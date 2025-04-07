@@ -4,9 +4,35 @@
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    use std::sync::Arc;
+
+    use eframe::{egui_wgpu, wgpu};
+
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
     let native_options = eframe::NativeOptions {
+        vsync: true,
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: Some(1),
+            on_surface_error: Arc::new(|e| {
+                println!("WGPU error: {e:?}");
+                egui_wgpu::SurfaceErrorAction::SkipFrame
+            }),
+            wgpu_setup: egui_wgpu::WgpuSetup::default(),
+            // wgpu_setup: egui_wgpu::WgpuSetup::CreateNew( {
+            //     instance_descriptor: wgpu::InstanceDescriptor {
+            //         backends: wgpu::Backends::all(),
+            //         flags: wgpu::InstanceFlags::default(),
+            //         backend_options: wgpu::BackendOptions::default(),
+            //     },
+            //     power_preference: wgpu::PowerPreference::HighPerformance,
+            //     device_descriptor: Arc::new(|_adapter| wgpu::DeviceDescriptor {
+            //         label: Some("egui-wgpu"),
+            //         ..Default::default()
+            //     }),
+            // }),
+        },
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([400.0, 300.0])
             .with_min_inner_size([300.0, 220.0])
