@@ -3,5 +3,5 @@
 mod app;
 mod models;
 mod resource;
-
+mod ui;
 pub use app::TemplateApp;

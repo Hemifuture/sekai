@@ -1,10 +1,16 @@
+use egui::{Rect, Widget};
+
+use crate::ui::map::map_impl::MapWidget;
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
     // Example stuff:
     label: String,
-
+    scene_rect: Rect,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    map_widget: MapWidget,
     #[serde(skip)] // This how you opt-out of serialization of a field
     value: f32,
 }
@@ -15,6 +21,8 @@ impl Default for TemplateApp {
             // Example stuff:
             label: "Hello World!".to_owned(),
             value: 2.7,
+            scene_rect: Rect::ZERO,
+            map_widget: MapWidget::default(),
         }
     }
 }
@@ -65,7 +73,7 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
             ui.heading("eframe template");
 
@@ -90,6 +98,23 @@ impl eframe::App for TemplateApp {
                 powered_by_egui_and_eframe(ui);
                 egui::warn_if_debug_build(ui);
             });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let scene = egui::Scene::new()
+                .max_inner_size([1000.0, 1000.0])
+                .zoom_range(0.1..=100.0);
+            let mut inner_rect = Rect::NAN;
+            let response = scene
+                .show(ui, &mut self.scene_rect, |ui| {
+                    self.map_widget.ui(ui);
+                    inner_rect = ui.min_rect();
+                })
+                .response;
+
+            if response.double_clicked() {
+                self.scene_rect = inner_rect;
+            }
         });
     }
 }
