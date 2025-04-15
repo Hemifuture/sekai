@@ -1069,6 +1069,7 @@ dependencies = [
  "env_logger",
  "log",
  "rand 0.9.0",
+ "rayon",
  "serde",
  "tokio",
  "wasm-bindgen-futures",
