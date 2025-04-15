@@ -1,6 +1,8 @@
 use egui::{Rect, Widget};
 
-use crate::ui::map::map_impl::MapWidget;
+use crate::{
+    gpu::map_renderer::MapRenderer, resource::MapRendererResource, ui::map::map_impl::MapWidget,
+};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -13,6 +15,8 @@ pub struct TemplateApp {
     map_widget: MapWidget,
     #[serde(skip)] // This how you opt-out of serialization of a field
     value: f32,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    map_renderer: Option<MapRendererResource>,
 }
 
 impl Default for TemplateApp {
@@ -23,6 +27,7 @@ impl Default for TemplateApp {
             value: 2.7,
             scene_rect: Rect::ZERO,
             map_widget: MapWidget::default(),
+            map_renderer: None,
         }
     }
 }
@@ -35,11 +40,34 @@ impl TemplateApp {
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        let mut app = if let Some(storage) = cc.storage {
+            let mut app: TemplateApp =
+                eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+            app.map_renderer = None;
+            app
+        } else {
+            Default::default()
+        };
+
+        let wgpu_render_state = cc.wgpu_render_state.as_ref();
+        if let Some(rs) = wgpu_render_state {
+            let device = &rs.device;
+
+            // 构造我们的粒子系统
+            let map_renderer = MapRenderer::new(device, rs.target_format);
+
+            let map_renderer_resource = MapRendererResource::new(map_renderer);
+
+            // 注册到资源里，这样在回调里可以获取到
+            rs.renderer
+                .write()
+                .callback_resources
+                .insert::<MapRendererResource>(map_renderer_resource.clone());
+
+            app.map_renderer = Some(map_renderer_resource.clone());
         }
 
-        Default::default()
+        app
     }
 }
 
