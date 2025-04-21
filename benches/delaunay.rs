@@ -24,10 +24,10 @@ fn create_benchmark_fn(b: &mut Bencher, size: usize) {
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("Delaunay Triangulation");
     let iterations: [usize; 8] = [
-        500, 500, 1_000, 10_000, 100_000, 500_000, 1_000_000, 2_000_000,
+        100, 500, 1_000, 10_000, 100_000, 500_000, 1_000_000, 2_000_000,
     ];
 
-    for size in iterations.iter().take(1) {
+    for size in iterations.iter().take(3) {
         group.bench_with_input(
             BenchmarkId::new("delauney2d", size),
             size,

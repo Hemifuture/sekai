@@ -1,7 +1,8 @@
 use egui::Pos2;
 
 /// 三角形结构，存储三个顶点坐标
-#[derive(Debug)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Triangle {
     pub points: [Pos2; 3],
 }

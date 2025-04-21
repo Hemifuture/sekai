@@ -4,14 +4,14 @@ use eframe::{
 };
 use egui::{accesskit::Point, PaintCallbackInfo, Rect};
 
-use crate::resource::{CanvasStateResource, PointsRendererResource};
+use crate::resource::{CanvasStateResource, DelaunayRendererResource};
 
-pub struct PointsCallback {
+pub struct DelaunayCallback {
     canvas_state_resource: CanvasStateResource,
     canvas_rect: Rect,
 }
 
-impl PointsCallback {
+impl DelaunayCallback {
     pub fn new(canvas_state_resource: CanvasStateResource, rect: Rect) -> Self {
         Self {
             canvas_state_resource,
@@ -20,7 +20,7 @@ impl PointsCallback {
     }
 }
 
-impl CallbackTrait for PointsCallback {
+impl CallbackTrait for DelaunayCallback {
     fn prepare(
         &self,
         _device: &eframe::wgpu::Device,
@@ -29,12 +29,12 @@ impl CallbackTrait for PointsCallback {
         _egui_encoder: &mut eframe::wgpu::CommandEncoder,
         resources: &mut eframe::egui_wgpu::CallbackResources,
     ) -> Vec<eframe::wgpu::CommandBuffer> {
-        let points_renderer_resource = resources.get::<PointsRendererResource>().unwrap();
-        points_renderer_resource.with_resource(|points_renderer| {
+        let delaunay_renderer_resource = resources.get::<DelaunayRendererResource>().unwrap();
+        delaunay_renderer_resource.with_resource(|delaunay_renderer| {
             // println!("points count: {}", points_renderer.points.len());
             self.canvas_state_resource.read_resource(|canvas_state| {
-                points_renderer.update_uniforms(self.canvas_rect, canvas_state.transform);
-                points_renderer.upload_to_gpu(queue);
+                delaunay_renderer.update_uniforms(self.canvas_rect, canvas_state.transform);
+                delaunay_renderer.upload_to_gpu(queue);
             })
         });
 
@@ -47,9 +47,9 @@ impl CallbackTrait for PointsCallback {
         render_pass: &mut RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        let points_renderer_resource = resources.get::<PointsRendererResource>().unwrap();
-        points_renderer_resource.read_resource(|points_renderer| {
-            points_renderer.render(render_pass);
+        let delaunay_renderer_resource = resources.get::<DelaunayRendererResource>().unwrap();
+        delaunay_renderer_resource.read_resource(|delaunay_renderer| {
+            delaunay_renderer.render(render_pass);
         });
     }
 }

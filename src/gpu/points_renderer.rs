@@ -2,51 +2,38 @@ use std::num::NonZeroU64;
 
 use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
+use eframe::wgpu::core::device::queue;
+use egui::emath::TSTransform;
 use egui::Pos2;
 
-use crate::delaunay::Triangle;
+use super::canvas_uniform::CanvasUniforms;
+use super::map_renderer::MapRenderer;
 
 const MAX_POINTS: usize = 10_000;
-const MAX_VORONOI_CELLS: usize = 10_000;
-const MAX_TRIANGLES: usize = 10_000;
 
-pub struct MapRenderer {
+pub struct PointsRenderer {
     pub points: Vec<Pos2>,
-    pub triangles: Vec<Triangle>,
-
+    pub uniforms: CanvasUniforms,
     pub points_buffer: wgpu::Buffer,
-    pub voronoi_buffer: wgpu::Buffer,
     pub uniform_buffer: wgpu::Buffer,
-
-    pub points_pipeline: Option<wgpu::RenderPipeline>,
-    pub voronoi_pipeline: Option<wgpu::RenderPipeline>,
-
-    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub points_pipeline: wgpu::RenderPipeline,
     pub bind_group: wgpu::BindGroup,
 }
 
-impl MapRenderer {
+impl PointsRenderer {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let points: Vec<Pos2> = vec![Pos2::new(0.0, 0.0); MAX_POINTS];
-        let voronoi_cells: Vec<Pos2> = vec![Pos2::new(0.0, 0.0); MAX_VORONOI_CELLS];
-        let triangles: Vec<Triangle> = vec![Triangle::new([Pos2::new(0.0, 0.0); 3]); MAX_TRIANGLES];
+        let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
 
         let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("map_points_buffer"),
+            label: Some("points_buffer"),
             contents: bytemuck::cast_slice(&points),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        let voronoi_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("map_voronoi_buffer"),
-            contents: bytemuck::cast_slice(&voronoi_cells),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let uniform_data = [0.0f32; 4];
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("map_uniform_buffer"),
-            contents: bytemuck::cast_slice(&uniform_data),
+            contents: bytemuck::cast_slice(&[uniforms]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -66,28 +53,17 @@ impl MapRenderer {
                     },
                     count: None,
                 },
-                // 绑定 voronoi_buffer
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<Pos2>() as u64 * voronoi_cells.len() as u64,
-                        ),
-                    },
-                    count: None,
-                },
                 // 绑定 uniform_buffer
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         // 16字节
-                        min_binding_size: NonZeroU64::new(16),
+                        min_binding_size: NonZeroU64::new(
+                            std::mem::size_of::<CanvasUniforms>() as u64
+                        ),
                     },
                     count: None,
                 },
@@ -105,10 +81,6 @@ impl MapRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: voronoi_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
                 },
             ],
@@ -123,19 +95,36 @@ impl MapRenderer {
         let points_pipeline =
             MapRenderer::create_points_pipeline(device, &pipeline_layout, target_format);
 
-        let voronoi_pipeline =
-            MapRenderer::create_voronoi_pipeline(device, &pipeline_layout, target_format);
-
         Self {
             points,
-            triangles,
-            points_pipeline: Some(points_pipeline),
-            voronoi_pipeline: Some(voronoi_pipeline),
+            uniforms,
             points_buffer,
-            voronoi_buffer,
             uniform_buffer,
-            bind_group_layout,
+            points_pipeline,
             bind_group,
         }
+    }
+
+    pub fn update_points(&mut self, points: Vec<Pos2>) {
+        self.points = points;
+    }
+
+    pub fn update_uniforms(&mut self, rect: egui::Rect, transform: TSTransform) {
+        self.uniforms = CanvasUniforms::new(rect, transform);
+    }
+
+    pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
+        queue.write_buffer(&self.points_buffer, 0, bytemuck::cast_slice(&self.points));
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.uniforms]),
+        );
+    }
+
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass<'static>) {
+        render_pass.set_pipeline(&self.points_pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..self.points.len() as u32 * 6, 0..1);
     }
 }

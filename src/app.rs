@@ -1,7 +1,20 @@
-use egui::{Rect, Widget};
+use eframe::egui_wgpu::RenderState;
+use egui::{accesskit::Point, Pos2, Rect, Widget};
 
 use crate::{
-    gpu::map_renderer::MapRenderer, resource::MapRendererResource, ui::map::map_impl::MapWidget,
+    delaunay::{self, Triangle},
+    gpu::{
+        delaunay::{
+            delaunay_renderer::{DelaunayRenderer, GPUTriangle},
+            helpers::to_gpu_triangles,
+        },
+        map_renderer::MapRenderer,
+        points_renderer::PointsRenderer,
+    },
+    resource::{
+        CanvasStateResource, DelaunayRendererResource, MapRendererResource, PointsRendererResource,
+    },
+    ui::canvas::canvas::Canvas,
 };
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -12,22 +25,29 @@ pub struct TemplateApp {
     label: String,
     scene_rect: Rect,
     #[serde(skip)] // This how you opt-out of serialization of a field
-    map_widget: MapWidget,
+    canvas_widget: Canvas,
     #[serde(skip)] // This how you opt-out of serialization of a field
     value: f32,
     #[serde(skip)] // This how you opt-out of serialization of a field
-    map_renderer: Option<MapRendererResource>,
+    points_renderer: Option<PointsRendererResource>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    delaunay_renderer: Option<DelaunayRendererResource>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    canvas_state: CanvasStateResource,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        let canvas_resource = CanvasStateResource::default();
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
             value: 2.7,
             scene_rect: Rect::ZERO,
-            map_widget: MapWidget::default(),
-            map_renderer: None,
+            canvas_widget: Canvas::new(canvas_resource.clone()),
+            points_renderer: None,
+            delaunay_renderer: None,
+            canvas_state: canvas_resource,
         }
     }
 }
@@ -43,7 +63,7 @@ impl TemplateApp {
         let mut app = if let Some(storage) = cc.storage {
             let mut app: TemplateApp =
                 eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-            app.map_renderer = None;
+            app.points_renderer = None;
             app
         } else {
             Default::default()
@@ -54,17 +74,11 @@ impl TemplateApp {
             let device = &rs.device;
 
             // 构造我们的粒子系统
-            let map_renderer = MapRenderer::new(device, rs.target_format);
+            let points_renderer_resource = create_points_renderer_resource(rs);
+            let delaunay_renderer_resource = create_delaunay_renderer_resource(rs);
 
-            let map_renderer_resource = MapRendererResource::new(map_renderer);
-
-            // 注册到资源里，这样在回调里可以获取到
-            rs.renderer
-                .write()
-                .callback_resources
-                .insert::<MapRendererResource>(map_renderer_resource.clone());
-
-            app.map_renderer = Some(map_renderer_resource.clone());
+            app.points_renderer = Some(points_renderer_resource.clone());
+            app.delaunay_renderer = Some(delaunay_renderer_resource.clone());
         }
 
         app
@@ -103,46 +117,15 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
 
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
-
-            ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                self.value += 1.0;
-            }
-
-            ui.separator();
-
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 powered_by_egui_and_eframe(ui);
                 egui::warn_if_debug_build(ui);
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let scene = egui::Scene::new()
-                .max_inner_size([1000.0, 1000.0])
-                .zoom_range(0.1..=100.0);
-            let mut inner_rect = Rect::NAN;
-            let response = scene
-                .show(ui, &mut self.scene_rect, |ui| {
-                    self.map_widget.ui(ui);
-                    inner_rect = ui.min_rect();
-                })
-                .response;
-
-            if response.double_clicked() {
-                self.scene_rect = inner_rect;
-            }
+            ui.add(&mut self.canvas_widget);
         });
     }
 }
@@ -159,4 +142,52 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
         );
         ui.label(".");
     });
+}
+
+fn create_points_renderer_resource(rs: &RenderState) -> PointsRendererResource {
+    let mut points_renderer = PointsRenderer::new(&rs.device, rs.target_format);
+    points_renderer.update_points(vec![
+        Pos2::new(0.1, 0.1),
+        Pos2::new(100.0, 100.0),
+        Pos2::new(150.0, 200.0),
+    ]);
+
+    let points_renderer_resource = PointsRendererResource::new(points_renderer);
+
+    // 注册到资源里，这样在回调里可以获取到
+    rs.renderer
+        .write()
+        .callback_resources
+        .insert::<PointsRendererResource>(points_renderer_resource.clone());
+
+    points_renderer_resource
+}
+
+fn create_delaunay_renderer_resource(rs: &RenderState) -> DelaunayRendererResource {
+    // 创建一些离散点
+    let points = vec![
+        Pos2::new(0.1, 0.1),
+        Pos2::new(-50.0, 100.0),
+        Pos2::new(0.0, 200.0),
+        Pos2::new(50.0, 300.0),
+        Pos2::new(100.0, 400.0),
+        Pos2::new(150.0, 500.0),
+        Pos2::new(200.0, 600.0),
+        Pos2::new(250.0, 700.0),
+        Pos2::new(300.0, 800.0),
+    ];
+    let triangles = delaunay::triangulate(&points);
+    let gpu_triangles = to_gpu_triangles(triangles);
+    let mut delaunay_renderer = DelaunayRenderer::new(&rs.device, rs.target_format);
+    delaunay_renderer.update_triangles(gpu_triangles);
+
+    let delaunay_renderer_resource = DelaunayRendererResource::new(delaunay_renderer);
+
+    // 注册到资源里，这样在回调里可以获取到
+    rs.renderer
+        .write()
+        .callback_resources
+        .insert::<DelaunayRendererResource>(delaunay_renderer_resource.clone());
+
+    delaunay_renderer_resource
 }

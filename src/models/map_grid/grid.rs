@@ -19,5 +19,7 @@ impl Grid {
 
     pub fn generate_points(&mut self) {}
 
-    fn generate_jittered_grid(&mut self) {}
+    fn generate_jittered_grid(&mut self) {
+        let mut points = vec![];
+    }
 }
