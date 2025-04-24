@@ -1,18 +1,14 @@
 use eframe::egui_wgpu::RenderState;
-use egui::{accesskit::Point, Pos2, Rect, Widget};
+use egui::Rect;
 
 use crate::{
-    delaunay::{self, Triangle},
+    delaunay::{self},
     gpu::{
-        delaunay::{
-            delaunay_renderer::{DelaunayRenderer, GPUTriangle},
-            helpers::to_gpu_triangles,
-        },
-        map_renderer::MapRenderer,
+        delaunay::{delaunay_renderer::DelaunayRenderer, helpers::to_gpu_triangles},
         points_renderer::PointsRenderer,
     },
     resource::{
-        CanvasStateResource, DelaunayRendererResource, MapRendererResource, PointsRendererResource,
+        CanvasStateResource, DelaunayRendererResource, GridResource, PointsRendererResource,
     },
     ui::canvas::canvas::Canvas,
 };
@@ -34,6 +30,8 @@ pub struct TemplateApp {
     delaunay_renderer: Option<DelaunayRendererResource>,
     #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_state: CanvasStateResource,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    grid: GridResource,
 }
 
 impl Default for TemplateApp {
@@ -48,6 +46,7 @@ impl Default for TemplateApp {
             points_renderer: None,
             delaunay_renderer: None,
             canvas_state: canvas_resource,
+            grid: GridResource::default(),
         }
     }
 }
@@ -71,11 +70,11 @@ impl TemplateApp {
 
         let wgpu_render_state = cc.wgpu_render_state.as_ref();
         if let Some(rs) = wgpu_render_state {
-            let device = &rs.device;
+            // let device = &rs.device;
 
             // 构造我们的粒子系统
-            let points_renderer_resource = create_points_renderer_resource(rs);
-            let delaunay_renderer_resource = create_delaunay_renderer_resource(rs);
+            let points_renderer_resource = app.create_points_renderer_resource(rs);
+            let delaunay_renderer_resource = app.create_delaunay_renderer_resource(rs);
 
             app.points_renderer = Some(points_renderer_resource.clone());
             app.delaunay_renderer = Some(delaunay_renderer_resource.clone());
@@ -144,50 +143,47 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
     });
 }
 
-fn create_points_renderer_resource(rs: &RenderState) -> PointsRendererResource {
-    let mut points_renderer = PointsRenderer::new(&rs.device, rs.target_format);
-    points_renderer.update_points(vec![
-        Pos2::new(0.1, 0.1),
-        Pos2::new(100.0, 100.0),
-        Pos2::new(150.0, 200.0),
-    ]);
+impl TemplateApp {
+    fn create_points_renderer_resource(&mut self, rs: &RenderState) -> PointsRendererResource {
+        println!("create_points_renderer_resource");
+        let mut points_renderer = PointsRenderer::new(&rs.device, rs.target_format);
 
-    let points_renderer_resource = PointsRendererResource::new(points_renderer);
+        let points = self
+            .grid
+            .read_resource(|grid| grid.get_all_points().clone());
+        points_renderer.update_points(points);
 
-    // 注册到资源里，这样在回调里可以获取到
-    rs.renderer
-        .write()
-        .callback_resources
-        .insert::<PointsRendererResource>(points_renderer_resource.clone());
+        let points_renderer_resource = PointsRendererResource::new(points_renderer);
 
-    points_renderer_resource
-}
+        // 注册到资源里，这样在回调里可以获取到
+        rs.renderer
+            .write()
+            .callback_resources
+            .insert::<PointsRendererResource>(points_renderer_resource.clone());
 
-fn create_delaunay_renderer_resource(rs: &RenderState) -> DelaunayRendererResource {
-    // 创建一些离散点
-    let points = vec![
-        Pos2::new(0.1, 0.1),
-        Pos2::new(-50.0, 100.0),
-        Pos2::new(0.0, 200.0),
-        Pos2::new(50.0, 300.0),
-        Pos2::new(100.0, 400.0),
-        Pos2::new(150.0, 500.0),
-        Pos2::new(200.0, 600.0),
-        Pos2::new(250.0, 700.0),
-        Pos2::new(300.0, 800.0),
-    ];
-    let triangles = delaunay::triangulate(&points);
-    let gpu_triangles = to_gpu_triangles(triangles);
-    let mut delaunay_renderer = DelaunayRenderer::new(&rs.device, rs.target_format);
-    delaunay_renderer.update_triangles(gpu_triangles);
+        points_renderer_resource
+    }
 
-    let delaunay_renderer_resource = DelaunayRendererResource::new(delaunay_renderer);
+    fn create_delaunay_renderer_resource(&mut self, rs: &RenderState) -> DelaunayRendererResource {
+        println!("create_delaunay_renderer_resource");
+        let mut delaunay_renderer = DelaunayRenderer::new(&rs.device, rs.target_format);
+        let triangles = self.grid.read_resource(|grid| {
+            let points = grid.get_all_points();
+            let triangles = delaunay::triangulate(&points);
+            triangles
+        });
+        // println!("triangles: {}", triangles.len());
+        let gpu_triangles = to_gpu_triangles(triangles);
+        delaunay_renderer.update_triangles(gpu_triangles);
 
-    // 注册到资源里，这样在回调里可以获取到
-    rs.renderer
-        .write()
-        .callback_resources
-        .insert::<DelaunayRendererResource>(delaunay_renderer_resource.clone());
+        let delaunay_renderer_resource = DelaunayRendererResource::new(delaunay_renderer);
 
-    delaunay_renderer_resource
+        // 注册到资源里，这样在回调里可以获取到
+        rs.renderer
+            .write()
+            .callback_resources
+            .insert::<DelaunayRendererResource>(delaunay_renderer_resource.clone());
+
+        delaunay_renderer_resource
+    }
 }

@@ -29,7 +29,11 @@ impl MapRenderer {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let points: Vec<Pos2> = vec![Pos2::new(0.0, 0.0); MAX_POINTS];
         let voronoi_cells: Vec<Pos2> = vec![Pos2::new(0.0, 0.0); MAX_VORONOI_CELLS];
-        let triangles: Vec<Triangle> = vec![Triangle::new([Pos2::new(0.0, 0.0); 3]); MAX_TRIANGLES];
+        let triangles: Vec<Triangle> = vec![Triangle::new([
+            Pos2::new(0.0, 0.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(0.0, 0.0),
+        ])];
 
         let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("map_points_buffer"),

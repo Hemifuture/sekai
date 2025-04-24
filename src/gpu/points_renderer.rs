@@ -1,15 +1,17 @@
 use std::num::NonZeroU64;
 
+use delaunator::Point;
 use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use eframe::wgpu::core::device::queue;
 use egui::emath::TSTransform;
 use egui::Pos2;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use super::canvas_uniform::CanvasUniforms;
 use super::map_renderer::MapRenderer;
 
-const MAX_POINTS: usize = 10_000;
+const MAX_POINTS: usize = 100_000;
 
 pub struct PointsRenderer {
     pub points: Vec<Pos2>,
@@ -125,6 +127,6 @@ impl PointsRenderer {
     pub fn render(&self, render_pass: &mut wgpu::RenderPass<'static>) {
         render_pass.set_pipeline(&self.points_pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.draw(0..self.points.len() as u32 * 6, 0..1);
+        render_pass.draw(0..self.points.len() as u32 * 3, 0..1);
     }
 }

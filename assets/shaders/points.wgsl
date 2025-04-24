@@ -32,7 +32,7 @@ struct VSOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index : u32) -> VSOutput {
     // 确定当前顶点对应哪个点
-    let point_id = vertex_index / 6;
+    let point_id = vertex_index / 3;
     // 确定当前顶点是矩形中的哪个顶点(0-5)
     
     // 获取点的位置
@@ -41,7 +41,7 @@ fn vs_main(@builtin(vertex_index) vertex_index : u32) -> VSOutput {
     
     var out : VSOutput;
     out.pos = get_triangle_pos(vertex_index, screen_pos, uniforms);
-    out.color = vec4<f32>(0.0, 1.0, 0.0, 1.0);
+    out.color = vec4<f32>(0.5, 0.5, 0.5, 1.0);
     return out;
 }
 
@@ -59,8 +59,8 @@ fn get_screen_pos(point: Pos2, uniforms: CanvasUniforms) -> vec2<f32> {
 }
 
 fn get_triangle_pos(vertex_index: u32, point: vec2<f32>, uniforms: CanvasUniforms) -> vec4<f32> {
-    let size = 0.01;
-    let vertex_in_rect = vertex_index % 6;
+    let size = 0.006;
+    let vertex_in_rect = vertex_index % 3;
     
     // 矩形的6个顶点(两个三角形)相对位置
     var offset = vec2<f32>(0.0, 0.0);
@@ -68,22 +68,13 @@ fn get_triangle_pos(vertex_index: u32, point: vec2<f32>, uniforms: CanvasUniform
     // 根据vertex_in_rect确定偏移量
     switch vertex_in_rect {
         case 0u: { // 第一个三角形 - 左下
-            offset = vec2<f32>(-size, -size);
+            offset = vec2<f32>(0, size);
         }
         case 1u: { // 第一个三角形 - 右下
-            offset = vec2<f32>(size, -size);
+            offset = vec2<f32>(-0.866 * size, -0.5 * size);
         }
         case 2u: { // 第一个三角形 - 左上
-            offset = vec2<f32>(-size, size);
-        }
-        case 3u: { // 第二个三角形 - 左上
-            offset = vec2<f32>(-size, size);
-        }
-        case 4u: { // 第二个三角形 - 右下
-            offset = vec2<f32>(size, -size);
-        }
-        case 5u: { // 第二个三角形 - 右上
-            offset = vec2<f32>(size, size);
+            offset = vec2<f32>(0.866 * size, -0.5 * size);
         }
         default: {}
     }

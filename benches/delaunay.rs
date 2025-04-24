@@ -1,7 +1,6 @@
 use criterion::{criterion_group, criterion_main, Bencher, BenchmarkId, Criterion};
 use egui::Pos2;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::hint::black_box;
 
 use eframe_template::delaunay::triangulate;
 
@@ -15,7 +14,7 @@ fn create_points(size: usize) -> Vec<Pos2> {
 fn create_benchmark_fn(b: &mut Bencher, size: usize) {
     let points = create_points(size);
     b.iter_batched(
-        || triangulate(&black_box(&points)),
+        || triangulate(&points),
         |_| {},
         criterion::BatchSize::SmallInput,
     );

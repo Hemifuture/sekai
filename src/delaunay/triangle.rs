@@ -1,8 +1,7 @@
 use egui::Pos2;
 
 /// 三角形结构，存储三个顶点坐标
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy)]
 pub struct Triangle {
     pub points: [Pos2; 3],
 }
@@ -19,57 +18,47 @@ impl Triangle {
         let b = self.points[1];
         let c = self.points[2];
 
-        // 使用行列式判断点是否在外接圆内
-        // 计算公式:
-        // | (ax-px)² + (ay-py)² | ax-px | ay-py | 1 |
-        // | (bx-px)² + (by-py)² | bx-px | by-py | 1 |
-        // | (cx-px)² + (cy-py)² | cx-px | cy-py | 1 |
+        // 使用精确的行列式算法判断点是否在外接圆内
+        // 为了数值稳定性，将点移到一个更合适的坐标系
+        let epsilon = 1e-10;
+
+        // 首先检查三角形是否有效（非退化）
+        let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if area.abs() < epsilon {
+            return false; // 退化三角形
+        }
 
         // 为了数值稳定性，如果点非常接近三角形的顶点之一，认为它不在外接圆内
-        let epsilon = 1e-6;
-
-        let px = point.x;
-        let py = point.y;
-
-        let ax = a.x - px;
-        let ay = a.y - py;
-        let bx = b.x - px;
-        let by = b.y - py;
-        let cx = c.x - px;
-        let cy = c.y - py;
-
-        // 检查点是否与三角形的任何顶点重合或非常接近
-        if (ax.abs() < epsilon && ay.abs() < epsilon)
-            || (bx.abs() < epsilon && by.abs() < epsilon)
-            || (cx.abs() < epsilon && cy.abs() < epsilon)
+        if (point - a).length_sq() < epsilon
+            || (point - b).length_sq() < epsilon
+            || (point - c).length_sq() < epsilon
         {
             return false;
         }
+
+        // 应用更稳定的外接圆测试
+        // 使用相对坐标减少数值误差
+        let ax = a.x - point.x;
+        let ay = a.y - point.y;
+        let bx = b.x - point.x;
+        let by = b.y - point.y;
+        let cx = c.x - point.x;
+        let cy = c.y - point.y;
 
         let a_squared = ax * ax + ay * ay;
         let b_squared = bx * bx + by * by;
         let c_squared = cx * cx + cy * cy;
 
-        let det = ax * (by * c_squared - b_squared * cy) - ay * (bx * c_squared - b_squared * cx)
-            + a_squared * (bx * cy - by * cx)
-            - bx * (ax * c_squared - a_squared * cx)
-            + by * (ax * b_squared - a_squared * bx)
-            - b_squared * (ax * cy - ay * cx);
+        // 行列式计算
+        let det = ax * (by * c_squared - cy * b_squared)
+            + bx * (cy * a_squared - ay * c_squared)
+            + cx * (ay * b_squared - by * a_squared);
 
-        // 判断三角形方向：如果三角形为顺时针方向，则结果要取反
-        // 计算三角形面积的两倍（使用叉积）
-        let area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-
-        // 添加数值容差
-        if area2.abs() < epsilon {
-            // 三角形退化，面积接近零
-            return false;
-        }
-
-        if area2 > 0.0 {
-            det > epsilon // 为正值添加容差
+        // 判断三角形方向
+        if area > 0.0 {
+            det > epsilon
         } else {
-            det < -epsilon // 为负值添加容差
+            det < -epsilon
         }
     }
 

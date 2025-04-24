@@ -9,7 +9,7 @@ use crate::delaunay::Triangle;
 use crate::gpu::canvas_uniform::CanvasUniforms;
 use crate::gpu::map_renderer::MapRenderer;
 
-const MAX_TRIANGLES: usize = 10_000;
+const MAX_TRIANGLES: usize = 100_000;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

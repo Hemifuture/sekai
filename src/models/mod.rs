@@ -1,2 +1,2 @@
-pub mod map_grid;
+pub mod map;
 pub mod map_layer;

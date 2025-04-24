@@ -3,7 +3,7 @@
 mod app;
 pub mod delaunay;
 mod gpu;
-mod models;
+pub mod models;
 mod resource;
 mod ui;
 pub use app::TemplateApp;

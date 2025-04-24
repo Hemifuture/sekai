@@ -2,7 +2,7 @@ use crate::delaunay::triangle::Triangle;
 use egui::Pos2;
 
 /// 创建包含所有点的超级三角形
-pub fn create_super_triangle(points: &[Pos2]) -> Triangle {
+pub fn create_super_triangle(points: &[&Pos2]) -> Triangle {
     // 找到包围所有点的矩形
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -16,18 +16,38 @@ pub fn create_super_triangle(points: &[Pos2]) -> Triangle {
         max_y = max_y.max(point.y);
     }
 
+    // 处理边缘情况
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+        // 使用默认值创建一个大三角形
+        return Triangle::new([
+            Pos2::new(-1000.0, -1000.0),
+            Pos2::new(0.0, 1000.0),
+            Pos2::new(1000.0, -1000.0),
+        ]);
+    }
+
+    // 处理所有点都在同一位置的情况
+    if (max_x - min_x).abs() < 1e-6 && (max_y - min_y).abs() < 1e-6 {
+        // 创建一个包围单点的三角形
+        return Triangle::new([
+            Pos2::new(min_x - 10.0, min_y - 10.0),
+            Pos2::new(min_x, min_y + 10.0),
+            Pos2::new(min_x + 10.0, min_y - 10.0),
+        ]);
+    }
+
     let dx = max_x - min_x;
     let dy = max_y - min_y;
-    let dmax = dx.max(dy) * 2.0;
+    let dmax = dx.max(dy).max(1.0) * 2.0; // 确保至少有一定大小
 
     let mid_x = (min_x + max_x) / 2.0;
     let mid_y = (min_y + max_y) / 2.0;
 
     // 创建一个足够大的三角形
     Triangle::new([
-        Pos2::new(mid_x - 20.0 * dmax, mid_y - dmax),
-        Pos2::new(mid_x, mid_y + 20.0 * dmax),
-        Pos2::new(mid_x + 20.0 * dmax, mid_y - dmax),
+        Pos2::new(mid_x - 10.0 * dmax, mid_y - dmax),
+        Pos2::new(mid_x, mid_y + 10.0 * dmax),
+        Pos2::new(mid_x + 10.0 * dmax, mid_y - dmax),
     ])
 }
 
@@ -88,4 +108,59 @@ pub fn validate_delaunay(triangles: &[Triangle], points: &[Pos2]) -> bool {
     }
 
     true
+}
+
+/// 计算给定点集的凸包边界点数量
+pub fn calculate_convex_hull_points(points: &[&Pos2]) -> i32 {
+    if points.len() < 3 {
+        return points.len() as i32;
+    }
+
+    // 使用Graham扫描算法计算凸包
+    // 首先找到最左下角的点作为参考点
+    let mut ref_point = points[0];
+    for &p in points.iter().skip(1) {
+        if p.y < ref_point.y || (p.y == ref_point.y && p.x < ref_point.x) {
+            ref_point = p;
+        }
+    }
+
+    // 计算其他点相对于参考点的极角
+    let mut angles: Vec<(f32, &Pos2)> = points
+        .iter()
+        .filter(|&&p| p != ref_point)
+        .map(|&p| {
+            let dx = p.x - ref_point.x;
+            let dy = p.y - ref_point.y;
+            (dy.atan2(dx), p)
+        })
+        .collect();
+
+    // 按极角排序
+    angles.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 构建凸包
+    let mut hull = vec![ref_point];
+    for (_, point) in angles {
+        while hull.len() >= 2 {
+            let n = hull.len();
+            let p1 = hull[n - 2];
+            let p2 = hull[n - 1];
+
+            // 检查是否形成左转（叉积为正）
+            let cross_product = (p2.x - p1.x) * (point.y - p2.y) - (p2.y - p1.y) * (point.x - p2.x);
+
+            if cross_product > 0.0 {
+                break;
+            }
+
+            // 当前形成右转或共线，移除栈顶元素
+            hull.pop();
+        }
+
+        hull.push(point);
+    }
+
+    // 返回凸包边界点的数量
+    hull.len() as i32
 }

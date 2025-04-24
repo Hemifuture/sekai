@@ -62,7 +62,7 @@ fn vs_main(@builtin(vertex_index) vertex_index : u32) -> VSOutput {
     
     var out : VSOutput;
     out.pos = screen_pos;
-    out.color = vec4<f32>(0.0, 1.0, 0.0, 1.0);
+    out.color = vec4<f32>(0.6, 0.6, 0.6, 1.0);
     return out;
 }
 

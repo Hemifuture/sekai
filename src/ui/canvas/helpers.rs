@@ -38,9 +38,20 @@ pub fn draw_grid(ui: &mut egui::Ui, canvas_state: &CanvasState, screen_rect: egu
     // println!("alpha_1: {:?}", alpha_1);
     // println!("alpha_2: {:?}", alpha_2);
 
+    let (grid_color_1, grid_color_2) = match ui.ctx().theme() {
+        egui::Theme::Light => (
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, alpha_1),
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, alpha_2),
+        ),
+        egui::Theme::Dark => (
+            egui::Color32::from_rgba_unmultiplied(50, 50, 50, alpha_1),
+            egui::Color32::from_rgba_unmultiplied(50, 50, 50, alpha_2),
+        ),
+    };
+
     // 定义网格颜色
-    let grid_color_1 = egui::Color32::from_rgba_unmultiplied(100, 100, 100, alpha_1);
-    let grid_color_2 = egui::Color32::from_rgba_unmultiplied(100, 100, 100, alpha_2);
+    // let grid_color_1 = egui::Color32::from_rgba_unmultiplied(100, 100, 100, alpha_1);
+    // let grid_color_2 = egui::Color32::from_rgba_unmultiplied(100, 100, 100, alpha_2);
 
     // 计算可见区域的边界（画布坐标）
     let min_canvas = canvas_state.to_canvas(screen_rect.min);

@@ -31,6 +31,7 @@ rand = "0.9.0"
 rayon = "1.10"
 
 criterion = { version = "0.5", features = ["html_reports"] }
+delaunator = "1.0.2"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
