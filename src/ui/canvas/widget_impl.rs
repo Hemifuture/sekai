@@ -1,7 +1,10 @@
 use eframe::egui_wgpu;
 use egui::Widget;
 
-use crate::gpu::{delaunay::delaunay_callback::DelaunayCallback, points_callback::PointsCallback};
+use crate::gpu::{
+    delaunay::delaunay_callback::DelaunayCallback, points_callback::PointsCallback,
+    voronoi::voronoi_callback::VoronoiCallback,
+};
 
 use super::{canvas::Canvas, helpers::draw_grid};
 
@@ -18,6 +21,13 @@ impl Widget for &mut Canvas {
             // println!("canvas rect: {}", screen_rect);
             // println!("transform: {:?}", canvas_state.transform);
         });
+
+        let voronoi_callback =
+            VoronoiCallback::new(self.canvas_state_resource.clone(), screen_rect);
+        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+            screen_rect,
+            voronoi_callback,
+        ));
 
         let delaunay_callback =
             DelaunayCallback::new(self.canvas_state_resource.clone(), screen_rect);

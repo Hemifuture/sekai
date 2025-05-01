@@ -2,13 +2,15 @@ use eframe::egui_wgpu::RenderState;
 use egui::Rect;
 
 use crate::{
-    delaunay::{self},
+    delaunay::{self, voronoi::generate_voronoi_render_data},
     gpu::{
         delaunay::{delaunay_renderer::DelaunayRenderer, helpers::to_gpu_triangles},
         points_renderer::PointsRenderer,
+        voronoi::voronoi_renderer::VoronoiRenderer,
     },
     resource::{
         CanvasStateResource, DelaunayRendererResource, GridResource, PointsRendererResource,
+        VoronoiRendererResource,
     },
     ui::canvas::canvas::Canvas,
 };
@@ -29,6 +31,8 @@ pub struct TemplateApp {
     #[serde(skip)] // This how you opt-out of serialization of a field
     delaunay_renderer: Option<DelaunayRendererResource>,
     #[serde(skip)] // This how you opt-out of serialization of a field
+    voronoi_renderer: Option<VoronoiRendererResource>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_state: CanvasStateResource,
     #[serde(skip)] // This how you opt-out of serialization of a field
     grid: GridResource,
@@ -45,6 +49,7 @@ impl Default for TemplateApp {
             canvas_widget: Canvas::new(canvas_resource.clone()),
             points_renderer: None,
             delaunay_renderer: None,
+            voronoi_renderer: None,
             canvas_state: canvas_resource,
             grid: GridResource::default(),
         }
@@ -63,6 +68,8 @@ impl TemplateApp {
             let mut app: TemplateApp =
                 eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
             app.points_renderer = None;
+            app.delaunay_renderer = None;
+            app.voronoi_renderer = None;
             app
         } else {
             Default::default()
@@ -75,9 +82,11 @@ impl TemplateApp {
             // 构造我们的粒子系统
             let points_renderer_resource = app.create_points_renderer_resource(rs);
             let delaunay_renderer_resource = app.create_delaunay_renderer_resource(rs);
+            let voronoi_renderer_resource = app.create_voronoi_renderer_resource(rs);
 
             app.points_renderer = Some(points_renderer_resource.clone());
             app.delaunay_renderer = Some(delaunay_renderer_resource.clone());
+            app.voronoi_renderer = Some(voronoi_renderer_resource.clone());
         }
 
         app
@@ -186,5 +195,29 @@ impl TemplateApp {
             .insert::<DelaunayRendererResource>(delaunay_renderer_resource.clone());
 
         delaunay_renderer_resource
+    }
+
+    fn create_voronoi_renderer_resource(&mut self, rs: &RenderState) -> VoronoiRendererResource {
+        println!("create_voronoi_renderer_resource");
+        let mut voronoi_renderer = VoronoiRenderer::new(&rs.device, rs.target_format);
+        let (indices, points) = self.grid.read_resource(|grid| {
+            let points = grid.get_all_points();
+            let indices = delaunay::triangulate(&points);
+            (indices, points.clone())
+        });
+
+        // 获取Voronoi索引化数据
+        let (vertices, indices) = generate_voronoi_render_data(&indices, &points);
+        voronoi_renderer.update_voronoi_data(vertices, indices);
+
+        let voronoi_renderer_resource = VoronoiRendererResource::new(voronoi_renderer);
+
+        // 注册到资源里，这样在回调里可以获取到
+        rs.renderer
+            .write()
+            .callback_resources
+            .insert::<VoronoiRendererResource>(voronoi_renderer_resource.clone());
+
+        voronoi_renderer_resource
     }
 }

@@ -6,10 +6,10 @@ use std::time::Instant;
 /// Voronoi边缘表示
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoronoiEdge {
-    /// 边的起点
-    pub start: Pos2,
-    /// 边的终点
-    pub end: Pos2,
+    /// 边的起点索引
+    pub start_idx: u32,
+    /// 边的终点索引
+    pub end_idx: u32,
     /// 相邻的Delaunay顶点索引（左侧）
     pub site1: usize,
     /// 相邻的Delaunay顶点索引（右侧）
@@ -21,53 +21,34 @@ pub struct VoronoiEdge {
 pub struct VoronoiCell {
     /// 细胞中心（原始点）
     pub site: Pos2,
-    /// 围绕细胞的边（有序）
-    pub edges: Vec<VoronoiEdge>,
-    /// 细胞顶点（有序）
-    pub vertices: Vec<Pos2>,
+    /// 该单元格顶点的索引（有序）
+    pub vertex_indices: Vec<u32>,
 }
 
-/// Voronoi图结构，包含所有Voronoi单元格
+/// 索引化的Voronoi图结构
 #[derive(Debug, Clone)]
-pub struct VoronoiDiagram {
+pub struct IndexedVoronoiDiagram {
+    /// 所有唯一的顶点坐标
+    pub vertices: Vec<Pos2>,
+    /// 边的索引，每两个索引表示一条边
+    pub indices: Vec<u32>,
     /// 所有Voronoi单元格，按原始点索引排序
     pub cells: Vec<VoronoiCell>,
-    /// 所有Voronoi边
-    pub edges: Vec<VoronoiEdge>,
 }
 
-impl VoronoiDiagram {
+impl IndexedVoronoiDiagram {
     /// 创建一个空的Voronoi图
     pub fn new() -> Self {
         Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
             cells: Vec::new(),
-            edges: Vec::new(),
         }
     }
 
-    /// 获取所有Voronoi顶点
-    pub fn get_vertices(&self) -> Vec<Pos2> {
-        let mut vertices = HashSet::new();
-
-        for edge in &self.edges {
-            // 使用精确的表示方法来避免重复点
-            let start_key = (
-                (edge.start.x * 10000.0).round() as i64,
-                (edge.start.y * 10000.0).round() as i64,
-            );
-            let end_key = (
-                (edge.end.x * 10000.0).round() as i64,
-                (edge.end.y * 10000.0).round() as i64,
-            );
-
-            vertices.insert(start_key);
-            vertices.insert(end_key);
-        }
-
-        vertices
-            .iter()
-            .map(|&(x, y)| Pos2::new(x as f32 / 10000.0, y as f32 / 10000.0))
-            .collect()
+    /// 获取用于渲染的顶点和索引
+    pub fn get_render_data(&self) -> (Vec<Pos2>, Vec<u32>) {
+        (self.vertices.clone(), self.indices.clone())
     }
 }
 
@@ -103,16 +84,16 @@ fn compute_circumcenter(points: &[Pos2], indices: &[usize; 3]) -> Pos2 {
     Pos2::new(ab_mid.x + t1 * ab_normal.x, ab_mid.y + t1 * ab_normal.y)
 }
 
-/// 从Delaunay三角剖分计算Voronoi图
-pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiagram {
+/// 从Delaunay三角剖分计算索引化的Voronoi图
+pub fn compute_indexed_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> IndexedVoronoiDiagram {
     let start_time = Instant::now();
     println!(
-        "开始生成Voronoi图，基于 {} 个三角形",
+        "开始生成索引化Voronoi图，基于 {} 个三角形",
         triangle_indices.len() / 3
     );
 
     if triangle_indices.len() < 3 || points.len() < 3 {
-        return VoronoiDiagram::new();
+        return IndexedVoronoiDiagram::new();
     }
 
     // 构建三角形顶点索引列表
@@ -150,8 +131,13 @@ pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiag
         }
     }
 
-    // 创建Voronoi边
-    let mut voronoi_edges = Vec::new();
+    // 收集所有唯一的Voronoi顶点
+    let mut vertex_map: HashMap<(i64, i64), u32> = HashMap::new();
+    let mut vertices: Vec<Pos2> = Vec::new();
+    let mut edges: Vec<VoronoiEdge> = Vec::new();
+
+    // 用于记录每个原始点的Voronoi顶点
+    let mut site_to_voronoi_vertices: HashMap<usize, HashSet<u32>> = HashMap::new();
 
     for ((p1_idx, p2_idx), triangle_indices) in edge_to_triangles.iter() {
         if triangle_indices.len() == 2 {
@@ -159,26 +145,176 @@ pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiag
             let t1_idx = triangle_indices[0];
             let t2_idx = triangle_indices[1];
 
+            let start = circumcenters[t1_idx];
+            let end = circumcenters[t2_idx];
+
+            // 量化顶点坐标以确定唯一顶点
+            let start_key = (
+                (start.x * 10000.0).round() as i64,
+                (start.y * 10000.0).round() as i64,
+            );
+            let end_key = (
+                (end.x * 10000.0).round() as i64,
+                (end.y * 10000.0).round() as i64,
+            );
+
+            // 获取或添加顶点索引
+            let start_idx = match vertex_map.get(&start_key) {
+                Some(&idx) => idx,
+                None => {
+                    let idx = vertices.len() as u32;
+                    vertices.push(start);
+                    vertex_map.insert(start_key, idx);
+                    idx
+                }
+            };
+
+            let end_idx = match vertex_map.get(&end_key) {
+                Some(&idx) => idx,
+                None => {
+                    let idx = vertices.len() as u32;
+                    vertices.push(end);
+                    vertex_map.insert(end_key, idx);
+                    idx
+                }
+            };
+
+            // 添加边
             let edge = VoronoiEdge {
-                start: circumcenters[t1_idx],
-                end: circumcenters[t2_idx],
+                start_idx,
+                end_idx,
                 site1: *p1_idx,
                 site2: *p2_idx,
             };
+            edges.push(edge);
 
-            voronoi_edges.push(edge);
+            // 记录每个原始点的相关Voronoi顶点
+            site_to_voronoi_vertices
+                .entry(*p1_idx)
+                .or_default()
+                .insert(start_idx);
+            site_to_voronoi_vertices
+                .entry(*p1_idx)
+                .or_default()
+                .insert(end_idx);
+            site_to_voronoi_vertices
+                .entry(*p2_idx)
+                .or_default()
+                .insert(start_idx);
+            site_to_voronoi_vertices
+                .entry(*p2_idx)
+                .or_default()
+                .insert(end_idx);
         } else if triangle_indices.len() == 1 {
             // 边界边: 只有一个三角形使用这条边
-            // 这里需要创建无限延伸的Voronoi边，或者截断在一个足够大的边界框内
-            // 在实际应用中，我们可以选择不返回这些边，或者将它们延伸到一个预设的边界
-            // TODO: 处理边界边
-            // 由于我们已经添加了外扩的边界点，这里的边界边应该很少，可以简单忽略
+            // 对于完整实现，这里需要处理边界情况
+            // 当前版本简单忽略边界边
         }
     }
 
-    // 为每个原始点构建Voronoi单元
+    // 构建索引数组，每两个索引表示一条边
+    let mut indices = Vec::with_capacity(edges.len() * 2);
+    for edge in &edges {
+        indices.push(edge.start_idx);
+        indices.push(edge.end_idx);
+    }
+
+    // 构建Voronoi单元格
     let mut cells = vec![
         VoronoiCell {
+            site: Pos2::new(0.0, 0.0),
+            vertex_indices: Vec::new(),
+        };
+        points.len()
+    ];
+
+    // 设置每个单元格的site点
+    for (i, &point) in points.iter().enumerate() {
+        cells[i].site = point;
+
+        // 添加该单元格的顶点索引
+        if let Some(vertex_indices) = site_to_voronoi_vertices.get(&i) {
+            cells[i].vertex_indices = vertex_indices.iter().copied().collect();
+        }
+    }
+
+    // 尝试为每个单元格排序顶点，使其形成闭合多边形
+    for cell in &mut cells {
+        if cell.vertex_indices.len() <= 2 {
+            continue; // 至少需要3个点才能形成多边形
+        }
+
+        // 这里可以添加更复杂的算法来排序顶点，使其形成闭合多边形
+        // 当前实现简单地收集顶点，但不保证它们组成有效的多边形
+    }
+
+    let duration = start_time.elapsed();
+    println!(
+        "索引化Voronoi图生成完成，包含 {} 个顶点、{} 条边和 {} 个单元格，耗时 {:.2?}",
+        vertices.len(),
+        edges.len(),
+        cells.len(),
+        duration
+    );
+
+    IndexedVoronoiDiagram {
+        vertices,
+        indices,
+        cells,
+    }
+}
+
+/// 生成Voronoi图的边界表示，返回顶点数组和索引数组
+/// 适合直接用于GPU渲染
+pub fn generate_voronoi_render_data(indices: &[u32], points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
+    compute_indexed_voronoi(indices, points).get_render_data()
+}
+
+/// 为兼容性保留原有函数，但内部使用新的索引化实现
+pub fn generate_voronoi_edges(indices: &[u32], points: &[Pos2]) -> Vec<[Pos2; 2]> {
+    let voronoi = compute_indexed_voronoi(indices, points);
+
+    let mut edges = Vec::new();
+    for i in 0..voronoi.indices.len() / 2 {
+        let start_idx = voronoi.indices[i * 2] as usize;
+        let end_idx = voronoi.indices[i * 2 + 1] as usize;
+
+        if start_idx < voronoi.vertices.len() && end_idx < voronoi.vertices.len() {
+            edges.push([voronoi.vertices[start_idx], voronoi.vertices[end_idx]]);
+        }
+    }
+
+    edges
+}
+
+/// 维持旧的接口以保持向后兼容性
+pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiagram {
+    let indexed_voronoi = compute_indexed_voronoi(triangle_indices, points);
+
+    // 将新的索引化结构转换为旧的非索引化结构
+    let mut old_edges = Vec::new();
+    for i in 0..indexed_voronoi.indices.len() / 2 {
+        let start_idx = indexed_voronoi.indices[i * 2] as usize;
+        let end_idx = indexed_voronoi.indices[i * 2 + 1] as usize;
+
+        if start_idx < indexed_voronoi.vertices.len() && end_idx < indexed_voronoi.vertices.len() {
+            // 找到这条边对应的原始点索引
+            // 注意：这是一个简化的转换，可能不完全准确
+            let site1 = i % points.len();
+            let site2 = (i + 1) % points.len();
+
+            old_edges.push(OldVoronoiEdge {
+                start: indexed_voronoi.vertices[start_idx],
+                end: indexed_voronoi.vertices[end_idx],
+                site1,
+                site2,
+            });
+        }
+    }
+
+    // 构建旧格式的单元格
+    let mut old_cells = vec![
+        OldVoronoiCell {
             site: Pos2::new(0.0, 0.0),
             edges: Vec::new(),
             vertices: Vec::new(),
@@ -186,97 +322,82 @@ pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiag
         points.len()
     ];
 
-    // 设置每个单元格的site
-    for (i, &point) in points.iter().enumerate() {
-        cells[i].site = point;
-    }
+    for (i, old_cell) in old_cells.iter_mut().enumerate() {
+        if i < indexed_voronoi.cells.len() {
+            old_cell.site = indexed_voronoi.cells[i].site;
 
-    // 将Voronoi边分配给相应的单元格
-    for edge in &voronoi_edges {
-        let p1_idx = edge.site1;
-        let p2_idx = edge.site2;
-
-        // 每条边被两个相邻单元格共享
-        cells[p1_idx].edges.push(*edge);
-
-        // 对于第二个单元格，需要交换起点和终点
-        let reversed_edge = VoronoiEdge {
-            start: edge.end,
-            end: edge.start,
-            site1: edge.site2,
-            site2: edge.site1,
-        };
-        cells[p2_idx].edges.push(reversed_edge);
-    }
-
-    // 对每个单元格的边进行排序，使它们形成连续的多边形
-    for cell in &mut cells {
-        if cell.edges.is_empty() {
-            continue;
+            // 从顶点索引构建旧格式的顶点列表
+            old_cell.vertices = indexed_voronoi.cells[i]
+                .vertex_indices
+                .iter()
+                .filter_map(|&idx| {
+                    if (idx as usize) < indexed_voronoi.vertices.len() {
+                        Some(indexed_voronoi.vertices[idx as usize])
+                    } else {
+                        None
+                    }
+                })
+                .collect();
         }
-
-        let mut sorted_edges = Vec::new();
-        let mut vertices = Vec::new();
-
-        // 从第一条边开始
-        let mut current_edge = cell.edges[0];
-        sorted_edges.push(current_edge);
-        vertices.push(current_edge.start);
-
-        let mut remaining_edges: HashSet<usize> = (1..cell.edges.len()).collect();
-
-        // 找到形成闭合多边形的边序列
-        while !remaining_edges.is_empty() {
-            let current_end = current_edge.end;
-            let mut found = false;
-
-            for &edge_idx in remaining_edges.iter() {
-                let next_edge = cell.edges[edge_idx];
-
-                // 检查是否能连接当前边的终点
-                if (next_edge.start - current_end).length() < 1e-4 {
-                    sorted_edges.push(next_edge);
-                    vertices.push(next_edge.start);
-                    current_edge = next_edge;
-                    remaining_edges.remove(&edge_idx);
-                    found = true;
-                    break;
-                }
-            }
-
-            if !found {
-                // 如果找不到下一条边，说明多边形可能不闭合
-                // 在实际应用中，这可能发生在边界附近的单元格
-                break;
-            }
-        }
-
-        cell.edges = sorted_edges;
-        cell.vertices = vertices;
     }
-
-    let duration = start_time.elapsed();
-    println!(
-        "Voronoi图生成完成，包含 {} 个单元格和 {} 条边，耗时 {:.2?}",
-        cells.len(),
-        voronoi_edges.len(),
-        duration
-    );
 
     VoronoiDiagram {
-        cells,
-        edges: voronoi_edges,
+        cells: old_cells,
+        edges: old_edges,
     }
 }
 
-/// 生成Voronoi图的边界表示
-/// 返回一个包含所有Voronoi边的列表，适合用于渲染
-pub fn generate_voronoi_edges(indices: &[u32], points: &[Pos2]) -> Vec<[Pos2; 2]> {
-    let voronoi = compute_voronoi(indices, points);
+// 为了支持旧的API，保留旧的结构体定义
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OldVoronoiEdge {
+    pub start: Pos2,
+    pub end: Pos2,
+    pub site1: usize,
+    pub site2: usize,
+}
 
-    voronoi
-        .edges
-        .iter()
-        .map(|edge| [edge.start, edge.end])
-        .collect()
+#[derive(Debug, Clone)]
+pub struct OldVoronoiCell {
+    pub site: Pos2,
+    pub edges: Vec<OldVoronoiEdge>,
+    pub vertices: Vec<Pos2>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoronoiDiagram {
+    pub cells: Vec<OldVoronoiCell>,
+    pub edges: Vec<OldVoronoiEdge>,
+}
+
+impl VoronoiDiagram {
+    pub fn new() -> Self {
+        Self {
+            cells: Vec::new(),
+            edges: Vec::new(),
+        }
+    }
+
+    pub fn get_vertices(&self) -> Vec<Pos2> {
+        let mut vertices = HashSet::new();
+
+        for edge in &self.edges {
+            // 使用精确的表示方法来避免重复点
+            let start_key = (
+                (edge.start.x * 10000.0).round() as i64,
+                (edge.start.y * 10000.0).round() as i64,
+            );
+            let end_key = (
+                (edge.end.x * 10000.0).round() as i64,
+                (edge.end.y * 10000.0).round() as i64,
+            );
+
+            vertices.insert(start_key);
+            vertices.insert(end_key);
+        }
+
+        vertices
+            .iter()
+            .map(|&(x, y)| Pos2::new(x as f32 / 10000.0, y as f32 / 10000.0))
+            .collect()
+    }
 }

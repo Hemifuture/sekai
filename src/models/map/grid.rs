@@ -13,7 +13,7 @@ pub struct Grid {
 
 impl Default for Grid {
     fn default() -> Self {
-        let mut grid = Self::new(2000, 1000, 20);
+        let mut grid = Self::new(2000, 1000, 10);
         grid.generate_points();
         grid
     }

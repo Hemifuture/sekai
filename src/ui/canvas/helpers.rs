@@ -135,12 +135,13 @@ pub fn draw_grid(ui: &mut egui::Ui, canvas_state: &CanvasState, screen_rect: egu
     }
 
     // 画坐标轴
-    let axis_color = egui::Color32::RED;
+    let x_axis_color = egui::Color32::RED;
+    let y_axis_color = egui::Color32::GREEN;
     let origin = canvas_state.to_screen(egui::Pos2::ZERO);
     let x_axis_end = canvas_state.to_screen(egui::Pos2::new(1000.0, 0.0));
     let y_axis_end = canvas_state.to_screen(egui::Pos2::new(0.0, 1000.0));
-    painter.line_segment([origin, x_axis_end], (2.0, axis_color));
-    painter.line_segment([origin, y_axis_end], (2.0, axis_color));
+    painter.line_segment([origin, x_axis_end], (2.0, x_axis_color));
+    painter.line_segment([origin, y_axis_end], (2.0, y_axis_color));
 
     // // 画一条线
     // let line_start = canvas_state.to_screen(egui::Pos2::new(0.0, 0.0));

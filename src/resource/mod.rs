@@ -1,7 +1,7 @@
 use crate::{
     gpu::{
         delaunay::delaunay_renderer::DelaunayRenderer, map_renderer::MapRenderer,
-        points_renderer::PointsRenderer,
+        points_renderer::PointsRenderer, voronoi::voronoi_renderer::VoronoiRenderer,
     },
     models::map::grid::Grid,
     ui::canvas::state::CanvasState,
@@ -16,4 +16,5 @@ pub type MapRendererResource = resource_impl::Resource<MapRenderer>;
 pub type CanvasStateResource = resource_impl::Resource<CanvasState>;
 pub type PointsRendererResource = resource_impl::Resource<PointsRenderer>;
 pub type DelaunayRendererResource = resource_impl::Resource<DelaunayRenderer>;
+pub type VoronoiRendererResource = resource_impl::Resource<VoronoiRenderer>;
 pub type GridResource = resource_impl::Resource<Grid>;

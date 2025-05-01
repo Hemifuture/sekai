@@ -3,82 +3,88 @@ use std::num::NonZeroU64;
 use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
-use egui::Pos2;
+use egui::{Pos2, Rect};
 
-use crate::delaunay::Triangle;
 use crate::gpu::canvas_uniform::CanvasUniforms;
 use crate::gpu::map_renderer::MapRenderer;
 
-const MAX_TRIANGLES: usize = 100_000;
+const MAX_VORONOI_VERTICES: usize = 100_000;
+const MAX_VORONOI_INDICES: usize = 200_000;
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GPUTriangle {
-    pub points: [Pos2; 3],
-}
-
-impl Default for GPUTriangle {
-    fn default() -> Self {
-        Self {
-            points: [
-                Pos2::new(0.0, 0.0),
-                Pos2::new(0.0, 0.0),
-                Pos2::new(0.0, 0.0),
-            ],
-        }
-    }
-}
-
-pub struct DelaunayRenderer {
-    pub triangles: Vec<GPUTriangle>,
+// 删除Matrix4x4相关代码，直接使用CanvasUniforms
+pub struct VoronoiRenderer {
+    pub vertices: Vec<Pos2>,
+    pub indices: Vec<u32>,
     pub uniforms: CanvasUniforms,
-    pub delaunay_buffer: wgpu::Buffer,
+    pub vertices_buffer: wgpu::Buffer,
+    pub indices_buffer: wgpu::Buffer,
     pub uniform_buffer: wgpu::Buffer,
-    pub delaunay_pipeline: wgpu::RenderPipeline,
+    pub voronoi_pipeline: wgpu::RenderPipeline,
     pub bind_group: wgpu::BindGroup,
 }
 
-impl DelaunayRenderer {
+impl VoronoiRenderer {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
-        let triangles: Vec<GPUTriangle> = vec![GPUTriangle::default(); MAX_TRIANGLES];
-        let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
+        let vertices: Vec<Pos2> = Vec::with_capacity(MAX_VORONOI_VERTICES);
+        let indices: Vec<u32> = Vec::with_capacity(MAX_VORONOI_INDICES);
+        let uniforms = CanvasUniforms::new(Rect::ZERO, TSTransform::IDENTITY);
 
-        let delaunay_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("delaunay_buffer"),
-            contents: bytemuck::cast_slice(&triangles),
+        // 创建顶点缓冲区
+        let vertices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voronoi_vertices_buffer"),
+            size: (std::mem::size_of::<Pos2>() * MAX_VORONOI_VERTICES) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
+        // 创建索引缓冲区
+        let indices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voronoi_indices_buffer"),
+            size: (std::mem::size_of::<u32>() * MAX_VORONOI_INDICES) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // 创建Uniform缓冲区，直接使用CanvasUniforms
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("map_uniform_buffer"),
+            label: Some("voronoi_uniform_buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        // 创建绑定组布局
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("map_bind_group_layout"),
+            label: Some("voronoi_bind_group_layout"),
             entries: &[
-                // 绑定 storage_buffer
+                // 绑定顶点缓冲区
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<Triangle>() as u64 * triangles.len() as u64,
-                        ),
+                        min_binding_size: NonZeroU64::new(std::mem::size_of::<Pos2>() as u64),
                     },
                     count: None,
                 },
-                // 绑定 uniform_buffer
+                // 绑定索引缓冲区
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(std::mem::size_of::<u32>() as u64),
+                    },
+                    count: None,
+                },
+                // 绑定Uniform缓冲区
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        // 16字节
                         min_binding_size: NonZeroU64::new(
                             std::mem::size_of::<CanvasUniforms>() as u64
                         ),
@@ -88,55 +94,71 @@ impl DelaunayRenderer {
             ],
         });
 
-        // 创建 BindGroup
+        // 创建绑定组
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("map_bind_group"),
+            label: Some("voronoi_bind_group"),
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: delaunay_buffer.as_entire_binding(),
+                    resource: vertices_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: indices_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
                 },
             ],
         });
 
+        // 创建管线布局
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("map_pipeline_layout"),
+            label: Some("voronoi_pipeline_layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        let delaunay_pipeline =
-            MapRenderer::create_delaunay_pipeline(device, &pipeline_layout, target_format);
+        // 创建管线
+        let voronoi_pipeline =
+            MapRenderer::create_voronoi_pipeline(device, &pipeline_layout, target_format);
 
         Self {
-            triangles,
+            vertices,
+            indices,
             uniforms,
-            delaunay_buffer,
+            vertices_buffer,
+            indices_buffer,
             uniform_buffer,
-            delaunay_pipeline,
+            voronoi_pipeline,
             bind_group,
         }
     }
 
-    pub fn update_triangles(&mut self, triangles: Vec<GPUTriangle>) {
-        self.triangles = triangles;
+    pub fn update_voronoi_data(&mut self, vertices: Vec<Pos2>, indices: Vec<u32>) {
+        self.vertices = vertices;
+        self.indices = indices;
     }
 
-    pub fn update_uniforms(&mut self, rect: egui::Rect, transform: TSTransform) {
+    pub fn update_uniforms(&mut self, rect: Rect, transform: TSTransform) {
         self.uniforms = CanvasUniforms::new(rect, transform);
     }
 
     pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(
-            &self.delaunay_buffer,
-            0,
-            bytemuck::cast_slice(&self.triangles),
-        );
+        if !self.vertices.is_empty() {
+            queue.write_buffer(
+                &self.vertices_buffer,
+                0,
+                bytemuck::cast_slice(&self.vertices),
+            );
+        }
+
+        if !self.indices.is_empty() {
+            queue.write_buffer(&self.indices_buffer, 0, bytemuck::cast_slice(&self.indices));
+        }
+
         queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -145,8 +167,12 @@ impl DelaunayRenderer {
     }
 
     pub fn render(&self, render_pass: &mut wgpu::RenderPass<'static>) {
-        render_pass.set_pipeline(&self.delaunay_pipeline);
+        if self.vertices.is_empty() || self.indices.is_empty() {
+            return;
+        }
+
+        render_pass.set_pipeline(&self.voronoi_pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.draw(0..self.triangles.len() as u32 * 6, 0..1);
+        render_pass.draw(0..self.indices.len() as u32, 0..1);
     }
 }
