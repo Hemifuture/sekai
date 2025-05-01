@@ -167,14 +167,15 @@ impl TemplateApp {
     fn create_delaunay_renderer_resource(&mut self, rs: &RenderState) -> DelaunayRendererResource {
         println!("create_delaunay_renderer_resource");
         let mut delaunay_renderer = DelaunayRenderer::new(&rs.device, rs.target_format);
-        let triangles = self.grid.read_resource(|grid| {
+        let (indices, points) = self.grid.read_resource(|grid| {
             let points = grid.get_all_points();
-            let triangles = delaunay::triangulate(&points);
-            triangles
+            let indices = delaunay::triangulate(&points);
+            (indices, points.clone())
         });
         // println!("triangles: {}", triangles.len());
-        let gpu_triangles = to_gpu_triangles(triangles);
-        delaunay_renderer.update_triangles(gpu_triangles);
+        // let gpu_triangles = to_gpu_triangles(indices, &points);
+        delaunay_renderer.update_points(points);
+        delaunay_renderer.update_indices(indices);
 
         let delaunay_renderer_resource = DelaunayRendererResource::new(delaunay_renderer);
 

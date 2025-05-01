@@ -41,7 +41,7 @@ fn vs_main(@builtin(vertex_index) vertex_index : u32) -> VSOutput {
     
     var out : VSOutput;
     out.pos = get_triangle_pos(vertex_index, screen_pos, uniforms);
-    out.color = vec4<f32>(0.5, 0.5, 0.5, 1.0);
+    out.color = vec4<f32>(0.9, 0.5, 0.5, 1.0);
     return out;
 }
 
@@ -59,7 +59,9 @@ fn get_screen_pos(point: Pos2, uniforms: CanvasUniforms) -> vec2<f32> {
 }
 
 fn get_triangle_pos(vertex_index: u32, point: vec2<f32>, uniforms: CanvasUniforms) -> vec4<f32> {
-    let size = 0.006;
+    //let size = 0.006;
+    let raw_size = uniforms.scale * 0.006;
+    let size = clamp(raw_size, raw_size, 0.01);
     let vertex_in_rect = vertex_index % 3;
     
     // 矩形的6个顶点(两个三角形)相对位置

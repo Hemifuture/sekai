@@ -1,41 +1,59 @@
-use criterion::{criterion_group, criterion_main, Bencher, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use eframe_template::delaunay::{self, voronoi};
 use egui::Pos2;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rand::Rng;
 
-use eframe_template::delaunay::triangulate;
+fn generate_random_points(n: usize, width: f32, height: f32) -> Vec<Pos2> {
+    let mut rng = rand::rng();
+    let mut points = Vec::with_capacity(n);
 
-fn create_points(size: usize) -> Vec<Pos2> {
-    (0..size)
-        .into_par_iter()
-        .map(|_| Pos2::new(rand::random(), rand::random()))
-        .collect()
+    for _ in 0..n {
+        let x = rng.random_range(0.0..width);
+        let y = rng.random_range(0.0..height);
+        points.push(Pos2::new(x, y));
+    }
+
+    points
 }
 
-fn create_benchmark_fn(b: &mut Bencher, size: usize) {
-    let points = create_points(size);
-    b.iter_batched(
-        || triangulate(&points),
-        |_| {},
-        criterion::BatchSize::SmallInput,
-    );
-}
-
-fn criterion_benchmark(c: &mut Criterion) {
+fn bench_delaunay(c: &mut Criterion) {
     let mut group = c.benchmark_group("Delaunay Triangulation");
-    let iterations: [usize; 8] = [
-        100, 500, 1_000, 10_000, 100_000, 500_000, 1_000_000, 2_000_000,
-    ];
 
-    for size in iterations.iter().take(3) {
-        group.bench_with_input(
-            BenchmarkId::new("delauney2d", size),
-            size,
-            |b, &bench_size| create_benchmark_fn(b, bench_size),
-        );
+    for &n in &[100, 1000, 10000] {
+        group.bench_function(format!("triangulate_{}", n), |b| {
+            let points = generate_random_points(n, 1000.0, 1000.0);
+            b.iter(|| {
+                black_box(delaunay::triangulate(&points));
+            });
+        });
     }
 
     group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+fn bench_voronoi(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Voronoi Diagram");
+
+    for &n in &[100, 1000, 10000] {
+        group.bench_function(format!("voronoi_{}", n), |b| {
+            let points = generate_random_points(n, 1000.0, 1000.0);
+            let triangle_indices = delaunay::triangulate(&points);
+            b.iter(|| {
+                black_box(voronoi::compute_voronoi(&triangle_indices, &points));
+            });
+        });
+
+        group.bench_function(format!("voronoi_edges_{}", n), |b| {
+            let points = generate_random_points(n, 1000.0, 1000.0);
+            let triangle_indices = delaunay::triangulate(&points);
+            b.iter(|| {
+                black_box(voronoi::generate_voronoi_edges(&triangle_indices, &points));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_delaunay, bench_voronoi);
 criterion_main!(benches);

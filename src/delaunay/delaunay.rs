@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// 执行Delaunay三角剖分，根据输入点集合返回三角形列表
-pub fn triangulate(points: &Vec<Pos2>) -> Vec<Triangle> {
+pub fn triangulate(points: &Vec<Pos2>) -> Vec<u32> {
     let start_time = Instant::now();
     println!("三角剖分开始，处理 {} 个点", points.len());
 
@@ -19,7 +19,10 @@ pub fn triangulate(points: &Vec<Pos2>) -> Vec<Triangle> {
     let mut unique_points_set = HashSet::new();
     let mut unique_points = Vec::with_capacity(points.len());
 
-    for point in points {
+    // 创建点到原始索引的映射
+    let mut point_to_index = HashMap::new();
+
+    for (idx, point) in points.iter().enumerate() {
         // 使用点坐标的近似值作为键
         let key = (
             (point.x * 1000.0).round() as i32,
@@ -27,6 +30,7 @@ pub fn triangulate(points: &Vec<Pos2>) -> Vec<Triangle> {
         );
         if unique_points_set.insert(key) {
             unique_points.push(point);
+            point_to_index.insert(key, idx as u32);
         }
     }
 
@@ -156,7 +160,25 @@ pub fn triangulate(points: &Vec<Pos2>) -> Vec<Triangle> {
         triangles.len() as f32 / theoretical_triangles as f32
     );
 
-    triangles
+    // 将三角形列表转换为索引列表
+    let mut result = Vec::with_capacity(triangles.len() * 3);
+    for triangle in triangles {
+        for point in triangle.points {
+            let key = (
+                (point.x * 1000.0).round() as i32,
+                (point.y * 1000.0).round() as i32,
+            );
+            // 查找原始点索引
+            if let Some(&index) = point_to_index.get(&key) {
+                result.push(index);
+            } else {
+                // 这不应该发生，因为我们已经过滤掉了超级三角形
+                println!("警告：找不到点 ({:.2}, {:.2}) 的原始索引", point.x, point.y);
+            }
+        }
+    }
+
+    result
 }
 
 /// 修复非Delaunay三角形

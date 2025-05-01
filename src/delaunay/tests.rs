@@ -12,9 +12,10 @@ mod tests {
             Pos2::new(0.0, 1.0),
         ];
 
-        let triangles = triangulate(&points);
-        assert_eq!(triangles.len(), 1);
-        assert!(validate_delaunay(&triangles, &points));
+        let indices = triangulate(&points);
+        // 对于一个三角形，应该有3个索引
+        assert_eq!(indices.len(), 3);
+        assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
@@ -27,11 +28,11 @@ mod tests {
             Pos2::new(1.0, 1.0),
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 检查三角形数量，应该是2-4之间（取决于具体算法实现）
-        assert!(triangles.len() >= 2 && triangles.len() <= 4);
-        // 暂时注释掉，因为验证函数可能太严格
-        // assert!(validate_delaunay(&triangles, &points));
+        assert!(indices.len() >= 6 && indices.len() <= 12); // 每个三角形3个索引
+                                                            // 暂时注释掉，因为验证函数可能太严格
+                                                            // assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
@@ -45,11 +46,11 @@ mod tests {
             Pos2::new(0.0, 0.5),
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 凸多边形中，三角形数 = 顶点数 - 2，但具体实现可能有所不同
-        assert!(triangles.len() >= 3);
-        // 暂时注释掉，因为验证函数可能太严格
-        // assert!(validate_delaunay(&triangles, &points));
+        assert!(indices.len() >= 9); // 每个三角形3个索引，至少3个三角形
+                                     // 暂时注释掉，因为验证函数可能太严格
+                                     // assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
@@ -62,10 +63,10 @@ mod tests {
             Pos2::new(0.0, 1.0),
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 共线点情况下会产生2-3个三角形
-        assert!(triangles.len() >= 2);
-        assert!(validate_delaunay(&triangles, &points));
+        assert!(indices.len() >= 6); // 每个三角形3个索引，至少2个三角形
+        assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
@@ -78,34 +79,34 @@ mod tests {
             Pos2::new(0.0, 1.0),
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 去重后应该只有3个点，形成1个三角形
-        assert_eq!(triangles.len(), 1);
-        assert!(validate_delaunay(&triangles, &points));
+        assert_eq!(indices.len(), 3); // 1个三角形，3个索引
+        assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
     fn test_empty_points() {
         // 空点集应该返回空结果
         let points: Vec<Pos2> = Vec::new();
-        let triangles = triangulate(&points);
-        assert_eq!(triangles.len(), 0);
+        let indices = triangulate(&points);
+        assert_eq!(indices.len(), 0);
     }
 
     #[test]
     fn test_single_point() {
         // 单点应该返回空结果
         let points = vec![Pos2::new(0.0, 0.0)];
-        let triangles = triangulate(&points);
-        assert_eq!(triangles.len(), 0);
+        let indices = triangulate(&points);
+        assert_eq!(indices.len(), 0);
     }
 
     #[test]
     fn test_two_points() {
         // 两点应该返回空结果
         let points = vec![Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)];
-        let triangles = triangulate(&points);
-        assert_eq!(triangles.len(), 0);
+        let indices = triangulate(&points);
+        assert_eq!(indices.len(), 0);
     }
 
     #[test]
@@ -118,10 +119,10 @@ mod tests {
             Pos2::new(0.0000001, 0.0000001), // 非常接近第一个点
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 接近的点可能会被视为同一点，也可能不会，这取决于算法的精度
-        assert!(triangles.len() >= 1);
-        assert!(validate_delaunay(&triangles, &points));
+        assert!(indices.len() >= 3); // 至少1个三角形，3个索引
+        assert!(validate_delaunay(&indices, &points));
     }
 
     #[test]
@@ -137,10 +138,10 @@ mod tests {
             Pos2::new(0.9, 0.6),
         ];
 
-        let triangles = triangulate(&points);
+        let indices = triangulate(&points);
         // 确保生成了三角形并且满足Delaunay性质
-        assert!(triangles.len() > 0);
+        assert!(indices.len() > 0);
         // 暂时注释掉，因为验证函数可能太严格
-        // assert!(validate_delaunay(&triangles, &points));
+        // assert!(validate_delaunay(&indices, &points));
     }
 }

@@ -9,7 +9,7 @@ use crate::delaunay::Triangle;
 use crate::gpu::canvas_uniform::CanvasUniforms;
 use crate::gpu::map_renderer::MapRenderer;
 
-const MAX_POINTS: usize = 100_000;
+const MAX_TRIANGLES: usize = 100_000;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,11 +30,9 @@ impl Default for GPUTriangle {
 }
 
 pub struct DelaunayRenderer {
-    pub points: Vec<Pos2>,
-    pub triangle_indices: Vec<u32>,
+    pub triangles: Vec<GPUTriangle>,
     pub uniforms: CanvasUniforms,
-    pub points_buffer: wgpu::Buffer,
-    pub triangle_indices_buffer: wgpu::Buffer,
+    pub delaunay_buffer: wgpu::Buffer,
     pub uniform_buffer: wgpu::Buffer,
     pub delaunay_pipeline: wgpu::RenderPipeline,
     pub bind_group: wgpu::BindGroup,
@@ -42,22 +40,14 @@ pub struct DelaunayRenderer {
 
 impl DelaunayRenderer {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
-        let points: Vec<Pos2> = vec![Pos2::ZERO; MAX_POINTS];
-        let triangle_indices: Vec<u32> = vec![0; MAX_POINTS * 3];
+        let triangles: Vec<GPUTriangle> = vec![GPUTriangle::default(); MAX_TRIANGLES];
         let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
 
-        let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("points_buffer"),
-            contents: bytemuck::cast_slice(&points),
+        let delaunay_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("delaunay_buffer"),
+            contents: bytemuck::cast_slice(&triangles),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-
-        let triangle_indices_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("triangle_indices_buffer"),
-                contents: bytemuck::cast_slice(&triangle_indices),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            });
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("map_uniform_buffer"),
@@ -68,7 +58,7 @@ impl DelaunayRenderer {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("map_bind_group_layout"),
             entries: &[
-                // 绑定点数据
+                // 绑定 storage_buffer
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -76,7 +66,7 @@ impl DelaunayRenderer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<Pos2>() as u64 * MAX_POINTS as u64,
+                            std::mem::size_of::<Triangle>() as u64 * triangles.len() as u64,
                         ),
                     },
                     count: None,
@@ -88,6 +78,7 @@ impl DelaunayRenderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
+                        // 16字节
                         min_binding_size: NonZeroU64::new(
                             std::mem::size_of::<CanvasUniforms>() as u64
                         ),
@@ -104,7 +95,7 @@ impl DelaunayRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: points_buffer.as_entire_binding(),
+                    resource: delaunay_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -123,43 +114,17 @@ impl DelaunayRenderer {
             MapRenderer::create_delaunay_pipeline(device, &pipeline_layout, target_format);
 
         Self {
-            points,
-            triangle_indices,
+            triangles,
             uniforms,
-            points_buffer,
-            triangle_indices_buffer,
+            delaunay_buffer,
             uniform_buffer,
             delaunay_pipeline,
             bind_group,
         }
     }
 
-    pub fn update_points(&mut self, points: Vec<Pos2>) {
-        self.points = points;
-    }
-
-    pub fn update_indices(&mut self, indices: Vec<u32>) {
-        // 转换为LineList需要的索引格式
-        // 每个三角形需要3条边，每条边2个顶点，共6个顶点
-        let mut line_indices = Vec::with_capacity(indices.len() * 2);
-
-        for chunk in indices.chunks(3) {
-            if chunk.len() == 3 {
-                // 三角形的第一条边：顶点0->1
-                line_indices.push(chunk[0]);
-                line_indices.push(chunk[1]);
-
-                // 三角形的第二条边：顶点1->2
-                line_indices.push(chunk[1]);
-                line_indices.push(chunk[2]);
-
-                // 三角形的第三条边：顶点2->0
-                line_indices.push(chunk[2]);
-                line_indices.push(chunk[0]);
-            }
-        }
-
-        self.triangle_indices = line_indices;
+    pub fn update_triangles(&mut self, triangles: Vec<GPUTriangle>) {
+        self.triangles = triangles;
     }
 
     pub fn update_uniforms(&mut self, rect: egui::Rect, transform: TSTransform) {
@@ -167,11 +132,10 @@ impl DelaunayRenderer {
     }
 
     pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(&self.points_buffer, 0, bytemuck::cast_slice(&self.points));
         queue.write_buffer(
-            &self.triangle_indices_buffer,
+            &self.delaunay_buffer,
             0,
-            bytemuck::cast_slice(&self.triangle_indices),
+            bytemuck::cast_slice(&self.triangles),
         );
         queue.write_buffer(
             &self.uniform_buffer,
@@ -183,14 +147,6 @@ impl DelaunayRenderer {
     pub fn render(&self, render_pass: &mut wgpu::RenderPass<'static>) {
         render_pass.set_pipeline(&self.delaunay_pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_index_buffer(
-            self.triangle_indices_buffer.slice(..),
-            wgpu::IndexFormat::Uint32,
-        );
-
-        // 使用索引缓冲区绘制三角形边
-        if !self.triangle_indices.is_empty() {
-            render_pass.draw_indexed(0..self.triangle_indices.len() as u32, 0, 0..1);
-        }
+        render_pass.draw(0..self.triangles.len() as u32 * 6, 0..1);
     }
 }

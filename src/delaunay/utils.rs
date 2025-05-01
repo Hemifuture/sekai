@@ -72,7 +72,12 @@ pub fn remove_duplicate_edges(edges: &mut Vec<[Pos2; 2]>) {
 }
 
 /// 验证三角剖分结果是否满足Delaunay性质
-pub fn validate_delaunay(triangles: &[Triangle], points: &[Pos2]) -> bool {
+pub fn validate_delaunay(indices: &[u32], points: &[Pos2]) -> bool {
+    // 确保索引列表长度是3的倍数
+    if indices.len() % 3 != 0 {
+        return false;
+    }
+
     // 去除重复点
     let mut unique_points = Vec::new();
     let epsilon = 1e-6;
@@ -89,7 +94,20 @@ pub fn validate_delaunay(triangles: &[Triangle], points: &[Pos2]) -> bool {
     }
 
     // 检查每个三角形的外接圆是否不包含任何其他点
-    for triangle in triangles {
+    for triangle_idx in 0..(indices.len() / 3) {
+        // 获取当前三角形的三个顶点索引
+        let i1 = indices[triangle_idx * 3] as usize;
+        let i2 = indices[triangle_idx * 3 + 1] as usize;
+        let i3 = indices[triangle_idx * 3 + 2] as usize;
+
+        // 确保索引在有效范围内
+        if i1 >= points.len() || i2 >= points.len() || i3 >= points.len() {
+            return false;
+        }
+
+        // 构造临时三角形用于检查
+        let triangle = Triangle::new([points[i1], points[i2], points[i3]]);
+
         for &point in &unique_points {
             // 使用容差判断点是否是三角形的顶点之一
             let is_vertex = triangle.points.iter().any(|&p: &Pos2| {
