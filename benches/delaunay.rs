@@ -4,12 +4,12 @@ use egui::Pos2;
 use rand::Rng;
 
 fn generate_random_points(n: usize, width: f32, height: f32) -> Vec<Pos2> {
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
     let mut points = Vec::with_capacity(n);
 
     for _ in 0..n {
-        let x = rng.random_range(0.0..width);
-        let y = rng.random_range(0.0..height);
+        let x = rng.gen_range(0.0..width);
+        let y = rng.gen_range(0.0..height);
         points.push(Pos2::new(x, y));
     }
 

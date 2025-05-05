@@ -1,404 +1,312 @@
-use crate::delaunay::triangle::Triangle;
-use crate::delaunay::utils::{calculate_convex_hull_points, create_super_triangle};
+use crate::delaunay::utils::calculate_convex_hull_indices;
 use egui::Pos2;
+use rand::thread_rng;
+use rand::Rng;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Once;
 use std::time::Instant;
+
+static INIT_LOGGER: Once = Once::new();
 
 /// 执行Delaunay三角剖分，根据输入点集合返回三角形列表
 pub fn triangulate(points: &Vec<Pos2>) -> Vec<u32> {
     let start_time = Instant::now();
-    println!("三角剖分开始，处理 {} 个点", points.len());
+
+    // 使用Once确保日志只初始化一次
+    INIT_LOGGER.call_once(|| {
+        println!("三角剖分开始，处理 {} 个点", points.len());
+    });
 
     // 至少需要3个点才能形成三角形
     if points.len() < 3 {
         return Vec::new();
     }
 
-    // 去除重复点 - 使用HashSet提高效率
-    let mut unique_points_set = HashSet::new();
-    let mut unique_points = Vec::with_capacity(points.len());
+    // 优化点的预处理，使用并行处理去重
+    let (unique_points, original_indices) = preprocess_points(points);
+    let unique_points_count = unique_points.len();
 
-    // 创建点到原始索引的映射
-    let mut point_to_index = HashMap::new();
-
-    for (idx, point) in points.iter().enumerate() {
-        // 使用点坐标的近似值作为键
-        let key = (
-            (point.x * 1000.0).round() as i32,
-            (point.y * 1000.0).round() as i32,
-        );
-        if unique_points_set.insert(key) {
-            unique_points.push(point);
-            point_to_index.insert(key, idx as u32);
-        }
-    }
+    // 记录预处理时间
+    let preprocess_time = start_time.elapsed();
 
     // 如果去重后点数量不足，返回空
-    if unique_points.len() < 3 {
+    if unique_points_count < 3 {
         return Vec::new();
     }
 
-    println!("去重后剩余 {} 个点", unique_points.len());
-
-    // 找到能包含所有点的超级三角形
-    let super_triangle = create_super_triangle(&unique_points);
-    let super_points = [
-        super_triangle.points[0],
-        super_triangle.points[1],
-        super_triangle.points[2],
-    ];
-
-    // 使用简单的Bowyer-Watson算法实现Delaunay三角剖分
-    // 从超级三角形开始
-    let mut triangles = vec![super_triangle];
-
-    // 逐个添加点
-    for &point in &unique_points {
-        // 找出包含点在外接圆内的所有三角形 - 并行处理
-        let bad_triangles: Vec<usize> = (0..triangles.len())
-            .into_par_iter()
-            .filter(|&i| triangles[i].contains_in_circumcircle(*point))
-            .collect();
-
-        // 如果没有找到不合法的三角形，跳过此点
-        if bad_triangles.is_empty() {
-            continue;
-        }
-
-        // 提取多边形边界
-        let mut boundary_edges = Vec::new();
-
-        for &bad_idx in &bad_triangles {
-            let triangle = triangles[bad_idx];
-
-            // 添加三角形的三条边
-            for i in 0..3 {
-                let edge = [triangle.points[i], triangle.points[(i + 1) % 3]];
-
-                // 检查这条边是否在其他不合法三角形中出现
-                let mut is_shared = false;
-
-                for &other_idx in &bad_triangles {
-                    if other_idx == bad_idx {
-                        continue;
-                    }
-
-                    let other_triangle = triangles[other_idx];
-
-                    // 检查边是否在other_triangle中
-                    for j in 0..3 {
-                        let other_edge =
-                            [other_triangle.points[j], other_triangle.points[(j + 1) % 3]];
-
-                        // 检查边是否相同（考虑方向）
-                        if (edge[0] == other_edge[0] && edge[1] == other_edge[1])
-                            || (edge[0] == other_edge[1] && edge[1] == other_edge[0])
-                        {
-                            is_shared = true;
-                            break;
-                        }
-                    }
-
-                    if is_shared {
-                        break;
-                    }
-                }
-
-                if !is_shared {
-                    boundary_edges.push(edge);
-                }
-            }
-        }
-
-        // 从三角形列表中移除不合法的三角形
-        // 倒序移除以保持索引有效
-        let mut bad_triangles_sorted = bad_triangles.clone();
-        bad_triangles_sorted.sort_unstable();
-        for i in bad_triangles_sorted.iter().rev() {
-            triangles.swap_remove(*i);
-        }
-
-        // 用point和多边形边界创建新的三角形
-        for edge in boundary_edges {
-            triangles.push(Triangle::new([edge[0], edge[1], *point]));
-        }
-    }
-
-    // 移除与超级三角形相关的三角形 - 并行处理
-    let triangles: Vec<Triangle> = triangles
-        .into_par_iter()
-        .filter(|t| !super_points.iter().any(|&p| t.points.contains(&p)))
-        .collect();
-
-    println!("移除超级三角形后的三角形数量：{}", triangles.len());
-
-    // 修复潜在的非Delaunay三角形
-    let triangles = fix_non_delaunay_triangles(triangles);
+    // 使用delaunator进行三角剖分
+    let triangulation_start = Instant::now();
+    let triangles = classic_delaunay(&unique_points);
+    let triangulation_time = triangulation_start.elapsed();
 
     let duration = start_time.elapsed();
-    println!(
-        "三角剖分完成，生成 {} 个三角形，耗时 {:.2?}",
-        triangles.len(),
-        duration
-    );
 
-    // 计算凸包边界点数
-    let convex_hull_points = calculate_convex_hull_points(&unique_points);
-    println!("凸包边界点数量: {}", convex_hull_points);
+    // 仅在调试模式下输出详细信息
+    #[cfg(debug_assertions)]
+    {
+        println!("去重后剩余 {} 个点", unique_points_count);
+        println!(
+            "三角剖分完成，生成 {} 个三角形，耗时 {:.2?}",
+            triangles.len(),
+            duration
+        );
+        println!("预处理时间: {:.2?}", preprocess_time);
+        println!("三角剖分时间: {:.2?}", triangulation_time);
 
-    // 理论上，对于n个点（其中k个在凸包边界上），平面Delaunay三角剖分产生的三角形数为2n-2-k
-    let theoretical_triangles = if unique_points.len() >= 3 {
-        2 * unique_points.len() as i32 - 2 - convex_hull_points
-    } else {
-        0
-    };
+        // 计算凸包边界点数
+        let convex_hull_points = calculate_convex_hull_indices(unique_points_count, &unique_points);
+        println!("凸包边界点数量: {}", convex_hull_points);
 
-    println!("理论三角形数量: {}", theoretical_triangles);
-    println!(
-        "实际/理论比率: {:.2}",
-        triangles.len() as f32 / theoretical_triangles as f32
-    );
+        // 理论上，对于n个点（其中k个在凸包边界上），平面Delaunay三角剖分产生的三角形数为2n-2-k
+        let theoretical_triangles = if unique_points_count >= 3 {
+            2 * unique_points_count as i32 - 2 - convex_hull_points
+        } else {
+            0
+        };
 
-    // 将三角形列表转换为索引列表
+        println!("理论三角形数量: {}", theoretical_triangles);
+        println!(
+            "实际/理论比率: {:.2}",
+            triangles.len() as f32 / theoretical_triangles as f32
+        );
+    }
+
+    // 将三角形索引列表转换为原始点索引列表
     let mut result = Vec::with_capacity(triangles.len() * 3);
     for triangle in triangles {
-        for point in triangle.points {
-            let key = (
-                (point.x * 1000.0).round() as i32,
-                (point.y * 1000.0).round() as i32,
-            );
-            // 查找原始点索引
-            if let Some(&index) = point_to_index.get(&key) {
-                result.push(index);
-            } else {
-                // 这不应该发生，因为我们已经过滤掉了超级三角形
-                println!("警告：找不到点 ({:.2}, {:.2}) 的原始索引", point.x, point.y);
-            }
-        }
+        result.push(original_indices[triangle[0] as usize]);
+        result.push(original_indices[triangle[1] as usize]);
+        result.push(original_indices[triangle[2] as usize]);
     }
 
     result
 }
 
-/// 修复非Delaunay三角形
-fn fix_non_delaunay_triangles(mut triangles: Vec<Triangle>) -> Vec<Triangle> {
-    let mut modified = true;
-    let max_iterations = 5; // 限制迭代次数防止无限循环
-    let mut iteration = 0;
-
-    // 计算初始三角形数量，用于调试
-    let initial_triangle_count = triangles.len();
-    println!("初始三角形数量: {}", initial_triangle_count);
-
-    // 跟踪已处理边的集合，避免重复处理
-    let mut processed_edges = HashSet::new();
-
-    while modified && iteration < max_iterations {
-        iteration += 1;
-        modified = false;
-
-        // 创建边到三角形的映射 - 并行收集所有边
-        let edge_to_triangles: HashMap<((i32, i32), (i32, i32)), Vec<usize>> = {
-            // 清空已处理边集合，准备新一轮检查
-            processed_edges.clear();
-
-            // 先并行收集所有三角形的边
-            let edges_with_indices: Vec<(((i32, i32), (i32, i32)), usize)> = triangles
-                .par_iter()
-                .enumerate()
-                .flat_map(|(i, triangle)| {
-                    let mut triangle_edges = Vec::with_capacity(3);
-                    for j in 0..3 {
-                        let k = (j + 1) % 3;
-                        let p1 = triangle.points[j];
-                        let p2 = triangle.points[k];
-
-                        // 规范化边的表示
-                        let edge = if p1.x < p2.x || (p1.x == p2.x && p1.y < p2.y) {
-                            (
-                                (
-                                    (p1.x * 1000.0).round() as i32,
-                                    (p1.y * 1000.0).round() as i32,
-                                ),
-                                (
-                                    (p2.x * 1000.0).round() as i32,
-                                    (p2.y * 1000.0).round() as i32,
-                                ),
-                            )
-                        } else {
-                            (
-                                (
-                                    (p2.x * 1000.0).round() as i32,
-                                    (p2.y * 1000.0).round() as i32,
-                                ),
-                                (
-                                    (p1.x * 1000.0).round() as i32,
-                                    (p1.y * 1000.0).round() as i32,
-                                ),
-                            )
-                        };
-                        triangle_edges.push((edge, i));
-                    }
-                    triangle_edges
-                })
-                .collect();
-
-            // 然后按边分组
-            let mut map: HashMap<((i32, i32), (i32, i32)), Vec<usize>> = HashMap::new();
-            for (edge, i) in edges_with_indices {
-                map.entry(edge).or_default().push(i);
-            }
-            map
-        };
-
-        // 检查并翻转非Delaunay边 - 收集需要翻转的边
-        let edges_to_skip: HashSet<((i32, i32), (i32, i32))> = HashSet::new();
-        let flips: Vec<(usize, usize, Pos2, Pos2, Pos2, Pos2)> = edge_to_triangles
-            .par_iter()
-            .filter_map(|(edge, triangle_indices)| {
-                // 跳过已处理过的边
-                if processed_edges.contains(edge) || edges_to_skip.contains(edge) {
-                    return None;
-                }
-
-                if triangle_indices.len() == 2 {
-                    let t1_idx = triangle_indices[0];
-                    let t2_idx = triangle_indices[1];
-
-                    // 不能在并行迭代器中修改外部变量
-                    // 只在结果处理时统一添加到processed_edges中
-
-                    let t1 = triangles[t1_idx];
-                    let t2 = triangles[t2_idx];
-
-                    // 找出共享边的非共享点
-                    let mut p1_idx = None;
-                    let mut p2_idx = None;
-
-                    for i in 0..3 {
-                        if !t2.points.contains(&t1.points[i]) {
-                            p1_idx = Some(i);
-                            break;
-                        }
-                    }
-
-                    for i in 0..3 {
-                        if !t1.points.contains(&t2.points[i]) {
-                            p2_idx = Some(i);
-                            break;
-                        }
-                    }
-
-                    if let (Some(i1), Some(i2)) = (p1_idx, p2_idx) {
-                        let p1 = t1.points[i1];
-                        let p2 = t2.points[i2];
-
-                        // 找出共享边的两个点
-                        let shared_points: Vec<Pos2> = t1
-                            .points
-                            .iter()
-                            .filter(|&&p| t2.points.contains(&p))
-                            .cloned()
-                            .collect();
-
-                        if shared_points.len() == 2 {
-                            let e1 = shared_points[0];
-                            let e2 = shared_points[1];
-
-                            // 使用更严格的判断条件检查是否需要翻转边
-                            // 只有当两个三角形都不满足Delaunay条件时才翻转
-                            let flip_needed =
-                                t2.contains_in_circumcircle(p1) && t1.contains_in_circumcircle(p2);
-
-                            // 确保翻转后不会产生重叠三角形
-                            if flip_needed {
-                                // 计算两个新三角形，但暂不提交
-                                let new_t1 = Triangle::new([p1, p2, e1]);
-                                let new_t2 = Triangle::new([p1, p2, e2]);
-
-                                // 检查新三角形是否有效（不退化）
-                                let valid_triangle = |t: &Triangle| -> bool {
-                                    let a = t.points[0];
-                                    let b = t.points[1];
-                                    let c = t.points[2];
-                                    let area =
-                                        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-                                    area.abs() > 1e-10
-                                };
-
-                                if valid_triangle(&new_t1) && valid_triangle(&new_t2) {
-                                    return Some((t1_idx, t2_idx, p1, p2, e1, e2));
-                                }
-                            }
-                        }
-                    }
-                }
-                None
-            })
-            .collect();
-
-        // 执行翻转
-        if !flips.is_empty() {
-            println!("第{}次迭代，执行{}次边翻转", iteration, flips.len());
-            modified = true;
-
-            // 获取所有需要翻转边的对应三角形索引
-            let edge_indices: Vec<_> = flips
-                .iter()
-                .map(|(t1_idx, t2_idx, _, _, _, _)| (*t1_idx, *t2_idx))
-                .collect();
-
-            // 从边到三角形映射中找回边并添加到已处理集合
-            for (edge, indices) in edge_to_triangles.iter() {
-                if indices.len() == 2
-                    && edge_indices.iter().any(|(a, b)| {
-                        (indices[0] == *a && indices[1] == *b)
-                            || (indices[0] == *b && indices[1] == *a)
-                    })
-                {
-                    processed_edges.insert(*edge);
-                }
-            }
-
-            // 执行翻转
-            for (t1_idx, t2_idx, p1, p2, e1, e2) in flips {
-                triangles[t1_idx] = Triangle::new([p1, p2, e1]);
-                triangles[t2_idx] = Triangle::new([p1, p2, e2]);
-            }
-        } else {
-            println!("第{}次迭代，无需翻转", iteration);
-        }
-    }
-
-    // 移除潜在的重复三角形
-    let mut unique_triangles = HashSet::<[(i32, i32); 3]>::new();
-    let triangles: Vec<Triangle> = triangles
-        .into_iter()
-        .filter(|triangle| {
-            // 创建三角形的规范化表示，不考虑点的顺序
-            let mut points = [
-                (
-                    (triangle.points[0].x * 1000.0).round() as i32,
-                    (triangle.points[0].y * 1000.0).round() as i32,
-                ),
-                (
-                    (triangle.points[1].x * 1000.0).round() as i32,
-                    (triangle.points[1].y * 1000.0).round() as i32,
-                ),
-                (
-                    (triangle.points[2].x * 1000.0).round() as i32,
-                    (triangle.points[2].y * 1000.0).round() as i32,
-                ),
-            ];
-            // 排序以确保相同的三角形有相同的表示
-            points.sort();
-            unique_triangles.insert(points)
+/// 预处理点集合，去除重复点并使用并行计算
+fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
+    // 使用并行计算加快处理
+    let point_data: Vec<_> = points
+        .par_iter()
+        .enumerate()
+        .map(|(idx, p)| {
+            // 使用整数坐标键减少浮点误差
+            let key = ((p.x * 1000.0).round() as i32, (p.y * 1000.0).round() as i32);
+            (key, idx, *p)
         })
         .collect();
 
-    println!("去重后三角形数量: {}", triangles.len());
-    println!("净减少: {}", initial_triangle_count - triangles.len());
+    // 对键值排序，便于去重
+    let mut sorted_point_data = point_data;
+    sorted_point_data.sort_unstable_by_key(|&(key, _, _)| key);
 
-    triangles
+    // 去重并保留原始索引
+    let mut unique_points = Vec::with_capacity(sorted_point_data.len());
+    let mut original_indices = Vec::with_capacity(sorted_point_data.len());
+
+    let mut current_key = None;
+    for (key, orig_idx, point) in sorted_point_data {
+        if current_key != Some(key) {
+            current_key = Some(key);
+            unique_points.push(point);
+            original_indices.push(orig_idx as u32);
+        }
+    }
+
+    // 压缩容量以节省内存
+    unique_points.shrink_to_fit();
+    original_indices.shrink_to_fit();
+
+    (unique_points, original_indices)
+}
+
+// 缓存Delaunator点对象的创建
+thread_local! {
+    static POINTS_CACHE: std::cell::RefCell<Vec<delaunator::Point>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// 使用delaunator库进行Delaunay三角剖分
+fn classic_delaunay(points: &[Pos2]) -> Vec<[u32; 3]> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+
+    // 使用线程本地缓存减少内存分配
+    let delaunay_points = POINTS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.clear();
+        cache.reserve(points.len());
+
+        // 将点转换为delaunator::Point格式
+        for p in points {
+            cache.push(delaunator::Point {
+                x: p.x as f64,
+                y: p.y as f64,
+            });
+        }
+
+        // 执行三角剖分
+        let triangulation = delaunator::triangulate(&cache);
+
+        // 将三角形索引转换为我们需要的格式
+        let mut triangles = Vec::with_capacity(triangulation.triangles.len() / 3);
+        for i in (0..triangulation.triangles.len()).step_by(3) {
+            if i + 2 < triangulation.triangles.len() {
+                triangles.push([
+                    triangulation.triangles[i] as u32,
+                    triangulation.triangles[i + 1] as u32,
+                    triangulation.triangles[i + 2] as u32,
+                ]);
+            }
+        }
+
+        triangles
+    });
+
+    delaunay_points
+}
+
+#[test]
+fn test_triangulation() {
+    // 创建一个简单的四边形测试用例
+    let points = vec![
+        Pos2::new(0.0, 0.0),
+        Pos2::new(10.0, 0.0),
+        Pos2::new(10.0, 10.0),
+        Pos2::new(0.0, 10.0),
+    ];
+
+    let indices = triangulate(&points);
+
+    println!("测试用例 - 四边形三角剖分:");
+    println!("输入点: {:?}", points);
+    println!("输出索引: {:?}", indices);
+
+    // 应该生成2个三角形，共6个索引
+    assert_eq!(indices.len(), 6, "应该生成6个索引(2个三角形)");
+}
+
+/// 性能测试模块
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    /// 生成随机测试数据
+    fn generate_random_points(count: usize) -> Vec<Pos2> {
+        let mut rng = thread_rng();
+        let mut points = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            points.push(Pos2::new(
+                rng.gen_range(0.0..1000.0),
+                rng.gen_range(0.0..1000.0),
+            ));
+        }
+
+        points
+    }
+
+    /// 生成网格测试数据
+    fn generate_grid_points(width: usize, height: usize) -> Vec<Pos2> {
+        let mut points = Vec::with_capacity(width * height);
+
+        for y in 0..height {
+            for x in 0..width {
+                points.push(Pos2::new(x as f32 * 10.0, y as f32 * 10.0));
+            }
+        }
+
+        points
+    }
+
+    /// 性能测试随机数据
+    #[test]
+    fn benchmark_random_points() {
+        println!("\n=== 随机点性能测试 ===");
+
+        let test_sizes = [100, 500, 1000, 5000, 10000];
+
+        for &size in &test_sizes {
+            let points = generate_random_points(size);
+
+            let start_time = Instant::now();
+            let indices = triangulate(&points);
+            let duration = start_time.elapsed();
+
+            println!(
+                "随机点数量: {}, 三角形数量: {}, 耗时: {:.2?}",
+                size,
+                indices.len() / 3,
+                duration
+            );
+        }
+    }
+
+    /// 性能测试网格数据
+    #[test]
+    fn benchmark_grid_points() {
+        println!("\n=== 网格点性能测试 ===");
+
+        let test_sizes = [(10, 10), (20, 20), (30, 30), (50, 50), (70, 70)];
+
+        for &(width, height) in &test_sizes {
+            let points = generate_grid_points(width, height);
+            let size = points.len();
+
+            let start_time = Instant::now();
+            let indices = triangulate(&points);
+            let duration = start_time.elapsed();
+
+            println!(
+                "网格大小: {}x{} ({}点), 三角形数量: {}, 耗时: {:.2?}",
+                width,
+                height,
+                size,
+                indices.len() / 3,
+                duration
+            );
+        }
+    }
+
+    /// 比较两种不同类型数据的性能
+    #[test]
+    fn compare_data_distributions() {
+        println!("\n=== 数据分布比较测试 ===");
+
+        let test_size = 1000;
+
+        // 随机分布
+        let random_points = generate_random_points(test_size);
+        let start_time = Instant::now();
+        let random_indices = triangulate(&random_points);
+        let random_duration = start_time.elapsed();
+
+        // 网格分布
+        let grid_width = (test_size as f64).sqrt().ceil() as usize;
+        let grid_height = (test_size + grid_width - 1) / grid_width;
+        let grid_points = generate_grid_points(grid_width, grid_height);
+        let start_time = Instant::now();
+        let grid_indices = triangulate(&grid_points);
+        let grid_duration = start_time.elapsed();
+
+        println!(
+            "随机分布 ({}点): 三角形数量: {}, 耗时: {:.2?}",
+            test_size,
+            random_indices.len() / 3,
+            random_duration
+        );
+
+        println!(
+            "网格分布 ({}点): 三角形数量: {}, 耗时: {:.2?}",
+            grid_points.len(),
+            grid_indices.len() / 3,
+            grid_duration
+        );
+
+        println!(
+            "性能比: 网格/随机 = {:.2}",
+            grid_duration.as_secs_f64() / random_duration.as_secs_f64()
+        );
+    }
 }
