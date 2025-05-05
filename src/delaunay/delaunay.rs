@@ -1,9 +1,6 @@
 use crate::delaunay::utils::calculate_convex_hull_indices;
 use egui::Pos2;
-use rand::thread_rng;
-use rand::Rng;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::sync::Once;
 use std::time::Instant;
 
@@ -189,18 +186,21 @@ fn test_triangulation() {
 /// 性能测试模块
 #[cfg(test)]
 mod bench {
+
+    use rand::Rng;
+
     use super::*;
     use std::time::Instant;
 
     /// 生成随机测试数据
     fn generate_random_points(count: usize) -> Vec<Pos2> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut points = Vec::with_capacity(count);
 
         for _ in 0..count {
             points.push(Pos2::new(
-                rng.gen_range(0.0..1000.0),
-                rng.gen_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
+                rng.random_range(0.0..1000.0),
             ));
         }
 

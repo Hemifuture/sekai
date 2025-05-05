@@ -53,7 +53,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     out.position = vec4<f32>(transformed, 0.0, 1.0);
     
     // 设置颜色 - 使用柔和的浅蓝色
-    out.color = vec4<f32>(0.3, 0.7, 0.9, 0.7);
+    out.color = vec4<f32>(0.3, 0.7, 0.9, 1.0);
     
     return out;
 }

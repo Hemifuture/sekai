@@ -4,13 +4,12 @@ use egui::Rect;
 use crate::{
     delaunay::{self, voronoi::generate_voronoi_render_data},
     gpu::{
-        delaunay::{delaunay_renderer::DelaunayRenderer, helpers::to_gpu_triangles},
-        points_renderer::PointsRenderer,
+        delaunay::delaunay_renderer::DelaunayRenderer, points_renderer::PointsRenderer,
         voronoi::voronoi_renderer::VoronoiRenderer,
     },
     resource::{
-        CanvasStateResource, DelaunayRendererResource, GridResource, PointsRendererResource,
-        VoronoiRendererResource,
+        CanvasStateResource, DelaunayRendererResource, GridResource, MapDataResource,
+        PointsRendererResource, VoronoiRendererResource,
     },
     ui::canvas::canvas::Canvas,
 };
@@ -35,7 +34,7 @@ pub struct TemplateApp {
     #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_state: CanvasStateResource,
     #[serde(skip)] // This how you opt-out of serialization of a field
-    grid: GridResource,
+    map_data: MapDataResource,
 }
 
 impl Default for TemplateApp {
@@ -51,7 +50,7 @@ impl Default for TemplateApp {
             delaunay_renderer: None,
             voronoi_renderer: None,
             canvas_state: canvas_resource,
-            grid: GridResource::default(),
+            map_data: MapDataResource::default(),
         }
     }
 }
@@ -158,8 +157,8 @@ impl TemplateApp {
         let mut points_renderer = PointsRenderer::new(&rs.device, rs.target_format);
 
         let points = self
-            .grid
-            .read_resource(|grid| grid.get_all_points().clone());
+            .map_data
+            .read_resource(|map_data| map_data.grid.get_all_points().clone());
         points_renderer.update_points(points);
 
         let points_renderer_resource = PointsRendererResource::new(points_renderer);
@@ -175,9 +174,10 @@ impl TemplateApp {
 
     fn create_delaunay_renderer_resource(&mut self, rs: &RenderState) -> DelaunayRendererResource {
         println!("create_delaunay_renderer_resource");
-        let mut delaunay_renderer = DelaunayRenderer::new(&rs.device, rs.target_format);
-        let (indices, points) = self.grid.read_resource(|grid| {
-            let points = grid.get_all_points();
+        let mut delaunay_renderer =
+            DelaunayRenderer::new(&rs.device, rs.target_format, self.canvas_state.clone());
+        let (indices, points) = self.map_data.read_resource(|map_data| {
+            let points = map_data.grid.get_all_points();
             let indices = delaunay::triangulate(&points);
             (indices, points.clone())
         });
@@ -199,16 +199,18 @@ impl TemplateApp {
 
     fn create_voronoi_renderer_resource(&mut self, rs: &RenderState) -> VoronoiRendererResource {
         println!("create_voronoi_renderer_resource");
-        let mut voronoi_renderer = VoronoiRenderer::new(&rs.device, rs.target_format);
-        let (indices, points) = self.grid.read_resource(|grid| {
-            let points = grid.get_all_points();
+        let mut voronoi_renderer =
+            VoronoiRenderer::new(&rs.device, rs.target_format, self.canvas_state.clone());
+        let (indices, points) = self.map_data.read_resource(|map_data| {
+            let points = map_data.grid.get_all_points();
             let indices = delaunay::triangulate(&points);
             (indices, points.clone())
         });
 
         // 获取Voronoi索引化数据
         let (vertices, indices) = generate_voronoi_render_data(&indices, &points);
-        voronoi_renderer.update_voronoi_data(vertices, indices);
+        voronoi_renderer.update_vertices(vertices);
+        voronoi_renderer.update_indices(indices);
 
         let voronoi_renderer_resource = VoronoiRendererResource::new(voronoi_renderer);
 

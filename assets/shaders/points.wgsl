@@ -41,7 +41,7 @@ fn vs_main(@builtin(vertex_index) vertex_index : u32) -> VSOutput {
     
     var out : VSOutput;
     out.pos = get_triangle_pos(vertex_index, screen_pos, uniforms);
-    out.color = vec4<f32>(0.9, 0.5, 0.5, 1.0);
+    out.color = vec4<f32>(0.9, 0.5, 0.5, 0.7);
     return out;
 }
 

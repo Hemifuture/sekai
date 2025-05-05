@@ -1,13 +1,13 @@
 use std::num::NonZeroU64;
 
+use crate::gpu::canvas_uniform::CanvasUniforms;
+use crate::gpu::helpers;
+use crate::gpu::map_renderer::MapRenderer;
+use crate::resource::CanvasStateResource;
 use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
 use egui::Pos2;
-
-use crate::delaunay::Triangle;
-use crate::gpu::canvas_uniform::CanvasUniforms;
-use crate::gpu::map_renderer::MapRenderer;
 
 const MAX_POINTS: usize = 100_000;
 
@@ -30,6 +30,7 @@ impl Default for GPUTriangle {
 }
 
 pub struct DelaunayRenderer {
+    canvas_state_resource: CanvasStateResource,
     pub points: Vec<Pos2>,
     pub triangle_indices: Vec<u32>,
     pub uniforms: CanvasUniforms,
@@ -41,7 +42,11 @@ pub struct DelaunayRenderer {
 }
 
 impl DelaunayRenderer {
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        canvas_state_resource: CanvasStateResource,
+    ) -> Self {
         let points: Vec<Pos2> = vec![Pos2::ZERO; MAX_POINTS];
         let triangle_indices: Vec<u32> = vec![0; MAX_POINTS * 3];
         let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
@@ -123,6 +128,7 @@ impl DelaunayRenderer {
             MapRenderer::create_delaunay_pipeline(device, &pipeline_layout, target_format);
 
         Self {
+            canvas_state_resource,
             points,
             triangle_indices,
             uniforms,
@@ -139,27 +145,7 @@ impl DelaunayRenderer {
     }
 
     pub fn update_indices(&mut self, indices: Vec<u32>) {
-        // 转换为LineList需要的索引格式
-        // 每个三角形需要3条边，每条边2个顶点，共6个顶点
-        let mut line_indices = Vec::with_capacity(indices.len() * 2);
-
-        for chunk in indices.chunks(3) {
-            if chunk.len() == 3 {
-                // 三角形的第一条边：顶点0->1
-                line_indices.push(chunk[0]);
-                line_indices.push(chunk[1]);
-
-                // 三角形的第二条边：顶点1->2
-                line_indices.push(chunk[1]);
-                line_indices.push(chunk[2]);
-
-                // 三角形的第三条边：顶点2->0
-                line_indices.push(chunk[2]);
-                line_indices.push(chunk[0]);
-            }
-        }
-
-        self.triangle_indices = line_indices;
+        self.triangle_indices = self.make_line_list_indices(indices);
     }
 
     pub fn update_uniforms(&mut self, rect: egui::Rect, transform: TSTransform) {
@@ -167,11 +153,25 @@ impl DelaunayRenderer {
     }
 
     pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
+        let visible_triangle_indices = helpers::get_visible_indices(
+            &self.points,
+            self.uniforms,
+            self.triangle_indices.clone(),
+            self.canvas_state_resource.clone(),
+        );
+        // println!("{:#?}", self.uniforms);
+        // let visible_indices = self.triangle_indices.clone();
+        // println!("[delaunay]update_points");
+        // println!(
+        //     "points size: {:?}",
+        //     self.points.len() * std::mem::size_of::<Pos2>()
+        // );
         queue.write_buffer(&self.points_buffer, 0, bytemuck::cast_slice(&self.points));
+        println!("[delaunay]update_triangle_indices");
         queue.write_buffer(
             &self.triangle_indices_buffer,
             0,
-            bytemuck::cast_slice(&self.triangle_indices),
+            bytemuck::cast_slice(&visible_triangle_indices),
         );
         queue.write_buffer(
             &self.uniform_buffer,
@@ -192,5 +192,29 @@ impl DelaunayRenderer {
         if !self.triangle_indices.is_empty() {
             render_pass.draw_indexed(0..self.triangle_indices.len() as u32, 0, 0..1);
         }
+    }
+
+    /// 将三角形索引转换为LineList需要的索引格式
+    /// 每个三角形需要3条边，每条边2个顶点，共6个顶点
+    fn make_line_list_indices(&self, triangle_indices: Vec<u32>) -> Vec<u32> {
+        let mut line_indices = Vec::with_capacity(triangle_indices.len() * 2);
+
+        for chunk in triangle_indices.chunks(3) {
+            if chunk.len() == 3 {
+                // 三角形的第一条边：顶点0->1
+                line_indices.push(chunk[0]);
+                line_indices.push(chunk[1]);
+
+                // 三角形的第二条边：顶点1->2
+                line_indices.push(chunk[1]);
+                line_indices.push(chunk[2]);
+
+                // 三角形的第三条边：顶点2->0
+                line_indices.push(chunk[2]);
+                line_indices.push(chunk[0]);
+            }
+        }
+
+        line_indices
     }
 }

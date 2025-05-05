@@ -6,13 +6,16 @@ use egui::emath::TSTransform;
 use egui::{Pos2, Rect};
 
 use crate::gpu::canvas_uniform::CanvasUniforms;
+use crate::gpu::helpers;
 use crate::gpu::map_renderer::MapRenderer;
+use crate::resource::CanvasStateResource;
 
 const MAX_VORONOI_VERTICES: usize = 100_000;
 const MAX_VORONOI_INDICES: usize = 200_000;
 
 // 删除Matrix4x4相关代码，直接使用CanvasUniforms
 pub struct VoronoiRenderer {
+    canvas_state_resource: CanvasStateResource,
     pub vertices: Vec<Pos2>,
     pub indices: Vec<u32>,
     pub uniforms: CanvasUniforms,
@@ -24,7 +27,11 @@ pub struct VoronoiRenderer {
 }
 
 impl VoronoiRenderer {
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        canvas_state_resource: CanvasStateResource,
+    ) -> Self {
         let vertices: Vec<Pos2> = Vec::with_capacity(MAX_VORONOI_VERTICES);
         let indices: Vec<u32> = Vec::with_capacity(MAX_VORONOI_INDICES);
         let uniforms = CanvasUniforms::new(Rect::ZERO, TSTransform::IDENTITY);
@@ -126,6 +133,7 @@ impl VoronoiRenderer {
             MapRenderer::create_voronoi_pipeline(device, &pipeline_layout, target_format);
 
         Self {
+            canvas_state_resource,
             vertices,
             indices,
             uniforms,
@@ -137,8 +145,11 @@ impl VoronoiRenderer {
         }
     }
 
-    pub fn update_voronoi_data(&mut self, vertices: Vec<Pos2>, indices: Vec<u32>) {
+    pub fn update_vertices(&mut self, vertices: Vec<Pos2>) {
         self.vertices = vertices;
+    }
+
+    pub fn update_indices(&mut self, indices: Vec<u32>) {
         self.indices = indices;
     }
 
@@ -148,6 +159,7 @@ impl VoronoiRenderer {
 
     pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
         if !self.vertices.is_empty() {
+            println!("[voronoi]update_vertices");
             queue.write_buffer(
                 &self.vertices_buffer,
                 0,
@@ -156,7 +168,18 @@ impl VoronoiRenderer {
         }
 
         if !self.indices.is_empty() {
-            queue.write_buffer(&self.indices_buffer, 0, bytemuck::cast_slice(&self.indices));
+            let visible_indices = helpers::get_visible_indices(
+                &self.vertices,
+                self.uniforms,
+                self.indices.clone(),
+                self.canvas_state_resource.clone(),
+            );
+            println!("[voronoi]update_indices");
+            queue.write_buffer(
+                &self.indices_buffer,
+                0,
+                bytemuck::cast_slice(&visible_indices),
+            );
         }
 
         queue.write_buffer(
