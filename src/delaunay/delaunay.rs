@@ -7,7 +7,7 @@ use std::time::Instant;
 static INIT_LOGGER: Once = Once::new();
 
 /// 执行Delaunay三角剖分，根据输入点集合返回三角形列表
-pub fn triangulate(points: &Vec<Pos2>) -> Vec<u32> {
+pub fn triangulate(points: &Vec<Pos2>) -> Vec<usize> {
     let start_time = Instant::now();
 
     // 使用Once确保日志只初始化一次
@@ -73,15 +73,15 @@ pub fn triangulate(points: &Vec<Pos2>) -> Vec<u32> {
     let mut result = Vec::with_capacity(triangles.len() * 3);
     for triangle in triangles {
         result.push(original_indices[triangle[0] as usize]);
-        result.push(original_indices[triangle[1] as usize]);
-        result.push(original_indices[triangle[2] as usize]);
+        result.push(original_indices[triangle[1]]);
+        result.push(original_indices[triangle[2]]);
     }
 
     result
 }
 
 /// 预处理点集合，去除重复点并使用并行计算
-fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
+fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<usize>) {
     // 使用并行计算加快处理
     let point_data: Vec<_> = points
         .par_iter()
@@ -106,7 +106,7 @@ fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
         if current_key != Some(key) {
             current_key = Some(key);
             unique_points.push(point);
-            original_indices.push(orig_idx as u32);
+            original_indices.push(orig_idx);
         }
     }
 
@@ -123,7 +123,7 @@ thread_local! {
 }
 
 /// 使用delaunator库进行Delaunay三角剖分
-fn classic_delaunay(points: &[Pos2]) -> Vec<[u32; 3]> {
+fn classic_delaunay(points: &[Pos2]) -> Vec<[usize; 3]> {
     if points.len() < 3 {
         return Vec::new();
     }
@@ -150,9 +150,9 @@ fn classic_delaunay(points: &[Pos2]) -> Vec<[u32; 3]> {
         for i in (0..triangulation.triangles.len()).step_by(3) {
             if i + 2 < triangulation.triangles.len() {
                 triangles.push([
-                    triangulation.triangles[i] as u32,
-                    triangulation.triangles[i + 1] as u32,
-                    triangulation.triangles[i + 2] as u32,
+                    triangulation.triangles[i],
+                    triangulation.triangles[i + 1],
+                    triangulation.triangles[i + 2],
                 ]);
             }
         }

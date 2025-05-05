@@ -8,6 +8,7 @@ use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
 use egui::Pos2;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 const MAX_POINTS: usize = 100_000;
 
@@ -32,7 +33,7 @@ impl Default for GPUTriangle {
 pub struct DelaunayRenderer {
     canvas_state_resource: CanvasStateResource,
     pub points: Vec<Pos2>,
-    pub triangle_indices: Vec<u32>,
+    pub triangle_indices: Vec<usize>,
     pub uniforms: CanvasUniforms,
     pub points_buffer: wgpu::Buffer,
     pub triangle_indices_buffer: wgpu::Buffer,
@@ -48,7 +49,7 @@ impl DelaunayRenderer {
         canvas_state_resource: CanvasStateResource,
     ) -> Self {
         let points: Vec<Pos2> = vec![Pos2::ZERO; MAX_POINTS];
-        let triangle_indices: Vec<u32> = vec![0; MAX_POINTS * 3];
+        let triangle_indices: Vec<usize> = vec![0; MAX_POINTS * 3];
         let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
 
         let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -144,7 +145,7 @@ impl DelaunayRenderer {
         self.points = points;
     }
 
-    pub fn update_indices(&mut self, indices: Vec<u32>) {
+    pub fn update_indices(&mut self, indices: Vec<usize>) {
         self.triangle_indices = self.make_line_list_indices(indices);
     }
 
@@ -171,7 +172,12 @@ impl DelaunayRenderer {
         queue.write_buffer(
             &self.triangle_indices_buffer,
             0,
-            bytemuck::cast_slice(&visible_triangle_indices),
+            bytemuck::cast_slice(
+                &visible_triangle_indices
+                    .par_iter()
+                    .map(|i| *i as u32)
+                    .collect::<Vec<_>>(),
+            ),
         );
         queue.write_buffer(
             &self.uniform_buffer,
@@ -196,7 +202,7 @@ impl DelaunayRenderer {
 
     /// 将三角形索引转换为LineList需要的索引格式
     /// 每个三角形需要3条边，每条边2个顶点，共6个顶点
-    fn make_line_list_indices(&self, triangle_indices: Vec<u32>) -> Vec<u32> {
+    fn make_line_list_indices(&self, triangle_indices: Vec<usize>) -> Vec<usize> {
         let mut line_indices = Vec::with_capacity(triangle_indices.len() * 2);
 
         for chunk in triangle_indices.chunks(3) {

@@ -10,9 +10,9 @@ use super::canvas_uniform::CanvasUniforms;
 pub fn get_visible_indices(
     points: &Vec<Pos2>,
     uniforms: CanvasUniforms,
-    indices: Vec<u32>,
+    indices: Vec<usize>,
     canvas_state_resource: CanvasStateResource,
-) -> Vec<u32> {
+) -> Vec<usize> {
     let mut visible_indices = Vec::new();
 
     let view_rect = canvas_state_resource.read_resource(|canvas_state| {
@@ -85,8 +85,8 @@ fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
         code
     }
 
-    let mut code1 = compute_code(p1, rect);
-    let mut code2 = compute_code(p2, rect);
+    let code1 = compute_code(p1, rect);
+    let code2 = compute_code(p2, rect);
 
     // 快速接受：两点都在矩形内
     if code1 == 0 && code2 == 0 {

@@ -128,7 +128,7 @@ pub fn remove_duplicate_edges(edges: &mut Vec<[Pos2; 2]>) {
 }
 
 /// 验证三角剖分结果是否满足Delaunay性质
-pub fn validate_delaunay(indices: &[u32], points: &[Pos2]) -> bool {
+pub fn validate_delaunay(indices: &[usize], points: &[Pos2]) -> bool {
     // 确保索引列表长度是3的倍数
     if indices.len() % 3 != 0 {
         return false;

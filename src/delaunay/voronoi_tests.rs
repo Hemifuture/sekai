@@ -3,19 +3,19 @@ mod voronoi_tests {
     use super::super::delaunay::triangulate;
     use super::super::voronoi::{compute_voronoi, generate_voronoi_edges};
     use egui::Pos2;
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
     use std::collections::HashSet;
     use std::time::Instant;
 
     /// 生成随机点集用于测试
     fn generate_random_points(n: usize, width: f32, height: f32) -> Vec<Pos2> {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let mut points = Vec::with_capacity(n);
 
         for _ in 0..n {
             points.push(Pos2::new(
-                rng.gen_range(0.0..width),
-                rng.gen_range(0.0..height),
+                rng.random_range(0.0..width),
+                rng.random_range(0.0..height),
             ));
         }
 
@@ -23,7 +23,7 @@ mod voronoi_tests {
     }
 
     /// 验证Voronoi图的基本属性
-    fn validate_voronoi_diagram(indices: &[u32], points: &[Pos2], edges: &[[Pos2; 2]]) -> bool {
+    fn validate_voronoi_diagram(indices: &[usize], points: &[Pos2], edges: &[[Pos2; 2]]) -> bool {
         if indices.len() < 3 || points.len() < 3 {
             return edges.is_empty(); // 点数太少，应该没有边
         }

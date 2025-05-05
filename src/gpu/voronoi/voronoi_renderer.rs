@@ -4,6 +4,7 @@ use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
 use egui::{Pos2, Rect};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::gpu::canvas_uniform::CanvasUniforms;
 use crate::gpu::helpers;
@@ -17,7 +18,7 @@ const MAX_VORONOI_INDICES: usize = 200_000;
 pub struct VoronoiRenderer {
     canvas_state_resource: CanvasStateResource,
     pub vertices: Vec<Pos2>,
-    pub indices: Vec<u32>,
+    pub indices: Vec<usize>,
     pub uniforms: CanvasUniforms,
     pub vertices_buffer: wgpu::Buffer,
     pub indices_buffer: wgpu::Buffer,
@@ -33,7 +34,7 @@ impl VoronoiRenderer {
         canvas_state_resource: CanvasStateResource,
     ) -> Self {
         let vertices: Vec<Pos2> = Vec::with_capacity(MAX_VORONOI_VERTICES);
-        let indices: Vec<u32> = Vec::with_capacity(MAX_VORONOI_INDICES);
+        let indices: Vec<usize> = Vec::with_capacity(MAX_VORONOI_INDICES);
         let uniforms = CanvasUniforms::new(Rect::ZERO, TSTransform::IDENTITY);
 
         // 创建顶点缓冲区
@@ -149,7 +150,7 @@ impl VoronoiRenderer {
         self.vertices = vertices;
     }
 
-    pub fn update_indices(&mut self, indices: Vec<u32>) {
+    pub fn update_indices(&mut self, indices: Vec<usize>) {
         self.indices = indices;
     }
 
@@ -178,7 +179,12 @@ impl VoronoiRenderer {
             queue.write_buffer(
                 &self.indices_buffer,
                 0,
-                bytemuck::cast_slice(&visible_indices),
+                bytemuck::cast_slice(
+                    &visible_indices
+                        .par_iter()
+                        .map(|i| *i as u32)
+                        .collect::<Vec<_>>(),
+                ),
             );
         }
 
