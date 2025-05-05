@@ -1,6 +1,6 @@
 use super::cells_data::CellsData;
 
-pub trait MapFeature {
+pub trait CellFeature {
     /// 获取特征ID
     fn id(&self) -> u16;
 
@@ -8,7 +8,7 @@ pub trait MapFeature {
     fn name(&self) -> &str;
 
     /// 获取特征类型
-    fn feature_type(&self) -> FeatureType;
+    fn feature_type(&self) -> CellFeatureType;
 
     /// 获取特征单元格列表（通过计算）
     fn cells<'a>(&self, cells_data: &'a CellsData) -> Vec<usize>;
@@ -23,10 +23,31 @@ pub trait MapFeature {
     fn remove_cell(&self, cell_id: usize, cells_data: &mut CellsData);
 }
 
-pub enum FeatureType {
+pub enum CellFeatureType {
     State,
     Culture,
     Religion,
     Province,
     Biome,
+}
+
+pub trait PointFeature {
+    /// 获取特征ID
+    fn id(&self) -> u16;
+
+    /// 获取特征名称
+    fn name(&self) -> &str;
+
+    /// 获取特征类型
+    fn feature_type(&self) -> PointFeatureType;
+
+    /// 获取获取特征点索引
+    fn point_index(&self) -> usize;
+}
+
+pub enum PointFeatureType {
+    City,
+    Town,
+    Village,
+    Settlement,
 }
