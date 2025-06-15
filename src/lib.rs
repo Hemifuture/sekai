@@ -3,6 +3,7 @@
 mod app;
 pub mod delaunay;
 mod gpu;
+mod map_layer;
 pub mod models;
 mod resource;
 mod ui;

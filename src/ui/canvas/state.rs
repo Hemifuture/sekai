@@ -8,8 +8,6 @@ pub struct CanvasState {
     pub scale: f32,
     // 从画布到屏幕的变换矩阵
     pub transform: TSTransform,
-    pub global_node_id: AtomicU64,
-    pub global_edge_id: AtomicU64,
 }
 
 impl Default for CanvasState {
@@ -18,21 +16,11 @@ impl Default for CanvasState {
             offset: egui::Vec2::ZERO,
             scale: 1.0,
             transform: TSTransform::IDENTITY,
-            global_node_id: AtomicU64::new(0),
-            global_edge_id: AtomicU64::new(0),
         }
     }
 }
 
 impl CanvasState {
-    pub fn new_node_id(&self) -> u64 {
-        self.global_node_id.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub fn new_edge_id(&self) -> u64 {
-        self.global_edge_id.fetch_add(1, Ordering::Relaxed)
-    }
-
     /// 将"画布坐标"转换到"屏幕坐标"
     pub fn to_screen(&self, canvas_pos: egui::Pos2) -> egui::Pos2 {
         // 假设：先缩放，再平移
