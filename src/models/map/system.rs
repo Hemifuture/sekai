@@ -2,6 +2,7 @@ use crate::delaunay::{
     self,
     voronoi::{self, IndexedVoronoiDiagram},
 };
+use crate::terrain::{HeightGenerator, NoiseConfig};
 
 use super::{cells_data::CellsData, grid::Grid};
 
@@ -32,6 +33,10 @@ pub struct MapSystem {
     pub voronoi: IndexedVoronoiDiagram,
 
     pub cells_data: CellsData,
+
+    // 地形数据
+    pub heights: Vec<u8>,
+    pub noise_config: NoiseConfig,
 }
 
 impl Default for MapSystem {
@@ -42,14 +47,53 @@ impl Default for MapSystem {
         let delaunay = delaunay::triangulate(&grid.get_all_points());
         let voronoi = voronoi::compute_indexed_voronoi(&delaunay, &grid.get_all_points());
         let cells_data = CellsData::new(grid.get_all_points().len());
+
+        // Generate terrain heights
+        let noise_config = NoiseConfig::terrain();
+        let height_generator = HeightGenerator::new(noise_config.clone());
+        let heights = height_generator.generate_for_grid(&grid);
+
+        log::info!(
+            "MapSystem: Generated {} height values for {} grid points",
+            heights.len(),
+            grid.points.len()
+        );
+
         Self {
             config,
             grid,
             delaunay,
             voronoi,
             cells_data,
+            heights,
+            noise_config,
         }
     }
 }
 
-impl MapSystem {}
+impl MapSystem {
+    /// Regenerate terrain heights with a new random seed
+    pub fn regenerate_heights(&mut self) {
+        self.noise_config.seed = rand::random();
+        let height_generator = HeightGenerator::new(self.noise_config.clone());
+        self.heights = height_generator.generate_for_grid(&self.grid);
+
+        log::info!(
+            "MapSystem: Regenerated {} height values with seed {}",
+            self.heights.len(),
+            self.noise_config.seed
+        );
+    }
+
+    /// Regenerate terrain heights with a specific noise configuration
+    pub fn regenerate_heights_with_config(&mut self, config: NoiseConfig) {
+        self.noise_config = config;
+        let height_generator = HeightGenerator::new(self.noise_config.clone());
+        self.heights = height_generator.generate_for_grid(&self.grid);
+
+        log::info!(
+            "MapSystem: Regenerated {} height values with custom config",
+            self.heights.len()
+        );
+    }
+}

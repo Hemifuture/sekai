@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["full"] }
 bytemuck = "1.21.0"
 rand = "0.9.0"
 rayon = "1.10"
+noise = "0.9"
 
 criterion = { version = "0.5", features = ["html_reports"] }
 delaunator = "1.0.2"

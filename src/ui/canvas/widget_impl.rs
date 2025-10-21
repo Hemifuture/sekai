@@ -2,7 +2,8 @@ use eframe::egui_wgpu;
 use egui::Widget;
 
 use crate::gpu::{
-    delaunay::delaunay_callback::DelaunayCallback, points_callback::PointsCallback,
+    delaunay::delaunay_callback::DelaunayCallback,
+    height_map::height_map_callback::HeightMapCallback, points_callback::PointsCallback,
     voronoi::voronoi_callback::VoronoiCallback,
 };
 
@@ -22,6 +23,14 @@ impl Widget for &mut Canvas {
             // println!("transform: {:?}", canvas_state.transform);
         });
 
+        // Render height map first (as background layer)
+        let height_map_callback = HeightMapCallback::new(screen_rect);
+        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+            screen_rect,
+            height_map_callback,
+        ));
+
+        // Then render Voronoi edges on top
         let voronoi_callback =
             VoronoiCallback::new(self.canvas_state_resource.clone(), screen_rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
@@ -29,6 +38,7 @@ impl Widget for &mut Canvas {
             voronoi_callback,
         ));
 
+        // Render Delaunay triangulation
         let delaunay_callback =
             DelaunayCallback::new(self.canvas_state_resource.clone(), screen_rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
@@ -36,6 +46,7 @@ impl Widget for &mut Canvas {
             delaunay_callback,
         ));
 
+        // Finally render points on top
         let points_callback = PointsCallback::new(self.canvas_state_resource.clone(), screen_rect);
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             screen_rect,

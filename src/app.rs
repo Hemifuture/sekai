@@ -4,13 +4,15 @@ use egui::Rect;
 use crate::{
     delaunay::{self, voronoi::generate_voronoi_render_data},
     gpu::{
-        delaunay::delaunay_renderer::DelaunayRenderer, points_renderer::PointsRenderer,
+        delaunay::delaunay_renderer::DelaunayRenderer,
+        height_map::height_map_renderer::HeightMapRenderer, points_renderer::PointsRenderer,
         voronoi::voronoi_renderer::VoronoiRenderer,
     },
     resource::{
-        CanvasStateResource, DelaunayRendererResource, MapSystemResource, PointsRendererResource,
-        VoronoiRendererResource,
+        CanvasStateResource, DelaunayRendererResource, HeightMapRendererResource,
+        MapSystemResource, PointsRendererResource, VoronoiRendererResource,
     },
+    terrain::HeightColorMap,
     ui::canvas::canvas::Canvas,
 };
 
@@ -32,6 +34,8 @@ pub struct TemplateApp {
     #[serde(skip)] // This how you opt-out of serialization of a field
     voronoi_renderer: Option<VoronoiRendererResource>,
     #[serde(skip)] // This how you opt-out of serialization of a field
+    height_map_renderer: Option<HeightMapRendererResource>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_state: CanvasStateResource,
     #[serde(skip)] // This how you opt-out of serialization of a field
     map_system: MapSystemResource,
@@ -49,6 +53,7 @@ impl Default for TemplateApp {
             points_renderer: None,
             delaunay_renderer: None,
             voronoi_renderer: None,
+            height_map_renderer: None,
             canvas_state: canvas_resource,
             map_system: MapSystemResource::default(),
         }
@@ -69,6 +74,7 @@ impl TemplateApp {
             app.points_renderer = None;
             app.delaunay_renderer = None;
             app.voronoi_renderer = None;
+            app.height_map_renderer = None;
             app
         } else {
             Default::default()
@@ -78,14 +84,16 @@ impl TemplateApp {
         if let Some(rs) = wgpu_render_state {
             // let device = &rs.device;
 
-            // 构造我们的粒子系统
+            // 构造我们的渲染器
             let points_renderer_resource = app.create_points_renderer_resource(rs);
             let delaunay_renderer_resource = app.create_delaunay_renderer_resource(rs);
             let voronoi_renderer_resource = app.create_voronoi_renderer_resource(rs);
+            let height_map_renderer_resource = app.create_height_map_renderer_resource(rs);
 
             app.points_renderer = Some(points_renderer_resource.clone());
             app.delaunay_renderer = Some(delaunay_renderer_resource.clone());
             app.voronoi_renderer = Some(voronoi_renderer_resource.clone());
+            app.height_map_renderer = Some(height_map_renderer_resource.clone());
         }
 
         app
@@ -118,7 +126,23 @@ impl eframe::App for TemplateApp {
                     ui.add_space(16.0);
                 }
 
-                egui::widgets::global_theme_preference_buttons(ui);
+                // Terrain generation controls
+                ui.separator();
+                if ui.button("🎲 Regenerate Terrain").clicked() {
+                    self.regenerate_terrain();
+                }
+
+                ui.separator();
+
+                // Display current noise parameters
+                self.map_system.read_resource(|map_system| {
+                    ui.label(format!("Seed: {}", map_system.noise_config.seed));
+                    ui.label(format!("Octaves: {}", map_system.noise_config.octaves));
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::widgets::global_theme_preference_buttons(ui);
+                });
             });
         });
 
@@ -221,5 +245,66 @@ impl TemplateApp {
             .insert::<VoronoiRendererResource>(voronoi_renderer_resource.clone());
 
         voronoi_renderer_resource
+    }
+
+    fn create_height_map_renderer_resource(
+        &mut self,
+        rs: &RenderState,
+    ) -> HeightMapRendererResource {
+        log::info!("create_height_map_renderer_resource");
+        let mut height_map_renderer =
+            HeightMapRenderer::new(&rs.device, rs.target_format, self.canvas_state.clone());
+
+        // Get data from map system
+        let (voronoi, heights) = self.map_system.read_resource(|map_system| {
+            (map_system.voronoi.clone(), map_system.heights.clone())
+        });
+
+        // Create color map
+        let color_map = HeightColorMap::earth_style();
+
+        // Update geometry with height data
+        height_map_renderer.update_geometry(&voronoi, &heights, &color_map);
+
+        log::info!(
+            "HeightMapRenderer: Initialized with {} vertices",
+            height_map_renderer.vertex_count()
+        );
+
+        let height_map_renderer_resource = HeightMapRendererResource::new(height_map_renderer);
+
+        // 注册到资源里，这样在回调里可以获取到
+        rs.renderer
+            .write()
+            .callback_resources
+            .insert::<HeightMapRendererResource>(height_map_renderer_resource.clone());
+
+        height_map_renderer_resource
+    }
+
+    fn regenerate_terrain(&mut self) {
+        log::info!("Regenerating terrain...");
+
+        // Regenerate heights in map system
+        self.map_system.with_resource(|map_system| {
+            map_system.regenerate_heights();
+        });
+
+        // Update height map renderer with new data
+        if let Some(height_map_renderer_resource) = &self.height_map_renderer {
+            let (voronoi, heights) = self.map_system.read_resource(|map_system| {
+                (map_system.voronoi.clone(), map_system.heights.clone())
+            });
+
+            let color_map = HeightColorMap::earth_style();
+
+            height_map_renderer_resource.with_resource(|renderer| {
+                renderer.update_geometry(&voronoi, &heights, &color_map);
+                log::info!(
+                    "HeightMapRenderer: Updated with {} vertices",
+                    renderer.vertex_count()
+                );
+            });
+        }
     }
 }
