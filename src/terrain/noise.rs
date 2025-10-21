@@ -1,4 +1,5 @@
 use noise::{NoiseFn, Perlin, Fbm};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for procedural noise generation

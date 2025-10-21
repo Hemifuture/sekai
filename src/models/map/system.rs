@@ -3,6 +3,7 @@ use crate::delaunay::{
     voronoi::{self, IndexedVoronoiDiagram},
 };
 use crate::terrain::{HeightGenerator, NoiseConfig};
+use rand::Rng;
 
 use super::{cells_data::CellsData, grid::Grid};
 
