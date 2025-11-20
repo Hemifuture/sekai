@@ -895,6 +895,8 @@ dependencies = [
  "egui",
  "env_logger",
  "log",
+ "rand",
+ "rand_chacha",
  "serde",
  "wasm-bindgen-futures",
  "web-sys",

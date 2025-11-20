@@ -20,6 +20,8 @@ eframe = { version = "0.30", default-features = false, features = [
     "wayland",       # To support Linux (and CI)
 ] }
 log = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
 
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
