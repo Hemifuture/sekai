@@ -8,7 +8,6 @@ use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
 use egui::Pos2;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 const MAX_POINTS: usize = 100_000;
 
@@ -30,10 +29,14 @@ impl Default for GPUTriangle {
     }
 }
 
+/// Delaunay 三角剖分渲染器
+/// 
+/// 使用 `u32` 类型的索引，与 GPU 索引缓冲区兼容。
 pub struct DelaunayRenderer {
     canvas_state_resource: CanvasStateResource,
     pub points: Vec<Pos2>,
-    pub triangle_indices: Vec<usize>,
+    /// 三角形边的索引（u32），每2个索引构成一条边
+    pub triangle_indices: Vec<u32>,
     pub uniforms: CanvasUniforms,
     pub points_buffer: wgpu::Buffer,
     pub triangle_indices_buffer: wgpu::Buffer,
@@ -49,7 +52,7 @@ impl DelaunayRenderer {
         canvas_state_resource: CanvasStateResource,
     ) -> Self {
         let points: Vec<Pos2> = vec![Pos2::ZERO; MAX_POINTS];
-        let triangle_indices: Vec<usize> = vec![0; MAX_POINTS * 3];
+        let triangle_indices: Vec<u32> = vec![0; MAX_POINTS * 3];
         let uniforms = CanvasUniforms::new(egui::Rect::ZERO, TSTransform::IDENTITY);
 
         let points_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -145,7 +148,11 @@ impl DelaunayRenderer {
         self.points = points;
     }
 
-    pub fn update_indices(&mut self, indices: Vec<usize>) {
+    /// 更新索引数据
+    /// 
+    /// 输入为三角形索引（每3个索引构成一个三角形），
+    /// 内部转换为线段列表格式（每2个索引构成一条边）。
+    pub fn update_indices(&mut self, indices: Vec<u32>) {
         self.triangle_indices = self.make_line_list_indices(indices);
     }
 
@@ -160,24 +167,12 @@ impl DelaunayRenderer {
             self.triangle_indices.clone(),
             self.canvas_state_resource.clone(),
         );
-        // println!("{:#?}", self.uniforms);
-        // let visible_indices = self.triangle_indices.clone();
-        // println!("[delaunay]update_points");
-        // println!(
-        //     "points size: {:?}",
-        //     self.points.len() * std::mem::size_of::<Pos2>()
-        // );
         queue.write_buffer(&self.points_buffer, 0, bytemuck::cast_slice(&self.points));
         println!("[delaunay]update_triangle_indices");
         queue.write_buffer(
             &self.triangle_indices_buffer,
             0,
-            bytemuck::cast_slice(
-                &visible_triangle_indices
-                    .par_iter()
-                    .map(|i| *i as u32)
-                    .collect::<Vec<_>>(),
-            ),
+            bytemuck::cast_slice(&visible_triangle_indices),
         );
         queue.write_buffer(
             &self.uniform_buffer,
@@ -200,9 +195,9 @@ impl DelaunayRenderer {
         }
     }
 
-    /// 将三角形索引转换为LineList需要的索引格式
+    /// 将三角形索引转换为 LineList 需要的索引格式
     /// 每个三角形需要3条边，每条边2个顶点，共6个顶点
-    fn make_line_list_indices(&self, triangle_indices: Vec<usize>) -> Vec<usize> {
+    fn make_line_list_indices(&self, triangle_indices: Vec<u32>) -> Vec<u32> {
         let mut line_indices = Vec::with_capacity(triangle_indices.len() * 2);
 
         for chunk in triangle_indices.chunks(3) {

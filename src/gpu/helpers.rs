@@ -6,13 +6,14 @@ use super::canvas_uniform::CanvasUniforms;
 
 /// 获取可见的边索引
 ///
-/// 每2个索引为一条边
+/// 每2个索引为一条边。
+/// 使用 `u32` 类型的索引，与 GPU 索引缓冲区兼容。
 pub fn get_visible_indices(
-    points: &Vec<Pos2>,
+    points: &[Pos2],
     uniforms: CanvasUniforms,
-    indices: Vec<usize>,
+    indices: Vec<u32>,
     canvas_state_resource: CanvasStateResource,
-) -> Vec<usize> {
+) -> Vec<u32> {
     let mut visible_indices = Vec::new();
 
     let view_rect = canvas_state_resource.read_resource(|canvas_state| {

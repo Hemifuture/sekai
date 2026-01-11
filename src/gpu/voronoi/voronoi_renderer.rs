@@ -4,7 +4,6 @@ use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use egui::emath::TSTransform;
 use egui::{Pos2, Rect};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::gpu::canvas_uniform::CanvasUniforms;
 use crate::gpu::helpers;
@@ -14,11 +13,14 @@ use crate::resource::CanvasStateResource;
 const MAX_VORONOI_VERTICES: usize = 100_000;
 const MAX_VORONOI_INDICES: usize = 200_000;
 
-// 删除Matrix4x4相关代码，直接使用CanvasUniforms
+/// Voronoi 图渲染器
+/// 
+/// 使用 `u32` 类型的索引，与 GPU 索引缓冲区兼容。
 pub struct VoronoiRenderer {
     canvas_state_resource: CanvasStateResource,
     pub vertices: Vec<Pos2>,
-    pub indices: Vec<usize>,
+    /// 边的索引（u32），每2个索引构成一条边
+    pub indices: Vec<u32>,
     pub uniforms: CanvasUniforms,
     pub vertices_buffer: wgpu::Buffer,
     pub indices_buffer: wgpu::Buffer,
@@ -34,7 +36,7 @@ impl VoronoiRenderer {
         canvas_state_resource: CanvasStateResource,
     ) -> Self {
         let vertices: Vec<Pos2> = Vec::with_capacity(MAX_VORONOI_VERTICES);
-        let indices: Vec<usize> = Vec::with_capacity(MAX_VORONOI_INDICES);
+        let indices: Vec<u32> = Vec::with_capacity(MAX_VORONOI_INDICES);
         let uniforms = CanvasUniforms::new(Rect::ZERO, TSTransform::IDENTITY);
 
         // 创建顶点缓冲区
@@ -150,7 +152,10 @@ impl VoronoiRenderer {
         self.vertices = vertices;
     }
 
-    pub fn update_indices(&mut self, indices: Vec<usize>) {
+    /// 更新索引数据
+    /// 
+    /// 输入为边索引（每2个索引构成一条边）。
+    pub fn update_indices(&mut self, indices: Vec<u32>) {
         self.indices = indices;
     }
 
@@ -179,12 +184,7 @@ impl VoronoiRenderer {
             queue.write_buffer(
                 &self.indices_buffer,
                 0,
-                bytemuck::cast_slice(
-                    &visible_indices
-                        .par_iter()
-                        .map(|i| *i as u32)
-                        .collect::<Vec<_>>(),
-                ),
+                bytemuck::cast_slice(&visible_indices),
             );
         }
 

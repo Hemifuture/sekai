@@ -22,15 +22,24 @@ impl Default for MapConfig {
     }
 }
 
+/// 地图系统
+/// 
+/// 包含地图的所有几何数据和属性数据。
 #[derive(Debug, Clone)]
 pub struct MapSystem {
+    /// 地图配置
     pub config: MapConfig,
 
     // 基础几何数据
+    /// 网格点生成器
     pub grid: Grid,
-    pub delaunay: Vec<usize>,
+    /// Delaunay 三角剖分索引（u32）
+    /// 每3个连续索引构成一个三角形
+    pub delaunay: Vec<u32>,
+    /// Voronoi 图
     pub voronoi: IndexedVoronoiDiagram,
 
+    /// 单元格属性数据
     pub cells_data: CellsData,
 }
 

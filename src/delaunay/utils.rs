@@ -14,7 +14,7 @@ use egui::Pos2;
 /// Delaunay 性质：任意三角形的外接圆内不包含其他点。
 ///
 /// # 参数
-/// - `indices`: 三角形索引列表，每3个索引构成一个三角形
+/// - `indices`: 三角形索引列表（`&[u32]`），每3个索引构成一个三角形
 /// - `points`: 点坐标列表
 ///
 /// # 返回值
@@ -26,7 +26,7 @@ use egui::Pos2;
 /// let valid = validate_delaunay(&indices, &points);
 /// assert!(valid);
 /// ```
-pub fn validate_delaunay(indices: &[usize], points: &[Pos2]) -> bool {
+pub fn validate_delaunay(indices: &[u32], points: &[Pos2]) -> bool {
     // 确保索引列表长度是3的倍数
     if indices.len() % 3 != 0 {
         return false;
@@ -37,9 +37,9 @@ pub fn validate_delaunay(indices: &[usize], points: &[Pos2]) -> bool {
 
     // 检查每个三角形的外接圆是否不包含任何其他点
     for triangle_idx in 0..(indices.len() / 3) {
-        let i1 = indices[triangle_idx * 3];
-        let i2 = indices[triangle_idx * 3 + 1];
-        let i3 = indices[triangle_idx * 3 + 2];
+        let i1 = indices[triangle_idx * 3] as usize;
+        let i2 = indices[triangle_idx * 3 + 1] as usize;
+        let i3 = indices[triangle_idx * 3 + 2] as usize;
 
         // 确保索引在有效范围内
         if i1 >= points.len() || i2 >= points.len() || i3 >= points.len() {

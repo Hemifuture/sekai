@@ -16,6 +16,11 @@
 //! - 使用 `delaunator` 库，时间复杂度 O(n log n)
 //! - 使用 `rayon` 并行预处理
 //! - 10000 点约需 10-50ms
+//!
+//! # 索引类型
+//! 使用 `u32` 作为索引类型，支持最多 40 亿个点，同时：
+//! - 内存占用比 `usize` 减少 50%（64位系统）
+//! - GPU 索引缓冲区原生支持
 
 #[cfg(debug_assertions)]
 use crate::delaunay::utils::calculate_convex_hull_indices;
@@ -37,8 +42,14 @@ static INIT_LOGGER: Once = Once::new();
 /// - `points`: 输入点坐标列表
 ///
 /// # 返回值
-/// 三角形索引列表，每3个连续索引构成一个三角形。
+/// 三角形索引列表（`Vec<u32>`），每3个连续索引构成一个三角形。
 /// 索引指向输入 `points` 数组。
+///
+/// # 索引类型
+/// 使用 `u32` 而非 `usize`，原因：
+/// - 内存占用减少 50%（64位系统上 8 bytes → 4 bytes）
+/// - GPU 索引缓冲区原生使用 u32
+/// - 支持最多 40 亿个点，远超实际需求
 ///
 /// # 算法流程
 /// 1. 预处理：去除重复点（使用整数量化）
@@ -61,8 +72,9 @@ static INIT_LOGGER: Once = Once::new();
 ///
 /// let indices = triangulate(&points);
 /// // indices 可能是 [0, 1, 2, 1, 3, 2] 表示两个三角形
+/// // 类型为 Vec<u32>
 /// ```
-pub fn triangulate(points: &Vec<Pos2>) -> Vec<usize> {
+pub fn triangulate(points: &[Pos2]) -> Vec<u32> {
     #[cfg(debug_assertions)]
     let start_time = std::time::Instant::now();
 
@@ -125,8 +137,8 @@ const COORD_QUANTIZATION: f32 = 1000.0;
 ///
 /// # 返回值
 /// - `unique_points`: 去重后的点列表
-/// - `original_indices`: 去重点对应的原始索引
-fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<usize>) {
+/// - `original_indices`: 去重点对应的原始索引（u32）
+fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
     // 并行计算每个点的量化键
     let mut point_data: Vec<_> = points
         .par_iter()
@@ -137,7 +149,7 @@ fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<usize>) {
                 (p.x * COORD_QUANTIZATION).round() as i32,
                 (p.y * COORD_QUANTIZATION).round() as i32,
             );
-            (key, idx, *p)
+            (key, idx as u32, *p)
         })
         .collect();
 
@@ -167,7 +179,7 @@ fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<usize>) {
 /// 使用 delaunator 库进行三角剖分
 ///
 /// 使用线程本地缓存减少内存分配。
-fn triangulate_with_delaunator(points: &[Pos2]) -> Vec<[usize; 3]> {
+fn triangulate_with_delaunator(points: &[Pos2]) -> Vec<[u32; 3]> {
     if points.len() < 3 {
         return Vec::new();
     }
@@ -194,14 +206,14 @@ fn triangulate_with_delaunator(points: &[Pos2]) -> Vec<[usize; 3]> {
         // 执行三角剖分
         let result = delaunator::triangulate(&cache);
 
-        // 转换输出格式
+        // 转换输出格式（usize -> u32）
         let mut triangles = Vec::with_capacity(result.triangles.len() / 3);
         for i in (0..result.triangles.len()).step_by(3) {
             if i + 2 < result.triangles.len() {
                 triangles.push([
-                    result.triangles[i],
-                    result.triangles[i + 1],
-                    result.triangles[i + 2],
+                    result.triangles[i] as u32,
+                    result.triangles[i + 1] as u32,
+                    result.triangles[i + 2] as u32,
                 ]);
             }
         }
@@ -211,13 +223,13 @@ fn triangulate_with_delaunator(points: &[Pos2]) -> Vec<[usize; 3]> {
 }
 
 /// 将去重后的索引映射回原始点数组
-fn map_indices_to_original(triangles: &[[usize; 3]], original_indices: &[usize]) -> Vec<usize> {
+fn map_indices_to_original(triangles: &[[u32; 3]], original_indices: &[u32]) -> Vec<u32> {
     let mut result = Vec::with_capacity(triangles.len() * 3);
 
     for triangle in triangles {
-        result.push(original_indices[triangle[0]]);
-        result.push(original_indices[triangle[1]]);
-        result.push(original_indices[triangle[2]]);
+        result.push(original_indices[triangle[0] as usize]);
+        result.push(original_indices[triangle[1] as usize]);
+        result.push(original_indices[triangle[2] as usize]);
     }
 
     result
@@ -287,6 +299,9 @@ mod tests {
 
         // 四个点应该生成2个三角形，共6个索引
         assert_eq!(indices.len(), 6, "应该生成6个索引(2个三角形)");
+        
+        // 验证索引类型是 u32
+        let _: Vec<u32> = indices;
     }
 
     #[test]
@@ -315,6 +330,21 @@ mod tests {
         let indices = triangulate(&points);
         // 去重后3个点，1个三角形
         assert_eq!(indices.len(), 3);
+    }
+    
+    #[test]
+    fn test_index_range() {
+        // 验证索引值在有效范围内
+        let points = vec![
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.5, 1.0),
+        ];
+        
+        let indices = triangulate(&points);
+        for idx in &indices {
+            assert!(*idx < points.len() as u32, "索引应该在有效范围内");
+        }
     }
 }
 

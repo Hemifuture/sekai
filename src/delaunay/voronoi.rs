@@ -8,6 +8,12 @@
 //! - [`IndexedVoronoiDiagram`]: 索引化的 Voronoi 图，用于高效存储和渲染
 //! - [`VoronoiCell`]: Voronoi 单元格，对应原始点集中的一个点
 //!
+//! # 索引类型
+//! 所有索引均使用 `u32` 类型，原因：
+//! - 内存占用减少 50%（64位系统）
+//! - GPU 索引缓冲区原生支持
+//! - 支持最多 40 亿个点，远超实际需求
+//!
 //! # 使用示例
 //! ```ignore
 //! use crate::delaunay::{triangulate, voronoi::compute_indexed_voronoi};
@@ -30,49 +36,51 @@ use std::collections::{HashMap, HashSet};
 
 /// Voronoi 边的内部表示
 ///
-/// 存储边的几何信息和拓扑关系。
+/// 存储边的几何信息和拓扑关系。所有索引使用 `u32` 类型。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoronoiEdge {
     /// 边起点在 vertices 数组中的索引
-    pub start_idx: usize,
+    pub start_idx: u32,
     /// 边终点在 vertices 数组中的索引
-    pub end_idx: usize,
+    pub end_idx: u32,
     /// 相邻的原始点索引（边左侧的单元格）
-    pub site1: usize,
+    pub site1: u32,
     /// 相邻的原始点索引（边右侧的单元格）
-    pub site2: usize,
+    pub site2: u32,
 }
 
 /// Voronoi 单元格
 ///
 /// 表示原始点集中一个点对应的 Voronoi 多边形区域。
 /// 单元格内的所有位置到该点的距离都比到其他点更近。
+/// 所有索引使用 `u32` 类型。
 #[derive(Debug, Clone)]
 pub struct VoronoiCell {
     /// 单元格对应的原始点索引
-    pub site_idx: usize,
+    pub site_idx: u32,
     /// 单元格顶点的索引列表
     ///
     /// **注意**: 当前实现中顶点未排序成闭合多边形顺序，
     /// 如需渲染填充多边形，需要额外排序。
-    pub vertex_indices: Vec<usize>,
+    pub vertex_indices: Vec<u32>,
 }
 
 /// 索引化的 Voronoi 图
 ///
 /// 使用索引而非直接存储坐标，减少内存占用并便于 GPU 渲染。
 /// 这是推荐使用的 Voronoi 图表示方式。
+/// 所有索引使用 `u32` 类型。
 ///
 /// # 内存布局
 /// - `vertices`: 所有唯一顶点坐标，约 N 个（N 为三角形数量）
-/// - `indices`: 边索引，每2个索引构成一条边
+/// - `indices`: 边索引（u32），每2个索引构成一条边
 /// - `cells`: 单元格信息，与原始点一一对应
 #[derive(Debug, Clone)]
 pub struct IndexedVoronoiDiagram {
     /// 所有唯一的 Voronoi 顶点坐标（三角形外心）
     pub vertices: Vec<Pos2>,
-    /// 边的索引数组，每两个连续索引表示一条边 [start, end, start, end, ...]
-    pub indices: Vec<usize>,
+    /// 边的索引数组（u32），每两个连续索引表示一条边 [start, end, start, end, ...]
+    pub indices: Vec<u32>,
     /// 所有 Voronoi 单元格，索引与原始点对应
     pub cells: Vec<VoronoiCell>,
 }
@@ -96,10 +104,11 @@ impl IndexedVoronoiDiagram {
     /// 获取用于 GPU 渲染的数据
     ///
     /// 返回顶点坐标和边索引，可直接用于 wgpu 线段渲染。
+    /// 索引类型为 `u32`，与 GPU 索引缓冲区兼容。
     ///
     /// # 返回值
     /// - `(vertices, indices)`: 顶点数组和索引数组的克隆
-    pub fn get_render_data(&self) -> (Vec<Pos2>, Vec<usize>) {
+    pub fn get_render_data(&self) -> (Vec<Pos2>, Vec<u32>) {
         (self.vertices.clone(), self.indices.clone())
     }
 
@@ -134,17 +143,17 @@ impl IndexedVoronoiDiagram {
 /// 4. 收集每个原始点关联的 Voronoi 顶点
 ///
 /// # 参数
-/// - `triangle_indices`: Delaunay 三角形索引，每3个索引构成一个三角形
+/// - `triangle_indices`: Delaunay 三角形索引（`&[u32]`），每3个索引构成一个三角形
 /// - `points`: 原始点坐标
 ///
 /// # 返回值
-/// 索引化的 Voronoi 图结构
+/// 索引化的 Voronoi 图结构，所有索引使用 `u32` 类型
 ///
 /// # 性能
 /// - 使用 rayon 并行计算外心
 /// - 10000 点约需 100-200ms
 pub fn compute_indexed_voronoi(
-    triangle_indices: &[usize],
+    triangle_indices: &[u32],
     points: &[Pos2],
 ) -> IndexedVoronoiDiagram {
     #[cfg(debug_assertions)]
@@ -162,7 +171,7 @@ pub fn compute_indexed_voronoi(
     }
 
     // Step 1: 构建三角形索引列表
-    let triangles: Vec<[usize; 3]> = build_triangle_list(triangle_indices);
+    let triangles: Vec<[u32; 3]> = build_triangle_list(triangle_indices);
 
     // Step 2: 并行计算每个三角形的外心
     let circumcenters: Vec<Pos2> = triangles
@@ -207,15 +216,16 @@ pub fn compute_indexed_voronoi(
 /// 这是一个便捷函数，直接返回渲染所需的顶点和索引。
 ///
 /// # 参数
-/// - `triangle_indices`: Delaunay 三角形索引
+/// - `triangle_indices`: Delaunay 三角形索引（`&[u32]`）
 /// - `points`: 原始点坐标
 ///
 /// # 返回值
 /// `(vertices, indices)` 元组，可直接用于 GPU 渲染
+/// 索引类型为 `u32`
 pub fn generate_voronoi_render_data(
-    triangle_indices: &[usize],
+    triangle_indices: &[u32],
     points: &[Pos2],
-) -> (Vec<Pos2>, Vec<usize>) {
+) -> (Vec<Pos2>, Vec<u32>) {
     compute_indexed_voronoi(triangle_indices, points).get_render_data()
 }
 
@@ -227,7 +237,7 @@ pub fn generate_voronoi_render_data(
 const VERTEX_QUANTIZATION: f64 = 10000.0;
 
 /// 构建三角形索引列表
-fn build_triangle_list(triangle_indices: &[usize]) -> Vec<[usize; 3]> {
+fn build_triangle_list(triangle_indices: &[u32]) -> Vec<[u32; 3]> {
     (0..triangle_indices.len() / 3)
         .map(|i| {
             [
@@ -243,8 +253,8 @@ fn build_triangle_list(triangle_indices: &[usize]) -> Vec<[usize; 3]> {
 ///
 /// 返回的 HashMap 中，每个键是有序的边 (min_idx, max_idx)，
 /// 值是使用该边的三角形索引列表。
-fn build_edge_triangle_map(triangles: &[[usize; 3]]) -> HashMap<(usize, usize), Vec<usize>> {
-    let mut edge_to_triangles: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+fn build_edge_triangle_map(triangles: &[[u32; 3]]) -> HashMap<(u32, u32), Vec<u32>> {
+    let mut edge_to_triangles: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
 
     for (t_idx, indices) in triangles.iter().enumerate() {
         for i in 0..3 {
@@ -255,7 +265,7 @@ fn build_edge_triangle_map(triangles: &[[usize; 3]]) -> HashMap<(usize, usize), 
             } else {
                 (indices[j], indices[i])
             };
-            edge_to_triangles.entry(edge).or_default().push(t_idx);
+            edge_to_triangles.entry(edge).or_default().push(t_idx as u32);
         }
     }
 
@@ -267,12 +277,12 @@ fn build_edge_triangle_map(triangles: &[[usize; 3]]) -> HashMap<(usize, usize), 
 /// 返回：(顶点列表, 边列表, 每个原始点对应的 Voronoi 顶点集合)
 fn generate_voronoi_geometry(
     circumcenters: &[Pos2],
-    edge_to_triangles: &HashMap<(usize, usize), Vec<usize>>,
-) -> (Vec<Pos2>, Vec<VoronoiEdge>, HashMap<usize, HashSet<usize>>) {
-    let mut vertex_map: HashMap<(i64, i64), usize> = HashMap::new();
+    edge_to_triangles: &HashMap<(u32, u32), Vec<u32>>,
+) -> (Vec<Pos2>, Vec<VoronoiEdge>, HashMap<u32, HashSet<u32>>) {
+    let mut vertex_map: HashMap<(i64, i64), u32> = HashMap::new();
     let mut vertices: Vec<Pos2> = Vec::new();
     let mut edges: Vec<VoronoiEdge> = Vec::new();
-    let mut site_to_vertices: HashMap<usize, HashSet<usize>> = HashMap::new();
+    let mut site_to_vertices: HashMap<u32, HashSet<u32>> = HashMap::new();
 
     for ((p1_idx, p2_idx), tri_indices) in edge_to_triangles.iter() {
         // 只处理内部边（被两个三角形共享的边）
@@ -282,8 +292,8 @@ fn generate_voronoi_geometry(
             continue;
         }
 
-        let t1_idx = tri_indices[0];
-        let t2_idx = tri_indices[1];
+        let t1_idx = tri_indices[0] as usize;
+        let t2_idx = tri_indices[1] as usize;
 
         let start = circumcenters[t1_idx];
         let end = circumcenters[t2_idx];
@@ -314,24 +324,24 @@ fn generate_voronoi_geometry(
 ///
 /// 使用量化坐标作为键来去除重复顶点。
 fn get_or_create_vertex(
-    vertex_map: &mut HashMap<(i64, i64), usize>,
+    vertex_map: &mut HashMap<(i64, i64), u32>,
     vertices: &mut Vec<Pos2>,
     pos: Pos2,
-) -> usize {
+) -> u32 {
     let key = (
         (pos.x as f64 * VERTEX_QUANTIZATION).round() as i64,
         (pos.y as f64 * VERTEX_QUANTIZATION).round() as i64,
     );
 
     *vertex_map.entry(key).or_insert_with(|| {
-        let idx = vertices.len();
+        let idx = vertices.len() as u32;
         vertices.push(pos);
         idx
     })
 }
 
 /// 将边列表转换为索引数组
-fn edges_to_indices(edges: &[VoronoiEdge]) -> Vec<usize> {
+fn edges_to_indices(edges: &[VoronoiEdge]) -> Vec<u32> {
     let mut indices = Vec::with_capacity(edges.len() * 2);
     for edge in edges {
         indices.push(edge.start_idx);
@@ -343,9 +353,9 @@ fn edges_to_indices(edges: &[VoronoiEdge]) -> Vec<usize> {
 /// 构建 Voronoi 单元格
 fn build_cells(
     point_count: usize,
-    site_to_vertices: &HashMap<usize, HashSet<usize>>,
+    site_to_vertices: &HashMap<u32, HashSet<u32>>,
 ) -> Vec<VoronoiCell> {
-    (0..point_count)
+    (0..point_count as u32)
         .map(|i| VoronoiCell {
             site_idx: i,
             vertex_indices: site_to_vertices
@@ -359,10 +369,10 @@ fn build_cells(
 /// 计算三角形的外心
 ///
 /// 外心是三角形外接圆的圆心，到三个顶点的距离相等。
-fn compute_circumcenter(points: &[Pos2], indices: &[usize; 3]) -> Pos2 {
-    let a = points[indices[0]];
-    let b = points[indices[1]];
-    let c = points[indices[2]];
+fn compute_circumcenter(points: &[Pos2], indices: &[u32; 3]) -> Pos2 {
+    let a = points[indices[0] as usize];
+    let b = points[indices[1] as usize];
+    let c = points[indices[2] as usize];
 
     // 边的中点
     let ab_mid = Pos2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
@@ -394,13 +404,13 @@ fn compute_circumcenter(points: &[Pos2], indices: &[usize; 3]) -> Pos2 {
 /// **注意**: 此函数主要用于测试兼容性，生产代码应使用 `compute_indexed_voronoi`
 /// 或 `generate_voronoi_render_data`。
 #[cfg(test)]
-pub fn generate_voronoi_edges(indices: &[usize], points: &[Pos2]) -> Vec<[Pos2; 2]> {
+pub fn generate_voronoi_edges(indices: &[u32], points: &[Pos2]) -> Vec<[Pos2; 2]> {
     let voronoi = compute_indexed_voronoi(indices, points);
 
     (0..voronoi.indices.len() / 2)
         .filter_map(|i| {
-            let start_idx = voronoi.indices[i * 2];
-            let end_idx = voronoi.indices[i * 2 + 1];
+            let start_idx = voronoi.indices[i * 2] as usize;
+            let end_idx = voronoi.indices[i * 2 + 1] as usize;
 
             if start_idx < voronoi.vertices.len() && end_idx < voronoi.vertices.len() {
                 Some([voronoi.vertices[start_idx], voronoi.vertices[end_idx]])
@@ -416,13 +426,13 @@ pub fn generate_voronoi_edges(indices: &[usize], points: &[Pos2]) -> Vec<[Pos2; 
 /// **注意**: 此函数已废弃，仅用于测试兼容性。
 /// 生产代码应使用 `compute_indexed_voronoi`。
 #[cfg(test)]
-pub fn compute_voronoi(triangle_indices: &[usize], points: &[Pos2]) -> VoronoiDiagram {
+pub fn compute_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> VoronoiDiagram {
     let indexed = compute_indexed_voronoi(triangle_indices, points);
 
     let edges: Vec<OldVoronoiEdge> = (0..indexed.indices.len() / 2)
         .filter_map(|i| {
-            let start_idx = indexed.indices[i * 2];
-            let end_idx = indexed.indices[i * 2 + 1];
+            let start_idx = indexed.indices[i * 2] as usize;
+            let end_idx = indexed.indices[i * 2 + 1] as usize;
 
             if start_idx < indexed.vertices.len() && end_idx < indexed.vertices.len() {
                 Some(OldVoronoiEdge {
@@ -443,7 +453,7 @@ pub fn compute_voronoi(triangle_indices: &[usize], points: &[Pos2]) -> VoronoiDi
         .enumerate()
         .map(|(i, cell)| OldVoronoiCell {
             site: if i < points.len() {
-                points[cell.site_idx]
+                points[cell.site_idx as usize]
             } else {
                 Pos2::ZERO
             },
@@ -451,7 +461,7 @@ pub fn compute_voronoi(triangle_indices: &[usize], points: &[Pos2]) -> VoronoiDi
             vertices: cell
                 .vertex_indices
                 .iter()
-                .filter_map(|&idx| indexed.vertices.get(idx).copied())
+                .filter_map(|&idx| indexed.vertices.get(idx as usize).copied())
                 .collect(),
         })
         .collect();

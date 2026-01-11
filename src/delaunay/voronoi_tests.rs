@@ -23,7 +23,7 @@ mod voronoi_tests {
     }
 
     /// 验证Voronoi图的基本属性
-    fn validate_voronoi_diagram(indices: &[usize], points: &[Pos2], edges: &[[Pos2; 2]]) -> bool {
+    fn validate_voronoi_diagram(indices: &[u32], points: &[Pos2], edges: &[[Pos2; 2]]) -> bool {
         if indices.len() < 3 || points.len() < 3 {
             return edges.is_empty(); // 点数太少，应该没有边
         }
