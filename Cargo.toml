@@ -63,3 +63,6 @@ opt-level = 2
 [[bench]]
 name = "delaunay"
 harness = false
+
+[dev-dependencies]
+rand_chacha = "0.9.0"

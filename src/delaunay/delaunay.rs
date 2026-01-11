@@ -299,7 +299,7 @@ mod tests {
 
         // 四个点应该生成2个三角形，共6个索引
         assert_eq!(indices.len(), 6, "应该生成6个索引(2个三角形)");
-        
+
         // 验证索引类型是 u32
         let _: Vec<u32> = indices;
     }
@@ -331,7 +331,7 @@ mod tests {
         // 去重后3个点，1个三角形
         assert_eq!(indices.len(), 3);
     }
-    
+
     #[test]
     fn test_index_range() {
         // 验证索引值在有效范围内
@@ -340,7 +340,7 @@ mod tests {
             Pos2::new(1.0, 0.0),
             Pos2::new(0.5, 1.0),
         ];
-        
+
         let indices = triangulate(&points);
         for idx in &indices {
             assert!(*idx < points.len() as u32, "索引应该在有效范围内");
@@ -361,12 +361,7 @@ mod bench {
     fn generate_random_points(count: usize) -> Vec<Pos2> {
         let mut rng = rand::rng();
         (0..count)
-            .map(|_| {
-                Pos2::new(
-                    rng.random_range(0.0..1000.0),
-                    rng.random_range(0.0..1000.0),
-                )
-            })
+            .map(|_| Pos2::new(rng.random_range(0.0..1000.0), rng.random_range(0.0..1000.0)))
             .collect()
     }
 
