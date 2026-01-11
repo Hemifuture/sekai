@@ -1068,26 +1068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eframe_template"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "criterion",
- "delaunator",
- "eframe",
- "egui",
- "env_logger",
- "log",
- "rand 0.9.0",
- "rand_chacha 0.9.0",
- "rayon",
- "serde",
- "tokio",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "egui"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2845,6 +2825,26 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sekai"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "criterion",
+ "delaunator",
+ "eframe",
+ "egui",
+ "env_logger",
+ "log",
+ "rand 0.9.0",
+ "rand_chacha 0.9.0",
+ "rayon",
+ "serde",
+ "tokio",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "serde"

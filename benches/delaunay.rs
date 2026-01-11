@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use eframe_template::delaunay::{self, voronoi};
 use egui::Pos2;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use sekai::delaunay::{self, voronoi};
 
 /// 使用固定种子生成随机点，确保基准测试可复现
 fn generate_random_points(n: usize, width: f32, height: f32, seed: u64) -> Vec<Pos2> {
