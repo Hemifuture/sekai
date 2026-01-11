@@ -6,5 +6,6 @@ mod gpu;
 mod map_layer;
 pub mod models;
 mod resource;
+pub mod spatial;
 mod ui;
 pub use app::TemplateApp;

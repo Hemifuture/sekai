@@ -184,43 +184,73 @@ fn sort_cell_vertices(
 
 **实施难度：低**
 
-### 2.5 空间索引
+### 2.5 空间索引 ✅ 已完成
 
-**方案：添加网格或四叉树索引**
+**方案：网格空间索引**
+
+已实现两种空间索引：
+
+#### GridIndex - 点的空间索引
 
 ```rust
-/// 简单的网格索引
+/// 网格空间索引 - 用于点击测试和邻居查询
 pub struct GridIndex {
     cell_size: f32,
-    width: usize,
-    height: usize,
-    /// 每个网格格子包含的点索引
-    cells: Vec<Vec<u32>>,
+    grid_width: usize,
+    grid_height: usize,
+    bounds: Rect,
+    cells: Vec<Vec<u32>>,  // 每个格子包含的点索引
 }
 
 impl GridIndex {
-    /// 查找包含指定点的 Voronoi 单元格
-    pub fn find_cell(&self, pos: Pos2, points: &[Pos2]) -> Option<u32> {
-        // 先查找网格格子
-        let candidates = self.get_nearby_points(pos);
-        // 在候选点中找最近的
-        candidates.iter()
-            .min_by(|&&a, &&b| {
-                let da = (points[a as usize] - pos).length_sq();
-                let db = (points[b as usize] - pos).length_sq();
-                da.partial_cmp(&db).unwrap()
-            })
-            .copied()
-    }
+    /// 构建索引（自动计算最优格子尺寸）
+    pub fn build_auto(points: &[Pos2], bounds: Rect) -> Self;
+    
+    /// 查找最近的点（即 Voronoi 单元格）
+    pub fn find_nearest(&self, points: &[Pos2], pos: Pos2) -> Option<u32>;
+    
+    /// 查询矩形范围内的点
+    pub fn query_rect(&self, rect: Rect) -> Vec<u32>;
+    
+    /// 查询圆形范围内的点
+    pub fn query_radius(&self, points: &[Pos2], center: Pos2, radius: f32) -> Vec<u32>;
+}
+```
+
+#### EdgeIndex - 边的空间索引
+
+```rust
+/// 边的空间索引 - 用于视口裁剪
+pub struct EdgeIndex {
+    cell_size: f32,
+    grid_width: usize,
+    grid_height: usize,
+    bounds: Rect,
+    cells: Vec<Vec<u32>>,  // 每个格子包含的边索引
+}
+
+impl EdgeIndex {
+    /// 构建索引
+    pub fn build_auto(vertices: &[Pos2], indices: &[u32], bounds: Rect) -> Self;
+    
+    /// 获取与视口相交的可见边索引
+    pub fn get_visible_indices(&self, vertices: &[Pos2], indices: &[u32], view_rect: Rect) -> Vec<u32>;
 }
 ```
 
 **收益：**
-- O(1) 点击测试（查找点所在单元格）
-- 加速视口裁剪
-- 支持高效的邻居查询
+- O(1) 点击测试（`MapSystem::find_cell_at`）
+- O(k) 视口裁剪（k 为视口内格子数，远小于总边数）
+- O(1) 邻居查询（`MapSystem::find_cells_in_radius`）
 
-**实施难度：中**
+**实施位置：**
+- `src/spatial/grid_index.rs` - 点索引
+- `src/spatial/edge_index.rs` - 边索引
+- `src/models/map/system.rs` - MapSystem 集成
+- `src/gpu/voronoi/voronoi_renderer.rs` - 渲染器集成
+- `src/gpu/delaunay/delaunay_renderer.rs` - 渲染器集成
+
+**实施难度：中** ✅
 
 ---
 
@@ -232,7 +262,7 @@ impl GridIndex {
 | 2 | 半边数据结构 | 完整拓扑信息，有序顶点 | 中 | ✅ **已完成** |
 | 3 | 扁平化单元格存储 | 减少内存碎片 | 低 | ✅ 已通过半边实现 |
 | 4 | 有序单元格顶点 | 支持填充渲染 | 低 | ✅ 已通过半边实现 |
-| 5 | 空间索引 | 加速查询 | 中 | 🔲 交互功能需要时实施 |
+| 5 | 空间索引 | 加速查询 | 中 | ✅ **已完成** |
 
 ---
 

@@ -122,50 +122,6 @@ impl Triangle {
     }
 }
 
-// ============================================================================
-// 废弃代码 - 保留供参考
-// ============================================================================
-
-#[cfg(feature = "deprecated")]
-impl Triangle {
-    /// 检查点是否在三角形内部
-    ///
-    /// **注意**: 此方法当前未被使用，保留供将来可能的需求。
-    ///
-    /// # 算法
-    /// 使用重心坐标判断：如果点的三个重心坐标都非负，则点在三角形内部。
-    ///
-    /// # 参数
-    /// - `point`: 待测试的点
-    ///
-    /// # 返回值
-    /// - `true`: 点在三角形内部或边上
-    /// - `false`: 点在三角形外部
-    pub fn contains_point(&self, point: Pos2) -> bool {
-        let a = self.points[0];
-        let b = self.points[1];
-        let c = self.points[2];
-
-        // 计算三角形面积
-        let area = 0.5 * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)).abs();
-
-        // 退化三角形
-        if area < 1e-10 {
-            return false;
-        }
-
-        // 计算重心坐标
-        let inv_2area = 1.0 / (2.0 * area);
-        let s = inv_2area
-            * (a.y * c.x - a.x * c.y + (c.y - a.y) * point.x + (a.x - c.x) * point.y);
-        let t = inv_2area
-            * (a.x * b.y - a.y * b.x + (a.y - b.y) * point.x + (b.x - a.x) * point.y);
-        let u = 1.0 - s - t;
-
-        s >= 0.0 && t >= 0.0 && u >= 0.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

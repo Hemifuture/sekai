@@ -140,9 +140,9 @@ fn deduplicate_points(points: &[Pos2]) -> Vec<Pos2> {
     let mut unique_points = Vec::new();
 
     for &point in points {
-        let is_duplicate = unique_points.iter().any(|&p: &Pos2| {
-            (p.x - point.x).abs() < EPSILON && (p.y - point.y).abs() < EPSILON
-        });
+        let is_duplicate = unique_points
+            .iter()
+            .any(|&p: &Pos2| (p.x - point.x).abs() < EPSILON && (p.y - point.y).abs() < EPSILON);
 
         if !is_duplicate {
             unique_points.push(point);
@@ -154,169 +154,8 @@ fn deduplicate_points(points: &[Pos2]) -> Vec<Pos2> {
 
 /// 判断点是否是三角形的顶点之一
 fn is_triangle_vertex(triangle: &Triangle, point: Pos2) -> bool {
-    triangle.points.iter().any(|&p: &Pos2| {
-        (p.x - point.x).abs() < EPSILON && (p.y - point.y).abs() < EPSILON
-    })
-}
-
-// ============================================================================
-// 废弃代码 - 保留供参考，但不再使用
-// ============================================================================
-
-#[cfg(feature = "deprecated")]
-mod deprecated {
-    //! 以下代码是自己实现 Delaunay 三角剖分时使用的辅助函数。
-    //! 现在已切换到 `delaunator` 库，这些代码不再需要。
-    //!
-    //! 保留这些代码仅供学习参考，不会被编译。
-
-    use super::*;
-
-    /// 创建包含所有点的超级三角形
-    ///
-    /// **废弃原因**: 现在使用 delaunator 库，不需要手动创建超级三角形
-    #[allow(dead_code)]
-    pub fn create_super_triangle(points: &[&Pos2]) -> Triangle {
-        let (min_x, min_y, max_x, max_y) = find_bounding_box_ref(points);
-
-        if !is_valid_bounds(min_x, min_y, max_x, max_y) {
-            return default_super_triangle();
-        }
-
-        if is_single_point(min_x, min_y, max_x, max_y) {
-            return create_point_enclosing_triangle(min_x, min_y);
-        }
-
-        create_enclosing_triangle(min_x, min_y, max_x, max_y)
-    }
-
-    /// 创建超级三角形并返回三个超级顶点的索引
-    #[allow(dead_code)]
-    pub fn create_super_triangle_indices(point_count: usize) -> [usize; 3] {
-        [point_count, point_count + 1, point_count + 2]
-    }
-
-    /// 基于点集创建超级三角形顶点
-    #[allow(dead_code)]
-    pub fn create_super_triangle_points(points: &[Pos2]) -> Triangle {
-        let (min_x, min_y, max_x, max_y) = find_bounding_box(points);
-
-        if !is_valid_bounds(min_x, min_y, max_x, max_y) {
-            return default_super_triangle();
-        }
-
-        if is_single_point(min_x, min_y, max_x, max_y) {
-            return create_point_enclosing_triangle(min_x, min_y);
-        }
-
-        create_enclosing_triangle(min_x, min_y, max_x, max_y)
-    }
-
-    /// 移除重复边
-    ///
-    /// **废弃原因**: 旧版 Delaunay 算法需要，新版不需要
-    #[allow(dead_code)]
-    pub fn remove_duplicate_edges(edges: &mut Vec<[Pos2; 2]>) {
-        let mut i = 0;
-        while i < edges.len() {
-            let mut j = i + 1;
-            while j < edges.len() {
-                if edges_equal(&edges[i], &edges[j]) {
-                    edges.swap_remove(j);
-                } else {
-                    j += 1;
-                }
-            }
-            i += 1;
-        }
-    }
-
-    /// 计算凸包边界点数量（使用点引用版本）
-    #[allow(dead_code)]
-    pub fn calculate_convex_hull_points(points: &[&Pos2]) -> i32 {
-        if points.len() < 3 {
-            return points.len() as i32;
-        }
-
-        // Graham 扫描算法实现...
-        // 省略具体实现
-        points.len() as i32
-    }
-
-    // --- 辅助函数 ---
-
-    fn find_bounding_box_ref(points: &[&Pos2]) -> (f32, f32, f32, f32) {
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-
-        for &point in points {
-            min_x = min_x.min(point.x);
-            min_y = min_y.min(point.y);
-            max_x = max_x.max(point.x);
-            max_y = max_y.max(point.y);
-        }
-
-        (min_x, min_y, max_x, max_y)
-    }
-
-    fn find_bounding_box(points: &[Pos2]) -> (f32, f32, f32, f32) {
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-
-        for point in points {
-            min_x = min_x.min(point.x);
-            min_y = min_y.min(point.y);
-            max_x = max_x.max(point.x);
-            max_y = max_y.max(point.y);
-        }
-
-        (min_x, min_y, max_x, max_y)
-    }
-
-    fn is_valid_bounds(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> bool {
-        min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()
-    }
-
-    fn is_single_point(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> bool {
-        (max_x - min_x).abs() < 1e-6 && (max_y - min_y).abs() < 1e-6
-    }
-
-    fn default_super_triangle() -> Triangle {
-        Triangle::new([
-            Pos2::new(-1000.0, -1000.0),
-            Pos2::new(0.0, 1000.0),
-            Pos2::new(1000.0, -1000.0),
-        ])
-    }
-
-    fn create_point_enclosing_triangle(x: f32, y: f32) -> Triangle {
-        Triangle::new([
-            Pos2::new(x - 10.0, y - 10.0),
-            Pos2::new(x, y + 10.0),
-            Pos2::new(x + 10.0, y - 10.0),
-        ])
-    }
-
-    fn create_enclosing_triangle(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Triangle {
-        let dx = max_x - min_x;
-        let dy = max_y - min_y;
-        let dmax = dx.max(dy).max(1.0) * 2.0;
-
-        let mid_x = (min_x + max_x) / 2.0;
-        let mid_y = (min_y + max_y) / 2.0;
-
-        Triangle::new([
-            Pos2::new(mid_x - 10.0 * dmax, mid_y - dmax),
-            Pos2::new(mid_x, mid_y + 10.0 * dmax),
-            Pos2::new(mid_x + 10.0 * dmax, mid_y - dmax),
-        ])
-    }
-
-    fn edges_equal(e1: &[Pos2; 2], e2: &[Pos2; 2]) -> bool {
-        (e1[0] == e2[0] && e1[1] == e2[1]) || (e1[0] == e2[1] && e1[1] == e2[0])
-    }
+    triangle
+        .points
+        .iter()
+        .any(|&p: &Pos2| (p.x - point.x).abs() < EPSILON && (p.y - point.y).abs() < EPSILON)
 }

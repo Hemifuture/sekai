@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_halfedge_navigation() {
-        let mesh = create_test_mesh();
+        let _mesh = create_test_mesh();
 
         // 测试 next_halfedge
         assert_eq!(DelaunayMesh::next_halfedge(0), 1);
@@ -505,13 +505,7 @@ mod tests {
 
             // 验证每条边的起点都是 v
             for &he in &edges {
-                assert_eq!(
-                    mesh.halfedge_start(he),
-                    v,
-                    "半边 {} 的起点应该是 {}",
-                    he,
-                    v
-                );
+                assert_eq!(mesh.halfedge_start(he), v, "半边 {} 的起点应该是 {}", he, v);
             }
         }
     }

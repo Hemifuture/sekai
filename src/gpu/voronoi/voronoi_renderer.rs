@@ -6,21 +6,24 @@ use egui::emath::TSTransform;
 use egui::{Pos2, Rect};
 
 use crate::gpu::canvas_uniform::CanvasUniforms;
-use crate::gpu::helpers;
 use crate::gpu::map_renderer::MapRenderer;
 use crate::resource::CanvasStateResource;
+use crate::spatial::EdgeIndex;
 
 const MAX_VORONOI_VERTICES: usize = 100_000;
 const MAX_VORONOI_INDICES: usize = 200_000;
 
 /// Voronoi 图渲染器
-/// 
+///
 /// 使用 `u32` 类型的索引，与 GPU 索引缓冲区兼容。
+/// 内部使用空间索引加速视口裁剪。
 pub struct VoronoiRenderer {
     canvas_state_resource: CanvasStateResource,
     pub vertices: Vec<Pos2>,
     /// 边的索引（u32），每2个索引构成一条边
     pub indices: Vec<u32>,
+    /// 边的空间索引，用于快速视口裁剪
+    edge_index: Option<EdgeIndex>,
     pub uniforms: CanvasUniforms,
     pub vertices_buffer: wgpu::Buffer,
     pub indices_buffer: wgpu::Buffer,
@@ -139,6 +142,7 @@ impl VoronoiRenderer {
             canvas_state_resource,
             vertices,
             indices,
+            edge_index: None,
             uniforms,
             vertices_buffer,
             indices_buffer,
@@ -150,22 +154,63 @@ impl VoronoiRenderer {
 
     pub fn update_vertices(&mut self, vertices: Vec<Pos2>) {
         self.vertices = vertices;
+        // 顶点更新后需要重建空间索引
+        self.edge_index = None;
     }
 
     /// 更新索引数据
-    /// 
+    ///
     /// 输入为边索引（每2个索引构成一条边）。
     pub fn update_indices(&mut self, indices: Vec<u32>) {
         self.indices = indices;
+        // 索引更新后需要重建空间索引
+        self.edge_index = None;
+    }
+
+    /// 设置预构建的边空间索引
+    ///
+    /// 如果 MapSystem 已经构建了空间索引，可以直接使用避免重复构建。
+    #[allow(dead_code)]
+    pub fn set_edge_index(&mut self, edge_index: EdgeIndex) {
+        self.edge_index = Some(edge_index);
+    }
+
+    /// 确保空间索引已构建
+    fn ensure_edge_index(&mut self) {
+        if self.edge_index.is_none() && !self.vertices.is_empty() && !self.indices.is_empty() {
+            // 计算边界框
+            let bounds = self.compute_bounds();
+            self.edge_index = Some(EdgeIndex::build_auto(&self.vertices, &self.indices, bounds));
+        }
+    }
+
+    /// 计算顶点的边界框
+    fn compute_bounds(&self) -> Rect {
+        if self.vertices.is_empty() {
+            return Rect::ZERO;
+        }
+
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+
+        for v in &self.vertices {
+            min_x = min_x.min(v.x);
+            min_y = min_y.min(v.y);
+            max_x = max_x.max(v.x);
+            max_y = max_y.max(v.y);
+        }
+
+        Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
     }
 
     pub fn update_uniforms(&mut self, rect: Rect, transform: TSTransform) {
         self.uniforms = CanvasUniforms::new(rect, transform);
     }
 
-    pub fn upload_to_gpu(&self, queue: &wgpu::Queue) {
+    pub fn upload_to_gpu(&mut self, queue: &wgpu::Queue) {
         if !self.vertices.is_empty() {
-            println!("[voronoi]update_vertices");
             queue.write_buffer(
                 &self.vertices_buffer,
                 0,
@@ -174,13 +219,34 @@ impl VoronoiRenderer {
         }
 
         if !self.indices.is_empty() {
-            let visible_indices = helpers::get_visible_indices(
-                &self.vertices,
-                self.uniforms,
-                self.indices.clone(),
-                self.canvas_state_resource.clone(),
-            );
-            println!("[voronoi]update_indices");
+            // 确保空间索引已构建
+            self.ensure_edge_index();
+
+            // 使用空间索引进行快速视口裁剪
+            let view_rect = self.canvas_state_resource.read_resource(|canvas_state| {
+                canvas_state.to_canvas_rect(egui::Rect::from_min_max(
+                    egui::Pos2::new(self.uniforms.canvas_x, self.uniforms.canvas_y),
+                    egui::Pos2::new(
+                        self.uniforms.canvas_x + self.uniforms.canvas_width,
+                        self.uniforms.canvas_y + self.uniforms.canvas_height,
+                    ),
+                ))
+            });
+
+            let visible_indices = if let Some(ref edge_index) = self.edge_index {
+                edge_index.get_visible_indices(&self.vertices, &self.indices, view_rect)
+            } else {
+                // 后备：如果没有空间索引，返回所有索引
+                self.indices.clone()
+            };
+
+            #[cfg(debug_assertions)]
+            // println!(
+            //     "[voronoi] 可见边: {}/{} ({:.1}%)",
+            //     visible_indices.len() / 2,
+            //     self.indices.len() / 2,
+            //     visible_indices.len() as f32 / self.indices.len() as f32 * 100.0
+            // );
             queue.write_buffer(
                 &self.indices_buffer,
                 0,
