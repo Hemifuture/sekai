@@ -124,6 +124,61 @@ pub fn triangulate(points: &[Pos2]) -> Vec<u32> {
     map_indices_to_original(&triangles, &original_indices)
 }
 
+/// 执行 Delaunay 三角剖分并返回半边网格
+///
+/// 这是推荐的方式，返回的 `DelaunayMesh` 包含完整的拓扑信息，
+/// 支持 O(1) 邻接查询和有序的 Voronoi 单元格遍历。
+///
+/// # 参数
+/// - `points`: 输入点坐标列表
+///
+/// # 返回值
+/// 包含半边结构的 Delaunay 网格
+///
+/// # 优势
+/// - O(1) 邻接三角形查询
+/// - 顶点周围边的高效遍历
+/// - Voronoi 单元格顶点自然有序（无需额外排序）
+///
+/// # 示例
+/// ```ignore
+/// let points = vec![
+///     Pos2::new(0.0, 0.0),
+///     Pos2::new(1.0, 0.0),
+///     Pos2::new(0.5, 1.0),
+/// ];
+///
+/// let mesh = triangulate_mesh(points);
+///
+/// // 获取有序的 Voronoi 单元格顶点
+/// for v in 0..mesh.point_count() as u32 {
+///     let (vertices, is_closed) = mesh.voronoi_cell_vertices(v);
+///     // vertices 已经是逆时针有序的
+/// }
+/// ```
+pub fn triangulate_mesh(points: Vec<Pos2>) -> crate::delaunay::half_edge::DelaunayMesh {
+    use crate::delaunay::half_edge::DelaunayMesh;
+
+    if points.len() < 3 {
+        return DelaunayMesh::new();
+    }
+
+    // 转换为 delaunator 格式
+    let delaunay_points: Vec<delaunator::Point> = points
+        .iter()
+        .map(|p| delaunator::Point {
+            x: p.x as f64,
+            y: p.y as f64,
+        })
+        .collect();
+
+    // 执行三角剖分
+    let triangulation = delaunator::triangulate(&delaunay_points);
+
+    // 构建半边网格
+    DelaunayMesh::from_delaunator(points, &triangulation)
+}
+
 // ============================================================================
 // 内部实现
 // ============================================================================
