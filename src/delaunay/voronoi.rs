@@ -60,8 +60,8 @@ pub struct VoronoiCell {
     pub site_idx: u32,
     /// 单元格顶点的索引列表
     ///
-    /// **注意**: 当前实现中顶点未排序成闭合多边形顺序，
-    /// 如需渲染填充多边形，需要额外排序。
+    /// **注意**: 顶点已按照相对于质心的角度逆时针排序，
+    /// 形成闭合多边形，可直接用于填充渲染。
     pub vertex_indices: Vec<u32>,
 }
 
@@ -190,7 +190,13 @@ pub fn compute_indexed_voronoi(
     let indices = edges_to_indices(&edges);
 
     // Step 6: 构建单元格
-    let cells = build_cells(points.len(), &site_vertices);
+    let mut cells = build_cells(points.len(), &site_vertices);
+
+    // Step 7: 对每个单元格的顶点进行排序，使其形成闭合多边形
+    for cell in cells.iter_mut() {
+        let site_pos = points[cell.site_idx as usize];
+        sort_cell_vertices(cell, &vertices, site_pos);
+    }
 
     #[cfg(debug_assertions)]
     {
@@ -364,6 +370,46 @@ fn build_cells(
                 .unwrap_or_default(),
         })
         .collect()
+}
+
+/// 对 Voronoi 单元格的顶点进行排序，使其形成闭合多边形
+///
+/// 顶点按照相对于质心的角度逆时针排序
+fn sort_cell_vertices(
+    cell: &mut VoronoiCell,
+    vertices: &[Pos2],
+    _site_pos: Pos2,
+) {
+    if cell.vertex_indices.len() < 3 {
+        return;
+    }
+
+    // 计算质心
+    let mut center = Pos2::ZERO;
+    for &idx in &cell.vertex_indices {
+        if (idx as usize) < vertices.len() {
+            center += vertices[idx as usize].to_vec2();
+        }
+    }
+    center = Pos2::new(
+        center.x / cell.vertex_indices.len() as f32,
+        center.y / cell.vertex_indices.len() as f32,
+    );
+
+    // 按照相对于质心的角度排序
+    cell.vertex_indices.sort_by(|&a, &b| {
+        if (a as usize) >= vertices.len() || (b as usize) >= vertices.len() {
+            return std::cmp::Ordering::Equal;
+        }
+
+        let va = vertices[a as usize];
+        let vb = vertices[b as usize];
+
+        let angle_a = (va.y - center.y).atan2(va.x - center.x);
+        let angle_b = (vb.y - center.y).atan2(vb.x - center.x);
+
+        angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// 计算三角形的外心

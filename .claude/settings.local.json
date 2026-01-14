@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(typst compile:*)"
+      "Bash(typst compile:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }

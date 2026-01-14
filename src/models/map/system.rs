@@ -8,6 +8,30 @@ use crate::spatial::{EdgeIndex, GridIndex};
 
 use super::{cells_data::CellsData, grid::Grid};
 
+/// 图层可见性设置
+#[derive(Debug, Clone, Copy)]
+pub struct LayerVisibility {
+    /// 高度图图层（填充的Voronoi单元格）
+    pub heightmap: bool,
+    /// Voronoi边线图层
+    pub voronoi_edges: bool,
+    /// Delaunay三角剖分图层
+    pub delaunay: bool,
+    /// 点图层
+    pub points: bool,
+}
+
+impl Default for LayerVisibility {
+    fn default() -> Self {
+        Self {
+            heightmap: true,
+            voronoi_edges: false,
+            delaunay: false,
+            points: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MapConfig {
     pub width: u32,
@@ -44,7 +68,7 @@ pub struct MapSystem {
 
     /// 单元格属性数据
     pub cells_data: CellsData,
-    
+
     // 空间索引
     /// 点的空间索引（用于点击测试、邻居查询）
     pub point_index: GridIndex,
@@ -52,6 +76,9 @@ pub struct MapSystem {
     pub voronoi_edge_index: EdgeIndex,
     /// Delaunay 边的空间索引（用于视口裁剪）
     pub delaunay_edge_index: EdgeIndex,
+
+    /// 图层可见性设置
+    pub layer_visibility: LayerVisibility,
 }
 
 impl Default for MapSystem {
@@ -96,6 +123,7 @@ impl Default for MapSystem {
             point_index,
             voronoi_edge_index,
             delaunay_edge_index,
+            layer_visibility: LayerVisibility::default(),
         }
     }
 }
