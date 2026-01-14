@@ -8,6 +8,116 @@
 
 == 地形生成算法
 
+=== 核心设计理念
+
+本系统采用*"板块构造主导 + 噪声细节叠加"*的分层地形生成策略，这是基于真实地质学原理的科学方法：
+
+*地质学基础*：
+- 地球表面的大尺度地形（山脉、海沟、高原）由*板块运动*形成
+- 中小尺度地形（褶皱、河谷、沟壑）由*侵蚀、沉积、局部构造*形成
+- 这是一个*多尺度、层次化*的过程
+
+*算法策略*：
+
+#figure(
+  table(
+    columns: (auto, auto, auto, 1fr),
+    stroke: 0.5pt,
+    inset: 6pt,
+    [*层级*], [*空间尺度*], [*地质过程*], [*实现方法*],
+    [宏观], [1000+ km], [板块碰撞、俯冲、张裂], [*板块构造模拟*（主算法）],
+    [中观], [100-1000 km], [区域褶皱、火山群、盆地], [中频噪声叠加],
+    [微观], [1-100 km], [侵蚀沟壑、冲积扇、沙丘], [高频噪声 + 可选物理侵蚀],
+  ),
+  caption: [多尺度地形生成策略]
+)
+
+*设计优势*：
+- ✓ *科学真实*：符合板块构造理论，生成的地形符合地质学规律
+- ✓ *性能平衡*：避免完整物理模拟的高昂成本，实时生成大规模地图
+- ✓ *高度可控*：板块参数控制大格局，噪声参数控制细节，互不干扰
+- ✓ *层次分明*：先宏观后微观，符合地质形成的自然时序
+
+*完整生成流程*：
+
+#figure(
+  cetz.canvas(length: 1cm, {
+    import cetz.draw: *
+
+    let width = 14
+    let y = 0
+
+    // 主容器
+    rect((0, y), (width, y - 20), stroke: (thickness: 1pt), fill: rgb("#f9f9f9"))
+    content((width/2, y - 0.5), text(weight: "bold", size: 11pt, "分层地形生成完整流程"))
+
+    // 阶段 1: 板块构造（主导）
+    let y = y - 1.2
+    rect((0.5, y), (width - 0.5, y - 3.5), stroke: (thickness: 1pt, paint: rgb("#d32f2f")), fill: rgb("#ffebee"))
+    content((1, y - 0.4), anchor: "west", text(weight: "bold", size: 9pt, fill: rgb("#d32f2f"), "阶段 1: 板块构造模拟（主导机制）"))
+    content((1, y - 0.9), anchor: "west", text(size: 7.5pt, "• 生成 12-15 个板块"))
+    content((1, y - 1.3), anchor: "west", text(size: 7.5pt, "• 分配运动向量"))
+    content((1, y - 1.7), anchor: "west", text(size: 7.5pt, "• 迭代 100-300 次模拟板块相互作用"))
+    content((1, y - 2.1), anchor: "west", text(size: 7.5pt, "• 汇聚边界 → 山脉/海沟，分离边界 → 裂谷"))
+    content((1, y - 2.5), anchor: "west", text(size: 7.5pt, "• 地壳均衡调整"))
+    content((11.5, y - 1.75), text(size: 7pt, style: "italic", fill: gray, "决定大陆、山脉、#linebreak()海沟等宏观格局"))
+
+    // 箭头
+    let y = y - 3.7
+    line((width/2, y), (width/2, y - 0.5), mark: (end: "stealth"), stroke: (thickness: 1.2pt))
+
+    // 阶段 2: 中尺度噪声
+    let y = y - 0.7
+    rect((0.5, y), (width - 0.5, y - 2.5), stroke: (thickness: 1pt, paint: rgb("#1976d2")), fill: rgb("#e3f2fd"))
+    content((1, y - 0.4), anchor: "west", text(weight: "bold", size: 9pt, fill: rgb("#1976d2"), "阶段 2: 中尺度噪声（区域构造）"))
+    content((1, y - 0.9), anchor: "west", text(size: 7.5pt, "• 低频噪声（3 octaves，频率 0.01）"))
+    content((1, y - 1.3), anchor: "west", text(size: 7.5pt, "• 大陆板块内部噪声强 (0.3)，海洋板块弱 (0.1)"))
+    content((1, y - 1.7), anchor: "west", text(size: 7.5pt, "• 板块边界附近抑制噪声"))
+    content((11.5, y - 1.25), text(size: 7pt, style: "italic", fill: gray, "添加褶皱、#linebreak()盆地等中尺度地貌"))
+
+    // 箭头
+    let y = y - 2.7
+    line((width/2, y), (width/2, y - 0.5), mark: (end: "stealth"), stroke: (thickness: 1.2pt))
+
+    // 阶段 3: 侵蚀（可选）
+    let y = y - 0.7
+    rect((0.5, y), (width - 0.5, y - 2), stroke: (thickness: 1pt, paint: rgb("#388e3c"), dash: "dashed"), fill: rgb("#e8f5e9"))
+    content((1, y - 0.4), anchor: "west", text(weight: "bold", size: 9pt, fill: rgb("#388e3c"), "阶段 3: 侵蚀模拟（可选，高质量模式）"))
+    content((1, y - 0.9), anchor: "west", text(size: 7.5pt, "• 热力侵蚀（模拟岩石碎裂）"))
+    content((1, y - 1.3), anchor: "west", text(size: 7.5pt, "• 水力侵蚀（模拟水流侵蚀）"))
+    content((11.5, y - 1), text(size: 7pt, style: "italic", fill: gray, "增强真实感，#linebreak()但计算量大"))
+
+    // 箭头
+    let y = y - 2.2
+    line((width/2, y), (width/2, y - 0.5), mark: (end: "stealth"), stroke: (thickness: 1.2pt))
+
+    // 阶段 4: 小尺度噪声
+    let y = y - 0.7
+    rect((0.5, y), (width - 0.5, y - 2.2), stroke: (thickness: 1pt, paint: rgb("#7b1fa2")), fill: rgb("#f3e5f5"))
+    content((1, y - 0.4), anchor: "west", text(weight: "bold", size: 9pt, fill: rgb("#7b1fa2"), "阶段 4: 小尺度噪声（表面细节）"))
+    content((1, y - 0.9), anchor: "west", text(size: 7.5pt, "• 高频噪声（5 octaves，频率 0.05）"))
+    content((1, y - 1.3), anchor: "west", text(size: 7.5pt, "• 高海拔区域侵蚀增强"))
+    content((11.5, y - 1.1), text(size: 7pt, style: "italic", fill: gray, "添加沟壑、#linebreak()小山丘等细节"))
+
+    // 箭头
+    let y = y - 2.4
+    line((width/2, y), (width/2, y - 0.5), mark: (end: "stealth"), stroke: (thickness: 1.2pt))
+
+    // 阶段 5: 后处理
+    let y = y - 0.7
+    rect((0.5, y), (width - 0.5, y - 1.8), stroke: (thickness: 1pt, paint: rgb("#f57c00")), fill: rgb("#fff3e0"))
+    content((1, y - 0.4), anchor: "west", text(weight: "bold", size: 9pt, fill: rgb("#f57c00"), "阶段 5: 归一化与后处理"))
+    content((1, y - 0.9), anchor: "west", text(size: 7.5pt, "• 归一化到 [0, 255]"))
+    content((1, y - 1.3), anchor: "west", text(size: 7.5pt, "• 可选平滑处理"))
+
+    // 输出
+    let y = y - 2
+    rect((width/2 - 2.5, y), (width/2 + 2.5, y - 0.8), stroke: (thickness: 1.5pt), fill: rgb("#4caf50"))
+    content((width/2, y - 0.4), text(weight: "bold", size: 9pt, fill: white, "输出: 真实感高度图"))
+  }),
+  caption: [分层地形生成完整流程]
+)
+
 === 噪声函数基础
 
 ==== Perlin/Simplex 噪声
@@ -101,6 +211,31 @@ fn generate_noise_heightmap(cells: &[Pos2], config: &Config) -> Vec<u8> {
 === 板块构造模拟（推荐）
 
 板块构造是地球地形形成的根本机制。通过模拟板块运动，可以生成最真实的大陆、山脉和海沟分布。
+
+==== 设计原理
+
+*多尺度地形生成策略*：
+
+本算法采用"板块构造主导 + 噪声细节叠加"的分层生成策略，符合真实地质过程的多尺度特征：
+
+#figure(
+  table(
+    columns: (auto, auto, 1fr, auto),
+    stroke: 0.5pt,
+    inset: 6pt,
+    [*尺度*], [*机制*], [*现实对应*], [*实现方法*],
+    [大尺度], [板块构造], [山脉、海沟、高原], [板块模拟（主算法）],
+    [中尺度], [区域构造], [褶皱、断裂、火山], [中频噪声 + 侵蚀],
+    [小尺度], [表面过程], [侵蚀沟壑、沉积], [高频噪声],
+  ),
+  caption: [地形生成的多尺度策略]
+)
+
+*为什么这样设计*：
+
+- *符合地质学原理*：现实中，板块运动决定大格局（数千公里尺度），局部过程产生细节（数公里尺度）
+- *性能与真实性平衡*：板块模拟处理宏观结构，噪声快速生成微观细节，避免完整物理模拟的高昂成本
+- *可控性强*：板块参数控制大陆分布，噪声参数控制地表粗糙度，两者解耦便于调整
 
 ==== 算法概述
 
@@ -366,6 +501,177 @@ let archipelago = TectonicConfig {
     ..Default::default()
 };
 ```
+
+==== 噪声细节叠加
+
+在板块构造生成基础地形后，添加噪声细节以模拟中小尺度地质过程。
+
+===== 约束性噪声策略
+
+噪声强度应受板块特性和边界距离约束，以保持地质合理性：
+
+```rust
+/// 根据板块特性计算噪声强度
+fn calculate_noise_strength(
+    cell: usize,
+    plate_type: PlateType,
+    boundary_distance: f32,  // 归一化距离 [0, 1]，0=边界，1=板块中心
+    height: f32,
+) -> f32 {
+    // 1. 基础噪声强度（受板块类型影响）
+    let base_strength = match plate_type {
+        PlateType::Continental => {
+            // 大陆板块：更厚、更古老，有更多褶皱和起伏
+            0.3
+        }
+        PlateType::Oceanic => {
+            // 海洋板块：年轻、薄，相对平坦
+            0.1
+        }
+    };
+
+    // 2. 边界抑制因子
+    // 板块边界已有明显地形（山脉/海沟），减少噪声干扰
+    let boundary_suppression = 1.0 - (-boundary_distance * 5.0).exp();
+
+    // 3. 高度调制（模拟侵蚀效应）
+    let erosion_factor = if height > SEA_LEVEL {
+        // 高山区侵蚀作用强，但保留尖峰特征
+        1.0 + (height - SEA_LEVEL) / 255.0 * 0.5
+    } else {
+        // 海底相对平缓
+        0.5
+    };
+
+    base_strength * boundary_suppression * erosion_factor
+}
+
+/// 应用分层噪声细节
+fn apply_detail_noise(
+    heights: &mut [f32],
+    plates: &[TectonicPlate],
+    plate_id: &[u16],
+    cells: &[Pos2],
+    config: &NoiseConfig,
+) {
+    for (i, &h) in heights.iter().enumerate() {
+        let pid = plate_id[i];
+        if pid == 0 { continue; }
+
+        let plate = &plates[pid as usize - 1];
+
+        // 计算到板块边界的距离
+        let boundary_dist = calculate_boundary_distance(i, plate, cells);
+
+        // 计算噪声强度
+        let strength = calculate_noise_strength(
+            i,
+            plate.plate_type,
+            boundary_dist,
+            h,
+        );
+
+        // 多层噪声叠加
+        let noise = fbm_noise(
+            cells[i].x as f64,
+            cells[i].y as f64,
+            config
+        );
+
+        heights[i] += noise as f32 * strength * 255.0;
+    }
+}
+```
+
+===== 分阶段噪声应用
+
+按地质时序应用不同尺度的噪声：
+
+```rust
+/// 完整地形生成流程
+fn generate_terrain_with_details(
+    cells: &[Pos2],
+    config: &TerrainConfig,
+) -> Vec<u8> {
+    // ====== 阶段 1: 板块构造模拟 ======
+    let (mut heights, plates, plate_id) = simulate_plate_tectonics(
+        cells,
+        &config.tectonic,
+    );
+
+    // ====== 阶段 2: 中尺度噪声（大地貌） ======
+    // 模拟区域性构造活动、火山、褶皱
+    let medium_noise_config = NoiseConfig {
+        octaves: 3,
+        base_frequency: 0.01,  // 低频
+        persistence: 0.5,
+        lacunarity: 2.0,
+    };
+
+    apply_detail_noise(
+        &mut heights,
+        &plates,
+        &plate_id,
+        cells,
+        &medium_noise_config,
+    );
+
+    // ====== 阶段 3: 侵蚀模拟（可选） ======
+    if config.enable_erosion {
+        thermal_erosion(&mut heights, 30, 0.05);
+        hydraulic_erosion(&mut heights, &config.erosion);
+    }
+
+    // ====== 阶段 4: 小尺度噪声（细节） ======
+    // 模拟侵蚀沟壑、沉积等表面过程
+    let detail_noise_config = NoiseConfig {
+        octaves: 5,
+        base_frequency: 0.05,  // 高频
+        persistence: 0.4,
+        lacunarity: 2.2,
+    };
+
+    apply_detail_noise(
+        &mut heights,
+        &plates,
+        &plate_id,
+        cells,
+        &detail_noise_config,
+    );
+
+    // ====== 阶段 5: 归一化与后处理 ======
+    normalize_heights(&mut heights, 0.0, 255.0);
+
+    // 平滑处理（可选）
+    if config.smoothing > 0 {
+        smooth_heights(&mut heights, config.smoothing);
+    }
+
+    // 转换为 u8
+    heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect()
+}
+```
+
+===== 噪声参数配置
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, 1fr),
+    stroke: 0.5pt,
+    inset: 6pt,
+    [*阶段*], [*Octaves*], [*频率*], [*强度*], [*目的*],
+    [中尺度], [3], [0.01], [0.2], [大地貌（山丘、盆地）],
+    [小尺度], [5], [0.05], [0.1], [表面细节（沟壑、褶皱）],
+  ),
+  caption: [噪声参数建议]
+)
+
+*关键要点*：
+
+- *约束性*：噪声不是均匀应用，而是根据板块类型、边界距离、高度动态调整
+- *层次性*：先应用低频噪声（大地貌），再应用高频噪声（细节）
+- *可选性*：侵蚀模拟计算量大，可作为高质量模式的可选项
+- *保持主导*：噪声强度应适中（0.1-0.3），不能掩盖板块构造的主导作用
 
 === 侵蚀模拟（可选）
 
