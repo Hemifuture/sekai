@@ -1,10 +1,10 @@
 // 高度图渲染回调
 
+use eframe::egui_wgpu::wgpu;
 use eframe::{
     egui::{self, Color32, Rect},
     egui_wgpu,
 };
-use eframe::egui_wgpu::wgpu;
 
 use crate::resource::{CanvasStateResource, MapSystemResource};
 
@@ -40,9 +40,8 @@ impl egui_wgpu::CallbackTrait for HeightmapCallback {
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         // 从 CallbackResources 获取 HeightmapRendererResource
-        let heightmap_renderer_resource = resources
-            .get::<super::HeightmapRendererResource>()
-            .unwrap();
+        let heightmap_renderer_resource =
+            resources.get::<super::HeightmapRendererResource>().unwrap();
 
         heightmap_renderer_resource.with_resource(|heightmap_renderer| {
             self.canvas_state_resource.read_resource(|canvas_state| {
@@ -84,9 +83,8 @@ impl egui_wgpu::CallbackTrait for HeightmapCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        let heightmap_renderer_resource = resources
-            .get::<super::HeightmapRendererResource>()
-            .unwrap();
+        let heightmap_renderer_resource =
+            resources.get::<super::HeightmapRendererResource>().unwrap();
 
         heightmap_renderer_resource.read_resource(|heightmap_renderer| {
             heightmap_renderer.render(render_pass);

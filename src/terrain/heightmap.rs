@@ -1,16 +1,32 @@
 // 高度图生成
 
 use super::noise::{NoiseConfig, NoiseGenerator};
-use super::plate::{BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate};
+use super::plate::{
+    BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate,
+};
+use super::template::{get_template_by_name, TerrainTemplate};
+use super::template_executor::TemplateExecutor;
 use eframe::egui::Pos2;
 use rayon::prelude::*;
 
 /// 海平面高度阈值
 pub const SEA_LEVEL: u8 = 20;
 
+/// 地形生成模式
+#[derive(Debug, Clone, PartialEq)]
+pub enum TerrainGenerationMode {
+    /// 板块构造模拟（物理模拟）
+    TectonicSimulation,
+    /// 模板生成（使用预设模板）
+    Template(String),
+}
+
 /// 地形生成配置
 #[derive(Debug, Clone)]
 pub struct TerrainConfig {
+    /// 生成模式
+    pub mode: TerrainGenerationMode,
+    /// 板块构造配置（仅在 TectonicSimulation 模式下使用）
     pub tectonic: TectonicConfig,
     pub medium_noise_strength: f32,
     pub detail_noise_strength: f32,
@@ -24,6 +40,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
+            mode: TerrainGenerationMode::Template("earth-like".to_string()),
             tectonic: TectonicConfig::default(),
             medium_noise_strength: 0.2,
             detail_noise_strength: 0.1,
@@ -32,6 +49,25 @@ impl Default for TerrainConfig {
             enable_erosion: false,
             erosion_iterations: 50,
             smoothing: 0,
+        }
+    }
+}
+
+impl TerrainConfig {
+    /// 使用模板生成
+    pub fn with_template(template_name: impl Into<String>) -> Self {
+        Self {
+            mode: TerrainGenerationMode::Template(template_name.into()),
+            ..Default::default()
+        }
+    }
+
+    /// 使用板块构造模拟
+    pub fn with_tectonic_simulation(tectonic_config: TectonicConfig) -> Self {
+        Self {
+            mode: TerrainGenerationMode::TectonicSimulation,
+            tectonic: tectonic_config,
+            ..Default::default()
         }
     }
 }
@@ -53,9 +89,108 @@ impl TerrainGenerator {
         cells: &[Pos2],
         neighbors: &[Vec<u32>],
     ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
+        match &self.config.mode {
+            TerrainGenerationMode::TectonicSimulation => self.generate_tectonic(cells, neighbors),
+            TerrainGenerationMode::Template(template_name) => {
+                self.generate_from_template(cells, neighbors, template_name)
+            }
+        }
+    }
+
+    /// 使用模板生成地形
+    fn generate_from_template(
+        &self,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        template_name: &str,
+    ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
+        #[cfg(debug_assertions)]
+        println!("使用模板生成地形: {}", template_name);
+
+        // 获取模板
+        let template = get_template_by_name(template_name).unwrap_or_else(|| {
+            eprintln!(
+                "警告: 未找到模板 '{}', 使用默认的 'earth-like' 模板",
+                template_name
+            );
+            TerrainTemplate::earth_like()
+        });
+
+        // 计算地图尺寸
+        let (min_x, max_x, min_y, max_y) = cells.iter().fold(
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), pos| {
+                (
+                    min_x.min(pos.x),
+                    max_x.max(pos.x),
+                    min_y.min(pos.y),
+                    max_y.max(pos.y),
+                )
+            },
+        );
+        let width = (max_x - min_x) as u32;
+        let height = (max_y - min_y) as u32;
+
+        // 执行模板
+        let executor = TemplateExecutor::new(width, height, self.config.tectonic.seed);
+        let mut heights = executor.execute(&template, cells, neighbors);
+
+        // 可选：添加细节噪声
+        if self.config.detail_noise_strength > 0.0 {
+            let detail_noise_config = NoiseConfig {
+                octaves: 4,
+                base_frequency: 0.08,
+                persistence: 0.4,
+                lacunarity: 2.2,
+                seed: (self.config.tectonic.seed + 1) as u32,
+            };
+
+            let generator = NoiseGenerator::new(detail_noise_config.seed);
+            let strengths = vec![self.config.detail_noise_strength; cells.len()];
+            let noise_values =
+                generator.generate_constrained_noise(cells, &detail_noise_config, &strengths);
+
+            for (i, &noise) in noise_values.iter().enumerate() {
+                heights[i] += noise * 30.0; // 添加噪声细节
+            }
+        }
+
+        // 可选：侵蚀
+        if self.config.enable_erosion {
+            self.thermal_erosion(&mut heights, neighbors, self.config.erosion_iterations);
+        }
+
+        // 可选：额外平滑
+        if self.config.smoothing > 0 {
+            self.smooth_heights(&mut heights, neighbors, self.config.smoothing);
+        }
+
+        // 确保归一化
+        self.normalize_heights(&mut heights);
+
+        // 转换为 u8
+        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+
+        // 模板模式下不生成板块数据
+        let plates = Vec::new();
+        let plate_id = vec![0; cells.len()];
+
+        (heights_u8, plates, plate_id)
+    }
+
+    /// 使用板块构造模拟生成地形
+    fn generate_tectonic(
+        &self,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+    ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
         // ====== 阶段 1: 板块构造模拟 ======
-        let (mut heights, plates, plate_id) =
-            self.simulate_plate_tectonics(cells, neighbors);
+        let (mut heights, plates, plate_id) = self.simulate_plate_tectonics(cells, neighbors);
 
         // ====== 阶段 2: 中尺度噪声（大地貌） ======
         let medium_noise_config = NoiseConfig {
@@ -108,10 +243,7 @@ impl TerrainGenerator {
         }
 
         // 转换为 u8
-        let heights_u8: Vec<u8> = heights
-            .iter()
-            .map(|&h| h.clamp(0.0, 255.0) as u8)
-            .collect();
+        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
 
         (heights_u8, plates, plate_id)
     }
@@ -178,13 +310,7 @@ impl TerrainGenerator {
                     );
                 }
                 BoundaryType::Divergent { intensity } => {
-                    self.apply_divergent_effects(
-                        heights,
-                        boundary,
-                        plate_id,
-                        neighbors,
-                        intensity,
-                    );
+                    self.apply_divergent_effects(heights, boundary, plate_id, neighbors, intensity);
                 }
                 BoundaryType::Transform { .. } => {
                     // 转换边界对高度影响较小，暂不处理
@@ -240,10 +366,8 @@ impl TerrainGenerator {
                     }
                     None => {
                         // 大陆-大陆碰撞：两侧都隆起
-                        heights[current] += self.config.tectonic.collision_uplift_rate
-                            * intensity
-                            * falloff
-                            * 0.15;
+                        heights[current] +=
+                            self.config.tectonic.collision_uplift_rate * intensity * falloff * 0.15;
                     }
                 }
 
@@ -286,10 +410,8 @@ impl TerrainGenerator {
                 let falloff = 1.0 - (distance as f32 / boundary_width as f32);
 
                 // 裂谷：下沉
-                heights[current] -= self.config.tectonic.rift_depth_rate
-                    * intensity
-                    * falloff
-                    * 0.1;
+                heights[current] -=
+                    self.config.tectonic.rift_depth_rate * intensity * falloff * 0.1;
 
                 for &neighbor_idx in &neighbors[current] {
                     let neighbor_idx = neighbor_idx as usize;
@@ -347,9 +469,7 @@ impl TerrainGenerator {
 
                 // 基础强度（受板块类型影响）
                 let type_strength = match plate.plate_type {
-                    PlateType::Continental => {
-                        base_strength * self.config.continental_noise_mult
-                    }
+                    PlateType::Continental => base_strength * self.config.continental_noise_mult,
                     PlateType::Oceanic => base_strength * self.config.oceanic_noise_mult,
                 };
 
