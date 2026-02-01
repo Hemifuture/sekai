@@ -116,6 +116,24 @@ impl TemplateExecutor {
                 }
             }
 
+            TerrainCommand::BoundedHill {
+                count,
+                height,
+                x,
+                y,
+                bounds,
+            } => {
+                for _ in 0..*count {
+                    let h = rng.random_range(height.0..=height.1);
+                    let px = rng.random_range(x.0..=x.1);
+                    let py = rng.random_range(y.0..=y.1);
+
+                    self.apply_hill_bfs_bounded(
+                        heights, cells, neighbors, h, px, py, *bounds, rng,
+                    );
+                }
+            }
+
             TerrainCommand::Pit {
                 count,
                 depth,
@@ -559,6 +577,39 @@ impl TemplateExecutor {
         let start_idx = BlobGenerator::find_nearest_cell(cells, x, y);
 
         blob_gen.add_hill(heights, neighbors, start_idx, height, rng);
+    }
+
+    /// BFS 扩散式丘陵（带边界限制）
+    /// 扩散不会超出指定的边界区域
+    #[allow(clippy::too_many_arguments)]
+    fn apply_hill_bfs_bounded(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        height: f32,
+        center_x: f32,
+        center_y: f32,
+        bounds: (f32, f32, f32, f32), // (min_x, max_x, min_y, max_y)
+        rng: &mut rand::rngs::StdRng,
+    ) {
+        let blob_config = BlobConfig::from_cell_count(cells.len());
+        let blob_gen = BlobGenerator::new(blob_config);
+
+        let x = center_x * self.width as f32;
+        let y = center_y * self.height as f32;
+        let start_idx = BlobGenerator::find_nearest_cell(cells, x, y);
+
+        blob_gen.add_hill_bounded(
+            heights,
+            cells,
+            neighbors,
+            start_idx,
+            height,
+            bounds,
+            (self.width as f32, self.height as f32),
+            rng,
+        );
     }
 
     /// BFS 扩散式坑洞

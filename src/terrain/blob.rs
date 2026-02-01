@@ -100,6 +100,47 @@ impl BlobGenerator {
         height: f32,
         rng: &mut impl Rng,
     ) {
+        self.add_hill_internal(heights, neighbors, start_idx, height, None, None, rng);
+    }
+
+    /// 添加带边界限制的 BFS 扩散式丘陵
+    ///
+    /// 扩散不会超出指定的边界范围，用于生成相互独立的大陆
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_hill_bounded(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        start_idx: usize,
+        height: f32,
+        bounds: (f32, f32, f32, f32), // (min_x, max_x, min_y, max_y) 归一化坐标
+        map_size: (f32, f32),          // (width, height)
+        rng: &mut impl Rng,
+    ) {
+        self.add_hill_internal(
+            heights,
+            neighbors,
+            start_idx,
+            height,
+            Some((cells, bounds, map_size)),
+            None,
+            rng,
+        );
+    }
+
+    /// 内部实现：BFS 扩散式丘陵
+    #[allow(clippy::too_many_arguments)]
+    fn add_hill_internal(
+        &self,
+        heights: &mut [f32],
+        neighbors: &[Vec<u32>],
+        start_idx: usize,
+        height: f32,
+        bounds_info: Option<(&[Pos2], (f32, f32, f32, f32), (f32, f32))>,
+        _extra: Option<()>, // 预留扩展
+        rng: &mut impl Rng,
+    ) {
         if start_idx >= heights.len() {
             return;
         }
@@ -118,6 +159,20 @@ impl BlobGenerator {
                 let n = neighbor as usize;
                 if n >= change.len() || change[n] > 0.0 {
                     continue;
+                }
+
+                // 边界检查：如果有边界限制，检查邻居是否在边界内
+                if let Some((cells, bounds, map_size)) = bounds_info {
+                    if n < cells.len() {
+                        let cell = &cells[n];
+                        let norm_x = cell.x / map_size.0;
+                        let norm_y = cell.y / map_size.1;
+                        // 超出边界则跳过
+                        if norm_x < bounds.0 || norm_x > bounds.1 
+                           || norm_y < bounds.2 || norm_y > bounds.3 {
+                            continue;
+                        }
+                    }
                 }
 
                 // 核心算法：指数衰减 + 随机扰动

@@ -419,6 +419,28 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
                     (radius.1 * 100.0) as i32
                 )
             }
+            TerrainCommand::BoundedHill {
+                count,
+                height,
+                x,
+                y,
+                bounds,
+            } => {
+                format!(
+                    "BoundedHill {} {}-{} {}-{} {}-{} bounds({}-{},{}-{})",
+                    count,
+                    height.0,
+                    height.1,
+                    (x.0 * 100.0) as i32,
+                    (x.1 * 100.0) as i32,
+                    (y.0 * 100.0) as i32,
+                    (y.1 * 100.0) as i32,
+                    (bounds.0 * 100.0) as i32,
+                    (bounds.1 * 100.0) as i32,
+                    (bounds.2 * 100.0) as i32,
+                    (bounds.3 * 100.0) as i32
+                )
+            }
             TerrainCommand::Range {
                 count,
                 height,

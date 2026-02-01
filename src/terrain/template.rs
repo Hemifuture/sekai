@@ -25,6 +25,16 @@ pub enum TerrainCommand {
         radius: (f32, f32), // 半径范围 (0.0-1.0)
     },
 
+    /// 有边界的丘陵 - BFS 扩散被限制在指定区域内
+    /// 用于生成相互独立的大陆，不会跨越边界融合
+    BoundedHill {
+        count: u32,
+        height: (f32, f32),
+        x: (f32, f32),      // 丘陵中心的 X 范围
+        y: (f32, f32),      // 丘陵中心的 Y 范围
+        bounds: (f32, f32, f32, f32), // 扩散边界 (min_x, max_x, min_y, max_y)
+    },
+
     /// 坑洞 - 圆形凹陷（与丘陵相反）
     Pit {
         count: u32,
@@ -814,116 +824,82 @@ impl TerrainTemplate {
         ])
     }
 
-    /// 多大陆 - 多个大陆块（参考 Azgaar continents 模板）
+    /// 多大陆 - 多个大陆块（使用 BoundedHill 实现自然分离）
     pub fn continents() -> Self {
         Self::new("Continents", "多个分散的大陆").with_commands(vec![
-            // === 第一阶段：建立大陆核心（分得更开）===
-            // 左侧大陆核心
+            // === 西大陆（左侧 0.0-0.45）===
+            // 核心
             TerrainCommand::Mountain {
-                height: 90.0,
-                x: 0.20,
+                height: 85.0,
+                x: 0.22,
                 y: 0.50,
-                radius: 0.12,
+                radius: 0.10,
             },
-            // 右侧大陆核心
-            TerrainCommand::Mountain {
-                height: 90.0,
-                x: 0.80,
-                y: 0.50,
-                radius: 0.12,
-            },
-            
-            // === 第二阶段：立即切割中央海峡（关键！在扩展之前）===
-            // 主海峡 - 非常深
-            TerrainCommand::Strait {
-                width: 0.20,  // 很宽
-                direction: StraitDirection::Vertical,
-                position: 0.50,
-                depth: 80.0,  // 很深
-            },
-            // 设置中央区域为负值（确保是海洋）
-            TerrainCommand::Pit {
+            // 扩展丘陵（限制在左侧区域内）
+            TerrainCommand::BoundedHill {
                 count: 8,
-                depth: (50.0, 70.0),
-                x: (0.40, 0.60),  // 中央带
-                y: (0.10, 0.90),
-                radius: (0.06, 0.10),
+                height: (50.0, 75.0),
+                x: (0.08, 0.38),
+                y: (0.15, 0.85),
+                bounds: (0.0, 0.45, 0.0, 1.0),  // 不会扩散到 x > 0.45
             },
             
-            // === 第三阶段：大陆扩展（严格限制在各自区域）===
-            // 左侧大陆扩展
-            TerrainCommand::Hill {
-                count: 6,
-                height: (45.0, 65.0),
-                x: (0.05, 0.35),  // 严格左侧
-                y: (0.15, 0.85),
-                radius: (0.05, 0.10),
+            // === 东大陆（右侧 0.55-1.0）===
+            // 核心
+            TerrainCommand::Mountain {
+                height: 85.0,
+                x: 0.78,
+                y: 0.50,
+                radius: 0.10,
             },
-            // 右侧大陆扩展
-            TerrainCommand::Hill {
-                count: 6,
-                height: (45.0, 65.0),
-                x: (0.65, 0.95),  // 严格右侧
+            // 扩展丘陵（限制在右侧区域内）
+            TerrainCommand::BoundedHill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.62, 0.92),
                 y: (0.15, 0.85),
-                radius: (0.05, 0.10),
+                bounds: (0.55, 1.0, 0.0, 1.0),  // 不会扩散到 x < 0.55
             },
             
             // 降低整体
-            TerrainCommand::Multiply { factor: 0.6 },
+            TerrainCommand::Multiply { factor: 0.55 },
             
-            // === 第四阶段：再次切割中央（加强分隔）===
-            TerrainCommand::Strait {
-                width: 0.15,
-                direction: StraitDirection::Vertical,
-                position: 0.50,
-                depth: 60.0,
-            },
-            TerrainCommand::Trough {
-                count: 3,
-                depth: (40.0, 55.0),
-                x: (0.42, 0.58),
-                y: (0.10, 0.90),
-                length: (0.4, 0.6),
-                width: (0.05, 0.08),
-                angle: (PI * 0.4, PI * 0.6),
-            },
-            
-            // === 第五阶段：细节丘陵 ===
-            // 左侧细节
-            TerrainCommand::Hill {
+            // === 细节丘陵（同样带边界）===
+            // 西大陆细节
+            TerrainCommand::BoundedHill {
                 count: 5,
-                height: (20.0, 40.0),
-                x: (0.05, 0.38),
+                height: (25.0, 45.0),
+                x: (0.05, 0.40),
                 y: (0.10, 0.90),
-                radius: (0.03, 0.06),
+                bounds: (0.0, 0.45, 0.0, 1.0),
             },
-            // 右侧细节
-            TerrainCommand::Hill {
+            // 东大陆细节
+            TerrainCommand::BoundedHill {
                 count: 5,
-                height: (20.0, 40.0),
-                x: (0.62, 0.95),
+                height: (25.0, 45.0),
+                x: (0.60, 0.95),
                 y: (0.10, 0.90),
-                radius: (0.03, 0.06),
+                bounds: (0.55, 1.0, 0.0, 1.0),
             },
             
-            // === 第六阶段：山脉 ===
-            // 左侧山脉
+            // === 山脉 ===
+            // 西大陆山脉
             TerrainCommand::Range {
                 count: 2,
-                height: (50.0, 70.0),
-                x: (0.08, 0.28),
+                height: (55.0, 75.0),
+                x: (0.10, 0.35),
                 y: (0.25, 0.75),
-                length: (0.18, 0.30),
+                length: (0.15, 0.28),
                 width: (0.02, 0.03),
                 angle: (PI * 0.3, PI * 0.7),
             },
-            // 右侧山脉
+            // 东大陆山脉
             TerrainCommand::Range {
                 count: 2,
-                height: (50.0, 70.0),
-                x: (0.72, 0.92),
+                height: (55.0, 75.0),
+                x: (0.65, 0.90),
                 y: (0.25, 0.75),
-                length: (0.18, 0.30),
+                length: (0.15, 0.28),
                 width: (0.02, 0.03),
                 angle: (PI * 0.3, PI * 0.7),
             },
@@ -937,7 +913,7 @@ impl TerrainTemplate {
                 strength: 0.5,
             },
             TerrainCommand::Normalize,
-            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.60 },
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.58 },
         ])
     }
 
