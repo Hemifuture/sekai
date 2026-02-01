@@ -17,10 +17,7 @@ mod tests {
     #[test]
     fn test_discover_all_template_files() {
         let template_dir = Path::new("templates");
-        assert!(
-            template_dir.exists(),
-            "templates/ directory should exist"
-        );
+        assert!(template_dir.exists(), "templates/ directory should exist");
 
         let entries: Vec<_> = std::fs::read_dir(template_dir)
             .expect("Should be able to read templates directory")
@@ -38,10 +35,7 @@ mod tests {
             println!("  - {}", entry.path().display());
         }
 
-        assert!(
-            entries.len() >= 4,
-            "Should have at least 4 template files"
-        );
+        assert!(entries.len() >= 4, "Should have at least 4 template files");
     }
 
     #[test]
@@ -59,10 +53,7 @@ mod tests {
             );
         }
 
-        assert!(
-            templates.len() >= 4,
-            "Should parse at least 4 templates"
-        );
+        assert!(templates.len() >= 4, "Should parse at least 4 templates");
 
         // 验证每个模板至少有一些命令
         for template in &templates {
@@ -78,14 +69,20 @@ mod tests {
     fn test_parse_archipelago_template() {
         let path = Path::new("templates/archipelago.terrain");
         let template = load_template_from_file(path).expect("Should parse archipelago.terrain");
-        
+
         assert_eq!(template.name, "archipelago");
         assert!(!template.commands.is_empty());
-        
+
         // 验证有预期的命令类型
-        let has_hill = template.commands.iter().any(|c| matches!(c, TerrainCommand::Hill { .. }));
-        let has_normalize = template.commands.iter().any(|c| matches!(c, TerrainCommand::Normalize));
-        
+        let has_hill = template
+            .commands
+            .iter()
+            .any(|c| matches!(c, TerrainCommand::Hill { .. }));
+        let has_normalize = template
+            .commands
+            .iter()
+            .any(|c| matches!(c, TerrainCommand::Normalize));
+
         assert!(has_hill, "Archipelago should have Hill commands");
         assert!(has_normalize, "Archipelago should have Normalize command");
     }
@@ -94,7 +91,7 @@ mod tests {
     fn test_parse_continents_template() {
         let path = Path::new("templates/continents.terrain");
         let template = load_template_from_file(path).expect("Should parse continents.terrain");
-        
+
         assert_eq!(template.name, "continents");
         assert!(!template.commands.is_empty());
     }
@@ -103,7 +100,7 @@ mod tests {
     fn test_parse_earth_like_template() {
         let path = Path::new("templates/earth-like.terrain");
         let template = load_template_from_file(path).expect("Should parse earth-like.terrain");
-        
+
         assert_eq!(template.name, "earth-like");
         assert!(!template.commands.is_empty());
     }
@@ -112,7 +109,7 @@ mod tests {
     fn test_parse_volcano_template() {
         let path = Path::new("templates/volcano.terrain");
         let template = load_template_from_file(path).expect("Should parse volcano.terrain");
-        
+
         assert_eq!(template.name, "volcano");
         assert!(!template.commands.is_empty());
     }
@@ -135,31 +132,129 @@ mod tests {
 
     fn validate_command(cmd: &TerrainCommand, template_name: &str, idx: usize) {
         match cmd {
-            TerrainCommand::Hill { count, height, x, y, radius } => {
-                assert!(*count > 0, "{} cmd {}: Hill count should be > 0", template_name, idx);
-                assert!(height.0 <= height.1, "{} cmd {}: Hill height min <= max", template_name, idx);
-                assert!(x.0 >= 0.0 && x.1 <= 1.0, "{} cmd {}: Hill x in [0,1]", template_name, idx);
-                assert!(y.0 >= 0.0 && y.1 <= 1.0, "{} cmd {}: Hill y in [0,1]", template_name, idx);
-                assert!(radius.0 >= 0.0, "{} cmd {}: Hill radius >= 0", template_name, idx);
+            TerrainCommand::Hill {
+                count,
+                height,
+                x,
+                y,
+                radius,
+            } => {
+                assert!(
+                    *count > 0,
+                    "{} cmd {}: Hill count should be > 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    height.0 <= height.1,
+                    "{} cmd {}: Hill height min <= max",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    x.0 >= 0.0 && x.1 <= 1.0,
+                    "{} cmd {}: Hill x in [0,1]",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    y.0 >= 0.0 && y.1 <= 1.0,
+                    "{} cmd {}: Hill y in [0,1]",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    radius.0 >= 0.0,
+                    "{} cmd {}: Hill radius >= 0",
+                    template_name,
+                    idx
+                );
             }
-            TerrainCommand::Range { count, height, x, y, length, width, angle } => {
-                assert!(*count > 0, "{} cmd {}: Range count should be > 0", template_name, idx);
-                assert!(height.0 <= height.1, "{} cmd {}: Range height min <= max", template_name, idx);
-                assert!(length.0 >= 0.0, "{} cmd {}: Range length >= 0", template_name, idx);
-                assert!(width.0 >= 0.0, "{} cmd {}: Range width >= 0", template_name, idx);
+            TerrainCommand::Range {
+                count,
+                height,
+                x,
+                y,
+                length,
+                width,
+                angle,
+            } => {
+                assert!(
+                    *count > 0,
+                    "{} cmd {}: Range count should be > 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    height.0 <= height.1,
+                    "{} cmd {}: Range height min <= max",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    length.0 >= 0.0,
+                    "{} cmd {}: Range length >= 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    width.0 >= 0.0,
+                    "{} cmd {}: Range width >= 0",
+                    template_name,
+                    idx
+                );
             }
-            TerrainCommand::Trough { count, depth, x, y, length, width, angle } => {
-                assert!(*count > 0, "{} cmd {}: Trough count should be > 0", template_name, idx);
-                assert!(depth.0 <= depth.1, "{} cmd {}: Trough depth min <= max", template_name, idx);
+            TerrainCommand::Trough {
+                count,
+                depth,
+                x,
+                y,
+                length,
+                width,
+                angle,
+            } => {
+                assert!(
+                    *count > 0,
+                    "{} cmd {}: Trough count should be > 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    depth.0 <= depth.1,
+                    "{} cmd {}: Trough depth min <= max",
+                    template_name,
+                    idx
+                );
             }
-            TerrainCommand::Pit { count, depth, x, y, radius } => {
-                assert!(*count > 0, "{} cmd {}: Pit count should be > 0", template_name, idx);
+            TerrainCommand::Pit {
+                count,
+                depth,
+                x,
+                y,
+                radius,
+            } => {
+                assert!(
+                    *count > 0,
+                    "{} cmd {}: Pit count should be > 0",
+                    template_name,
+                    idx
+                );
             }
             TerrainCommand::Smooth { iterations } => {
-                assert!(*iterations > 0, "{} cmd {}: Smooth iterations > 0", template_name, idx);
+                assert!(
+                    *iterations > 0,
+                    "{} cmd {}: Smooth iterations > 0",
+                    template_name,
+                    idx
+                );
             }
             TerrainCommand::Multiply { factor } => {
-                assert!(*factor > 0.0, "{} cmd {}: Multiply factor > 0", template_name, idx);
+                assert!(
+                    *factor > 0.0,
+                    "{} cmd {}: Multiply factor > 0",
+                    template_name,
+                    idx
+                );
             }
             TerrainCommand::AdjustSeaRatio { ocean_ratio } => {
                 assert!(
@@ -220,7 +315,7 @@ mod tests {
     fn test_execute_all_templates_classic_mode() {
         let template_dir = Path::new("templates");
         let templates = load_templates_from_dir(template_dir);
-        
+
         let width = 256;
         let height = 256;
         let cell_count = 1000;
@@ -228,7 +323,7 @@ mod tests {
 
         for template in &templates {
             println!("Testing template execution (Classic): {}", template.name);
-            
+
             let executor = TemplateExecutor::with_mode(width, height, 42, GenerationMode::Classic);
             let heights = executor.execute(template, &cells, &neighbors);
 
@@ -244,11 +339,8 @@ mod tests {
             // 验证高度值合理
             let min_height = heights.iter().cloned().fold(f32::INFINITY, f32::min);
             let max_height = heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            
-            println!(
-                "  Heights range: {:.2} to {:.2}",
-                min_height, max_height
-            );
+
+            println!("  Heights range: {:.2} to {:.2}", min_height, max_height);
 
             assert!(
                 !heights.iter().any(|h| h.is_nan()),
@@ -262,7 +354,7 @@ mod tests {
     fn test_execute_all_templates_bfs_mode() {
         let template_dir = Path::new("templates");
         let templates = load_templates_from_dir(template_dir);
-        
+
         let width = 256;
         let height = 256;
         let cell_count = 1000;
@@ -270,7 +362,7 @@ mod tests {
 
         for template in &templates {
             println!("Testing template execution (BFS): {}", template.name);
-            
+
             let executor = TemplateExecutor::with_mode(width, height, 42, GenerationMode::BfsBlob);
             let heights = executor.execute(template, &cells, &neighbors);
 
@@ -294,11 +386,11 @@ mod tests {
     fn test_template_determinism() {
         let template_dir = Path::new("templates");
         let templates = load_templates_from_dir(template_dir);
-        
+
         if templates.is_empty() {
             panic!("No templates found");
         }
-        
+
         let template = &templates[0];
         let width = 128;
         let height = 128;
@@ -374,7 +466,7 @@ mod tests {
 
             assert_eq!(heights.len(), cell_count);
             assert!(!heights.iter().any(|h| h.is_nan()));
-            
+
             println!(
                 "Built-in '{}': heights {:.1} to {:.1}",
                 template.name,
@@ -406,13 +498,13 @@ mod tests {
         for (name, dsl) in &presets {
             let template = parse_template(name, "Test preset", dsl)
                 .expect(&format!("Should parse preset: {}", name));
-            
+
             assert!(
                 !template.commands.is_empty(),
                 "Preset '{}' should have commands",
                 name
             );
-            
+
             println!("Preset '{}': {} commands", name, template.commands.len());
         }
     }
@@ -449,7 +541,7 @@ mod tests {
     #[test]
     fn test_empty_template() {
         let template = TerrainTemplate::new("Empty", "Empty template for testing");
-        
+
         let width = 64;
         let height = 64;
         let cell_count = 100;
@@ -466,7 +558,7 @@ mod tests {
     #[test]
     fn test_single_cell_grid() {
         let template = TerrainTemplate::earth_like();
-        
+
         let cells = vec![Pos2::new(32.0, 32.0)];
         let neighbors = vec![vec![]]; // 单个单元格没有邻居
 
@@ -480,7 +572,7 @@ mod tests {
     #[test]
     fn test_large_grid() {
         let template = TerrainTemplate::archipelago();
-        
+
         let width = 512;
         let height = 512;
         let cell_count = 5000;

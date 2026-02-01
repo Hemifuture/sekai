@@ -46,7 +46,7 @@ impl Default for PlateConfig {
 pub struct Plate {
     pub id: u16,
     pub plate_type: PlateType,
-    pub direction: f32,  // radians
+    pub direction: f32, // radians
     pub speed: f32,
     pub cells: Vec<usize>,
 }
@@ -67,12 +67,12 @@ impl PlateLayer {
     pub fn new(config: PlateConfig) -> Self {
         Self { config, seed: 0 }
     }
-    
+
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
     }
-    
+
     /// Generate plates using random flood fill
     pub fn generate_plates(
         &self,
@@ -81,31 +81,32 @@ impl PlateLayer {
     ) -> (Vec<u16>, Vec<Plate>) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
         let n = cells.len();
-        
+
         // Initialize plate IDs (0 = unassigned)
         let mut plate_ids = vec![0u16; n];
-        
+
         // Choose random seed points for each plate
         let mut available: Vec<usize> = (0..n).collect();
         let mut plates = Vec::new();
-        
-        let num_continental = (self.config.num_plates as f32 * self.config.continental_ratio) as usize;
-        
+
+        let num_continental =
+            (self.config.num_plates as f32 * self.config.continental_ratio) as usize;
+
         for i in 0..self.config.num_plates {
             if available.is_empty() {
                 break;
             }
-            
+
             // Pick random seed point
             let seed_idx = rng.random_range(0..available.len());
             let seed_cell = available.swap_remove(seed_idx);
-            
+
             let plate_type = if i < num_continental {
                 PlateType::Continental
             } else {
                 PlateType::Oceanic
             };
-            
+
             let plate = Plate {
                 id: (i + 1) as u16,
                 plate_type,
@@ -113,26 +114,27 @@ impl PlateLayer {
                 speed: rng.random_range(0.5..1.5),
                 cells: vec![seed_cell],
             };
-            
+
             plate_ids[seed_cell] = plate.id;
             plates.push(plate);
         }
-        
+
         // Random flood fill to assign remaining cells
-        let mut queue: VecDeque<usize> = plates.iter()
+        let mut queue: VecDeque<usize> = plates
+            .iter()
             .flat_map(|p| p.cells.iter().copied())
             .collect();
-        
+
         while let Some(current) = queue.pop_front() {
             let current_plate = plate_ids[current];
-            
+
             // Shuffle neighbors for randomness
             let mut neighbor_list: Vec<u32> = neighbors[current].clone();
             for i in (1..neighbor_list.len()).rev() {
                 let j = rng.random_range(0..=i);
                 neighbor_list.swap(i, j);
             }
-            
+
             for &neighbor in &neighbor_list {
                 let neighbor = neighbor as usize;
                 if plate_ids[neighbor] == 0 {
@@ -142,10 +144,10 @@ impl PlateLayer {
                 }
             }
         }
-        
+
         (plate_ids, plates)
     }
-    
+
     /// Detect boundary cells between plates
     pub fn detect_boundaries(
         &self,
@@ -153,7 +155,7 @@ impl PlateLayer {
         neighbors: &[Vec<u32>],
     ) -> Vec<(usize, BoundaryType)> {
         let mut boundaries = Vec::new();
-        
+
         for (i, &plate_id) in plate_ids.iter().enumerate() {
             for &neighbor in &neighbors[i] {
                 let neighbor_plate = plate_ids[neighbor as usize];
@@ -165,7 +167,7 @@ impl PlateLayer {
                 }
             }
         }
-        
+
         boundaries
     }
 }
@@ -174,7 +176,7 @@ impl TerrainLayer for PlateLayer {
     fn name(&self) -> &'static str {
         "Plates"
     }
-    
+
     fn generate(
         &self,
         cells: &[Pos2],
@@ -182,19 +184,22 @@ impl TerrainLayer for PlateLayer {
         _previous: &LayerOutput,
     ) -> LayerOutput {
         let (plate_ids, plates) = self.generate_plates(cells, neighbors);
-        
+
         // Generate base heights based on plate type
-        let heights: Vec<f32> = plate_ids.iter().map(|&pid| {
-            if pid == 0 {
-                return 0.0;
-            }
-            let plate = &plates[(pid - 1) as usize];
-            match plate.plate_type {
-                PlateType::Continental => self.config.continental_base,
-                PlateType::Oceanic => self.config.oceanic_base,
-            }
-        }).collect();
-        
+        let heights: Vec<f32> = plate_ids
+            .iter()
+            .map(|&pid| {
+                if pid == 0 {
+                    return 0.0;
+                }
+                let plate = &plates[(pid - 1) as usize];
+                match plate.plate_type {
+                    PlateType::Continental => self.config.continental_base,
+                    PlateType::Oceanic => self.config.oceanic_base,
+                }
+            })
+            .collect();
+
         LayerOutput {
             heights,
             plate_ids: Some(plate_ids),

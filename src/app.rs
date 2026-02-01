@@ -5,8 +5,7 @@ use crate::{
     delaunay::{self, voronoi::generate_voronoi_render_data},
     gpu::{
         delaunay::delaunay_renderer::DelaunayRenderer,
-        heightmap::heightmap_renderer::HeightmapRenderer,
-        points_renderer::PointsRenderer,
+        heightmap::heightmap_renderer::HeightmapRenderer, points_renderer::PointsRenderer,
         voronoi::voronoi_renderer::VoronoiRenderer,
     },
     resource::{
@@ -21,7 +20,7 @@ use crate::{
 const TEMPLATE_NAMES: [&str; 22] = [
     // 传统模板
     "Earth-like",
-    "Archipelago", 
+    "Archipelago",
     "Continental",
     "Volcanic Island",
     "Atoll",
@@ -141,13 +140,13 @@ impl TemplateApp {
 
         app
     }
-    
+
     /// 配置字体，支持中文显示
     fn setup_fonts(ctx: &egui::Context) {
         use egui::{FontData, FontDefinitions, FontFamily};
-        
+
         let mut fonts = FontDefinitions::default();
-        
+
         // 尝试加载 Noto Sans SC 字体
         let font_paths = [
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -157,7 +156,7 @@ impl TemplateApp {
             "/usr/share/fonts/noto/NotoSansSC-Regular.otf",
             "assets/fonts/NotoSansSC-Regular.otf",
         ];
-        
+
         let mut font_loaded = false;
         for path in &font_paths {
             if let Ok(font_data) = std::fs::read(path) {
@@ -165,30 +164,32 @@ impl TemplateApp {
                     "noto_sans_sc".to_owned(),
                     std::sync::Arc::new(FontData::from_owned(font_data)),
                 );
-                
+
                 // 将中文字体添加到所有字体族的首选列表
-                fonts.families
+                fonts
+                    .families
                     .entry(FontFamily::Proportional)
                     .or_default()
                     .insert(0, "noto_sans_sc".to_owned());
-                    
-                fonts.families
+
+                fonts
+                    .families
                     .entry(FontFamily::Monospace)
                     .or_default()
                     .insert(0, "noto_sans_sc".to_owned());
-                
+
                 font_loaded = true;
                 #[cfg(debug_assertions)]
                 println!("Loaded Chinese font from: {}", path);
                 break;
             }
         }
-        
+
         if !font_loaded {
             #[cfg(debug_assertions)]
             eprintln!("Warning: Could not load Noto Sans SC font. Chinese characters may not display correctly.");
         }
-        
+
         ctx.set_fonts(fonts);
     }
 }
@@ -409,7 +410,10 @@ impl TemplateApp {
             new_seed
         };
 
-        println!("Generating terrain with template '{}', seed: {}", template_name, seed);
+        println!(
+            "Generating terrain with template '{}', seed: {}",
+            template_name, seed
+        );
 
         self.map_system.with_resource(|map_system| {
             // 根据模板名称获取模板
@@ -458,7 +462,10 @@ impl TemplateApp {
             // 更新高度数据
             map_system.cells_data.height = heights;
 
-            println!("Terrain generated successfully with template '{}'!", template_name);
+            println!(
+                "Terrain generated successfully with template '{}'!",
+                template_name
+            );
         });
     }
 

@@ -9,9 +9,8 @@
 //! - [`GridIndex`]: 基于均匀网格的点索引
 //! - [`EdgeIndex`]: 基于均匀网格的边索引（用于视口裁剪）
 
-mod grid_index;
 mod edge_index;
+mod grid_index;
 
-pub use grid_index::GridIndex;
 pub use edge_index::EdgeIndex;
-
+pub use grid_index::GridIndex;

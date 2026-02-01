@@ -1,7 +1,7 @@
 // 地形模板 DSL 解析器
 //
 // 支持 Azgaar 式的简洁文本格式定义地形模板
-// 
+//
 // 格式示例：
 // ```
 // Hill 1 90-100 44-56 40-60
@@ -12,8 +12,8 @@
 // SeaRatio 0.7
 // ```
 
+use super::template::{InvertAxis, MaskMode, StraitDirection, TerrainCommand, TerrainTemplate};
 use std::f32::consts::PI;
-use super::template::{TerrainCommand, TerrainTemplate, MaskMode, StraitDirection, InvertAxis};
 
 /// DSL 解析错误
 #[derive(Debug, Clone)]
@@ -35,18 +35,29 @@ fn parse_range(s: &str) -> Result<(f32, f32), String> {
         if parts.len() != 2 {
             return Err(format!("Invalid range format: {}", s));
         }
-        let min: f32 = parts[0].trim().parse().map_err(|_| format!("Invalid number: {}", parts[0]))?;
-        let max: f32 = parts[1].trim().parse().map_err(|_| format!("Invalid number: {}", parts[1]))?;
+        let min: f32 = parts[0]
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number: {}", parts[0]))?;
+        let max: f32 = parts[1]
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number: {}", parts[1]))?;
         Ok((min, max))
     } else {
-        let val: f32 = s.trim().parse().map_err(|_| format!("Invalid number: {}", s))?;
+        let val: f32 = s
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid number: {}", s))?;
         Ok((val, val))
     }
 }
 
 /// 解析单个数值
 fn parse_f32(s: &str) -> Result<f32, String> {
-    s.trim().parse().map_err(|_| format!("Invalid number: {}", s))
+    s.trim()
+        .parse()
+        .map_err(|_| format!("Invalid number: {}", s))
 }
 
 /// 解析整数
@@ -56,7 +67,9 @@ fn parse_u32(s: &str) -> Result<u32, String> {
         let (min, max) = parse_range(s)?;
         Ok(((min + max) / 2.0) as u32)
     } else {
-        s.trim().parse().map_err(|_| format!("Invalid integer: {}", s))
+        s.trim()
+            .parse()
+            .map_err(|_| format!("Invalid integer: {}", s))
     }
 }
 
@@ -68,25 +81,25 @@ fn percent_to_ratio(range: (f32, f32)) -> (f32, f32) {
 /// 解析单行命令
 fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, ParseError> {
     let line = line.trim();
-    
+
     // 跳过空行和注释
     if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
         return Ok(None);
     }
-    
+
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.is_empty() {
         return Ok(None);
     }
-    
+
     let cmd = parts[0].to_lowercase();
     let args = &parts[1..];
-    
+
     let make_err = |msg: &str| ParseError {
         line: line_num,
         message: format!("{}: {}", msg, line),
     };
-    
+
     match cmd.as_str() {
         // Hill count height x y [radius]
         // 示例: Hill 3 80-120 20-80 20-80
@@ -103,15 +116,23 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             } else {
                 (0.08, 0.15) // 默认半径
             };
-            
-            Ok(Some(TerrainCommand::Hill { count, height, x, y, radius }))
+
+            Ok(Some(TerrainCommand::Hill {
+                count,
+                height,
+                x,
+                y,
+                radius,
+            }))
         }
-        
+
         // Range count height x y [length] [width] [angle]
         // 示例: Range 2 40-60 20-80 20-80
         "range" => {
             if args.len() < 4 {
-                return Err(make_err("Range requires: count height x y [length] [width] [angle]"));
+                return Err(make_err(
+                    "Range requires: count height x y [length] [width] [angle]",
+                ));
             }
             let count = parse_u32(args[0]).map_err(|e| make_err(&e))?;
             let height = parse_range(args[1]).map_err(|e| make_err(&e))?;
@@ -132,14 +153,24 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             } else {
                 (0.0, 2.0 * PI)
             };
-            
-            Ok(Some(TerrainCommand::Range { count, height, x, y, length, width, angle }))
+
+            Ok(Some(TerrainCommand::Range {
+                count,
+                height,
+                x,
+                y,
+                length,
+                width,
+                angle,
+            }))
         }
-        
+
         // Trough count depth x y [length] [width] [angle]
         "trough" => {
             if args.len() < 4 {
-                return Err(make_err("Trough requires: count depth x y [length] [width] [angle]"));
+                return Err(make_err(
+                    "Trough requires: count depth x y [length] [width] [angle]",
+                ));
             }
             let count = parse_u32(args[0]).map_err(|e| make_err(&e))?;
             let depth = parse_range(args[1]).map_err(|e| make_err(&e))?;
@@ -160,10 +191,18 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             } else {
                 (0.0, 2.0 * PI)
             };
-            
-            Ok(Some(TerrainCommand::Trough { count, depth, x, y, length, width, angle }))
+
+            Ok(Some(TerrainCommand::Trough {
+                count,
+                depth,
+                x,
+                y,
+                length,
+                width,
+                angle,
+            }))
         }
-        
+
         // Pit count depth x y [radius]
         "pit" => {
             if args.len() < 4 {
@@ -178,10 +217,16 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             } else {
                 (0.08, 0.15)
             };
-            
-            Ok(Some(TerrainCommand::Pit { count, depth, x, y, radius }))
+
+            Ok(Some(TerrainCommand::Pit {
+                count,
+                depth,
+                x,
+                y,
+                radius,
+            }))
         }
-        
+
         // Add value
         "add" => {
             if args.is_empty() {
@@ -190,7 +235,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let value = parse_f32(args[0]).map_err(|e| make_err(&e))?;
             Ok(Some(TerrainCommand::Add { value }))
         }
-        
+
         // Multiply factor
         "multiply" | "mult" => {
             if args.is_empty() {
@@ -199,7 +244,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let factor = parse_f32(args[0]).map_err(|e| make_err(&e))?;
             Ok(Some(TerrainCommand::Multiply { factor }))
         }
-        
+
         // Smooth iterations
         "smooth" => {
             if args.is_empty() {
@@ -208,7 +253,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let iterations = parse_u32(args[0]).map_err(|e| make_err(&e))?;
             Ok(Some(TerrainCommand::Smooth { iterations }))
         }
-        
+
         // Mask mode [strength]
         // mode: 1=EdgeFade, 2=CenterBoost, 3=RadialGradient (或直接用名字)
         "mask" => {
@@ -227,12 +272,14 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             };
             Ok(Some(TerrainCommand::Mask { mode, strength }))
         }
-        
+
         // Strait width direction position depth
         // direction: v/vertical, h/horizontal
         "strait" => {
             if args.len() < 2 {
-                return Err(make_err("Strait requires: width direction [position] [depth]"));
+                return Err(make_err(
+                    "Strait requires: width direction [position] [depth]",
+                ));
             }
             let width = parse_f32(args[0]).map_err(|e| make_err(&e))? / 100.0;
             let direction = match args[1].to_lowercase().as_str() {
@@ -249,9 +296,14 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             } else {
                 30.0
             };
-            Ok(Some(TerrainCommand::Strait { width, direction, position, depth }))
+            Ok(Some(TerrainCommand::Strait {
+                width,
+                direction,
+                position,
+                depth,
+            }))
         }
-        
+
         // Invert probability axis
         // axis: x, y, both
         "invert" => {
@@ -271,12 +323,10 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             };
             Ok(Some(TerrainCommand::Invert { axis, probability }))
         }
-        
+
         // Normalize
-        "normalize" | "norm" => {
-            Ok(Some(TerrainCommand::Normalize))
-        }
-        
+        "normalize" | "norm" => Ok(Some(TerrainCommand::Normalize)),
+
         // SeaRatio ratio (0.0-1.0 或 0-100)
         "searatio" | "sea" | "ocean" => {
             if args.is_empty() {
@@ -288,7 +338,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             }
             Ok(Some(TerrainCommand::AdjustSeaRatio { ocean_ratio: ratio }))
         }
-        
+
         // SetSeaLevel level
         "sealevel" => {
             if args.is_empty() {
@@ -297,7 +347,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let level = parse_f32(args[0]).map_err(|e| make_err(&e))?;
             Ok(Some(TerrainCommand::SetSeaLevel { level }))
         }
-        
+
         // Mountain height x y radius (单个大山)
         "mountain" | "mt" => {
             if args.len() < 4 {
@@ -307,23 +357,32 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let x = parse_f32(args[1]).map_err(|e| make_err(&e))? / 100.0;
             let y = parse_f32(args[2]).map_err(|e| make_err(&e))? / 100.0;
             let radius = parse_f32(args[3]).map_err(|e| make_err(&e))? / 100.0;
-            Ok(Some(TerrainCommand::Mountain { height, x, y, radius }))
+            Ok(Some(TerrainCommand::Mountain {
+                height,
+                x,
+                y,
+                radius,
+            }))
         }
-        
+
         _ => Err(make_err(&format!("Unknown command: {}", cmd))),
     }
 }
 
 /// 从文本解析模板
-pub fn parse_template(name: &str, description: &str, text: &str) -> Result<TerrainTemplate, ParseError> {
+pub fn parse_template(
+    name: &str,
+    description: &str,
+    text: &str,
+) -> Result<TerrainTemplate, ParseError> {
     let mut commands = Vec::new();
-    
+
     for (i, line) in text.lines().enumerate() {
         if let Some(cmd) = parse_line(line, i + 1)? {
             commands.push(cmd);
         }
     }
-    
+
     Ok(TerrainTemplate {
         name: name.to_string(),
         description: description.to_string(),
@@ -337,46 +396,110 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
     lines.push(format!("# {}", template.name));
     lines.push(format!("# {}", template.description));
     lines.push(String::new());
-    
+
     for cmd in &template.commands {
         let line = match cmd {
-            TerrainCommand::Hill { count, height, x, y, radius } => {
-                format!("Hill {} {}-{} {}-{} {}-{} {}-{}", 
+            TerrainCommand::Hill {
+                count,
+                height,
+                x,
+                y,
+                radius,
+            } => {
+                format!(
+                    "Hill {} {}-{} {}-{} {}-{} {}-{}",
                     count,
-                    height.0, height.1,
-                    (x.0 * 100.0) as i32, (x.1 * 100.0) as i32,
-                    (y.0 * 100.0) as i32, (y.1 * 100.0) as i32,
-                    (radius.0 * 100.0) as i32, (radius.1 * 100.0) as i32)
+                    height.0,
+                    height.1,
+                    (x.0 * 100.0) as i32,
+                    (x.1 * 100.0) as i32,
+                    (y.0 * 100.0) as i32,
+                    (y.1 * 100.0) as i32,
+                    (radius.0 * 100.0) as i32,
+                    (radius.1 * 100.0) as i32
+                )
             }
-            TerrainCommand::Range { count, height, x, y, length, width, angle: _ } => {
-                format!("Range {} {}-{} {}-{} {}-{} {}-{} {}-{}", 
+            TerrainCommand::Range {
+                count,
+                height,
+                x,
+                y,
+                length,
+                width,
+                angle: _,
+            } => {
+                format!(
+                    "Range {} {}-{} {}-{} {}-{} {}-{} {}-{}",
                     count,
-                    height.0, height.1,
-                    (x.0 * 100.0) as i32, (x.1 * 100.0) as i32,
-                    (y.0 * 100.0) as i32, (y.1 * 100.0) as i32,
-                    (length.0 * 100.0) as i32, (length.1 * 100.0) as i32,
-                    (width.0 * 100.0) as i32, (width.1 * 100.0) as i32)
+                    height.0,
+                    height.1,
+                    (x.0 * 100.0) as i32,
+                    (x.1 * 100.0) as i32,
+                    (y.0 * 100.0) as i32,
+                    (y.1 * 100.0) as i32,
+                    (length.0 * 100.0) as i32,
+                    (length.1 * 100.0) as i32,
+                    (width.0 * 100.0) as i32,
+                    (width.1 * 100.0) as i32
+                )
             }
-            TerrainCommand::Trough { count, depth, x, y, length, width, angle: _ } => {
-                format!("Trough {} {}-{} {}-{} {}-{} {}-{} {}-{}", 
+            TerrainCommand::Trough {
+                count,
+                depth,
+                x,
+                y,
+                length,
+                width,
+                angle: _,
+            } => {
+                format!(
+                    "Trough {} {}-{} {}-{} {}-{} {}-{} {}-{}",
                     count,
-                    depth.0, depth.1,
-                    (x.0 * 100.0) as i32, (x.1 * 100.0) as i32,
-                    (y.0 * 100.0) as i32, (y.1 * 100.0) as i32,
-                    (length.0 * 100.0) as i32, (length.1 * 100.0) as i32,
-                    (width.0 * 100.0) as i32, (width.1 * 100.0) as i32)
+                    depth.0,
+                    depth.1,
+                    (x.0 * 100.0) as i32,
+                    (x.1 * 100.0) as i32,
+                    (y.0 * 100.0) as i32,
+                    (y.1 * 100.0) as i32,
+                    (length.0 * 100.0) as i32,
+                    (length.1 * 100.0) as i32,
+                    (width.0 * 100.0) as i32,
+                    (width.1 * 100.0) as i32
+                )
             }
-            TerrainCommand::Pit { count, depth, x, y, radius } => {
-                format!("Pit {} {}-{} {}-{} {}-{} {}-{}", 
+            TerrainCommand::Pit {
+                count,
+                depth,
+                x,
+                y,
+                radius,
+            } => {
+                format!(
+                    "Pit {} {}-{} {}-{} {}-{} {}-{}",
                     count,
-                    depth.0, depth.1,
-                    (x.0 * 100.0) as i32, (x.1 * 100.0) as i32,
-                    (y.0 * 100.0) as i32, (y.1 * 100.0) as i32,
-                    (radius.0 * 100.0) as i32, (radius.1 * 100.0) as i32)
+                    depth.0,
+                    depth.1,
+                    (x.0 * 100.0) as i32,
+                    (x.1 * 100.0) as i32,
+                    (y.0 * 100.0) as i32,
+                    (y.1 * 100.0) as i32,
+                    (radius.0 * 100.0) as i32,
+                    (radius.1 * 100.0) as i32
+                )
             }
-            TerrainCommand::Mountain { height, x, y, radius } => {
-                format!("Mountain {} {} {} {}", 
-                    height, (x * 100.0) as i32, (y * 100.0) as i32, (radius * 100.0) as i32)
+            TerrainCommand::Mountain {
+                height,
+                x,
+                y,
+                radius,
+            } => {
+                format!(
+                    "Mountain {} {} {} {}",
+                    height,
+                    (x * 100.0) as i32,
+                    (y * 100.0) as i32,
+                    (radius * 100.0) as i32
+                )
             }
             TerrainCommand::Add { value } => format!("Add {}", value),
             TerrainCommand::Multiply { factor } => format!("Multiply {}", factor),
@@ -389,12 +512,23 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
                 };
                 format!("Mask {} {}", mode_str, strength)
             }
-            TerrainCommand::Strait { width, direction, position, depth } => {
+            TerrainCommand::Strait {
+                width,
+                direction,
+                position,
+                depth,
+            } => {
                 let dir = match direction {
                     StraitDirection::Vertical => "vertical",
                     StraitDirection::Horizontal => "horizontal",
                 };
-                format!("Strait {} {} {} {}", (width * 100.0) as i32, dir, (position * 100.0) as i32, depth)
+                format!(
+                    "Strait {} {} {} {}",
+                    (width * 100.0) as i32,
+                    dir,
+                    (position * 100.0) as i32,
+                    depth
+                )
             }
             TerrainCommand::Invert { axis, probability } => {
                 let axis_str = match axis {
@@ -410,7 +544,7 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
         };
         lines.push(line);
     }
-    
+
     lines.join("\n")
 }
 
@@ -548,15 +682,15 @@ SeaRatio 0.25
 
 /// 从文件加载模板
 pub fn load_template_from_file(path: &std::path::Path) -> Result<TerrainTemplate, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
-    
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
+
     // 从文件名提取模板名
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Unknown");
-    
+
     // 从第一行注释提取描述
     let description = content
         .lines()
@@ -564,15 +698,14 @@ pub fn load_template_from_file(path: &std::path::Path) -> Result<TerrainTemplate
         .or_else(|| content.lines().find(|line| line.starts_with('#')))
         .map(|line| line.trim_start_matches('#').trim())
         .unwrap_or("Custom template");
-    
-    parse_template(name, description, &content)
-        .map_err(|e| format!("Parse error: {}", e))
+
+    parse_template(name, description, &content).map_err(|e| format!("Parse error: {}", e))
 }
 
 /// 从目录加载所有模板
 pub fn load_templates_from_dir(dir: &std::path::Path) -> Vec<TerrainTemplate> {
     let mut templates = Vec::new();
-    
+
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -584,25 +717,31 @@ pub fn load_templates_from_dir(dir: &std::path::Path) -> Vec<TerrainTemplate> {
             }
         }
     }
-    
+
     templates
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_range() {
         assert_eq!(parse_range("40-60").unwrap(), (40.0, 60.0));
         assert_eq!(parse_range("50").unwrap(), (50.0, 50.0));
     }
-    
+
     #[test]
     fn test_parse_hill() {
         let cmd = parse_line("Hill 3 80-120 20-80 20-80", 1).unwrap().unwrap();
         match cmd {
-            TerrainCommand::Hill { count, height, x, y, .. } => {
+            TerrainCommand::Hill {
+                count,
+                height,
+                x,
+                y,
+                ..
+            } => {
                 assert_eq!(count, 3);
                 assert_eq!(height, (80.0, 120.0));
                 assert_eq!(x, (0.2, 0.8));
@@ -611,18 +750,19 @@ mod tests {
             _ => panic!("Expected Hill command"),
         }
     }
-    
+
     #[test]
     fn test_parse_template() {
         let template = parse_template(
             "Test",
             "A test template",
-            "Hill 2 50-80 20-80 20-80\nSmooth 2\nNormalize\nSeaRatio 0.7"
-        ).unwrap();
-        
+            "Hill 2 50-80 20-80 20-80\nSmooth 2\nNormalize\nSeaRatio 0.7",
+        )
+        .unwrap();
+
         assert_eq!(template.commands.len(), 4);
     }
-    
+
     #[test]
     fn test_preset_volcano() {
         let template = parse_template("Volcano", "Volcanic island", presets::VOLCANO).unwrap();

@@ -29,6 +29,7 @@ pub struct MapRenderer {
     pub bind_group: wgpu::BindGroup,
 }
 
+#[allow(dead_code)]
 impl MapRenderer {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let points: Vec<Pos2> = vec![Pos2::new(0.0, 0.0); MAX_POINTS];

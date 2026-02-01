@@ -3,8 +3,7 @@ use egui::Widget;
 
 use crate::gpu::{
     delaunay::delaunay_callback::DelaunayCallback,
-    heightmap::heightmap_callback::HeightmapCallback,
-    points_callback::PointsCallback,
+    heightmap::heightmap_callback::HeightmapCallback, points_callback::PointsCallback,
     voronoi::voronoi_callback::VoronoiCallback,
 };
 

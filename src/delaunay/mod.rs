@@ -76,6 +76,7 @@
 //! - `triangle`: 三角形数据结构
 //! - `utils`: 验证和辅助工具
 
+#[allow(clippy::module_inception)]
 mod delaunay;
 pub mod half_edge;
 mod triangle;

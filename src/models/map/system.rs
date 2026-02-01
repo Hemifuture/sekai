@@ -44,13 +44,13 @@ impl Default for MapConfig {
         Self {
             width: 2000,
             height: 1000,
-            spacing: 5,  // 减小间距以获得更高分辨率 (约 80,000 点)
+            spacing: 5, // 减小间距以获得更高分辨率 (约 80,000 点)
         }
     }
 }
 
 /// 地图系统
-/// 
+///
 /// 包含地图的所有几何数据和属性数据。
 #[derive(Debug, Clone)]
 pub struct MapSystem {
@@ -90,30 +90,22 @@ impl Default for MapSystem {
         let delaunay = delaunay::triangulate(&points);
         let voronoi = voronoi::compute_indexed_voronoi(&delaunay, &points);
         let cells_data = CellsData::new(points.len());
-        
+
         // 计算边界框
         let bounds = Rect::from_min_max(
             Pos2::ZERO,
             Pos2::new(config.width as f32, config.height as f32),
         );
-        
+
         // 构建空间索引
         let point_index = GridIndex::build_auto(&points, bounds);
-        let voronoi_edge_index = EdgeIndex::build_auto(
-            &voronoi.vertices,
-            &voronoi.indices,
-            bounds,
-        );
-        
+        let voronoi_edge_index = EdgeIndex::build_auto(&voronoi.vertices, &voronoi.indices, bounds);
+
         // 构建 Delaunay 边索引
         // Delaunay 的顶点是原始点，需要从三角形索引提取边
         let delaunay_edges = Self::extract_delaunay_edges(&delaunay);
-        let delaunay_edge_index = EdgeIndex::build_auto(
-            &points,
-            &delaunay_edges,
-            bounds,
-        );
-        
+        let delaunay_edge_index = EdgeIndex::build_auto(&points, &delaunay_edges, bounds);
+
         Self {
             config,
             grid,
@@ -134,13 +126,13 @@ impl MapSystem {
     /// 每个三角形有 3 条边，但相邻三角形共享边，所以需要去重。
     fn extract_delaunay_edges(triangle_indices: &[u32]) -> Vec<u32> {
         use std::collections::HashSet;
-        
+
         let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
-        
+
         for chunk in triangle_indices.chunks(3) {
             if chunk.len() == 3 {
                 let (a, b, c) = (chunk[0], chunk[1], chunk[2]);
-                
+
                 // 确保边的索引有序（小的在前）以便去重
                 for (p1, p2) in [(a, b), (b, c), (c, a)] {
                     let edge = if p1 < p2 { (p1, p2) } else { (p2, p1) };
@@ -148,17 +140,17 @@ impl MapSystem {
                 }
             }
         }
-        
+
         // 转换为扁平数组
         let mut edges = Vec::with_capacity(edge_set.len() * 2);
         for (p1, p2) in edge_set {
             edges.push(p1);
             edges.push(p2);
         }
-        
+
         edges
     }
-    
+
     /// 查找包含指定位置的 Voronoi 单元格
     ///
     /// # 参数
@@ -170,7 +162,7 @@ impl MapSystem {
         let points = self.grid.get_all_points();
         self.point_index.find_nearest(&points, pos)
     }
-    
+
     /// 查询指定位置附近的单元格
     ///
     /// # 参数
@@ -183,7 +175,7 @@ impl MapSystem {
         let points = self.grid.get_all_points();
         self.point_index.query_radius(&points, pos, radius)
     }
-    
+
     /// 获取视口内可见的 Voronoi 边索引
     ///
     /// # 参数
@@ -198,7 +190,7 @@ impl MapSystem {
             view_rect,
         )
     }
-    
+
     /// 获取视口内可见的 Delaunay 边索引
     ///
     /// # 参数
@@ -209,13 +201,10 @@ impl MapSystem {
     pub fn get_visible_delaunay_edges(&self, view_rect: Rect) -> Vec<u32> {
         let points = self.grid.get_all_points();
         let delaunay_edges = Self::extract_delaunay_edges(&self.delaunay);
-        self.delaunay_edge_index.get_visible_indices(
-            &points,
-            &delaunay_edges,
-            view_rect,
-        )
+        self.delaunay_edge_index
+            .get_visible_indices(&points, &delaunay_edges, view_rect)
     }
-    
+
     /// 获取地图边界框
     pub fn bounds(&self) -> Rect {
         Rect::from_min_max(

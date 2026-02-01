@@ -66,12 +66,12 @@ impl TectonicLayer {
     pub fn new(config: TectonicConfig) -> Self {
         Self { config, seed: 0 }
     }
-    
+
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
     }
-    
+
     /// Compute distance from each cell to nearest boundary
     fn compute_distance_field(
         &self,
@@ -81,46 +81,42 @@ impl TectonicLayer {
     ) -> Vec<f32> {
         let mut distances = vec![f32::MAX; n];
         let mut queue = VecDeque::new();
-        
+
         // Initialize boundary cells with distance 0
         for &cell in boundary_cells {
             distances[cell] = 0.0;
             queue.push_back(cell);
         }
-        
+
         // BFS to compute distances
         while let Some(current) = queue.pop_front() {
             let current_dist = distances[current];
-            
+
             for &neighbor in &neighbors[current] {
                 let neighbor = neighbor as usize;
                 let new_dist = current_dist + 1.0;
-                
+
                 if new_dist < distances[neighbor] {
                     distances[neighbor] = new_dist;
                     queue.push_back(neighbor);
                 }
             }
         }
-        
+
         distances
     }
-    
+
     /// Classify collision type based on plate types
-    fn classify_collision(
-        &self,
-        plate_a: &Plate,
-        plate_b: &Plate,
-    ) -> CollisionType {
+    fn classify_collision(&self, plate_a: &Plate, plate_b: &Plate) -> CollisionType {
         use PlateType::*;
-        
+
         match (plate_a.plate_type, plate_b.plate_type) {
             (Continental, Continental) => CollisionType::ContinentalCollision,
             (Continental, Oceanic) | (Oceanic, Continental) => CollisionType::OceanicSubduction,
             (Oceanic, Oceanic) => CollisionType::OceanicCollision,
         }
     }
-    
+
     /// Calculate terrain contribution based on distance and collision type
     fn terrain_contribution(
         &self,
@@ -129,13 +125,13 @@ impl TectonicLayer {
         rng: &mut impl Rng,
     ) -> f32 {
         let width = self.config.mountain_width;
-        
+
         // Gaussian-like falloff
         let falloff = (-distance * distance / (2.0 * width * width)).exp();
-        
+
         // Add some noise for natural variation
         let noise = rng.random_range(-0.1..0.1);
-        
+
         match collision_type {
             CollisionType::ContinentalCollision => {
                 // Tall mountains
@@ -169,7 +165,7 @@ impl TerrainLayer for TectonicLayer {
     fn name(&self) -> &'static str {
         "Tectonic"
     }
-    
+
     fn generate(
         &self,
         cells: &[Pos2],
@@ -178,21 +174,20 @@ impl TerrainLayer for TectonicLayer {
     ) -> LayerOutput {
         let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
         let n = cells.len();
-        
+
         // Generate plates first
-        let plate_layer = PlateLayer::new(self.config.plate_config.clone())
-            .with_seed(self.seed);
+        let plate_layer = PlateLayer::new(self.config.plate_config.clone()).with_seed(self.seed);
         let (plate_ids, plates) = plate_layer.generate_plates(cells, neighbors);
-        
+
         // Find boundary cells and their collision types
         let mut boundary_cells = Vec::new();
         let mut boundary_collisions: HashMap<usize, CollisionType> = HashMap::new();
-        
+
         for (i, &plate_id) in plate_ids.iter().enumerate() {
             if plate_id == 0 {
                 continue;
             }
-            
+
             for &neighbor in &neighbors[i] {
                 let neighbor_plate = plate_ids[neighbor as usize];
                 if neighbor_plate != 0 && neighbor_plate != plate_id {
@@ -200,43 +195,43 @@ impl TerrainLayer for TectonicLayer {
                     let plate_a = &plates[(plate_id - 1) as usize];
                     let plate_b = &plates[(neighbor_plate - 1) as usize];
                     let collision_type = self.classify_collision(plate_a, plate_b);
-                    
+
                     boundary_cells.push(i);
                     boundary_collisions.insert(i, collision_type);
                     break;
                 }
             }
         }
-        
+
         // Compute distance field from boundaries
         let distances = self.compute_distance_field(&boundary_cells, neighbors, n);
-        
+
         // Generate heights
         let mut heights = vec![0.0f32; n];
-        
+
         for i in 0..n {
             let plate_id = plate_ids[i];
             if plate_id == 0 {
                 continue;
             }
-            
+
             let plate = &plates[(plate_id - 1) as usize];
-            
+
             // Base height from plate type
             let base = match plate.plate_type {
                 PlateType::Continental => self.config.plate_config.continental_base,
                 PlateType::Oceanic => self.config.plate_config.oceanic_base,
             };
-            
+
             // Tectonic contribution based on distance to nearest boundary
             let distance = distances[i];
-            
+
             // Find nearest boundary's collision type
             let collision_type = if distance < self.config.mountain_width * 2.0 {
                 // Find the collision type of the nearest boundary
                 let mut nearest_boundary = None;
                 let mut nearest_dist = f32::MAX;
-                
+
                 for &bc in &boundary_cells {
                     let d = distances[bc];
                     if d < nearest_dist {
@@ -244,7 +239,7 @@ impl TerrainLayer for TectonicLayer {
                         nearest_boundary = Some(bc);
                     }
                 }
-                
+
                 nearest_boundary
                     .and_then(|bc| boundary_collisions.get(&bc))
                     .copied()
@@ -252,12 +247,12 @@ impl TerrainLayer for TectonicLayer {
             } else {
                 CollisionType::ContinentalCollision
             };
-            
+
             let tectonic = self.terrain_contribution(distance, collision_type, &mut rng);
-            
+
             heights[i] = base + tectonic;
         }
-        
+
         LayerOutput {
             heights,
             plate_ids: Some(plate_ids),

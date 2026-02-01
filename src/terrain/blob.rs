@@ -3,9 +3,9 @@
 // 参考 Azgaar Fantasy Map Generator 的算法
 // 使用 BFS 从中心向外传播高度值，创造自然不规则的地形
 
-use std::collections::VecDeque;
 use eframe::egui::Pos2;
 use rand::Rng;
+use std::collections::VecDeque;
 
 /// Blob 生成器配置
 #[derive(Debug, Clone)]
@@ -118,7 +118,8 @@ impl BlobGenerator {
                 }
 
                 // 核心算法：指数衰减 + 随机扰动
-                let jitter = 1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
+                let jitter =
+                    1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
                 change[n] = change[current].powf(self.config.blob_power) * jitter;
 
                 // 只有足够高的值才继续传播
@@ -250,14 +251,11 @@ impl BlobGenerator {
             let mut current = cur;
             for _ in 0..iteration {
                 // 找到高度最低的邻居
-                if let Some(&min_neighbor) = neighbors[current]
-                    .iter()
-                    .min_by(|&&a, &&b| {
-                        heights[a as usize]
-                            .partial_cmp(&heights[b as usize])
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                {
+                if let Some(&min_neighbor) = neighbors[current].iter().min_by(|&&a, &&b| {
+                    heights[a as usize]
+                        .partial_cmp(&heights[b as usize])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) {
                     let min_idx = min_neighbor as usize;
                     // 平滑过渡
                     heights[min_idx] = (heights[current] * 2.0 + heights[min_idx]) / 3.0;

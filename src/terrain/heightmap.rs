@@ -1,16 +1,18 @@
 // 高度图生成
 
+use super::layered_generator::LayeredGenerator;
+use super::layers::{
+    DetailLayer, PlateConfig, PostprocessConfig, PostprocessLayer, RegionalLayer,
+    TectonicConfig as LayeredTectonicConfig, TectonicLayer,
+};
 use super::noise::{NoiseConfig, NoiseGenerator};
 use super::plate::{
     BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate,
 };
-use super::template::{get_template_by_name, should_use_layered_generation, get_suggested_plate_count, TerrainTemplate};
-use super::template_executor::TemplateExecutor;
-use super::layers::{
-    PlateConfig, TectonicLayer, TectonicConfig as LayeredTectonicConfig,
-    RegionalLayer, DetailLayer, PostprocessLayer, PostprocessConfig,
+use super::template::{
+    get_suggested_plate_count, get_template_by_name, should_use_layered_generation, TerrainTemplate,
 };
-use super::layered_generator::LayeredGenerator;
+use super::template_executor::TemplateExecutor;
 use eframe::egui::Pos2;
 use rayon::prelude::*;
 
@@ -61,19 +63,19 @@ impl Default for TerrainConfig {
         Self {
             mode: TerrainGenerationMode::Template("earth-like".to_string()),
             tectonic: TectonicConfig::default(),
-            medium_noise_strength: 0.0,  // 暂时关闭噪声测试
-            detail_noise_strength: 0.0,  // 暂时关闭噪声测试
+            medium_noise_strength: 0.0, // 暂时关闭噪声测试
+            detail_noise_strength: 0.0, // 暂时关闭噪声测试
             continental_noise_mult: 1.5,
             oceanic_noise_mult: 0.5,
             enable_erosion: false,
             erosion_iterations: 50,
             smoothing: 0,
             // 新增：特征清理和海岸线优化
-            enable_feature_cleanup: true,  // 默认启用
-            min_island_size: 15,   // 大幅增加最小岛屿大小
-            min_lake_size: 10,    // 大幅增加最小湖泊大小
+            enable_feature_cleanup: true, // 默认启用
+            min_island_size: 15,          // 大幅增加最小岛屿大小
+            min_lake_size: 10,            // 大幅增加最小湖泊大小
             coastline_smoothing: 1,
-            use_constrained_noise: true,  // 默认启用约束噪声
+            use_constrained_noise: true, // 默认启用约束噪声
         }
     }
 }
@@ -103,7 +105,7 @@ impl TerrainConfig {
             ..Default::default()
         }
     }
-    
+
     /// 使用新的分层生成系统
     pub fn with_layered(seed: u64, num_plates: usize) -> Self {
         Self {
@@ -143,7 +145,7 @@ impl TerrainGenerator {
             }
         }
     }
-    
+
     /// 使用新的分层系统生成地形
     fn generate_layered(
         &self,
@@ -154,7 +156,7 @@ impl TerrainGenerator {
     ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
         #[cfg(debug_assertions)]
         println!("使用分层系统生成地形: seed={}, plates={}", seed, num_plates);
-        
+
         // 配置板块层
         let plate_config = PlateConfig {
             num_plates,
@@ -162,7 +164,7 @@ impl TerrainGenerator {
             continental_base: 30.0,
             oceanic_base: -40.0,
         };
-        
+
         // 配置构造层
         let tectonic_config = LayeredTectonicConfig {
             plate_config: plate_config.clone(),
@@ -172,14 +174,14 @@ impl TerrainGenerator {
             ridge_height: 20.0,
             rift_depth: 25.0,
         };
-        
+
         // 配置后处理层
         let postprocess_config = PostprocessConfig {
             min_island_size: self.config.min_island_size,
             min_lake_size: self.config.min_lake_size,
             smoothing_iterations: self.config.coastline_smoothing,
         };
-        
+
         // 构建分层生成器
         let generator = LayeredGenerator::new()
             .with_seed(seed)
@@ -187,31 +189,39 @@ impl TerrainGenerator {
             .add_layer(RegionalLayer::new().with_seed((seed + 100) as u32))
             .add_layer(DetailLayer::new().with_seed((seed + 200) as u32))
             .add_layer(PostprocessLayer::new(postprocess_config));
-        
+
         // 生成地形
         let output = generator.generate(cells, neighbors);
-        
+
         // 转换高度值到 u8 范围
         // 先找到范围
         let min_h = output.heights.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_h = output.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let max_h = output
+            .heights
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
         let range = max_h - min_h;
-        
+
         let heights_u8: Vec<u8> = if range > 0.001 {
-            output.heights.iter().map(|&h| {
-                let normalized = (h - min_h) / range;
-                (normalized * 255.0).clamp(0.0, 255.0) as u8
-            }).collect()
+            output
+                .heights
+                .iter()
+                .map(|&h| {
+                    let normalized = (h - min_h) / range;
+                    (normalized * 255.0).clamp(0.0, 255.0) as u8
+                })
+                .collect()
         } else {
             vec![128u8; cells.len()]
         };
-        
+
         // 提取板块信息
         let plate_ids = output.plate_ids.unwrap_or_else(|| vec![0; cells.len()]);
-        
+
         // 暂时不返回详细的板块对象
         let plates = Vec::new();
-        
+
         (heights_u8, plates, plate_ids)
     }
 
@@ -226,10 +236,13 @@ impl TerrainGenerator {
         if should_use_layered_generation(template_name) {
             let num_plates = get_suggested_plate_count(template_name);
             #[cfg(debug_assertions)]
-            println!("模板 '{}' 使用分层系统 (plates={})", template_name, num_plates);
+            println!(
+                "模板 '{}' 使用分层系统 (plates={})",
+                template_name, num_plates
+            );
             return self.generate_layered(cells, neighbors, self.config.tectonic.seed, num_plates);
         }
-        
+
         #[cfg(debug_assertions)]
         println!("使用传统模板生成地形: {}", template_name);
 
@@ -271,7 +284,7 @@ impl TerrainGenerator {
             // 中等尺度噪声 - 增加地形变化但不产生碎片
             let medium_noise_config = NoiseConfig {
                 octaves: 4,
-                base_frequency: 0.002,  // 低频率，大尺度变化
+                base_frequency: 0.002, // 低频率，大尺度变化
                 persistence: 0.5,
                 lacunarity: 2.0,
                 seed: (self.config.tectonic.seed + 1) as u32,
@@ -846,10 +859,7 @@ impl TerrainGenerator {
             })
             .collect();
 
-        let detector = FeatureDetector::new(
-            self.config.min_island_size,
-            self.config.min_lake_size,
-        );
+        let detector = FeatureDetector::new(self.config.min_island_size, self.config.min_lake_size);
 
         // 1. 检测所有连通区域（特征）
         let (features, _feature_ids) = detector.detect_features(heights, neighbors, &border_cells);
@@ -865,11 +875,8 @@ impl TerrainGenerator {
 
         // 3. 平滑海岸线
         if self.config.coastline_smoothing > 0 {
-            let smoothed = detector.smooth_coastline(
-                heights,
-                neighbors,
-                self.config.coastline_smoothing,
-            );
+            let smoothed =
+                detector.smooth_coastline(heights, neighbors, self.config.coastline_smoothing);
             #[cfg(debug_assertions)]
             if smoothed > 0 {
                 println!("平滑了 {} 个海岸线单元格", smoothed);

@@ -152,10 +152,7 @@ impl IndexedVoronoiDiagram {
 /// # 性能
 /// - 使用 rayon 并行计算外心
 /// - 10000 点约需 100-200ms
-pub fn compute_indexed_voronoi(
-    triangle_indices: &[u32],
-    points: &[Pos2],
-) -> IndexedVoronoiDiagram {
+pub fn compute_indexed_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> IndexedVoronoiDiagram {
     #[cfg(debug_assertions)]
     let start_time = std::time::Instant::now();
 
@@ -271,7 +268,10 @@ fn build_edge_triangle_map(triangles: &[[u32; 3]]) -> HashMap<(u32, u32), Vec<u3
             } else {
                 (indices[j], indices[i])
             };
-            edge_to_triangles.entry(edge).or_default().push(t_idx as u32);
+            edge_to_triangles
+                .entry(edge)
+                .or_default()
+                .push(t_idx as u32);
         }
     }
 
@@ -317,9 +317,15 @@ fn generate_voronoi_geometry(
         });
 
         // 记录每个原始点关联的 Voronoi 顶点
-        site_to_vertices.entry(*p1_idx).or_default().insert(start_idx);
+        site_to_vertices
+            .entry(*p1_idx)
+            .or_default()
+            .insert(start_idx);
         site_to_vertices.entry(*p1_idx).or_default().insert(end_idx);
-        site_to_vertices.entry(*p2_idx).or_default().insert(start_idx);
+        site_to_vertices
+            .entry(*p2_idx)
+            .or_default()
+            .insert(start_idx);
         site_to_vertices.entry(*p2_idx).or_default().insert(end_idx);
     }
 
@@ -375,11 +381,7 @@ fn build_cells(
 /// 对 Voronoi 单元格的顶点进行排序，使其形成闭合多边形
 ///
 /// 顶点按照相对于质心的角度逆时针排序
-fn sort_cell_vertices(
-    cell: &mut VoronoiCell,
-    vertices: &[Pos2],
-    _site_pos: Pos2,
-) {
+fn sort_cell_vertices(cell: &mut VoronoiCell, vertices: &[Pos2], _site_pos: Pos2) {
     if cell.vertex_indices.len() < 3 {
         return;
     }
@@ -408,7 +410,9 @@ fn sort_cell_vertices(
         let angle_a = (va.y - center.y).atan2(va.x - center.x);
         let angle_b = (vb.y - center.y).atan2(vb.x - center.x);
 
-        angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
+        angle_a
+            .partial_cmp(&angle_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 }
 

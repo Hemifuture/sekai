@@ -3,9 +3,7 @@
 // 执行地形模板命令，修改高度图数据
 
 use super::blob::{BlobConfig, BlobGenerator};
-use super::template::{
-    InvertAxis, MaskMode, StraitDirection, TerrainCommand, TerrainTemplate,
-};
+use super::template::{InvertAxis, MaskMode, StraitDirection, TerrainCommand, TerrainTemplate};
 use eframe::egui::Pos2;
 use rand::{Rng, SeedableRng};
 
@@ -20,7 +18,7 @@ pub enum GenerationMode {
 
 impl Default for GenerationMode {
     fn default() -> Self {
-        Self::BfsBlob  // 默认使用 BFS 模式
+        Self::BfsBlob // 默认使用 BFS 模式
     }
 }
 
@@ -38,7 +36,7 @@ impl TemplateExecutor {
             width,
             height,
             seed,
-            mode: GenerationMode::BfsBlob,  // 默认使用 BFS 模式
+            mode: GenerationMode::BfsBlob, // 默认使用 BFS 模式
         }
     }
 
@@ -68,10 +66,7 @@ impl TemplateExecutor {
         let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
 
         #[cfg(debug_assertions)]
-        println!(
-            "执行地形模板: {} - {}",
-            template.name, template.description
-        );
+        println!("执行地形模板: {} - {}", template.name, template.description);
 
         for (idx, command) in template.commands.iter().enumerate() {
             #[cfg(debug_assertions)]
@@ -114,7 +109,7 @@ impl TemplateExecutor {
                     let px = rng.random_range(x.0..=x.1);
                     let py = rng.random_range(y.0..=y.1);
                     let r = rng.random_range(radius.0..=radius.1);
-                    
+
                     match self.mode {
                         GenerationMode::Classic => {
                             self.apply_hill(heights, cells, h, px, py, r);
@@ -138,7 +133,7 @@ impl TemplateExecutor {
                     let px = rng.random_range(x.0..=x.1);
                     let py = rng.random_range(y.0..=y.1);
                     let r = rng.random_range(radius.0..=radius.1);
-                    
+
                     match self.mode {
                         GenerationMode::Classic => {
                             self.apply_pit(heights, cells, d, px, py, r);
@@ -166,7 +161,7 @@ impl TemplateExecutor {
                     let len = rng.random_range(length.0..=length.1);
                     let w = rng.random_range(width.0..=width.1);
                     let a = rng.random_range(angle.0..=angle.1);
-                    
+
                     match self.mode {
                         GenerationMode::Classic => {
                             self.apply_range(heights, cells, h, px, py, len, w, a);
@@ -194,13 +189,15 @@ impl TemplateExecutor {
                     let len = rng.random_range(length.0..=length.1);
                     let w = rng.random_range(width.0..=width.1);
                     let a = rng.random_range(angle.0..=angle.1);
-                    
+
                     match self.mode {
                         GenerationMode::Classic => {
                             self.apply_trough(heights, cells, d, px, py, len, w, a);
                         }
                         GenerationMode::BfsBlob => {
-                            self.apply_trough_bfs(heights, cells, neighbors, d, px, py, len, a, rng);
+                            self.apply_trough_bfs(
+                                heights, cells, neighbors, d, px, py, len, a, rng,
+                            );
                         }
                     }
                 }
@@ -315,10 +312,7 @@ impl TemplateExecutor {
         center_y: f32,
         radius: f32,
     ) {
-        let center = Pos2::new(
-            center_x * self.width as f32,
-            center_y * self.height as f32,
-        );
+        let center = Pos2::new(center_x * self.width as f32, center_y * self.height as f32);
         let radius_pixels = radius * self.width.max(self.height) as f32;
 
         for (i, pos) in cells.iter().enumerate() {
@@ -369,10 +363,7 @@ impl TemplateExecutor {
         width: f32,
         angle: f32,
     ) {
-        let center = Pos2::new(
-            center_x * self.width as f32,
-            center_y * self.height as f32,
-        );
+        let center = Pos2::new(center_x * self.width as f32, center_y * self.height as f32);
         let length_pixels = length * self.width.max(self.height) as f32;
         let width_pixels = width * self.width.max(self.height) as f32;
 
@@ -428,12 +419,8 @@ impl TemplateExecutor {
 
         for (i, pos) in cells.iter().enumerate() {
             let dist = match direction {
-                StraitDirection::Vertical => {
-                    (pos.x - position * self.width as f32).abs()
-                }
-                StraitDirection::Horizontal => {
-                    (pos.y - position * self.height as f32).abs()
-                }
+                StraitDirection::Vertical => (pos.x - position * self.width as f32).abs(),
+                StraitDirection::Horizontal => (pos.y - position * self.height as f32).abs(),
             };
 
             if dist < width_pixels {
@@ -446,8 +433,7 @@ impl TemplateExecutor {
     /// 应用遮罩效果
     fn apply_mask(&self, heights: &mut [f32], cells: &[Pos2], mode: MaskMode, strength: f32) {
         let center = Pos2::new(self.width as f32 / 2.0, self.height as f32 / 2.0);
-        let max_dist = (self.width as f32 / 2.0)
-            .hypot(self.height as f32 / 2.0);
+        let max_dist = (self.width as f32 / 2.0).hypot(self.height as f32 / 2.0);
 
         for (i, pos) in cells.iter().enumerate() {
             let dist = pos.distance(center);

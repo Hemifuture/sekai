@@ -1,8 +1,7 @@
 use crate::{
     gpu::{
         delaunay::delaunay_renderer::DelaunayRenderer,
-        heightmap::heightmap_renderer::HeightmapRenderer,
-        points_renderer::PointsRenderer,
+        heightmap::heightmap_renderer::HeightmapRenderer, points_renderer::PointsRenderer,
         voronoi::voronoi_renderer::VoronoiRenderer,
     },
     models::map::system::MapSystem,

@@ -37,26 +37,26 @@ impl RegionalLayer {
             generator: NoiseGenerator::new(100),
         }
     }
-    
+
     pub fn with_seed(mut self, seed: u32) -> Self {
         self.config.seed = seed;
         self.generator = NoiseGenerator::new(seed);
         self
     }
-    
+
     /// Sample the regional contribution at a point
     fn sample_at(&self, x: f64, y: f64, is_land: bool, coast_distance: f64) -> f64 {
         let noise = self.generator.fbm(x, y, &self.config);
-        
+
         // Reduce amplitude near coasts
         let coast_factor = smootherstep(0.0, 50.0, coast_distance.abs());
-        
+
         let amplitude = if is_land {
             self.land_amplitude
         } else {
             self.ocean_amplitude
         };
-        
+
         noise * amplitude * coast_factor
     }
 }
@@ -65,12 +65,12 @@ impl LegacyTerrainLayer for RegionalLayer {
     fn name(&self) -> &'static str {
         "Regional"
     }
-    
+
     fn apply(&self, ctx: &mut TerrainContext) {
         let contribution = self.sample_at(ctx.x, ctx.y, ctx.is_land, ctx.coast_distance);
         ctx.elevation += contribution;
     }
-    
+
     fn sample(&self, ctx: &TerrainContext) -> f64 {
         self.sample_at(ctx.x, ctx.y, ctx.is_land, ctx.coast_distance)
     }
@@ -80,7 +80,7 @@ impl TerrainLayer for RegionalLayer {
     fn name(&self) -> &'static str {
         "Regional"
     }
-    
+
     fn generate(
         &self,
         cells: &[Pos2],
@@ -88,20 +88,22 @@ impl TerrainLayer for RegionalLayer {
         previous: &LayerOutput,
     ) -> LayerOutput {
         let mut output = previous.clone();
-        
+
         for (i, cell) in cells.iter().enumerate() {
             let is_land = previous.heights[i] > 0.0;
-            let noise = self.generator.fbm(cell.x as f64, cell.y as f64, &self.config);
-            
+            let noise = self
+                .generator
+                .fbm(cell.x as f64, cell.y as f64, &self.config);
+
             let amplitude = if is_land {
                 self.land_amplitude
             } else {
                 self.ocean_amplitude
             };
-            
+
             output.heights[i] += (noise * amplitude) as f32;
         }
-        
+
         output
     }
 }

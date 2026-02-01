@@ -5,7 +5,7 @@
 use crate::terrain::layers::{LayerOutput, Pos2, TerrainLayer};
 
 /// 分层地形生成器
-/// 
+///
 /// 按顺序执行多个 TerrainLayer，每层可基于前一层的输出进行处理
 pub struct LayeredGenerator {
     /// 生成层列表，按执行顺序排列
@@ -17,12 +17,12 @@ pub struct LayeredGenerator {
 impl LayeredGenerator {
     /// 创建空的分层生成器
     pub fn new() -> Self {
-        Self { 
+        Self {
             layers: Vec::new(),
             seed: 0,
         }
     }
-    
+
     /// 设置随机种子
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
@@ -42,22 +42,20 @@ impl LayeredGenerator {
     }
 
     /// 执行所有层生成地形
-    /// 
+    ///
     /// # 参数
     /// - `cells`: 所有单元格的位置坐标 (使用 eframe::egui::Pos2)
     /// - `neighbors`: 每个单元格的邻居索引
-    /// 
+    ///
     /// # 返回
     /// 最终的层输出结果
     pub fn generate(&self, cells: &[eframe::egui::Pos2], neighbors: &[Vec<u32>]) -> LayerOutput {
         // Convert eframe Pos2 to our Pos2
-        let our_cells: Vec<Pos2> = cells.iter()
-            .map(|p| Pos2::new(p.x, p.y))
-            .collect();
-        
+        let our_cells: Vec<Pos2> = cells.iter().map(|p| Pos2::new(p.x, p.y)).collect();
+
         self.generate_internal(&our_cells, neighbors)
     }
-    
+
     /// Internal generation with our Pos2 type
     fn generate_internal(&self, cells: &[Pos2], neighbors: &[Vec<u32>]) -> LayerOutput {
         let mut output = LayerOutput::with_size(cells.len());

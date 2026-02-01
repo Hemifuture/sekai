@@ -44,17 +44,17 @@ impl LayerOutput {
 }
 
 /// 地形生成层 trait（基于单元格批量处理）
-/// 
+///
 /// 每个层负责地形生成的一个方面（如板块、侵蚀、河流等）
 /// 层按顺序执行，每层可以读取前一层的输出并生成新的输出
 pub trait TerrainLayer: Send + Sync {
     /// 生成该层的地形数据
-    /// 
+    ///
     /// # 参数
     /// - `cells`: 所有单元格的位置
     /// - `neighbors`: 每个单元格的邻居索引列表
     /// - `previous`: 前一层的输出结果
-    /// 
+    ///
     /// # 返回
     /// 该层生成的输出结果
     fn generate(
@@ -96,7 +96,7 @@ impl TerrainContext {
             is_land: false,
         }
     }
-    
+
     /// Update land status based on current elevation
     pub fn update_land_status(&mut self, sea_level: f64) {
         self.is_land = self.elevation > sea_level;
@@ -108,10 +108,10 @@ impl TerrainContext {
 pub trait LegacyTerrainLayer: Send + Sync {
     /// Layer name for debugging/logging
     fn name(&self) -> &'static str;
-    
+
     /// Apply this layer's modification to the terrain context
     fn apply(&self, ctx: &mut TerrainContext);
-    
+
     /// Get the raw contribution of this layer without applying
     fn sample(&self, ctx: &TerrainContext) -> f64;
 }

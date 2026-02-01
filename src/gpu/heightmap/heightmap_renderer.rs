@@ -303,8 +303,8 @@ impl HeightmapRenderer {
 /// 颜色停止点结构
 #[allow(dead_code)]
 struct ColorStop {
-    position: f32,  // 0.0-1.0
-    color: (f32, f32, f32),  // RGB
+    position: f32,          // 0.0-1.0
+    color: (f32, f32, f32), // RGB
 }
 
 /// 在两个颜色之间平滑插值
@@ -322,41 +322,41 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
 pub fn height_to_color(height: u8) -> Color32 {
     // 海平面
     const SEA_LEVEL: u8 = 20;
-    
+
     let ratio = height as f32 / 255.0;
     let sea_ratio = SEA_LEVEL as f32 / 255.0;
-    
+
     if height < SEA_LEVEL {
         // ========== 海洋渐变 ==========
         // 从深海到浅海：深蓝 → 中蓝 → 浅蓝/青色
         let ocean_stops: [(f32, (f32, f32, f32)); 4] = [
-            (0.0,       (8.0, 24.0, 58.0)),      // 深海：非常深的蓝
-            (0.3,       (16.0, 48.0, 120.0)),    // 中深海
-            (0.7,       (32.0, 80.0, 170.0)),    // 浅海
-            (1.0,       (60.0, 120.0, 190.0)),   // 近岸浅水
+            (0.0, (8.0, 24.0, 58.0)),    // 深海：非常深的蓝
+            (0.3, (16.0, 48.0, 120.0)),  // 中深海
+            (0.7, (32.0, 80.0, 170.0)),  // 浅海
+            (1.0, (60.0, 120.0, 190.0)), // 近岸浅水
         ];
-        
-        let ocean_ratio = ratio / sea_ratio;  // 0.0（最深）到 1.0（海平面）
-        
+
+        let ocean_ratio = ratio / sea_ratio; // 0.0（最深）到 1.0（海平面）
+
         interpolate_gradient(&ocean_stops, ocean_ratio)
     } else {
         // ========== 陆地渐变 ==========
         // 多色调平滑过渡：沙滩 → 深绿 → 浅绿 → 黄绿 → 黄 → 橙 → 棕 → 灰岩 → 雪白
         let land_stops: [(f32, (f32, f32, f32)); 10] = [
-            (0.0,       (210.0, 180.0, 140.0)),  // 沙滩/海岸
-            (0.05,      (34.0, 120.0, 50.0)),    // 深绿（低地森林）
-            (0.15,      (50.0, 150.0, 50.0)),    // 中绿
-            (0.25,      (100.0, 170.0, 60.0)),   // 浅绿
-            (0.35,      (160.0, 180.0, 70.0)),   // 黄绿（草地/灌木）
-            (0.45,      (200.0, 170.0, 80.0)),   // 黄/卡其（干草/丘陵）
-            (0.55,      (180.0, 130.0, 70.0)),   // 橙棕（低山）
-            (0.70,      (130.0, 100.0, 70.0)),   // 深棕（山地）
-            (0.85,      (150.0, 145.0, 140.0)),  // 灰色（岩石）
-            (1.0,       (255.0, 255.0, 255.0)),  // 白色（雪峰）
+            (0.0, (210.0, 180.0, 140.0)),  // 沙滩/海岸
+            (0.05, (34.0, 120.0, 50.0)),   // 深绿（低地森林）
+            (0.15, (50.0, 150.0, 50.0)),   // 中绿
+            (0.25, (100.0, 170.0, 60.0)),  // 浅绿
+            (0.35, (160.0, 180.0, 70.0)),  // 黄绿（草地/灌木）
+            (0.45, (200.0, 170.0, 80.0)),  // 黄/卡其（干草/丘陵）
+            (0.55, (180.0, 130.0, 70.0)),  // 橙棕（低山）
+            (0.70, (130.0, 100.0, 70.0)),  // 深棕（山地）
+            (0.85, (150.0, 145.0, 140.0)), // 灰色（岩石）
+            (1.0, (255.0, 255.0, 255.0)),  // 白色（雪峰）
         ];
-        
-        let land_ratio = (ratio - sea_ratio) / (1.0 - sea_ratio);  // 归一化到 0.0-1.0
-        
+
+        let land_ratio = (ratio - sea_ratio) / (1.0 - sea_ratio); // 归一化到 0.0-1.0
+
         interpolate_gradient(&land_stops, land_ratio)
     }
 }
@@ -364,19 +364,19 @@ pub fn height_to_color(height: u8) -> Color32 {
 /// 根据渐变停止点数组进行插值
 fn interpolate_gradient(stops: &[(f32, (f32, f32, f32))], ratio: f32) -> Color32 {
     let ratio = ratio.clamp(0.0, 1.0);
-    
+
     // 找到 ratio 所在的区间
     for i in 0..stops.len() - 1 {
         let (pos1, color1) = stops[i];
         let (pos2, color2) = stops[i + 1];
-        
+
         if ratio >= pos1 && ratio <= pos2 {
             let t = (ratio - pos1) / (pos2 - pos1);
             let (r, g, b) = lerp_color(color1, color2, t);
             return Color32::from_rgb(r as u8, g as u8, b as u8);
         }
     }
-    
+
     // 默认返回最后一个颜色
     let (_, (r, g, b)) = stops[stops.len() - 1];
     Color32::from_rgb(r as u8, g as u8, b as u8)
