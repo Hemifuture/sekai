@@ -164,6 +164,47 @@ impl TerrainTemplate {
         self
     }
 
+    /// 从图元列表创建模板
+    pub fn from_primitives(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        primitives: Vec<super::primitive::TerrainPrimitive>,
+    ) -> Self {
+        let mut commands = Vec::new();
+        for primitive in primitives {
+            commands.extend(primitive.to_commands());
+        }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            commands,
+        }
+    }
+    
+    /// 添加图元
+    pub fn with_primitive(mut self, primitive: super::primitive::TerrainPrimitive) -> Self {
+        self.commands.extend(primitive.to_commands());
+        self
+    }
+    
+    /// 添加多个图元
+    pub fn with_primitives(mut self, primitives: Vec<super::primitive::TerrainPrimitive>) -> Self {
+        for primitive in primitives {
+            self.commands.extend(primitive.to_commands());
+        }
+        self
+    }
+    
+    /// 从 DSL 文本创建模板
+    pub fn from_dsl(name: &str, description: &str, dsl: &str) -> Result<Self, super::dsl::ParseError> {
+        super::dsl::parse_template(name, description, dsl)
+    }
+    
+    /// 导出为 DSL 文本
+    pub fn to_dsl(&self) -> String {
+        super::dsl::template_to_dsl(self)
+    }
+
     // ============================================================================
     // 预设模板
     // ============================================================================
@@ -175,42 +216,98 @@ impl TerrainTemplate {
             "平衡的大陆和海洋配置，约 30% 陆地",
         )
         .with_commands(vec![
-            // 添加 3-4 个大陆核心
+            // ====== 第一层：大陆核心 ======
+            // 2-3 个大陆核心作为基础
             TerrainCommand::Hill {
-                count: 4,
-                height: (80.0, 120.0),
+                count: 3,
+                height: (100.0, 140.0),
+                x: (0.15, 0.85),
+                y: (0.15, 0.85),
+                radius: (0.18, 0.28),
+            },
+            
+            // ====== 第二层：山脉链条（关键！）======
+            // 主要山脉 - 长而窄，模拟板块碰撞形成的造山带
+            TerrainCommand::Range {
+                count: 6,
+                height: (100.0, 160.0),  // 更高
                 x: (0.1, 0.9),
                 y: (0.1, 0.9),
-                radius: (0.15, 0.25),
-            },
-            // 添加一些次级陆块
-            TerrainCommand::Hill {
-                count: 8,
-                height: (50.0, 80.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                radius: (0.08, 0.15),
-            },
-            // 添加海沟
-            TerrainCommand::Trough {
-                count: 3,
-                depth: (20.0, 40.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                length: (0.3, 0.6),
-                width: (0.02, 0.05),
+                length: (0.35, 0.7),     // 更长
+                width: (0.025, 0.05),    // 稍窄
                 angle: (0.0, 2.0 * PI),
             },
-            // 添加一些深海盆地
-            TerrainCommand::Pit {
-                count: 5,
-                depth: (15.0, 30.0),
+            // 次级山脉 - 较短
+            TerrainCommand::Range {
+                count: 10,
+                height: (70.0, 110.0),
                 x: (0.0, 1.0),
                 y: (0.0, 1.0),
-                radius: (0.1, 0.2),
+                length: (0.18, 0.4),
+                width: (0.02, 0.04),
+                angle: (0.0, 2.0 * PI),
             },
-            // 平滑处理
-            TerrainCommand::Smooth { iterations: 2 },
+            // 小型山脊/丘陵带
+            TerrainCommand::Range {
+                count: 15,
+                height: (40.0, 70.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                length: (0.1, 0.25),
+                width: (0.015, 0.03),
+                angle: (0.0, 2.0 * PI),
+            },
+            
+            // ====== 第三层：次级陆块和岛屿 ======
+            TerrainCommand::Hill {
+                count: 12,
+                height: (50.0, 85.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                radius: (0.06, 0.14),
+            },
+            // 小岛屿
+            TerrainCommand::Hill {
+                count: 15,
+                height: (35.0, 60.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                radius: (0.02, 0.06),
+            },
+            
+            // ====== 第四层：海洋地形 ======
+            // 海沟 - 模拟俯冲带
+            TerrainCommand::Trough {
+                count: 4,
+                depth: (25.0, 50.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                length: (0.25, 0.5),
+                width: (0.015, 0.03),
+                angle: (0.0, 2.0 * PI),
+            },
+            // 深海盆地
+            TerrainCommand::Pit {
+                count: 6,
+                depth: (18.0, 35.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                radius: (0.08, 0.18),
+            },
+            // 海底山脊（洋中脊）
+            TerrainCommand::Range {
+                count: 3,
+                height: (25.0, 45.0),
+                x: (0.0, 1.0),
+                y: (0.0, 1.0),
+                length: (0.4, 0.7),
+                width: (0.02, 0.04),
+                angle: (0.0, 2.0 * PI),
+            },
+            
+            // ====== 后处理 ======
+            // 不做平滑，保留山脉的锐利边缘
+            // TerrainCommand::Smooth { iterations: 1 },
             // 归一化
             TerrainCommand::Normalize,
             // 调整海陆比例：70% 海洋，30% 陆地
@@ -540,11 +637,227 @@ impl TerrainTemplate {
             TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.95 },
         ])
     }
+    
+    // ============================================================================
+    // 基于图元的新模板 (Primitive-based templates)
+    // ============================================================================
+    
+    /// 板块碰撞地形 - 使用图元组合
+    pub fn tectonic_collision() -> Self {
+        use super::primitive::*;
+        
+        Self::new(
+            "Tectonic Collision",
+            "板块碰撞形成的山脉和海沟",
+        )
+        .with_primitives(vec![
+            // 两个大陆核心
+            TerrainPrimitive::ContinentCore {
+                size: Size::Large,
+                elevation: Elevation::Medium,
+                position: PositionConstraint { x: (0.1, 0.4), y: (0.2, 0.8) },
+            },
+            TerrainPrimitive::ContinentCore {
+                size: Size::Large,
+                elevation: Elevation::Medium,
+                position: PositionConstraint { x: (0.6, 0.9), y: (0.2, 0.8) },
+            },
+            // 碰撞形成的山脉（喜马拉雅式）
+            TerrainPrimitive::MountainChain {
+                size: Size::Large,
+                elevation: Elevation::Extreme,
+                count: 2,
+                position: PositionConstraint { x: (0.4, 0.6), y: (0.2, 0.8) },
+            },
+            // 次级山脉
+            TerrainPrimitive::MountainChain {
+                size: Size::Medium,
+                elevation: Elevation::High,
+                count: 4,
+                position: PositionConstraint::default(),
+            },
+            // 高原
+            TerrainPrimitive::Plateau {
+                size: Size::Medium,
+                elevation: Elevation::Medium,
+                position: PositionConstraint::center(),
+            },
+            // 深海沟
+            TerrainPrimitive::OceanTrench {
+                size: Size::Large,
+                depth: Elevation::High,
+                position: PositionConstraint { x: (0.0, 0.2), y: (0.0, 1.0) },
+            },
+        ])
+        .with_command(TerrainCommand::Normalize)
+        .with_command(TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.55 })
+    }
+    
+    /// 火山群岛 - 使用图元组合
+    pub fn volcanic_archipelago() -> Self {
+        use super::primitive::*;
+        
+        Self::new(
+            "Volcanic Archipelago",
+            "火山活动形成的岛链",
+        )
+        .with_primitives(vec![
+            // 主火山岛
+            TerrainPrimitive::Volcano {
+                size: Size::Large,
+                elevation: Elevation::Extreme,
+                has_crater: true,
+                position: PositionConstraint::center(),
+            },
+            // 次级火山
+            TerrainPrimitive::Volcano {
+                size: Size::Medium,
+                elevation: Elevation::High,
+                has_crater: true,
+                position: PositionConstraint::default(),
+            },
+            TerrainPrimitive::Volcano {
+                size: Size::Small,
+                elevation: Elevation::Medium,
+                has_crater: false,
+                position: PositionConstraint::default(),
+            },
+            // 周围小岛
+            TerrainPrimitive::Archipelago {
+                island_count: 12,
+                island_size: Size::Tiny,
+                spread: Size::Large,
+                position: PositionConstraint::default(),
+            },
+            // 深海沟（俯冲带）
+            TerrainPrimitive::OceanTrench {
+                size: Size::Large,
+                depth: Elevation::High,
+                position: PositionConstraint::edge(),
+            },
+            // 深海平原
+            TerrainPrimitive::AbyssalPlain {
+                size: Size::Large,
+                count: 6,
+                position: PositionConstraint::default(),
+            },
+        ])
+        .with_command(TerrainCommand::Normalize)
+        .with_command(TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.85 })
+    }
+    
+    /// 峡湾海岸 - 使用图元组合
+    pub fn fjord_coast() -> Self {
+        use super::primitive::*;
+        
+        Self::new(
+            "Fjord Coast",
+            "冰川侵蚀形成的峡湾海岸",
+        )
+        .with_primitives(vec![
+            // 沿海山脉
+            TerrainPrimitive::MountainChain {
+                size: Size::Large,
+                elevation: Elevation::High,
+                count: 3,
+                position: PositionConstraint { x: (0.0, 0.5), y: (0.0, 1.0) },
+            },
+            // 多条峡湾
+            TerrainPrimitive::Fjord {
+                size: Size::Medium,
+                depth: Elevation::Medium,
+                position: PositionConstraint { x: (0.2, 0.6), y: (0.1, 0.3) },
+            },
+            TerrainPrimitive::Fjord {
+                size: Size::Medium,
+                depth: Elevation::Medium,
+                position: PositionConstraint { x: (0.2, 0.6), y: (0.4, 0.6) },
+            },
+            TerrainPrimitive::Fjord {
+                size: Size::Small,
+                depth: Elevation::Low,
+                position: PositionConstraint { x: (0.2, 0.6), y: (0.7, 0.9) },
+            },
+            // 高原内陆
+            TerrainPrimitive::Plateau {
+                size: Size::Large,
+                elevation: Elevation::Medium,
+                position: PositionConstraint { x: (0.0, 0.4), y: (0.2, 0.8) },
+            },
+            // 近海岛屿
+            TerrainPrimitive::Archipelago {
+                island_count: 8,
+                island_size: Size::Small,
+                spread: Size::Medium,
+                position: PositionConstraint { x: (0.5, 0.8), y: (0.0, 1.0) },
+            },
+        ])
+        .with_command(TerrainCommand::Normalize)
+        .with_command(TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.60 })
+    }
+    
+    /// 大裂谷 - 使用图元组合
+    pub fn rift_valley() -> Self {
+        use super::primitive::*;
+        
+        Self::new(
+            "Rift Valley",
+            "大陆裂谷和火山活动",
+        )
+        .with_primitives(vec![
+            // 大陆高原
+            TerrainPrimitive::ContinentCore {
+                size: Size::Huge,
+                elevation: Elevation::Medium,
+                position: PositionConstraint::center(),
+            },
+            // 中央裂谷
+            TerrainPrimitive::Rift {
+                size: Size::Large,
+                depth: Elevation::Medium,
+                position: PositionConstraint::center(),
+            },
+            // 裂谷两侧的山脉
+            TerrainPrimitive::MountainChain {
+                size: Size::Medium,
+                elevation: Elevation::High,
+                count: 2,
+                position: PositionConstraint { x: (0.3, 0.45), y: (0.1, 0.9) },
+            },
+            TerrainPrimitive::MountainChain {
+                size: Size::Medium,
+                elevation: Elevation::High,
+                count: 2,
+                position: PositionConstraint { x: (0.55, 0.7), y: (0.1, 0.9) },
+            },
+            // 火山
+            TerrainPrimitive::Volcano {
+                size: Size::Medium,
+                elevation: Elevation::High,
+                has_crater: true,
+                position: PositionConstraint::center(),
+            },
+            // 裂谷湖泊
+            TerrainPrimitive::Basin {
+                size: Size::Medium,
+                depth: Elevation::Low,
+                position: PositionConstraint { x: (0.45, 0.55), y: (0.3, 0.5) },
+            },
+            TerrainPrimitive::Basin {
+                size: Size::Small,
+                depth: Elevation::Low,
+                position: PositionConstraint { x: (0.45, 0.55), y: (0.6, 0.8) },
+            },
+        ])
+        .with_command(TerrainCommand::Normalize)
+        .with_command(TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.25 })
+    }
 }
 
 /// 获取所有预设模板
 pub fn get_preset_templates() -> Vec<TerrainTemplate> {
     vec![
+        // 传统模板
         TerrainTemplate::earth_like(),
         TerrainTemplate::archipelago(),
         TerrainTemplate::continental(),
@@ -553,12 +866,18 @@ pub fn get_preset_templates() -> Vec<TerrainTemplate> {
         TerrainTemplate::peninsula(),
         TerrainTemplate::highland(),
         TerrainTemplate::oceanic(),
+        // 基于图元的新模板
+        TerrainTemplate::tectonic_collision(),
+        TerrainTemplate::volcanic_archipelago(),
+        TerrainTemplate::fjord_coast(),
+        TerrainTemplate::rift_valley(),
     ]
 }
 
 /// 根据名称获取预设模板
 pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
     match name.to_lowercase().as_str() {
+        // 传统模板
         "earth-like" | "earth_like" => Some(TerrainTemplate::earth_like()),
         "archipelago" => Some(TerrainTemplate::archipelago()),
         "continental" => Some(TerrainTemplate::continental()),
@@ -567,6 +886,11 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
         "peninsula" => Some(TerrainTemplate::peninsula()),
         "highland" => Some(TerrainTemplate::highland()),
         "oceanic" => Some(TerrainTemplate::oceanic()),
+        // 基于图元的新模板
+        "tectonic_collision" | "tectonic-collision" => Some(TerrainTemplate::tectonic_collision()),
+        "volcanic_archipelago" | "volcanic-archipelago" => Some(TerrainTemplate::volcanic_archipelago()),
+        "fjord_coast" | "fjord-coast" => Some(TerrainTemplate::fjord_coast()),
+        "rift_valley" | "rift-valley" => Some(TerrainTemplate::rift_valley()),
         _ => None,
     }
 }

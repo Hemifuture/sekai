@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// 可用的地形模板名称
-const TEMPLATE_NAMES: [&str; 8] = [
+const TEMPLATE_NAMES: [&str; 12] = [
     "Earth-like",
     "Archipelago", 
     "Continental",
@@ -27,6 +27,11 @@ const TEMPLATE_NAMES: [&str; 8] = [
     "Peninsula",
     "Highland",
     "Oceanic",
+    // 基于图元的新模板
+    "Tectonic Collision",
+    "Volcanic Archipelago",
+    "Fjord Coast",
+    "Rift Valley",
 ];
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -355,6 +360,11 @@ impl TemplateApp {
                 "Peninsula" => crate::terrain::TerrainTemplate::peninsula(),
                 "Highland" => crate::terrain::TerrainTemplate::highland(),
                 "Oceanic" => crate::terrain::TerrainTemplate::oceanic(),
+                // 基于图元的新模板
+                "Tectonic Collision" => crate::terrain::TerrainTemplate::tectonic_collision(),
+                "Volcanic Archipelago" => crate::terrain::TerrainTemplate::volcanic_archipelago(),
+                "Fjord Coast" => crate::terrain::TerrainTemplate::fjord_coast(),
+                "Rift Valley" => crate::terrain::TerrainTemplate::rift_valley(),
                 _ => crate::terrain::TerrainTemplate::earth_like(),
             };
 

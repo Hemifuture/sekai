@@ -1,0 +1,14 @@
+# Archipelago 群岛
+# 众多小岛屿分布在广阔海洋中
+
+Add 11
+Range 2-3 40-60 20-80 20-80 30-50 3-6
+Hill 5 15-20 10-90 30-70 5-10
+Hill 2 10-15 10-30 20-80 4-8
+Hill 2 10-15 60-90 20-80 4-8
+Smooth 3
+Trough 10 20-30 5-95 5-95 25-45 2-5
+Strait 2 vertical 50 30
+Strait 2 horizontal 50 30
+Normalize
+SeaRatio 0.85

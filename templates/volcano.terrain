@@ -1,0 +1,13 @@
+# Volcano 火山岛
+# 单个高耸的火山岛屿
+
+Hill 1 90-100 44-56 40-60 15-20
+Multiply 0.8
+Range 1 30-55 45-55 40-60 20-40 2-5
+Smooth 3
+Hill 1 35-45 25-30 20-75 8-12
+Hill 1 35-55 75-80 25-75 8-12
+Hill 1 20-25 10-15 20-25 5-10
+Mask radial 0.5
+Normalize
+SeaRatio 0.85
