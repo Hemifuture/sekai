@@ -1702,9 +1702,9 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
 /// 判断模板是否应该使用新的分层生成系统
 /// 所有模板都使用分层系统以避免放射状图案问题
 pub fn should_use_layered_generation(_template_name: &str) -> bool {
-    // 所有模板都使用新的分层生成系统
-    // 这能有效解决老系统的放射状图案问题
-    true
+    // 暂时禁用分层系统，使用传统的 BFS Blob 模板系统
+    // 分层系统需要进一步调优
+    false
 }
 
 /// 获取模板建议的板块数量
