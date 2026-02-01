@@ -1,6 +1,21 @@
 // 噪声生成系统
 
-use noise::{NoiseFn, Perlin};
+use noise::{NoiseFn, Perlin, RidgedMulti, Fbm};
+
+/// 平滑阶梯函数（比 smoothstep 更平滑）
+pub fn smootherstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// 约束噪声函数 - 过滤弱信号，防止散点
+pub fn constrained_noise(noise_value: f64, threshold: f64) -> f64 {
+    if noise_value.abs() < threshold {
+        0.0
+    } else {
+        noise_value
+    }
+}
 
 /// 噪声配置
 #[derive(Debug, Clone)]
@@ -56,13 +71,62 @@ impl NoiseConfig {
 /// 噪声生成器
 pub struct NoiseGenerator {
     perlin: Perlin,
+    config: NoiseConfig,
+    amplitude: f64,
 }
 
 impl NoiseGenerator {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed_or_frequency: u32) -> Self {
+        // 支持旧接口（seed）和新接口（frequency as integer）
         Self {
-            perlin: Perlin::new(seed),
+            perlin: Perlin::new(seed_or_frequency),
+            config: NoiseConfig::default(),
+            amplitude: 1.0,
         }
+    }
+    
+    /// 从频率创建（新接口，用于分层系统）
+    pub fn from_frequency(frequency: f64) -> Self {
+        Self {
+            perlin: Perlin::new(0),
+            config: NoiseConfig {
+                base_frequency: frequency,
+                ..Default::default()
+            },
+            amplitude: 1.0,
+        }
+    }
+    
+    /// 链式设置振幅
+    pub fn with_amplitude(mut self, amplitude: f64) -> Self {
+        self.amplitude = amplitude;
+        self
+    }
+    
+    /// 链式设置八度数
+    pub fn with_octaves(mut self, octaves: u32) -> Self {
+        self.config.octaves = octaves;
+        self
+    }
+    
+    /// 链式设置种子
+    pub fn with_seed(mut self, seed: u32) -> Self {
+        self.perlin = Perlin::new(seed);
+        self.config.seed = seed;
+        self
+    }
+    
+    /// 采样 fBm 噪声（使用内置配置）
+    pub fn sample_fbm(&self, x: f64, y: f64) -> f64 {
+        self.fbm(x, y, &self.config) * self.amplitude
+    }
+    
+    /// 采样脊状噪声
+    pub fn sample_ridged(&self, x: f64, y: f64) -> f64 {
+        let freq = self.config.base_frequency;
+        let value = self.perlin.get([x * freq, y * freq]);
+        // 脊状变换: 1 - |noise|
+        (1.0 - value.abs()) * self.amplitude
     }
 
     /// 生成分形布朗运动 (Fractal Brownian Motion) 噪声
