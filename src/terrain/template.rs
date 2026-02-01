@@ -596,6 +596,872 @@ impl TerrainTemplate {
             TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.95 },
         ])
     }
+
+    // ============================================================================
+    // Azgaar 风格模板 (Azgaar-style templates)
+    // 参考 Azgaar's Fantasy Map Generator
+    // ============================================================================
+
+    /// 火山岛 - 中心高耸的火山（参考 Azgaar volcano 模板）
+    pub fn volcano() -> Self {
+        Self::new(
+            "Volcano",
+            "孤立的火山岛，中央高耸",
+        )
+        .with_commands(vec![
+            // 中央主火山 - 非常高
+            TerrainCommand::Mountain {
+                height: 220.0,
+                x: 0.5,
+                y: 0.5,
+                radius: 0.12,
+            },
+            // 火山外沿的较低区域
+            TerrainCommand::Multiply { factor: 0.8 },
+            // 周围山脊
+            TerrainCommand::Range {
+                count: 1,
+                height: (80.0, 100.0),
+                x: (0.3, 0.55),
+                y: (0.45, 0.55),
+                length: (0.25, 0.35),
+                width: (0.05, 0.08),
+                angle: (0.0, PI),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 3 },
+            // 次级丘陵
+            TerrainCommand::Hill {
+                count: 1,
+                height: (60.0, 80.0),
+                x: (0.35, 0.45),
+                y: (0.25, 0.30),
+                radius: (0.06, 0.1),
+            },
+            TerrainCommand::Hill {
+                count: 1,
+                height: (50.0, 70.0),
+                x: (0.75, 0.80),
+                y: (0.25, 0.75),
+                radius: (0.04, 0.08),
+            },
+            TerrainCommand::Hill {
+                count: 1,
+                height: (40.0, 60.0),
+                x: (0.10, 0.15),
+                y: (0.20, 0.25),
+                radius: (0.03, 0.06),
+            },
+            // 遮罩 - 边缘降低
+            TerrainCommand::Mask {
+                mode: MaskMode::EdgeFade,
+                strength: 0.6,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.88 },
+        ])
+    }
+
+    /// 高岛 - 有山脉的大岛（参考 Azgaar highIsland 模板）
+    pub fn high_island() -> Self {
+        Self::new(
+            "High Island",
+            "大型岛屿，有复杂的山脉系统",
+        )
+        .with_commands(vec![
+            // 主丘陵核心
+            TerrainCommand::Mountain {
+                height: 120.0,
+                x: 0.65,
+                y: 0.5,
+                radius: 0.18,
+            },
+            // 添加基础高度
+            TerrainCommand::Add { value: 7.0 },
+            // 多个山丘
+            TerrainCommand::Hill {
+                count: 5,
+                height: (50.0, 80.0),
+                x: (0.25, 0.55),
+                y: (0.45, 0.55),
+                radius: (0.08, 0.12),
+            },
+            // 山脉
+            TerrainCommand::Range {
+                count: 1,
+                height: (80.0, 100.0),
+                x: (0.45, 0.55),
+                y: (0.45, 0.55),
+                length: (0.3, 0.4),
+                width: (0.04, 0.06),
+                angle: (0.0, PI),
+            },
+            // 降低陆地
+            TerrainCommand::Multiply { factor: 0.8 },
+            // 遮罩
+            TerrainCommand::Mask {
+                mode: MaskMode::EdgeFade,
+                strength: 0.5,
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 2 },
+            // 海沟
+            TerrainCommand::Trough {
+                count: 2,
+                depth: (30.0, 45.0),
+                x: (0.20, 0.30),
+                y: (0.20, 0.30),
+                length: (0.15, 0.25),
+                width: (0.02, 0.04),
+                angle: (0.0, PI),
+            },
+            TerrainCommand::Trough {
+                count: 2,
+                depth: (30.0, 45.0),
+                x: (0.60, 0.80),
+                y: (0.70, 0.80),
+                length: (0.15, 0.25),
+                width: (0.02, 0.04),
+                angle: (0.0, PI),
+            },
+            // 额外的丘陵
+            TerrainCommand::Hill {
+                count: 1,
+                height: (45.0, 60.0),
+                x: (0.60, 0.60),
+                y: (0.50, 0.50),
+                radius: (0.06, 0.09),
+            },
+            TerrainCommand::Hill {
+                count: 1,
+                height: (50.0, 65.0),
+                x: (0.15, 0.20),
+                y: (0.20, 0.75),
+                radius: (0.05, 0.08),
+            },
+            // 次级山脉
+            TerrainCommand::Range {
+                count: 1,
+                height: (60.0, 80.0),
+                x: (0.15, 0.85),
+                y: (0.30, 0.40),
+                length: (0.25, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            TerrainCommand::Range {
+                count: 1,
+                height: (60.0, 80.0),
+                x: (0.15, 0.85),
+                y: (0.60, 0.70),
+                length: (0.25, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 坑洞/湖泊
+            TerrainCommand::Pit {
+                count: 4,
+                depth: (25.0, 40.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.80),
+                radius: (0.04, 0.08),
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.65 },
+        ])
+    }
+
+    /// 低岛 - 平坦的岛屿（参考 Azgaar lowIsland 模板）
+    pub fn low_island() -> Self {
+        Self::new(
+            "Low Island",
+            "低矮平坦的大型岛屿",
+        )
+        .with_commands(vec![
+            // 主体
+            TerrainCommand::Mountain {
+                height: 100.0,
+                x: 0.7,
+                y: 0.5,
+                radius: 0.2,
+            },
+            // 侧翼丘陵
+            TerrainCommand::Hill {
+                count: 2,
+                height: (50.0, 70.0),
+                x: (0.10, 0.30),
+                y: (0.10, 0.90),
+                radius: (0.08, 0.12),
+            },
+            TerrainCommand::Smooth { iterations: 2 },
+            // 主体丘陵
+            TerrainCommand::Hill {
+                count: 7,
+                height: (55.0, 75.0),
+                x: (0.20, 0.70),
+                y: (0.30, 0.70),
+                radius: (0.08, 0.12),
+            },
+            // 山脉
+            TerrainCommand::Range {
+                count: 1,
+                height: (70.0, 90.0),
+                x: (0.45, 0.55),
+                y: (0.45, 0.55),
+                length: (0.3, 0.4),
+                width: (0.04, 0.06),
+                angle: (0.0, PI),
+            },
+            // 海沟
+            TerrainCommand::Trough {
+                count: 2,
+                depth: (30.0, 45.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.30),
+                length: (0.15, 0.25),
+                width: (0.02, 0.04),
+                angle: (0.0, PI),
+            },
+            TerrainCommand::Trough {
+                count: 2,
+                depth: (30.0, 45.0),
+                x: (0.15, 0.85),
+                y: (0.70, 0.80),
+                length: (0.15, 0.25),
+                width: (0.02, 0.04),
+                angle: (0.0, PI),
+            },
+            // 边缘丘陵
+            TerrainCommand::Hill {
+                count: 1,
+                height: (45.0, 60.0),
+                x: (0.05, 0.15),
+                y: (0.20, 0.80),
+                radius: (0.05, 0.08),
+            },
+            TerrainCommand::Hill {
+                count: 1,
+                height: (45.0, 60.0),
+                x: (0.85, 0.95),
+                y: (0.70, 0.80),
+                radius: (0.05, 0.08),
+            },
+            // 坑洞/湖泊
+            TerrainCommand::Pit {
+                count: 6,
+                depth: (25.0, 40.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.80),
+                radius: (0.04, 0.08),
+            },
+            // 大幅降低高度使其变得平坦
+            TerrainCommand::Multiply { factor: 0.4 },
+            TerrainCommand::Mask {
+                mode: MaskMode::EdgeFade,
+                strength: 0.6,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.70 },
+        ])
+    }
+
+    /// 多大陆 - 多个大陆块（参考 Azgaar continents 模板）
+    pub fn continents() -> Self {
+        Self::new(
+            "Continents",
+            "多个分散的大陆",
+        )
+        .with_commands(vec![
+            // 左侧大陆核心
+            TerrainCommand::Mountain {
+                height: 110.0,
+                x: 0.7,
+                y: 0.5,
+                radius: 0.18,
+            },
+            // 右侧大陆核心
+            TerrainCommand::Mountain {
+                height: 110.0,
+                x: 0.25,
+                y: 0.5,
+                radius: 0.18,
+            },
+            // 大陆扩展丘陵
+            TerrainCommand::Hill {
+                count: 7,
+                height: (50.0, 75.0),
+                x: (0.25, 0.75),
+                y: (0.15, 0.85),
+                radius: (0.08, 0.14),
+            },
+            // 降低陆地
+            TerrainCommand::Multiply { factor: 0.6 },
+            // 更多丘陵
+            TerrainCommand::Hill {
+                count: 9,
+                height: (30.0, 50.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.80),
+                radius: (0.05, 0.09),
+            },
+            // 左侧山脉
+            TerrainCommand::Range {
+                count: 2,
+                height: (70.0, 100.0),
+                x: (0.05, 0.15),
+                y: (0.25, 0.75),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (PI * 0.3, PI * 0.7),
+            },
+            // 右侧山脉
+            TerrainCommand::Range {
+                count: 2,
+                height: (70.0, 100.0),
+                x: (0.80, 0.95),
+                y: (0.25, 0.75),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (PI * 0.3, PI * 0.7),
+            },
+            // 东部山脉
+            TerrainCommand::Range {
+                count: 2,
+                height: (60.0, 90.0),
+                x: (0.80, 0.90),
+                y: (0.20, 0.80),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 中央海峡
+            TerrainCommand::Strait {
+                width: 0.06,
+                direction: StraitDirection::Vertical,
+                position: 0.5,
+                depth: 40.0,
+            },
+            TerrainCommand::Strait {
+                width: 0.04,
+                direction: StraitDirection::Vertical,
+                position: 0.45,
+                depth: 30.0,
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 3 },
+            // 海沟
+            TerrainCommand::Trough {
+                count: 3,
+                depth: (30.0, 45.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.80),
+                length: (0.2, 0.35),
+                width: (0.02, 0.04),
+                angle: (0.0, 2.0 * PI),
+            },
+            TerrainCommand::Trough {
+                count: 3,
+                depth: (20.0, 35.0),
+                x: (0.45, 0.55),
+                y: (0.45, 0.55),
+                length: (0.15, 0.25),
+                width: (0.02, 0.04),
+                angle: (0.0, PI),
+            },
+            // 坑洞
+            TerrainCommand::Pit {
+                count: 4,
+                depth: (25.0, 40.0),
+                x: (0.15, 0.85),
+                y: (0.20, 0.80),
+                radius: (0.05, 0.1),
+            },
+            TerrainCommand::Mask {
+                mode: MaskMode::EdgeFade,
+                strength: 0.5,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.60 },
+        ])
+    }
+
+    /// 群岛增强版 - 很多小岛（参考 Azgaar archipelago 模板）
+    pub fn archipelago_azgaar() -> Self {
+        Self::new(
+            "Archipelago (Azgaar)",
+            "众多分散的小岛，复杂的岛链",
+        )
+        .with_commands(vec![
+            // 基础高度
+            TerrainCommand::Add { value: 11.0 },
+            // 主要山脉
+            TerrainCommand::Range {
+                count: 2,
+                height: (80.0, 120.0),
+                x: (0.20, 0.80),
+                y: (0.20, 0.80),
+                length: (0.35, 0.5),
+                width: (0.04, 0.06),
+                angle: (0.0, PI),
+            },
+            // 主丘陵
+            TerrainCommand::Hill {
+                count: 5,
+                height: (50.0, 70.0),
+                x: (0.10, 0.90),
+                y: (0.30, 0.70),
+                radius: (0.06, 0.1),
+            },
+            // 左侧丘陵
+            TerrainCommand::Hill {
+                count: 2,
+                height: (45.0, 60.0),
+                x: (0.10, 0.30),
+                y: (0.20, 0.80),
+                radius: (0.05, 0.08),
+            },
+            // 右侧丘陵
+            TerrainCommand::Hill {
+                count: 2,
+                height: (45.0, 60.0),
+                x: (0.60, 0.90),
+                y: (0.20, 0.80),
+                radius: (0.05, 0.08),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 3 },
+            // 深海沟分隔
+            TerrainCommand::Trough {
+                count: 10,
+                depth: (40.0, 60.0),
+                x: (0.05, 0.95),
+                y: (0.05, 0.95),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (0.0, 2.0 * PI),
+            },
+            // 垂直海峡
+            TerrainCommand::Strait {
+                width: 0.05,
+                direction: StraitDirection::Vertical,
+                position: 0.5,
+                depth: 35.0,
+            },
+            // 水平海峡
+            TerrainCommand::Strait {
+                width: 0.05,
+                direction: StraitDirection::Horizontal,
+                position: 0.5,
+                depth: 35.0,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.80 },
+        ])
+    }
+
+    /// 环礁增强版 - 环形岛屿（参考 Azgaar atoll 模板）
+    pub fn atoll_azgaar() -> Self {
+        Self::new(
+            "Atoll (Azgaar)",
+            "环形珊瑚岛围绕浅泻湖",
+        )
+        .with_commands(vec![
+            // 中央凸起
+            TerrainCommand::Mountain {
+                height: 85.0,
+                x: 0.55,
+                y: 0.5,
+                radius: 0.12,
+            },
+            // 环形丘陵
+            TerrainCommand::Hill {
+                count: 2,
+                height: (60.0, 90.0),
+                x: (0.25, 0.75),
+                y: (0.30, 0.70),
+                radius: (0.12, 0.18),
+            },
+            // 西侧延伸
+            TerrainCommand::Hill {
+                count: 1,
+                height: (60.0, 90.0),
+                x: (0.25, 0.35),
+                y: (0.30, 0.70),
+                radius: (0.1, 0.15),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 1 },
+            // 降低外环使其变得很低
+            TerrainCommand::Multiply { factor: 0.2 },
+            // 中央泻湖小凸起
+            TerrainCommand::Hill {
+                count: 1,
+                height: (30.0, 50.0),
+                x: (0.50, 0.55),
+                y: (0.48, 0.52),
+                radius: (0.04, 0.07),
+            },
+            TerrainCommand::Mask {
+                mode: MaskMode::CenterBoost,
+                strength: 0.4,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.92 },
+        ])
+    }
+
+    /// 地中海式 - 内海（参考 Azgaar mediterranean 模板）
+    pub fn mediterranean() -> Self {
+        Self::new(
+            "Mediterranean",
+            "被陆地包围的内海",
+        )
+        .with_commands(vec![
+            // 北部海岸山脉
+            TerrainCommand::Range {
+                count: 5,
+                height: (70.0, 120.0),
+                x: (0.0, 1.0),
+                y: (0.0, 0.10),
+                length: (0.25, 0.45),
+                width: (0.04, 0.08),
+                angle: (PI * 0.4, PI * 0.6),
+            },
+            // 南部海岸山脉
+            TerrainCommand::Range {
+                count: 5,
+                height: (70.0, 120.0),
+                x: (0.0, 1.0),
+                y: (0.90, 1.0),
+                length: (0.25, 0.45),
+                width: (0.04, 0.08),
+                angle: (PI * 0.4, PI * 0.6),
+            },
+            // 北部丘陵
+            TerrainCommand::Hill {
+                count: 7,
+                height: (70.0, 100.0),
+                x: (0.10, 0.90),
+                y: (0.0, 0.05),
+                radius: (0.1, 0.15),
+            },
+            // 南部丘陵
+            TerrainCommand::Hill {
+                count: 7,
+                height: (70.0, 100.0),
+                x: (0.10, 0.90),
+                y: (0.95, 1.0),
+                radius: (0.1, 0.15),
+            },
+            // 降低陆地
+            TerrainCommand::Multiply { factor: 0.9 },
+            // 边缘遮罩（反向 - 中央凹陷）
+            TerrainCommand::Mask {
+                mode: MaskMode::RadialGradient,
+                strength: -0.4,
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 1 },
+            // 西部延伸
+            TerrainCommand::Hill {
+                count: 2,
+                height: (65.0, 95.0),
+                x: (0.0, 0.05),
+                y: (0.20, 0.80),
+                radius: (0.1, 0.15),
+            },
+            // 东部延伸
+            TerrainCommand::Hill {
+                count: 2,
+                height: (65.0, 95.0),
+                x: (0.95, 1.0),
+                y: (0.20, 0.80),
+                radius: (0.1, 0.15),
+            },
+            // 内海海沟（加深中央区域）
+            TerrainCommand::Trough {
+                count: 4,
+                depth: (50.0, 70.0),
+                x: (0.0, 1.0),
+                y: (0.0, 0.10),
+                length: (0.3, 0.5),
+                width: (0.03, 0.06),
+                angle: (PI * 0.4, PI * 0.6),
+            },
+            TerrainCommand::Trough {
+                count: 4,
+                depth: (50.0, 70.0),
+                x: (0.0, 1.0),
+                y: (0.90, 1.0),
+                length: (0.3, 0.5),
+                width: (0.03, 0.06),
+                angle: (PI * 0.4, PI * 0.6),
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.55 },
+        ])
+    }
+
+    /// 半岛增强版 - 延伸的陆地（参考 Azgaar peninsula 模板）
+    pub fn peninsula_azgaar() -> Self {
+        Self::new(
+            "Peninsula (Azgaar)",
+            "从大陆延伸的细长半岛",
+        )
+        .with_commands(vec![
+            // 北部主体山脉
+            TerrainCommand::Range {
+                count: 2,
+                height: (60.0, 80.0),
+                x: (0.40, 0.50),
+                y: (0.0, 0.15),
+                length: (0.25, 0.4),
+                width: (0.06, 0.1),
+                angle: (0.0, PI * 0.3),
+            },
+            // 基础高度
+            TerrainCommand::Add { value: 5.0 },
+            // 北部大陆
+            TerrainCommand::Mountain {
+                height: 120.0,
+                x: 0.5,
+                y: 0.03,
+                radius: 0.25,
+            },
+            // 添加更多高度
+            TerrainCommand::Add { value: 13.0 },
+            // 南部延伸丘陵
+            TerrainCommand::Hill {
+                count: 4,
+                height: (30.0, 50.0),
+                x: (0.05, 0.95),
+                y: (0.80, 1.0),
+                radius: (0.04, 0.07),
+            },
+            // 中部连接丘陵
+            TerrainCommand::Hill {
+                count: 2,
+                height: (30.0, 50.0),
+                x: (0.05, 0.95),
+                y: (0.40, 0.60),
+                radius: (0.04, 0.07),
+            },
+            // 海沟分隔
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (35.0, 55.0),
+                x: (0.05, 0.95),
+                y: (0.05, 0.95),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 3 },
+            // 反转（上下翻转使半岛向下延伸）
+            TerrainCommand::Invert {
+                axis: InvertAxis::Y,
+                probability: 0.4,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.65 },
+        ])
+    }
+
+    /// 盘古大陆 - 单一超级大陆（参考 Azgaar pangea 模板）
+    pub fn pangea() -> Self {
+        Self::new(
+            "Pangea",
+            "单一的超级大陆",
+        )
+        .with_commands(vec![
+            // 西北角大陆
+            TerrainCommand::Hill {
+                count: 2,
+                height: (60.0, 90.0),
+                x: (0.15, 0.50),
+                y: (0.0, 0.10),
+                radius: (0.1, 0.16),
+            },
+            // 东北角大陆
+            TerrainCommand::Hill {
+                count: 2,
+                height: (30.0, 70.0),
+                x: (0.50, 0.85),
+                y: (0.0, 0.10),
+                radius: (0.08, 0.14),
+            },
+            // 东南角大陆
+            TerrainCommand::Hill {
+                count: 2,
+                height: (60.0, 90.0),
+                x: (0.50, 0.85),
+                y: (0.90, 1.0),
+                radius: (0.1, 0.16),
+            },
+            // 西南角大陆
+            TerrainCommand::Hill {
+                count: 2,
+                height: (30.0, 70.0),
+                x: (0.15, 0.50),
+                y: (0.90, 1.0),
+                radius: (0.08, 0.14),
+            },
+            // 中央大陆核心
+            TerrainCommand::Hill {
+                count: 10,
+                height: (60.0, 90.0),
+                x: (0.20, 0.80),
+                y: (0.48, 0.52),
+                radius: (0.1, 0.16),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 2 },
+            // 降低陆地
+            TerrainCommand::Multiply { factor: 0.7 },
+            // 北部海沟
+            TerrainCommand::Trough {
+                count: 3,
+                depth: (45.0, 65.0),
+                x: (0.05, 0.95),
+                y: (0.10, 0.20),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (PI * 0.3, PI * 0.7),
+            },
+            // 南部海沟
+            TerrainCommand::Trough {
+                count: 3,
+                depth: (45.0, 65.0),
+                x: (0.05, 0.95),
+                y: (0.80, 0.90),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (PI * 0.3, PI * 0.7),
+            },
+            // 中央山脉
+            TerrainCommand::Range {
+                count: 5,
+                height: (70.0, 90.0),
+                x: (0.10, 0.90),
+                y: (0.35, 0.65),
+                length: (0.25, 0.4),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.45 },
+        ])
+    }
+
+    /// 地峡 - 连接两块陆地的狭窄地带（参考 Azgaar isthmus 模板）
+    pub fn isthmus() -> Self {
+        Self::new(
+            "Isthmus",
+            "连接两块大陆的狭窄地峡",
+        )
+        .with_commands(vec![
+            // 西北大陆块
+            TerrainCommand::Hill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.0, 0.30),
+                y: (0.0, 0.20),
+                radius: (0.08, 0.14),
+            },
+            // 西侧大陆延伸
+            TerrainCommand::Hill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.10, 0.50),
+                y: (0.20, 0.40),
+                radius: (0.08, 0.14),
+            },
+            // 中央连接带
+            TerrainCommand::Hill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.30, 0.70),
+                y: (0.40, 0.60),
+                radius: (0.08, 0.14),
+            },
+            // 东侧大陆延伸
+            TerrainCommand::Hill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.50, 0.90),
+                y: (0.60, 0.80),
+                radius: (0.08, 0.14),
+            },
+            // 东南大陆块
+            TerrainCommand::Hill {
+                count: 8,
+                height: (50.0, 75.0),
+                x: (0.70, 1.0),
+                y: (0.80, 1.0),
+                radius: (0.08, 0.14),
+            },
+            // 平滑
+            TerrainCommand::Smooth { iterations: 2 },
+            // 海沟分隔（西北）
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (40.0, 60.0),
+                x: (0.0, 0.30),
+                y: (0.0, 0.20),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 海沟分隔（中西）
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (40.0, 60.0),
+                x: (0.10, 0.50),
+                y: (0.20, 0.40),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 海沟分隔（中央）
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (40.0, 60.0),
+                x: (0.30, 0.70),
+                y: (0.40, 0.60),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 海沟分隔（中东）
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (40.0, 60.0),
+                x: (0.50, 0.90),
+                y: (0.60, 0.80),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 海沟分隔（东南）
+            TerrainCommand::Trough {
+                count: 5,
+                depth: (40.0, 60.0),
+                x: (0.70, 1.0),
+                y: (0.80, 1.0),
+                length: (0.2, 0.35),
+                width: (0.03, 0.05),
+                angle: (0.0, PI),
+            },
+            // 反转（沿X轴）
+            TerrainCommand::Invert {
+                axis: InvertAxis::X,
+                probability: 0.25,
+            },
+            TerrainCommand::Normalize,
+            TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.55 },
+        ])
+    }
     
     // ============================================================================
     // 基于图元的新模板 (Primitive-based templates)
@@ -825,6 +1691,17 @@ pub fn get_preset_templates() -> Vec<TerrainTemplate> {
         TerrainTemplate::peninsula(),
         TerrainTemplate::highland(),
         TerrainTemplate::oceanic(),
+        // Azgaar 风格模板
+        TerrainTemplate::volcano(),
+        TerrainTemplate::high_island(),
+        TerrainTemplate::low_island(),
+        TerrainTemplate::continents(),
+        TerrainTemplate::archipelago_azgaar(),
+        TerrainTemplate::atoll_azgaar(),
+        TerrainTemplate::mediterranean(),
+        TerrainTemplate::peninsula_azgaar(),
+        TerrainTemplate::pangea(),
+        TerrainTemplate::isthmus(),
         // 基于图元的新模板
         TerrainTemplate::tectonic_collision(),
         TerrainTemplate::volcanic_archipelago(),
@@ -845,6 +1722,17 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
         "peninsula" => Some(TerrainTemplate::peninsula()),
         "highland" => Some(TerrainTemplate::highland()),
         "oceanic" => Some(TerrainTemplate::oceanic()),
+        // Azgaar 风格模板
+        "volcano" => Some(TerrainTemplate::volcano()),
+        "high_island" | "high-island" | "high island" => Some(TerrainTemplate::high_island()),
+        "low_island" | "low-island" | "low island" => Some(TerrainTemplate::low_island()),
+        "continents" => Some(TerrainTemplate::continents()),
+        "archipelago_azgaar" | "archipelago-azgaar" | "archipelago (azgaar)" => Some(TerrainTemplate::archipelago_azgaar()),
+        "atoll_azgaar" | "atoll-azgaar" | "atoll (azgaar)" => Some(TerrainTemplate::atoll_azgaar()),
+        "mediterranean" => Some(TerrainTemplate::mediterranean()),
+        "peninsula_azgaar" | "peninsula-azgaar" | "peninsula (azgaar)" => Some(TerrainTemplate::peninsula_azgaar()),
+        "pangea" => Some(TerrainTemplate::pangea()),
+        "isthmus" => Some(TerrainTemplate::isthmus()),
         // 基于图元的新模板
         "tectonic_collision" | "tectonic-collision" => Some(TerrainTemplate::tectonic_collision()),
         "volcanic_archipelago" | "volcanic-archipelago" => Some(TerrainTemplate::volcanic_archipelago()),

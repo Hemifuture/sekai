@@ -18,7 +18,8 @@ use crate::{
 };
 
 /// 可用的地形模板名称
-const TEMPLATE_NAMES: [&str; 12] = [
+const TEMPLATE_NAMES: [&str; 22] = [
+    // 传统模板
     "Earth-like",
     "Archipelago", 
     "Continental",
@@ -27,6 +28,17 @@ const TEMPLATE_NAMES: [&str; 12] = [
     "Peninsula",
     "Highland",
     "Oceanic",
+    // Azgaar 风格模板
+    "Volcano",
+    "High Island",
+    "Low Island",
+    "Continents",
+    "Archipelago (Azgaar)",
+    "Atoll (Azgaar)",
+    "Mediterranean",
+    "Peninsula (Azgaar)",
+    "Pangea",
+    "Isthmus",
     // 基于图元的新模板
     "Tectonic Collision",
     "Volcanic Archipelago",
@@ -91,8 +103,8 @@ impl Default for TemplateApp {
 impl TemplateApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // This is also where you can customize the look and feel of egui using
-        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
+        // 配置中文字体支持
+        Self::setup_fonts(&cc.egui_ctx);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -128,6 +140,56 @@ impl TemplateApp {
         }
 
         app
+    }
+    
+    /// 配置字体，支持中文显示
+    fn setup_fonts(ctx: &egui::Context) {
+        use egui::{FontData, FontDefinitions, FontFamily};
+        
+        let mut fonts = FontDefinitions::default();
+        
+        // 尝试加载 Noto Sans SC 字体
+        let font_paths = [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
+            "/usr/share/fonts/noto/NotoSansSC-Regular.otf",
+            "assets/fonts/NotoSansSC-Regular.otf",
+        ];
+        
+        let mut font_loaded = false;
+        for path in &font_paths {
+            if let Ok(font_data) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    "noto_sans_sc".to_owned(),
+                    std::sync::Arc::new(FontData::from_owned(font_data)),
+                );
+                
+                // 将中文字体添加到所有字体族的首选列表
+                fonts.families
+                    .entry(FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, "noto_sans_sc".to_owned());
+                    
+                fonts.families
+                    .entry(FontFamily::Monospace)
+                    .or_default()
+                    .insert(0, "noto_sans_sc".to_owned());
+                
+                font_loaded = true;
+                #[cfg(debug_assertions)]
+                println!("Loaded Chinese font from: {}", path);
+                break;
+            }
+        }
+        
+        if !font_loaded {
+            #[cfg(debug_assertions)]
+            eprintln!("Warning: Could not load Noto Sans SC font. Chinese characters may not display correctly.");
+        }
+        
+        ctx.set_fonts(fonts);
     }
 }
 
@@ -352,6 +414,7 @@ impl TemplateApp {
         self.map_system.with_resource(|map_system| {
             // 根据模板名称获取模板
             let template = match template_name {
+                // 传统模板
                 "Earth-like" => crate::terrain::TerrainTemplate::earth_like(),
                 "Archipelago" => crate::terrain::TerrainTemplate::archipelago(),
                 "Continental" => crate::terrain::TerrainTemplate::continental(),
@@ -360,6 +423,17 @@ impl TemplateApp {
                 "Peninsula" => crate::terrain::TerrainTemplate::peninsula(),
                 "Highland" => crate::terrain::TerrainTemplate::highland(),
                 "Oceanic" => crate::terrain::TerrainTemplate::oceanic(),
+                // Azgaar 风格模板
+                "Volcano" => crate::terrain::TerrainTemplate::volcano(),
+                "High Island" => crate::terrain::TerrainTemplate::high_island(),
+                "Low Island" => crate::terrain::TerrainTemplate::low_island(),
+                "Continents" => crate::terrain::TerrainTemplate::continents(),
+                "Archipelago (Azgaar)" => crate::terrain::TerrainTemplate::archipelago_azgaar(),
+                "Atoll (Azgaar)" => crate::terrain::TerrainTemplate::atoll_azgaar(),
+                "Mediterranean" => crate::terrain::TerrainTemplate::mediterranean(),
+                "Peninsula (Azgaar)" => crate::terrain::TerrainTemplate::peninsula_azgaar(),
+                "Pangea" => crate::terrain::TerrainTemplate::pangea(),
+                "Isthmus" => crate::terrain::TerrainTemplate::isthmus(),
                 // 基于图元的新模板
                 "Tectonic Collision" => crate::terrain::TerrainTemplate::tectonic_collision(),
                 "Volcanic Archipelago" => crate::terrain::TerrainTemplate::volcanic_archipelago(),

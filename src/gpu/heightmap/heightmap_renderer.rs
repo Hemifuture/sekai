@@ -300,48 +300,83 @@ impl HeightmapRenderer {
     }
 }
 
-/// 根据高度值生成颜色
+/// 颜色停止点结构
+struct ColorStop {
+    position: f32,  // 0.0-1.0
+    color: (f32, f32, f32),  // RGB
+}
+
+/// 在两个颜色之间平滑插值
+fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
+    // 使用平滑的 smoothstep 插值，避免线性过渡的生硬感
+    let t_smooth = t * t * (3.0 - 2.0 * t);
+    (
+        c1.0 + (c2.0 - c1.0) * t_smooth,
+        c1.1 + (c2.1 - c1.1) * t_smooth,
+        c1.2 + (c2.2 - c1.2) * t_smooth,
+    )
+}
+
+/// 根据高度值生成颜色 - 改进版平滑渐变
 pub fn height_to_color(height: u8) -> Color32 {
     // 海平面
     const SEA_LEVEL: u8 = 20;
-
+    
+    let ratio = height as f32 / 255.0;
+    let sea_ratio = SEA_LEVEL as f32 / 255.0;
+    
     if height < SEA_LEVEL {
-        // 海洋：深蓝到浅蓝
-        let depth = SEA_LEVEL - height;
-        let ratio = depth as f32 / SEA_LEVEL as f32;
-        let r = (10.0 + ratio * 20.0) as u8;
-        let g = (50.0 + ratio * 50.0) as u8;
-        let b = (150.0 + ratio * 105.0) as u8;
-        Color32::from_rgb(r, g, b)
+        // ========== 海洋渐变 ==========
+        // 从深海到浅海：深蓝 → 中蓝 → 浅蓝/青色
+        let ocean_stops: [(f32, (f32, f32, f32)); 4] = [
+            (0.0,       (8.0, 24.0, 58.0)),      // 深海：非常深的蓝
+            (0.3,       (16.0, 48.0, 120.0)),    // 中深海
+            (0.7,       (32.0, 80.0, 170.0)),    // 浅海
+            (1.0,       (60.0, 120.0, 190.0)),   // 近岸浅水
+        ];
+        
+        let ocean_ratio = ratio / sea_ratio;  // 0.0（最深）到 1.0（海平面）
+        
+        interpolate_gradient(&ocean_stops, ocean_ratio)
     } else {
-        // 陆地：绿色到棕色到白色
-        let elevation = height - SEA_LEVEL;
-        let max_elevation = (255 - SEA_LEVEL) as u32;  // 转换为 u32 避免溢出
+        // ========== 陆地渐变 ==========
+        // 多色调平滑过渡：沙滩 → 深绿 → 浅绿 → 黄绿 → 黄 → 橙 → 棕 → 灰岩 → 雪白
+        let land_stops: [(f32, (f32, f32, f32)); 10] = [
+            (0.0,       (210.0, 180.0, 140.0)),  // 沙滩/海岸
+            (0.05,      (34.0, 120.0, 50.0)),    // 深绿（低地森林）
+            (0.15,      (50.0, 150.0, 50.0)),    // 中绿
+            (0.25,      (100.0, 170.0, 60.0)),   // 浅绿
+            (0.35,      (160.0, 180.0, 70.0)),   // 黄绿（草地/灌木）
+            (0.45,      (200.0, 170.0, 80.0)),   // 黄/卡其（干草/丘陵）
+            (0.55,      (180.0, 130.0, 70.0)),   // 橙棕（低山）
+            (0.70,      (130.0, 100.0, 70.0)),   // 深棕（山地）
+            (0.85,      (150.0, 145.0, 140.0)),  // 灰色（岩石）
+            (1.0,       (255.0, 255.0, 255.0)),  // 白色（雪峰）
+        ];
+        
+        let land_ratio = (ratio - sea_ratio) / (1.0 - sea_ratio);  // 归一化到 0.0-1.0
+        
+        interpolate_gradient(&land_stops, land_ratio)
+    }
+}
 
-        let threshold_low = max_elevation / 3;
-        let threshold_high = max_elevation * 2 / 3;  // 现在可以安全地乘以2
-
-        if (elevation as u32) < threshold_low {
-            // 低地：绿色
-            let ratio = elevation as f32 / threshold_low as f32;
-            let r = (34.0 + ratio * 100.0) as u8;
-            let g = (139.0 + ratio * 50.0) as u8;
-            let b = (34.0 - ratio * 20.0) as u8;
-            Color32::from_rgb(r, g, b)
-        } else if (elevation as u32) < threshold_high {
-            // 中地：棕色
-            let ratio = (elevation as u32 - threshold_low) as f32 / (threshold_high - threshold_low) as f32;
-            let r = (134.0 + ratio * 40.0) as u8;
-            let g = (89.0 + ratio * 30.0) as u8;
-            let b = (14.0 + ratio * 10.0) as u8;
-            Color32::from_rgb(r, g, b)
-        } else {
-            // 高地：白色（雪山）
-            let ratio = (elevation as u32 - threshold_high) as f32 / (max_elevation - threshold_high) as f32;
-            let r = (174.0 + ratio * 81.0) as u8;
-            let g = (119.0 + ratio * 136.0) as u8;
-            let b = (24.0 + ratio * 231.0) as u8;
-            Color32::from_rgb(r, g, b)
+/// 根据渐变停止点数组进行插值
+fn interpolate_gradient(stops: &[(f32, (f32, f32, f32))], ratio: f32) -> Color32 {
+    let ratio = ratio.clamp(0.0, 1.0);
+    
+    // 找到 ratio 所在的区间
+    for i in 0..stops.len() - 1 {
+        let (pos1, color1) = stops[i];
+        let (pos2, color2) = stops[i + 1];
+        
+        if ratio >= pos1 && ratio <= pos2 {
+            let t = (ratio - pos1) / (pos2 - pos1);
+            let (r, g, b) = lerp_color(color1, color2, t);
+            return Color32::from_rgb(r as u8, g as u8, b as u8);
         }
     }
+    
+    // 默认返回最后一个颜色
+    let (_, (r, g, b)) = stops[stops.len() - 1];
+    Color32::from_rgb(r as u8, g as u8, b as u8)
 }
