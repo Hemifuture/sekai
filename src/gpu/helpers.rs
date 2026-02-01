@@ -8,6 +8,7 @@ use super::canvas_uniform::CanvasUniforms;
 ///
 /// 每2个索引为一条边。
 /// 使用 `u32` 类型的索引，与 GPU 索引缓冲区兼容。
+#[allow(dead_code)]
 pub fn get_visible_indices(
     points: &[Pos2],
     uniforms: CanvasUniforms,
@@ -65,6 +66,7 @@ pub fn get_visible_indices(
 }
 
 /// 优化的线段与矩形相交测试
+#[allow(dead_code)]
 fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
     // Cohen-Sutherland算法的区域码
     fn compute_code(p: Pos2, rect: Rect) -> u8 {

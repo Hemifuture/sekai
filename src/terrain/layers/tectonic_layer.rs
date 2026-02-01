@@ -134,7 +134,7 @@ impl TectonicLayer {
         let falloff = (-distance * distance / (2.0 * width * width)).exp();
         
         // Add some noise for natural variation
-        let noise = rng.gen_range(-0.1..0.1);
+        let noise = rng.random_range(-0.1..0.1);
         
         match collision_type {
             CollisionType::ContinentalCollision => {

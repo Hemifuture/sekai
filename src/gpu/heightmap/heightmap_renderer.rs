@@ -301,6 +301,7 @@ impl HeightmapRenderer {
 }
 
 /// 颜色停止点结构
+#[allow(dead_code)]
 struct ColorStop {
     position: f32,  // 0.0-1.0
     color: (f32, f32, f32),  // RGB

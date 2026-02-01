@@ -109,8 +109,8 @@ impl PlateLayer {
             let plate = Plate {
                 id: (i + 1) as u16,
                 plate_type,
-                direction: rng.gen_range(0.0..std::f32::consts::TAU),
-                speed: rng.gen_range(0.5..1.5),
+                direction: rng.random_range(0.0..std::f32::consts::TAU),
+                speed: rng.random_range(0.5..1.5),
                 cells: vec![seed_cell],
             };
             
@@ -129,7 +129,7 @@ impl PlateLayer {
             // Shuffle neighbors for randomness
             let mut neighbor_list: Vec<u32> = neighbors[current].clone();
             for i in (1..neighbor_list.len()).rev() {
-                let j = rng.gen_range(0..=i);
+                let j = rng.random_range(0..=i);
                 neighbor_list.swap(i, j);
             }
             

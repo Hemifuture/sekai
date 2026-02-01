@@ -129,7 +129,7 @@ impl PostprocessLayer {
             
             for (i, h) in heights.iter().enumerate() {
                 // Check if this is a coastline cell
-                let is_land = *h > 0.0;
+                let _is_land = *h > 0.0;
                 let has_water_neighbor = neighbors[i].iter().any(|&n| heights[n as usize] <= 0.0);
                 let has_land_neighbor = neighbors[i].iter().any(|&n| heights[n as usize] > 0.0);
                 

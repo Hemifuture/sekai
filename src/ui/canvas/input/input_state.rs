@@ -2,6 +2,7 @@
 
 use egui::Pos2;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputState {
     /// 空闲状态 - 系统等待新的输入
@@ -55,6 +56,7 @@ pub enum InputState {
     // },
 }
 
+#[allow(dead_code)]
 impl InputState {
     /// 返回该状态是否为"忙"状态 - 会阻止其他输入的处理
     pub fn is_busy(&self) -> bool {

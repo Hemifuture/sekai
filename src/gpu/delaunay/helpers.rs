@@ -2,6 +2,7 @@ use egui::Pos2;
 
 use super::delaunay_renderer::GPUTriangle;
 
+#[allow(dead_code)]
 pub fn to_gpu_triangles(indices: Vec<u32>, points: &[Pos2]) -> Vec<GPUTriangle> {
     let mut triangles = Vec::with_capacity(indices.len() / 3);
 

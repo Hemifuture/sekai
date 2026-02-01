@@ -348,7 +348,7 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
                     (y.0 * 100.0) as i32, (y.1 * 100.0) as i32,
                     (radius.0 * 100.0) as i32, (radius.1 * 100.0) as i32)
             }
-            TerrainCommand::Range { count, height, x, y, length, width, angle } => {
+            TerrainCommand::Range { count, height, x, y, length, width, angle: _ } => {
                 format!("Range {} {}-{} {}-{} {}-{} {}-{} {}-{}", 
                     count,
                     height.0, height.1,
@@ -357,7 +357,7 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
                     (length.0 * 100.0) as i32, (length.1 * 100.0) as i32,
                     (width.0 * 100.0) as i32, (width.1 * 100.0) as i32)
             }
-            TerrainCommand::Trough { count, depth, x, y, length, width, angle } => {
+            TerrainCommand::Trough { count, depth, x, y, length, width, angle: _ } => {
                 format!("Trough {} {}-{} {}-{} {}-{} {}-{} {}-{}", 
                     count,
                     depth.0, depth.1,

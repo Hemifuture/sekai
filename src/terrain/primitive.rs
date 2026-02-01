@@ -355,7 +355,7 @@ impl TerrainPrimitive {
                 ]
             }
             
-            TerrainPrimitive::Archipelago { island_count, island_size, spread, position } => {
+            TerrainPrimitive::Archipelago { island_count, island_size, spread: _, position } => {
                 let radius = island_size.to_radius();
                 // 群岛：多个小岛散布
                 vec![

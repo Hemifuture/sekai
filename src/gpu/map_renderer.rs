@@ -6,10 +6,14 @@ use egui::Pos2;
 
 use crate::delaunay::Triangle;
 
+#[allow(dead_code)]
 const MAX_POINTS: usize = 10_000;
+#[allow(dead_code)]
 const MAX_VORONOI_CELLS: usize = 10_000;
+#[allow(dead_code)]
 const MAX_TRIANGLES: usize = 10_000;
 
+#[allow(dead_code)]
 pub struct MapRenderer {
     pub points: Vec<Pos2>,
     pub triangles: Vec<Triangle>,

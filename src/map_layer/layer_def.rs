@@ -4,6 +4,7 @@ use eframe::wgpu;
 
 use crate::ui::canvas::state::CanvasState;
 
+#[allow(dead_code)]
 pub trait MapLayer: Any + Send + Sync {
     // 层的唯一标识符
     fn id(&self) -> &'static str;

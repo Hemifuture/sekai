@@ -316,7 +316,7 @@ impl FeatureDetector {
         heights: &[u8],
         distance_field: &[i8],
     ) -> Vec<f32> {
-        heights.iter().zip(distance_field.iter()).map(|(&h, &d)| {
+        heights.iter().zip(distance_field.iter()).map(|(&_h, &d)| {
             let dist = d.abs() as f32;
             
             // 海岸线附近（距离 1-2）几乎不允许噪声
