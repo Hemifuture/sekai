@@ -17,7 +17,8 @@ eframe = { version = "0.31", default-features = false, features = [
     "default_fonts", # Embed the default egui fonts.
     "wgpu",          # Use the wgpu rendering backend, alternative: glow.
     "persistence",   # Enable restoring app state when restarting the app.
-    "wayland",       # To support Linux (and CI)
+    "wayland",       # To support Linux Wayland
+    "x11",           # To support Linux X11
 ] }
 log = "0.4"
 

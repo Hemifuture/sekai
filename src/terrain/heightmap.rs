@@ -13,12 +13,14 @@ use rayon::prelude::*;
 pub const SEA_LEVEL: u8 = 20;
 
 /// 地形生成模式
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum TerrainGenerationMode {
     /// 板块构造模拟（物理模拟）
     TectonicSimulation,
-    /// 模板生成（使用预设模板）
+    /// 模板生成（使用预设模板名称）
     Template(String),
+    /// 模板生成（使用模板对象和指定种子）
+    TemplateWithSeed(TerrainTemplate, u64),
 }
 
 /// 地形生成配置
@@ -62,6 +64,14 @@ impl TerrainConfig {
         }
     }
 
+    /// 使用模板和指定种子生成
+    pub fn with_template_and_seed(template: TerrainTemplate, seed: u64) -> Self {
+        Self {
+            mode: TerrainGenerationMode::TemplateWithSeed(template, seed),
+            ..Default::default()
+        }
+    }
+
     /// 使用板块构造模拟
     pub fn with_tectonic_simulation(tectonic_config: TectonicConfig) -> Self {
         Self {
@@ -93,6 +103,9 @@ impl TerrainGenerator {
             TerrainGenerationMode::TectonicSimulation => self.generate_tectonic(cells, neighbors),
             TerrainGenerationMode::Template(template_name) => {
                 self.generate_from_template(cells, neighbors, template_name)
+            }
+            TerrainGenerationMode::TemplateWithSeed(template, seed) => {
+                self.generate_from_template_with_seed(cells, neighbors, template.clone(), *seed)
             }
         }
     }
@@ -157,6 +170,84 @@ impl TerrainGenerator {
 
             for (i, &noise) in noise_values.iter().enumerate() {
                 heights[i] += noise * 30.0; // 添加噪声细节
+            }
+        }
+
+        // 可选：侵蚀
+        if self.config.enable_erosion {
+            self.thermal_erosion(&mut heights, neighbors, self.config.erosion_iterations);
+        }
+
+        // 可选：额外平滑
+        if self.config.smoothing > 0 {
+            self.smooth_heights(&mut heights, neighbors, self.config.smoothing);
+        }
+
+        // 确保归一化
+        self.normalize_heights(&mut heights);
+
+        // 转换为 u8
+        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+
+        // 模板模式下不生成板块数据
+        let plates = Vec::new();
+        let plate_id = vec![0; cells.len()];
+
+        (heights_u8, plates, plate_id)
+    }
+
+    /// 使用模板和指定种子生成地形
+    fn generate_from_template_with_seed(
+        &self,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        template: TerrainTemplate,
+        seed: u64,
+    ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
+        #[cfg(debug_assertions)]
+        println!("使用模板 '{}' 和种子 {} 生成地形", template.name, seed);
+
+        // 计算地图尺寸
+        let (min_x, max_x, min_y, max_y) = cells.iter().fold(
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), pos| {
+                (
+                    min_x.min(pos.x),
+                    max_x.max(pos.x),
+                    min_y.min(pos.y),
+                    max_y.max(pos.y),
+                )
+            },
+        );
+        let width = (max_x - min_x) as u32;
+        let height = (max_y - min_y) as u32;
+
+        // 使用指定种子执行模板
+        let executor = TemplateExecutor::new(width, height, seed);
+        let mut heights = executor.execute(&template, cells, neighbors);
+
+        // 可选：添加细节噪声
+        if self.config.detail_noise_strength > 0.0 {
+            let detail_noise_config = NoiseConfig {
+                octaves: 4,
+                base_frequency: 0.08,
+                persistence: 0.4,
+                lacunarity: 2.2,
+                seed: (seed + 1) as u32,
+            };
+
+            let generator = NoiseGenerator::new(detail_noise_config.seed);
+            let strengths = vec![self.config.detail_noise_strength; cells.len()];
+            let noise_values =
+                generator.generate_constrained_noise(cells, &detail_noise_config, &strengths);
+
+            for (i, &noise) in noise_values.iter().enumerate() {
+                heights[i] += noise * 30.0;
             }
         }
 

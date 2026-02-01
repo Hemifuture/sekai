@@ -17,6 +17,18 @@ use crate::{
     ui::canvas::canvas::Canvas,
 };
 
+/// 可用的地形模板名称
+const TEMPLATE_NAMES: [&str; 8] = [
+    "Earth-like",
+    "Archipelago", 
+    "Continental",
+    "Volcanic Island",
+    "Atoll",
+    "Peninsula",
+    "Highland",
+    "Oceanic",
+];
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -24,6 +36,12 @@ pub struct TemplateApp {
     // Example stuff:
     label: String,
     scene_rect: Rect,
+    /// 当前选择的地形模板索引
+    selected_template: usize,
+    /// 随机种子
+    terrain_seed: u64,
+    /// 是否使用固定种子
+    use_fixed_seed: bool,
     #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_widget: Canvas,
     #[serde(skip)] // This how you opt-out of serialization of a field
@@ -51,6 +69,9 @@ impl Default for TemplateApp {
             label: "Hello World!".to_owned(),
             value: 2.7,
             scene_rect: Rect::ZERO,
+            selected_template: 0, // 默认 Earth-like
+            terrain_seed: 42,
+            use_fixed_seed: false,
             canvas_widget: Canvas::new(canvas_resource.clone(), map_system_resource.clone()),
             points_renderer: None,
             delaunay_renderer: None,
@@ -153,6 +174,36 @@ impl eframe::App for TemplateApp {
 
                 ui.separator();
 
+                // 地形模板选择
+                ui.label("地形模板:");
+                egui::ComboBox::from_label("")
+                    .selected_text(TEMPLATE_NAMES[self.selected_template])
+                    .show_ui(ui, |ui| {
+                        for (i, name) in TEMPLATE_NAMES.iter().enumerate() {
+                            ui.selectable_value(&mut self.selected_template, i, *name);
+                        }
+                    });
+
+                ui.add_space(8.0);
+
+                // 随机种子控制
+                ui.checkbox(&mut self.use_fixed_seed, "使用固定种子");
+                if self.use_fixed_seed {
+                    ui.horizontal(|ui| {
+                        ui.label("种子:");
+                        ui.add(egui::DragValue::new(&mut self.terrain_seed).range(0..=u64::MAX));
+                    });
+                }
+
+                ui.add_space(8.0);
+
+                // 生成按钮
+                if ui.button("🗺 生成新地图").clicked() {
+                    self.generate_terrain_with_template();
+                }
+
+                ui.separator();
+
                 // 图层可见性控制
                 ui.label("图层可见性:");
                 self.map_system.with_resource(|map_system| {
@@ -164,11 +215,9 @@ impl eframe::App for TemplateApp {
 
                 ui.separator();
 
-                // 地形生成控制
-                ui.label("地形生成:");
-                if ui.button("生成新地图").clicked() {
-                    self.generate_terrain();
-                }
+                // 显示当前地形信息
+                ui.label("当前地形:");
+                ui.label(format!("模板: {}", TEMPLATE_NAMES[self.selected_template]));
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -281,13 +330,36 @@ impl TemplateApp {
         heightmap_renderer_resource
     }
 
-    /// 生成新的地形
-    fn generate_terrain(&mut self) {
-        println!("Generating new terrain...");
+    /// 生成新的地形（使用选定的模板）
+    fn generate_terrain_with_template(&mut self) {
+        let template_name = TEMPLATE_NAMES[self.selected_template];
+        let seed = if self.use_fixed_seed {
+            self.terrain_seed
+        } else {
+            // 生成随机种子
+            let new_seed = rand::random::<u64>();
+            self.terrain_seed = new_seed;
+            new_seed
+        };
+
+        println!("Generating terrain with template '{}', seed: {}", template_name, seed);
 
         self.map_system.with_resource(|map_system| {
-            // 使用默认配置生成地形
-            let config = crate::terrain::TerrainConfig::default();
+            // 根据模板名称获取模板
+            let template = match template_name {
+                "Earth-like" => crate::terrain::TerrainTemplate::earth_like(),
+                "Archipelago" => crate::terrain::TerrainTemplate::archipelago(),
+                "Continental" => crate::terrain::TerrainTemplate::continental(),
+                "Volcanic Island" => crate::terrain::TerrainTemplate::volcanic_island(),
+                "Atoll" => crate::terrain::TerrainTemplate::atoll(),
+                "Peninsula" => crate::terrain::TerrainTemplate::peninsula(),
+                "Highland" => crate::terrain::TerrainTemplate::highland(),
+                "Oceanic" => crate::terrain::TerrainTemplate::oceanic(),
+                _ => crate::terrain::TerrainTemplate::earth_like(),
+            };
+
+            // 使用模板创建配置
+            let config = crate::terrain::TerrainConfig::with_template_and_seed(template, seed);
             let generator = TerrainGenerator::new(config);
 
             // 获取单元格位置（Voronoi生成点）
@@ -302,8 +374,13 @@ impl TemplateApp {
             // 更新高度数据
             map_system.cells_data.height = heights;
 
-            println!("Terrain generated successfully!");
+            println!("Terrain generated successfully with template '{}'!", template_name);
         });
+    }
+
+    /// 生成新的地形（兼容旧代码）
+    fn generate_terrain(&mut self) {
+        self.generate_terrain_with_template();
     }
 
     /// 从Delaunay三角剖分提取每个点的邻居
