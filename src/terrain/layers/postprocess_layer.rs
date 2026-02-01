@@ -14,6 +14,8 @@ pub struct PostprocessConfig {
     pub min_lake_size: usize,
     /// Coastline smoothing iterations
     pub smoothing_iterations: u32,
+    /// Target ocean ratio (0.0-1.0), e.g., 0.7 means 70% ocean
+    pub ocean_ratio: f32,
 }
 
 impl Default for PostprocessConfig {
@@ -22,6 +24,7 @@ impl Default for PostprocessConfig {
             min_island_size: 15,
             min_lake_size: 10,
             smoothing_iterations: 2,
+            ocean_ratio: 0.65,
         }
     }
 }
@@ -150,6 +153,38 @@ impl PostprocessLayer {
             heights.copy_from_slice(&new_heights);
         }
     }
+
+    /// Adjust heights to achieve target ocean ratio
+    /// This finds the height threshold that gives the desired water percentage
+    fn adjust_sea_ratio(heights: &mut [f32], ocean_ratio: f32) {
+        if heights.is_empty() || ocean_ratio <= 0.0 || ocean_ratio >= 1.0 {
+            return;
+        }
+
+        // Sort heights to find the percentile
+        let mut sorted: Vec<f32> = heights.iter().cloned().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Find the height at the ocean_ratio percentile
+        let percentile_idx = ((sorted.len() as f32) * ocean_ratio.clamp(0.0, 0.99)) as usize;
+        let threshold = sorted[percentile_idx];
+
+        #[cfg(debug_assertions)]
+        println!("调整海平面: ocean_ratio={}, threshold={:.2}", ocean_ratio, threshold);
+
+        // Shift all heights so that 'threshold' becomes the sea level (0.0)
+        // Heights below threshold become negative (water), above become positive (land)
+        for h in heights.iter_mut() {
+            *h -= threshold;
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let water_count = heights.iter().filter(|&&h| h <= 0.0).count();
+            let actual_ratio = water_count as f32 / heights.len() as f32;
+            println!("调整后海洋比例: {:.1}%", actual_ratio * 100.0);
+        }
+    }
 }
 
 impl TerrainLayer for PostprocessLayer {
@@ -164,6 +199,9 @@ impl TerrainLayer for PostprocessLayer {
         previous: &LayerOutput,
     ) -> LayerOutput {
         let mut output = previous.clone();
+
+        // First: Adjust sea level to achieve target ocean ratio
+        Self::adjust_sea_ratio(&mut output.heights, self.config.ocean_ratio);
 
         // Remove small islands
         Self::remove_small_islands(&mut output.heights, neighbors, self.config.min_island_size);

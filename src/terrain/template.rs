@@ -1747,3 +1747,38 @@ pub fn get_suggested_plate_count(template_name: &str) -> usize {
         _ => 10,
     }
 }
+
+/// 获取模板建议的海洋比例
+pub fn get_suggested_ocean_ratio(template_name: &str) -> f32 {
+    match template_name.to_lowercase().as_str() {
+        // 高海洋比例 (80-95%)
+        "oceanic" => 0.95,
+        "atoll" | "atoll_azgaar" | "atoll-azgaar" => 0.92,
+        "volcanic_island" | "volcanic-island" => 0.90,
+        "archipelago" | "archipelago_azgaar" | "archipelago-azgaar" => 0.85,
+        "volcanic_archipelago" | "volcanic-archipelago" => 0.85,
+        
+        // 中高海洋比例 (70-80%)
+        "low_island" | "low-island" => 0.80,
+        "earth-like" | "earth_like" => 0.70,
+        "high_island" | "high-island" => 0.70,
+        
+        // 中等海洋比例 (55-65%)
+        "peninsula" | "peninsula_azgaar" | "peninsula-azgaar" => 0.65,
+        "highland" => 0.65,
+        "isthmus" => 0.65,
+        "rift_valley" | "rift-valley" => 0.60,
+        "mediterranean" => 0.60,
+        "fjord_coast" | "fjord-coast" => 0.55,
+        "continental" => 0.55,
+        "tectonic_collision" | "tectonic-collision" => 0.55,
+        "fractured" => 0.55,
+        
+        // 低海洋比例 (25-45%)
+        "pangea" => 0.45,
+        "continents" => 0.30,
+        
+        // 默认值
+        _ => 0.65,
+    }
+}

@@ -10,7 +10,7 @@ use super::plate::{
     BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate,
 };
 use super::template::{
-    get_suggested_plate_count, get_template_by_name, should_use_layered_generation, TerrainTemplate,
+    get_suggested_plate_count, get_suggested_ocean_ratio, get_template_by_name, should_use_layered_generation, TerrainTemplate,
 };
 use super::template_executor::TemplateExecutor;
 use eframe::egui::Pos2;
@@ -141,7 +141,8 @@ impl TerrainGenerator {
                 self.generate_from_template_with_seed(cells, neighbors, template.clone(), *seed)
             }
             TerrainGenerationMode::Layered { seed, num_plates } => {
-                self.generate_layered(cells, neighbors, *seed, *num_plates)
+                // Default ocean ratio for direct Layered mode
+                self.generate_layered(cells, neighbors, *seed, *num_plates, 0.65)
             }
         }
     }
@@ -153,6 +154,7 @@ impl TerrainGenerator {
         neighbors: &[Vec<u32>],
         seed: u64,
         num_plates: usize,
+        ocean_ratio: f32,
     ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
         #[cfg(debug_assertions)]
         println!("使用分层系统生成地形: seed={}, plates={}", seed, num_plates);
@@ -180,6 +182,7 @@ impl TerrainGenerator {
             min_island_size: self.config.min_island_size,
             min_lake_size: self.config.min_lake_size,
             smoothing_iterations: self.config.coastline_smoothing,
+            ocean_ratio,
         };
 
         // 构建分层生成器
@@ -194,27 +197,40 @@ impl TerrainGenerator {
         let output = generator.generate(cells, neighbors);
 
         // 转换高度值到 u8 范围
-        // 先找到范围
+        // 保持海平面在固定位置 (SEA_LEVEL = 20)
+        // 海平面 (0.0) 映射到 20，负值映射到 0-20，正值映射到 20-255
         let min_h = output.heights.iter().cloned().fold(f32::INFINITY, f32::min);
         let max_h = output
             .heights
             .iter()
             .cloned()
             .fold(f32::NEG_INFINITY, f32::max);
-        let range = max_h - min_h;
 
-        let heights_u8: Vec<u8> = if range > 0.001 {
-            output
-                .heights
-                .iter()
-                .map(|&h| {
-                    let normalized = (h - min_h) / range;
-                    (normalized * 255.0).clamp(0.0, 255.0) as u8
-                })
-                .collect()
-        } else {
-            vec![128u8; cells.len()]
-        };
+        let heights_u8: Vec<u8> = output
+            .heights
+            .iter()
+            .map(|&h| {
+                if h <= 0.0 {
+                    // 海洋：映射到 0-20
+                    // min_h (最深) -> 0, 0 (海平面) -> 20
+                    if min_h >= 0.0 {
+                        SEA_LEVEL
+                    } else {
+                        let t = (h - min_h) / (0.0 - min_h);
+                        (t * SEA_LEVEL as f32).clamp(0.0, SEA_LEVEL as f32) as u8
+                    }
+                } else {
+                    // 陆地：映射到 20-255
+                    // 0 (海平面) -> 20, max_h (最高) -> 255
+                    if max_h <= 0.0 {
+                        SEA_LEVEL
+                    } else {
+                        let t = h / max_h;
+                        (SEA_LEVEL as f32 + t * (255.0 - SEA_LEVEL as f32)).clamp(SEA_LEVEL as f32, 255.0) as u8
+                    }
+                }
+            })
+            .collect();
 
         // 提取板块信息
         let plate_ids = output.plate_ids.unwrap_or_else(|| vec![0; cells.len()]);
@@ -240,7 +256,8 @@ impl TerrainGenerator {
                 "模板 '{}' 使用分层系统 (plates={})",
                 template_name, num_plates
             );
-            return self.generate_layered(cells, neighbors, self.config.tectonic.seed, num_plates);
+            let ocean_ratio = get_suggested_ocean_ratio(template_name);
+            return self.generate_layered(cells, neighbors, self.config.tectonic.seed, num_plates, ocean_ratio);
         }
 
         #[cfg(debug_assertions)]
