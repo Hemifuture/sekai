@@ -15,10 +15,10 @@ impl MapRenderer {
             ))),
         });
 
-        let points_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("points_pipeline"),
             cache: None,
-            layout: Some(&pipeline_layout),
+            layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &points_shader_module,
                 compilation_options: PipelineCompilationOptions::default(),
@@ -42,9 +42,7 @@ impl MapRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-        });
-
-        points_pipeline
+        })
     }
 
     pub fn create_delaunay_pipeline(
@@ -59,10 +57,10 @@ impl MapRenderer {
             ))),
         });
 
-        let delaunay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("delaunay_pipeline"),
             cache: None,
-            layout: Some(&pipeline_layout),
+            layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &delaunay_shader_module,
                 compilation_options: PipelineCompilationOptions::default(),
@@ -86,9 +84,7 @@ impl MapRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-        });
-
-        delaunay_pipeline
+        })
     }
 
     pub fn create_voronoi_pipeline(
@@ -103,10 +99,10 @@ impl MapRenderer {
             ))),
         });
 
-        let voronoi_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("voronoi_pipeline"),
             cache: None,
-            layout: Some(&pipeline_layout),
+            layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &voronoi_shader_module,
                 compilation_options: PipelineCompilationOptions::default(),
@@ -130,8 +126,6 @@ impl MapRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-        });
-
-        voronoi_pipeline
+        })
     }
 }

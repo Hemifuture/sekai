@@ -179,6 +179,7 @@ impl BlobGenerator {
     /// 添加 BFS 扩散式山脉
     ///
     /// 首先找到从起点到终点的路径，然后从路径向两侧扩散。
+    #[allow(clippy::too_many_arguments)]
     pub fn add_range(
         &self,
         heights: &mut [f32],
@@ -266,6 +267,7 @@ impl BlobGenerator {
     }
 
     /// 添加 BFS 扩散式海沟（与山脉相反）
+    #[allow(clippy::too_many_arguments)]
     pub fn add_trough(
         &self,
         heights: &mut [f32],

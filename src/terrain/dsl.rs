@@ -263,7 +263,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let mode = match args[0].to_lowercase().as_str() {
                 "1" | "edge" | "edgefade" => MaskMode::EdgeFade,
                 "2" | "center" | "centerboost" => MaskMode::CenterBoost,
-                "3" | "radial" | "radialgradient" | _ => MaskMode::RadialGradient,
+                _ => MaskMode::RadialGradient,
             };
             let strength = if args.len() > 1 {
                 parse_f32(args[1]).map_err(|e| make_err(&e))?
@@ -284,7 +284,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             let width = parse_f32(args[0]).map_err(|e| make_err(&e))? / 100.0;
             let direction = match args[1].to_lowercase().as_str() {
                 "v" | "vertical" => StraitDirection::Vertical,
-                "h" | "horizontal" | _ => StraitDirection::Horizontal,
+                _ => StraitDirection::Horizontal,
             };
             let position = if args.len() > 2 {
                 parse_f32(args[2]).map_err(|e| make_err(&e))? / 100.0
@@ -316,7 +316,7 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
                 match args[1].to_lowercase().as_str() {
                     "x" => InvertAxis::X,
                     "y" => InvertAxis::Y,
-                    "both" | _ => InvertAxis::Both,
+                    _ => InvertAxis::Both,
                 }
             } else {
                 InvertAxis::Both

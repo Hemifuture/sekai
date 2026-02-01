@@ -24,11 +24,12 @@ pub struct Lake {
 }
 
 /// 水系生成器
+#[derive(Default)]
 pub struct HydrologyGenerator {}
 
 impl HydrologyGenerator {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 
     /// 计算流向
@@ -105,7 +106,7 @@ impl HydrologyGenerator {
             .filter(|&i| {
                 flux[i] >= threshold
                     && is_land[i]
-                    && flow_direction[i].map_or(false, |d| !is_land[d as usize])
+                    && flow_direction[i].is_some_and(|d| !is_land[d as usize])
             })
             .collect();
 
@@ -139,7 +140,7 @@ impl HydrologyGenerator {
             if let Some(downstream) = flow {
                 flows_into
                     .entry(downstream as usize)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(i);
             }
         }

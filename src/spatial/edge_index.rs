@@ -253,7 +253,7 @@ impl EdgeIndex {
         if dy.abs() > 1e-6 {
             // 上边界
             let t = (rect.min.y - p1.y) / dy;
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let x = p1.x + t * dx;
                 if x >= rect.min.x && x <= rect.max.x {
                     return true;
@@ -262,7 +262,7 @@ impl EdgeIndex {
 
             // 下边界
             let t = (rect.max.y - p1.y) / dy;
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let x = p1.x + t * dx;
                 if x >= rect.min.x && x <= rect.max.x {
                     return true;
@@ -274,7 +274,7 @@ impl EdgeIndex {
         if dx.abs() > 1e-6 {
             // 左边界
             let t = (rect.min.x - p1.x) / dx;
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let y = p1.y + t * dy;
                 if y >= rect.min.y && y <= rect.max.y {
                     return true;
@@ -283,7 +283,7 @@ impl EdgeIndex {
 
             // 右边界
             let t = (rect.max.x - p1.x) / dx;
-            if t >= 0.0 && t <= 1.0 {
+            if (0.0..=1.0).contains(&t) {
                 let y = p1.y + t * dy;
                 if y >= rect.min.y && y <= rect.max.y {
                     return true;

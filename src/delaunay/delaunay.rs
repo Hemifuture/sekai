@@ -242,7 +242,7 @@ fn triangulate_with_delaunator(points: &[Pos2]) -> Vec<[u32; 3]> {
     // 线程本地缓存，避免重复分配
     thread_local! {
         static POINTS_CACHE: std::cell::RefCell<Vec<delaunator::Point>> =
-            std::cell::RefCell::new(Vec::new());
+            const { std::cell::RefCell::new(Vec::new()) };
     }
 
     POINTS_CACHE.with(|cache| {

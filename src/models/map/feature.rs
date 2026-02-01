@@ -11,7 +11,7 @@ pub trait CellFeature {
     fn feature_type(&self) -> CellFeatureType;
 
     /// 获取特征单元格列表（通过计算）
-    fn cells<'a>(&self, cells_data: &'a CellsData) -> Vec<usize>;
+    fn cells(&self, cells_data: &CellsData) -> Vec<usize>;
 
     /// 判断单元格是否属于该特征
     fn contains_cell(&self, cell_id: usize, cells_data: &CellsData) -> bool;

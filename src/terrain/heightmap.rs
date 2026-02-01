@@ -689,6 +689,7 @@ impl TerrainGenerator {
     }
 
     /// 应用噪声细节
+    #[allow(clippy::too_many_arguments)]
     fn apply_detail_noise(
         &self,
         heights: &mut [f32],

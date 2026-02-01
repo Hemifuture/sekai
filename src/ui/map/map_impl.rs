@@ -1,12 +1,7 @@
 use egui::{Color32, FontId, Pos2, Response, Ui, Widget};
 
+#[derive(Default)]
 pub struct MapWidget {}
-
-impl Default for MapWidget {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 impl Widget for &mut MapWidget {
     fn ui(self, ui: &mut Ui) -> Response {
@@ -18,7 +13,6 @@ impl Widget for &mut MapWidget {
             FontId::monospace(13.0),
             Color32::RED,
         );
-        let response = ui.label("Map");
-        response
+        ui.label("Map")
     }
 }

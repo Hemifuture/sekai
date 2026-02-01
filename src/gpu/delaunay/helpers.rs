@@ -16,7 +16,7 @@ pub fn to_gpu_triangles(indices: Vec<u32>, points: &[Pos2]) -> Vec<GPUTriangle> 
             // 确保索引在有效范围内
             if i1 < points.len() && i2 < points.len() && i3 < points.len() {
                 triangles.push(GPUTriangle {
-                    points: [points[i1].into(), points[i2].into(), points[i3].into()],
+                    points: [points[i1], points[i2], points[i3]],
                 });
             }
         }

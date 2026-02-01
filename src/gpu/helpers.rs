@@ -113,7 +113,7 @@ fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
     if dy.abs() > 1e-6 {
         // 与上边界y=rect.min.y相交
         let t_top = (rect.min.y - p1.y) / dy;
-        if t_top >= 0.0 && t_top <= 1.0 {
+        if (0.0..=1.0).contains(&t_top) {
             let x_intersect = p1.x + t_top * dx;
             if x_intersect >= rect.min.x && x_intersect <= rect.max.x {
                 return true;
@@ -122,7 +122,7 @@ fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
 
         // 与下边界y=rect.max.y相交
         let t_bottom = (rect.max.y - p1.y) / dy;
-        if t_bottom >= 0.0 && t_bottom <= 1.0 {
+        if (0.0..=1.0).contains(&t_bottom) {
             let x_intersect = p1.x + t_bottom * dx;
             if x_intersect >= rect.min.x && x_intersect <= rect.max.x {
                 return true;
@@ -134,7 +134,7 @@ fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
     if dx.abs() > 1e-6 {
         // 与左边界x=rect.min.x相交
         let t_left = (rect.min.x - p1.x) / dx;
-        if t_left >= 0.0 && t_left <= 1.0 {
+        if (0.0..=1.0).contains(&t_left) {
             let y_intersect = p1.y + t_left * dy;
             if y_intersect >= rect.min.y && y_intersect <= rect.max.y {
                 return true;
@@ -143,7 +143,7 @@ fn line_intersects_rect(p1: Pos2, p2: Pos2, rect: Rect) -> bool {
 
         // 与右边界x=rect.max.x相交
         let t_right = (rect.max.x - p1.x) / dx;
-        if t_right >= 0.0 && t_right <= 1.0 {
+        if (0.0..=1.0).contains(&t_right) {
             let y_intersect = p1.y + t_right * dy;
             if y_intersect >= rect.min.y && y_intersect <= rect.max.y {
                 return true;

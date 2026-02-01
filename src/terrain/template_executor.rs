@@ -8,18 +8,13 @@ use eframe::egui::Pos2;
 use rand::{Rng, SeedableRng};
 
 /// 生成模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GenerationMode {
     /// 传统模式：基于距离衰减的几何形状
     Classic,
     /// BFS 模式：基于 BFS 扩散的自然形状（参考 Azgaar）
+    #[default]
     BfsBlob,
-}
-
-impl Default for GenerationMode {
-    fn default() -> Self {
-        Self::BfsBlob // 默认使用 BFS 模式
-    }
 }
 
 /// 模板执行器
@@ -352,6 +347,7 @@ impl TemplateExecutor {
     }
 
     /// 应用山脉效果
+    #[allow(clippy::too_many_arguments)]
     fn apply_range(
         &self,
         heights: &mut [f32],
@@ -389,6 +385,7 @@ impl TemplateExecutor {
     }
 
     /// 应用海沟效果
+    #[allow(clippy::too_many_arguments)]
     fn apply_trough(
         &self,
         heights: &mut [f32],
@@ -532,6 +529,7 @@ impl TemplateExecutor {
     // ============================================================================
 
     /// BFS 扩散式丘陵
+    #[allow(clippy::too_many_arguments)]
     fn apply_hill_bfs(
         &self,
         heights: &mut [f32],
@@ -553,6 +551,7 @@ impl TemplateExecutor {
     }
 
     /// BFS 扩散式坑洞
+    #[allow(clippy::too_many_arguments)]
     fn apply_pit_bfs(
         &self,
         heights: &mut [f32],
@@ -574,6 +573,7 @@ impl TemplateExecutor {
     }
 
     /// BFS 扩散式山脉
+    #[allow(clippy::too_many_arguments)]
     fn apply_range_bfs(
         &self,
         heights: &mut [f32],
@@ -606,6 +606,7 @@ impl TemplateExecutor {
     }
 
     /// BFS 扩散式海沟
+    #[allow(clippy::too_many_arguments)]
     fn apply_trough_bfs(
         &self,
         heights: &mut [f32],
