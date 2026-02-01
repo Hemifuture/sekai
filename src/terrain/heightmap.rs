@@ -37,6 +37,16 @@ pub struct TerrainConfig {
     pub enable_erosion: bool,
     pub erosion_iterations: u32,
     pub smoothing: u32,
+    /// 是否启用特征清理（移除孤立的小岛和小湖）
+    pub enable_feature_cleanup: bool,
+    /// 最小岛屿大小（小于此值的岛屿会被淹没）
+    pub min_island_size: usize,
+    /// 最小湖泊大小（小于此值的湖泊会被填充）
+    pub min_lake_size: usize,
+    /// 海岸线平滑迭代次数
+    pub coastline_smoothing: u32,
+    /// 是否使用约束噪声（防止噪声产生散点）
+    pub use_constrained_noise: bool,
 }
 
 impl Default for TerrainConfig {
@@ -44,13 +54,19 @@ impl Default for TerrainConfig {
         Self {
             mode: TerrainGenerationMode::Template("earth-like".to_string()),
             tectonic: TectonicConfig::default(),
-            medium_noise_strength: 0.3,
-            detail_noise_strength: 0.25, // 增加细节噪声强度
+            medium_noise_strength: 0.0,  // 暂时关闭噪声测试
+            detail_noise_strength: 0.0,  // 暂时关闭噪声测试
             continental_noise_mult: 1.5,
             oceanic_noise_mult: 0.5,
             enable_erosion: false,
             erosion_iterations: 50,
             smoothing: 0,
+            // 新增：特征清理和海岸线优化
+            enable_feature_cleanup: true,  // 默认启用
+            min_island_size: 15,   // 大幅增加最小岛屿大小
+            min_lake_size: 10,    // 大幅增加最小湖泊大小
+            coastline_smoothing: 1,
+            use_constrained_noise: true,  // 默认启用约束噪声
         }
     }
 }
@@ -153,78 +169,42 @@ impl TerrainGenerator {
         let executor = TemplateExecutor::new(width, height, self.config.tectonic.seed);
         let mut heights = executor.execute(&template, cells, neighbors);
 
-        // 可选：添加细节噪声（多层）
+        // 可选：添加细节噪声（简化版，避免产生太多碎片）
         if self.config.detail_noise_strength > 0.0 {
-            // 中等尺度噪声 - 丘陵和小山
+            // 中等尺度噪声 - 增加地形变化但不产生碎片
             let medium_noise_config = NoiseConfig {
                 octaves: 4,
-                base_frequency: 0.003,  // 更低的基础频率，产生大尺度变化
+                base_frequency: 0.002,  // 低频率，大尺度变化
                 persistence: 0.5,
                 lacunarity: 2.0,
                 seed: (self.config.tectonic.seed + 1) as u32,
             };
 
             let generator = NoiseGenerator::new(medium_noise_config.seed);
-            let strengths = vec![self.config.detail_noise_strength * 0.6; cells.len()];
+            let strengths = vec![self.config.detail_noise_strength; cells.len()];
             let noise_values =
                 generator.generate_constrained_noise(cells, &medium_noise_config, &strengths);
 
             for (i, &noise) in noise_values.iter().enumerate() {
-                heights[i] += noise * 35.0;
+                heights[i] += noise * 20.0;
             }
 
-            // 细节噪声 - 中等地形变化
+            // 细节噪声 - 中等尺度，给陆地添加变化
             let detail_noise_config = NoiseConfig {
-                octaves: 5,
-                base_frequency: 0.008,
-                persistence: 0.45,
-                lacunarity: 2.1,
+                octaves: 3,
+                base_frequency: 0.005,
+                persistence: 0.4,
+                lacunarity: 2.0,
                 seed: (self.config.tectonic.seed + 2) as u32,
             };
 
             let generator2 = NoiseGenerator::new(detail_noise_config.seed);
-            let strengths2 = vec![self.config.detail_noise_strength * 0.8; cells.len()];
+            let strengths2 = vec![self.config.detail_noise_strength * 0.5; cells.len()];
             let noise_values2 =
                 generator2.generate_constrained_noise(cells, &detail_noise_config, &strengths2);
 
             for (i, &noise) in noise_values2.iter().enumerate() {
-                heights[i] += noise * 25.0;
-            }
-
-            // 高频噪声 - 微地形细节（海岸线破碎等）
-            let fine_noise_config = NoiseConfig {
-                octaves: 6,
-                base_frequency: 0.02,  // 更高频率
-                persistence: 0.4,
-                lacunarity: 2.3,
-                seed: (self.config.tectonic.seed + 3) as u32,
-            };
-
-            let generator3 = NoiseGenerator::new(fine_noise_config.seed);
-            let strengths3 = vec![self.config.detail_noise_strength; cells.len()];
-            let noise_values3 =
-                generator3.generate_constrained_noise(cells, &fine_noise_config, &strengths3);
-
-            for (i, &noise) in noise_values3.iter().enumerate() {
-                heights[i] += noise * 15.0;
-            }
-
-            // 超高频噪声 - 极细微的纹理
-            let micro_noise_config = NoiseConfig {
-                octaves: 4,
-                base_frequency: 0.05,  // 最高频率
-                persistence: 0.35,
-                lacunarity: 2.5,
-                seed: (self.config.tectonic.seed + 4) as u32,
-            };
-
-            let generator4 = NoiseGenerator::new(micro_noise_config.seed);
-            let strengths4 = vec![self.config.detail_noise_strength * 0.5; cells.len()];
-            let noise_values4 =
-                generator4.generate_constrained_noise(cells, &micro_noise_config, &strengths4);
-
-            for (i, &noise) in noise_values4.iter().enumerate() {
-                heights[i] += noise * 8.0;
+                heights[i] += noise * 12.0;
             }
         }
 
@@ -242,7 +222,10 @@ impl TerrainGenerator {
         self.normalize_heights(&mut heights);
 
         // 转换为 u8
-        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+        let mut heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+
+        // 后处理：特征清理和海岸线优化
+        self.post_process(&mut heights_u8, neighbors);
 
         // 模板模式下不生成板块数据
         let plates = Vec::new();
@@ -320,7 +303,10 @@ impl TerrainGenerator {
         self.normalize_heights(&mut heights);
 
         // 转换为 u8
-        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+        let mut heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+
+        // 后处理：特征清理和海岸线优化
+        self.post_process(&mut heights_u8, neighbors);
 
         // 模板模式下不生成板块数据
         let plates = Vec::new();
@@ -389,7 +375,10 @@ impl TerrainGenerator {
         }
 
         // 转换为 u8
-        let heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+        let mut heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+
+        // 后处理：特征清理和海岸线优化
+        self.post_process(&mut heights_u8, neighbors);
 
         (heights_u8, plates, plate_id)
     }
@@ -739,6 +728,54 @@ impl TerrainGenerator {
                     / neighbors[i].len() as f32;
 
                 heights[i] = heights[i] * 0.7 + neighbor_avg * 0.3;
+            }
+        }
+    }
+
+    /// 后处理：特征清理和海岸线优化
+    ///
+    /// 使用 Azgaar 风格的算法清理孤立的小岛和小湖，
+    /// 并平滑海岸线以消除噪点。
+    fn post_process(&self, heights: &mut [u8], neighbors: &[Vec<u32>]) {
+        use super::features::FeatureDetector;
+
+        // 计算边界单元格（简化版：假设边缘索引的单元格是边界）
+        // 实际应用中，这应该从 Voronoi 网格获取
+        let n = heights.len();
+        let border_cells: Vec<bool> = (0..n)
+            .map(|i| {
+                // 如果一个单元格的邻居数量少于平均值，可能是边界
+                neighbors[i].len() < 4
+            })
+            .collect();
+
+        let detector = FeatureDetector::new(
+            self.config.min_island_size,
+            self.config.min_lake_size,
+        );
+
+        // 1. 检测所有连通区域（特征）
+        let (features, _feature_ids) = detector.detect_features(heights, neighbors, &border_cells);
+
+        // 2. 清理太小的特征
+        if self.config.enable_feature_cleanup {
+            let cleaned = detector.cleanup_small_features(heights, &features);
+            #[cfg(debug_assertions)]
+            if cleaned > 0 {
+                println!("清理了 {} 个孤立单元格", cleaned);
+            }
+        }
+
+        // 3. 平滑海岸线
+        if self.config.coastline_smoothing > 0 {
+            let smoothed = detector.smooth_coastline(
+                heights,
+                neighbors,
+                self.config.coastline_smoothing,
+            );
+            #[cfg(debug_assertions)]
+            if smoothed > 0 {
+                println!("平滑了 {} 个海岸线单元格", smoothed);
             }
         }
     }

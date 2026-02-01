@@ -2,6 +2,7 @@
 //
 // 执行地形模板命令，修改高度图数据
 
+use super::blob::{BlobConfig, BlobGenerator};
 use super::template::{
     InvertAxis, MaskMode, StraitDirection, TerrainCommand, TerrainTemplate,
 };
@@ -9,11 +10,27 @@ use eframe::egui::Pos2;
 use rand::{Rng, SeedableRng};
 use std::f32::consts::PI;
 
+/// 生成模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationMode {
+    /// 传统模式：基于距离衰减的几何形状
+    Classic,
+    /// BFS 模式：基于 BFS 扩散的自然形状（参考 Azgaar）
+    BfsBlob,
+}
+
+impl Default for GenerationMode {
+    fn default() -> Self {
+        Self::BfsBlob  // 默认使用 BFS 模式
+    }
+}
+
 /// 模板执行器
 pub struct TemplateExecutor {
     width: u32,
     height: u32,
     seed: u64,
+    mode: GenerationMode,
 }
 
 impl TemplateExecutor {
@@ -22,7 +39,23 @@ impl TemplateExecutor {
             width,
             height,
             seed,
+            mode: GenerationMode::BfsBlob,  // 默认使用 BFS 模式
         }
+    }
+
+    /// 使用指定模式创建执行器
+    pub fn with_mode(width: u32, height: u32, seed: u64, mode: GenerationMode) -> Self {
+        Self {
+            width,
+            height,
+            seed,
+            mode,
+        }
+    }
+
+    /// 设置生成模式
+    pub fn set_mode(&mut self, mode: GenerationMode) {
+        self.mode = mode;
     }
 
     /// 执行模板，生成高度图
@@ -82,7 +115,15 @@ impl TemplateExecutor {
                     let px = rng.random_range(x.0..=x.1);
                     let py = rng.random_range(y.0..=y.1);
                     let r = rng.random_range(radius.0..=radius.1);
-                    self.apply_hill(heights, cells, h, px, py, r);
+                    
+                    match self.mode {
+                        GenerationMode::Classic => {
+                            self.apply_hill(heights, cells, h, px, py, r);
+                        }
+                        GenerationMode::BfsBlob => {
+                            self.apply_hill_bfs(heights, cells, neighbors, h, px, py, rng);
+                        }
+                    }
                 }
             }
 
@@ -98,7 +139,15 @@ impl TemplateExecutor {
                     let px = rng.random_range(x.0..=x.1);
                     let py = rng.random_range(y.0..=y.1);
                     let r = rng.random_range(radius.0..=radius.1);
-                    self.apply_pit(heights, cells, d, px, py, r);
+                    
+                    match self.mode {
+                        GenerationMode::Classic => {
+                            self.apply_pit(heights, cells, d, px, py, r);
+                        }
+                        GenerationMode::BfsBlob => {
+                            self.apply_pit_bfs(heights, cells, neighbors, d, px, py, rng);
+                        }
+                    }
                 }
             }
 
@@ -118,7 +167,15 @@ impl TemplateExecutor {
                     let len = rng.random_range(length.0..=length.1);
                     let w = rng.random_range(width.0..=width.1);
                     let a = rng.random_range(angle.0..=angle.1);
-                    self.apply_range(heights, cells, h, px, py, len, w, a);
+                    
+                    match self.mode {
+                        GenerationMode::Classic => {
+                            self.apply_range(heights, cells, h, px, py, len, w, a);
+                        }
+                        GenerationMode::BfsBlob => {
+                            self.apply_range_bfs(heights, cells, neighbors, h, px, py, len, a, rng);
+                        }
+                    }
                 }
             }
 
@@ -138,7 +195,15 @@ impl TemplateExecutor {
                     let len = rng.random_range(length.0..=length.1);
                     let w = rng.random_range(width.0..=width.1);
                     let a = rng.random_range(angle.0..=angle.1);
-                    self.apply_trough(heights, cells, d, px, py, len, w, a);
+                    
+                    match self.mode {
+                        GenerationMode::Classic => {
+                            self.apply_trough(heights, cells, d, px, py, len, w, a);
+                        }
+                        GenerationMode::BfsBlob => {
+                            self.apply_trough_bfs(heights, cells, neighbors, d, px, py, len, a, rng);
+                        }
+                    }
                 }
             }
 
@@ -475,5 +540,115 @@ impl TemplateExecutor {
         for h in heights.iter_mut() {
             *h = (*h - min) / (max - min) * 255.0;
         }
+    }
+
+    // ============================================================================
+    // BFS 扩散式方法（参考 Azgaar Fantasy Map Generator）
+    // ============================================================================
+
+    /// BFS 扩散式丘陵
+    fn apply_hill_bfs(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        height: f32,
+        center_x: f32,
+        center_y: f32,
+        rng: &mut rand::rngs::StdRng,
+    ) {
+        let blob_config = BlobConfig::from_cell_count(cells.len());
+        let blob_gen = BlobGenerator::new(blob_config);
+
+        let x = center_x * self.width as f32;
+        let y = center_y * self.height as f32;
+        let start_idx = BlobGenerator::find_nearest_cell(cells, x, y);
+
+        blob_gen.add_hill(heights, neighbors, start_idx, height, rng);
+    }
+
+    /// BFS 扩散式坑洞
+    fn apply_pit_bfs(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        depth: f32,
+        center_x: f32,
+        center_y: f32,
+        rng: &mut rand::rngs::StdRng,
+    ) {
+        let blob_config = BlobConfig::from_cell_count(cells.len());
+        let blob_gen = BlobGenerator::new(blob_config);
+
+        let x = center_x * self.width as f32;
+        let y = center_y * self.height as f32;
+        let start_idx = BlobGenerator::find_nearest_cell(cells, x, y);
+
+        blob_gen.add_pit(heights, neighbors, start_idx, depth, rng);
+    }
+
+    /// BFS 扩散式山脉
+    fn apply_range_bfs(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        height: f32,
+        center_x: f32,
+        center_y: f32,
+        length: f32,
+        angle: f32,
+        rng: &mut rand::rngs::StdRng,
+    ) {
+        let blob_config = BlobConfig::from_cell_count(cells.len());
+        let blob_gen = BlobGenerator::new(blob_config);
+
+        // 计算起点和终点
+        let half_len = length * self.width.max(self.height) as f32 / 2.0;
+        let cx = center_x * self.width as f32;
+        let cy = center_y * self.height as f32;
+
+        let start_x = cx - half_len * angle.cos();
+        let start_y = cy - half_len * angle.sin();
+        let end_x = cx + half_len * angle.cos();
+        let end_y = cy + half_len * angle.sin();
+
+        let start_idx = BlobGenerator::find_nearest_cell(cells, start_x, start_y);
+        let end_idx = BlobGenerator::find_nearest_cell(cells, end_x, end_y);
+
+        blob_gen.add_range(heights, cells, neighbors, start_idx, end_idx, height, rng);
+    }
+
+    /// BFS 扩散式海沟
+    fn apply_trough_bfs(
+        &self,
+        heights: &mut [f32],
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        depth: f32,
+        center_x: f32,
+        center_y: f32,
+        length: f32,
+        angle: f32,
+        rng: &mut rand::rngs::StdRng,
+    ) {
+        let blob_config = BlobConfig::from_cell_count(cells.len());
+        let blob_gen = BlobGenerator::new(blob_config);
+
+        // 计算起点和终点
+        let half_len = length * self.width.max(self.height) as f32 / 2.0;
+        let cx = center_x * self.width as f32;
+        let cy = center_y * self.height as f32;
+
+        let start_x = cx - half_len * angle.cos();
+        let start_y = cy - half_len * angle.sin();
+        let end_x = cx + half_len * angle.cos();
+        let end_y = cy + half_len * angle.sin();
+
+        let start_idx = BlobGenerator::find_nearest_cell(cells, start_x, start_y);
+        let end_idx = BlobGenerator::find_nearest_cell(cells, end_x, end_y);
+
+        blob_gen.add_trough(heights, cells, neighbors, start_idx, end_idx, depth, rng);
     }
 }

@@ -216,101 +216,60 @@ impl TerrainTemplate {
             "平衡的大陆和海洋配置，约 30% 陆地",
         )
         .with_commands(vec![
-            // ====== 第一层：大陆核心 ======
-            // 2-3 个大陆核心作为基础
+            // ====== 简化版：减少命令数量，避免碎片化 ======
+            
+            // 主大陆核心 - 少量大型
             TerrainCommand::Hill {
-                count: 3,
-                height: (100.0, 140.0),
-                x: (0.15, 0.85),
-                y: (0.15, 0.85),
-                radius: (0.18, 0.28),
+                count: 2,
+                height: (100.0, 130.0),
+                x: (0.2, 0.8),
+                y: (0.25, 0.75),
+                radius: (0.25, 0.35),
             },
             
-            // ====== 第二层：山脉链条（关键！）======
-            // 主要山脉 - 长而窄，模拟板块碰撞形成的造山带
+            // 次级大陆
+            TerrainCommand::Hill {
+                count: 3,
+                height: (70.0, 100.0),
+                x: (0.1, 0.9),
+                y: (0.15, 0.85),
+                radius: (0.15, 0.22),
+            },
+            
+            // 主要山脉 - 少量长山脉
             TerrainCommand::Range {
-                count: 6,
-                height: (100.0, 160.0),  // 更高
+                count: 3,
+                height: (90.0, 140.0),
+                x: (0.15, 0.85),
+                y: (0.2, 0.8),
+                length: (0.4, 0.6),
+                width: (0.03, 0.05),
+                angle: (0.0, 2.0 * PI),
+            },
+            
+            // 少量岛屿
+            TerrainCommand::Hill {
+                count: 5,
+                height: (40.0, 70.0),
+                x: (0.05, 0.95),
+                y: (0.1, 0.9),
+                radius: (0.04, 0.08),
+            },
+            
+            // 海沟
+            TerrainCommand::Trough {
+                count: 2,
+                depth: (30.0, 50.0),
                 x: (0.1, 0.9),
                 y: (0.1, 0.9),
-                length: (0.35, 0.7),     // 更长
-                width: (0.025, 0.05),    // 稍窄
-                angle: (0.0, 2.0 * PI),
-            },
-            // 次级山脉 - 较短
-            TerrainCommand::Range {
-                count: 10,
-                height: (70.0, 110.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                length: (0.18, 0.4),
-                width: (0.02, 0.04),
-                angle: (0.0, 2.0 * PI),
-            },
-            // 小型山脊/丘陵带
-            TerrainCommand::Range {
-                count: 15,
-                height: (40.0, 70.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                length: (0.1, 0.25),
-                width: (0.015, 0.03),
-                angle: (0.0, 2.0 * PI),
-            },
-            
-            // ====== 第三层：次级陆块和岛屿 ======
-            TerrainCommand::Hill {
-                count: 12,
-                height: (50.0, 85.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                radius: (0.06, 0.14),
-            },
-            // 小岛屿
-            TerrainCommand::Hill {
-                count: 15,
-                height: (35.0, 60.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                radius: (0.02, 0.06),
-            },
-            
-            // ====== 第四层：海洋地形 ======
-            // 海沟 - 模拟俯冲带
-            TerrainCommand::Trough {
-                count: 4,
-                depth: (25.0, 50.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                length: (0.25, 0.5),
-                width: (0.015, 0.03),
-                angle: (0.0, 2.0 * PI),
-            },
-            // 深海盆地
-            TerrainCommand::Pit {
-                count: 6,
-                depth: (18.0, 35.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                radius: (0.08, 0.18),
-            },
-            // 海底山脊（洋中脊）
-            TerrainCommand::Range {
-                count: 3,
-                height: (25.0, 45.0),
-                x: (0.0, 1.0),
-                y: (0.0, 1.0),
-                length: (0.4, 0.7),
+                length: (0.3, 0.5),
                 width: (0.02, 0.04),
                 angle: (0.0, 2.0 * PI),
             },
             
-            // ====== 后处理 ======
-            // 不做平滑，保留山脉的锐利边缘
-            // TerrainCommand::Smooth { iterations: 1 },
-            // 归一化
+            // 后处理
+            TerrainCommand::Smooth { iterations: 2 },
             TerrainCommand::Normalize,
-            // 调整海陆比例：70% 海洋，30% 陆地
             TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.7 },
         ])
     }
