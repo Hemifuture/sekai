@@ -495,11 +495,22 @@ impl TemplateExecutor {
                     continue;
                 }
 
-                let neighbor_avg: f32 = neighbors[i]
+                let valid_neighbors: Vec<f32> = neighbors[i]
                     .iter()
-                    .map(|&n| original[n as usize])
-                    .sum::<f32>()
-                    / neighbors[i].len() as f32;
+                    .filter_map(|&n| {
+                        let idx = n as usize;
+                        if idx < original.len() {
+                            Some(original[idx])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if valid_neighbors.is_empty() {
+                    continue;
+                }
+                let neighbor_avg: f32 = valid_neighbors.iter().sum::<f32>()
+                    / valid_neighbors.len() as f32;
 
                 heights[i] = heights[i] * 0.5 + neighbor_avg * 0.5;
             }

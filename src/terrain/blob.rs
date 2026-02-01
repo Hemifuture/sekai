@@ -111,9 +111,12 @@ impl BlobGenerator {
         queue.push_back(start_idx);
 
         while let Some(current) = queue.pop_front() {
+            if current >= neighbors.len() {
+                continue;
+            }
             for &neighbor in &neighbors[current] {
                 let n = neighbor as usize;
-                if change[n] > 0.0 {
+                if n >= change.len() || change[n] > 0.0 {
                     continue;
                 }
 
@@ -155,6 +158,9 @@ impl BlobGenerator {
         queue.push_back((start_idx, depth));
 
         while let Some((current, h)) = queue.pop_front() {
+            if current >= heights.len() {
+                continue;
+            }
             // 应用高度变化
             let jitter = 1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
             heights[current] -= h * jitter;
@@ -165,9 +171,12 @@ impl BlobGenerator {
                 continue;
             }
 
+            if current >= neighbors.len() {
+                continue;
+            }
             for &neighbor in &neighbors[current] {
                 let n = neighbor as usize;
-                if used[n] {
+                if n >= used.len() || used[n] {
                     continue;
                 }
                 used[n] = true;
@@ -228,8 +237,14 @@ impl BlobGenerator {
 
             // 扩展到邻居
             for &f in &frontier {
+                if f >= neighbors.len() {
+                    continue;
+                }
                 for &neighbor in &neighbors[f] {
                     let n = neighbor as usize;
+                    if n >= used.len() {
+                        continue;
+                    }
                     if !used[n] {
                         queue.push(n);
                         used[n] = true;
@@ -251,13 +266,21 @@ impl BlobGenerator {
 
             let mut current = cur;
             for _ in 0..iteration {
+                if current >= neighbors.len() {
+                    break;
+                }
                 // 找到高度最低的邻居
-                if let Some(&min_neighbor) = neighbors[current].iter().min_by(|&&a, &&b| {
-                    heights[a as usize]
-                        .partial_cmp(&heights[b as usize])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }) {
+                if let Some(&min_neighbor) = neighbors[current].iter()
+                    .filter(|&&n| (n as usize) < heights.len())
+                    .min_by(|&&a, &&b| {
+                        heights[a as usize]
+                            .partial_cmp(&heights[b as usize])
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
                     let min_idx = min_neighbor as usize;
+                    if min_idx >= heights.len() {
+                        break;
+                    }
                     // 平滑过渡
                     heights[min_idx] = (heights[current] * 2.0 + heights[min_idx]) / 3.0;
                     current = min_idx;
@@ -312,8 +335,14 @@ impl BlobGenerator {
             }
 
             for &f in &frontier {
+                if f >= neighbors.len() {
+                    continue;
+                }
                 for &neighbor in &neighbors[f] {
                     let n = neighbor as usize;
+                    if n >= used.len() {
+                        continue;
+                    }
                     if !used[n] {
                         queue.push(n);
                         used[n] = true;
@@ -346,9 +375,15 @@ impl BlobGenerator {
             let mut best_neighbor = None;
             let mut best_dist = f32::INFINITY;
 
+            if current >= neighbors.len() {
+                break;
+            }
             for &neighbor in &neighbors[current] {
                 let n = neighbor as usize;
-                if used[n] {
+                if n >= used.len() || used[n] {
+                    continue;
+                }
+                if n >= cells.len() {
                     continue;
                 }
 
