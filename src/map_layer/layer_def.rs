@@ -1,7 +1,6 @@
 use std::any::Any;
 
 use eframe::wgpu;
-use egui::Rect;
 
 use crate::ui::canvas::state::CanvasState;
 

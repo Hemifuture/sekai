@@ -97,7 +97,7 @@ impl PlateLayer {
             }
             
             // Pick random seed point
-            let seed_idx = rng.gen_range(0..available.len());
+            let seed_idx = rng.random_range(0..available.len());
             let seed_cell = available.swap_remove(seed_idx);
             
             let plate_type = if i < num_continental {

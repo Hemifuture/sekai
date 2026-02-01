@@ -118,7 +118,7 @@ impl BlobGenerator {
                 }
 
                 // 核心算法：指数衰减 + 随机扰动
-                let jitter = 1.0 - self.config.jitter + rng.gen::<f32>() * self.config.jitter * 2.0;
+                let jitter = 1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
                 change[n] = change[current].powf(self.config.blob_power) * jitter;
 
                 // 只有足够高的值才继续传播
@@ -155,7 +155,7 @@ impl BlobGenerator {
 
         while let Some((current, h)) = queue.pop_front() {
             // 应用高度变化
-            let jitter = 1.0 - self.config.jitter + rng.gen::<f32>() * self.config.jitter * 2.0;
+            let jitter = 1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
             heights[current] -= h * jitter;
 
             // 计算下一层的高度
@@ -214,7 +214,7 @@ impl BlobGenerator {
 
             // 对当前层的所有单元格应用高度
             for &idx in &frontier {
-                let jitter = 0.85 + rng.gen::<f32>() * 0.3;
+                let jitter = 0.85 + rng.random::<f32>() * 0.3;
                 heights[idx] += h * jitter;
             }
 
@@ -302,7 +302,7 @@ impl BlobGenerator {
             queue.clear();
 
             for &idx in &frontier {
-                let jitter = 0.85 + rng.gen::<f32>() * 0.3;
+                let jitter = 0.85 + rng.random::<f32>() * 0.3;
                 heights[idx] -= d * jitter;
             }
 
@@ -356,7 +356,7 @@ impl BlobGenerator {
                 let mut dist = (pos.x - end_pos.x).powi(2) + (pos.y - end_pos.y).powi(2);
 
                 // 15% 的概率将距离减半（增加路径随机性）
-                if rng.gen::<f32>() > 0.85 {
+                if rng.random::<f32>() > 0.85 {
                     dist /= 2.0;
                 }
 

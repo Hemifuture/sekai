@@ -3,7 +3,7 @@
 //! Removes small islands, fills small lakes, smooths coastlines.
 
 use super::r#trait::{LayerOutput, Pos2, TerrainLayer};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 /// Postprocessing configuration
 #[derive(Debug, Clone)]

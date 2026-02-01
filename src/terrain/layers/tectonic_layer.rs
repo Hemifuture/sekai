@@ -4,7 +4,7 @@
 //! This layer uses boundary cells as ridge lines and creates elevation
 //! that falls off with distance.
 
-use super::plate_layer::{BoundaryType, Plate, PlateConfig, PlateLayer, PlateType};
+use super::plate_layer::{Plate, PlateConfig, PlateLayer, PlateType};
 use super::r#trait::{LayerOutput, Pos2, TerrainLayer};
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, VecDeque};

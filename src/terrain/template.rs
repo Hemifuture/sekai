@@ -3,8 +3,6 @@
 // 模板是一组操作指令，用于生成特定类型的地形。
 // 每个模板定义了一系列的地形修改命令，可以产生可预测但仍具有随机性的地图。
 
-use eframe::egui::Pos2;
-use rand::{Rng, SeedableRng};
 use std::f32::consts::PI;
 
 /// 地形修改命令
@@ -1743,29 +1741,50 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
 }
 
 /// 判断模板是否应该使用新的分层生成系统
-/// 复杂的多大陆/板块碰撞模板使用分层系统，简单的单岛模板使用传统方式
-pub fn should_use_layered_generation(template_name: &str) -> bool {
-    match template_name.to_lowercase().as_str() {
-        // 这些模板使用新的分层系统（板块构造驱动）
-        "continents" |
-        "pangea" |
-        "tectonic_collision" | "tectonic-collision" |
-        "mediterranean" |
-        "earth-like" | "earth_like" => true,
-        
-        // 其他模板使用传统模板系统
-        _ => false,
-    }
+/// 所有模板都使用分层系统以避免放射状图案问题
+pub fn should_use_layered_generation(_template_name: &str) -> bool {
+    // 所有模板都使用新的分层生成系统
+    // 这能有效解决老系统的放射状图案问题
+    true
 }
 
 /// 获取模板建议的板块数量
+/// - 群岛类型：8-10 个小板块
+/// - 大陆类型：12-15 个板块  
+/// - 超级大陆：6-8 个大板块
 pub fn get_suggested_plate_count(template_name: &str) -> usize {
     match template_name.to_lowercase().as_str() {
-        "continents" => 15,
-        "pangea" => 8,
-        "tectonic_collision" | "tectonic-collision" => 12,
-        "mediterranean" => 10,
+        // === 超级大陆类型 (6-8 个大板块) ===
+        "pangea" => 6,
+        "rift_valley" | "rift-valley" => 8,
+        
+        // === 群岛类型 (8-10 个小板块) ===
+        "archipelago" => 10,
+        "archipelago_azgaar" | "archipelago-azgaar" | "archipelago (azgaar)" => 10,
+        "volcanic_archipelago" | "volcanic-archipelago" => 10,
+        "volcanic_island" | "volcanic-island" => 8,
+        "volcano" => 8,
+        "atoll" => 8,
+        "atoll_azgaar" | "atoll-azgaar" | "atoll (azgaar)" => 8,
+        "oceanic" => 8,
+        
+        // === 单岛/半岛类型 (8-10 个板块) ===
+        "high_island" | "high-island" | "high island" => 10,
+        "low_island" | "low-island" | "low island" => 10,
+        "peninsula" => 10,
+        "peninsula_azgaar" | "peninsula-azgaar" | "peninsula (azgaar)" => 10,
+        "highland" => 10,
+        "isthmus" => 10,
+        
+        // === 大陆类型 (12-15 个板块) ===
         "earth-like" | "earth_like" => 12,
+        "continental" => 12,
+        "continents" => 15,
+        "mediterranean" => 12,
+        "tectonic_collision" | "tectonic-collision" => 12,
+        "fjord_coast" | "fjord-coast" => 12,
+        
+        // 默认：中等数量
         _ => 10,
     }
 }

@@ -1,6 +1,6 @@
 // 噪声生成系统
 
-use noise::{NoiseFn, Perlin, RidgedMulti, Fbm};
+use noise::{NoiseFn, Perlin};
 
 /// 平滑阶梯函数（比 smoothstep 更平滑）
 pub fn smootherstep(edge0: f64, edge1: f64, x: f64) -> f64 {

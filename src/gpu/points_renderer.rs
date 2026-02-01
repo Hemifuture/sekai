@@ -1,12 +1,9 @@
 use std::num::NonZeroU64;
 
-use delaunator::Point;
 use eframe::egui_wgpu::wgpu;
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
-use eframe::wgpu::core::device::queue;
 use egui::emath::TSTransform;
 use egui::Pos2;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use super::canvas_uniform::CanvasUniforms;
 use super::map_renderer::MapRenderer;

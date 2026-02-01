@@ -2,7 +2,7 @@ use eframe::{
     egui_wgpu::{CallbackResources, CallbackTrait},
     wgpu::RenderPass,
 };
-use egui::{accesskit::Point, PaintCallbackInfo, Rect};
+use egui::{PaintCallbackInfo, Rect};
 
 use crate::resource::{CanvasStateResource, VoronoiRendererResource};
 

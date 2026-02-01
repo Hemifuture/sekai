@@ -8,7 +8,6 @@ use super::template::{
 };
 use eframe::egui::Pos2;
 use rand::{Rng, SeedableRng};
-use std::f32::consts::PI;
 
 /// 生成模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +236,7 @@ impl TemplateExecutor {
             }
 
             TerrainCommand::Invert { axis, probability } => {
-                if rng.gen::<f32>() < *probability {
+                if rng.random::<f32>() < *probability {
                     self.invert_heights(heights, cells, *axis);
                 }
             }

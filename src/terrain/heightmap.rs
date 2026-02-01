@@ -7,7 +7,7 @@ use super::plate::{
 use super::template::{get_template_by_name, should_use_layered_generation, get_suggested_plate_count, TerrainTemplate};
 use super::template_executor::TemplateExecutor;
 use super::layers::{
-    PlateLayer, PlateConfig, TectonicLayer, TectonicConfig as LayeredTectonicConfig,
+    PlateConfig, TectonicLayer, TectonicConfig as LayeredTectonicConfig,
     RegionalLayer, DetailLayer, PostprocessLayer, PostprocessConfig,
 };
 use super::layered_generator::LayeredGenerator;

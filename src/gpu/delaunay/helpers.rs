@@ -1,4 +1,3 @@
-use crate::delaunay::Triangle;
 use egui::Pos2;
 
 use super::delaunay_renderer::GPUTriangle;

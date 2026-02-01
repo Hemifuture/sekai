@@ -11,6 +11,10 @@ pub mod dsl;
 pub mod blob;
 pub mod features;
 
+// 模板测试
+#[cfg(test)]
+mod template_tests;
+
 // 新增：分层地形生成系统
 pub mod layers;
 pub mod layered_generator;

@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use egui::emath::TSTransform;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
