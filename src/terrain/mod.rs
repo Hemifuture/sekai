@@ -19,7 +19,10 @@ pub use plate::*;
 pub use noise::*;
 pub use heightmap::*;
 pub use hydrology::*;
-pub use template::*;
+pub use template::{
+    TerrainTemplate, TerrainCommand, MaskMode, StraitDirection, InvertAxis,
+    get_template_by_name, should_use_layered_generation, get_suggested_plate_count,
+};
 pub use template_executor::*;
 pub use primitive::*;
 pub use dsl::{parse_template, template_to_dsl};

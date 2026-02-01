@@ -4,8 +4,13 @@ use super::noise::{NoiseConfig, NoiseGenerator};
 use super::plate::{
     BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate,
 };
-use super::template::{get_template_by_name, TerrainTemplate};
+use super::template::{get_template_by_name, should_use_layered_generation, get_suggested_plate_count, TerrainTemplate};
 use super::template_executor::TemplateExecutor;
+use super::layers::{
+    PlateLayer, PlateConfig, TectonicLayer, TectonicConfig as LayeredTectonicConfig,
+    RegionalLayer, DetailLayer, PostprocessLayer, PostprocessConfig,
+};
+use super::layered_generator::LayeredGenerator;
 use eframe::egui::Pos2;
 use rayon::prelude::*;
 
@@ -21,6 +26,8 @@ pub enum TerrainGenerationMode {
     Template(String),
     /// 模板生成（使用模板对象和指定种子）
     TemplateWithSeed(TerrainTemplate, u64),
+    /// 新分层生成（板块→构造→区域→细节→后处理）
+    Layered { seed: u64, num_plates: usize },
 }
 
 /// 地形生成配置
@@ -96,6 +103,14 @@ impl TerrainConfig {
             ..Default::default()
         }
     }
+    
+    /// 使用新的分层生成系统
+    pub fn with_layered(seed: u64, num_plates: usize) -> Self {
+        Self {
+            mode: TerrainGenerationMode::Layered { seed, num_plates },
+            ..Default::default()
+        }
+    }
 }
 
 /// 地形生成器
@@ -123,7 +138,81 @@ impl TerrainGenerator {
             TerrainGenerationMode::TemplateWithSeed(template, seed) => {
                 self.generate_from_template_with_seed(cells, neighbors, template.clone(), *seed)
             }
+            TerrainGenerationMode::Layered { seed, num_plates } => {
+                self.generate_layered(cells, neighbors, *seed, *num_plates)
+            }
         }
+    }
+    
+    /// 使用新的分层系统生成地形
+    fn generate_layered(
+        &self,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        seed: u64,
+        num_plates: usize,
+    ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
+        #[cfg(debug_assertions)]
+        println!("使用分层系统生成地形: seed={}, plates={}", seed, num_plates);
+        
+        // 配置板块层
+        let plate_config = PlateConfig {
+            num_plates,
+            continental_ratio: 0.35,
+            continental_base: 30.0,
+            oceanic_base: -40.0,
+        };
+        
+        // 配置构造层
+        let tectonic_config = LayeredTectonicConfig {
+            plate_config: plate_config.clone(),
+            mountain_height: 80.0,
+            mountain_width: 20.0,
+            trench_depth: 30.0,
+            ridge_height: 20.0,
+            rift_depth: 25.0,
+        };
+        
+        // 配置后处理层
+        let postprocess_config = PostprocessConfig {
+            min_island_size: self.config.min_island_size,
+            min_lake_size: self.config.min_lake_size,
+            smoothing_iterations: self.config.coastline_smoothing,
+        };
+        
+        // 构建分层生成器
+        let generator = LayeredGenerator::new()
+            .with_seed(seed)
+            .add_layer(TectonicLayer::new(tectonic_config).with_seed(seed))
+            .add_layer(RegionalLayer::new().with_seed((seed + 100) as u32))
+            .add_layer(DetailLayer::new().with_seed((seed + 200) as u32))
+            .add_layer(PostprocessLayer::new(postprocess_config));
+        
+        // 生成地形
+        let output = generator.generate(cells, neighbors);
+        
+        // 转换高度值到 u8 范围
+        // 先找到范围
+        let min_h = output.heights.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_h = output.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let range = max_h - min_h;
+        
+        let heights_u8: Vec<u8> = if range > 0.001 {
+            output.heights.iter().map(|&h| {
+                let normalized = (h - min_h) / range;
+                (normalized * 255.0).clamp(0.0, 255.0) as u8
+            }).collect()
+        } else {
+            vec![128u8; cells.len()]
+        };
+        
+        // 提取板块信息
+        let plate_ids = output.plate_ids.unwrap_or_else(|| vec![0; cells.len()]);
+        
+        // 暂时不返回详细的板块对象
+        let plates = Vec::new();
+        
+        (heights_u8, plates, plate_ids)
     }
 
     /// 使用模板生成地形
@@ -133,8 +222,16 @@ impl TerrainGenerator {
         neighbors: &[Vec<u32>],
         template_name: &str,
     ) -> (Vec<u8>, Vec<TectonicPlate>, Vec<u16>) {
+        // 检查是否应该使用新的分层系统
+        if should_use_layered_generation(template_name) {
+            let num_plates = get_suggested_plate_count(template_name);
+            #[cfg(debug_assertions)]
+            println!("模板 '{}' 使用分层系统 (plates={})", template_name, num_plates);
+            return self.generate_layered(cells, neighbors, self.config.tectonic.seed, num_plates);
+        }
+        
         #[cfg(debug_assertions)]
-        println!("使用模板生成地形: {}", template_name);
+        println!("使用传统模板生成地形: {}", template_name);
 
         // 获取模板
         let template = get_template_by_name(template_name).unwrap_or_else(|| {

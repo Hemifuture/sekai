@@ -1741,3 +1741,31 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
         _ => None,
     }
 }
+
+/// 判断模板是否应该使用新的分层生成系统
+/// 复杂的多大陆/板块碰撞模板使用分层系统，简单的单岛模板使用传统方式
+pub fn should_use_layered_generation(template_name: &str) -> bool {
+    match template_name.to_lowercase().as_str() {
+        // 这些模板使用新的分层系统（板块构造驱动）
+        "continents" |
+        "pangea" |
+        "tectonic_collision" | "tectonic-collision" |
+        "mediterranean" |
+        "earth-like" | "earth_like" => true,
+        
+        // 其他模板使用传统模板系统
+        _ => false,
+    }
+}
+
+/// 获取模板建议的板块数量
+pub fn get_suggested_plate_count(template_name: &str) -> usize {
+    match template_name.to_lowercase().as_str() {
+        "continents" => 15,
+        "pangea" => 8,
+        "tectonic_collision" | "tectonic-collision" => 12,
+        "mediterranean" => 10,
+        "earth-like" | "earth_like" => 12,
+        _ => 10,
+    }
+}
