@@ -13,7 +13,9 @@ pub struct Grid {
 
 impl Default for Grid {
     fn default() -> Self {
-        let mut grid = Self::new(2000, 1000, 10);
+        // 减小间距以获得更高分辨率的地形细节
+        // spacing=5 → 约 80,000 个点 (之前是 20,000)
+        let mut grid = Self::new(2000, 1000, 5);
         grid.generate_points();
         grid
     }

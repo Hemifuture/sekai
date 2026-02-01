@@ -44,8 +44,8 @@ impl Default for TerrainConfig {
         Self {
             mode: TerrainGenerationMode::Template("earth-like".to_string()),
             tectonic: TectonicConfig::default(),
-            medium_noise_strength: 0.25,
-            detail_noise_strength: 0.18, // 增加细节噪声，让地形更不规则
+            medium_noise_strength: 0.3,
+            detail_noise_strength: 0.25, // 增加细节噪声强度
             continental_noise_mult: 1.5,
             oceanic_noise_mult: 0.5,
             enable_erosion: false,
@@ -157,38 +157,74 @@ impl TerrainGenerator {
         if self.config.detail_noise_strength > 0.0 {
             // 中等尺度噪声 - 丘陵和小山
             let medium_noise_config = NoiseConfig {
-                octaves: 3,
-                base_frequency: 0.02,
+                octaves: 4,
+                base_frequency: 0.003,  // 更低的基础频率，产生大尺度变化
                 persistence: 0.5,
                 lacunarity: 2.0,
                 seed: (self.config.tectonic.seed + 1) as u32,
             };
 
             let generator = NoiseGenerator::new(medium_noise_config.seed);
-            let strengths = vec![self.config.detail_noise_strength * 0.8; cells.len()];
+            let strengths = vec![self.config.detail_noise_strength * 0.6; cells.len()];
             let noise_values =
                 generator.generate_constrained_noise(cells, &medium_noise_config, &strengths);
 
             for (i, &noise) in noise_values.iter().enumerate() {
-                heights[i] += noise * 40.0;
+                heights[i] += noise * 35.0;
             }
 
-            // 细节噪声 - 微地形
+            // 细节噪声 - 中等地形变化
             let detail_noise_config = NoiseConfig {
                 octaves: 5,
-                base_frequency: 0.06,
-                persistence: 0.4,
-                lacunarity: 2.2,
+                base_frequency: 0.008,
+                persistence: 0.45,
+                lacunarity: 2.1,
                 seed: (self.config.tectonic.seed + 2) as u32,
             };
 
             let generator2 = NoiseGenerator::new(detail_noise_config.seed);
-            let strengths2 = vec![self.config.detail_noise_strength; cells.len()];
+            let strengths2 = vec![self.config.detail_noise_strength * 0.8; cells.len()];
             let noise_values2 =
                 generator2.generate_constrained_noise(cells, &detail_noise_config, &strengths2);
 
             for (i, &noise) in noise_values2.iter().enumerate() {
                 heights[i] += noise * 25.0;
+            }
+
+            // 高频噪声 - 微地形细节（海岸线破碎等）
+            let fine_noise_config = NoiseConfig {
+                octaves: 6,
+                base_frequency: 0.02,  // 更高频率
+                persistence: 0.4,
+                lacunarity: 2.3,
+                seed: (self.config.tectonic.seed + 3) as u32,
+            };
+
+            let generator3 = NoiseGenerator::new(fine_noise_config.seed);
+            let strengths3 = vec![self.config.detail_noise_strength; cells.len()];
+            let noise_values3 =
+                generator3.generate_constrained_noise(cells, &fine_noise_config, &strengths3);
+
+            for (i, &noise) in noise_values3.iter().enumerate() {
+                heights[i] += noise * 15.0;
+            }
+
+            // 超高频噪声 - 极细微的纹理
+            let micro_noise_config = NoiseConfig {
+                octaves: 4,
+                base_frequency: 0.05,  // 最高频率
+                persistence: 0.35,
+                lacunarity: 2.5,
+                seed: (self.config.tectonic.seed + 4) as u32,
+            };
+
+            let generator4 = NoiseGenerator::new(micro_noise_config.seed);
+            let strengths4 = vec![self.config.detail_noise_strength * 0.5; cells.len()];
+            let noise_values4 =
+                generator4.generate_constrained_noise(cells, &micro_noise_config, &strengths4);
+
+            for (i, &noise) in noise_values4.iter().enumerate() {
+                heights[i] += noise * 8.0;
             }
         }
 

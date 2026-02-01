@@ -44,7 +44,7 @@ impl Default for MapConfig {
         Self {
             width: 2000,
             height: 1000,
-            spacing: 10,
+            spacing: 5,  // 减小间距以获得更高分辨率 (约 80,000 点)
         }
     }
 }
