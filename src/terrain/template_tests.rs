@@ -5,8 +5,11 @@
 #[cfg(test)]
 mod tests {
     use crate::terrain::dsl::{load_template_from_file, load_templates_from_dir, parse_template};
+    use crate::terrain::heightmap::SEA_LEVEL;
+    use crate::terrain::plate::TectonicConfig;
     use crate::terrain::template::{TerrainCommand, TerrainTemplate};
     use crate::terrain::template_executor::{GenerationMode, TemplateExecutor};
+    use crate::terrain::{TerrainConfig, TerrainGenerator};
     use eframe::egui::Pos2;
     use std::path::Path;
 
@@ -248,6 +251,37 @@ mod tests {
                     idx
                 );
             }
+            TerrainCommand::Erode {
+                iterations,
+                rain,
+                capacity,
+                deposition,
+            } => {
+                assert!(
+                    *iterations > 0,
+                    "{} cmd {}: Erode iterations > 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    *rain >= 0.0 && *rain <= 1.0,
+                    "{} cmd {}: Erode rain in [0,1]",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    *capacity >= 0.0,
+                    "{} cmd {}: Erode capacity >= 0",
+                    template_name,
+                    idx
+                );
+                assert!(
+                    *deposition >= 0.0 && *deposition <= 1.0,
+                    "{} cmd {}: Erode deposition in [0,1]",
+                    template_name,
+                    idx
+                );
+            }
             TerrainCommand::Multiply { factor } => {
                 assert!(
                     *factor > 0.0,
@@ -309,6 +343,27 @@ mod tests {
         }
 
         (cells, neighbors)
+    }
+
+    fn assert_tectonic_quality(
+        config: TectonicConfig,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+    ) -> (f32, i32) {
+        let terrain = TerrainConfig::with_tectonic_simulation(config);
+        let generator = TerrainGenerator::new(terrain);
+        let (heights, _plates, _plate_id) = generator.generate(cells, neighbors);
+
+        let ocean =
+            heights.iter().filter(|&&h| h <= SEA_LEVEL).count() as f32 / heights.len() as f32;
+
+        let mut sorted = heights.clone();
+        sorted.sort_unstable();
+        let p10 = sorted[(sorted.len() as f32 * 0.10) as usize] as i32;
+        let p90 = sorted[(sorted.len() as f32 * 0.90) as usize] as i32;
+        let relief = p90 - p10;
+
+        (ocean, relief)
     }
 
     #[test]
@@ -481,6 +536,21 @@ mod tests {
     // ============================================================================
 
     #[test]
+    fn test_dsl_erode_command_parse() {
+        let text = "Hill 2 80-100 30-70 30-70
+Erode 5 0.3 0.8 0.4
+Normalize
+SeaRatio 0.7";
+        let template = parse_template("Erosion Test", "DSL erode parse", text)
+            .expect("Should parse erode command");
+
+        assert!(template
+            .commands
+            .iter()
+            .any(|c| matches!(c, TerrainCommand::Erode { .. })));
+    }
+
+    #[test]
     fn test_dsl_presets_parse() {
         use crate::terrain::dsl::presets;
 
@@ -567,6 +637,78 @@ mod tests {
 
         assert_eq!(heights.len(), 1);
         assert!(!heights[0].is_nan());
+    }
+
+    #[test]
+    fn test_tectonic_simulation_realistic_distribution() {
+        let width = 256;
+        let height = 256;
+        let cell_count = 2500;
+        let (cells, neighbors) = create_test_grid(width, height, cell_count);
+
+        let mut tectonic = TectonicConfig::earth_like();
+        tectonic.seed = 42;
+
+        let (ocean, relief) = assert_tectonic_quality(tectonic, &cells, &neighbors);
+
+        assert!(
+            (0.50..=0.85).contains(&ocean),
+            "Ocean ratio should be in a realistic range, got {:.3}",
+            ocean
+        );
+        assert!(
+            relief >= 80,
+            "Relief should be significant for tectonic maps, got {}",
+            relief
+        );
+    }
+
+    #[test]
+    fn test_tectonic_realism_stable_across_seeds() {
+        let width = 256;
+        let height = 256;
+        let cell_count = 2500;
+        let (cells, neighbors) = create_test_grid(width, height, cell_count);
+
+        for seed in [7_u64, 42, 123, 2024, 4096] {
+            let mut tectonic = TectonicConfig::earth_like();
+            tectonic.seed = seed;
+
+            let (ocean, relief) = assert_tectonic_quality(tectonic, &cells, &neighbors);
+            assert!(
+                (0.48..=0.86).contains(&ocean),
+                "Seed {} ocean ratio out of range: {:.3}",
+                seed,
+                ocean
+            );
+            assert!(relief >= 70, "Seed {} relief too low: {}", seed, relief);
+        }
+    }
+
+    #[test]
+    fn test_tectonic_ocean_ratio_responds_to_continental_ratio() {
+        let width = 256;
+        let height = 256;
+        let cell_count = 2500;
+        let (cells, neighbors) = create_test_grid(width, height, cell_count);
+
+        let mut oceanic_world = TectonicConfig::earth_like();
+        oceanic_world.seed = 2024;
+        oceanic_world.continental_ratio = 0.20;
+
+        let mut continental_world = TectonicConfig::earth_like();
+        continental_world.seed = 2024;
+        continental_world.continental_ratio = 0.50;
+
+        let (ocean_low_cont, _) = assert_tectonic_quality(oceanic_world, &cells, &neighbors);
+        let (ocean_high_cont, _) = assert_tectonic_quality(continental_world, &cells, &neighbors);
+
+        assert!(
+            ocean_low_cont > ocean_high_cont,
+            "Higher continental ratio should reduce ocean ratio, got low_cont={:.3}, high_cont={:.3}",
+            ocean_low_cont,
+            ocean_high_cont
+        );
     }
 
     #[test]

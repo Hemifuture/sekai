@@ -254,6 +254,37 @@ fn parse_line(line: &str, line_num: usize) -> Result<Option<TerrainCommand>, Par
             Ok(Some(TerrainCommand::Smooth { iterations }))
         }
 
+        // Erode iterations [rain] [capacity] [deposition]
+        "erode" => {
+            if args.is_empty() {
+                return Err(make_err(
+                    "Erode requires: iterations [rain] [capacity] [deposition]",
+                ));
+            }
+            let iterations = parse_u32(args[0]).map_err(|e| make_err(&e))?;
+            let rain = if args.len() > 1 {
+                parse_f32(args[1]).map_err(|e| make_err(&e))?
+            } else {
+                0.35
+            };
+            let capacity = if args.len() > 2 {
+                parse_f32(args[2]).map_err(|e| make_err(&e))?
+            } else {
+                0.65
+            };
+            let deposition = if args.len() > 3 {
+                parse_f32(args[3]).map_err(|e| make_err(&e))?
+            } else {
+                0.45
+            };
+            Ok(Some(TerrainCommand::Erode {
+                iterations,
+                rain,
+                capacity,
+                deposition,
+            }))
+        }
+
         // Mask mode [strength]
         // mode: 1=EdgeFade, 2=CenterBoost, 3=RadialGradient (或直接用名字)
         "mask" => {
@@ -526,6 +557,12 @@ pub fn template_to_dsl(template: &TerrainTemplate) -> String {
             TerrainCommand::Add { value } => format!("Add {}", value),
             TerrainCommand::Multiply { factor } => format!("Multiply {}", factor),
             TerrainCommand::Smooth { iterations } => format!("Smooth {}", iterations),
+            TerrainCommand::Erode {
+                iterations,
+                rain,
+                capacity,
+                deposition,
+            } => format!("Erode {} {} {} {}", iterations, rain, capacity, deposition),
             TerrainCommand::Mask { mode, strength } => {
                 let mode_str = match mode {
                     MaskMode::EdgeFade => "edge",
