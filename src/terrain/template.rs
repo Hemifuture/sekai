@@ -30,8 +30,8 @@ pub enum TerrainCommand {
     BoundedHill {
         count: u32,
         height: (f32, f32),
-        x: (f32, f32),      // 丘陵中心的 X 范围
-        y: (f32, f32),      // 丘陵中心的 Y 范围
+        x: (f32, f32),                // 丘陵中心的 X 范围
+        y: (f32, f32),                // 丘陵中心的 Y 范围
         bounds: (f32, f32, f32, f32), // 扩散边界 (min_x, max_x, min_y, max_y)
     },
 
@@ -84,6 +84,14 @@ pub enum TerrainCommand {
 
     /// 平滑 - 平均周围单元格的高度
     Smooth { iterations: u32 },
+
+    /// 侵蚀 - 基于坡度搬运沉积物，模拟水蚀对地形的重塑
+    Erode {
+        iterations: u32, // 迭代轮数
+        rain: f32,       // 每轮降雨量（0.0-1.0）
+        capacity: f32,   // 搬运能力系数（0.0-2.0）
+        deposition: f32, // 沉积比例（0.0-1.0）
+    },
 
     /// 遮罩 - 应用边缘或中心渐变效果
     Mask {
@@ -268,6 +276,12 @@ impl TerrainTemplate {
             },
             // 后处理
             TerrainCommand::Smooth { iterations: 2 },
+            TerrainCommand::Erode {
+                iterations: 4,
+                rain: 0.32,
+                capacity: 0.7,
+                deposition: 0.5,
+            },
             TerrainCommand::Normalize,
             TerrainCommand::AdjustSeaRatio { ocean_ratio: 0.7 },
         ])
@@ -357,6 +371,12 @@ impl TerrainTemplate {
             },
             // 平滑处理
             TerrainCommand::Smooth { iterations: 3 },
+            TerrainCommand::Erode {
+                iterations: 3,
+                rain: 0.28,
+                capacity: 0.6,
+                deposition: 0.45,
+            },
             // 归一化
             TerrainCommand::Normalize,
             // 调整海陆比例：55% 海洋，45% 陆地
@@ -841,9 +861,8 @@ impl TerrainTemplate {
                 height: (50.0, 75.0),
                 x: (0.08, 0.38),
                 y: (0.15, 0.85),
-                bounds: (0.0, 0.45, 0.0, 1.0),  // 不会扩散到 x > 0.45
+                bounds: (0.0, 0.45, 0.0, 1.0), // 不会扩散到 x > 0.45
             },
-            
             // === 东大陆（右侧 0.55-1.0）===
             // 核心
             TerrainCommand::Mountain {
@@ -858,12 +877,10 @@ impl TerrainTemplate {
                 height: (50.0, 75.0),
                 x: (0.62, 0.92),
                 y: (0.15, 0.85),
-                bounds: (0.55, 1.0, 0.0, 1.0),  // 不会扩散到 x < 0.55
+                bounds: (0.55, 1.0, 0.0, 1.0), // 不会扩散到 x < 0.55
             },
-            
             // 降低整体
             TerrainCommand::Multiply { factor: 0.55 },
-            
             // === 细节丘陵（同样带边界）===
             // 西大陆细节
             TerrainCommand::BoundedHill {
@@ -881,7 +898,6 @@ impl TerrainTemplate {
                 y: (0.10, 0.90),
                 bounds: (0.55, 1.0, 0.0, 1.0),
             },
-            
             // === 山脉 ===
             // 西大陆山脉
             TerrainCommand::Range {
@@ -903,10 +919,8 @@ impl TerrainTemplate {
                 width: (0.02, 0.03),
                 angle: (PI * 0.3, PI * 0.7),
             },
-            
             // 平滑
             TerrainCommand::Smooth { iterations: 2 },
-            
             // 边缘淡出
             TerrainCommand::Mask {
                 mode: MaskMode::EdgeFade,
@@ -1744,12 +1758,12 @@ pub fn get_suggested_ocean_ratio(template_name: &str) -> f32 {
         "volcanic_island" | "volcanic-island" => 0.90,
         "archipelago" | "archipelago_azgaar" | "archipelago-azgaar" => 0.85,
         "volcanic_archipelago" | "volcanic-archipelago" => 0.85,
-        
+
         // 中高海洋比例 (70-80%)
         "low_island" | "low-island" => 0.80,
         "earth-like" | "earth_like" => 0.70,
         "high_island" | "high-island" => 0.70,
-        
+
         // 中等海洋比例 (55-65%)
         "peninsula" | "peninsula_azgaar" | "peninsula-azgaar" => 0.65,
         "highland" => 0.65,
@@ -1760,11 +1774,11 @@ pub fn get_suggested_ocean_ratio(template_name: &str) -> f32 {
         "continental" => 0.55,
         "tectonic_collision" | "tectonic-collision" => 0.55,
         "fractured" => 0.55,
-        
+
         // 低海洋比例 (25-45%)
         "pangea" => 0.45,
         "continents" => 0.30,
-        
+
         // 默认值
         _ => 0.65,
     }

@@ -128,9 +128,7 @@ impl TemplateExecutor {
                     let px = rng.random_range(x.0..=x.1);
                     let py = rng.random_range(y.0..=y.1);
 
-                    self.apply_hill_bfs_bounded(
-                        heights, cells, neighbors, h, px, py, *bounds, rng,
-                    );
+                    self.apply_hill_bfs_bounded(heights, cells, neighbors, h, px, py, *bounds, rng);
                 }
             }
 
@@ -239,6 +237,22 @@ impl TemplateExecutor {
 
             TerrainCommand::Smooth { iterations } => {
                 self.smooth_heights(heights, neighbors, *iterations);
+            }
+
+            TerrainCommand::Erode {
+                iterations,
+                rain,
+                capacity,
+                deposition,
+            } => {
+                self.erode_heights(
+                    heights,
+                    neighbors,
+                    *iterations,
+                    *rain,
+                    *capacity,
+                    *deposition,
+                );
             }
 
             TerrainCommand::Mask { mode, strength } => {
@@ -503,6 +517,80 @@ impl TemplateExecutor {
         }
     }
 
+    /// 侵蚀地形（简化水蚀模型）
+    /// 核心思想：陡坡区域更易被侵蚀，低坡区域更容易沉积。
+    fn erode_heights(
+        &self,
+        heights: &mut [f32],
+        neighbors: &[Vec<u32>],
+        iterations: u32,
+        rain: f32,
+        capacity: f32,
+        deposition: f32,
+    ) {
+        if heights.is_empty() || iterations == 0 {
+            return;
+        }
+
+        let rain = rain.clamp(0.0, 1.0);
+        let capacity = capacity.max(0.0);
+        let deposition = deposition.clamp(0.0, 1.0);
+
+        for _ in 0..iterations {
+            let original = heights.to_vec();
+            let mut delta = vec![0.0f32; heights.len()];
+
+            for (i, ns) in neighbors.iter().enumerate() {
+                if ns.is_empty() {
+                    continue;
+                }
+
+                let h = original[i];
+                let mut lower_neighbors = Vec::new();
+                let mut total_slope = 0.0f32;
+
+                for &n in ns {
+                    let ni = n as usize;
+                    if ni >= original.len() {
+                        continue;
+                    }
+                    let slope = h - original[ni];
+                    if slope > 0.0 {
+                        lower_neighbors.push((ni, slope));
+                        total_slope += slope;
+                    }
+                }
+
+                if lower_neighbors.is_empty() {
+                    continue;
+                }
+
+                let potential = total_slope * rain * capacity;
+                let removed = potential.min(h.max(0.0));
+                if removed <= 0.0 {
+                    continue;
+                }
+
+                delta[i] -= removed;
+
+                for (ni, slope) in lower_neighbors {
+                    let weight = if total_slope > 0.0 {
+                        slope / total_slope
+                    } else {
+                        0.0
+                    };
+                    let transported = removed * weight;
+                    let deposit = transported * deposition;
+                    delta[ni] += deposit;
+                }
+            }
+
+            for (h, d) in heights.iter_mut().zip(delta.iter()) {
+                *h = (*h + *d).max(0.0);
+            }
+        }
+    }
+
     /// 平滑高度
     fn smooth_heights(&self, heights: &mut [f32], neighbors: &[Vec<u32>], iterations: u32) {
         for _ in 0..iterations {
@@ -527,8 +615,8 @@ impl TemplateExecutor {
                 if valid_neighbors.is_empty() {
                     continue;
                 }
-                let neighbor_avg: f32 = valid_neighbors.iter().sum::<f32>()
-                    / valid_neighbors.len() as f32;
+                let neighbor_avg: f32 =
+                    valid_neighbors.iter().sum::<f32>() / valid_neighbors.len() as f32;
 
                 heights[i] = heights[i] * 0.5 + neighbor_avg * 0.5;
             }

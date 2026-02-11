@@ -10,7 +10,8 @@ use super::plate::{
     BoundaryType, PlateBoundary, PlateGenerator, PlateType, TectonicConfig, TectonicPlate,
 };
 use super::template::{
-    get_suggested_plate_count, get_suggested_ocean_ratio, get_template_by_name, should_use_layered_generation, TerrainTemplate,
+    get_suggested_ocean_ratio, get_suggested_plate_count, get_template_by_name,
+    should_use_layered_generation, TerrainTemplate,
 };
 use super::template_executor::TemplateExecutor;
 use eframe::egui::Pos2;
@@ -226,7 +227,8 @@ impl TerrainGenerator {
                         SEA_LEVEL
                     } else {
                         let t = h / max_h;
-                        (SEA_LEVEL as f32 + t * (255.0 - SEA_LEVEL as f32)).clamp(SEA_LEVEL as f32, 255.0) as u8
+                        (SEA_LEVEL as f32 + t * (255.0 - SEA_LEVEL as f32))
+                            .clamp(SEA_LEVEL as f32, 255.0) as u8
                     }
                 }
             })
@@ -257,7 +259,13 @@ impl TerrainGenerator {
                 template_name, num_plates
             );
             let ocean_ratio = get_suggested_ocean_ratio(template_name);
-            return self.generate_layered(cells, neighbors, self.config.tectonic.seed, num_plates, ocean_ratio);
+            return self.generate_layered(
+                cells,
+                neighbors,
+                self.config.tectonic.seed,
+                num_plates,
+                ocean_ratio,
+            );
         }
 
         #[cfg(debug_assertions)]
@@ -451,6 +459,9 @@ impl TerrainGenerator {
         // ====== 阶段 1: 板块构造模拟 ======
         let (mut heights, plates, plate_id) = self.simulate_plate_tectonics(cells, neighbors);
 
+        // 根据板块类型和到边界距离加入浮力偏移，形成更稳定的海陆双峰分布
+        self.apply_plate_buoyancy(&mut heights, &plates, &plate_id, neighbors);
+
         // ====== 阶段 2: 中尺度噪声（大地貌） ======
         let medium_noise_config = NoiseConfig {
             octaves: 3,
@@ -494,15 +505,13 @@ impl TerrainGenerator {
             self.config.detail_noise_strength,
         );
 
-        // ====== 阶段 5: 归一化与后处理 ======
-        self.normalize_heights(&mut heights);
-
+        // ====== 阶段 5: 地貌整形与后处理 ======
         if self.config.smoothing > 0 {
             self.smooth_heights(&mut heights, neighbors, self.config.smoothing);
         }
 
-        // 转换为 u8
-        let mut heights_u8: Vec<u8> = heights.iter().map(|&h| h.clamp(0.0, 255.0) as u8).collect();
+        // 使用分位数控制海陆比例 + 非线性映射，得到更拟真的高程分布
+        let mut heights_u8 = self.remap_tectonic_heights(&heights);
 
         // 后处理：特征清理和海岸线优化
         self.post_process(&mut heights_u8, neighbors);
@@ -819,6 +828,86 @@ impl TerrainGenerator {
                 }
             }
         }
+    }
+
+    /// 板块浮力偏移：大陆内部抬升、海洋板块压低，强化海陆双峰结构
+    fn apply_plate_buoyancy(
+        &self,
+        heights: &mut [f32],
+        plates: &[TectonicPlate],
+        plate_id: &[u16],
+        neighbors: &[Vec<u32>],
+    ) {
+        if heights.is_empty() {
+            return;
+        }
+
+        for i in 0..heights.len() {
+            let pid = plate_id[i];
+            if pid == 0 {
+                continue;
+            }
+
+            let plate = &plates[(pid - 1) as usize];
+            let dist = self
+                .calculate_boundary_distance(i, plate, neighbors)
+                .min(12.0);
+
+            match plate.plate_type {
+                PlateType::Continental => {
+                    // 大陆内部更厚、更高；边界保留一定起伏给造山带
+                    heights[i] += 6.0 + dist * 1.1;
+                }
+                PlateType::Oceanic => {
+                    // 海洋板块总体更低，内部更深，形成深海平原
+                    heights[i] -= 10.0 + dist * 0.9;
+                }
+            }
+        }
+    }
+
+    /// 将板块模拟的原始高度重映射到 0..255，控制海陆比例并塑造拟真高程分布
+    fn remap_tectonic_heights(&self, heights: &[f32]) -> Vec<u8> {
+        if heights.is_empty() {
+            return Vec::new();
+        }
+
+        let mut sorted = heights.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let target_ocean_ratio =
+            (0.85 - self.config.tectonic.continental_ratio * 0.55).clamp(0.45, 0.80);
+        let idx = ((sorted.len() as f32) * target_ocean_ratio) as usize;
+        let idx = idx.min(sorted.len() - 1);
+        let sea_threshold = sorted[idx];
+
+        let min_h = sorted[0];
+        let max_h = sorted[sorted.len() - 1];
+        let sea = SEA_LEVEL as f32;
+
+        heights
+            .iter()
+            .map(|&h| {
+                if h <= sea_threshold {
+                    // 海洋：加深深海，保留大陆架浅海
+                    let t = if (sea_threshold - min_h).abs() < 0.0001 {
+                        0.5
+                    } else {
+                        ((h - min_h) / (sea_threshold - min_h)).clamp(0.0, 1.0)
+                    };
+                    (t.powf(1.55) * sea).clamp(0.0, sea) as u8
+                } else {
+                    // 陆地：压缩低地、拉开高山区间，突出造山带
+                    let t = if (max_h - sea_threshold).abs() < 0.0001 {
+                        0.5
+                    } else {
+                        ((h - sea_threshold) / (max_h - sea_threshold)).clamp(0.0, 1.0)
+                    };
+                    let land = sea + t.powf(0.82) * (255.0 - sea);
+                    land.clamp(sea, 255.0) as u8
+                }
+            })
+            .collect()
     }
 
     /// 归一化高度值
