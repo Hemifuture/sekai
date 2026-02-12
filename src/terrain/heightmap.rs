@@ -169,7 +169,7 @@ impl TerrainGenerator {
         let plate_config = PlateConfig {
             num_plates,
             continental_ratio,
-            continental_base: 40.0,
+            continental_base: 60.0,
             oceanic_base: -50.0,
         };
 

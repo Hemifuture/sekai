@@ -339,6 +339,22 @@ impl TerrainLayer for TectonicLayer {
                 }
             };
 
+            // Intra-continental noise: gentle variation (±12) so interiors aren't flat
+            // but minimum stays well above sea level
+            let interior_noise =
+                if plate.plate_type == PlateType::Continental && dist_tb >= shelf_width {
+                    let noise_val = {
+                        let h = (i as u64)
+                            .wrapping_mul(self.seed.wrapping_mul(0x9E3779B97F4A7C15))
+                            .wrapping_add(plate_id as u64);
+                        let h = h.wrapping_mul(0x517cc1b727220a95);
+                        ((h >> 32) as f32 / u32::MAX as f32) * 2.0 - 1.0 // -1..1
+                    };
+                    noise_val * 12.0
+                } else {
+                    0.0
+                };
+
             // Tectonic contribution based on distance to nearest boundary
             let distance = distances[i];
 
@@ -347,7 +363,7 @@ impl TerrainLayer for TectonicLayer {
 
             let tectonic = self.terrain_contribution(distance, collision_type, &mut rng);
 
-            heights[i] = base + tectonic;
+            heights[i] = base + tectonic + interior_noise;
         }
 
         // Post-assignment smoothing passes - EDGE ONLY (near plate boundaries)

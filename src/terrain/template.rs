@@ -1713,37 +1713,37 @@ pub fn should_use_layered_generation(_template_name: &str) -> bool {
 pub fn get_suggested_plate_count(template_name: &str) -> usize {
     match template_name.to_lowercase().as_str() {
         // === 超级大陆类型 (6-8 个大板块) ===
-        "pangea" => 6,
-        "rift_valley" | "rift-valley" => 8,
+        "pangea" => 5,
+        "rift_valley" | "rift-valley" => 6,
 
-        // === 群岛类型 (8-10 个小板块) ===
-        "archipelago" => 10,
-        "archipelago_azgaar" | "archipelago-azgaar" | "archipelago (azgaar)" => 10,
-        "volcanic_archipelago" | "volcanic-archipelago" => 10,
-        "volcanic_island" | "volcanic-island" => 8,
-        "volcano" => 8,
-        "atoll" => 8,
-        "atoll_azgaar" | "atoll-azgaar" | "atoll (azgaar)" => 8,
-        "oceanic" => 8,
+        // === 群岛类型 (keep more for island feel) ===
+        "archipelago" => 8,
+        "archipelago_azgaar" | "archipelago-azgaar" | "archipelago (azgaar)" => 8,
+        "volcanic_archipelago" | "volcanic-archipelago" => 8,
+        "volcanic_island" | "volcanic-island" => 6,
+        "volcano" => 6,
+        "atoll" => 6,
+        "atoll_azgaar" | "atoll-azgaar" | "atoll (azgaar)" => 6,
+        "oceanic" => 6,
 
-        // === 单岛/半岛类型 (8-10 个板块) ===
-        "high_island" | "high-island" | "high island" => 10,
-        "low_island" | "low-island" | "low island" => 10,
-        "peninsula" => 10,
-        "peninsula_azgaar" | "peninsula-azgaar" | "peninsula (azgaar)" => 10,
-        "highland" => 10,
-        "isthmus" => 10,
+        // === 单岛/半岛类型 ===
+        "high_island" | "high-island" | "high island" => 7,
+        "low_island" | "low-island" | "low island" => 7,
+        "peninsula" => 7,
+        "peninsula_azgaar" | "peninsula-azgaar" | "peninsula (azgaar)" => 7,
+        "highland" => 7,
+        "isthmus" => 7,
 
-        // === 大陆类型 (10-14 个板块) ===
-        "earth-like" | "earth_like" => 12,
-        "continental" => 10,
-        "continents" => 14,
-        "mediterranean" => 12,
-        "tectonic_collision" | "tectonic-collision" => 12,
-        "fjord_coast" | "fjord-coast" => 10,
+        // === 大陆类型 (fewer plates = broader landmasses) ===
+        "earth-like" | "earth_like" => 7,
+        "continental" => 6,
+        "continents" => 8,
+        "mediterranean" => 7,
+        "tectonic_collision" | "tectonic-collision" => 7,
+        "fjord_coast" | "fjord-coast" => 6,
 
-        // 默认：中等数量
-        _ => 10,
+        // 默认
+        _ => 7,
     }
 }
 
