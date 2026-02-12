@@ -23,7 +23,7 @@ impl VoronoiCallback {
 impl CallbackTrait for VoronoiCallback {
     fn prepare(
         &self,
-        _device: &eframe::wgpu::Device,
+        device: &eframe::wgpu::Device,
         queue: &eframe::wgpu::Queue,
         _screen_descriptor: &eframe::egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut eframe::wgpu::CommandEncoder,
@@ -33,7 +33,7 @@ impl CallbackTrait for VoronoiCallback {
         voronoi_renderer_resource.with_resource(|voronoi_renderer| {
             self.canvas_state_resource.read_resource(|canvas_state| {
                 voronoi_renderer.update_uniforms(self.canvas_rect, canvas_state.transform);
-                voronoi_renderer.upload_to_gpu(queue);
+                voronoi_renderer.upload_to_gpu(device, queue);
             })
         });
 

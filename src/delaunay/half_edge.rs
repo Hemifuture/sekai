@@ -571,6 +571,6 @@ mod tests {
         // 验证 Voronoi 渲染数据
         let (voronoi_vertices, voronoi_indices) = mesh.voronoi_render_data();
         assert_eq!(voronoi_vertices.len(), mesh.triangle_count());
-        assert!(voronoi_indices.len() > 0, "应该有 Voronoi 边");
+        assert!(!voronoi_indices.is_empty(), "应该有 Voronoi 边");
     }
 }

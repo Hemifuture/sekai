@@ -162,7 +162,7 @@ impl PostprocessLayer {
         }
 
         // Sort heights to find the percentile
-        let mut sorted: Vec<f32> = heights.iter().cloned().collect();
+        let mut sorted: Vec<f32> = heights.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         // Find the height at the ocean_ratio percentile
@@ -170,7 +170,10 @@ impl PostprocessLayer {
         let threshold = sorted[percentile_idx];
 
         #[cfg(debug_assertions)]
-        println!("调整海平面: ocean_ratio={}, threshold={:.2}", ocean_ratio, threshold);
+        println!(
+            "调整海平面: ocean_ratio={}, threshold={:.2}",
+            ocean_ratio, threshold
+        );
 
         // Shift all heights so that 'threshold' becomes the sea level (0.0)
         // Heights below threshold become negative (water), above become positive (land)

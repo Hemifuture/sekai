@@ -25,23 +25,24 @@ log = "0.4"
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
 
-tokio = { version = "1", features = ["full"] }
 bytemuck = "1.21.0"
 rand = "0.9.0"
-rayon = "1.10"
 noise = "0.9"
 
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", default-features = false, features = ["html_reports", "cargo_bench_support"] }
 delaunator = "1.0.2"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
+tokio = { version = "1", features = ["full"] }
+rayon = "1.10"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
 opt-level = 2 # fast and small wasm

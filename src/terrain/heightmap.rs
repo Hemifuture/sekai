@@ -15,6 +15,7 @@ use super::template::{
 };
 use super::template_executor::TemplateExecutor;
 use eframe::egui::Pos2;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 /// 海平面高度阈值
@@ -729,8 +730,11 @@ impl TerrainGenerator {
         let generator = NoiseGenerator::new(noise_config.seed);
 
         // 计算每个单元格的噪声强度
-        let strengths: Vec<f32> = (0..heights.len())
-            .into_par_iter()
+        #[cfg(not(target_arch = "wasm32"))]
+        let iter = (0..heights.len()).into_par_iter();
+        #[cfg(target_arch = "wasm32")]
+        let iter = 0..heights.len();
+        let strengths: Vec<f32> = iter
             .map(|i| {
                 let pid = plate_id[i];
                 if pid == 0 {

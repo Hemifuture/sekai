@@ -27,6 +27,7 @@
 //! ```
 
 use egui::Pos2;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -171,8 +172,11 @@ pub fn compute_indexed_voronoi(triangle_indices: &[u32], points: &[Pos2]) -> Ind
     let triangles: Vec<[u32; 3]> = build_triangle_list(triangle_indices);
 
     // Step 2: 并行计算每个三角形的外心
-    let circumcenters: Vec<Pos2> = triangles
-        .par_iter()
+    #[cfg(not(target_arch = "wasm32"))]
+    let iter = triangles.par_iter();
+    #[cfg(target_arch = "wasm32")]
+    let iter = triangles.iter();
+    let circumcenters: Vec<Pos2> = iter
         .map(|indices| compute_circumcenter(points, indices))
         .collect();
 
@@ -548,6 +552,13 @@ pub struct OldVoronoiCell {
 pub struct VoronoiDiagram {
     pub cells: Vec<OldVoronoiCell>,
     pub edges: Vec<OldVoronoiEdge>,
+}
+
+#[cfg(test)]
+impl Default for VoronoiDiagram {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -28,8 +28,9 @@ pub use noise::*;
 pub use plate::*;
 pub use primitive::*;
 pub use template::{
-    get_suggested_plate_count, get_suggested_ocean_ratio, get_template_by_name, should_use_layered_generation, InvertAxis,
-    MaskMode, StraitDirection, TerrainCommand, TerrainTemplate,
+    get_suggested_ocean_ratio, get_suggested_plate_count, get_template_by_name,
+    should_use_layered_generation, InvertAxis, MaskMode, StraitDirection, TerrainCommand,
+    TerrainTemplate,
 };
 pub use template_executor::*;
 

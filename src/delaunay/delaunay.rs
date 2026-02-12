@@ -25,6 +25,7 @@
 #[cfg(debug_assertions)]
 use crate::delaunay::utils::calculate_convex_hull_indices;
 use egui::Pos2;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::sync::Once;
 
@@ -195,9 +196,11 @@ const COORD_QUANTIZATION: f32 = 1000.0;
 /// - `original_indices`: 去重点对应的原始索引（u32）
 fn preprocess_points(points: &[Pos2]) -> (Vec<Pos2>, Vec<u32>) {
     // 并行计算每个点的量化键
-    let mut point_data: Vec<_> = points
-        .par_iter()
-        .enumerate()
+    #[cfg(not(target_arch = "wasm32"))]
+    let iter = points.par_iter().enumerate();
+    #[cfg(target_arch = "wasm32")]
+    let iter = points.iter().enumerate();
+    let mut point_data: Vec<_> = iter
         .map(|(idx, p)| {
             // 使用整数坐标键减少浮点误差
             let key = (

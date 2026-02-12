@@ -7,6 +7,9 @@ use eframe::egui::Pos2;
 use rand::Rng;
 use std::collections::VecDeque;
 
+/// Bounds info: (points, (min_x, max_x, min_y, max_y), (width, height))
+type BoundsInfo<'a> = (&'a [Pos2], (f32, f32, f32, f32), (f32, f32));
+
 /// Blob 生成器配置
 #[derive(Debug, Clone)]
 pub struct BlobConfig {
@@ -115,7 +118,7 @@ impl BlobGenerator {
         start_idx: usize,
         height: f32,
         bounds: (f32, f32, f32, f32), // (min_x, max_x, min_y, max_y) 归一化坐标
-        map_size: (f32, f32),          // (width, height)
+        map_size: (f32, f32),         // (width, height)
         rng: &mut impl Rng,
     ) {
         self.add_hill_internal(
@@ -137,7 +140,7 @@ impl BlobGenerator {
         neighbors: &[Vec<u32>],
         start_idx: usize,
         height: f32,
-        bounds_info: Option<(&[Pos2], (f32, f32, f32, f32), (f32, f32))>,
+        bounds_info: Option<BoundsInfo<'_>>,
         _extra: Option<()>, // 预留扩展
         rng: &mut impl Rng,
     ) {
@@ -168,8 +171,11 @@ impl BlobGenerator {
                         let norm_x = cell.x / map_size.0;
                         let norm_y = cell.y / map_size.1;
                         // 超出边界则跳过
-                        if norm_x < bounds.0 || norm_x > bounds.1 
-                           || norm_y < bounds.2 || norm_y > bounds.3 {
+                        if norm_x < bounds.0
+                            || norm_x > bounds.1
+                            || norm_y < bounds.2
+                            || norm_y > bounds.3
+                        {
                             continue;
                         }
                     }
@@ -325,13 +331,15 @@ impl BlobGenerator {
                     break;
                 }
                 // 找到高度最低的邻居
-                if let Some(&min_neighbor) = neighbors[current].iter()
+                if let Some(&min_neighbor) = neighbors[current]
+                    .iter()
                     .filter(|&&n| (n as usize) < heights.len())
                     .min_by(|&&a, &&b| {
                         heights[a as usize]
                             .partial_cmp(&heights[b as usize])
                             .unwrap_or(std::cmp::Ordering::Equal)
-                    }) {
+                    })
+                {
                     let min_idx = min_neighbor as usize;
                     if min_idx >= heights.len() {
                         break;

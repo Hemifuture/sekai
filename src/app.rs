@@ -146,48 +146,29 @@ impl TemplateApp {
         use egui::{FontData, FontDefinitions, FontFamily};
 
         let mut fonts = FontDefinitions::default();
+        let noto_sans_sc = include_bytes!("../assets/fonts/NotoSansSC-Regular.otf");
 
-        // 尝试加载 Noto Sans SC 字体
-        let font_paths = [
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
-            "/usr/share/fonts/noto/NotoSansSC-Regular.otf",
-            "assets/fonts/NotoSansSC-Regular.otf",
-        ];
+        fonts.font_data.insert(
+            "noto_sans_sc".to_owned(),
+            std::sync::Arc::new(FontData::from_static(noto_sans_sc)),
+        );
 
-        let mut font_loaded = false;
-        for path in &font_paths {
-            if let Ok(font_data) = std::fs::read(path) {
-                fonts.font_data.insert(
-                    "noto_sans_sc".to_owned(),
-                    std::sync::Arc::new(FontData::from_owned(font_data)),
-                );
+        // 将中文字体添加到所有字体族的首选列表
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "noto_sans_sc".to_owned());
 
-                // 将中文字体添加到所有字体族的首选列表
-                fonts
-                    .families
-                    .entry(FontFamily::Proportional)
-                    .or_default()
-                    .insert(0, "noto_sans_sc".to_owned());
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .insert(0, "noto_sans_sc".to_owned());
 
-                fonts
-                    .families
-                    .entry(FontFamily::Monospace)
-                    .or_default()
-                    .insert(0, "noto_sans_sc".to_owned());
-
-                font_loaded = true;
-                #[cfg(debug_assertions)]
-                println!("Loaded Chinese font from: {}", path);
-                break;
-            }
-        }
-
-        if !font_loaded {
-            #[cfg(debug_assertions)]
-            eprintln!("Warning: Could not load Noto Sans SC font. Chinese characters may not display correctly.");
+        #[cfg(debug_assertions)]
+        {
+            println!("Loaded bundled Chinese font: Noto Sans SC");
         }
 
         ctx.set_fonts(fonts);

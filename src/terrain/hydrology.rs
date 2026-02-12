@@ -138,10 +138,7 @@ impl HydrologyGenerator {
         let mut flows_into: HashMap<usize, Vec<usize>> = HashMap::new();
         for (i, &flow) in flow_direction.iter().enumerate() {
             if let Some(downstream) = flow {
-                flows_into
-                    .entry(downstream as usize)
-                    .or_default()
-                    .push(i);
+                flows_into.entry(downstream as usize).or_default().push(i);
             }
         }
 

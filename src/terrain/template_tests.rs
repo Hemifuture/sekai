@@ -176,11 +176,11 @@ mod tests {
             TerrainCommand::Range {
                 count,
                 height,
-                x,
-                y,
+                x: _,
+                y: _,
                 length,
                 width,
-                angle,
+                angle: _,
             } => {
                 assert!(
                     *count > 0,
@@ -210,11 +210,11 @@ mod tests {
             TerrainCommand::Trough {
                 count,
                 depth,
-                x,
-                y,
-                length,
-                width,
-                angle,
+                x: _,
+                y: _,
+                length: _,
+                width: _,
+                angle: _,
             } => {
                 assert!(
                     *count > 0,
@@ -231,10 +231,10 @@ mod tests {
             }
             TerrainCommand::Pit {
                 count,
-                depth,
-                x,
-                y,
-                radius,
+                depth: _,
+                x: _,
+                y: _,
+                radius: _,
             } => {
                 assert!(
                     *count > 0,
@@ -314,7 +314,7 @@ mod tests {
 
         // 创建规则网格
         let cols = (cell_count as f32).sqrt() as u32;
-        let rows = (cell_count as u32 + cols - 1) / cols;
+        let rows = (cell_count as u32).div_ceil(cols);
         let cell_width = width as f32 / cols as f32;
         let cell_height = height as f32 / rows as f32;
 
@@ -334,10 +334,10 @@ mod tests {
                 cell_neighbors.push((i + 1) as u32);
             }
             if row > 0 {
-                cell_neighbors.push((i as u32 - cols));
+                cell_neighbors.push(i as u32 - cols);
             }
             if row < rows - 1 && i + cols as usize <= cell_count {
-                cell_neighbors.push((i as u32 + cols));
+                cell_neighbors.push(i as u32 + cols);
             }
             neighbors.push(cell_neighbors);
         }
@@ -567,7 +567,7 @@ SeaRatio 0.7";
 
         for (name, dsl) in &presets {
             let template = parse_template(name, "Test preset", dsl)
-                .expect(&format!("Should parse preset: {}", name));
+                .unwrap_or_else(|_| panic!("Should parse preset: {}", name));
 
             assert!(
                 !template.commands.is_empty(),

@@ -195,7 +195,7 @@ mod tests {
         let value = generator.fbm(100.0, 200.0, &config);
 
         // 噪声值应该在 [-1, 1] 范围内
-        assert!(value >= -1.0 && value <= 1.0);
+        assert!((-1.0..=1.0).contains(&value));
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
 
         assert_eq!(noise_map.len(), 3);
         for &value in &noise_map {
-            assert!(value >= -1.0 && value <= 1.0);
+            assert!((-1.0..=1.0).contains(&value));
         }
     }
 

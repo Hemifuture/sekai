@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod voronoi_tests {
+mod voronoi_validation {
     use super::super::delaunay::triangulate;
     use super::super::voronoi::{compute_voronoi, generate_voronoi_edges};
     use egui::Pos2;
@@ -69,12 +69,12 @@ mod voronoi_tests {
         ];
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let voronoi = compute_voronoi(&indices, &points);
 
         // 验证voronoi图的基本结构
-        assert!(voronoi.edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi.edges.is_empty(), "应该至少生成一条Voronoi边");
         assert_eq!(
             voronoi.cells.len(),
             points.len(),
@@ -101,13 +101,13 @@ mod voronoi_tests {
         ];
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
 
         // 对于正方形的四个顶点，理论上应该有一个十字形的Voronoi图
         // 由于边界处理和算法实现的差异，可能会有不同数量的边
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
 
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
@@ -126,13 +126,13 @@ mod voronoi_tests {
         }
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
 
         // 对于网格点，每个内部点的Voronoi单元应该是一个正方形
         // 边界上的点的Voronoi单元则会被截断
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
 
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
@@ -146,10 +146,10 @@ mod voronoi_tests {
         let points = generate_random_points(20, 100.0, 100.0);
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
 
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
@@ -163,7 +163,7 @@ mod voronoi_tests {
         let points = generate_random_points(1000, 1000.0, 1000.0);
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let start_time = Instant::now();
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
@@ -175,7 +175,7 @@ mod voronoi_tests {
             "1000点的Voronoi图应在500毫秒内计算完成"
         );
 
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
             "Voronoi图应该满足基本性质"
@@ -189,7 +189,7 @@ mod voronoi_tests {
         let points = generate_random_points(n, 10000.0, 10000.0);
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let start_time = Instant::now();
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
@@ -201,7 +201,7 @@ mod voronoi_tests {
             "10000点的Voronoi图应在2秒内计算完成"
         );
 
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
             "Voronoi图应该满足基本性质"
@@ -216,7 +216,7 @@ mod voronoi_tests {
         let points = generate_random_points(n, 100000.0, 100000.0);
 
         let indices = triangulate(&points);
-        assert!(indices.len() > 0, "三角剖分应该至少生成一个三角形");
+        assert!(!indices.is_empty(), "三角剖分应该至少生成一个三角形");
 
         let start_time = Instant::now();
         let voronoi_edges = generate_voronoi_edges(&indices, &points);
@@ -228,7 +228,7 @@ mod voronoi_tests {
             "100000点的Voronoi图应在10秒内计算完成"
         ); // 考虑到CI环境可能较慢，允许稍微宽松一些
 
-        assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+        assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
         assert!(
             validate_voronoi_diagram(&indices, &points, &voronoi_edges),
             "Voronoi图应该满足基本性质"
@@ -291,7 +291,7 @@ mod voronoi_tests {
             );
 
             // 验证结果
-            assert!(voronoi_edges.len() > 0, "应该至少生成一条Voronoi边");
+            assert!(!voronoi_edges.is_empty(), "应该至少生成一条Voronoi边");
             assert!(
                 validate_voronoi_diagram(&indices, &points, &voronoi_edges),
                 "Voronoi图应该满足基本性质"

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod delaunay_tests {
     use super::super::delaunay::triangulate;
     use super::super::utils::validate_delaunay;
     use egui::Pos2;
@@ -140,7 +140,7 @@ mod tests {
 
         let indices = triangulate(&points);
         // 确保生成了三角形并且满足Delaunay性质
-        assert!(indices.len() > 0);
+        assert!(!indices.is_empty());
         // 暂时注释掉，因为验证函数可能太严格
         // assert!(validate_delaunay(&indices, &points));
     }

@@ -1,14 +1,14 @@
 //! 生成所有模板的地形截图 - 使用项目自带的网格生成
 
-use sekai::terrain::{TerrainConfig, TerrainGenerator};
 use sekai::delaunay::triangulate;
 use sekai::models::map::grid::Grid;
-use std::fs;
+use sekai::terrain::{TerrainConfig, TerrainGenerator};
 use std::collections::HashSet;
+use std::fs;
 fn main() {
     let templates = [
         "earth-like",
-        "archipelago", 
+        "archipelago",
         "continental",
         "volcanic_island",
         "volcano",
@@ -27,47 +27,47 @@ fn main() {
         "tectonic_collision",
         "fjord_coast",
     ];
-    
+
     fs::create_dir_all("screenshots").unwrap();
-    
+
     // 使用项目的 Grid 生成点
     let mut grid = Grid::from_cells_count(1000, 1000, 3000);
     grid.generate_points();
     let cells = grid.get_all_points();
-    
+
     println!("Generated {} cells using Grid", cells.len());
-    
+
     // 使用项目的 triangulate 函数
     let triangles = triangulate(&cells);
     println!("Triangulated: {} triangles", triangles.len() / 3);
-    
+
     // 使用项目的邻居提取方法
     let neighbors = extract_neighbors(&triangles, cells.len());
     println!("Built neighbors, example: {:?}", &neighbors[0]);
-    
+
     for template_name in &templates {
         println!("\nGenerating: {}", template_name);
-        
+
         let config = TerrainConfig::with_template(*template_name);
         let generator = TerrainGenerator::new(config);
-        
+
         let (heights, _, _) = generator.generate(&cells, &neighbors);
-        
+
         // 统计 (海平面是 20)
         let sea = heights.iter().filter(|&&h| h <= 20).count();
         let sea_pct = sea as f32 * 100.0 / cells.len() as f32;
         println!("  Sea: {:.1}%, Land: {:.1}%", sea_pct, 100.0 - sea_pct);
-        
+
         // 渲染到图像 (800x800)
         let img_size = 800;
         let mut img = vec![(50u8, 100u8, 200u8); img_size * img_size];
-        
+
         // 对每个像素找到最近的单元格
         for py in 0..img_size {
             for px in 0..img_size {
                 let x = px as f32 / img_size as f32 * 1000.0;
                 let y = py as f32 / img_size as f32 * 1000.0;
-                
+
                 // 找最近的单元格
                 let mut min_dist = f32::INFINITY;
                 let mut nearest = 0;
@@ -80,23 +80,23 @@ fn main() {
                         nearest = i;
                     }
                 }
-                
+
                 let h = heights[nearest] as f32;
                 img[py * img_size + px] = height_to_color(h);
             }
         }
-        
+
         // 写入 PPM
         let mut ppm = format!("P3\n{} {}\n255\n", img_size, img_size);
         for (r, g, b) in &img {
             ppm.push_str(&format!("{} {} {} ", r, g, b));
         }
-        
+
         let filename = format!("screenshots/{}.ppm", template_name);
         fs::write(&filename, ppm).unwrap();
         println!("  -> {}", filename);
     }
-    
+
     println!("\nDone! Generated {} screenshots.", templates.len());
 }
 
@@ -127,9 +127,9 @@ fn height_to_color(h: f32) -> (u8, u8, u8) {
     // Heights are u8 (0-255) where:
     // 0-20 = ocean (sea level is 20)
     // 20-255 = land
-    
+
     let sea_level = 20.0;
-    
+
     if h <= sea_level {
         // 海洋 - 深蓝到浅蓝 (0 = 深海, 20 = 海岸)
         let t = h / sea_level;
