@@ -16,7 +16,7 @@ pub use detail_layer::DetailLayer;
 pub use plate_layer::{BoundaryType, Plate, PlateConfig, PlateLayer, PlateType};
 pub use postprocess_layer::{PostprocessConfig, PostprocessLayer};
 pub use regional_layer::RegionalLayer;
-pub use tectonic_layer::{CollisionType, TectonicConfig, TectonicLayer};
+pub use tectonic_layer::{TectonicConfig, TectonicLayer};
 
 // Re-export the trait and types
 pub use r#trait::{LayerOutput, LegacyTerrainLayer, Pos2, TerrainContext, TerrainLayer};

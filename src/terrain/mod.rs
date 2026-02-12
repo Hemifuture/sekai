@@ -37,7 +37,7 @@ pub use template_executor::*;
 // 导出分层系统
 pub use layered_generator::LayeredGenerator;
 pub use layers::{
-    BoundaryType, CollisionType, DetailLayer, LayerOutput, LegacyTerrainLayer, Plate, PlateConfig,
-    PlateLayer, PlateType, Pos2, PostprocessLayer, RegionalLayer, TectonicConfig, TectonicLayer,
+    BoundaryType, DetailLayer, LayerOutput, LegacyTerrainLayer, Plate, PlateConfig, PlateLayer,
+    PlateType, Pos2, PostprocessLayer, RegionalLayer, TectonicConfig, TectonicLayer,
     TerrainContext, TerrainLayer,
 };

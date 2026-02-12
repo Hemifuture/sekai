@@ -169,7 +169,7 @@ impl TerrainGenerator {
         let plate_config = PlateConfig {
             num_plates,
             continental_ratio,
-            continental_base: 60.0,
+            continental_base: 80.0,
             oceanic_base: -50.0,
         };
 
@@ -398,6 +398,21 @@ impl TerrainGenerator {
         #[cfg(debug_assertions)]
         println!("使用模板 '{}' 和种子 {} 生成地形", template.name, seed);
 
+        // Use the layered pipeline (same as generate_from_template)
+        // This ensures the sekai app and generate_screenshots use identical generation
+        if should_use_layered_generation(&template.name) {
+            let num_plates = get_suggested_plate_count(&template.name);
+            let ocean_ratio = get_suggested_ocean_ratio(&template.name);
+            let (mut heights_u8, plates, plate_ids) =
+                self.generate_layered(cells, neighbors, seed, num_plates, ocean_ratio);
+
+            self.apply_template_modifiers(&mut heights_u8, &template, cells, neighbors);
+            self.post_process(&mut heights_u8, neighbors);
+
+            return (heights_u8, plates, plate_ids);
+        }
+
+        // Fallback: legacy template executor
         // 计算地图尺寸
         let (min_x, max_x, min_y, max_y) = cells.iter().fold(
             (

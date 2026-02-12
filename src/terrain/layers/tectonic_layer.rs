@@ -1,30 +1,13 @@
-//! Tectonic layer - generates terrain along plate boundaries
+//! Tectonic layer — elevation from distance fields (mapgen4-inspired)
 //!
-//! Key insight: Mountains form ALONG boundaries, not as radial patterns.
-//! This layer uses boundary cells as ridge lines and creates elevation
-//! that falls off with distance.
+//! Uses signed distance from coastline + multi-scale noise + mountain peaks.
+//! Based on proven techniques from Red Blob Games / mapgen4 / Brash & Plucky.
 
-use super::plate_layer::{Plate, PlateConfig, PlateLayer, PlateType};
+use super::plate_layer::{PlateConfig, PlateLayer, PlateType};
 use super::r#trait::{LayerOutput, Pos2, TerrainLayer};
+use noise::{NoiseFn, Perlin};
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, VecDeque};
-
-/// Collision type determines terrain features
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollisionType {
-    /// Continental + Continental → Mountain range
-    ContinentalCollision,
-    /// Oceanic subducts under Continental → Trench + Volcanic arc
-    OceanicSubduction,
-    /// Oceanic + Oceanic → Island arc
-    OceanicCollision,
-    /// Divergent on continent → Rift valley
-    ContinentalRift,
-    /// Divergent in ocean → Mid-ocean ridge
-    OceanicRidge,
-    /// Transform fault
-    Transform,
-}
 
 /// Tectonic configuration
 #[derive(Debug, Clone)]
@@ -43,9 +26,9 @@ impl Default for TectonicConfig {
             plate_config: PlateConfig::default(),
             mountain_height: 80.0,
             mountain_width: 20.0,
-            trench_depth: 30.0,
-            ridge_height: 20.0,
-            rift_depth: 25.0,
+            trench_depth: 40.0,
+            ridge_height: 25.0,
+            rift_depth: 30.0,
         }
     }
 }
@@ -71,126 +54,6 @@ impl TectonicLayer {
         self.seed = seed;
         self
     }
-
-    /// Compute distance from each cell to nearest boundary
-    fn compute_distance_field(
-        &self,
-        boundary_cells: &[usize],
-        neighbors: &[Vec<u32>],
-        n: usize,
-    ) -> Vec<f32> {
-        let mut distances = vec![f32::MAX; n];
-        let mut queue = VecDeque::new();
-
-        // Initialize boundary cells with distance 0
-        for &cell in boundary_cells {
-            distances[cell] = 0.0;
-            queue.push_back(cell);
-        }
-
-        // BFS to compute distances
-        while let Some(current) = queue.pop_front() {
-            let current_dist = distances[current];
-
-            for &neighbor in &neighbors[current] {
-                let neighbor = neighbor as usize;
-                let new_dist = current_dist + 1.0;
-
-                if new_dist < distances[neighbor] {
-                    distances[neighbor] = new_dist;
-                    queue.push_back(neighbor);
-                }
-            }
-        }
-
-        distances
-    }
-
-    /// Classify collision type based on plate types and motion vectors
-    fn classify_collision(
-        &self,
-        plate_a: &Plate,
-        plate_b: &Plate,
-        cell_a: &Pos2,
-        cell_b: &Pos2,
-    ) -> CollisionType {
-        use PlateType::*;
-
-        // Calculate relative motion along the boundary normal
-        let dx = cell_b.x - cell_a.x;
-        let dy = cell_b.y - cell_a.y;
-        let len = (dx * dx + dy * dy).sqrt().max(0.001);
-        let nx = dx / len;
-        let ny = dy / len;
-
-        // Velocity of plate A and B along the normal
-        let va = plate_a.speed * (plate_a.direction.cos() * nx + plate_a.direction.sin() * ny);
-        let vb = plate_b.speed * (plate_b.direction.cos() * nx + plate_b.direction.sin() * ny);
-
-        // Relative velocity: positive = converging, negative = diverging
-        let relative = va - vb;
-
-        if relative > 0.15 {
-            // Convergent
-            match (plate_a.plate_type, plate_b.plate_type) {
-                (Continental, Continental) => CollisionType::ContinentalCollision,
-                (Continental, Oceanic) | (Oceanic, Continental) => CollisionType::OceanicSubduction,
-                (Oceanic, Oceanic) => CollisionType::OceanicCollision,
-            }
-        } else if relative < -0.15 {
-            // Divergent
-            match (plate_a.plate_type, plate_b.plate_type) {
-                (Continental, Continental) => CollisionType::ContinentalRift,
-                _ => CollisionType::OceanicRidge,
-            }
-        } else {
-            // Transform
-            CollisionType::Transform
-        }
-    }
-
-    /// Calculate terrain contribution based on distance and collision type
-    fn terrain_contribution(
-        &self,
-        distance: f32,
-        collision_type: CollisionType,
-        rng: &mut impl Rng,
-    ) -> f32 {
-        let width = self.config.mountain_width;
-
-        // Gaussian-like falloff
-        let falloff = (-distance * distance / (2.0 * width * width)).exp();
-
-        // Add some noise for natural variation
-        let noise = rng.random_range(-0.1..0.1);
-
-        match collision_type {
-            CollisionType::ContinentalCollision => {
-                // Tall mountains
-                self.config.mountain_height * falloff * (1.0 + noise)
-            }
-            CollisionType::OceanicSubduction => {
-                // Volcanic arc (mountains) on continental side
-                self.config.mountain_height * 0.7 * falloff * (1.0 + noise)
-            }
-            CollisionType::OceanicCollision => {
-                // Island arc
-                self.config.mountain_height * 0.5 * falloff * (1.0 + noise)
-            }
-            CollisionType::ContinentalRift => {
-                // Rift valley (negative)
-                -self.config.rift_depth * falloff * (1.0 + noise)
-            }
-            CollisionType::OceanicRidge => {
-                // Mid-ocean ridge
-                self.config.ridge_height * falloff * (1.0 + noise)
-            }
-            CollisionType::Transform => {
-                // Minimal terrain
-                5.0 * falloff * (1.0 + noise)
-            }
-        }
-    }
 }
 
 impl TerrainLayer for TectonicLayer {
@@ -207,199 +70,291 @@ impl TerrainLayer for TectonicLayer {
         let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
         let n = cells.len();
 
-        // Generate plates first
+        // Step 1: Generate plates (ellipse-based continental mask)
         let plate_layer = PlateLayer::new(self.config.plate_config.clone()).with_seed(self.seed);
         let (plate_ids, plates) = plate_layer.generate_plates(cells, neighbors);
 
-        // Find boundary cells and their collision types
-        let mut boundary_cells = Vec::new();
-        let mut boundary_collisions: HashMap<usize, CollisionType> = HashMap::new();
-
-        for (i, &plate_id) in plate_ids.iter().enumerate() {
-            if plate_id == 0 {
-                continue;
-            }
-
-            for &neighbor in &neighbors[i] {
-                let ni = neighbor as usize;
-                let neighbor_plate = plate_ids[ni];
-                if neighbor_plate != 0 && neighbor_plate != plate_id {
-                    // This is a boundary cell
-                    let plate_a = &plates[(plate_id - 1) as usize];
-                    let plate_b = &plates[(neighbor_plate - 1) as usize];
-                    let collision_type =
-                        self.classify_collision(plate_a, plate_b, &cells[i], &cells[ni]);
-
-                    boundary_cells.push(i);
-                    boundary_collisions.insert(i, collision_type);
-                    break;
-                }
-            }
-        }
-
-        // Compute distance field from boundaries
-        let distances = self.compute_distance_field(&boundary_cells, neighbors, n);
-
-        // Build a map from each cell to its nearest boundary's collision type
-        // using BFS from boundary cells outward
-        let mut nearest_collision: Vec<Option<CollisionType>> = vec![None; n];
+        // Step 2: Compute signed distance from coastline
+        // Positive = inland (continental), Negative = seaward (oceanic)
+        // Coastline cells are cells that border a different plate type
+        let mut signed_dist = vec![0.0f32; n];
+        let mut coast_cells = Vec::new();
         {
+            let mut queue = VecDeque::new();
             let mut visited = vec![false; n];
-            let mut queue = VecDeque::new();
-            for &bc in &boundary_cells {
-                if let Some(&ct) = boundary_collisions.get(&bc) {
-                    nearest_collision[bc] = Some(ct);
-                    visited[bc] = true;
-                    queue.push_back(bc);
-                }
-            }
-            while let Some(current) = queue.pop_front() {
-                let ct = nearest_collision[current].unwrap();
-                for &neighbor in &neighbors[current] {
-                    let neighbor = neighbor as usize;
-                    if !visited[neighbor] {
-                        visited[neighbor] = true;
-                        nearest_collision[neighbor] = Some(ct);
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-        }
 
-        // Compute distance from each cell to nearest cell of a DIFFERENT plate type
-        // This is used for continental shelf gradient
-        let mut dist_to_type_boundary = vec![f32::MAX; n];
-        {
-            let mut queue = VecDeque::new();
-            for (i, &pid) in plate_ids.iter().enumerate() {
-                if pid == 0 {
+            // Find coastline cells (continental cells adjacent to oceanic, or vice versa)
+            for i in 0..n {
+                if plate_ids[i] == 0 {
                     continue;
                 }
-                let my_type = plates[(pid - 1) as usize].plate_type;
-                for &neighbor in &neighbors[i] {
-                    let ni = neighbor as usize;
-                    let npid = plate_ids[ni];
-                    if npid != 0 && plates[(npid - 1) as usize].plate_type != my_type {
-                        dist_to_type_boundary[i] = 0.0;
-                        queue.push_back(i);
+                let my_type = plates[(plate_ids[i] - 1) as usize].plate_type;
+                let mut is_coast = false;
+                for &nb in &neighbors[i] {
+                    let ni = nb as usize;
+                    if plate_ids[ni] == 0 {
+                        continue;
+                    }
+                    let nb_type = plates[(plate_ids[ni] - 1) as usize].plate_type;
+                    if nb_type != my_type {
+                        is_coast = true;
                         break;
                     }
                 }
+                if is_coast {
+                    signed_dist[i] = 0.0;
+                    visited[i] = true;
+                    queue.push_back(i);
+                    coast_cells.push(i);
+                }
             }
+
+            // BFS outward from coastline with jaggedness (à la mapgen4)
+            let noise_seed = self.seed.wrapping_mul(0x9E3779B97F4A7C15);
             while let Some(current) = queue.pop_front() {
-                let cd = dist_to_type_boundary[current];
-                for &neighbor in &neighbors[current] {
-                    let ni = neighbor as usize;
-                    let nd = cd + 1.0;
-                    if nd < dist_to_type_boundary[ni] {
-                        dist_to_type_boundary[ni] = nd;
+                let cd = signed_dist[current];
+                let _my_type = if plate_ids[current] == 0 {
+                    PlateType::Oceanic
+                } else {
+                    plates[(plate_ids[current] - 1) as usize].plate_type
+                };
+
+                for &nb in &neighbors[current] {
+                    let ni = nb as usize;
+                    if visited[ni] || plate_ids[ni] == 0 {
+                        continue;
+                    }
+
+                    // Add jaggedness to distance (triangular distribution)
+                    let jag = {
+                        let h = (ni as u64)
+                            .wrapping_mul(noise_seed)
+                            .wrapping_add(current as u64);
+                        let h = h.wrapping_mul(0x517cc1b727220a95);
+                        let r1 = (h >> 32) as f32 / u32::MAX as f32;
+                        let r2 = ((h >> 16) & 0xFFFF) as f32 / 65535.0;
+                        (r1 - r2) * 0.3 // Triangular distribution, ±0.3 jag
+                    };
+
+                    let step = 1.0 + jag;
+                    let nb_type = plates[(plate_ids[ni] - 1) as usize].plate_type;
+
+                    let new_dist = if nb_type == PlateType::Continental {
+                        cd + step // Going inland: positive
+                    } else {
+                        cd - step // Going seaward: negative
+                    };
+
+                    // Only update if this gives a more extreme distance
+                    let should_update = if nb_type == PlateType::Continental {
+                        new_dist > signed_dist[ni] && !visited[ni]
+                    } else {
+                        new_dist < signed_dist[ni] && !visited[ni]
+                    };
+
+                    if should_update || !visited[ni] {
+                        signed_dist[ni] = new_dist;
+                        visited[ni] = true;
+                        queue.push_back(ni);
+                    }
+                }
+            }
+
+            // Handle any unvisited cells (shouldn't happen, but safety)
+            for i in 0..n {
+                if !visited[i] {
+                    signed_dist[i] = if plate_ids[i] != 0
+                        && plates[(plate_ids[i] - 1) as usize].plate_type == PlateType::Continental
+                    {
+                        5.0
+                    } else {
+                        -5.0
+                    };
+                }
+            }
+        }
+
+        // Normalize signed distance
+        let max_land_dist = signed_dist.iter().cloned().fold(1.0f32, f32::max);
+        let min_ocean_dist = signed_dist.iter().cloned().fold(-1.0f32, f32::min);
+
+        // Step 3: Mountain peaks using BFS distance field (à la mapgen4)
+        // Place mountain seeds on continental cells far from coast
+        let continental_cells: Vec<usize> = (0..n)
+            .filter(|&i| {
+                plate_ids[i] != 0
+                    && plates[(plate_ids[i] - 1) as usize].plate_type == PlateType::Continental
+                    && signed_dist[i] > max_land_dist * 0.3
+            })
+            .collect();
+
+        let num_peaks = (continental_cells.len() / 40).clamp(3, 20);
+        let mut mountain_dist = vec![f32::MAX; n];
+
+        if !continental_cells.is_empty() {
+            // Place peaks spread apart
+            let mut peak_cells = Vec::new();
+            for _ in 0..num_peaks {
+                let mut best = continental_cells[rng.random_range(0..continental_cells.len())];
+                let mut best_min = 0.0f32;
+                for _ in 0..30 {
+                    let c = continental_cells[rng.random_range(0..continental_cells.len())];
+                    let min_d = peak_cells
+                        .iter()
+                        .map(|&p: &usize| {
+                            let dx = cells[c].x - cells[p].x;
+                            let dy = cells[c].y - cells[p].y;
+                            (dx * dx + dy * dy).sqrt()
+                        })
+                        .fold(f32::MAX, f32::min);
+                    // Prefer cells that are far from coast AND far from other peaks
+                    let score = min_d * signed_dist[c].max(0.0);
+                    if score > best_min {
+                        best_min = score;
+                        best = c;
+                    }
+                }
+                peak_cells.push(best);
+            }
+
+            // BFS distance from peaks with jaggedness
+            let mut queue = VecDeque::new();
+            for &p in &peak_cells {
+                mountain_dist[p] = 0.0;
+                queue.push_back(p);
+            }
+
+            let mtn_noise = self.seed.wrapping_mul(0x6C62272E07BB0142);
+            while let Some(current) = queue.pop_front() {
+                let cd = mountain_dist[current];
+                for &nb in &neighbors[current] {
+                    let ni = nb as usize;
+                    // Mountain distance only propagates on land
+                    if plate_ids[ni] == 0 {
+                        continue;
+                    }
+                    if plates[(plate_ids[ni] - 1) as usize].plate_type != PlateType::Continental {
+                        continue;
+                    }
+
+                    let jag = {
+                        let h = (ni as u64)
+                            .wrapping_mul(mtn_noise)
+                            .wrapping_add(current as u64);
+                        let h = h.wrapping_mul(0x517cc1b727220a95);
+                        let r1 = (h >> 32) as f32 / u32::MAX as f32;
+                        let r2 = ((h >> 16) & 0xFFFF) as f32 / 65535.0;
+                        (r1 - r2) * 0.5 // More jaggedness for mountains
+                    };
+
+                    let new_dist = cd + 1.0 + jag;
+                    if new_dist < mountain_dist[ni] {
+                        mountain_dist[ni] = new_dist;
                         queue.push_back(ni);
                     }
                 }
             }
         }
 
-        // Generate heights with continental shelf gradient
-        let shelf_width = 6.0; // cells over which the shelf gradient applies
+        let max_mtn_dist = mountain_dist
+            .iter()
+            .filter(|&&d| d < f32::MAX)
+            .cloned()
+            .fold(1.0f32, f32::max);
+
+        // Step 4: Multi-scale noise layers
+        let perlin_n0 = Perlin::new(self.seed as u32);
+        let perlin_n1 = Perlin::new(self.seed.wrapping_add(100) as u32);
+        let perlin_n2 = Perlin::new(self.seed.wrapping_add(200) as u32);
+        let perlin_n4 = Perlin::new(self.seed.wrapping_add(400) as u32);
+
+        // Map bounds for noise coordinates
+        let (min_x, max_x) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            (lo.min(p.x), hi.max(p.x))
+        });
+        let (min_y, max_y) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
+        let rx = (max_x - min_x).max(1.0);
+        let ry = (max_y - min_y).max(1.0);
+
+        // Step 5: Compute final elevation using mapgen4-style blending
+        let continental_base = self.config.plate_config.continental_base;
+        let oceanic_base = self.config.plate_config.oceanic_base;
+
         let mut heights = vec![0.0f32; n];
 
         for i in 0..n {
-            let plate_id = plate_ids[i];
-            if plate_id == 0 {
+            if plate_ids[i] == 0 {
+                heights[i] = oceanic_base;
                 continue;
             }
 
-            let plate = &plates[(plate_id - 1) as usize];
-            let continental_base = self.config.plate_config.continental_base;
-            let oceanic_base = self.config.plate_config.oceanic_base;
+            let nx = (cells[i].x - min_x) / rx;
+            let ny = (cells[i].y - min_y) / ry;
 
-            // Base height from plate type with shelf gradient at edges
-            let dist_tb = dist_to_type_boundary[i];
-            let base = match plate.plate_type {
-                PlateType::Continental => {
-                    if dist_tb < shelf_width {
-                        // Near ocean: gradually descend toward oceanic level
-                        let t = dist_tb / shelf_width;
-                        // Smooth hermite interpolation
-                        let t = t * t * (3.0 - 2.0 * t);
-                        oceanic_base + (continental_base - oceanic_base) * t
-                    } else {
-                        continental_base
-                    }
-                }
-                PlateType::Oceanic => {
-                    if dist_tb < shelf_width {
-                        // Near continent: gradually rise toward continental level
-                        let t = dist_tb / shelf_width;
-                        let t = t * t * (3.0 - 2.0 * t);
-                        continental_base + (oceanic_base - continental_base) * t
-                    } else {
-                        oceanic_base
-                    }
-                }
-            };
+            // Noise layers at different frequencies
+            let n0 = perlin_n0.get([nx as f64 * 2.0, ny as f64 * 2.0]) as f32;
+            let n1 = perlin_n1.get([nx as f64 * 4.0, ny as f64 * 4.0]) as f32;
+            let n2 = perlin_n2.get([nx as f64 * 8.0, ny as f64 * 8.0]) as f32;
+            let n4 = perlin_n4.get([nx as f64 * 16.0, ny as f64 * 16.0]) as f32;
 
-            // Intra-continental noise: gentle variation (±12) so interiors aren't flat
-            // but minimum stays well above sea level
-            let interior_noise =
-                if plate.plate_type == PlateType::Continental && dist_tb >= shelf_width {
-                    let noise_val = {
-                        let h = (i as u64)
-                            .wrapping_mul(self.seed.wrapping_mul(0x9E3779B97F4A7C15))
-                            .wrapping_add(plate_id as u64);
-                        let h = h.wrapping_mul(0x517cc1b727220a95);
-                        ((h >> 32) as f32 / u32::MAX as f32) * 2.0 - 1.0 // -1..1
-                    };
-                    noise_val * 12.0
+            let sd = signed_dist[i];
+            let plate = &plates[(plate_ids[i] - 1) as usize];
+
+            if plate.plate_type == PlateType::Continental {
+                // --- LAND ---
+                // Normalize inland distance (0 at coast, 1 deep inland)
+                let inland_t = (sd / max_land_dist).clamp(0.0, 1.0);
+
+                // Base elevation: rises with distance from coast
+                // Concave curve so coast rises quickly then flattens
+                let base = continental_base * inland_t.sqrt();
+
+                // Hill component: low-frequency noise modulated by mid-frequency
+                let hill_blend = (1.0 + n0) / 2.0; // 0..1
+                let hill_noise = n1 * (1.0 - hill_blend) + n2 * hill_blend;
+                let hill_height = 15.0 * (1.0 + hill_noise);
+
+                // Mountain component from distance field
+                let mtn_contribution = if mountain_dist[i] < f32::MAX {
+                    let mtn_t = (mountain_dist[i] / max_mtn_dist).clamp(0.0, 1.0);
+                    // Mountains are tallest at peak (mtn_t=0), fall off with distance
+                    let mtn_height = self.config.mountain_height * (1.0 - mtn_t.sqrt());
+                    mtn_height
                 } else {
                     0.0
                 };
 
-            // Tectonic contribution based on distance to nearest boundary
-            let distance = distances[i];
+                // Blend: near coast → hills, deep inland → mix of hills and mountains
+                let mtn_blend = inland_t * inland_t; // Quadratic: mountains only deep inland
+                let elevation =
+                    base + hill_height * (1.0 - mtn_blend) + mtn_contribution * mtn_blend;
 
-            let collision_type =
-                nearest_collision[i].unwrap_or(CollisionType::ContinentalCollision);
+                // Add fine detail noise
+                let detail = n4 * 5.0 * inland_t; // Detail increases inland
 
-            let tectonic = self.terrain_contribution(distance, collision_type, &mut rng);
+                heights[i] = elevation + detail;
+            } else {
+                // --- OCEAN ---
+                let depth_t = (-sd / -min_ocean_dist).clamp(0.0, 1.0);
+                let base = oceanic_base * depth_t.sqrt();
 
-            heights[i] = base + tectonic + interior_noise;
-        }
+                // Ocean floor variation
+                let ocean_noise = n1 * 0.3 + n2 * 0.15;
+                let detail = oceanic_base * 0.1 * ocean_noise;
 
-        // Post-assignment smoothing passes - EDGE ONLY (near plate boundaries)
-        // Only smooth cells within 4 hops of a boundary to preserve continental interiors
-        for _ in 0..3 {
-            let old = heights.clone();
-            for i in 0..n {
-                if plate_ids[i] == 0 || neighbors[i].is_empty() {
-                    continue;
-                }
-                let dist_b = distances[i];
-                // Only smooth cells near plate boundaries (within 4 hops)
-                if dist_b > 4.0 {
-                    continue;
-                }
-                let mut sum = old[i];
-                let mut count = 1.0f32;
-                for &nb in &neighbors[i] {
-                    let ni = nb as usize;
-                    if plate_ids[ni] != 0 {
-                        sum += old[ni];
-                        count += 1.0;
-                    }
-                }
-                // Blend strength decreases with distance from boundary
-                let blend = 0.4 * (1.0 - dist_b / 5.0);
-                if blend > 0.0 {
-                    heights[i] = old[i] * (1.0 - blend) + (sum / count) * blend;
-                }
+                heights[i] = base + detail;
             }
         }
+
+        // Collect boundary cells for metadata
+        let boundary_cells: Vec<u32> = coast_cells.iter().map(|&i| i as u32).collect();
 
         LayerOutput {
             heights,
             plate_ids: Some(plate_ids),
-            boundary_cells: Some(boundary_cells.iter().map(|&i| i as u32).collect()),
+            boundary_cells: Some(boundary_cells),
             metadata: HashMap::new(),
         }
     }
