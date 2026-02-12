@@ -1,6 +1,7 @@
 // 板块构造模拟
 
 use eframe::egui::Pos2;
+use noise::{NoiseFn, Perlin};
 use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 
@@ -244,25 +245,96 @@ impl PlateGenerator {
             plates.push(plate);
         }
 
-        // 3. 使用 Voronoi 式扩张分配单元格到板块
+        // 3. 使用加权 BFS 扩张分配单元格到板块
+        //    每个板块有随机的偏好方向和不同的生长速率
         let mut plate_id = vec![0u16; n];
-        let mut queue = VecDeque::new();
+
+        // 为每个板块生成偏好方向和生长速率
+        let plate_bias_angles: Vec<f32> = (0..plates.len())
+            .map(|_| rng.random_range(0.0..std::f32::consts::TAU))
+            .collect();
+        let plate_growth_rates: Vec<f32> = (0..plates.len())
+            .map(|_| rng.random_range(0.7..1.3))
+            .collect();
+
+        // 使用优先级队列模拟：BFS with variable growth
+        // 每个条目: (priority, cell_idx, plate_id)
+        // 较低的 priority 先扩展
+        let mut queue: VecDeque<(f32, usize, u16)> = VecDeque::new();
 
         // 初始化种子点
         for (i, &seed_idx) in seed_indices.iter().enumerate() {
             plate_id[seed_idx] = (i + 1) as u16;
-            queue.push_back(seed_idx);
+            queue.push_back((0.0, seed_idx, (i + 1) as u16));
         }
 
-        // BFS 扩张
-        while let Some(cell) = queue.pop_front() {
-            let current_plate_id = plate_id[cell];
+        // 加权 BFS 扩张
+        while let Some((priority, cell, pid)) = queue.pop_front() {
+            let plate_idx = (pid - 1) as usize;
+            let seed_pos = cells[seed_indices[plate_idx]];
+            let bias_angle = plate_bias_angles[plate_idx];
+            let growth_rate = plate_growth_rates[plate_idx];
+            let bias_dx = bias_angle.cos();
+            let bias_dy = bias_angle.sin();
 
             for &neighbor_idx in &neighbors[cell] {
                 let neighbor_idx = neighbor_idx as usize;
                 if plate_id[neighbor_idx] == 0 {
-                    plate_id[neighbor_idx] = current_plate_id;
-                    queue.push_back(neighbor_idx);
+                    plate_id[neighbor_idx] = pid;
+
+                    // 计算方向偏置：沿偏好方向扩展更快（更低的 priority）
+                    let dx = cells[neighbor_idx].x - seed_pos.x;
+                    let dy = cells[neighbor_idx].y - seed_pos.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    let alignment = if dist > 0.001 {
+                        (dx * bias_dx + dy * bias_dy) / dist
+                    } else {
+                        0.0
+                    };
+
+                    // 偏好方向上 priority 更低（扩展更快）
+                    let dir_weight = 1.0 - alignment * 0.3;
+                    let next_priority =
+                        priority + dir_weight / growth_rate + rng.random::<f32>() * 0.2;
+
+                    // 插入到合适位置（简单排序插入）
+                    let insert_pos = queue
+                        .iter()
+                        .position(|(p, _, _)| *p > next_priority)
+                        .unwrap_or(queue.len());
+                    queue.insert(insert_pos, (next_priority, neighbor_idx, pid));
+                }
+            }
+        }
+
+        // 4. 噪声扰动边界：随机重新分配部分边界单元格
+        let boundary_perlin = Perlin::new(self.config.seed as u32);
+        let noise_freq = 0.01;
+        for cell_idx in 0..n {
+            let pid = plate_id[cell_idx];
+            if pid == 0 {
+                continue;
+            }
+            // 检查是否为边界
+            let is_boundary = neighbors[cell_idx]
+                .iter()
+                .any(|&nb| plate_id[nb as usize] != pid && plate_id[nb as usize] != 0);
+
+            if is_boundary {
+                let noise_val = boundary_perlin.get([
+                    cells[cell_idx].x as f64 * noise_freq,
+                    cells[cell_idx].y as f64 * noise_freq,
+                ]);
+                // ~15% chance to reassign based on noise
+                if noise_val > 0.4 {
+                    // Find a neighboring plate to reassign to
+                    for &nb in &neighbors[cell_idx] {
+                        let nb_pid = plate_id[nb as usize];
+                        if nb_pid != 0 && nb_pid != pid {
+                            plate_id[cell_idx] = nb_pid;
+                            break;
+                        }
+                    }
                 }
             }
         }

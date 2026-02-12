@@ -4,6 +4,7 @@
 // 使用 BFS 从中心向外传播高度值，创造自然不规则的地形
 
 use eframe::egui::Pos2;
+use noise::{NoiseFn, Perlin};
 use rand::Rng;
 use std::collections::VecDeque;
 
@@ -18,8 +19,19 @@ pub struct BlobConfig {
     pub blob_power: f32,
     /// 线性衰减因子（用于山脉）
     pub line_power: f32,
-    /// 随机扰动范围 (例如 0.2 表示 0.9 ~ 1.1)
+    /// 随机扰动范围 (例如 0.45 表示 0.55 ~ 1.45)
     pub jitter: f32,
+    /// 噪声权重强度 (0.0 = 无噪声, 1.0 = 强噪声影响)
+    /// 使用 Perlin 噪声场来偏置 BFS 传播方向
+    pub noise_weight: f32,
+    /// 噪声频率（控制噪声场的尺度）
+    pub noise_frequency: f64,
+    /// 方向偏置强度 (0.0 = 无偏置, 1.0 = 强烈拉伸)
+    /// 给每个 blob 随机方向，使其沿该方向拉伸
+    pub directional_bias: f32,
+    /// 概率跳过率 (0.0 ~ 0.15)
+    /// BFS 中随机跳过邻居的概率，创造凹陷和不规则边缘
+    pub skip_probability: f32,
 }
 
 impl Default for BlobConfig {
@@ -27,7 +39,11 @@ impl Default for BlobConfig {
         Self {
             blob_power: 0.97,
             line_power: 0.82,
-            jitter: 0.2,
+            jitter: 0.45,
+            noise_weight: 0.3,
+            noise_frequency: 0.02,
+            directional_bias: 0.25,
+            skip_probability: 0.07,
         }
     }
 }
@@ -71,7 +87,11 @@ impl BlobConfig {
         Self {
             blob_power,
             line_power,
-            jitter: 0.2,
+            jitter: 0.45,
+            noise_weight: 0.3,
+            noise_frequency: 0.02,
+            directional_bias: 0.25,
+            skip_probability: 0.07,
         }
     }
 }
@@ -133,6 +153,8 @@ impl BlobGenerator {
     }
 
     /// 内部实现：BFS 扩散式丘陵
+    ///
+    /// 使用噪声权重、方向偏置和概率跳过来打破圆形对称性
     #[allow(clippy::too_many_arguments)]
     fn add_hill_internal(
         &self,
@@ -147,6 +169,24 @@ impl BlobGenerator {
         if start_idx >= heights.len() {
             return;
         }
+
+        // 初始化噪声场用于权重 BFS 传播
+        let noise_seed = rng.random::<u32>();
+        let perlin = Perlin::new(noise_seed);
+
+        // 随机方向偏置：blob 沿此方向拉伸
+        let bias_angle: f32 = rng.random_range(0.0..std::f32::consts::TAU);
+        let bias_dx = bias_angle.cos();
+        let bias_dy = bias_angle.sin();
+
+        // 获取起始点坐标（用于方向偏置计算）
+        let start_pos = bounds_info.map(|(cells, _, _)| {
+            if start_idx < cells.len() {
+                cells[start_idx]
+            } else {
+                Pos2::ZERO
+            }
+        });
 
         let mut change = vec![0.0f32; heights.len()];
         change[start_idx] = height;
@@ -164,13 +204,19 @@ impl BlobGenerator {
                     continue;
                 }
 
+                // 概率跳过：随机跳过邻居以创造凹陷
+                if self.config.skip_probability > 0.0
+                    && rng.random::<f32>() < self.config.skip_probability
+                {
+                    continue;
+                }
+
                 // 边界检查：如果有边界限制，检查邻居是否在边界内
                 if let Some((cells, bounds, map_size)) = bounds_info {
                     if n < cells.len() {
                         let cell = &cells[n];
                         let norm_x = cell.x / map_size.0;
                         let norm_y = cell.y / map_size.1;
-                        // 超出边界则跳过
                         if norm_x < bounds.0
                             || norm_x > bounds.1
                             || norm_y < bounds.2
@@ -184,7 +230,60 @@ impl BlobGenerator {
                 // 核心算法：指数衰减 + 随机扰动
                 let jitter =
                     1.0 - self.config.jitter + rng.random::<f32>() * self.config.jitter * 2.0;
-                change[n] = change[current].powf(self.config.blob_power) * jitter;
+
+                // 噪声权重：使用 Perlin 噪声偏置传播
+                let noise_mult = if self.config.noise_weight > 0.0 {
+                    if let Some((cells, _, _)) = bounds_info {
+                        if n < cells.len() {
+                            let pos = cells[n];
+                            let noise_val = perlin.get([
+                                pos.x as f64 * self.config.noise_frequency,
+                                pos.y as f64 * self.config.noise_frequency,
+                            ]) as f32;
+                            // Map noise [-1,1] to a multiplier centered at 1.0
+                            1.0 + noise_val * self.config.noise_weight
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+
+                // 方向偏置：沿偏好方向传播更强
+                let dir_mult = if self.config.directional_bias > 0.0 {
+                    if let Some((cells, _, _)) = bounds_info {
+                        if let Some(sp) = start_pos {
+                            if n < cells.len() {
+                                let pos = cells[n];
+                                let dx = pos.x - sp.x;
+                                let dy = pos.y - sp.y;
+                                let dist = (dx * dx + dy * dy).sqrt();
+                                if dist > 0.001 {
+                                    // dot product with bias direction, normalized
+                                    let alignment = (dx * bias_dx + dy * bias_dy) / dist;
+                                    // alignment in [-1, 1], scale to multiplier
+                                    1.0 + alignment * self.config.directional_bias
+                                } else {
+                                    1.0
+                                }
+                            } else {
+                                1.0
+                            }
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+
+                change[n] =
+                    change[current].powf(self.config.blob_power) * jitter * noise_mult * dir_mult;
 
                 // 只有足够高的值才继续传播
                 if change[n] > 1.0 {
@@ -238,6 +337,12 @@ impl BlobGenerator {
             for &neighbor in &neighbors[current] {
                 let n = neighbor as usize;
                 if n >= used.len() || used[n] {
+                    continue;
+                }
+                // 概率跳过
+                if self.config.skip_probability > 0.0
+                    && rng.random::<f32>() < self.config.skip_probability
+                {
                     continue;
                 }
                 used[n] = true;

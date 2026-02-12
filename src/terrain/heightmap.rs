@@ -344,6 +344,9 @@ impl TerrainGenerator {
             }
         }
 
+        // 后生成噪声叠加：打破残余的放射状图案
+        self.apply_post_generation_noise(&mut heights, cells, self.config.tectonic.seed);
+
         // 可选：侵蚀
         if self.config.enable_erosion {
             self.thermal_erosion(&mut heights, neighbors, self.config.erosion_iterations);
@@ -424,6 +427,9 @@ impl TerrainGenerator {
                 heights[i] += noise * 30.0;
             }
         }
+
+        // 后生成噪声叠加：打破残余的放射状图案
+        self.apply_post_generation_noise(&mut heights, cells, seed);
 
         // 可选：侵蚀
         if self.config.enable_erosion {
@@ -912,6 +918,50 @@ impl TerrainGenerator {
                 }
             })
             .collect()
+    }
+
+    /// 后生成噪声叠加：在模板生成之后叠加多频段噪声，打破放射状图案
+    ///
+    /// 使用两层噪声：
+    /// - 低频层：大尺度形变，使整体地形不对称
+    /// - 中频层：中等尺度扰动，打破局部的圆形等高线
+    fn apply_post_generation_noise(&self, heights: &mut [f32], cells: &[Pos2], seed: u64) {
+        if heights.is_empty() {
+            return;
+        }
+
+        // 计算当前高度范围，用于按比例叠加噪声
+        let max_h = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let amplitude = max_h.abs().max(50.0); // 至少有一些影响
+
+        // 低频噪声：大尺度形变
+        let low_freq_config = NoiseConfig {
+            octaves: 2,
+            base_frequency: 0.003,
+            persistence: 0.6,
+            lacunarity: 2.0,
+            seed: (seed + 42) as u32,
+        };
+        let gen_low = NoiseGenerator::new(low_freq_config.seed);
+
+        // 中频噪声：打破局部圆形
+        let mid_freq_config = NoiseConfig {
+            octaves: 3,
+            base_frequency: 0.008,
+            persistence: 0.45,
+            lacunarity: 2.2,
+            seed: (seed + 99) as u32,
+        };
+        let gen_mid = NoiseGenerator::new(mid_freq_config.seed);
+
+        for (i, pos) in cells.iter().enumerate() {
+            let low_noise = gen_low.fbm(pos.x as f64, pos.y as f64, &low_freq_config) as f32;
+            let mid_noise = gen_mid.fbm(pos.x as f64, pos.y as f64, &mid_freq_config) as f32;
+
+            // Scale noise relative to terrain amplitude
+            // Low freq: ~8% of amplitude, mid freq: ~5%
+            heights[i] += low_noise * amplitude * 0.08 + mid_noise * amplitude * 0.05;
+        }
     }
 
     /// 归一化高度值
