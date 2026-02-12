@@ -106,11 +106,11 @@ impl PlateLayer {
         self
     }
 
-    /// Generate plates using priority-weighted BFS for organic shapes
+    /// Generate plates using LOD multi-resolution approach for broader shapes.
     ///
-    /// Each plate gets a random growth speed. The priority queue ensures
-    /// faster-growing plates expand first, creating varied plate sizes.
-    /// Noise-based cost adds irregularity to plate boundaries.
+    /// 1. Cluster fine cells into ~100-150 super-cells (coarse graph)
+    /// 2. Run priority-weighted BFS on the coarse graph
+    /// 3. Project back to fine cells with boundary noise
     pub fn generate_plates(
         &self,
         cells: &[Pos2],
@@ -119,132 +119,238 @@ impl PlateLayer {
         let mut rng = rand::rngs::StdRng::seed_from_u64(self.seed);
         let n = cells.len();
 
-        // Initialize plate IDs (0 = unassigned)
-        let mut plate_ids = vec![0u16; n];
+        // Step 1: Build coarse graph
+        let target_clusters = (n / 20).clamp(50, 200);
+        let (cell_to_cluster, cluster_cells, cluster_neighbors, cluster_centers) =
+            Self::build_coarse_graph(cells, neighbors, target_clusters, &mut rng);
 
-        // Choose random seed points for each plate, spread them apart
-        let mut plates = Vec::new();
+        // Step 2: Assign plates on coarse graph
+        let (cluster_plate_ids, mut plates) =
+            self.assign_plates_coarse(&cluster_centers, &cluster_neighbors, &mut rng);
+
+        // Step 3: Project to fine cells with boundary noise
+        let plate_ids = Self::project_to_fine(
+            neighbors,
+            &cell_to_cluster,
+            &cluster_cells,
+            &cluster_plate_ids,
+            &cluster_neighbors,
+            &mut rng,
+        );
+
+        // Rebuild plate cell lists
+        for plate in &mut plates {
+            plate.cells.clear();
+        }
+        for (i, &pid) in plate_ids.iter().enumerate() {
+            if pid > 0 {
+                plates[(pid - 1) as usize].cells.push(i);
+            }
+        }
+
+        // Handle any unassigned cells (shouldn't happen, but safety net)
+        let _ = n;
+
+        (plate_ids, plates)
+    }
+
+    /// Step 1: Cluster fine cells into super-cells via greedy BFS.
+    fn build_coarse_graph(
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+        target_clusters: usize,
+        rng: &mut rand::rngs::StdRng,
+    ) -> (Vec<u32>, Vec<Vec<usize>>, Vec<Vec<u32>>, Vec<Pos2>) {
+        #![allow(clippy::type_complexity)]
+        let n = cells.len();
+        let cluster_size = (n / target_clusters).max(1);
+        let mut cell_to_cluster = vec![u32::MAX; n];
+        let mut cluster_cells: Vec<Vec<usize>> = Vec::new();
+
+        // Collect all cell indices, shuffle for random start order
+        let mut order: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            let j = rng.random_range(0..=i);
+            order.swap(i, j);
+        }
+
+        for &start in &order {
+            if cell_to_cluster[start] != u32::MAX {
+                continue;
+            }
+            let cluster_id = cluster_cells.len() as u32;
+            let mut members = Vec::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(start);
+            cell_to_cluster[start] = cluster_id;
+            members.push(start);
+
+            while let Some(curr) = queue.pop_front() {
+                if members.len() >= cluster_size {
+                    break;
+                }
+                for &nb in &neighbors[curr] {
+                    let nb = nb as usize;
+                    if cell_to_cluster[nb] == u32::MAX && members.len() < cluster_size {
+                        cell_to_cluster[nb] = cluster_id;
+                        members.push(nb);
+                        queue.push_back(nb);
+                    }
+                }
+            }
+            cluster_cells.push(members);
+        }
+
+        let num_clusters = cluster_cells.len();
+
+        // Compute cluster centers (centroids)
+        let cluster_centers: Vec<Pos2> = cluster_cells
+            .iter()
+            .map(|members| {
+                let (sx, sy) = members.iter().fold((0.0f32, 0.0f32), |(ax, ay), &c| {
+                    (ax + cells[c].x, ay + cells[c].y)
+                });
+                let len = members.len() as f32;
+                Pos2 {
+                    x: sx / len,
+                    y: sy / len,
+                }
+            })
+            .collect();
+
+        // Build cluster neighbor graph
+        let mut cluster_neighbor_set: Vec<std::collections::BTreeSet<u32>> =
+            vec![std::collections::BTreeSet::new(); num_clusters];
+        for (cell_idx, &cid) in cell_to_cluster.iter().enumerate() {
+            if cid == u32::MAX {
+                continue;
+            }
+            for &nb in &neighbors[cell_idx] {
+                let nb_cid = cell_to_cluster[nb as usize];
+                if nb_cid != u32::MAX && nb_cid != cid {
+                    cluster_neighbor_set[cid as usize].insert(nb_cid);
+                }
+            }
+        }
+        let cluster_neighbors: Vec<Vec<u32>> = cluster_neighbor_set
+            .into_iter()
+            .map(|s| s.into_iter().collect())
+            .collect();
+
+        (
+            cell_to_cluster,
+            cluster_cells,
+            cluster_neighbors,
+            cluster_centers,
+        )
+    }
+
+    /// Step 2: Assign plates on the coarse graph using priority-weighted BFS.
+    fn assign_plates_coarse(
+        &self,
+        cluster_centers: &[Pos2],
+        cluster_neighbors: &[Vec<u32>],
+        rng: &mut rand::rngs::StdRng,
+    ) -> (Vec<u16>, Vec<Plate>) {
+        let nc = cluster_centers.len();
+        let mut cluster_plate_ids = vec![0u16; nc];
         let num_continental =
             (self.config.num_plates as f32 * self.config.continental_ratio).ceil() as usize;
 
-        // Use rejection sampling to spread seed points
-        let mut seed_cells = Vec::new();
-        let _min_dist_sq = if n > 100 {
-            // Estimate map dimensions from cell positions
-            let (min_x, max_x) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
-                (lo.min(p.x), hi.max(p.x))
-            });
-            let (min_y, max_y) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
-                (lo.min(p.y), hi.max(p.y))
-            });
-            let area = (max_x - min_x) * (max_y - min_y);
-            // Target distance: spread evenly, then require at least 30% of that
-            let target = (area / self.config.num_plates as f32).sqrt() * 0.3;
-            target * target
-        } else {
-            0.0
-        };
-
+        // Select seed clusters spread apart
+        let mut seed_clusters = Vec::new();
         for _ in 0..self.config.num_plates {
-            // Try to find a cell far from existing seeds
-            let mut best_cell = rng.random_range(0..n);
+            let mut best = rng.random_range(0..nc);
             let mut best_min_dist = 0.0f32;
-
-            for _ in 0..30 {
-                let candidate = rng.random_range(0..n);
-                if plate_ids[candidate] != 0 {
+            for _ in 0..50 {
+                let candidate = rng.random_range(0..nc);
+                if cluster_plate_ids[candidate] != 0 {
                     continue;
                 }
-                let min_d = seed_cells
+                let min_d = seed_clusters
                     .iter()
                     .map(|&s: &usize| {
-                        let dx = cells[candidate].x - cells[s].x;
-                        let dy = cells[candidate].y - cells[s].y;
+                        let dx = cluster_centers[candidate].x - cluster_centers[s].x;
+                        let dy = cluster_centers[candidate].y - cluster_centers[s].y;
                         dx * dx + dy * dy
                     })
                     .fold(f32::MAX, f32::min);
-
                 if min_d > best_min_dist {
                     best_min_dist = min_d;
-                    best_cell = candidate;
+                    best = candidate;
                 }
             }
-
-            seed_cells.push(best_cell);
+            seed_clusters.push(best);
         }
 
-        // Create plates with variable growth speeds
-        for (i, &seed_cell) in seed_cells.iter().enumerate() {
+        let mut plates = Vec::new();
+        for (i, &seed) in seed_clusters.iter().enumerate() {
             let plate_type = if i < num_continental {
                 PlateType::Continental
             } else {
                 PlateType::Oceanic
             };
-
             let plate = Plate {
                 id: (i + 1) as u16,
                 plate_type,
                 direction: rng.random_range(0.0..std::f32::consts::TAU),
                 speed: rng.random_range(0.6..1.4),
-                cells: vec![seed_cell],
+                cells: Vec::new(),
             };
-
-            plate_ids[seed_cell] = plate.id;
+            cluster_plate_ids[seed] = plate.id;
             plates.push(plate);
         }
 
-        // Priority-weighted BFS: lower cost = expands first
-        // Each plate has a growth speed; cost = base_cost / speed + noise
-        let mut heap: BinaryHeap<PlateFrontier> = plates
+        // Priority-weighted BFS on coarse graph
+        let mut heap: BinaryHeap<PlateFrontier> = seed_clusters
             .iter()
-            .map(|p| PlateFrontier {
-                cell: p.cells[0],
-                plate_id: p.id,
+            .enumerate()
+            .map(|(i, &s)| PlateFrontier {
+                cell: s,
+                plate_id: (i + 1) as u16,
                 cost: 0.0,
             })
             .collect();
 
-        let mut costs = vec![f32::MAX; n];
-        for p in &plates {
-            costs[p.cells[0]] = 0.0;
+        let mut costs = vec![f32::MAX; nc];
+        for (i, &s) in seed_clusters.iter().enumerate() {
+            costs[s] = 0.0;
+            let _ = i;
         }
 
-        // Simple hash-based noise for cost perturbation
         let noise_seed = self.seed.wrapping_mul(2654435761);
 
         while let Some(front) = heap.pop() {
-            if plate_ids[front.cell] != 0 && plate_ids[front.cell] != front.plate_id {
-                continue; // Already claimed by another plate
+            if cluster_plate_ids[front.cell] != 0 && cluster_plate_ids[front.cell] != front.plate_id
+            {
+                continue;
             }
             if front.cost > costs[front.cell] + 0.001 {
-                continue; // Stale entry
+                continue;
             }
 
             let speed = plates[(front.plate_id - 1) as usize].speed;
 
-            for &neighbor in &neighbors[front.cell] {
-                let neighbor = neighbor as usize;
-                if plate_ids[neighbor] != 0 {
+            for &nb in &cluster_neighbors[front.cell] {
+                let nb = nb as usize;
+                if cluster_plate_ids[nb] != 0 {
                     continue;
                 }
-
-                // Cost: base step (1.0) / speed + noise perturbation
                 let noise = {
-                    let h = (neighbor as u64)
+                    let h = (nb as u64)
                         .wrapping_mul(noise_seed)
                         .wrapping_add(front.plate_id as u64);
                     let h = h.wrapping_mul(0x517cc1b727220a95);
-                    (h >> 48) as f32 / 65536.0 * 0.6 // 0..0.6 noise
+                    (h >> 48) as f32 / 65536.0 * 0.6
                 };
                 let step_cost = (1.0 / speed) + noise;
                 let new_cost = front.cost + step_cost;
 
-                if new_cost < costs[neighbor] {
-                    costs[neighbor] = new_cost;
-                    plate_ids[neighbor] = front.plate_id;
-                    plates[(front.plate_id - 1) as usize].cells.push(neighbor);
+                if new_cost < costs[nb] {
+                    costs[nb] = new_cost;
+                    cluster_plate_ids[nb] = front.plate_id;
                     heap.push(PlateFrontier {
-                        cell: neighbor,
+                        cell: nb,
                         plate_id: front.plate_id,
                         cost: new_cost,
                     });
@@ -252,7 +358,63 @@ impl PlateLayer {
             }
         }
 
-        (plate_ids, plates)
+        (cluster_plate_ids, plates)
+    }
+
+    /// Step 3: Project coarse plate assignments to fine cells with boundary noise.
+    fn project_to_fine(
+        neighbors: &[Vec<u32>],
+        cell_to_cluster: &[u32],
+        cluster_cells: &[Vec<usize>],
+        cluster_plate_ids: &[u16],
+        cluster_neighbors: &[Vec<u32>],
+        rng: &mut rand::rngs::StdRng,
+    ) -> Vec<u16> {
+        let n = cell_to_cluster.len();
+        let mut plate_ids = vec![0u16; n];
+
+        // Direct projection: each cell gets its cluster's plate
+        for (cid, members) in cluster_cells.iter().enumerate() {
+            let pid = cluster_plate_ids[cid];
+            for &cell in members {
+                plate_ids[cell] = pid;
+            }
+        }
+
+        // Find boundary clusters (clusters with neighbors in different plates)
+        let mut boundary_clusters = std::collections::HashSet::new();
+        for (cid, nbs) in cluster_neighbors.iter().enumerate() {
+            let my_plate = cluster_plate_ids[cid];
+            for &nb_cid in nbs {
+                if cluster_plate_ids[nb_cid as usize] != my_plate {
+                    boundary_clusters.insert(cid);
+                    break;
+                }
+            }
+        }
+
+        // For boundary clusters, randomly reassign ~25% of edge fine cells
+        for &cid in &boundary_clusters {
+            let my_plate = cluster_plate_ids[cid];
+            for &cell in &cluster_cells[cid] {
+                // Check if this fine cell is on the edge (has neighbor in different plate)
+                let mut neighbor_plate = None;
+                for &nb in &neighbors[cell] {
+                    let nb_pid = plate_ids[nb as usize];
+                    if nb_pid != 0 && nb_pid != my_plate {
+                        neighbor_plate = Some(nb_pid);
+                        break;
+                    }
+                }
+                if let Some(other_plate) = neighbor_plate {
+                    if rng.random_range(0.0..1.0f32) < 0.25 {
+                        plate_ids[cell] = other_plate;
+                    }
+                }
+            }
+        }
+
+        plate_ids
     }
 
     /// Detect boundary cells between plates
