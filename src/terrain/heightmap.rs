@@ -161,22 +161,26 @@ impl TerrainGenerator {
         #[cfg(debug_assertions)]
         println!("使用分层系统生成地形: seed={}, plates={}", seed, num_plates);
 
+        // Continental ratio derived from ocean ratio:
+        // more ocean → fewer continental plates
+        let continental_ratio = (1.0 - ocean_ratio).clamp(0.2, 0.5);
+
         // 配置板块层
         let plate_config = PlateConfig {
             num_plates,
-            continental_ratio: 0.35,
-            continental_base: 30.0,
-            oceanic_base: -40.0,
+            continental_ratio,
+            continental_base: 40.0,
+            oceanic_base: -50.0,
         };
 
         // 配置构造层
         let tectonic_config = LayeredTectonicConfig {
             plate_config: plate_config.clone(),
-            mountain_height: 80.0,
-            mountain_width: 20.0,
-            trench_depth: 30.0,
-            ridge_height: 20.0,
-            rift_depth: 25.0,
+            mountain_height: 100.0,
+            mountain_width: 15.0,
+            trench_depth: 40.0,
+            ridge_height: 25.0,
+            rift_depth: 30.0,
         };
 
         // 配置后处理层
@@ -260,13 +264,23 @@ impl TerrainGenerator {
                 template_name, num_plates
             );
             let ocean_ratio = get_suggested_ocean_ratio(template_name);
-            return self.generate_layered(
+            let (mut heights_u8, plates, plate_ids) = self.generate_layered(
                 cells,
                 neighbors,
                 self.config.tectonic.seed,
                 num_plates,
                 ocean_ratio,
             );
+
+            // Apply template-specific modifiers as subtle adjustments
+            if let Some(template) = get_template_by_name(template_name) {
+                self.apply_template_modifiers(&mut heights_u8, &template, cells, neighbors);
+            }
+
+            // Post-process
+            self.post_process(&mut heights_u8, neighbors);
+
+            return (heights_u8, plates, plate_ids);
         }
 
         #[cfg(debug_assertions)]
@@ -918,6 +932,125 @@ impl TerrainGenerator {
                 }
             })
             .collect()
+    }
+
+    /// Apply template commands as subtle modifiers on top of plate-driven terrain
+    ///
+    /// Only Range and Strait commands are applied (as mountain chains and water channels).
+    /// Hill/Mountain commands are skipped since the plate system already handles landmasses.
+    /// The modifier strength is reduced to 30% to keep plate structure dominant.
+    fn apply_template_modifiers(
+        &self,
+        heights: &mut [u8],
+        template: &TerrainTemplate,
+        cells: &[Pos2],
+        neighbors: &[Vec<u32>],
+    ) {
+        use super::template::TerrainCommand;
+
+        // Compute map bounds
+        let (min_x, max_x, min_y, max_y) = cells.iter().fold(
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(min_x, max_x, min_y, max_y), pos| {
+                (
+                    min_x.min(pos.x),
+                    max_x.max(pos.x),
+                    min_y.min(pos.y),
+                    max_y.max(pos.y),
+                )
+            },
+        );
+        let w = max_x - min_x;
+        let h = max_y - min_y;
+
+        let modifier_strength = 0.3; // Only 30% of template effect
+
+        for cmd in &template.commands {
+            match cmd {
+                TerrainCommand::Range {
+                    count: _,
+                    height,
+                    x,
+                    y,
+                    length: _,
+                    width: _,
+                    angle: _,
+                } => {
+                    // Add subtle mountain ridges in the specified area
+                    // This helps templates like Mediterranean get their characteristic features
+                    let (hmin, hmax) = *height;
+                    let boost = (hmin + hmax) / 2.0 * modifier_strength;
+                    let (xmin, xmax) = *x;
+                    let (ymin, ymax) = *y;
+
+                    for (i, pos) in cells.iter().enumerate() {
+                        let nx = (pos.x - min_x) / w;
+                        let ny = (pos.y - min_y) / h;
+                        if nx >= xmin && nx <= xmax && ny >= ymin && ny <= ymax {
+                            let new_val = (heights[i] as f32 + boost * 0.3).clamp(0.0, 255.0);
+                            heights[i] = new_val as u8;
+                        }
+                    }
+                }
+                TerrainCommand::Strait {
+                    width: sw,
+                    direction,
+                    position,
+                    depth,
+                } => {
+                    // Carve strait through terrain
+                    use super::template::StraitDirection;
+                    let carve = *depth * modifier_strength;
+
+                    for (i, pos) in cells.iter().enumerate() {
+                        let nx = (pos.x - min_x) / w;
+                        let ny = (pos.y - min_y) / h;
+                        let in_strait = match direction {
+                            StraitDirection::Vertical => (nx - position).abs() < *sw / 2.0,
+                            StraitDirection::Horizontal => (ny - position).abs() < *sw / 2.0,
+                        };
+                        if in_strait {
+                            let new_val = (heights[i] as f32 - carve).clamp(0.0, 255.0);
+                            heights[i] = new_val as u8;
+                        }
+                    }
+                }
+                TerrainCommand::Trough {
+                    count: _,
+                    depth,
+                    x,
+                    y,
+                    length: _,
+                    width: _,
+                    angle: _,
+                } => {
+                    // Subtle deepening in specified areas
+                    let (dmin, dmax) = *depth;
+                    let carve = (dmin + dmax) / 2.0 * modifier_strength * 0.2;
+                    let (xmin, xmax) = *x;
+                    let (ymin, ymax) = *y;
+
+                    for (i, pos) in cells.iter().enumerate() {
+                        let nx = (pos.x - min_x) / w;
+                        let ny = (pos.y - min_y) / h;
+                        if nx >= xmin && nx <= xmax && ny >= ymin && ny <= ymax {
+                            let new_val = (heights[i] as f32 - carve).clamp(0.0, 255.0);
+                            heights[i] = new_val as u8;
+                        }
+                    }
+                }
+                _ => {
+                    // Skip Hill, Mountain, Pit, etc. - plate system handles these
+                }
+            }
+        }
+
+        let _ = neighbors; // suppress unused warning
     }
 
     /// 后生成噪声叠加：在模板生成之后叠加多频段噪声，打破放射状图案

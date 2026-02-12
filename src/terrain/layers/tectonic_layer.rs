@@ -106,14 +106,46 @@ impl TectonicLayer {
         distances
     }
 
-    /// Classify collision type based on plate types
-    fn classify_collision(&self, plate_a: &Plate, plate_b: &Plate) -> CollisionType {
+    /// Classify collision type based on plate types and motion vectors
+    fn classify_collision(
+        &self,
+        plate_a: &Plate,
+        plate_b: &Plate,
+        cell_a: &Pos2,
+        cell_b: &Pos2,
+    ) -> CollisionType {
         use PlateType::*;
 
-        match (plate_a.plate_type, plate_b.plate_type) {
-            (Continental, Continental) => CollisionType::ContinentalCollision,
-            (Continental, Oceanic) | (Oceanic, Continental) => CollisionType::OceanicSubduction,
-            (Oceanic, Oceanic) => CollisionType::OceanicCollision,
+        // Calculate relative motion along the boundary normal
+        let dx = cell_b.x - cell_a.x;
+        let dy = cell_b.y - cell_a.y;
+        let len = (dx * dx + dy * dy).sqrt().max(0.001);
+        let nx = dx / len;
+        let ny = dy / len;
+
+        // Velocity of plate A and B along the normal
+        let va = plate_a.speed * (plate_a.direction.cos() * nx + plate_a.direction.sin() * ny);
+        let vb = plate_b.speed * (plate_b.direction.cos() * nx + plate_b.direction.sin() * ny);
+
+        // Relative velocity: positive = converging, negative = diverging
+        let relative = va - vb;
+
+        if relative > 0.15 {
+            // Convergent
+            match (plate_a.plate_type, plate_b.plate_type) {
+                (Continental, Continental) => CollisionType::ContinentalCollision,
+                (Continental, Oceanic) | (Oceanic, Continental) => CollisionType::OceanicSubduction,
+                (Oceanic, Oceanic) => CollisionType::OceanicCollision,
+            }
+        } else if relative < -0.15 {
+            // Divergent
+            match (plate_a.plate_type, plate_b.plate_type) {
+                (Continental, Continental) => CollisionType::ContinentalRift,
+                _ => CollisionType::OceanicRidge,
+            }
+        } else {
+            // Transform
+            CollisionType::Transform
         }
     }
 
@@ -189,12 +221,14 @@ impl TerrainLayer for TectonicLayer {
             }
 
             for &neighbor in &neighbors[i] {
-                let neighbor_plate = plate_ids[neighbor as usize];
+                let ni = neighbor as usize;
+                let neighbor_plate = plate_ids[ni];
                 if neighbor_plate != 0 && neighbor_plate != plate_id {
                     // This is a boundary cell
                     let plate_a = &plates[(plate_id - 1) as usize];
                     let plate_b = &plates[(neighbor_plate - 1) as usize];
-                    let collision_type = self.classify_collision(plate_a, plate_b);
+                    let collision_type =
+                        self.classify_collision(plate_a, plate_b, &cells[i], &cells[ni]);
 
                     boundary_cells.push(i);
                     boundary_collisions.insert(i, collision_type);
@@ -205,6 +239,32 @@ impl TerrainLayer for TectonicLayer {
 
         // Compute distance field from boundaries
         let distances = self.compute_distance_field(&boundary_cells, neighbors, n);
+
+        // Build a map from each cell to its nearest boundary's collision type
+        // using BFS from boundary cells outward
+        let mut nearest_collision: Vec<Option<CollisionType>> = vec![None; n];
+        {
+            let mut visited = vec![false; n];
+            let mut queue = VecDeque::new();
+            for &bc in &boundary_cells {
+                if let Some(&ct) = boundary_collisions.get(&bc) {
+                    nearest_collision[bc] = Some(ct);
+                    visited[bc] = true;
+                    queue.push_back(bc);
+                }
+            }
+            while let Some(current) = queue.pop_front() {
+                let ct = nearest_collision[current].unwrap();
+                for &neighbor in &neighbors[current] {
+                    let neighbor = neighbor as usize;
+                    if !visited[neighbor] {
+                        visited[neighbor] = true;
+                        nearest_collision[neighbor] = Some(ct);
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+        }
 
         // Generate heights
         let mut heights = vec![0.0f32; n];
@@ -226,27 +286,8 @@ impl TerrainLayer for TectonicLayer {
             // Tectonic contribution based on distance to nearest boundary
             let distance = distances[i];
 
-            // Find nearest boundary's collision type
-            let collision_type = if distance < self.config.mountain_width * 2.0 {
-                // Find the collision type of the nearest boundary
-                let mut nearest_boundary = None;
-                let mut nearest_dist = f32::MAX;
-
-                for &bc in &boundary_cells {
-                    let d = distances[bc];
-                    if d < nearest_dist {
-                        nearest_dist = d;
-                        nearest_boundary = Some(bc);
-                    }
-                }
-
-                nearest_boundary
-                    .and_then(|bc| boundary_collisions.get(&bc))
-                    .copied()
-                    .unwrap_or(CollisionType::ContinentalCollision)
-            } else {
-                CollisionType::ContinentalCollision
-            };
+            let collision_type =
+                nearest_collision[i].unwrap_or(CollisionType::ContinentalCollision);
 
             let tectonic = self.terrain_contribution(distance, collision_type, &mut rng);
 

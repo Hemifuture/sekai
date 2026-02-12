@@ -4,7 +4,8 @@
 
 use super::r#trait::{LayerOutput, Pos2, TerrainLayer};
 use rand::{Rng, SeedableRng};
-use std::collections::VecDeque;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 /// Plate type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,38 @@ pub struct Plate {
     pub cells: Vec<usize>,
 }
 
+/// Priority queue entry for plate expansion
+#[derive(Debug, Clone)]
+struct PlateFrontier {
+    cell: usize,
+    plate_id: u16,
+    cost: f32,
+}
+
+impl PartialEq for PlateFrontier {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost
+    }
+}
+
+impl Eq for PlateFrontier {}
+
+impl PartialOrd for PlateFrontier {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PlateFrontier {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering: lowest cost has highest priority
+        other
+            .cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(Ordering::Equal)
+    }
+}
+
 /// Plate generation layer
 pub struct PlateLayer {
     config: PlateConfig,
@@ -73,7 +106,11 @@ impl PlateLayer {
         self
     }
 
-    /// Generate plates using random flood fill
+    /// Generate plates using priority-weighted BFS for organic shapes
+    ///
+    /// Each plate gets a random growth speed. The priority queue ensures
+    /// faster-growing plates expand first, creating varied plate sizes.
+    /// Noise-based cost adds irregularity to plate boundaries.
     pub fn generate_plates(
         &self,
         cells: &[Pos2],
@@ -85,22 +122,59 @@ impl PlateLayer {
         // Initialize plate IDs (0 = unassigned)
         let mut plate_ids = vec![0u16; n];
 
-        // Choose random seed points for each plate
-        let mut available: Vec<usize> = (0..n).collect();
+        // Choose random seed points for each plate, spread them apart
         let mut plates = Vec::new();
-
         let num_continental =
-            (self.config.num_plates as f32 * self.config.continental_ratio) as usize;
+            (self.config.num_plates as f32 * self.config.continental_ratio).ceil() as usize;
 
-        for i in 0..self.config.num_plates {
-            if available.is_empty() {
-                break;
+        // Use rejection sampling to spread seed points
+        let mut seed_cells = Vec::new();
+        let _min_dist_sq = if n > 100 {
+            // Estimate map dimensions from cell positions
+            let (min_x, max_x) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p.x), hi.max(p.x))
+            });
+            let (min_y, max_y) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                (lo.min(p.y), hi.max(p.y))
+            });
+            let area = (max_x - min_x) * (max_y - min_y);
+            // Target distance: spread evenly, then require at least 30% of that
+            let target = (area / self.config.num_plates as f32).sqrt() * 0.3;
+            target * target
+        } else {
+            0.0
+        };
+
+        for _ in 0..self.config.num_plates {
+            // Try to find a cell far from existing seeds
+            let mut best_cell = rng.random_range(0..n);
+            let mut best_min_dist = 0.0f32;
+
+            for _ in 0..30 {
+                let candidate = rng.random_range(0..n);
+                if plate_ids[candidate] != 0 {
+                    continue;
+                }
+                let min_d = seed_cells
+                    .iter()
+                    .map(|&s: &usize| {
+                        let dx = cells[candidate].x - cells[s].x;
+                        let dy = cells[candidate].y - cells[s].y;
+                        dx * dx + dy * dy
+                    })
+                    .fold(f32::MAX, f32::min);
+
+                if min_d > best_min_dist {
+                    best_min_dist = min_d;
+                    best_cell = candidate;
+                }
             }
 
-            // Pick random seed point
-            let seed_idx = rng.random_range(0..available.len());
-            let seed_cell = available.swap_remove(seed_idx);
+            seed_cells.push(best_cell);
+        }
 
+        // Create plates with variable growth speeds
+        for (i, &seed_cell) in seed_cells.iter().enumerate() {
             let plate_type = if i < num_continental {
                 PlateType::Continental
             } else {
@@ -111,7 +185,7 @@ impl PlateLayer {
                 id: (i + 1) as u16,
                 plate_type,
                 direction: rng.random_range(0.0..std::f32::consts::TAU),
-                speed: rng.random_range(0.5..1.5),
+                speed: rng.random_range(0.6..1.4),
                 cells: vec![seed_cell],
             };
 
@@ -119,28 +193,61 @@ impl PlateLayer {
             plates.push(plate);
         }
 
-        // Random flood fill to assign remaining cells
-        let mut queue: VecDeque<usize> = plates
+        // Priority-weighted BFS: lower cost = expands first
+        // Each plate has a growth speed; cost = base_cost / speed + noise
+        let mut heap: BinaryHeap<PlateFrontier> = plates
             .iter()
-            .flat_map(|p| p.cells.iter().copied())
+            .map(|p| PlateFrontier {
+                cell: p.cells[0],
+                plate_id: p.id,
+                cost: 0.0,
+            })
             .collect();
 
-        while let Some(current) = queue.pop_front() {
-            let current_plate = plate_ids[current];
+        let mut costs = vec![f32::MAX; n];
+        for p in &plates {
+            costs[p.cells[0]] = 0.0;
+        }
 
-            // Shuffle neighbors for randomness
-            let mut neighbor_list: Vec<u32> = neighbors[current].clone();
-            for i in (1..neighbor_list.len()).rev() {
-                let j = rng.random_range(0..=i);
-                neighbor_list.swap(i, j);
+        // Simple hash-based noise for cost perturbation
+        let noise_seed = self.seed.wrapping_mul(2654435761);
+
+        while let Some(front) = heap.pop() {
+            if plate_ids[front.cell] != 0 && plate_ids[front.cell] != front.plate_id {
+                continue; // Already claimed by another plate
+            }
+            if front.cost > costs[front.cell] + 0.001 {
+                continue; // Stale entry
             }
 
-            for &neighbor in &neighbor_list {
+            let speed = plates[(front.plate_id - 1) as usize].speed;
+
+            for &neighbor in &neighbors[front.cell] {
                 let neighbor = neighbor as usize;
-                if plate_ids[neighbor] == 0 {
-                    plate_ids[neighbor] = current_plate;
-                    plates[(current_plate - 1) as usize].cells.push(neighbor);
-                    queue.push_back(neighbor);
+                if plate_ids[neighbor] != 0 {
+                    continue;
+                }
+
+                // Cost: base step (1.0) / speed + noise perturbation
+                let noise = {
+                    let h = (neighbor as u64)
+                        .wrapping_mul(noise_seed)
+                        .wrapping_add(front.plate_id as u64);
+                    let h = h.wrapping_mul(0x517cc1b727220a95);
+                    (h >> 48) as f32 / 65536.0 * 0.6 // 0..0.6 noise
+                };
+                let step_cost = (1.0 / speed) + noise;
+                let new_cost = front.cost + step_cost;
+
+                if new_cost < costs[neighbor] {
+                    costs[neighbor] = new_cost;
+                    plate_ids[neighbor] = front.plate_id;
+                    plates[(front.plate_id - 1) as usize].cells.push(neighbor);
+                    heap.push(PlateFrontier {
+                        cell: neighbor,
+                        plate_id: front.plate_id,
+                        cost: new_cost,
+                    });
                 }
             }
         }

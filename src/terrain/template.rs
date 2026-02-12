@@ -1701,11 +1701,9 @@ pub fn get_template_by_name(name: &str) -> Option<TerrainTemplate> {
 }
 
 /// 判断模板是否应该使用新的分层生成系统
-/// 所有模板都使用分层系统以避免放射状图案问题
+/// 所有模板都使用分层系统以获得板块驱动的自然地形
 pub fn should_use_layered_generation(_template_name: &str) -> bool {
-    // 暂时禁用分层系统，使用传统的 BFS Blob 模板系统
-    // 分层系统需要进一步调优
-    false
+    true
 }
 
 /// 获取模板建议的板块数量
@@ -1736,13 +1734,13 @@ pub fn get_suggested_plate_count(template_name: &str) -> usize {
         "highland" => 10,
         "isthmus" => 10,
 
-        // === 大陆类型 (12-15 个板块) ===
+        // === 大陆类型 (10-14 个板块) ===
         "earth-like" | "earth_like" => 12,
-        "continental" => 12,
-        "continents" => 15,
+        "continental" => 10,
+        "continents" => 14,
         "mediterranean" => 12,
         "tectonic_collision" | "tectonic-collision" => 12,
-        "fjord_coast" | "fjord-coast" => 12,
+        "fjord_coast" | "fjord-coast" => 10,
 
         // 默认：中等数量
         _ => 10,
@@ -1753,31 +1751,31 @@ pub fn get_suggested_plate_count(template_name: &str) -> usize {
 pub fn get_suggested_ocean_ratio(template_name: &str) -> f32 {
     match template_name.to_lowercase().as_str() {
         // 高海洋比例 (80-95%)
-        "oceanic" => 0.95,
+        "oceanic" => 0.85,
         "atoll" | "atoll_azgaar" | "atoll-azgaar" => 0.92,
-        "volcanic_island" | "volcanic-island" => 0.90,
-        "archipelago" | "archipelago_azgaar" | "archipelago-azgaar" => 0.85,
+        "volcanic_island" | "volcanic-island" => 0.85,
+        "volcano" => 0.88,
+        "archipelago" | "archipelago_azgaar" | "archipelago-azgaar" => 0.80,
         "volcanic_archipelago" | "volcanic-archipelago" => 0.85,
 
-        // 中高海洋比例 (70-80%)
-        "low_island" | "low-island" => 0.80,
+        // 中高海洋比例 (65-75%)
+        "low_island" | "low-island" => 0.70,
         "earth-like" | "earth_like" => 0.70,
-        "high_island" | "high-island" => 0.70,
+        "high_island" | "high-island" => 0.65,
+        "isthmus" => 0.70,
 
         // 中等海洋比例 (55-65%)
         "peninsula" | "peninsula_azgaar" | "peninsula-azgaar" => 0.65,
-        "highland" => 0.65,
-        "isthmus" => 0.65,
-        "rift_valley" | "rift-valley" => 0.60,
+        "continents" => 0.65,
         "mediterranean" => 0.60,
-        "fjord_coast" | "fjord-coast" => 0.55,
+        "fjord_coast" | "fjord-coast" => 0.60,
         "continental" => 0.55,
         "tectonic_collision" | "tectonic-collision" => 0.55,
-        "fractured" => 0.55,
+        "rift_valley" | "rift-valley" => 0.55,
 
-        // 低海洋比例 (25-45%)
-        "pangea" => 0.45,
-        "continents" => 0.30,
+        // 低海洋比例 (30-50%)
+        "highland" => 0.50,
+        "pangea" => 0.40,
 
         // 默认值
         _ => 0.65,
