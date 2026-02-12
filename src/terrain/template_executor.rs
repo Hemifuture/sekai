@@ -63,9 +63,9 @@ impl TemplateExecutor {
         #[cfg(debug_assertions)]
         println!("执行地形模板: {} - {}", template.name, template.description);
 
-        for (idx, command) in template.commands.iter().enumerate() {
+        for (_idx, command) in template.commands.iter().enumerate() {
             #[cfg(debug_assertions)]
-            println!("  [{}] 执行命令: {:?}", idx + 1, command);
+            println!("  [{}] 执行命令: {:?}", _idx + 1, command);
 
             self.execute_command(command, &mut heights, cells, neighbors, &mut rng);
         }

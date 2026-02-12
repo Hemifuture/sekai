@@ -977,20 +977,20 @@ impl TerrainGenerator {
 
         // 2. 清理太小的特征
         if self.config.enable_feature_cleanup {
-            let cleaned = detector.cleanup_small_features(heights, &features);
+            let _cleaned = detector.cleanup_small_features(heights, &features);
             #[cfg(debug_assertions)]
-            if cleaned > 0 {
-                println!("清理了 {} 个孤立单元格", cleaned);
+            if _cleaned > 0 {
+                println!("清理了 {} 个孤立单元格", _cleaned);
             }
         }
 
         // 3. 平滑海岸线
         if self.config.coastline_smoothing > 0 {
-            let smoothed =
+            let _smoothed =
                 detector.smooth_coastline(heights, neighbors, self.config.coastline_smoothing);
             #[cfg(debug_assertions)]
-            if smoothed > 0 {
-                println!("平滑了 {} 个海岸线单元格", smoothed);
+            if _smoothed > 0 {
+                println!("平滑了 {} 个海岸线单元格", _smoothed);
             }
         }
     }

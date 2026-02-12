@@ -236,7 +236,6 @@ impl DelaunayRenderer {
                 self.triangle_indices.clone()
             };
 
-            #[cfg(debug_assertions)]
             // println!(
             //     "[delaunay] 可见边: {}/{} ({:.1}%)",
             //     visible_indices.len() / 2,
