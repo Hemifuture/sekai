@@ -1,10 +1,14 @@
+name: CI
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
-name: CI
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   RUSTFLAGS: -D warnings
@@ -18,8 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
   check_wasm:
@@ -32,8 +35,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features --lib --target wasm32-unknown-unknown
 
   test:
@@ -42,8 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - run: cargo test --lib
 
@@ -54,7 +56,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -65,8 +66,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
 
   trunk:
@@ -79,10 +80,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - name: Download and install Trunk binary
-        run: wget -qO- https://github.com/thedodd/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
+        run: wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf-
       - name: Build
         run: ./trunk build
 
@@ -112,23 +113,18 @@ jobs:
       - name: Building ${{ matrix.TARGET }}
         run: echo "${{ matrix.TARGET }}"
 
-      - uses: actions/checkout@master
-      - name: Install build dependencies - Rustup
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable --profile default --target ${{ matrix.TARGET }} -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - uses: actions/checkout@v4
 
-      - name: Install cross for linux
-        if: contains(matrix.TARGET, 'linux')
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross --rev 1b8cf50d20180c1a394099e608141480f934b7f7
-          rustup target add ${{ matrix.TARGET }} --toolchain stable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.TARGET }}
 
-      - name: Install cross for mac and windows
-        if: ${{ !contains(matrix.TARGET, 'linux') }}
-        run: |
-          cargo install cross
-          rustup target add ${{ matrix.TARGET }} --toolchain stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.TARGET }}
+
+      - name: Install cross
+        run: cargo install cross
 
       - name: Build for Windows
         if: matrix.os == 'windows-latest'
@@ -136,43 +132,53 @@ jobs:
           $env:CROSS_NO_WARNINGS=0
           cross build --verbose --release --target=${{ matrix.TARGET }}
         shell: pwsh
-  
+
       - name: Build for macOS and Linux
         if: matrix.os != 'windows-latest'
         run: |
           CROSS_NO_WARNINGS=0 cross build --verbose --release --target=${{ matrix.TARGET }}
-  
 
       - name: Rename
         run: cp target/${{ matrix.TARGET }}/release/${{ env.BINARY_NAME }}${{ matrix.EXTENSION }} ${{ env.BINARY_NAME }}-${{ matrix.TARGET }}${{ matrix.EXTENSION }}
 
-      - uses: actions/upload-artifact@master
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BINARY_NAME }}-${{ matrix.TARGET }}${{ matrix.EXTENSION }}
           path: ${{ env.BINARY_NAME }}-${{ matrix.TARGET }}${{ matrix.EXTENSION }}
 
-      # Nightly release - only on main branch push
+  nightly-release:
+    name: Nightly Release
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Delete old nightly tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git tag -d nightly || true
           git push origin :refs/tags/nightly || true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: svenstaro/upload-release-action@v2
-        name: Upload binaries to nightly release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Upload all binaries to nightly release
+        uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ env.BINARY_NAME }}-${{ matrix.TARGET }}${{ matrix.EXTENSION }}
-          asset_name: ${{ env.BINARY_NAME }}-${{ matrix.TARGET }}${{ matrix.EXTENSION }}
+          file: artifacts/**/*
+          file_glob: true
           tag: nightly
           release_name: Nightly Build
           body: |
             Automated nightly build from the latest commit on main branch.
-            
+
             **Commit:** ${{ github.sha }}
-            **Date:** ${{ github.event.head_commit.timestamp }}
           prerelease: true
           overwrite: true
