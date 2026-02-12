@@ -266,7 +266,41 @@ impl TerrainLayer for TectonicLayer {
             }
         }
 
-        // Generate heights
+        // Compute distance from each cell to nearest cell of a DIFFERENT plate type
+        // This is used for continental shelf gradient
+        let mut dist_to_type_boundary = vec![f32::MAX; n];
+        {
+            let mut queue = VecDeque::new();
+            for (i, &pid) in plate_ids.iter().enumerate() {
+                if pid == 0 {
+                    continue;
+                }
+                let my_type = plates[(pid - 1) as usize].plate_type;
+                for &neighbor in &neighbors[i] {
+                    let ni = neighbor as usize;
+                    let npid = plate_ids[ni];
+                    if npid != 0 && plates[(npid - 1) as usize].plate_type != my_type {
+                        dist_to_type_boundary[i] = 0.0;
+                        queue.push_back(i);
+                        break;
+                    }
+                }
+            }
+            while let Some(current) = queue.pop_front() {
+                let cd = dist_to_type_boundary[current];
+                for &neighbor in &neighbors[current] {
+                    let ni = neighbor as usize;
+                    let nd = cd + 1.0;
+                    if nd < dist_to_type_boundary[ni] {
+                        dist_to_type_boundary[ni] = nd;
+                        queue.push_back(ni);
+                    }
+                }
+            }
+        }
+
+        // Generate heights with continental shelf gradient
+        let shelf_width = 12.0; // cells over which the shelf gradient applies
         let mut heights = vec![0.0f32; n];
 
         for i in 0..n {
@@ -276,11 +310,33 @@ impl TerrainLayer for TectonicLayer {
             }
 
             let plate = &plates[(plate_id - 1) as usize];
+            let continental_base = self.config.plate_config.continental_base;
+            let oceanic_base = self.config.plate_config.oceanic_base;
 
-            // Base height from plate type
+            // Base height from plate type with shelf gradient at edges
+            let dist_tb = dist_to_type_boundary[i];
             let base = match plate.plate_type {
-                PlateType::Continental => self.config.plate_config.continental_base,
-                PlateType::Oceanic => self.config.plate_config.oceanic_base,
+                PlateType::Continental => {
+                    if dist_tb < shelf_width {
+                        // Near ocean: gradually descend toward oceanic level
+                        let t = dist_tb / shelf_width;
+                        // Smooth hermite interpolation
+                        let t = t * t * (3.0 - 2.0 * t);
+                        oceanic_base + (continental_base - oceanic_base) * t
+                    } else {
+                        continental_base
+                    }
+                }
+                PlateType::Oceanic => {
+                    if dist_tb < shelf_width {
+                        // Near continent: gradually rise toward continental level
+                        let t = dist_tb / shelf_width;
+                        let t = t * t * (3.0 - 2.0 * t);
+                        continental_base + (oceanic_base - continental_base) * t
+                    } else {
+                        oceanic_base
+                    }
+                }
             };
 
             // Tectonic contribution based on distance to nearest boundary
@@ -292,6 +348,29 @@ impl TerrainLayer for TectonicLayer {
             let tectonic = self.terrain_contribution(distance, collision_type, &mut rng);
 
             heights[i] = base + tectonic;
+        }
+
+        // Post-assignment smoothing passes (gaussian-like neighbor averaging)
+        for _ in 0..5 {
+            let old = heights.clone();
+            for i in 0..n {
+                if plate_ids[i] == 0 || neighbors[i].is_empty() {
+                    continue;
+                }
+                let mut sum = old[i];
+                let mut count = 1.0f32;
+                for &nb in &neighbors[i] {
+                    let ni = nb as usize;
+                    if plate_ids[ni] != 0 {
+                        sum += old[ni];
+                        count += 1.0;
+                    }
+                }
+                // Stronger smoothing near boundaries, lighter in interior
+                let dist_b = distances[i].min(20.0);
+                let blend = if dist_b < 8.0 { 0.6 } else { 0.3 };
+                heights[i] = old[i] * (1.0 - blend) + (sum / count) * blend;
+            }
         }
 
         LayerOutput {

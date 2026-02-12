@@ -23,7 +23,7 @@ impl Default for PostprocessConfig {
         Self {
             min_island_size: 15,
             min_lake_size: 10,
-            smoothing_iterations: 2,
+            smoothing_iterations: 5,
             ocean_ratio: 0.65,
         }
     }
@@ -154,6 +154,59 @@ impl PostprocessLayer {
         }
     }
 
+    /// Continental shelf pass: smooth cells near land-sea boundaries
+    /// Gradually transitions ocean depth near coast and land height near shore
+    fn continental_shelf_pass(heights: &mut [f32], neighbors: &[Vec<u32>], max_hops: usize) {
+        // Find land-sea boundary cells
+        let n = heights.len();
+        let mut dist_to_coast = vec![u32::MAX; n];
+        let mut queue = VecDeque::new();
+
+        for i in 0..n {
+            let is_land = heights[i] > 0.0;
+            for &nb in &neighbors[i] {
+                if (heights[nb as usize] > 0.0) != is_land {
+                    dist_to_coast[i] = 0;
+                    queue.push_back(i);
+                    break;
+                }
+            }
+        }
+
+        // BFS to compute distance to coast
+        while let Some(current) = queue.pop_front() {
+            let cd = dist_to_coast[current];
+            if cd as usize >= max_hops {
+                continue;
+            }
+            for &nb in &neighbors[current] {
+                let ni = nb as usize;
+                if cd + 1 < dist_to_coast[ni] {
+                    dist_to_coast[ni] = cd + 1;
+                    queue.push_back(ni);
+                }
+            }
+        }
+
+        // Smooth cells within max_hops of coast, with strength decreasing with distance
+        for _ in 0..3 {
+            let old = heights.to_vec();
+            for i in 0..n {
+                let d = dist_to_coast[i];
+                if d == u32::MAX || d as usize > max_hops || neighbors[i].is_empty() {
+                    continue;
+                }
+                let blend = 0.5 * (1.0 - d as f32 / (max_hops as f32 + 1.0));
+                if blend <= 0.0 {
+                    continue;
+                }
+                let avg: f32 = neighbors[i].iter().map(|&nb| old[nb as usize]).sum::<f32>()
+                    / neighbors[i].len() as f32;
+                heights[i] = old[i] * (1.0 - blend) + avg * blend;
+            }
+        }
+    }
+
     /// Adjust heights to achieve target ocean ratio
     /// This finds the height threshold that gives the desired water percentage
     fn adjust_sea_ratio(heights: &mut [f32], ocean_ratio: f32) {
@@ -218,6 +271,9 @@ impl TerrainLayer for PostprocessLayer {
             neighbors,
             self.config.smoothing_iterations,
         );
+
+        // Continental shelf pass: gradual transitions near coast
+        Self::continental_shelf_pass(&mut output.heights, neighbors, 8);
 
         output
     }

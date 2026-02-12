@@ -124,44 +124,55 @@ fn extract_neighbors(triangles: &[u32], num_points: usize) -> Vec<Vec<u32>> {
 }
 
 fn height_to_color(h: f32) -> (u8, u8, u8) {
-    // Heights are u8 (0-255) where:
-    // 0-20 = ocean (sea level is 20)
-    // 20-255 = land
+    // Smooth continuous color gradient with many stops
+    // Heights are u8 (0-255) where sea level = 20
 
-    let sea_level = 20.0;
+    // Color stops: (height, r, g, b)
+    let stops: &[(f32, f32, f32, f32)] = &[
+        (0.0, 8.0, 20.0, 80.0),       // deep ocean - dark blue
+        (5.0, 12.0, 30.0, 110.0),     // deep ocean
+        (10.0, 20.0, 50.0, 140.0),    // mid ocean
+        (14.0, 30.0, 70.0, 165.0),    // mid-shallow ocean
+        (17.0, 45.0, 90.0, 185.0),    // shallow ocean
+        (19.0, 60.0, 110.0, 195.0),   // continental shelf
+        (20.0, 70.0, 120.0, 200.0),   // sea level / coast water
+        (21.0, 190.0, 185.0, 140.0),  // beach / sand
+        (24.0, 160.0, 195.0, 110.0),  // coastal lowland
+        (30.0, 120.0, 190.0, 90.0),   // lowland green
+        (45.0, 90.0, 175.0, 70.0),    // plains
+        (65.0, 70.0, 160.0, 55.0),    // lush plains
+        (90.0, 105.0, 155.0, 50.0),   // foothills - yellow-green
+        (120.0, 140.0, 140.0, 45.0),  // low hills - olive
+        (150.0, 165.0, 125.0, 50.0),  // hills - tan
+        (175.0, 155.0, 105.0, 55.0),  // low mountains - brown
+        (200.0, 140.0, 95.0, 65.0),   // mountains - dark brown
+        (220.0, 155.0, 140.0, 120.0), // alpine - grey-brown
+        (240.0, 200.0, 200.0, 200.0), // high alpine - light grey
+        (255.0, 245.0, 245.0, 250.0), // snow cap - white
+    ];
 
-    if h <= sea_level {
-        // 海洋 - 深蓝到浅蓝 (0 = 深海, 20 = 海岸)
-        let t = h / sea_level;
-        let r = (10.0 + 40.0 * t) as u8;
-        let g = (30.0 + 70.0 * t) as u8;
-        let b = (100.0 + 100.0 * t) as u8;
-        (r, g, b)
-    } else if h < 60.0 {
-        // 海岸/平原 - 浅绿
-        let t = (h - sea_level) / 40.0;
-        let r = (80.0 + 40.0 * t) as u8;
-        let g = (180.0 - 20.0 * t) as u8;
-        let b = (80.0 - 30.0 * t) as u8;
-        (r, g, b)
-    } else if h < 120.0 {
-        // 丘陵 - 深绿到黄绿
-        let t = (h - 60.0) / 60.0;
-        let r = (120.0 + 60.0 * t) as u8;
-        let g = (160.0 - 40.0 * t) as u8;
-        let b = (50.0 - 20.0 * t) as u8;
-        (r, g, b)
-    } else if h < 180.0 {
-        // 山地 - 棕色
-        let t = (h - 120.0) / 60.0;
-        let r = (180.0 - 40.0 * t) as u8;
-        let g = (120.0 - 20.0 * t) as u8;
-        let b = (30.0 + 70.0 * t) as u8;
-        (r, g, b)
-    } else {
-        // 高山 - 灰白/雪
-        let t = ((h - 180.0) / 75.0).min(1.0);
-        let v = (140.0 + 115.0 * t) as u8;
-        (v, v, v)
+    // Clamp height
+    let h = h.clamp(0.0, 255.0);
+
+    // Find the two surrounding stops and interpolate
+    if h <= stops[0].0 {
+        return (stops[0].1 as u8, stops[0].2 as u8, stops[0].3 as u8);
     }
+
+    for i in 1..stops.len() {
+        if h <= stops[i].0 {
+            let (h0, r0, g0, b0) = stops[i - 1];
+            let (h1, r1, g1, b1) = stops[i];
+            let t = (h - h0) / (h1 - h0);
+            // Smooth hermite interpolation for extra smoothness
+            let t = t * t * (3.0 - 2.0 * t);
+            let r = (r0 + (r1 - r0) * t).clamp(0.0, 255.0) as u8;
+            let g = (g0 + (g1 - g0) * t).clamp(0.0, 255.0) as u8;
+            let b = (b0 + (b1 - b0) * t).clamp(0.0, 255.0) as u8;
+            return (r, g, b);
+        }
+    }
+
+    let last = stops[stops.len() - 1];
+    (last.1 as u8, last.2 as u8, last.3 as u8)
 }
