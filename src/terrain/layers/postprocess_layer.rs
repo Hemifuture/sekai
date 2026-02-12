@@ -23,7 +23,7 @@ impl Default for PostprocessConfig {
         Self {
             min_island_size: 15,
             min_lake_size: 10,
-            smoothing_iterations: 5,
+            smoothing_iterations: 2,
             ocean_ratio: 0.65,
         }
     }
@@ -189,7 +189,7 @@ impl PostprocessLayer {
         }
 
         // Smooth cells within max_hops of coast, with strength decreasing with distance
-        for _ in 0..3 {
+        for _ in 0..1 {
             let old = heights.to_vec();
             for i in 0..n {
                 let d = dist_to_coast[i];
@@ -273,7 +273,7 @@ impl TerrainLayer for PostprocessLayer {
         );
 
         // Continental shelf pass: gradual transitions near coast
-        Self::continental_shelf_pass(&mut output.heights, neighbors, 8);
+        Self::continental_shelf_pass(&mut output.heights, neighbors, 4);
 
         output
     }

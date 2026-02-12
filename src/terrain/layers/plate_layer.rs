@@ -36,7 +36,7 @@ impl Default for PlateConfig {
         Self {
             num_plates: 12,
             continental_ratio: 0.35,
-            continental_base: 30.0,
+            continental_base: 50.0,
             oceanic_base: -40.0,
         }
     }

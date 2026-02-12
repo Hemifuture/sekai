@@ -300,7 +300,7 @@ impl TerrainLayer for TectonicLayer {
         }
 
         // Generate heights with continental shelf gradient
-        let shelf_width = 12.0; // cells over which the shelf gradient applies
+        let shelf_width = 6.0; // cells over which the shelf gradient applies
         let mut heights = vec![0.0f32; n];
 
         for i in 0..n {
@@ -350,11 +350,17 @@ impl TerrainLayer for TectonicLayer {
             heights[i] = base + tectonic;
         }
 
-        // Post-assignment smoothing passes (gaussian-like neighbor averaging)
-        for _ in 0..5 {
+        // Post-assignment smoothing passes - EDGE ONLY (near plate boundaries)
+        // Only smooth cells within 4 hops of a boundary to preserve continental interiors
+        for _ in 0..3 {
             let old = heights.clone();
             for i in 0..n {
                 if plate_ids[i] == 0 || neighbors[i].is_empty() {
+                    continue;
+                }
+                let dist_b = distances[i];
+                // Only smooth cells near plate boundaries (within 4 hops)
+                if dist_b > 4.0 {
                     continue;
                 }
                 let mut sum = old[i];
@@ -366,10 +372,11 @@ impl TerrainLayer for TectonicLayer {
                         count += 1.0;
                     }
                 }
-                // Stronger smoothing near boundaries, lighter in interior
-                let dist_b = distances[i].min(20.0);
-                let blend = if dist_b < 8.0 { 0.6 } else { 0.3 };
-                heights[i] = old[i] * (1.0 - blend) + (sum / count) * blend;
+                // Blend strength decreases with distance from boundary
+                let blend = 0.4 * (1.0 - dist_b / 5.0);
+                if blend > 0.0 {
+                    heights[i] = old[i] * (1.0 - blend) + (sum / count) * blend;
+                }
             }
         }
 
