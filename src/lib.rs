@@ -5,6 +5,8 @@
 
 mod app;
 pub mod delaunay;
+/// Domain-neutral deterministic generation services.
+pub mod engine;
 mod gpu;
 mod map_layer;
 pub mod models;
