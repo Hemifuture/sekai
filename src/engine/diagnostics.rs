@@ -135,7 +135,7 @@ impl<'de> Deserialize<'de> for Diagnostic {
 }
 
 /// A semantic hash for all successful stage outputs in a build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct BuildResultHash([u8; 32]);
 
 impl BuildResultHash {
@@ -152,7 +152,7 @@ impl BuildResultHash {
 }
 
 /// Reporting metadata for one executed stage.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StageReport {
     stage_id: String,
     duration: Duration,
@@ -186,7 +186,7 @@ impl StageReport {
 }
 
 /// Ordered operational metadata and diagnostics for one build attempt.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct BuildReport {
     stages: Vec<StageReport>,
     diagnostics: Vec<Diagnostic>,
@@ -219,13 +219,18 @@ impl BuildReport {
 
     /// Appends a structured diagnostic in emission order.
     pub fn push_diagnostic(&mut self, diagnostic: Diagnostic) {
+        if diagnostic.severity() == DiagnosticSeverity::Error {
+            self.result_hash = None;
+        }
         self.diagnostics.push(diagnostic);
     }
 
     /// Sets the semantic result hash after every stage has completed successfully.
     #[allow(dead_code)] // Called by the scheduler introduced in Task 9.
     pub(crate) fn set_result_hash(&mut self, result_hash: BuildResultHash) {
-        self.result_hash = Some(result_hash);
+        if !self.has_errors() {
+            self.result_hash = Some(result_hash);
+        }
     }
 
     /// Returns reporting metadata in deterministic stage order.
@@ -263,5 +268,50 @@ impl BuildReport {
     /// Returns the semantic result hash, present only for successful builds.
     pub const fn result_hash(&self) -> Option<&BuildResultHash> {
         self.result_hash.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildReport, BuildResultHash, Diagnostic, DiagnosticSeverity};
+
+    fn result_hash() -> BuildResultHash {
+        BuildResultHash::new([7; 32])
+    }
+
+    #[test]
+    fn error_diagnostic_clears_an_existing_result_hash() {
+        let mut report = BuildReport::new();
+        report.set_result_hash(result_hash());
+        report.push_diagnostic(
+            Diagnostic::new(DiagnosticSeverity::Error, "test.error", "failed").unwrap(),
+        );
+
+        assert!(report.result_hash().is_none());
+    }
+
+    #[test]
+    fn error_diagnostic_prevents_later_result_hash_population() {
+        let mut report = BuildReport::new();
+        report.push_diagnostic(
+            Diagnostic::new(DiagnosticSeverity::Error, "test.error", "failed").unwrap(),
+        );
+        report.set_result_hash(result_hash());
+
+        assert!(report.result_hash().is_none());
+    }
+
+    #[test]
+    fn non_error_diagnostics_preserve_a_result_hash() {
+        let mut report = BuildReport::new();
+        report.set_result_hash(result_hash());
+        report.push_diagnostic(
+            Diagnostic::new(DiagnosticSeverity::Warning, "test.warning", "warning").unwrap(),
+        );
+        report.push_diagnostic(
+            Diagnostic::new(DiagnosticSeverity::Info, "test.info", "info").unwrap(),
+        );
+
+        assert_eq!(report.result_hash(), Some(&result_hash()));
     }
 }

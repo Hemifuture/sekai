@@ -168,29 +168,41 @@ impl ProvenanceIndex {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// Adds, merges, orders, and bounds a factor contribution for an entity.
-    pub fn add_factor(
+    /// Replaces an entity's factors after atomically merging, ordering, and bounding them.
+    pub fn replace_factors(
         &mut self,
         entity: EntityRef,
-        factor: FactorContribution,
+        contributions: impl IntoIterator<Item = FactorContribution>,
     ) -> Result<(), ProvenanceError> {
-        let factors = self.factors.entry(entity).or_default();
-        if let Some(existing) = factors.iter_mut().find(|existing| {
-            existing.reason_id == factor.reason_id && existing.source == factor.source
-        }) {
-            let merged_weight = existing.weight + factor.weight;
-            if !merged_weight.is_finite() {
-                return Err(ProvenanceError::NonFiniteMergedWeight);
+        let mut grouped = BTreeMap::<(String, SourceRef), Vec<FactorContribution>>::new();
+        for factor in contributions {
+            let key = (factor.reason_id.clone(), factor.source.clone());
+            grouped.entry(key).or_default().push(factor);
+        }
+
+        let mut factors = Vec::with_capacity(grouped.len());
+        for (_, mut group) in grouped {
+            group.sort_by(|left, right| {
+                left.code
+                    .cmp(&right.code)
+                    .then_with(|| left.weight.total_cmp(&right.weight))
+            });
+            let mut factors_to_merge = group.into_iter();
+            let mut merged = factors_to_merge
+                .next()
+                .expect("each grouped provenance key has at least one factor");
+            for factor in factors_to_merge {
+                let merged_weight = merged.weight + factor.weight;
+                if !merged_weight.is_finite() {
+                    return Err(ProvenanceError::NonFiniteMergedWeight);
+                }
+                merged.weight = merged_weight;
             }
-            existing.weight = merged_weight;
-            if factor.code < existing.code {
-                existing.code = factor.code;
-            }
-        } else {
-            factors.push(factor);
+            factors.push(merged);
         }
         factors.sort_by(compare_factors);
         factors.truncate(MAX_FACTORS_PER_ENTITY);
+        self.factors.insert(entity, factors);
         Ok(())
     }
 

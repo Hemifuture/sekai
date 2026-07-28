@@ -152,25 +152,22 @@ fn factors_merge_identical_reason_and_source() {
     let mut index = ProvenanceIndex::new();
     let entity = EntityRef::Cell(CellId::from_raw(4));
     index
-        .add_factor(
+        .replace_factors(
             entity,
-            contribution(
-                "terrain.river-access",
-                SourceRef::Stage("society.settlements".into()),
-                1.25,
-                "reason.river-access",
-            ),
-        )
-        .unwrap();
-    index
-        .add_factor(
-            entity,
-            contribution(
-                "terrain.river-access",
-                SourceRef::Stage("society.settlements".into()),
-                2.75,
-                "reason.river-access",
-            ),
+            [
+                contribution(
+                    "terrain.river-access",
+                    SourceRef::Stage("society.settlements".into()),
+                    1.25,
+                    "reason.river-access",
+                ),
+                contribution(
+                    "terrain.river-access",
+                    SourceRef::Stage("society.settlements".into()),
+                    2.75,
+                    "reason.river-access",
+                ),
+            ],
         )
         .unwrap();
 
@@ -183,34 +180,37 @@ fn factors_merge_identical_reason_and_source() {
 fn factors_are_ordered_by_absolute_weight_reason_and_source() {
     let mut index = ProvenanceIndex::new();
     let entity = EntityRef::Cell(CellId::from_raw(1));
-    for factor in [
-        contribution(
-            "test.z",
-            SourceRef::Stage("z.stage".into()),
-            2.0,
-            "reason.b",
-        ),
-        contribution(
-            "test.a",
-            SourceRef::RulePack("a.pack".into()),
-            -3.0,
-            "reason.z",
-        ),
-        contribution(
-            "test.c",
-            SourceRef::Stage("z.stage".into()),
-            3.0,
-            "reason.a",
-        ),
-        contribution(
-            "test.b",
-            SourceRef::Stage("a.stage".into()),
-            -2.0,
-            "reason.b",
-        ),
-    ] {
-        index.add_factor(entity, factor).unwrap();
-    }
+    index
+        .replace_factors(
+            entity,
+            [
+                contribution(
+                    "test.z",
+                    SourceRef::Stage("z.stage".into()),
+                    2.0,
+                    "reason.b",
+                ),
+                contribution(
+                    "test.a",
+                    SourceRef::RulePack("a.pack".into()),
+                    -3.0,
+                    "reason.z",
+                ),
+                contribution(
+                    "test.c",
+                    SourceRef::Stage("z.stage".into()),
+                    3.0,
+                    "reason.a",
+                ),
+                contribution(
+                    "test.b",
+                    SourceRef::Stage("a.stage".into()),
+                    -2.0,
+                    "reason.b",
+                ),
+            ],
+        )
+        .unwrap();
 
     let factors = index.factors(&entity);
     assert_eq!(
@@ -228,19 +228,16 @@ fn factors_are_ordered_by_absolute_weight_reason_and_source() {
 fn factors_truncate_to_the_sixteen_strongest() {
     let mut index = ProvenanceIndex::new();
     let entity = EntityRef::Cell(CellId::from_raw(2));
+    let mut contributions = Vec::new();
     for raw_weight in 1..=17 {
-        index
-            .add_factor(
-                entity,
-                contribution(
-                    "test.factor",
-                    SourceRef::Stage(format!("stage.{raw_weight}")),
-                    raw_weight as f32,
-                    &format!("reason.{raw_weight}"),
-                ),
-            )
-            .unwrap();
+        contributions.push(contribution(
+            "test.factor",
+            SourceRef::Stage(format!("stage.{raw_weight}")),
+            raw_weight as f32,
+            &format!("reason.{raw_weight}"),
+        ));
     }
+    index.replace_factors(entity, contributions).unwrap();
 
     let factors = index.factors(&entity);
     assert_eq!(factors.len(), 16);
@@ -249,24 +246,113 @@ fn factors_truncate_to_the_sixteen_strongest() {
 }
 
 #[test]
-fn factor_merges_reject_overflow_to_non_finite() {
+fn replacing_factors_rejects_overflow_without_changing_existing_factors() {
     let mut index = ProvenanceIndex::new();
     let entity = EntityRef::Cell(CellId::from_raw(3));
     let source = SourceRef::Stage("test.stage".into());
     index
-        .add_factor(
+        .replace_factors(
             entity,
-            contribution("test.factor", source.clone(), f32::MAX, "reason.test"),
+            [contribution(
+                "test.factor",
+                source.clone(),
+                f32::MAX,
+                "reason.test",
+            )],
         )
         .unwrap();
 
     assert!(index
-        .add_factor(
+        .replace_factors(
             entity,
-            contribution("test.factor", source, f32::MAX, "reason.test"),
+            [
+                contribution("test.factor", source.clone(), f32::MAX, "reason.test"),
+                contribution("test.factor", source, f32::MAX, "reason.test"),
+            ],
         )
         .is_err());
     assert_eq!(index.factors(&entity)[0].weight(), f32::MAX);
+}
+
+#[test]
+fn factor_replacement_merges_before_retaining_the_top_sixteen() {
+    let mut index = ProvenanceIndex::new();
+    let entity = EntityRef::Cell(CellId::from_raw(5));
+    let mut contributions = (0..16)
+        .map(|index| {
+            contribution(
+                "test.strong",
+                SourceRef::Stage(format!("stage.strong-{index}")),
+                2.0,
+                &format!("reason.strong-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    contributions.extend((0..3).map(|_| {
+        contribution(
+            "test.aggregate",
+            SourceRef::Stage("stage.aggregate".into()),
+            1.0,
+            "reason.aggregate",
+        )
+    }));
+
+    index.replace_factors(entity, contributions).unwrap();
+
+    let factors = index.factors(&entity);
+    assert_eq!(factors.len(), 16);
+    assert_eq!(factors[0].reason_id(), "reason.aggregate");
+    assert_eq!(factors[0].weight(), 3.0);
+}
+
+#[test]
+fn factor_replacement_is_independent_of_input_order() {
+    let entity = EntityRef::Cell(CellId::from_raw(6));
+    let contributions = vec![
+        contribution(
+            "test.z",
+            SourceRef::Stage("stage.shared".into()),
+            1.0,
+            "reason.shared",
+        ),
+        contribution(
+            "test.a",
+            SourceRef::Stage("stage.shared".into()),
+            1.0e20,
+            "reason.shared",
+        ),
+        contribution(
+            "test.m",
+            SourceRef::Stage("stage.shared".into()),
+            -1.0e20,
+            "reason.shared",
+        ),
+        contribution(
+            "test.other",
+            SourceRef::RulePack("pack.other".into()),
+            -2.0,
+            "reason.other",
+        ),
+    ];
+    let mut forward = ProvenanceIndex::new();
+    forward
+        .replace_factors(entity, contributions.clone())
+        .unwrap();
+    let mut reverse = ProvenanceIndex::new();
+    reverse
+        .replace_factors(entity, contributions.into_iter().rev())
+        .unwrap();
+
+    assert_eq!(forward.factors(&entity), reverse.factors(&entity));
+    assert_eq!(
+        forward
+            .factors(&entity)
+            .iter()
+            .find(|factor| factor.reason_id() == "reason.shared")
+            .unwrap()
+            .code(),
+        "test.a"
+    );
 }
 
 #[test]
