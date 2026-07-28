@@ -1,3 +1,5 @@
+pub mod fields;
+
 mod ids;
 mod spec;
 mod units;
