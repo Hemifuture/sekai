@@ -43,7 +43,7 @@ fn main() {
 
     // 使用项目的邻居提取方法
     let neighbors = extract_neighbors(&triangles, cells.len());
-    println!("Built neighbors, example: {:?}", &neighbors[0]);
+    println!("Built neighbors, example: {:?}", neighbors[0]);
 
     for template_name in &templates {
         println!("\nGenerating: {}", template_name);
