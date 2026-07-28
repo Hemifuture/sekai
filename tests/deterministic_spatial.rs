@@ -15,6 +15,24 @@ fn small_space() -> PlanarSpaceSpec {
     }
 }
 
+struct ConstantRng(u64);
+
+impl RngCore for ConstantRng {
+    fn next_u32(&mut self) -> u32 {
+        self.0 as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for chunk in dest.chunks_mut(std::mem::size_of::<u64>()) {
+            chunk.copy_from_slice(&self.0.to_le_bytes()[..chunk.len()]);
+        }
+    }
+}
+
 #[test]
 fn same_rng_seed_produces_identical_spatial_json() {
     let mut first_rng = ChaCha8Rng::seed_from_u64(42);
@@ -173,4 +191,48 @@ fn area_perturbations_below_contract_tolerances_are_accepted_and_above_are_rejec
         Err(SpatialValidationError::AreaMismatch { .. }
             | SpatialValidationError::TotalAreaMismatch { .. })
     ));
+}
+
+#[test]
+fn constant_rng_builds_repeatable_one_row_partition() {
+    let space = PlanarSpaceSpec {
+        width: Meters::new(1_600.0).unwrap(),
+        height: Meters::new(100.0).unwrap(),
+        target_cell_count: 16,
+        boundary: BoundaryCondition::Closed,
+    };
+    let mut first_rng = ConstantRng(0);
+    let mut second_rng = ConstantRng(0);
+
+    let first = PlanarVoronoiBuilder::build(&space, &mut first_rng).unwrap();
+    let second = PlanarVoronoiBuilder::build(&space, &mut second_rng).unwrap();
+
+    assert_eq!(first.cell_count(), 16);
+    first.validate().unwrap();
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&second).unwrap()
+    );
+}
+
+#[test]
+fn constant_rng_builds_repeatable_one_column_partition() {
+    let space = PlanarSpaceSpec {
+        width: Meters::new(100.0).unwrap(),
+        height: Meters::new(1_600.0).unwrap(),
+        target_cell_count: 16,
+        boundary: BoundaryCondition::Closed,
+    };
+    let mut first_rng = ConstantRng(u64::MAX);
+    let mut second_rng = ConstantRng(u64::MAX);
+
+    let first = PlanarVoronoiBuilder::build(&space, &mut first_rng).unwrap();
+    let second = PlanarVoronoiBuilder::build(&space, &mut second_rng).unwrap();
+
+    assert_eq!(first.cell_count(), 16);
+    first.validate().unwrap();
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&second).unwrap()
+    );
 }

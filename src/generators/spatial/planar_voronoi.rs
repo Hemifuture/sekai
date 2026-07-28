@@ -22,8 +22,8 @@ pub enum SpatialBuildError {
     /// The planar space violates its numerical or allocation safety budget.
     #[error("invalid planar space: {0}")]
     InvalidSpec(#[from] SpecError),
-    /// Site triangulation did not produce any candidate-neighbor triangles.
-    #[error("site triangulation produced no triangles")]
+    /// Site triangulation produced neither triangles nor a complete collinear hull.
+    #[error("site triangulation produced no usable candidate neighbors")]
     EmptyTriangulation,
     /// More than one site occupies the same world-space point.
     #[error("sites {first:?} and {second:?} occupy the same point")]
@@ -179,10 +179,8 @@ fn build_from_sites(
         })
         .collect();
     let triangulation = delaunator::triangulate(&delaunay_points);
-    if triangulation.triangles.is_empty() {
-        return Err(SpatialBuildError::EmptyTriangulation);
-    }
-    let neighbors = candidate_neighbors(sites.len(), &triangulation.triangles);
+    let neighbors =
+        candidate_neighbors(sites.len(), &triangulation.triangles, &triangulation.hull)?;
 
     let mut cells = Vec::with_capacity(sites.len());
     for (index, &site) in sites.iter().enumerate() {
@@ -229,23 +227,38 @@ fn reject_duplicate_sites(sites: &[Point]) -> Result<(), SpatialBuildError> {
     Ok(())
 }
 
-fn candidate_neighbors(site_count: usize, triangles: &[usize]) -> Vec<Vec<usize>> {
+fn candidate_neighbors(
+    site_count: usize,
+    triangles: &[usize],
+    hull: &[usize],
+) -> Result<Vec<Vec<usize>>, SpatialBuildError> {
     let mut neighbors = vec![Vec::new(); site_count];
-    for triangle in triangles.chunks_exact(3) {
-        for (first, second) in [
-            (triangle[0], triangle[1]),
-            (triangle[1], triangle[2]),
-            (triangle[2], triangle[0]),
-        ] {
+    if triangles.is_empty() {
+        if hull.len() != site_count || hull.len() < 2 {
+            return Err(SpatialBuildError::EmptyTriangulation);
+        }
+        for pair in hull.windows(2) {
+            let (first, second) = (pair[0], pair[1]);
             neighbors[first].push(second);
             neighbors[second].push(first);
+        }
+    } else {
+        for triangle in triangles.chunks_exact(3) {
+            for (first, second) in [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ] {
+                neighbors[first].push(second);
+                neighbors[second].push(first);
+            }
         }
     }
     for site_neighbors in &mut neighbors {
         site_neighbors.sort_unstable();
         site_neighbors.dedup();
     }
-    neighbors
+    Ok(neighbors)
 }
 
 fn clipped_polygon(
@@ -294,12 +307,11 @@ fn clip_to_bisector(polygon: &[Point], site: Point, neighbor: Point) -> Vec<Poin
     let mut output = Vec::with_capacity(polygon.len() + 1);
     let mut previous = polygon[polygon.len() - 1];
     let mut previous_value = bisector_value(previous, site, neighbor);
-    let tolerance = f64::EPSILON * 64.0 * site.distance(neighbor);
-    let mut previous_inside = previous_value <= tolerance;
+    let mut previous_inside = previous_value <= 0.0;
 
     for &current in polygon {
         let current_value = bisector_value(current, site, neighbor);
-        let current_inside = current_value <= tolerance;
+        let current_inside = current_value <= 0.0;
         if current_inside {
             if !previous_inside {
                 output.push(bisector_intersection(
@@ -339,7 +351,17 @@ fn bisector_intersection(
     first_value: f64,
     second_value: f64,
 ) -> Point {
-    let parameter = (first_value / (first_value - second_value)).clamp(0.0, 1.0);
+    if first_value == 0.0 {
+        return first;
+    }
+    if second_value == 0.0 {
+        return second;
+    }
+    debug_assert!(
+        (first_value < 0.0 && second_value > 0.0) || (first_value > 0.0 && second_value < 0.0)
+    );
+    let parameter = first_value / (first_value - second_value);
+    debug_assert!((0.0..=1.0).contains(&parameter));
     Point {
         x: first.x + (second.x - first.x) * parameter,
         y: first.y + (second.y - first.y) * parameter,
@@ -694,5 +716,32 @@ mod tests {
             ),
             Err(SpatialBuildError::AmbiguousSegment { .. })
         ));
+    }
+
+    #[test]
+    fn clipping_never_keeps_small_positive_half_plane_values() {
+        let site = Point { x: -0.5, y: 0.0 };
+        let neighbor = Point { x: 0.5, y: 0.0 };
+        let small_positive = f64::EPSILON * 16.0;
+        let polygon = [
+            Point { x: -1.0, y: -1.0 },
+            Point {
+                x: small_positive,
+                y: -1.0,
+            },
+            Point { x: 0.5, y: 0.0 },
+            Point {
+                x: small_positive,
+                y: 1.0,
+            },
+            Point { x: -1.0, y: 1.0 },
+        ];
+
+        let clipped = clip_to_bisector(&polygon, site, neighbor);
+
+        assert!(!clipped.is_empty());
+        assert!(clipped
+            .iter()
+            .all(|&point| bisector_value(point, site, neighbor) <= 0.0));
     }
 }
