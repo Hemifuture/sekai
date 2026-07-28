@@ -3,7 +3,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::engine::artifact::{Artifact, ArtifactKey};
+use crate::engine::artifact::{Artifact, ArtifactError, ArtifactKey, ArtifactType, BuildArtifacts};
 use crate::engine::diagnostics::is_valid_identifier;
 use crate::engine::stage::{
     erase_stage, ErasedStage, Stage, StageDescriptor, StageId, StageInputs,
@@ -76,7 +76,7 @@ struct RegisteredStage {
 /// A fluent collector for external artifacts and typed stages.
 #[derive(Default)]
 pub struct StageGraphBuilder {
-    external_artifacts: Vec<ArtifactKey>,
+    external_artifacts: Vec<ArtifactType>,
     stages: Vec<RegisteredStage>,
 }
 
@@ -91,22 +91,23 @@ impl StageGraphBuilder {
 
     /// Registers an artifact type supplied externally to each build.
     pub fn external<T: Artifact>(mut self) -> Self {
-        self.external_artifacts.push(T::KEY);
+        self.external_artifacts.push(ArtifactType::of::<T>());
         self
     }
 
     /// Registers one typed generation stage without normalizing declarations.
     pub fn stage<S: Stage>(mut self, stage: S) -> Self {
+        let dependencies = S::Inputs::dependencies().to_vec();
         let descriptor = StageDescriptor::new(
             stage.id(),
             stage.version(),
             stage.namespace(),
-            S::Inputs::dependencies().to_vec(),
+            dependencies.clone(),
             S::Output::KEY,
         );
         self.stages.push(RegisteredStage {
             descriptor,
-            stage: erase_stage(stage),
+            stage: erase_stage(stage, dependencies),
         });
         self
     }
@@ -117,7 +118,8 @@ impl StageGraphBuilder {
         validate_unique_stage_ids(&self.stages)?;
         validate_unique_providers(&self.external_artifacts, &self.stages)?;
 
-        self.external_artifacts.sort_unstable();
+        self.external_artifacts
+            .sort_unstable_by_key(|artifact_type| artifact_type.key());
         self.stages
             .sort_by_key(|registration| registration.descriptor.id());
         normalize_dependencies(&mut self.stages)?;
@@ -141,8 +143,14 @@ impl StageGraphBuilder {
             stages.push(registration.stage);
         }
 
+        let external_artifact_keys = self
+            .external_artifacts
+            .iter()
+            .map(|artifact_type| artifact_type.key())
+            .collect();
         Ok(StageGraph {
-            external_artifacts: self.external_artifacts,
+            external_artifact_keys,
+            external_artifact_types: self.external_artifacts,
             descriptors,
             stages,
         })
@@ -151,7 +159,8 @@ impl StageGraphBuilder {
 
 /// A validated generation graph in deterministic execution order.
 pub struct StageGraph {
-    external_artifacts: Vec<ArtifactKey>,
+    external_artifact_keys: Vec<ArtifactKey>,
+    external_artifact_types: Vec<ArtifactType>,
     descriptors: Vec<StageDescriptor>,
     stages: Vec<Box<dyn ErasedStage>>,
 }
@@ -160,7 +169,7 @@ impl fmt::Debug for StageGraph {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("StageGraph")
-            .field("external_artifacts", &self.external_artifacts)
+            .field("external_artifacts", &self.external_artifact_keys)
             .field("descriptors", &self.descriptors)
             .finish_non_exhaustive()
     }
@@ -182,7 +191,18 @@ impl StageGraph {
 
     #[allow(dead_code)] // Read by the scheduler introduced in Task 9.
     pub(crate) fn external_artifact_keys(&self) -> &[ArtifactKey] {
-        &self.external_artifacts
+        &self.external_artifact_keys
+    }
+
+    #[allow(dead_code)] // Called before scheduler hash and cache lookups in Task 9.
+    pub(crate) fn validate_external_artifacts(
+        &self,
+        artifacts: &BuildArtifacts,
+    ) -> Result<(), ArtifactError> {
+        for artifact_type in &self.external_artifact_types {
+            artifact_type.validate_in(artifacts)?;
+        }
+        Ok(())
     }
 
     #[allow(dead_code)] // Read by the scheduler introduced in Task 9.
@@ -196,7 +216,7 @@ impl StageGraph {
 }
 
 fn validate_identifiers(
-    external_artifacts: &[ArtifactKey],
+    external_artifacts: &[ArtifactType],
     stages: &[RegisteredStage],
 ) -> Result<(), GraphError> {
     let invalid_stage_id = stages
@@ -210,7 +230,7 @@ fn validate_identifiers(
 
     let invalid_artifact_key = external_artifacts
         .iter()
-        .copied()
+        .map(|artifact_type| artifact_type.key())
         .chain(stages.iter().flat_map(|registration| {
             registration
                 .descriptor
@@ -240,15 +260,19 @@ fn validate_unique_stage_ids(stages: &[RegisteredStage]) -> Result<(), GraphErro
 }
 
 fn validate_unique_providers(
-    external_artifacts: &[ArtifactKey],
+    external_artifacts: &[ArtifactType],
     stages: &[RegisteredStage],
 ) -> Result<(), GraphError> {
     let mut counts = BTreeMap::<ArtifactKey, usize>::new();
-    for artifact_key in external_artifacts.iter().copied().chain(
-        stages
-            .iter()
-            .map(|registration| registration.descriptor.output()),
-    ) {
+    for artifact_key in external_artifacts
+        .iter()
+        .map(|artifact_type| artifact_type.key())
+        .chain(
+            stages
+                .iter()
+                .map(|registration| registration.descriptor.output()),
+        )
+    {
         *counts.entry(artifact_key).or_default() += 1;
     }
     if let Some((artifact_key, _)) = counts.into_iter().find(|(_, count)| *count > 1) {
@@ -283,13 +307,12 @@ fn normalize_dependencies(stages: &mut [RegisteredStage]) -> Result<(), GraphErr
 }
 
 fn providers(
-    external_artifacts: &[ArtifactKey],
+    external_artifacts: &[ArtifactType],
     stages: &[RegisteredStage],
 ) -> BTreeMap<ArtifactKey, Option<StageId>> {
     let mut providers = external_artifacts
         .iter()
-        .copied()
-        .map(|artifact_key| (artifact_key, None))
+        .map(|artifact_type| (artifact_type.key(), None))
         .collect::<BTreeMap<_, _>>();
     for registration in stages {
         providers.insert(
@@ -391,4 +414,71 @@ fn topological_order(
     }
 
     Ok(ordered)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+
+    use super::StageGraphBuilder;
+    use crate::engine::artifact::{
+        Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
+    };
+
+    #[derive(Debug, Serialize)]
+    struct ExpectedExternal(u32);
+
+    impl Artifact for ExpectedExternal {
+        const KEY: ArtifactKey = ArtifactKey::new("test.external");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct WrongExternal(u32);
+
+    impl Artifact for WrongExternal {
+        const KEY: ArtifactKey = ExpectedExternal::KEY;
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn external_validation_distinguishes_missing_from_same_key_type_mismatch() {
+        let graph = StageGraphBuilder::new()
+            .external::<ExpectedExternal>()
+            .build()
+            .unwrap();
+        let missing = BuildArtifacts::default();
+
+        assert!(matches!(
+            graph.validate_external_artifacts(&missing),
+            Err(ArtifactError::Missing { artifact_key })
+                if artifact_key == ExpectedExternal::KEY
+        ));
+
+        let mut mismatched = BuildArtifacts::default();
+        mismatched.insert(WrongExternal(1)).unwrap();
+        assert!(matches!(
+            graph.validate_external_artifacts(&mismatched),
+            Err(ArtifactError::TypeMismatch { artifact_key })
+                if artifact_key == ExpectedExternal::KEY
+        ));
+    }
+
+    #[test]
+    fn external_validation_accepts_the_registered_concrete_type() {
+        let graph = StageGraphBuilder::new()
+            .external::<ExpectedExternal>()
+            .build()
+            .unwrap();
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(ExpectedExternal(1)).unwrap();
+
+        assert!(graph.validate_external_artifacts(&artifacts).is_ok());
+    }
 }

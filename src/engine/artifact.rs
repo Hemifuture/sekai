@@ -1,4 +1,4 @@
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -132,6 +132,38 @@ pub trait Artifact: Serialize + Send + Sync + 'static {
     fn validate(&self) -> Result<(), ArtifactValidationError>;
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ArtifactType {
+    key: ArtifactKey,
+    type_id: TypeId,
+}
+
+impl ArtifactType {
+    pub(crate) fn of<T: Artifact>() -> Self {
+        Self {
+            key: T::KEY,
+            type_id: TypeId::of::<T>(),
+        }
+    }
+
+    pub(crate) const fn key(self) -> ArtifactKey {
+        self.key
+    }
+
+    pub(crate) fn validate_in(self, artifacts: &BuildArtifacts) -> Result<(), ArtifactError> {
+        artifacts.validate_type_id(self.key, self.type_id)
+    }
+
+    pub(crate) fn validate_stored(self, stored: &StoredArtifact) -> Result<(), ArtifactError> {
+        if stored.key() != self.key {
+            return Err(ArtifactError::Missing {
+                artifact_key: self.key,
+            });
+        }
+        stored.validate_type_id(self.type_id)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StoredArtifact {
     #[allow(dead_code)] // Read by the cache introduced in Task 9.
@@ -167,6 +199,15 @@ impl StoredArtifact {
     #[allow(dead_code)] // Read by the cache and scheduler introduced in Task 9.
     pub(crate) const fn hash(&self) -> ContentHash {
         self.hash
+    }
+
+    fn validate_type_id(&self, expected: TypeId) -> Result<(), ArtifactError> {
+        if self.value.as_ref().type_id() != expected {
+            return Err(ArtifactError::TypeMismatch {
+                artifact_key: self.key,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -209,6 +250,20 @@ impl BuildArtifacts {
         Ok(stored.hash)
     }
 
+    pub(crate) fn dependency_view(
+        &self,
+        dependencies: &[ArtifactKey],
+    ) -> Result<Self, ArtifactError> {
+        let mut entries = BTreeMap::new();
+        for dependency in dependencies {
+            let stored = self.entries.get(dependency).ok_or(ArtifactError::Missing {
+                artifact_key: *dependency,
+            })?;
+            entries.insert(*dependency, stored.clone());
+        }
+        Ok(Self { entries })
+    }
+
     #[allow(dead_code)] // Used for external artifacts introduced in Task 9.
     pub(crate) fn insert<T: Artifact>(&mut self, value: T) -> Result<(), ArtifactError> {
         self.insert_stored(StoredArtifact::new(value)?)
@@ -230,6 +285,13 @@ impl BuildArtifacts {
             .get(&key)
             .map(StoredArtifact::hash)
             .ok_or(ArtifactError::Missing { artifact_key: key })
+    }
+
+    fn validate_type_id(&self, key: ArtifactKey, expected: TypeId) -> Result<(), ArtifactError> {
+        self.entries
+            .get(&key)
+            .ok_or(ArtifactError::Missing { artifact_key: key })?
+            .validate_type_id(expected)
     }
 }
 
@@ -310,6 +372,37 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Serialize)]
+    struct SameKeyArtifact(u32);
+
+    impl Artifact for SameKeyArtifact {
+        const KEY: ArtifactKey = ScalarArtifact::KEY;
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct SerializationFailureArtifact;
+
+    impl Serialize for SerializationFailureArtifact {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(S::Error::custom("intentional serialization failure"))
+        }
+    }
+
+    impl Artifact for SerializationFailureArtifact {
+        const KEY: ArtifactKey = ArtifactKey::new("test.serialization-failure");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn invalid_artifact_is_rejected_before_serialization_or_storage() {
         let mut artifacts = BuildArtifacts::default();
@@ -357,6 +450,68 @@ mod tests {
         let value = artifacts.get::<ScalarArtifact>().unwrap();
 
         assert_eq!(value.0, 42);
+    }
+
+    #[test]
+    fn dependency_view_reuses_the_stored_arc() {
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(ScalarArtifact(42)).unwrap();
+        let original = artifacts.get::<ScalarArtifact>().unwrap();
+
+        let view = artifacts.dependency_view(&[ScalarArtifact::KEY]).unwrap();
+        let restricted = view.get::<ScalarArtifact>().unwrap();
+
+        assert!(std::sync::Arc::ptr_eq(&original, &restricted));
+    }
+
+    #[test]
+    fn serialization_failure_after_validation_leaves_store_unchanged() {
+        let mut artifacts = BuildArtifacts::default();
+
+        let error = artifacts.insert(SerializationFailureArtifact).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ArtifactError::Serialization { artifact_key, .. }
+                if artifact_key == SerializationFailureArtifact::KEY
+        ));
+        assert!(matches!(
+            artifacts.get::<SerializationFailureArtifact>(),
+            Err(ArtifactError::Missing { artifact_key })
+                if artifact_key == SerializationFailureArtifact::KEY
+        ));
+    }
+
+    #[test]
+    fn duplicate_insertion_leaves_the_original_value_intact() {
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(ScalarArtifact(1)).unwrap();
+
+        let error = artifacts.insert(ScalarArtifact(2)).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ArtifactError::Duplicate { artifact_key }
+                if artifact_key == ScalarArtifact::KEY
+        ));
+        assert_eq!(artifacts.get::<ScalarArtifact>().unwrap().0, 1);
+    }
+
+    #[test]
+    fn typed_access_rejects_a_same_key_value_of_another_type() {
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(SameKeyArtifact(7)).unwrap();
+
+        assert!(matches!(
+            artifacts.get::<ScalarArtifact>(),
+            Err(ArtifactError::TypeMismatch { artifact_key })
+                if artifact_key == ScalarArtifact::KEY
+        ));
+        assert!(matches!(
+            artifacts.hash::<ScalarArtifact>(),
+            Err(ArtifactError::TypeMismatch { artifact_key })
+                if artifact_key == ScalarArtifact::KEY
+        ));
     }
 
     #[test]
