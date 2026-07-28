@@ -1,3 +1,5 @@
+//! Immutable planar cells, edges, topology queries, and partition validation.
+
 mod snapshot;
 mod topology;
 mod validation;

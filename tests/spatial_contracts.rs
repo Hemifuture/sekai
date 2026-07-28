@@ -106,6 +106,36 @@ fn edge_mut(edges: &mut [SpatialEdge], id: u32) -> &mut SpatialEdge {
         .unwrap()
 }
 
+fn renumber_edges(edges: &mut [SpatialEdge]) {
+    for (index, edge) in edges.iter_mut().enumerate() {
+        edge.id = EdgeId::from_raw(index as u32);
+    }
+}
+
+fn overlap_gap_parts() -> SpatialParts {
+    let (bounds, boundary, mut cells, mut edges) = four_cell_parts();
+    let bottom_left = cells[0].clone();
+    cells[1] = SpatialCell {
+        id: CellId::from_raw(1),
+        neighbors: vec![CellId::from_raw(0), CellId::from_raw(3)],
+        ..bottom_left
+    };
+    let top_left = cells[2].clone();
+    cells[3] = SpatialCell {
+        id: CellId::from_raw(3),
+        neighbors: vec![CellId::from_raw(1), CellId::from_raw(2)],
+        ..top_left
+    };
+
+    *edge_mut(&mut edges, 2) = edge(2, (0.0, 0.0), (1.0, 0.0), [Some(1), None]);
+    *edge_mut(&mut edges, 3) = edge(3, (0.0, 1.0), (0.0, 0.0), [Some(1), None]);
+    *edge_mut(&mut edges, 6) = edge(6, (0.0, 1.0), (0.0, 2.0), [Some(3), None]);
+    *edge_mut(&mut edges, 7) = edge(7, (1.0, 2.0), (0.0, 2.0), [Some(3), None]);
+    *edge_mut(&mut edges, 10) = edge(10, (1.0, 1.0), (0.0, 1.0), [Some(1), Some(3)]);
+
+    (bounds, boundary, cells, edges)
+}
+
 #[test]
 fn validates_a_closed_four_cell_partition() {
     let snapshot = four_cell_fixture();
@@ -453,4 +483,146 @@ fn canonical_record_order_makes_serialization_deterministic() {
         serde_json::to_string(&forward).unwrap(),
         serde_json::to_string(&reverse).unwrap()
     );
+}
+
+#[test]
+fn rejects_a_partition_with_no_declared_edges() {
+    let (bounds, boundary, mut cells, edges) = four_cell_parts();
+    for cell in &mut cells {
+        cell.neighbors.clear();
+    }
+
+    assert!(matches!(
+        SpatialSnapshot::new(
+            SPATIAL_SCHEMA_V1,
+            bounds,
+            boundary,
+            cells,
+            edges[..0].to_vec()
+        ),
+        Err(SpatialValidationError::PolygonSideEdgeCount { count: 0, .. })
+    ));
+}
+
+#[test]
+fn rejects_an_omitted_polygon_side() {
+    let (bounds, boundary, cells, mut edges) = four_cell_parts();
+    edges.remove(0);
+    renumber_edges(&mut edges);
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::PolygonSideEdgeCount { count: 0, .. })
+    ));
+}
+
+#[test]
+fn rejects_a_duplicated_polygon_side() {
+    let (bounds, boundary, cells, mut edges) = four_cell_parts();
+    edges.push(edge(12, (0.0, 0.0), (1.0, 0.0), [Some(0), None]));
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::PolygonSideEdgeCount { count: 2, .. })
+    ));
+}
+
+#[test]
+fn rejects_repeated_consecutive_polygon_vertices() {
+    let (bounds, boundary, mut cells, edges) = four_cell_parts();
+    cells[0].polygon.insert(2, point(1.0, 1.0));
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::DegeneratePolygonSide { .. })
+    ));
+}
+
+#[test]
+fn rejects_self_intersecting_polygon_detours() {
+    let (bounds, boundary, mut cells, edges) = four_cell_parts();
+    cells[0].polygon = vec![
+        point(0.0, 0.0),
+        point(0.5, 0.5),
+        point(0.0, 0.0),
+        point(1.0, 0.0),
+        point(1.0, 1.0),
+        point(0.0, 1.0),
+    ];
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::SelfIntersectingPolygon { .. })
+    ));
+}
+
+#[test]
+fn rejects_an_internal_edge_on_the_world_boundary() {
+    let (bounds, boundary, cells, mut edges) = overlap_gap_parts();
+    *edge_mut(&mut edges, 8) = edge(8, (0.0, 0.0), (1.0, 0.0), [Some(0), Some(1)]);
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::InternalEdgeOnBounds { .. })
+    ));
+}
+
+#[test]
+fn rejects_overlap_and_gap_when_signed_areas_cancel() {
+    let (bounds, boundary, cells, edges) = overlap_gap_parts();
+
+    assert!(matches!(
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges),
+        Err(SpatialValidationError::InternalEdgeOrientationMismatch { .. })
+    ));
+}
+
+#[test]
+fn validates_extreme_finite_geometry_without_intermediate_overflow() {
+    let width = 1.0e154;
+    let height = 5.0e153;
+    let bounds = WorldRect::new(point(0.0, 0.0), point(width, height)).unwrap();
+    let cells = vec![SpatialCell {
+        id: CellId::from_raw(0),
+        site: point(5.0e153, 2.5e153),
+        centroid: point(5.0e153, 2.5e153),
+        area: square_meters(5.0e307),
+        polygon: vec![
+            point(0.0, 0.0),
+            point(width, 0.0),
+            point(width, height),
+            point(0.0, height),
+        ],
+        neighbors: Vec::new(),
+    }];
+    let edges = vec![
+        edge(0, (0.0, 0.0), (width, 0.0), [Some(0), None]),
+        edge(1, (width, 0.0), (width, height), [Some(0), None]),
+        edge(2, (width, height), (0.0, height), [Some(0), None]),
+        edge(3, (0.0, height), (0.0, 0.0), [Some(0), None]),
+    ];
+
+    let snapshot = SpatialSnapshot::new(
+        SPATIAL_SCHEMA_V1,
+        bounds,
+        BoundaryCondition::Closed,
+        cells,
+        edges,
+    )
+    .unwrap();
+    assert_eq!(snapshot.total_cell_area().get(), 5.0e307);
+}
+
+#[test]
+fn rejects_extreme_finite_edge_endpoints_without_panicking() {
+    let (bounds, boundary, cells, mut edges) = four_cell_parts();
+    *edge_mut(&mut edges, 0) = edge(0, (1.0e308, 0.0), (1.0, 0.0), [Some(0), None]);
+
+    let result = std::panic::catch_unwind(|| {
+        SpatialSnapshot::new(SPATIAL_SCHEMA_V1, bounds, boundary, cells, edges)
+    });
+    assert!(matches!(
+        result,
+        Ok(Err(SpatialValidationError::EdgeNotOnCellPolygon { .. }))
+    ));
 }

@@ -76,7 +76,15 @@ impl SpatialSnapshot {
         Ok(snapshot)
     }
 
-    /// Returns the compensated sum of the stored, validated cell areas.
+    /// Returns the compensated sum of the stored cell areas.
+    ///
+    /// Call [`Self::validate`] first when this snapshot came from deserialization.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an unvalidated deserialized snapshot contains individually
+    /// finite areas whose sum is non-finite. Snapshots returned by [`Self::new`],
+    /// or deserialized snapshots that pass [`Self::validate`], cannot panic here.
     pub fn total_cell_area(&self) -> SquareMeters {
         let mut sum = 0.0;
         let mut compensation = 0.0;
