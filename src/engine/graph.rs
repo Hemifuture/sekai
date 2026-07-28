@@ -3,7 +3,9 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::engine::artifact::{Artifact, ArtifactError, ArtifactKey, ArtifactType, BuildArtifacts};
+use crate::engine::artifact::{
+    Artifact, ArtifactError, ArtifactKey, ArtifactType, BuildArtifacts, ContentHash,
+};
 use crate::engine::diagnostics::is_valid_identifier;
 use crate::engine::stage::{
     erase_stage, ErasedStage, Stage, StageDescriptor, StageId, StageInputs,
@@ -70,6 +72,7 @@ pub enum GraphError {
 
 struct RegisteredStage {
     descriptor: StageDescriptor,
+    output_type: ArtifactType,
     stage: Box<dyn ErasedStage>,
 }
 
@@ -98,15 +101,17 @@ impl StageGraphBuilder {
     /// Registers one typed generation stage without normalizing declarations.
     pub fn stage<S: Stage>(mut self, stage: S) -> Self {
         let dependencies = S::Inputs::dependencies().to_vec();
+        let output_type = ArtifactType::of::<S::Output>();
         let descriptor = StageDescriptor::new(
             stage.id(),
             stage.version(),
             stage.namespace(),
             dependencies.clone(),
-            S::Output::KEY,
+            output_type.key(),
         );
         self.stages.push(RegisteredStage {
             descriptor,
+            output_type,
             stage: erase_stage(stage, dependencies),
         });
         self
@@ -127,6 +132,7 @@ impl StageGraphBuilder {
         let providers = providers(&self.external_artifacts, &self.stages);
         validate_dependencies(&providers, &self.stages)?;
         let stage_order = topological_order(&providers, &self.stages)?;
+        let provider_types = provider_types(&self.external_artifacts, &self.stages);
 
         let mut registrations = self
             .stages
@@ -143,14 +149,9 @@ impl StageGraphBuilder {
             stages.push(registration.stage);
         }
 
-        let external_artifact_keys = self
-            .external_artifacts
-            .iter()
-            .map(|artifact_type| artifact_type.key())
-            .collect();
         Ok(StageGraph {
-            external_artifact_keys,
             external_artifact_types: self.external_artifacts,
+            provider_types,
             descriptors,
             stages,
         })
@@ -159,17 +160,22 @@ impl StageGraphBuilder {
 
 /// A validated generation graph in deterministic execution order.
 pub struct StageGraph {
-    external_artifact_keys: Vec<ArtifactKey>,
     external_artifact_types: Vec<ArtifactType>,
+    provider_types: BTreeMap<ArtifactKey, ArtifactType>,
     descriptors: Vec<StageDescriptor>,
     stages: Vec<Box<dyn ErasedStage>>,
 }
 
 impl fmt::Debug for StageGraph {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let external_artifact_keys = self
+            .external_artifact_types
+            .iter()
+            .map(|artifact_type| artifact_type.key())
+            .collect::<Vec<_>>();
         formatter
             .debug_struct("StageGraph")
-            .field("external_artifacts", &self.external_artifact_keys)
+            .field("external_artifacts", &external_artifact_keys)
             .field("descriptors", &self.descriptors)
             .finish_non_exhaustive()
     }
@@ -189,20 +195,50 @@ impl StageGraph {
         &self.descriptors
     }
 
-    #[allow(dead_code)] // Read by the scheduler introduced in Task 9.
-    pub(crate) fn external_artifact_keys(&self) -> &[ArtifactKey] {
-        &self.external_artifact_keys
-    }
-
-    #[allow(dead_code)] // Called before scheduler hash and cache lookups in Task 9.
-    pub(crate) fn validate_external_artifacts(
+    #[allow(dead_code)] // Used to seed checked external state in Task 9.
+    pub(crate) fn external_hashes(
         &self,
         artifacts: &BuildArtifacts,
-    ) -> Result<(), ArtifactError> {
+    ) -> Result<Vec<(ArtifactKey, ContentHash)>, ArtifactError> {
+        let mut hashes = Vec::with_capacity(self.external_artifact_types.len());
         for artifact_type in &self.external_artifact_types {
-            artifact_type.validate_in(artifacts)?;
+            hashes.push((artifact_type.key(), artifact_type.hash_in(artifacts)?));
         }
-        Ok(())
+        Ok(hashes)
+    }
+
+    #[allow(dead_code)] // Used to frame one stage cache key in Task 9.
+    pub(crate) fn dependency_hashes(
+        &self,
+        descriptor: &StageDescriptor,
+        artifacts: &BuildArtifacts,
+    ) -> Result<Vec<(ArtifactKey, ContentHash)>, ArtifactError> {
+        let mut hashes = Vec::with_capacity(descriptor.dependencies().len());
+        for artifact_key in descriptor.dependencies() {
+            let artifact_type = self
+                .provider_types
+                .get(artifact_key)
+                .expect("validated dependency must retain its provider type");
+            hashes.push((*artifact_key, artifact_type.hash_in(artifacts)?));
+        }
+        Ok(hashes)
+    }
+
+    #[allow(dead_code)] // Used to frame the successful build result in Task 9.
+    pub(crate) fn output_hashes(
+        &self,
+        artifacts: &BuildArtifacts,
+    ) -> Result<Vec<(ArtifactKey, ContentHash)>, ArtifactError> {
+        let mut hashes = Vec::with_capacity(self.descriptors.len());
+        for descriptor in &self.descriptors {
+            let artifact_key = descriptor.output();
+            let artifact_type = self
+                .provider_types
+                .get(&artifact_key)
+                .expect("validated output must retain its provider type");
+            hashes.push((artifact_key, artifact_type.hash_in(artifacts)?));
+        }
+        Ok(hashes)
     }
 
     #[allow(dead_code)] // Read by the scheduler introduced in Task 9.
@@ -323,6 +359,18 @@ fn providers(
     providers
 }
 
+fn provider_types(
+    external_artifacts: &[ArtifactType],
+    stages: &[RegisteredStage],
+) -> BTreeMap<ArtifactKey, ArtifactType> {
+    external_artifacts
+        .iter()
+        .copied()
+        .chain(stages.iter().map(|registration| registration.output_type))
+        .map(|artifact_type| (artifact_type.key(), artifact_type))
+        .collect()
+}
+
 fn validate_dependencies(
     providers: &BTreeMap<ArtifactKey, Option<StageId>>,
     stages: &[RegisteredStage],
@@ -418,12 +466,17 @@ fn topological_order(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde::Serialize;
 
-    use super::StageGraphBuilder;
+    use super::{StageGraph, StageGraphBuilder};
     use crate::engine::artifact::{
         Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
     };
+    use crate::engine::diagnostics::Diagnostic;
+    use crate::engine::random::StageRng;
+    use crate::engine::stage::{Stage, StageError, StageId, StageInputs};
 
     #[derive(Debug, Serialize)]
     struct ExpectedExternal(u32);
@@ -447,6 +500,96 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Serialize)]
+    struct AnotherExternal(u32);
+
+    impl Artifact for AnotherExternal {
+        const KEY: ArtifactKey = ArtifactKey::new("test.another-external");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct DependencyOutput;
+
+    impl Artifact for DependencyOutput {
+        const KEY: ArtifactKey = ArtifactKey::new("test.dependency-output");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Serialize)]
+    struct WrongDependencyOutput;
+
+    impl Artifact for WrongDependencyOutput {
+        const KEY: ArtifactKey = DependencyOutput::KEY;
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    struct DependencyInputs {
+        #[allow(dead_code)]
+        expected: Arc<ExpectedExternal>,
+        #[allow(dead_code)]
+        another: Arc<AnotherExternal>,
+    }
+
+    impl StageInputs for DependencyInputs {
+        fn dependencies() -> &'static [ArtifactKey] {
+            &[ExpectedExternal::KEY, AnotherExternal::KEY]
+        }
+
+        fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+            Ok(Self {
+                expected: artifacts.get::<ExpectedExternal>()?,
+                another: artifacts.get::<AnotherExternal>()?,
+            })
+        }
+    }
+
+    struct DependencyStage;
+
+    impl Stage for DependencyStage {
+        type Inputs = DependencyInputs;
+        type Output = DependencyOutput;
+
+        fn id(&self) -> StageId {
+            StageId::new("test.dependencies")
+        }
+
+        fn version(&self) -> u32 {
+            1
+        }
+
+        fn namespace(&self) -> &'static str {
+            "test"
+        }
+
+        fn run(
+            &self,
+            _inputs: Self::Inputs,
+            _rng: &mut StageRng,
+            _diagnostics: &mut Vec<Diagnostic>,
+        ) -> Result<Self::Output, StageError> {
+            Ok(DependencyOutput)
+        }
+    }
+
+    fn dependency_graph() -> StageGraph {
+        StageGraphBuilder::new()
+            .external::<ExpectedExternal>()
+            .external::<AnotherExternal>()
+            .stage(DependencyStage)
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn external_validation_distinguishes_missing_from_same_key_type_mismatch() {
         let graph = StageGraphBuilder::new()
@@ -456,7 +599,7 @@ mod tests {
         let missing = BuildArtifacts::default();
 
         assert!(matches!(
-            graph.validate_external_artifacts(&missing),
+            graph.external_hashes(&missing),
             Err(ArtifactError::Missing { artifact_key })
                 if artifact_key == ExpectedExternal::KEY
         ));
@@ -464,21 +607,104 @@ mod tests {
         let mut mismatched = BuildArtifacts::default();
         mismatched.insert(WrongExternal(1)).unwrap();
         assert!(matches!(
-            graph.validate_external_artifacts(&mismatched),
+            graph.external_hashes(&mismatched),
             Err(ArtifactError::TypeMismatch { artifact_key })
                 if artifact_key == ExpectedExternal::KEY
         ));
     }
 
     #[test]
-    fn external_validation_accepts_the_registered_concrete_type() {
+    fn external_hashes_are_type_checked_and_sorted_by_artifact_key() {
         let graph = StageGraphBuilder::new()
             .external::<ExpectedExternal>()
+            .external::<AnotherExternal>()
             .build()
             .unwrap();
         let mut artifacts = BuildArtifacts::default();
         artifacts.insert(ExpectedExternal(1)).unwrap();
+        artifacts.insert(AnotherExternal(2)).unwrap();
 
-        assert!(graph.validate_external_artifacts(&artifacts).is_ok());
+        let hashes = graph.external_hashes(&artifacts).unwrap();
+
+        assert_eq!(
+            hashes,
+            vec![
+                (
+                    AnotherExternal::KEY,
+                    artifacts.hash::<AnotherExternal>().unwrap()
+                ),
+                (
+                    ExpectedExternal::KEY,
+                    artifacts.hash::<ExpectedExternal>().unwrap()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn dependency_hashing_rejects_same_key_wrong_type() {
+        let graph = dependency_graph();
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(WrongExternal(1)).unwrap();
+        artifacts.insert(AnotherExternal(2)).unwrap();
+
+        let error = graph
+            .dependency_hashes(&graph.descriptors()[0], &artifacts)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ArtifactError::TypeMismatch { artifact_key }
+                if artifact_key == ExpectedExternal::KEY
+        ));
+    }
+
+    #[test]
+    fn dependency_hashes_follow_sorted_descriptor_order() {
+        let graph = dependency_graph();
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(ExpectedExternal(1)).unwrap();
+        artifacts.insert(AnotherExternal(2)).unwrap();
+
+        let hashes = graph
+            .dependency_hashes(&graph.descriptors()[0], &artifacts)
+            .unwrap();
+
+        assert_eq!(
+            hashes,
+            vec![
+                (
+                    AnotherExternal::KEY,
+                    artifacts.hash::<AnotherExternal>().unwrap()
+                ),
+                (
+                    ExpectedExternal::KEY,
+                    artifacts.hash::<ExpectedExternal>().unwrap()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn output_hashes_retain_stage_output_type_identity() {
+        let graph = dependency_graph();
+        let mut mismatched = BuildArtifacts::default();
+        mismatched.insert(WrongDependencyOutput).unwrap();
+
+        assert!(matches!(
+            graph.output_hashes(&mismatched),
+            Err(ArtifactError::TypeMismatch { artifact_key })
+                if artifact_key == DependencyOutput::KEY
+        ));
+
+        let mut valid = BuildArtifacts::default();
+        valid.insert(DependencyOutput).unwrap();
+        assert_eq!(
+            graph.output_hashes(&valid).unwrap(),
+            vec![(
+                DependencyOutput::KEY,
+                valid.hash::<DependencyOutput>().unwrap()
+            )]
+        );
     }
 }

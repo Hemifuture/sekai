@@ -150,11 +150,33 @@ impl ArtifactType {
         self.key
     }
 
-    pub(crate) fn validate_in(self, artifacts: &BuildArtifacts) -> Result<(), ArtifactError> {
-        artifacts.validate_type_id(self.key, self.type_id)
+    pub(crate) fn hash_in(self, artifacts: &BuildArtifacts) -> Result<ContentHash, ArtifactError> {
+        let stored = artifacts
+            .entries
+            .get(&self.key)
+            .ok_or(ArtifactError::Missing {
+                artifact_key: self.key,
+            })?;
+        self.validate_stored(stored)?;
+        Ok(stored.hash)
     }
 
-    pub(crate) fn validate_stored(self, stored: &StoredArtifact) -> Result<(), ArtifactError> {
+    pub(crate) fn publish_into(
+        self,
+        stored: StoredArtifact,
+        artifacts: &mut BuildArtifacts,
+    ) -> Result<(), ArtifactError> {
+        self.validate_stored(&stored)?;
+        if artifacts.entries.contains_key(&self.key) {
+            return Err(ArtifactError::Duplicate {
+                artifact_key: self.key,
+            });
+        }
+        artifacts.entries.insert(self.key, stored);
+        Ok(())
+    }
+
+    fn validate_stored(self, stored: &StoredArtifact) -> Result<(), ArtifactError> {
         if stored.key() != self.key {
             return Err(ArtifactError::Missing {
                 artifact_key: self.key,
@@ -166,7 +188,6 @@ impl ArtifactType {
 
 #[derive(Clone)]
 pub(crate) struct StoredArtifact {
-    #[allow(dead_code)] // Read by the cache introduced in Task 9.
     key: ArtifactKey,
     value: Arc<dyn Any + Send + Sync>,
     hash: ContentHash,
@@ -191,14 +212,8 @@ impl StoredArtifact {
         })
     }
 
-    #[allow(dead_code)] // Read by the cache and scheduler introduced in Task 9.
-    pub(crate) const fn key(&self) -> ArtifactKey {
+    const fn key(&self) -> ArtifactKey {
         self.key
-    }
-
-    #[allow(dead_code)] // Read by the cache and scheduler introduced in Task 9.
-    pub(crate) const fn hash(&self) -> ContentHash {
-        self.hash
     }
 
     fn validate_type_id(&self, expected: TypeId) -> Result<(), ArtifactError> {
@@ -239,15 +254,7 @@ impl BuildArtifacts {
 
     /// Returns the semantic content hash for a stored typed artifact.
     pub fn hash<T: Artifact>(&self) -> Result<ContentHash, ArtifactError> {
-        let stored = self.entries.get(&T::KEY).ok_or(ArtifactError::Missing {
-            artifact_key: T::KEY,
-        })?;
-        if !stored.value.is::<T>() {
-            return Err(ArtifactError::TypeMismatch {
-                artifact_key: T::KEY,
-            });
-        }
-        Ok(stored.hash)
+        ArtifactType::of::<T>().hash_in(self)
     }
 
     pub(crate) fn dependency_view(
@@ -266,32 +273,7 @@ impl BuildArtifacts {
 
     #[allow(dead_code)] // Used for external artifacts introduced in Task 9.
     pub(crate) fn insert<T: Artifact>(&mut self, value: T) -> Result<(), ArtifactError> {
-        self.insert_stored(StoredArtifact::new(value)?)
-    }
-
-    #[allow(dead_code)] // Used for cache hits and stage outputs in Task 9.
-    pub(crate) fn insert_stored(&mut self, stored: StoredArtifact) -> Result<(), ArtifactError> {
-        let key = stored.key();
-        if self.entries.contains_key(&key) {
-            return Err(ArtifactError::Duplicate { artifact_key: key });
-        }
-        self.entries.insert(key, stored);
-        Ok(())
-    }
-
-    #[allow(dead_code)] // Used to frame cache keys in Task 9.
-    pub(crate) fn hash_by_key(&self, key: ArtifactKey) -> Result<ContentHash, ArtifactError> {
-        self.entries
-            .get(&key)
-            .map(StoredArtifact::hash)
-            .ok_or(ArtifactError::Missing { artifact_key: key })
-    }
-
-    fn validate_type_id(&self, key: ArtifactKey, expected: TypeId) -> Result<(), ArtifactError> {
-        self.entries
-            .get(&key)
-            .ok_or(ArtifactError::Missing { artifact_key: key })?
-            .validate_type_id(expected)
+        ArtifactType::of::<T>().publish_into(StoredArtifact::new(value)?, self)
     }
 }
 

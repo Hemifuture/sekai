@@ -155,18 +155,24 @@ pub(crate) enum ErasedStageError {
     Stage(#[source] StageError),
     #[error("stage output could not be prepared: {0}")]
     Output(#[source] ArtifactError),
+    #[error("stage output could not be published: {0}")]
+    Publication(#[source] ArtifactError),
 }
 
 #[allow(dead_code)] // Executed by the scheduler introduced in Task 9.
 pub(crate) trait ErasedStage: Send + Sync {
     fn run(
         &self,
-        artifacts: &BuildArtifacts,
+        artifacts: &mut BuildArtifacts,
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<StoredArtifact, ErasedStageError>;
 
-    fn validate_cached_output(&self, stored: &StoredArtifact) -> Result<(), ArtifactError>;
+    fn restore_cached_output(
+        &self,
+        stored: StoredArtifact,
+        artifacts: &mut BuildArtifacts,
+    ) -> Result<(), ArtifactError>;
 }
 
 struct ErasedStageAdapter<S> {
@@ -178,7 +184,7 @@ struct ErasedStageAdapter<S> {
 impl<S: Stage> ErasedStage for ErasedStageAdapter<S> {
     fn run(
         &self,
-        artifacts: &BuildArtifacts,
+        artifacts: &mut BuildArtifacts,
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<StoredArtifact, ErasedStageError> {
@@ -190,11 +196,19 @@ impl<S: Stage> ErasedStage for ErasedStageAdapter<S> {
             .stage
             .run(inputs, rng, diagnostics)
             .map_err(ErasedStageError::Stage)?;
-        StoredArtifact::new(output).map_err(ErasedStageError::Output)
+        let stored = StoredArtifact::new(output).map_err(ErasedStageError::Output)?;
+        self.output_type
+            .publish_into(stored.clone(), artifacts)
+            .map_err(ErasedStageError::Publication)?;
+        Ok(stored)
     }
 
-    fn validate_cached_output(&self, stored: &StoredArtifact) -> Result<(), ArtifactError> {
-        self.output_type.validate_stored(stored)
+    fn restore_cached_output(
+        &self,
+        stored: StoredArtifact,
+        artifacts: &mut BuildArtifacts,
+    ) -> Result<(), ArtifactError> {
+        self.output_type.publish_into(stored, artifacts)
     }
 }
 
@@ -256,6 +270,17 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Serialize)]
+    struct OtherOutputArtifact(u32);
+
+    impl Artifact for OtherOutputArtifact {
+        const KEY: ArtifactKey = ArtifactKey::new("test.other-output");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
     struct AdversarialInputs {
         #[allow(dead_code)]
         declared: Arc<DeclaredArtifact>,
@@ -301,6 +326,51 @@ mod tests {
         }
     }
 
+    struct HonestInputs {
+        #[allow(dead_code)]
+        declared: Arc<DeclaredArtifact>,
+    }
+
+    impl StageInputs for HonestInputs {
+        fn dependencies() -> &'static [ArtifactKey] {
+            &[DeclaredArtifact::KEY]
+        }
+
+        fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+            Ok(Self {
+                declared: artifacts.get::<DeclaredArtifact>()?,
+            })
+        }
+    }
+
+    struct PublishingStage;
+
+    impl Stage for PublishingStage {
+        type Inputs = HonestInputs;
+        type Output = OutputArtifact;
+
+        fn id(&self) -> StageId {
+            StageId::new("test.publishing")
+        }
+
+        fn version(&self) -> u32 {
+            1
+        }
+
+        fn namespace(&self) -> &'static str {
+            "test"
+        }
+
+        fn run(
+            &self,
+            _inputs: Self::Inputs,
+            _rng: &mut StageRng,
+            _diagnostics: &mut Vec<Diagnostic>,
+        ) -> Result<Self::Output, StageError> {
+            Ok(OutputArtifact(5))
+        }
+    }
+
     fn rng() -> StageRng {
         StageRng::from_seed(derive_stage_seed(
             RootSeed::new(7),
@@ -325,7 +395,7 @@ mod tests {
         let graph = graph();
         let (_, stage) = graph.execution_stages().next().unwrap();
 
-        let error = match stage.run(&artifacts, &mut rng(), &mut Vec::new()) {
+        let error = match stage.run(&mut artifacts, &mut rng(), &mut Vec::new()) {
             Ok(_) => panic!("undeclared access unexpectedly succeeded"),
             Err(error) => error,
         };
@@ -338,26 +408,98 @@ mod tests {
     }
 
     #[test]
-    fn erased_stage_rejects_same_key_cached_output_of_another_type() {
+    fn cached_restore_rejects_same_key_wrong_type_without_mutation() {
         let graph = graph();
         let (_, stage) = graph.execution_stages().next().unwrap();
         let cached = StoredArtifact::new(WrongOutputArtifact(9)).unwrap();
+        let mut artifacts = BuildArtifacts::default();
 
-        let error = stage.validate_cached_output(&cached).unwrap_err();
+        let error = stage
+            .restore_cached_output(cached, &mut artifacts)
+            .unwrap_err();
 
         assert!(matches!(
             error,
             ArtifactError::TypeMismatch { artifact_key }
                 if artifact_key == OutputArtifact::KEY
         ));
+        assert!(matches!(
+            artifacts.get::<OutputArtifact>(),
+            Err(ArtifactError::Missing { artifact_key })
+                if artifact_key == OutputArtifact::KEY
+        ));
     }
 
     #[test]
-    fn erased_stage_accepts_cached_output_of_declared_type() {
+    fn cached_restore_inserts_the_declared_output_type() {
         let graph = graph();
         let (_, stage) = graph.execution_stages().next().unwrap();
         let cached = StoredArtifact::new(OutputArtifact(9)).unwrap();
+        let mut artifacts = BuildArtifacts::default();
 
-        assert!(stage.validate_cached_output(&cached).is_ok());
+        stage.restore_cached_output(cached, &mut artifacts).unwrap();
+
+        assert_eq!(artifacts.get::<OutputArtifact>().unwrap().0, 9);
+    }
+
+    #[test]
+    fn cached_restore_rejects_wrong_key_without_mutation() {
+        let graph = graph();
+        let (_, stage) = graph.execution_stages().next().unwrap();
+        let cached = StoredArtifact::new(OtherOutputArtifact(9)).unwrap();
+        let mut artifacts = BuildArtifacts::default();
+
+        let error = stage
+            .restore_cached_output(cached, &mut artifacts)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ArtifactError::Missing { artifact_key }
+                if artifact_key == OutputArtifact::KEY
+        ));
+        assert!(matches!(
+            artifacts.get::<OtherOutputArtifact>(),
+            Err(ArtifactError::Missing { artifact_key })
+                if artifact_key == OtherOutputArtifact::KEY
+        ));
+    }
+
+    #[test]
+    fn cached_restore_rejects_duplicate_without_replacing_original() {
+        let graph = graph();
+        let (_, stage) = graph.execution_stages().next().unwrap();
+        let cached = StoredArtifact::new(OutputArtifact(9)).unwrap();
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(OutputArtifact(1)).unwrap();
+
+        let error = stage
+            .restore_cached_output(cached, &mut artifacts)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ArtifactError::Duplicate { artifact_key }
+                if artifact_key == OutputArtifact::KEY
+        ));
+        assert_eq!(artifacts.get::<OutputArtifact>().unwrap().0, 1);
+    }
+
+    #[test]
+    fn erased_stage_run_publishes_fresh_output() {
+        let graph = StageGraphBuilder::new()
+            .external::<DeclaredArtifact>()
+            .stage(PublishingStage)
+            .build()
+            .unwrap();
+        let (_, stage) = graph.execution_stages().next().unwrap();
+        let mut artifacts = BuildArtifacts::default();
+        artifacts.insert(DeclaredArtifact(1)).unwrap();
+
+        stage
+            .run(&mut artifacts, &mut rng(), &mut Vec::new())
+            .unwrap();
+
+        assert_eq!(artifacts.get::<OutputArtifact>().unwrap().0, 5);
     }
 }
