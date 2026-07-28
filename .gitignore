@@ -4,6 +4,9 @@
 # trunk output folder
 dist
 
+# local linked worktrees
+.worktrees/
+
 # Rust compile target directories:
 target
 target_ra
