@@ -1,4 +1,5 @@
 pub mod fields;
+pub mod spatial;
 
 mod ids;
 mod spec;
