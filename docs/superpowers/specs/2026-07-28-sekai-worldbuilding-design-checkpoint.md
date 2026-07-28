@@ -4,6 +4,8 @@
 > 日期：2026-07-28
 > 代码基线：`main` / `cad6e68affbd43e6a6ad1dd460f25988aa437574`
 > 原 Claude 会话：`ee324593-4eac-44d4-a3ae-1741e8e6b80f`
+>
+> 后续更新：第一阶段已改为聚焦自然、魔法与社会的当前切片，不实现历史时间线或事件演化。后续设计以 `docs/superpowers/specs/2026-07-28-sekai-current-slice-world-design.md` 为准；本文保留为决策历史与审计记录。
 
 ## 1. 恢复说明
 
