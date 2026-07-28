@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 
 use sekai::world::fields::{
-    DomainSizes, EntityKind, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain,
-    FieldId, FieldPaletteHint, FieldRegistryBuilder, FieldSchema, FieldUnit, FieldValueType,
-    MissingValuePolicy, StableIdKind, ValueRange,
+    DomainSizes, EntityKind, ExtensionFieldSet, FieldData, FieldDataError, FieldDisplayMetadata,
+    FieldDomain, FieldId, FieldPaletteHint, FieldRegistryBuilder, FieldSchema, FieldSchemaError,
+    FieldUnit, FieldValueType, MissingValuePolicy, StableIdKind, ValueRange,
 };
+
+const DEEP_GRAPH_CHILD: &str = "SEKAI_DEEP_FIELD_GRAPH_CHILD";
+const DEEP_GRAPH_LENGTH: usize = 4_096;
 
 fn mana_schema() -> FieldSchema {
     FieldSchema {
@@ -97,6 +100,44 @@ fn register_one(schema: FieldSchema) -> sekai::world::fields::FieldRegistry {
     let mut builder = FieldRegistryBuilder::new();
     builder.register(schema).unwrap();
     builder.build().unwrap()
+}
+
+fn deep_dependency_schema(index: usize, closes_cycle: bool) -> FieldSchema {
+    let id = FieldId::new("example.stress", format!("node-{index:05}"), 1).unwrap();
+    let dependency = if index + 1 < DEEP_GRAPH_LENGTH {
+        Some(FieldId::new("example.stress", format!("node-{:05}", index + 1), 1).unwrap())
+    } else if closes_cycle {
+        Some(FieldId::new("example.stress", "node-00000", 1).unwrap())
+    } else {
+        None
+    };
+
+    FieldSchema {
+        id,
+        domain: FieldDomain::Global,
+        value_type: FieldValueType::ScalarF32,
+        unit: FieldUnit::Unitless,
+        valid_range: None,
+        missing: MissingValuePolicy::Forbidden,
+        dependencies: dependency.into_iter().collect(),
+        category_labels: BTreeMap::new(),
+        display: FieldDisplayMetadata::new(
+            "field.example.stress.node",
+            FieldPaletteHint::Sequential,
+            0,
+        )
+        .unwrap(),
+    }
+}
+
+fn deep_dependency_registry(closes_cycle: bool) -> FieldRegistryBuilder {
+    let mut builder = FieldRegistryBuilder::new();
+    for index in 0..DEEP_GRAPH_LENGTH {
+        builder
+            .register(deep_dependency_schema(index, closes_cycle))
+            .unwrap();
+    }
+    builder
 }
 
 #[test]
@@ -231,6 +272,58 @@ fn dependency_cycles_are_rejected() {
 }
 
 #[test]
+fn dependency_cycle_error_identifies_a_cycle_member() {
+    let mut dependent = category_schema();
+    let mut mana = mana_schema();
+    let mut temperature = temperature_schema();
+    let mana_id = mana.id.clone();
+    dependent.dependencies.push(mana_id.clone());
+    mana.dependencies.push(temperature.id.clone());
+    temperature.dependencies.push(mana_id.clone());
+
+    let mut builder = FieldRegistryBuilder::new();
+    builder.register(dependent).unwrap();
+    builder.register(mana).unwrap();
+    builder.register(temperature).unwrap();
+    assert_eq!(
+        builder.build(),
+        Err(FieldSchemaError::DependencyCycle(mana_id))
+    );
+}
+
+#[test]
+fn dependency_validation_is_stack_safe_for_deep_graphs() {
+    if std::env::var_os(DEEP_GRAPH_CHILD).is_some() {
+        assert!(deep_dependency_registry(false).build().is_ok());
+        assert_eq!(
+            deep_dependency_registry(true).build(),
+            Err(FieldSchemaError::DependencyCycle(
+                FieldId::new("example.stress", "node-00000", 1).unwrap()
+            ))
+        );
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "dependency_validation_is_stack_safe_for_deep_graphs",
+            "--nocapture",
+        ])
+        .env(DEEP_GRAPH_CHILD, "1")
+        .env("RUST_MIN_STACK", "65536")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "deep dependency validation child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
 fn immutable_registry_deserialization_revalidates_schemas() {
     let invalid_registry = serde_json::json!([{
         "id": {
@@ -327,6 +420,7 @@ fn validates_payload_type_length_and_range() {
 fn validates_entity_lengths_and_stable_id_targets() {
     let sizes = DomainSizes::new(0, 0)
         .with_entities(EntityKind::Settlement, 2)
+        .with_entities(EntityKind::Species, 10)
         .with_entities(EntityKind::Polity, 6);
     let schema = settlement_owner_schema();
     let id = schema.id.clone();
@@ -359,8 +453,8 @@ fn validates_entity_lengths_and_stable_id_targets() {
         .is_err());
 
     let mut wrong_target = ExtensionFieldSet::new();
-    assert!(wrong_target
-        .insert(
+    assert_eq!(
+        wrong_target.insert(
             &registry,
             id.clone(),
             FieldData::StableIdU32 {
@@ -368,8 +462,9 @@ fn validates_entity_lengths_and_stable_id_targets() {
                 values: vec![3, 5],
             },
             &sizes,
-        )
-        .is_err());
+        ),
+        Err(FieldDataError::StableIdTargetMismatch { field: id.clone() })
+    );
 
     let mut out_of_range = ExtensionFieldSet::new();
     assert!(out_of_range

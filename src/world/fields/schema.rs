@@ -552,29 +552,40 @@ fn validate_dependencies(schemas: &BTreeMap<FieldId, FieldSchema>) -> Result<(),
 
     let mut visited = BTreeSet::new();
     let mut active = BTreeSet::new();
-    for field in schemas.keys() {
-        visit_dependency(field, schemas, &mut visited, &mut active)?;
-    }
-    Ok(())
-}
+    for root in schemas.keys() {
+        if visited.contains(root) {
+            continue;
+        }
 
-fn visit_dependency(
-    field: &FieldId,
-    schemas: &BTreeMap<FieldId, FieldSchema>,
-    visited: &mut BTreeSet<FieldId>,
-    active: &mut BTreeSet<FieldId>,
-) -> Result<(), FieldSchemaError> {
-    if visited.contains(field) {
-        return Ok(());
-    }
-    if !active.insert(field.clone()) {
-        return Err(FieldSchemaError::DependencyCycle(field.clone()));
+        active.insert(root.clone());
+        let mut stack = vec![(root.clone(), 0_usize)];
+        while !stack.is_empty() {
+            let next_dependency = {
+                let (field, dependency_index) = stack
+                    .last_mut()
+                    .expect("the stack is known to be non-empty");
+                let dependency = schemas[field].dependencies.get(*dependency_index).cloned();
+                if dependency.is_some() {
+                    *dependency_index += 1;
+                }
+                dependency
+            };
+
+            if let Some(dependency) = next_dependency {
+                if visited.contains(&dependency) {
+                    continue;
+                }
+                if !active.insert(dependency.clone()) {
+                    return Err(FieldSchemaError::DependencyCycle(dependency));
+                }
+                stack.push((dependency, 0));
+            } else {
+                let (field, _) = stack.pop().expect("the stack is known to be non-empty");
+                active.remove(&field);
+                visited.insert(field);
+            }
+        }
     }
 
-    for dependency in &schemas[field].dependencies {
-        visit_dependency(dependency, schemas, visited, active)?;
-    }
-    active.remove(field);
-    visited.insert(field.clone());
     Ok(())
 }
