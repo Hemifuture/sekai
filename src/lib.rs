@@ -7,6 +7,8 @@ mod app;
 pub mod delaunay;
 /// Domain-neutral deterministic generation services.
 pub mod engine;
+/// Deterministic world-generation pipelines.
+pub mod generators;
 mod gpu;
 mod map_layer;
 pub mod models;
