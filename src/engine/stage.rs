@@ -159,7 +159,6 @@ pub(crate) enum ErasedStageError {
     Publication(#[source] ArtifactError),
 }
 
-#[allow(dead_code)] // Executed by the scheduler introduced in Task 9.
 pub(crate) trait ErasedStage: Send + Sync {
     fn run(
         &self,

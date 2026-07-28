@@ -113,12 +113,23 @@ impl BuildEngine {
                 descriptor.namespace(),
             );
             let stage_seed = derive_stage_seed(root_seed, identity);
-            let cache_key = StageCacheKey::new(
+            let cache_key = match StageCacheKey::new(
                 identity,
                 descriptor.output(),
                 stage_seed,
                 &dependency_hashes,
-            );
+            ) {
+                Ok(cache_key) => cache_key,
+                Err(error) => {
+                    push_engine_error(
+                        &mut report,
+                        "engine.stage-cache-key",
+                        error.to_string(),
+                        Some(descriptor),
+                    );
+                    return Err(BuildFailure { report });
+                }
+            };
 
             if let Some(stored) = cache.get(&cache_key) {
                 if let Err(error) = stage.restore_cached_output(stored, &mut artifacts) {
@@ -213,10 +224,22 @@ fn same_keys(
 
 fn erased_stage_error(error: ErasedStageError) -> (&'static str, String) {
     match error {
-        ErasedStageError::Inputs(error) => ("engine.stage-inputs", error.to_string()),
-        ErasedStageError::Stage(error) => ("engine.stage-failed", error.to_string()),
-        ErasedStageError::Output(error) => ("engine.stage-output", error.to_string()),
-        ErasedStageError::Publication(error) => ("engine.stage-publication", error.to_string()),
+        ErasedStageError::Inputs(error) => artifact_error_diagnostic(error, "engine.stage-inputs"),
+        ErasedStageError::Stage(error) => (error.code(), error.message().to_owned()),
+        ErasedStageError::Output(error) => artifact_error_diagnostic(error, "engine.stage-output"),
+        ErasedStageError::Publication(error) => {
+            artifact_error_diagnostic(error, "engine.stage-publication")
+        }
+    }
+}
+
+fn artifact_error_diagnostic(
+    error: ArtifactError,
+    generic_code: &'static str,
+) -> (&'static str, String) {
+    match error {
+        ArtifactError::Validation { source, .. } => (source.code(), source.message().to_owned()),
+        error => (generic_code, error.to_string()),
     }
 }
 
@@ -260,7 +283,7 @@ mod tests {
 
     use serde::Serialize;
 
-    use super::{BuildEngine, ExternalArtifacts};
+    use super::{erased_stage_error, BuildEngine, ExternalArtifacts};
     use crate::engine::artifact::{
         Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
         StoredArtifact,
@@ -357,7 +380,8 @@ mod tests {
             Output::KEY,
             derive_stage_seed(root_seed, identity),
             &[(External::KEY, external_hash)],
-        );
+        )
+        .unwrap();
         let mut cache = MemoryStageCache::new();
         cache.insert(key, StoredArtifact::new(PoisonedOutput(9)).unwrap());
         let engine = BuildEngine::new(
@@ -379,5 +403,29 @@ mod tests {
             Some("test.output-stage")
         );
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn validation_codes_survive_every_erased_artifact_error_boundary() {
+        for error in [
+            crate::engine::stage::ErasedStageError::Inputs(validation_error()),
+            crate::engine::stage::ErasedStageError::Output(validation_error()),
+            crate::engine::stage::ErasedStageError::Publication(validation_error()),
+        ] {
+            let (code, message) = erased_stage_error(error);
+
+            assert_eq!(code, "test.boundary-validation");
+            assert_eq!(message, "invalid at erased boundary");
+        }
+    }
+
+    fn validation_error() -> ArtifactError {
+        ArtifactError::Validation {
+            artifact_key: Output::KEY,
+            source: ArtifactValidationError::new(
+                "test.boundary-validation",
+                "invalid at erased boundary",
+            ),
+        }
     }
 }

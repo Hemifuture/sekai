@@ -140,7 +140,6 @@ pub struct BuildResultHash([u8; 32]);
 
 impl BuildResultHash {
     /// Creates a result hash from already-computed semantic bytes within the engine.
-    #[allow(dead_code)] // Populated by the scheduler introduced in Task 9.
     pub(crate) const fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -226,7 +225,6 @@ impl BuildReport {
     }
 
     /// Sets the semantic result hash after every stage has completed successfully.
-    #[allow(dead_code)] // Called by the scheduler introduced in Task 9.
     pub(crate) fn set_result_hash(&mut self, result_hash: BuildResultHash) {
         if !self.has_errors() {
             self.result_hash = Some(result_hash);

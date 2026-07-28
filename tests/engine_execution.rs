@@ -34,6 +34,8 @@ scalar_artifact!(BArtifact, "test.b");
 scalar_artifact!(LeftArtifact, "test.left");
 scalar_artifact!(RightArtifact, "test.right");
 scalar_artifact!(JoinArtifact, "test.join");
+scalar_artifact!(ZFirstArtifact, "test.z-first");
+scalar_artifact!(ASecondArtifact, "test.a-second");
 
 #[derive(Debug, Serialize)]
 struct WrongSpecArtifact(i32);
@@ -70,6 +72,20 @@ impl Artifact for InvalidOutputArtifact {
         Err(ArtifactValidationError::new(
             "test.invalid-output",
             "stage output is invalid",
+        ))
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct InvalidCodeOutputArtifact;
+
+impl Artifact for InvalidCodeOutputArtifact {
+    const KEY: ArtifactKey = ArtifactKey::new("test.invalid-code-output");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        Err(ArtifactValidationError::new(
+            "Bad Code",
+            "stage output uses an invalid validation code",
         ))
     }
 }
@@ -133,6 +149,18 @@ impl StageInputs for AInput {
 struct JoinInput {
     left: Arc<LeftArtifact>,
     right: Arc<RightArtifact>,
+}
+
+struct ZFirstInput(Arc<ZFirstArtifact>);
+
+impl StageInputs for ZFirstInput {
+    fn dependencies() -> &'static [ArtifactKey] {
+        &[ZFirstArtifact::KEY]
+    }
+
+    fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+        artifacts.get::<ZFirstArtifact>().map(Self)
+    }
 }
 
 impl StageInputs for JoinInput {
@@ -310,6 +338,62 @@ impl Stage for JoinStage {
     }
 }
 
+struct ZFirstStage;
+
+impl Stage for ZFirstStage {
+    type Inputs = SpecInput;
+    type Output = ZFirstArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("test.first")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "test"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        _rng: &mut StageRng,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        Ok(ZFirstArtifact(inputs.0 .0 + 10))
+    }
+}
+
+struct ASecondStage;
+
+impl Stage for ASecondStage {
+    type Inputs = ZFirstInput;
+    type Output = ASecondArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("test.second")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "test"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        _rng: &mut StageRng,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        Ok(ASecondArtifact(inputs.0 .0 * 2))
+    }
+}
+
 struct RecoverableBStage {
     fail: Arc<AtomicBool>,
 }
@@ -436,6 +520,34 @@ impl Stage for SerializationFailureStage {
     }
 }
 
+struct InvalidCodeOutputStage;
+
+impl Stage for InvalidCodeOutputStage {
+    type Inputs = SpecInput;
+    type Output = InvalidCodeOutputArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("test.invalid-code-output-stage")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "test"
+    }
+
+    fn run(
+        &self,
+        _inputs: Self::Inputs,
+        _rng: &mut StageRng,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        Ok(InvalidCodeOutputArtifact)
+    }
+}
+
 struct DiagnosticStage {
     severity: DiagnosticSeverity,
     runs: Arc<AtomicUsize>,
@@ -539,6 +651,7 @@ fn a_cache_key(
         derive_stage_seed(root_seed, identity),
         &[(SpecArtifact::KEY, spec_hash)],
     )
+    .unwrap()
 }
 
 #[test]
@@ -696,7 +809,8 @@ fn cache_key_uses_the_exact_v1_byte_frame() {
             (SpecArtifact::KEY, spec_hash),
             (RightSpecArtifact::KEY, right_hash),
         ],
-    );
+    )
+    .unwrap();
 
     let mut expected_frame = Vec::new();
     expected_frame.extend_from_slice(b"sekai-stage-cache-v1\0");
@@ -834,10 +948,29 @@ fn validation_failure_is_atomic_and_not_cached() {
     assert!(failure.report.has_errors());
     assert_eq!(cache.len(), 0);
     let diagnostic = failure.report.diagnostics().last().unwrap();
-    assert_eq!(diagnostic.code(), "engine.stage-output");
+    assert_eq!(diagnostic.code(), "test.invalid-output");
+    assert_eq!(diagnostic.message(), "stage output is invalid");
     assert_eq!(
         diagnostic.context().stage_id.as_deref(),
         Some("test.invalid-output-stage")
+    );
+}
+
+#[test]
+fn invalid_output_validation_code_keeps_the_normalized_fallback() {
+    let engine = single_stage_engine(InvalidCodeOutputStage);
+    let mut cache = MemoryStageCache::new();
+
+    let failure = engine
+        .build(RootSeed::new(42), spec(1), &mut cache)
+        .unwrap_err();
+
+    let diagnostic = failure.report.diagnostics().last().unwrap();
+    assert_eq!(diagnostic.code(), "engine.invalid-artifact-validation-code");
+    assert!(diagnostic.message().contains("Bad Code"));
+    assert_eq!(
+        diagnostic.context().stage_id.as_deref(),
+        Some("test.invalid-code-output-stage")
     );
 }
 
@@ -876,7 +1009,8 @@ fn stage_failure_preserves_emitted_diagnostics_and_is_not_cached() {
         "test.before-failure"
     );
     let mapped = &failure.report.diagnostics()[1];
-    assert_eq!(mapped.code(), "engine.stage-failed");
+    assert_eq!(mapped.code(), "test.stage-failure");
+    assert_eq!(mapped.message(), "stage failed");
     assert_eq!(
         mapped.context().stage_id.as_deref(),
         Some("test.stage-failure")
@@ -986,6 +1120,44 @@ fn result_hash_uses_the_exact_v1_output_only_byte_frame() {
     expected_frame.extend_from_slice(&6_u32.to_le_bytes());
     expected_frame.extend_from_slice(b"test.b");
     expected_frame.extend_from_slice(b_hash.as_bytes());
+    let expected = blake3::hash(&expected_frame);
+
+    assert_eq!(
+        outcome.report.result_hash().unwrap().as_bytes(),
+        expected.as_bytes()
+    );
+}
+
+#[test]
+fn result_hash_frames_non_lexical_output_keys_in_graph_order() {
+    let engine = BuildEngine::new(
+        StageGraphBuilder::new()
+            .external::<SpecArtifact>()
+            .stage(ASecondStage)
+            .stage(ZFirstStage)
+            .build()
+            .unwrap(),
+    );
+    let mut cache = MemoryStageCache::new();
+
+    let outcome = engine
+        .build(RootSeed::new(42), spec(3), &mut cache)
+        .unwrap();
+
+    assert_eq!(
+        outcome.report.stage_ids(),
+        vec!["test.first", "test.second"]
+    );
+    let first_hash = blake3::hash(b"13");
+    let second_hash = blake3::hash(b"26");
+    let mut expected_frame = Vec::new();
+    expected_frame.extend_from_slice(b"sekai-build-result-v1\0");
+    expected_frame.extend_from_slice(&12_u32.to_le_bytes());
+    expected_frame.extend_from_slice(b"test.z-first");
+    expected_frame.extend_from_slice(first_hash.as_bytes());
+    expected_frame.extend_from_slice(&13_u32.to_le_bytes());
+    expected_frame.extend_from_slice(b"test.a-second");
+    expected_frame.extend_from_slice(second_hash.as_bytes());
     let expected = blake3::hash(&expected_frame);
 
     assert_eq!(

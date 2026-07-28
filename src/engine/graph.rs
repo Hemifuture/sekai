@@ -195,7 +195,6 @@ impl StageGraph {
         &self.descriptors
     }
 
-    #[allow(dead_code)] // Used to seed checked external state in Task 9.
     pub(crate) fn external_hashes(
         &self,
         artifacts: &BuildArtifacts,
@@ -207,7 +206,6 @@ impl StageGraph {
         Ok(hashes)
     }
 
-    #[allow(dead_code)] // Used to frame one stage cache key in Task 9.
     pub(crate) fn dependency_hashes(
         &self,
         descriptor: &StageDescriptor,
@@ -224,7 +222,6 @@ impl StageGraph {
         Ok(hashes)
     }
 
-    #[allow(dead_code)] // Used to frame the successful build result in Task 9.
     pub(crate) fn output_hashes(
         &self,
         artifacts: &BuildArtifacts,
@@ -241,7 +238,6 @@ impl StageGraph {
         Ok(hashes)
     }
 
-    #[allow(dead_code)] // Read by the scheduler introduced in Task 9.
     pub(crate) fn execution_stages(
         &self,
     ) -> impl ExactSizeIterator<Item = (&StageDescriptor, &dyn ErasedStage)> {

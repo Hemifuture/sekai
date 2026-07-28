@@ -14,29 +14,42 @@ pub struct StageCacheKey([u8; 32]);
 
 impl StageCacheKey {
     /// Computes a cache key from stage metadata, its seed, and checked dependency hashes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StageCacheError::FrameLengthOverflow`] when any framed string length or
+    /// the dependency count does not fit in the V1 frame's `u32` field.
     pub fn new(
         identity: StageIdentity,
         output: ArtifactKey,
         stage_seed: StageSeed,
         dependencies: &[(ArtifactKey, ContentHash)],
-    ) -> Self {
+    ) -> Result<Self, StageCacheError> {
+        checked_length_u32(identity.namespace().len())?;
+        checked_length_u32(identity.id().len())?;
+        checked_length_u32(output.as_str().len())?;
+        checked_length_u32(dependencies.len())?;
+        for (artifact_key, _) in dependencies {
+            checked_length_u32(artifact_key.as_str().len())?;
+        }
+
         let mut dependencies = dependencies.to_vec();
         dependencies.sort_unstable_by_key(|(artifact_key, _)| *artifact_key);
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"sekai-stage-cache-v1\0");
-        update_length_prefixed(&mut hasher, identity.namespace());
-        update_length_prefixed(&mut hasher, identity.id());
+        update_length_prefixed(&mut hasher, identity.namespace())?;
+        update_length_prefixed(&mut hasher, identity.id())?;
         hasher.update(&identity.version().to_le_bytes());
-        update_length_prefixed(&mut hasher, output.as_str());
+        update_length_prefixed(&mut hasher, output.as_str())?;
         hasher.update(&stage_seed.into_bytes());
-        hasher.update(&length_u32(dependencies.len()).to_le_bytes());
+        hasher.update(&checked_length_u32(dependencies.len())?.to_le_bytes());
         for (artifact_key, content_hash) in dependencies {
-            update_length_prefixed(&mut hasher, artifact_key.as_str());
+            update_length_prefixed(&mut hasher, artifact_key.as_str())?;
             hasher.update(content_hash.as_bytes());
         }
 
-        Self(*hasher.finalize().as_bytes())
+        Ok(Self(*hasher.finalize().as_bytes()))
     }
 
     /// Returns the cache-key hash bytes without copying them.
@@ -51,6 +64,9 @@ pub enum StageCacheError {
     /// A bounded cache cannot be configured with no storage slots.
     #[error("stage cache capacity must be greater than zero")]
     ZeroCapacity,
+    /// A cache frame string length or dependency count does not fit in its V1 `u32` field.
+    #[error("stage cache frame length or dependency count exceeds u32::MAX")]
+    FrameLengthOverflow,
 }
 
 /// A deterministic, process-local, bounded FIFO cache of validated stage outputs.
@@ -140,20 +156,21 @@ impl MemoryStageCache {
     }
 }
 
-fn update_length_prefixed(hasher: &mut blake3::Hasher, value: &str) {
-    hasher.update(&length_u32(value.len()).to_le_bytes());
+fn update_length_prefixed(hasher: &mut blake3::Hasher, value: &str) -> Result<(), StageCacheError> {
+    hasher.update(&checked_length_u32(value.len())?.to_le_bytes());
     hasher.update(value.as_bytes());
+    Ok(())
 }
 
-fn length_u32(length: usize) -> u32 {
-    u32::try_from(length).expect("validated engine metadata must fit in a u32 frame length")
+fn checked_length_u32(length: usize) -> Result<u32, StageCacheError> {
+    u32::try_from(length).map_err(|_| StageCacheError::FrameLengthOverflow)
 }
 
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
 
-    use super::{MemoryStageCache, StageCacheKey};
+    use super::{checked_length_u32, MemoryStageCache, StageCacheError, StageCacheKey};
     use crate::engine::artifact::{Artifact, ArtifactKey, ArtifactValidationError, StoredArtifact};
 
     #[derive(Debug, Serialize)]
@@ -190,5 +207,13 @@ mod tests {
         assert!(cache.contains(&key(2)));
         assert!(cache.contains(&key(3)));
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn oversized_frame_length_is_rejected_without_panicking() {
+        assert_eq!(
+            checked_length_u32(usize::MAX),
+            Err(StageCacheError::FrameLengthOverflow)
+        );
     }
 }
