@@ -12,4 +12,5 @@ mod resource;
 pub mod spatial;
 pub mod terrain;
 mod ui;
+pub mod world;
 pub use app::TemplateApp;
