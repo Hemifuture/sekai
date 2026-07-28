@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 /// Errors returned when constructing validated world units and bounds.
@@ -16,7 +17,7 @@ pub enum UnitError {
 }
 
 /// A finite distance measured in meters.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[repr(transparent)]
 pub struct Meters(f64);
 
@@ -35,8 +36,17 @@ impl Meters {
     }
 }
 
+impl<'de> Deserialize<'de> for Meters {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(f64::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
 /// A finite, non-negative area measured in square meters.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[repr(transparent)]
 pub struct SquareMeters(f64);
 
@@ -56,6 +66,15 @@ impl SquareMeters {
     /// Returns the area in square meters.
     pub const fn get(self) -> f64 {
         self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SquareMeters {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(f64::deserialize(deserializer)?).map_err(D::Error::custom)
     }
 }
 
@@ -84,10 +103,26 @@ impl WorldPoint {
 }
 
 /// An axis-aligned, positive-area rectangle in world-space coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct WorldRect {
     min: WorldPoint,
     max: WorldPoint,
+}
+
+#[derive(Deserialize)]
+struct WorldRectWire {
+    min: WorldPoint,
+    max: WorldPoint,
+}
+
+impl<'de> Deserialize<'de> for WorldRect {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WorldRectWire::deserialize(deserializer)?;
+        Self::new(wire.min, wire.max).map_err(D::Error::custom)
+    }
 }
 
 impl WorldRect {
