@@ -1,0 +1,194 @@
+use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
+
+use thiserror::Error;
+
+use crate::engine::artifact::{ArtifactKey, ContentHash, StoredArtifact};
+use crate::engine::random::{StageIdentity, StageSeed};
+
+const DEFAULT_MAX_ENTRIES: usize = 32;
+
+/// A semantic BLAKE3 key for one versioned stage invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StageCacheKey([u8; 32]);
+
+impl StageCacheKey {
+    /// Computes a cache key from stage metadata, its seed, and checked dependency hashes.
+    pub fn new(
+        identity: StageIdentity,
+        output: ArtifactKey,
+        stage_seed: StageSeed,
+        dependencies: &[(ArtifactKey, ContentHash)],
+    ) -> Self {
+        let mut dependencies = dependencies.to_vec();
+        dependencies.sort_unstable_by_key(|(artifact_key, _)| *artifact_key);
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai-stage-cache-v1\0");
+        update_length_prefixed(&mut hasher, identity.namespace());
+        update_length_prefixed(&mut hasher, identity.id());
+        hasher.update(&identity.version().to_le_bytes());
+        update_length_prefixed(&mut hasher, output.as_str());
+        hasher.update(&stage_seed.into_bytes());
+        hasher.update(&length_u32(dependencies.len()).to_le_bytes());
+        for (artifact_key, content_hash) in dependencies {
+            update_length_prefixed(&mut hasher, artifact_key.as_str());
+            hasher.update(content_hash.as_bytes());
+        }
+
+        Self(*hasher.finalize().as_bytes())
+    }
+
+    /// Returns the cache-key hash bytes without copying them.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+/// Errors returned while configuring an in-memory stage cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum StageCacheError {
+    /// A bounded cache cannot be configured with no storage slots.
+    #[error("stage cache capacity must be greater than zero")]
+    ZeroCapacity,
+}
+
+/// A deterministic, process-local, bounded FIFO cache of validated stage outputs.
+pub struct MemoryStageCache {
+    entries: BTreeMap<StageCacheKey, StoredArtifact>,
+    insertion_order: VecDeque<StageCacheKey>,
+    max_entries: usize,
+}
+
+impl fmt::Debug for MemoryStageCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MemoryStageCache")
+            .field("len", &self.len())
+            .field("max_entries", &self.max_entries)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for MemoryStageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryStageCache {
+    /// Creates an empty cache with the default capacity of 32 entries.
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            insertion_order: VecDeque::new(),
+            max_entries: DEFAULT_MAX_ENTRIES,
+        }
+    }
+
+    /// Creates an empty cache with an explicit non-zero entry capacity.
+    pub fn with_max_entries(max_entries: usize) -> Result<Self, StageCacheError> {
+        if max_entries == 0 {
+            return Err(StageCacheError::ZeroCapacity);
+        }
+        Ok(Self {
+            entries: BTreeMap::new(),
+            insertion_order: VecDeque::new(),
+            max_entries,
+        })
+    }
+
+    /// Returns the number of entries currently retained.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the cache currently retains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns the configured maximum number of retained entries.
+    pub const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Returns whether a cache key is currently retained without exposing its erased value.
+    pub fn contains(&self, key: &StageCacheKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub(crate) fn get(&self, key: &StageCacheKey) -> Option<StoredArtifact> {
+        self.entries.get(key).cloned()
+    }
+
+    pub(crate) fn insert(&mut self, key: StageCacheKey, stored: StoredArtifact) {
+        if let Some(existing) = self.entries.get_mut(&key) {
+            *existing = stored;
+            return;
+        }
+
+        while self.entries.len() >= self.max_entries {
+            let oldest = self
+                .insertion_order
+                .pop_front()
+                .expect("every cache entry must have one FIFO queue key");
+            self.entries.remove(&oldest);
+        }
+        self.entries.insert(key, stored);
+        self.insertion_order.push_back(key);
+    }
+}
+
+fn update_length_prefixed(hasher: &mut blake3::Hasher, value: &str) {
+    hasher.update(&length_u32(value.len()).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn length_u32(length: usize) -> u32 {
+    u32::try_from(length).expect("validated engine metadata must fit in a u32 frame length")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+
+    use super::{MemoryStageCache, StageCacheKey};
+    use crate::engine::artifact::{Artifact, ArtifactKey, ArtifactValidationError, StoredArtifact};
+
+    #[derive(Debug, Serialize)]
+    struct CachedArtifact(u32);
+
+    impl Artifact for CachedArtifact {
+        const KEY: ArtifactKey = ArtifactKey::new("test.cached");
+
+        fn validate(&self) -> Result<(), ArtifactValidationError> {
+            Ok(())
+        }
+    }
+
+    fn key(byte: u8) -> StageCacheKey {
+        StageCacheKey([byte; 32])
+    }
+
+    #[test]
+    fn duplicate_insertion_replaces_in_place_without_duplicating_fifo_keys() {
+        let mut cache = MemoryStageCache::with_max_entries(2).unwrap();
+        cache.insert(key(1), StoredArtifact::new(CachedArtifact(1)).unwrap());
+        cache.insert(key(1), StoredArtifact::new(CachedArtifact(2)).unwrap());
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            cache.insertion_order.iter().copied().collect::<Vec<_>>(),
+            vec![key(1)]
+        );
+
+        cache.insert(key(2), StoredArtifact::new(CachedArtifact(2)).unwrap());
+        cache.insert(key(3), StoredArtifact::new(CachedArtifact(3)).unwrap());
+
+        assert!(!cache.contains(&key(1)));
+        assert!(cache.contains(&key(2)));
+        assert!(cache.contains(&key(3)));
+        assert_eq!(cache.len(), 2);
+    }
+}

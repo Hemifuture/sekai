@@ -19,6 +19,21 @@ impl StageIdentity {
             namespace,
         }
     }
+
+    /// Returns the stable stage identifier.
+    pub const fn id(self) -> &'static str {
+        self.id
+    }
+
+    /// Returns the stage implementation version.
+    pub const fn version(self) -> u32 {
+        self.version
+    }
+
+    /// Returns the namespace owning the stage's deterministic streams.
+    pub const fn namespace(self) -> &'static str {
+        self.namespace
+    }
 }
 
 /// A 32-byte deterministic seed for a generation stage or entity stream.

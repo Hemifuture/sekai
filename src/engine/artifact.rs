@@ -271,9 +271,12 @@ impl BuildArtifacts {
         Ok(Self { entries })
     }
 
-    #[allow(dead_code)] // Used for external artifacts introduced in Task 9.
     pub(crate) fn insert<T: Artifact>(&mut self, value: T) -> Result<(), ArtifactError> {
         ArtifactType::of::<T>().publish_into(StoredArtifact::new(value)?, self)
+    }
+
+    pub(crate) fn keys(&self) -> impl ExactSizeIterator<Item = ArtifactKey> + '_ {
+        self.entries.keys().copied()
     }
 }
 
