@@ -47,7 +47,7 @@ pub enum CapabilityCardinality {
     UniqueRequired,
     /// Zero or one provider is allowed.
     UniqueOptional,
-    /// Any bounded number of providers may contribute to a typed merger.
+    /// A bounded number of providers may contribute to a typed merger.
     Merge,
 }
 

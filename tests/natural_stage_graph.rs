@@ -541,3 +541,55 @@ fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
     assert_eq!(recovered.report.cache_hits(), 5);
     assert_eq!(recovered.report.cache_misses(), 0);
 }
+
+#[test]
+fn property_root_seed_changes_nature_but_not_resolved_rule_input() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let first = engine
+        .build(
+            RootSeed::new(42),
+            complete_external(12),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+    let second = engine
+        .build(
+            RootSeed::new(43),
+            complete_external(12),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        first
+            .artifacts
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap(),
+        second
+            .artifacts
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap()
+    );
+    assert_eq!(
+        first
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap(),
+        second
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+    );
+    assert_ne!(
+        first.artifacts.hash::<SpatialArtifact>().unwrap(),
+        second.artifacts.hash::<SpatialArtifact>().unwrap()
+    );
+    assert_ne!(
+        first.artifacts.hash::<TectonicArtifact>().unwrap(),
+        second.artifacts.hash::<TectonicArtifact>().unwrap()
+    );
+    assert_ne!(
+        first.artifacts.hash::<ReliefArtifact>().unwrap(),
+        second.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+}

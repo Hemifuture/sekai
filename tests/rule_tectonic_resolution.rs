@@ -814,3 +814,99 @@ fn audit_deserialization_rejects_invalid_private_state() {
         serde_json::json!("sekai.test.absent");
     assert!(serde_json::from_value::<sekai::rules::TectonicRuleResolution>(unknown_pack).is_err());
 }
+
+#[test]
+fn property_fixed_specs_orders_and_constraint_combinations_are_deterministic() {
+    let controls = pack(
+        "property-controls",
+        RulePackKind::Ordinary,
+        Vec::new(),
+        vec![
+            rule_constraint(
+                "hard-activity",
+                ConstraintStrength::Hard,
+                TectonicConstraintClause::activity([
+                    TectonicActivity::Quiet,
+                    TectonicActivity::Active,
+                ])
+                .unwrap(),
+            ),
+            rule_constraint(
+                "hard-fraction",
+                ConstraintStrength::Hard,
+                TectonicConstraintClause::continental_crust_permille(250, 600).unwrap(),
+            ),
+            rule_constraint(
+                "hard-plates",
+                ConstraintStrength::Hard,
+                TectonicConstraintClause::plate_count(8, 20).unwrap(),
+            ),
+            rule_constraint(
+                "soft-plates",
+                ConstraintStrength::soft(7).unwrap(),
+                TectonicConstraintClause::plate_count(15, 15).unwrap(),
+            ),
+            rule_constraint(
+                "hint-active",
+                ConstraintStrength::hint(11).unwrap(),
+                TectonicConstraintClause::activity([TectonicActivity::Active]).unwrap(),
+            ),
+        ],
+    );
+    let first_author = author_constraint(
+        1,
+        ConstraintStrength::soft(5).unwrap(),
+        TectonicConstraintClause::continental_crust_permille(400, 450).unwrap(),
+    );
+    let second_author = author_constraint(
+        2,
+        ConstraintStrength::hint(3).unwrap(),
+        TectonicConstraintClause::plate_count(13, 13).unwrap(),
+    );
+    let base_specs = [
+        TectonicSpec {
+            plate_count: 2,
+            continental_crust_fraction: 0.10,
+            activity: TectonicActivity::Quiet,
+            ..TectonicSpec::default()
+        },
+        TectonicSpec {
+            plate_count: 12,
+            continental_crust_fraction: 0.3814,
+            activity: TectonicActivity::Moderate,
+            ..TectonicSpec::default()
+        },
+        TectonicSpec {
+            plate_count: 64,
+            continental_crust_fraction: 0.75,
+            activity: TectonicActivity::Active,
+            ..TectonicSpec::default()
+        },
+    ];
+
+    for base in base_specs {
+        let forward = resolve(
+            &base,
+            vec![world_law(Vec::new()), controls.clone()],
+            &authors(vec![first_author.clone(), second_author.clone()]),
+        )
+        .unwrap();
+        let reverse = resolve(
+            &base,
+            vec![controls.clone(), world_law(Vec::new())],
+            &authors(vec![second_author.clone(), first_author.clone()]),
+        )
+        .unwrap();
+
+        forward.spec().validate().unwrap();
+        assert!(forward.adoptions().iter().all(|adoption| {
+            adoption.strength() != ConstraintStrength::Hard
+                || adoption.outcome() == ConstraintAdoptionOutcome::Satisfied
+        }));
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            serde_json::to_vec(&forward).unwrap(),
+            serde_json::to_vec(&reverse).unwrap()
+        );
+    }
+}
