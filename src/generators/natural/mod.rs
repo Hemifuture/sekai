@@ -1,5 +1,6 @@
 //! Deterministic generation of the current natural world slice.
 
+mod climate_rule_input;
 mod geologic_rule_input;
 mod geologic_stage;
 mod geology;
@@ -11,6 +12,11 @@ mod stage;
 mod tectonics;
 mod topology;
 
+pub use climate_rule_input::{
+    ClimateRuleResolutionArtifact, ClimateSpecArtifact, ResolvedClimateInput,
+    ResolvedClimateInputArtifact, ResolvedClimateInputStage, ResolvedClimateInputStageInputs,
+    RuleClimateResolutionStage, RuleClimateResolutionStageInputs,
+};
 pub use geologic_rule_input::{
     GeologicRuleResolutionArtifact, GeologicSpecArtifact, ResolvedGeologicInput,
     ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, ResolvedGeologicInputStageInputs,
