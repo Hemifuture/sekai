@@ -3,6 +3,7 @@
 mod capability;
 mod constraints;
 mod ids;
+mod manifest;
 
 pub use capability::{
     tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
@@ -19,4 +20,9 @@ pub use constraints::{
 pub use ids::{
     CapabilityId, CoreSchemaRange, RuleContentHash, RuleIdentityError, RuleItemId, RulePackId,
     RuleVersion, RuleVersionRequirement,
+};
+pub use manifest::{
+    RulePack, RulePackDependency, RulePackError, RulePackManifest,
+    MAX_RULE_PACK_CAPABILITY_REQUIREMENTS, MAX_RULE_PACK_CONTRIBUTIONS, MAX_RULE_PACK_DEPENDENCIES,
+    RULE_PACK_SCHEMA_V1,
 };
