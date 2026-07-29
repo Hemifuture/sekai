@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use super::field_document::AppFieldDocument;
 use crate::delaunay::voronoi::IndexedVoronoiDiagram;
 use crate::view::{
-    CellGeometrySource, DisplayPrepareError, MeshCompleteness, OwnedViewDiagnostic,
-    PreparedCellMesh, ViewDiagnosticSeverity,
+    CellGeometrySource, DisplayPrepareError, DisplayRangeMode, FieldCatalog, FieldViewError,
+    MeshCompleteness, OwnedViewDiagnostic, PreparedCellMesh, ViewDiagnosticSeverity,
 };
 use crate::world::fields::{
     DomainSizes, ExtensionFieldSet, FieldData, FieldDataError, FieldDisplayMetadata, FieldDomain,
@@ -23,6 +24,28 @@ pub(super) struct LegacyTerrainDisplay {
     pub(super) fields: ExtensionFieldSet,
     pub(super) mesh: Arc<PreparedCellMesh>,
     pub(super) diagnostics: Vec<OwnedViewDiagnostic>,
+}
+
+impl AppFieldDocument for LegacyTerrainDisplay {
+    fn mesh(&self) -> &Arc<PreparedCellMesh> {
+        &self.mesh
+    }
+
+    fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
+        FieldCatalog::from_extension_fields(&self.registry, &self.fields)
+    }
+
+    fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
+        &self.diagnostics
+    }
+
+    fn preferred_field(&self) -> Option<FieldId> {
+        Some(legacy_elevation_id())
+    }
+
+    fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
+        (field == &legacy_elevation_id()).then_some(DisplayRangeMode::Schema)
+    }
 }
 
 /// One-way adapter from current height, plate, and Voronoi outputs.

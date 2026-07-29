@@ -3,8 +3,12 @@ use std::sync::Arc;
 use eframe::egui_wgpu::RenderState;
 use egui::Rect;
 
+mod field_document;
 mod legacy_display;
+#[cfg_attr(not(test), allow(dead_code))]
+mod natural_display;
 
+use field_document::{prepare_control_action, prepare_new_document_display, AppFieldDocument};
 use legacy_display::{LegacyTerrainDisplay, LegacyTerrainDisplayAdapter};
 
 use crate::{
@@ -23,12 +27,8 @@ use crate::{
         canvas::canvas::Canvas,
         field::{show_field_controls, show_field_inspector, FieldControlAction},
     },
-    view::{
-        built_in_palette, prepare_cell_field, resolve_display_range, DisplayPrepareError,
-        DisplayRevisionClock, DisplayRevisions, FieldCatalog, FieldDisplayState, LinearRgba,
-        PaletteId, PreparedCellField, PreparedDiagnosticMask, PreparedFieldDisplay,
-    },
-    world::{fields::FieldPaletteHint, Meters, WorldPoint, WorldRect},
+    view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
+    world::{Meters, WorldPoint, WorldRect},
 };
 
 /// 可用的地形模板名称
@@ -212,221 +212,12 @@ impl TemplateApp {
     }
 }
 
-struct PreparedDisplayParts {
-    field: Arc<PreparedCellField>,
-    diagnostics: Arc<PreparedDiagnosticMask>,
-    palette: Arc<[LinearRgba]>,
-}
-
 fn prepare_new_legacy_display(
     display: &LegacyTerrainDisplay,
     current_state: &FieldDisplayState,
     clock: &mut DisplayRevisionClock,
 ) -> Result<(FieldDisplayState, Arc<PreparedFieldDisplay>), DisplayPrepareError> {
-    let catalog = FieldCatalog::from_extension_fields(&display.registry, &display.fields)?;
-    let mut state = current_state.clone();
-    state.reconcile(&catalog, display.mesh.cell_count());
-    let parts = prepare_display_parts(display, &catalog, &state)?;
-    let revisions = issue_all_revisions(clock)?;
-    let packet = Arc::new(PreparedFieldDisplay::new(
-        display.mesh.clone(),
-        parts.field,
-        parts.diagnostics,
-        parts.palette,
-        revisions,
-        state.diagnostics_enabled(),
-    )?);
-    Ok((state, packet))
-}
-
-fn prepare_control_action(
-    display: &LegacyTerrainDisplay,
-    current: &PreparedFieldDisplay,
-    state: &mut FieldDisplayState,
-    clock: &mut DisplayRevisionClock,
-    action: FieldControlAction,
-) -> Result<Arc<PreparedFieldDisplay>, DisplayPrepareError> {
-    let catalog = FieldCatalog::from_extension_fields(&display.registry, &display.fields)?;
-    match action {
-        FieldControlAction::InspectField(_) => {
-            unreachable!("inspection actions are handled without rebuilding the packet")
-        }
-        FieldControlAction::SelectField(field) => {
-            state.select_field(field);
-            state.reconcile(&catalog, display.mesh.cell_count());
-            let parts = prepare_display_parts(display, &catalog, state)?;
-            rebuild_changed_packet(current, parts, state.diagnostics_enabled(), clock)
-        }
-        FieldControlAction::SetRangeMode(mode) => {
-            state.set_range_mode(mode);
-            let Some(view) = selected_field_view(&catalog, state) else {
-                return Err(DisplayPrepareError::NoRenderableField);
-            };
-            if view.scalar_values().is_none() {
-                return Ok(Arc::new(current.clone()));
-            }
-            let range = resolve_display_range(view, state.range_mode())?;
-            Ok(Arc::new(current.with_display_range(range)))
-        }
-        FieldControlAction::SetPaletteOverride(palette) => {
-            state.set_palette_override(palette);
-            state.reconcile(&catalog, display.mesh.cell_count());
-            let palette = prepare_palette(&catalog, state)?;
-            let mut revisions = current.revisions();
-            let palette = if current.palette() == palette.as_ref() {
-                current.palette_arc().clone()
-            } else {
-                revisions.palette = clock.issue()?;
-                palette
-            };
-            Ok(Arc::new(PreparedFieldDisplay::new(
-                current.mesh_arc().clone(),
-                current.field_arc().clone(),
-                current.diagnostics_arc().clone(),
-                palette,
-                revisions,
-                current.diagnostics_enabled(),
-            )?))
-        }
-        FieldControlAction::SetDiagnosticsEnabled(enabled) => {
-            state.set_diagnostics_enabled(enabled);
-            Ok(Arc::new(current.with_diagnostics_enabled(enabled)))
-        }
-        FieldControlAction::SetDiagnosticScope(scope) => {
-            state.set_diagnostic_scope(scope);
-            let diagnostics = prepare_diagnostics(display, state)?;
-            let mut revisions = current.revisions();
-            let diagnostics = if current.diagnostics() == diagnostics.as_ref() {
-                current.diagnostics_arc().clone()
-            } else {
-                revisions.diagnostics = clock.issue()?;
-                diagnostics
-            };
-            Ok(Arc::new(PreparedFieldDisplay::new(
-                current.mesh_arc().clone(),
-                current.field_arc().clone(),
-                diagnostics,
-                current.palette_arc().clone(),
-                revisions,
-                current.diagnostics_enabled(),
-            )?))
-        }
-    }
-}
-
-fn prepare_display_parts(
-    display: &LegacyTerrainDisplay,
-    catalog: &FieldCatalog<'_>,
-    state: &FieldDisplayState,
-) -> Result<PreparedDisplayParts, DisplayPrepareError> {
-    let view = selected_field_view(catalog, state).ok_or(DisplayPrepareError::NoRenderableField)?;
-    let field = Arc::new(prepare_cell_field(
-        view,
-        display.mesh.cell_count(),
-        state.range_mode(),
-    )?);
-    let diagnostics = prepare_diagnostics(display, state)?;
-    let palette = prepare_palette(catalog, state)?;
-    Ok(PreparedDisplayParts {
-        field,
-        diagnostics,
-        palette,
-    })
-}
-
-fn selected_field_view<'catalog, 'data>(
-    catalog: &'catalog FieldCatalog<'data>,
-    state: &FieldDisplayState,
-) -> Option<&'catalog crate::view::FieldView<'data>> {
-    state
-        .selected_field()
-        .and_then(|field| catalog.get(field))
-        .and_then(|entry| entry.view())
-        .filter(|view| view.cell_fill_kind().is_ok())
-}
-
-fn prepare_diagnostics(
-    display: &LegacyTerrainDisplay,
-    state: &FieldDisplayState,
-) -> Result<Arc<PreparedDiagnosticMask>, DisplayPrepareError> {
-    Ok(Arc::new(PreparedDiagnosticMask::build(
-        display.mesh.cell_count(),
-        display
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.as_ref()),
-        state.selected_field(),
-        state.diagnostic_scope(),
-    )?))
-}
-
-fn prepare_palette(
-    catalog: &FieldCatalog<'_>,
-    state: &FieldDisplayState,
-) -> Result<Arc<[LinearRgba]>, DisplayPrepareError> {
-    let schema = state
-        .selected_field()
-        .and_then(|field| catalog.get(field))
-        .map(|entry| entry.schema())
-        .ok_or(DisplayPrepareError::NoRenderableField)?;
-    let schema_palette = match schema.display.palette() {
-        FieldPaletteHint::Sequential => PaletteId::Sequential,
-        FieldPaletteHint::Diverging => PaletteId::Diverging,
-        FieldPaletteHint::Categorical => PaletteId::Categorical,
-        FieldPaletteHint::Boolean | FieldPaletteHint::Vector => {
-            return Err(DisplayPrepareError::UnsupportedCellFill {
-                field: schema.id.clone(),
-            });
-        }
-    };
-    let palette = state.palette_override().unwrap_or(schema_palette);
-    Ok(Arc::from(built_in_palette(palette)))
-}
-
-fn rebuild_changed_packet(
-    current: &PreparedFieldDisplay,
-    parts: PreparedDisplayParts,
-    diagnostics_enabled: bool,
-    clock: &mut DisplayRevisionClock,
-) -> Result<Arc<PreparedFieldDisplay>, DisplayPrepareError> {
-    let mut revisions = current.revisions();
-    let field = if current.field() == parts.field.as_ref() {
-        current.field_arc().clone()
-    } else {
-        revisions.field = clock.issue()?;
-        parts.field
-    };
-    let diagnostics = if current.diagnostics() == parts.diagnostics.as_ref() {
-        current.diagnostics_arc().clone()
-    } else {
-        revisions.diagnostics = clock.issue()?;
-        parts.diagnostics
-    };
-    let palette = if current.palette() == parts.palette.as_ref() {
-        current.palette_arc().clone()
-    } else {
-        revisions.palette = clock.issue()?;
-        parts.palette
-    };
-    Ok(Arc::new(PreparedFieldDisplay::new(
-        current.mesh_arc().clone(),
-        field,
-        diagnostics,
-        palette,
-        revisions,
-        diagnostics_enabled,
-    )?))
-}
-
-fn issue_all_revisions(
-    clock: &mut DisplayRevisionClock,
-) -> Result<DisplayRevisions, DisplayPrepareError> {
-    Ok(DisplayRevisions::new(
-        clock.issue()?,
-        clock.issue()?,
-        clock.issue()?,
-        clock.issue()?,
-    ))
+    prepare_new_document_display(display, current_state, clock)
 }
 
 impl eframe::App for TemplateApp {
@@ -529,14 +320,14 @@ impl eframe::App for TemplateApp {
 
                     if let Some(display) = &self.legacy_display {
                         ui.separator();
-                        let catalog =
-                            FieldCatalog::from_extension_fields(&display.registry, &display.fields)
-                                .expect("the stored legacy display document is validated");
+                        let catalog = display
+                            .catalog()
+                            .expect("the stored legacy display document is validated");
                         let state = self.field_viewer_state.read_resource(Clone::clone);
                         field_actions.extend(show_field_controls(ui, &catalog, &state));
                         ui.separator();
                         let diagnostics: Vec<_> = display
-                            .diagnostics
+                            .diagnostics()
                             .iter()
                             .map(|diagnostic| diagnostic.as_ref())
                             .collect();
@@ -582,7 +373,8 @@ impl TemplateApp {
     fn apply_field_control_action(&mut self, action: FieldControlAction) {
         if let FieldControlAction::InspectField(field) = action {
             let is_registered = self.legacy_display.as_ref().is_some_and(|display| {
-                FieldCatalog::from_extension_fields(&display.registry, &display.fields)
+                display
+                    .catalog()
                     .ok()
                     .is_some_and(|catalog| catalog.get(&field).is_some())
             });
