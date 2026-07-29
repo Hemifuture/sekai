@@ -4,6 +4,7 @@ mod diagnostics;
 mod field;
 mod mesh;
 mod palette;
+mod prepared;
 mod state;
 
 pub use diagnostics::{
@@ -22,5 +23,9 @@ pub use palette::{
     scalar_color, DisplayPrepareError, DisplayRangeMode, LinearRgba, PaletteId, PreparedCellField,
     PreparedFieldKind, ResolvedDisplayRange, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR,
     DIAGNOSTIC_WARNING_COLOR,
+};
+pub use prepared::{
+    DisplayRevision, DisplayRevisionClock, DisplayRevisions, DisplayStatusError,
+    FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use state::{format_field_value, FieldDisplayState, FormattedFieldValue};

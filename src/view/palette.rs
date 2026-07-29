@@ -152,13 +152,6 @@ impl PreparedCellField {
     pub fn category_keys(&self) -> &[u32] {
         &self.category_keys
     }
-
-    /// Clones this prepared payload with a new scalar display range.
-    pub fn with_display_range(&self, range: ResolvedDisplayRange) -> Self {
-        let mut next = self.clone();
-        next.display_range = Some(range);
-        next
-    }
 }
 
 /// Failures returned while preparing renderer-neutral display data.
@@ -287,6 +280,24 @@ pub enum DisplayPrepareError {
         /// The checked operation's stable context.
         context: &'static str,
     },
+    /// A display revision used reserved value zero.
+    #[error("display revision must be non-zero")]
+    ZeroRevision,
+    /// The process-local display revision clock would wrap.
+    #[error("display revision clock overflow")]
+    RevisionOverflow,
+    /// A packet palette was empty, non-finite, or outside linear RGBA bounds.
+    #[error("display palette must be non-empty finite linear RGBA")]
+    InvalidPalette,
+    /// A scalar prepared packet had no active display range.
+    #[error("scalar field {field:?} has no active display range")]
+    MissingDisplayRange {
+        /// The scalar field without a range.
+        field: FieldId,
+    },
+    /// A runtime status code violated the stable lowercase syntax.
+    #[error("display runtime status code is invalid")]
+    InvalidStatusCode,
 }
 
 const SEQUENTIAL: [LinearRgba; 5] = [
