@@ -1,4 +1,5 @@
 pub mod fields;
+pub mod natural;
 pub mod spatial;
 
 mod ids;
@@ -6,7 +7,8 @@ mod spec;
 mod units;
 
 pub use ids::{
-    AuthorObjectId, CellId, CultureId, EdgeId, PolityId, RootSeed, SettlementId, SpeciesId,
+    AuthorObjectId, BoundarySegmentId, CellId, CultureId, EdgeId, PlateId, PolityId, RootSeed,
+    SettlementId, SpeciesId,
 };
 pub use spec::{
     BoundaryCondition, PlanarSpaceSpec, SpecError, TechnologyBaseline, WorldSpec, MAX_CELL_COUNT,

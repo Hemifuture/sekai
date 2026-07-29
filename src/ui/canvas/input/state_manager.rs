@@ -8,6 +8,9 @@ use egui::*;
 
 use super::button_state::ButtonState;
 
+const MIN_ZOOM_SCALE: f32 = 1.0e-9;
+const MAX_ZOOM_SCALE: f32 = 1.0e6;
+
 /// 存储输入处理所需的上下文数据
 #[derive(Debug)]
 pub struct InputContext {
@@ -289,20 +292,41 @@ impl InputStateManager {
         let mouse_pos = self.context.current_mouse_pos;
 
         self.context.canvas_state_resource.with_resource(|state| {
-            let scaling = state.transform.scaling;
-            if scaling <= 0.1 && delta < 1.0 || scaling >= 100.0 && delta > 1.0 {
+            let current = state.transform.scaling;
+            let target = zoomed_scale(current, delta);
+            if target == current || !current.is_finite() || current <= 0.0 {
                 return;
             }
             let pointer_in_layer = state.transform.inverse() * mouse_pos;
+            let applied_delta = target / current;
 
             // 缩放，保持鼠标下方的点不变
             state.transform = state.transform
                 * egui::emath::TSTransform::from_translation(pointer_in_layer.to_vec2())
-                * egui::emath::TSTransform::from_scaling(delta)
+                * egui::emath::TSTransform::from_scaling(applied_delta)
                 * egui::emath::TSTransform::from_translation(-pointer_in_layer.to_vec2());
 
             // 最终scaling截断
-            state.transform.scaling = state.transform.scaling.clamp(0.1, 100.0);
+            state.transform.scaling = target;
         });
+    }
+}
+
+pub(super) fn zoomed_scale(current: f32, delta: f32) -> f32 {
+    if !current.is_finite() || current <= 0.0 || !delta.is_finite() || delta <= 0.0 {
+        return current;
+    }
+    (current * delta).clamp(MIN_ZOOM_SCALE, MAX_ZOOM_SCALE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zoomed_scale;
+
+    #[test]
+    fn geological_scale_zoom_does_not_jump_to_legacy_point_one_floor() {
+        let zoomed = zoomed_scale(0.000_04, 0.8);
+        assert!((zoomed - 0.000_032).abs() < 1.0e-9);
+        assert!(zoomed < 0.1);
     }
 }

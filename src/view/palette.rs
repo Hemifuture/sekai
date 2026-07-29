@@ -436,7 +436,9 @@ pub fn prepare_cell_field(
 
     let kind = field.cell_fill_kind().map_err(|error| match error {
         FieldViewError::UnsupportedCellFill { field, .. }
-        | FieldViewError::TypeMismatch { field, .. } => {
+        | FieldViewError::TypeMismatch { field, .. }
+        | FieldViewError::UnknownPayload { field }
+        | FieldViewError::DuplicatePayload { field } => {
             DisplayPrepareError::UnsupportedCellFill { field }
         }
     })?;

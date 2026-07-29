@@ -1,12 +1,9 @@
 use eframe::egui_wgpu;
 use egui::Widget;
 
-use crate::gpu::{
-    delaunay::delaunay_callback::DelaunayCallback, field::FieldFillCallback,
-    points_callback::PointsCallback, voronoi::voronoi_callback::VoronoiCallback,
-};
+use crate::gpu::field::FieldFillCallback;
 
-use super::{canvas::Canvas, helpers::draw_grid};
+use super::canvas::Canvas;
 
 impl Widget for &mut Canvas {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
@@ -14,18 +11,8 @@ impl Widget for &mut Canvas {
         let (screen_rect, canvas_response) =
             ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
+        self.fit_current_mesh_once(screen_rect);
         self.input_state_manager.update(ui);
-
-        self.canvas_state_resource.read_resource(|canvas_state| {
-            draw_grid(ui, canvas_state, screen_rect);
-            // println!("canvas rect: {}", screen_rect);
-            // println!("transform: {:?}", canvas_state.transform);
-        });
-
-        // 获取图层可见性设置
-        let layer_visibility = self
-            .map_system_resource
-            .read_resource(|map_system| map_system.layer_visibility);
         if canvas_response.clicked_by(egui::PointerButton::Primary) {
             if let Some(screen_position) = canvas_response.interact_pointer_pos() {
                 let local = self
@@ -41,49 +28,15 @@ impl Widget for &mut Canvas {
             }
         }
 
-        // 图层按照从底到顶的顺序渲染
-        // 1. 字段填色图层 - 底层
-        if layer_visibility.cell_fill {
-            let field_callback = FieldFillCallback::new(
-                self.canvas_state_resource.clone(),
-                self.field_display_resource.clone(),
-                screen_rect,
-            );
-            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                screen_rect,
-                field_callback,
-            ));
-        }
-
-        // 2. Delaunay三角剖分图层 - 中层
-        if layer_visibility.delaunay {
-            let delaunay_callback =
-                DelaunayCallback::new(self.canvas_state_resource.clone(), screen_rect);
-            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                screen_rect,
-                delaunay_callback,
-            ));
-        }
-
-        // 3. Voronoi边线图层 - 上层
-        if layer_visibility.voronoi_edges {
-            let voronoi_callback =
-                VoronoiCallback::new(self.canvas_state_resource.clone(), screen_rect);
-            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                screen_rect,
-                voronoi_callback,
-            ));
-        }
-
-        // 4. 点图层 - 最上层
-        if layer_visibility.points {
-            let points_callback =
-                PointsCallback::new(self.canvas_state_resource.clone(), screen_rect);
-            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                screen_rect,
-                points_callback,
-            ));
-        }
+        let field_callback = FieldFillCallback::new(
+            self.canvas_state_resource.clone(),
+            self.field_display_resource.clone(),
+            screen_rect,
+        );
+        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+            screen_rect,
+            field_callback,
+        ));
 
         canvas_response
     }

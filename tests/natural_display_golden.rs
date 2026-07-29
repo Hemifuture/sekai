@@ -1,0 +1,475 @@
+use std::collections::{BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
+use sekai::generators::natural::{
+    natural_foundation_graph, ReliefArtifact, TectonicArtifact, TectonicSpecArtifact,
+};
+use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
+use sekai::view::{
+    built_in_palette, prepare_cell_field, rasterize_reference, DisplayRangeMode,
+    DisplayRevisionClock, DisplayRevisions, FieldCatalog, FieldPayloadRef, MeshCompleteness,
+    PaletteId, PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay,
+};
+use sekai::world::fields::{FieldId, ValueRange};
+use sekai::world::natural::{
+    crust_kind_field_id, elevation_field_id, natural_field_registry, plate_id_field_id,
+    BoundaryKind, ReliefSnapshot, TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
+};
+use sekai::world::spatial::{SpatialSnapshot, Topology};
+use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
+
+const QUALITY_CELL_COUNT: u32 = 512;
+const GOLDEN_SEED: u64 = 0x00C0_FFEE;
+const GOLDEN_WIDTH: u32 = 256;
+const GOLDEN_HEIGHT: u32 = 128;
+const QUALITY_SEEDS: [u64; 8] = [
+    1,
+    7,
+    42,
+    0x5E_A1,
+    0x00C0_FFEE,
+    0xDEAD_BEEF,
+    0x1234_5678_9ABC_DEF0,
+    u64::MAX - 17,
+];
+
+#[test]
+fn quality_across_fixed_seed_set() {
+    run_multi_seed_quality_suite();
+}
+
+#[test]
+fn reviewed_natural_goldens_match() {
+    for (name, packet) in golden_packets() {
+        assert_golden(name, &packet);
+    }
+}
+
+#[test]
+#[ignore = "writes reviewed natural-foundation golden PNGs"]
+fn regenerate_natural_goldens() {
+    assert_eq!(
+        std::env::var("SEKAI_UPDATE_NATURAL_GOLDENS").as_deref(),
+        Ok("1")
+    );
+    for (name, packet) in golden_packets() {
+        write_golden(name, &packet);
+    }
+}
+
+fn run_multi_seed_quality_suite() {
+    let mut saw_mixed_crust_plate = false;
+    let mut saw_cross_plate_crust_component = false;
+
+    for seed in QUALITY_SEEDS {
+        let fixture = build_natural(seed, QUALITY_CELL_COUNT);
+        let spatial = fixture.spatial.snapshot();
+        let tectonic = fixture.tectonic.snapshot();
+        let relief = fixture.relief.snapshot();
+        tectonic.validate_against(spatial).unwrap();
+        relief.validate_against(spatial).unwrap();
+
+        assert_eq!(spatial.cell_count(), QUALITY_CELL_COUNT as usize);
+        assert_eq!(tectonic.cell_count(), QUALITY_CELL_COUNT);
+        assert_eq!(relief.cell_count(), QUALITY_CELL_COUNT);
+        assert_plate_connectivity_and_balance(seed, spatial, tectonic);
+        assert_boundary_partition_and_motion(seed, spatial, tectonic);
+
+        let continental_cells = tectonic
+            .crust_kinds()
+            .raw_values()
+            .iter()
+            .filter(|&&kind| kind == 1)
+            .count();
+        let continental_fraction = continental_cells as f32 / QUALITY_CELL_COUNT as f32;
+        assert!(
+            (continental_fraction - TectonicSpec::default().continental_crust_fraction).abs()
+                <= 0.04,
+            "seed {seed}: continental fraction {continental_fraction}"
+        );
+
+        let land_cells = relief
+            .land_ocean()
+            .raw_values()
+            .iter()
+            .filter(|&&kind| kind == 1)
+            .count();
+        assert!(
+            land_cells > 0 && land_cells < QUALITY_CELL_COUNT as usize,
+            "seed {seed}: both land and ocean are required"
+        );
+
+        saw_mixed_crust_plate |= plate_has_mixed_crust(tectonic);
+        let components = crust_components(spatial, tectonic);
+        saw_cross_plate_crust_component |= components.iter().any(|component| {
+            component
+                .iter()
+                .map(|&cell| tectonic.cell_plates().raw_values()[cell])
+                .collect::<BTreeSet<_>>()
+                .len()
+                > 1
+        });
+        let largest_continental_component = components
+            .iter()
+            .filter(|component| tectonic.crust_kinds().raw_values()[component[0]] == 1)
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            largest_continental_component as f32 / QUALITY_CELL_COUNT as f32 <= 0.50,
+            "seed {seed}: one continental component consumed {largest_continental_component} cells"
+        );
+
+        assert_relief_finite_and_explainable(seed, relief);
+        let mesh = PreparedCellMesh::build(spatial, MeshCompleteness::RequireAll).unwrap();
+        assert_eq!(mesh.cell_count(), QUALITY_CELL_COUNT as usize);
+        let registry = natural_field_registry(tectonic.plates().len() as u16).unwrap();
+        let catalog = FieldCatalog::from_payloads(
+            &registry,
+            [(
+                elevation_field_id(),
+                FieldPayloadRef::ScalarF32(relief.elevation_m().values()),
+            )],
+        )
+        .unwrap();
+        let view = catalog.get(&elevation_field_id()).unwrap().view().unwrap();
+        let prepared =
+            prepare_cell_field(view, mesh.cell_count(), DisplayRangeMode::Schema).unwrap();
+        assert_eq!(prepared.len(), mesh.cell_count());
+
+        eprintln!(
+            "seed={seed} cells={} edges={} plates={} segments={} continental={continental_fraction:.3} land={:.3}",
+            spatial.cell_count(),
+            spatial.edges().len(),
+            tectonic.plates().len(),
+            tectonic.boundary_segments().len(),
+            land_cells as f32 / QUALITY_CELL_COUNT as f32,
+        );
+    }
+
+    assert!(
+        saw_mixed_crust_plate,
+        "the fixed quality set must contain a plate spanning both crust kinds"
+    );
+    assert!(
+        saw_cross_plate_crust_component,
+        "the fixed quality set must contain a crust component crossing plate boundaries"
+    );
+}
+
+struct NaturalFixture {
+    spatial: Arc<SpatialArtifact>,
+    tectonic: Arc<TectonicArtifact>,
+    relief: Arc<ReliefArtifact>,
+}
+
+fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
+    let mut external = ExternalArtifacts::new();
+    external
+        .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
+            width: Meters::new(4_000_000.0).unwrap(),
+            height: Meters::new(2_000_000.0).unwrap(),
+            target_cell_count: cell_count,
+            boundary: BoundaryCondition::Closed,
+        }))
+        .unwrap();
+    external
+        .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+        .unwrap();
+    let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
+        .build(RootSeed::new(seed), external, &mut MemoryStageCache::new())
+        .unwrap();
+    NaturalFixture {
+        spatial: outcome.artifacts.get::<SpatialArtifact>().unwrap(),
+        tectonic: outcome.artifacts.get::<TectonicArtifact>().unwrap(),
+        relief: outcome.artifacts.get::<ReliefArtifact>().unwrap(),
+    }
+}
+
+fn assert_plate_connectivity_and_balance(
+    seed: u64,
+    spatial: &SpatialSnapshot,
+    tectonic: &TectonicSnapshot,
+) {
+    let mut plate_counts = vec![0_usize; tectonic.plates().len()];
+    for &plate in tectonic.cell_plates().raw_values() {
+        plate_counts[plate as usize] += 1;
+    }
+    for (plate_index, &expected_count) in plate_counts.iter().enumerate() {
+        assert!(expected_count > 0, "seed {seed}: empty plate {plate_index}");
+        assert!(
+            expected_count as f32 / spatial.cell_count() as f32 <= 0.40,
+            "seed {seed}: plate {plate_index} consumed {expected_count} cells"
+        );
+        let start = tectonic.plates()[plate_index].seed_cell;
+        let mut seen = vec![false; spatial.cell_count()];
+        let mut queue = VecDeque::from([start]);
+        seen[start.raw() as usize] = true;
+        let mut connected = 0;
+        while let Some(cell) = queue.pop_front() {
+            connected += 1;
+            for &neighbor in spatial.neighbors(cell).unwrap() {
+                let index = neighbor.raw() as usize;
+                if !seen[index]
+                    && tectonic.cell_plates().raw_values()[index] as usize == plate_index
+                {
+                    seen[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        assert_eq!(
+            connected, expected_count,
+            "seed {seed}: plate {plate_index} is disconnected"
+        );
+    }
+}
+
+fn assert_boundary_partition_and_motion(
+    seed: u64,
+    spatial: &SpatialSnapshot,
+    tectonic: &TectonicSnapshot,
+) {
+    let mut member_edges = BTreeSet::new();
+    for segment in tectonic.boundary_segments() {
+        assert!(!segment.member_edges.is_empty());
+        for edge in &segment.member_edges {
+            assert!(
+                member_edges.insert(*edge),
+                "seed {seed}: edge {:?} appears in two segments",
+                edge
+            );
+            let record = &tectonic.boundaries()[edge.raw() as usize];
+            assert_eq!(record.segment_id, Some(segment.id));
+            assert_eq!(record.kind, segment.kind);
+        }
+    }
+
+    let mut cross_plate_edges = 0;
+    for edge in spatial.edges() {
+        let record = &tectonic.boundaries()[edge.id.raw() as usize];
+        let [Some(a), Some(b)] = edge.cells else {
+            assert_eq!(record.kind, BoundaryKind::None);
+            assert_eq!(record.segment_id, None);
+            continue;
+        };
+        let plate_a = tectonic.cell_plates().get(a.raw() as usize).unwrap();
+        let plate_b = tectonic.cell_plates().get(b.raw() as usize).unwrap();
+        if plate_a == plate_b {
+            assert_eq!(record.kind, BoundaryKind::None);
+            assert_eq!(record.segment_id, None);
+            continue;
+        }
+        cross_plate_edges += 1;
+        assert_ne!(record.kind, BoundaryKind::None);
+        assert!(record.segment_id.is_some());
+        assert_ne!(
+            tectonic.plates()[plate_a.raw() as usize].velocity,
+            tectonic.plates()[plate_b.raw() as usize].velocity,
+            "seed {seed}: adjacent plates are co-moving"
+        );
+        assert!(member_edges.contains(&edge.id));
+    }
+    assert_eq!(member_edges.len(), cross_plate_edges);
+}
+
+fn plate_has_mixed_crust(tectonic: &TectonicSnapshot) -> bool {
+    let mut kinds = vec![[false; 2]; tectonic.plates().len()];
+    for (&plate, &kind) in tectonic
+        .cell_plates()
+        .raw_values()
+        .iter()
+        .zip(tectonic.crust_kinds().raw_values())
+    {
+        kinds[plate as usize][kind as usize] = true;
+    }
+    kinds.into_iter().any(|present| present[0] && present[1])
+}
+
+fn crust_components(spatial: &SpatialSnapshot, tectonic: &TectonicSnapshot) -> Vec<Vec<usize>> {
+    let kinds = tectonic.crust_kinds().raw_values();
+    let mut visited = vec![false; spatial.cell_count()];
+    let mut components = Vec::new();
+    for start in 0..spatial.cell_count() {
+        if visited[start] {
+            continue;
+        }
+        let kind = kinds[start];
+        let mut component = Vec::new();
+        let mut queue = VecDeque::from([CellId::from_raw(start as u32)]);
+        visited[start] = true;
+        while let Some(cell) = queue.pop_front() {
+            component.push(cell.raw() as usize);
+            for &neighbor in spatial.neighbors(cell).unwrap() {
+                let index = neighbor.raw() as usize;
+                if !visited[index] && kinds[index] == kind {
+                    visited[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
+}
+
+fn assert_relief_finite_and_explainable(seed: u64, relief: &ReliefSnapshot) {
+    let fields = [
+        relief.crust_base_elevation_m().values(),
+        relief.tectonic_offset_m().values(),
+        relief.regional_offset_m().values(),
+        relief.elevation_m().values(),
+    ];
+    assert!(
+        fields
+            .iter()
+            .flat_map(|values| values.iter())
+            .all(|value| value.is_finite()),
+        "seed {seed}: non-finite relief value"
+    );
+    for index in 0..relief.cell_count() as usize {
+        let expected = relief.crust_base_elevation_m().values()[index]
+            + relief.tectonic_offset_m().values()[index]
+            + relief.regional_offset_m().values()[index];
+        let actual = relief.elevation_m().values()[index];
+        assert!(
+            (expected - actual).abs() <= COMPONENT_IDENTITY_TOLERANCE_M,
+            "seed {seed}: component identity failed at cell {index}"
+        );
+    }
+}
+
+fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
+    let fixture = build_natural(GOLDEN_SEED, QUALITY_CELL_COUNT);
+    let mesh = Arc::new(
+        PreparedCellMesh::build(fixture.spatial.snapshot(), MeshCompleteness::RequireAll).unwrap(),
+    );
+    vec![
+        (
+            "plate.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                plate_id_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    fixture.tectonic.snapshot().cell_plates().raw_values(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Categorical,
+            ),
+        ),
+        (
+            "crust.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                crust_kind_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    fixture.tectonic.snapshot().crust_kinds().raw_values(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Categorical,
+            ),
+        ),
+        (
+            "elevation.png",
+            natural_packet(
+                &fixture,
+                mesh,
+                elevation_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.relief.snapshot().elevation_m().values()),
+                symmetric_elevation_range(fixture.relief.snapshot()),
+                PaletteId::Diverging,
+            ),
+        ),
+    ]
+}
+
+fn symmetric_elevation_range(relief: &ReliefSnapshot) -> DisplayRangeMode {
+    let sea_level = relief.sea_level_m();
+    let radius = relief
+        .elevation_m()
+        .values()
+        .iter()
+        .map(|value| (value - sea_level).abs())
+        .fold(0.0_f32, f32::max);
+    DisplayRangeMode::Manual(ValueRange::new(sea_level - radius, sea_level + radius).unwrap())
+}
+
+fn natural_packet(
+    fixture: &NaturalFixture,
+    mesh: Arc<PreparedCellMesh>,
+    field_id: FieldId,
+    payload: FieldPayloadRef<'_>,
+    range: DisplayRangeMode,
+    palette: PaletteId,
+) -> PreparedFieldDisplay {
+    let registry =
+        natural_field_registry(fixture.tectonic.snapshot().plates().len() as u16).unwrap();
+    let catalog = FieldCatalog::from_payloads(&registry, [(field_id.clone(), payload)]).unwrap();
+    let view = catalog.get(&field_id).unwrap().view().unwrap();
+    let field = Arc::new(prepare_cell_field(view, mesh.cell_count(), range).unwrap());
+    let mut clock = DisplayRevisionClock::default();
+    PreparedFieldDisplay::new(
+        mesh,
+        field,
+        Arc::new(PreparedDiagnosticMask::empty(
+            fixture.spatial.snapshot().cell_count(),
+        )),
+        Arc::from(built_in_palette(palette)),
+        DisplayRevisions::new(
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+        ),
+        false,
+    )
+    .unwrap()
+}
+
+fn assert_golden(name: &str, packet: &PreparedFieldDisplay) {
+    let actual = rasterize_reference(packet, GOLDEN_WIDTH, GOLDEN_HEIGHT).unwrap();
+    let expected = image::ImageReader::open(golden_path(name))
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgba8();
+    let actual_hash = blake3::hash(actual.rgba8());
+    let expected_hash = blake3::hash(expected.as_raw());
+    assert_eq!(
+        (actual.width(), actual.height()),
+        expected.dimensions(),
+        "{name}: dimension mismatch; actual={actual_hash}, expected={expected_hash}"
+    );
+    assert_eq!(
+        actual.rgba8(),
+        expected.as_raw(),
+        "{name}: pixel mismatch; actual={actual_hash}, expected={expected_hash}"
+    );
+}
+
+fn write_golden(name: &str, packet: &PreparedFieldDisplay) {
+    let image = rasterize_reference(packet, GOLDEN_WIDTH, GOLDEN_HEIGHT).unwrap();
+    let path = golden_path(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::save_buffer_with_format(
+        path,
+        image.rgba8(),
+        image.width(),
+        image.height(),
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .unwrap();
+}
+
+fn golden_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("natural-foundation")
+        .join(name)
+}
