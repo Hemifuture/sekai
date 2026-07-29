@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::stage::TectonicSpecArtifact;
 use crate::engine::{
@@ -11,8 +12,9 @@ use crate::engine::{
 };
 use crate::rules::{
     core_capability_registry, AuthorConstraints, BuiltinRuleError, RulePackSet, RulePackSetError,
-    TectonicRuleResolution, TectonicRuleResolutionError, TectonicRuleResolver,
+    TectonicModel, TectonicRuleResolution, TectonicRuleResolutionError, TectonicRuleResolver,
 };
+use crate::world::natural::{NaturalSpecError, TectonicSpec};
 use crate::world::WORLD_SPEC_SCHEMA_V1;
 
 const INVALID_PACK_SET_CODE: &str = "rules.invalid-pack-set";
@@ -24,6 +26,7 @@ const CAPABILITY_CONTRACT_CODE: &str = "rules.capability-contract";
 const HARD_CONSTRAINT_CONFLICT_CODE: &str = "rules.hard-constraint-conflict";
 const INVALID_BASE_SPEC_CODE: &str = "rules.invalid-base-tectonic-spec";
 const RESOLUTION_SCORE_CODE: &str = "rules.tectonic-score";
+const INVALID_RESOLVED_INPUT_CODE: &str = "natural.invalid-resolved-tectonic-input";
 
 /// Engine transport for an externally supplied, validated rule-pack set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +109,130 @@ impl Artifact for TectonicRuleResolutionArtifact {
         self.resolution.validate().map_err(|error| {
             ArtifactValidationError::new(INVALID_RESOLUTION_CODE, error.to_string())
         })
+    }
+}
+
+/// The minimal, audit-free input consumed by tectonic generation.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResolvedTectonicInput {
+    model: TectonicModel,
+    spec: TectonicSpec,
+}
+
+#[derive(Deserialize)]
+struct ResolvedTectonicInputWire {
+    model: TectonicModel,
+    spec: TectonicSpec,
+}
+
+impl ResolvedTectonicInput {
+    /// Creates a minimal input after validating the resolved natural specification.
+    pub fn new(model: TectonicModel, spec: TectonicSpec) -> Result<Self, NaturalSpecError> {
+        spec.validate()?;
+        Ok(Self { model, spec })
+    }
+
+    /// Returns the trusted compiled model selection.
+    pub const fn model(&self) -> TectonicModel {
+        self.model
+    }
+
+    /// Returns the exact resolved generation specification.
+    pub const fn spec(&self) -> &TectonicSpec {
+        &self.spec
+    }
+
+    /// Revalidates the minimal generation contract.
+    pub fn validate(&self) -> Result<(), NaturalSpecError> {
+        self.spec.validate()
+    }
+}
+
+impl<'de> Deserialize<'de> for ResolvedTectonicInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ResolvedTectonicInputWire::deserialize(deserializer)?;
+        Self::new(wire.model, wire.spec).map_err(D::Error::custom)
+    }
+}
+
+/// Engine transport for the audit-free tectonic generation input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedTectonicInputArtifact {
+    input: ResolvedTectonicInput,
+}
+
+impl ResolvedTectonicInputArtifact {
+    /// Wraps one validated minimal generation input.
+    pub const fn new(input: ResolvedTectonicInput) -> Self {
+        Self { input }
+    }
+
+    /// Returns the minimal generation input.
+    pub const fn input(&self) -> &ResolvedTectonicInput {
+        &self.input
+    }
+}
+
+impl Artifact for ResolvedTectonicInputArtifact {
+    const KEY: ArtifactKey = ArtifactKey::new("natural.resolved-tectonic-input");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        self.input.validate().map_err(|error| {
+            ArtifactValidationError::new(INVALID_RESOLVED_INPUT_CODE, error.to_string())
+        })
+    }
+}
+
+/// Typed audit dependency visible to [`ResolvedTectonicInputStage`].
+pub struct ResolvedTectonicInputStageInputs {
+    resolution: Arc<TectonicRuleResolutionArtifact>,
+}
+
+impl StageInputs for ResolvedTectonicInputStageInputs {
+    fn dependencies() -> &'static [ArtifactKey] {
+        &[TectonicRuleResolutionArtifact::KEY]
+    }
+
+    fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+        Ok(Self {
+            resolution: artifacts.get::<TectonicRuleResolutionArtifact>()?,
+        })
+    }
+}
+
+/// Projects a full rule audit into only the model and resolved specification.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolvedTectonicInputStage;
+
+impl Stage for ResolvedTectonicInputStage {
+    type Inputs = ResolvedTectonicInputStageInputs;
+    type Output = ResolvedTectonicInputArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("natural.project-tectonic-input")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "sekai.core"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        _rng: &mut StageRng,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        let resolution = inputs.resolution.resolution();
+        let input = ResolvedTectonicInput::new(resolution.model(), resolution.spec().clone())
+            .map_err(|error| StageError::new(INVALID_RESOLVED_INPUT_CODE, error.to_string()))?;
+        Ok(ResolvedTectonicInputArtifact::new(input))
     }
 }
 

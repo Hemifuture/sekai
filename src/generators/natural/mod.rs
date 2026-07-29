@@ -9,8 +9,9 @@ mod topology;
 
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{
-    AuthorConstraintsArtifact, RulePackSetArtifact, RuleTectonicResolutionStage,
-    RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
+    AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    ResolvedTectonicInputStage, ResolvedTectonicInputStageInputs, RulePackSetArtifact,
+    RuleTectonicResolutionStage, RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
 };
 pub use stage::{
     natural_foundation_graph, ReliefArtifact, ReliefStage, TectonicArtifact, TectonicSpecArtifact,

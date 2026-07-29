@@ -4,12 +4,17 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::{
+    AuthorConstraintsArtifact, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
+    RulePackSetArtifact, RuleTectonicResolutionStage,
+};
 use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
     GraphError, Stage, StageError, StageGraph, StageGraphBuilder, StageId, StageInputs, StageRng,
 };
 use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
+use crate::rules::TectonicModel;
 use crate::world::natural::{
     NaturalSpecError, ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicSpec,
     TectonicValidationError,
@@ -80,18 +85,18 @@ impl Artifact for TectonicArtifact {
 
 /// Restricted typed dependencies supplied to [`TectonicStage`].
 pub struct TectonicStageInputs {
-    spec: Arc<TectonicSpecArtifact>,
+    resolved_input: Arc<ResolvedTectonicInputArtifact>,
     spatial: Arc<SpatialArtifact>,
 }
 
 impl StageInputs for TectonicStageInputs {
     fn dependencies() -> &'static [ArtifactKey] {
-        &[TectonicSpecArtifact::KEY, SpatialArtifact::KEY]
+        &[ResolvedTectonicInputArtifact::KEY, SpatialArtifact::KEY]
     }
 
     fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
         Ok(Self {
-            spec: artifacts.get::<TectonicSpecArtifact>()?,
+            resolved_input: artifacts.get::<ResolvedTectonicInputArtifact>()?,
             spatial: artifacts.get::<SpatialArtifact>()?,
         })
     }
@@ -123,10 +128,14 @@ impl Stage for TectonicStage {
         rng: &mut StageRng,
         _diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
-        inputs.spec.spec().validate().map_err(invalid_spec)?;
-        let snapshot =
-            TectonicGenerator::generate(inputs.spatial.snapshot(), inputs.spec.spec(), rng)
-                .map_err(generation_failure)?;
+        let resolved_input = inputs.resolved_input.input();
+        resolved_input.spec().validate().map_err(invalid_spec)?;
+        let snapshot = match resolved_input.model() {
+            TectonicModel::CurrentSliceV1 => {
+                TectonicGenerator::generate(inputs.spatial.snapshot(), resolved_input.spec(), rng)
+            }
+        }
+        .map_err(generation_failure)?;
         snapshot
             .validate_against(inputs.spatial.snapshot())
             .map_err(invalid_snapshot)?;
@@ -264,7 +273,11 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
     StageGraphBuilder::new()
         .external::<PlanarSpaceArtifact>()
         .external::<TectonicSpecArtifact>()
+        .external::<RulePackSetArtifact>()
+        .external::<AuthorConstraintsArtifact>()
         .stage(SpatialStage)
+        .stage(RuleTectonicResolutionStage)
+        .stage(ResolvedTectonicInputStage)
         .stage(TectonicStage)
         .stage(ReliefStage)
         .build()

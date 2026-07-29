@@ -3,7 +3,8 @@ use sekai::engine::{
     StageGraphBuilder,
 };
 use sekai::generators::natural::{
-    AuthorConstraintsArtifact, RulePackSetArtifact, RuleTectonicResolutionStage,
+    AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    ResolvedTectonicInputStage, RulePackSetArtifact, RuleTectonicResolutionStage,
     TectonicRuleResolutionArtifact, TectonicSpecArtifact,
 };
 use sekai::rules::{
@@ -66,6 +67,67 @@ fn hard_constraint_pack() -> RulePack {
         ],
     )
     .unwrap()
+}
+
+fn alternate_world_law() -> RulePack {
+    RulePack::new(
+        RulePackId::new("sekai.test.alternate-world-law").unwrap(),
+        RuleVersion::new(1, 7, 0).unwrap(),
+        RulePackKind::WorldLaw,
+        CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1).unwrap(),
+        Vec::new(),
+        Vec::new(),
+        vec![CapabilityContribution::TectonicModel(
+            TectonicModel::CurrentSliceV1,
+        )],
+    )
+    .unwrap()
+}
+
+fn projection_graph() -> StageGraph {
+    StageGraphBuilder::new()
+        .external::<TectonicRuleResolutionArtifact>()
+        .stage(ResolvedTectonicInputStage)
+        .build()
+        .unwrap()
+}
+
+fn resolved_audit(packs: RulePackSet) -> TectonicRuleResolutionArtifact {
+    let outcome = BuildEngine::new(resolution_graph())
+        .build(
+            RootSeed::new(42),
+            resolution_inputs(TectonicSpec::default(), packs, AuthorConstraints::default()),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+    outcome
+        .artifacts
+        .get::<TectonicRuleResolutionArtifact>()
+        .unwrap()
+        .as_ref()
+        .clone()
+}
+
+fn project(
+    resolution: TectonicRuleResolutionArtifact,
+) -> (sekai::engine::ContentHash, ResolvedTectonicInputArtifact) {
+    let mut external = ExternalArtifacts::new();
+    external.insert(resolution).unwrap();
+    let outcome = BuildEngine::new(projection_graph())
+        .build(RootSeed::new(42), external, &mut MemoryStageCache::new())
+        .unwrap();
+    (
+        outcome
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap(),
+        outcome
+            .artifacts
+            .get::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+            .as_ref()
+            .clone(),
+    )
 }
 
 #[test]
@@ -272,4 +334,87 @@ fn resolution_hard_conflict_has_stable_rule_code_and_publishes_no_output() {
     assert!(diagnostic.message().contains("high-range"));
     assert!(diagnostic.message().contains("low-range"));
     assert!(cache.is_empty());
+}
+
+#[test]
+fn projection_input_contains_only_model_and_final_spec() {
+    let spec = TectonicSpec::default();
+    let input = ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, spec.clone()).unwrap();
+
+    assert_eq!(input.model(), TectonicModel::CurrentSliceV1);
+    assert_eq!(input.spec(), &spec);
+    let value = serde_json::to_value(input).unwrap();
+    let object = value.as_object().unwrap();
+    assert_eq!(object.len(), 2);
+    assert!(object.contains_key("model"));
+    assert!(object.contains_key("spec"));
+}
+
+#[test]
+fn projection_artifact_has_stable_key_and_revalidating_round_trip() {
+    assert_eq!(
+        ResolvedTectonicInputArtifact::KEY.as_str(),
+        "natural.resolved-tectonic-input"
+    );
+    let artifact = ResolvedTectonicInputArtifact::new(
+        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, TectonicSpec::default()).unwrap(),
+    );
+    let encoded = serde_json::to_vec(&artifact).unwrap();
+    let decoded: ResolvedTectonicInputArtifact = serde_json::from_slice(&encoded).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded, artifact);
+
+    let mut malformed = serde_json::to_value(&artifact).unwrap();
+    malformed["input"]["spec"]["plate_count"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<ResolvedTectonicInputArtifact>(malformed).is_err());
+}
+
+#[test]
+fn projection_stage_depends_only_on_full_resolution() {
+    let stage = ResolvedTectonicInputStage;
+    assert_eq!(stage.id().as_str(), "natural.project-tectonic-input");
+    assert_eq!(stage.version(), 1);
+    assert_eq!(stage.namespace(), "sekai.core");
+
+    let graph = projection_graph();
+    assert_eq!(graph.stage_ids(), vec!["natural.project-tectonic-input"]);
+    let descriptor = &graph.descriptors()[0];
+    assert_eq!(
+        descriptor
+            .dependencies()
+            .iter()
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["natural.tectonic-rule-resolution"]
+    );
+    assert_eq!(descriptor.output(), ResolvedTectonicInputArtifact::KEY);
+}
+
+#[test]
+fn projection_audit_identity_changes_do_not_change_model_spec_hash() {
+    let default_audit = resolved_audit(default_rule_pack_set().unwrap());
+    let alternate_audit = resolved_audit(RulePackSet::new(vec![alternate_world_law()]).unwrap());
+    let mut default_external = ExternalArtifacts::new();
+    default_external.insert(default_audit.clone()).unwrap();
+    let mut alternate_external = ExternalArtifacts::new();
+    alternate_external.insert(alternate_audit.clone()).unwrap();
+    assert_ne!(
+        default_external
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap(),
+        alternate_external
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap()
+    );
+
+    let (default_hash, default_projection) = project(default_audit);
+    let (alternate_hash, alternate_projection) = project(alternate_audit);
+
+    assert_eq!(default_hash, alternate_hash);
+    assert_eq!(default_projection, alternate_projection);
+    assert_eq!(
+        default_projection.input().model(),
+        TectonicModel::CurrentSliceV1
+    );
+    assert_eq!(default_projection.input().spec(), &TectonicSpec::default());
 }
