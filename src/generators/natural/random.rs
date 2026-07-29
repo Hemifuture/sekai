@@ -11,6 +11,8 @@ pub(super) const CRUST_SEEDS_LABEL: &str = "crust-seeds-v1";
 pub(super) const CRUST_SHAPE_LABEL: &str = "crust-shape-v1";
 pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
 pub(super) const RELIEF_REGIONAL_LABEL: &str = "relief-regional-v1";
+pub(super) const HOTSPOT_SEEDS_LABEL: &str = "hotspot-seeds-v1";
+pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
 
 pub(super) struct LabeledSubstreams {
     root: [u8; 32],
@@ -43,7 +45,10 @@ impl LabeledSubstreams {
 mod tests {
     use rand::RngCore;
 
-    use super::{LabeledSubstreams, CRUST_SEEDS_LABEL, PLATE_SEEDS_LABEL};
+    use super::{
+        LabeledSubstreams, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL, HOTSPOT_STRENGTH_LABEL,
+        PLATE_SEEDS_LABEL,
+    };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::world::RootSeed;
 
@@ -97,5 +102,26 @@ mod tests {
         expected.fill_bytes(&mut seed);
 
         assert_eq!(actual.next_u64(), expected.next_u64());
+    }
+
+    #[test]
+    fn hotspot_seed_consumption_cannot_perturb_strengths() {
+        let streams = LabeledSubstreams::capture(&mut stage_rng());
+        let mut seeds = streams.stream(HOTSPOT_SEEDS_LABEL);
+        let mut strengths_after_seeds = streams.stream(HOTSPOT_STRENGTH_LABEL);
+        for _ in 0..100 {
+            seeds.next_u64();
+        }
+
+        let pristine = LabeledSubstreams::capture(&mut stage_rng());
+        let mut pristine_strengths = pristine.stream(HOTSPOT_STRENGTH_LABEL);
+        assert_eq!(
+            (0..8)
+                .map(|_| strengths_after_seeds.next_u64())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|_| pristine_strengths.next_u64())
+                .collect::<Vec<_>>()
+        );
     }
 }

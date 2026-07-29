@@ -1,6 +1,8 @@
 //! Deterministic generation of the current natural world slice.
 
 mod geologic_rule_input;
+mod geologic_stage;
+mod mantle;
 mod random;
 mod relief;
 mod rule_input;
@@ -13,6 +15,8 @@ pub use geologic_rule_input::{
     ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, ResolvedGeologicInputStageInputs,
     RuleGeologicResolutionStage, RuleGeologicResolutionStageInputs,
 };
+pub use geologic_stage::{MantleArtifact, MantleStage, MantleStageInputs};
+pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{
     AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
