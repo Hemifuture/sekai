@@ -43,6 +43,9 @@ pub enum RulePackSetError {
         /// The repeated pack ID.
         pack_id: RulePackId,
     },
+    /// A private stored pack vector is not in strict pack-ID order.
+    #[error("rule packs are not stored in strict canonical ID order")]
+    NonCanonicalPackOrder,
     /// A pack is not compatible with the active core world schema.
     #[error("rule pack {pack_id:?} supports core schema {supported:?}, not active schema {found}")]
     IncompatibleCoreSchema {
@@ -204,6 +207,43 @@ impl RulePackSet {
             .iter()
             .map(|pack| pack.contributions().len())
             .sum()
+    }
+
+    /// Revalidates pack-local contracts, collection budgets, and canonical order.
+    pub fn validate(&self) -> Result<(), RulePackSetError> {
+        if self.packs.len() > MAX_RULE_PACKS {
+            return Err(RulePackSetError::TooManyPacks {
+                found: self.packs.len(),
+            });
+        }
+        let mut contribution_count = 0usize;
+        for pack in &self.packs {
+            pack.validate()
+                .map_err(|source| RulePackSetError::InvalidPack {
+                    pack_id: pack.manifest().id().clone(),
+                    source,
+                })?;
+            contribution_count = contribution_count.saturating_add(pack.contributions().len());
+            if contribution_count > MAX_RULE_SET_CONTRIBUTIONS {
+                return Err(RulePackSetError::TooManyContributions {
+                    found: contribution_count,
+                });
+            }
+        }
+        for pair in self.packs.windows(2) {
+            match pair[0].manifest().id().cmp(pair[1].manifest().id()) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    return Err(RulePackSetError::DuplicatePack {
+                        pack_id: pair[0].manifest().id().clone(),
+                    });
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(RulePackSetError::NonCanonicalPackOrder);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Validates dependencies and returns a deterministic topological order.
