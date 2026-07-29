@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
+    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -44,10 +44,14 @@ fn profile_default_natural_foundation() {
     let total = started.elapsed();
     let spatial = outcome.artifacts.get::<SpatialArtifact>().unwrap();
     let tectonic = outcome.artifacts.get::<TectonicArtifact>().unwrap();
+    let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
     let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
+    let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
     let spatial = spatial.snapshot();
     let tectonic = tectonic.snapshot();
+    let mantle = mantle.snapshot();
     let relief = relief.snapshot();
+    let geology = geology.snapshot();
 
     let dense_bytes = size_of_val(tectonic.cell_plates().raw_values())
         + size_of_val(tectonic.crust_kinds().raw_values())
@@ -58,7 +62,16 @@ fn profile_default_natural_foundation() {
         + size_of_val(relief.volcanic_offset_m().values())
         + size_of_val(relief.regional_offset_m().values())
         + size_of_val(relief.elevation_m().values())
-        + size_of_val(relief.land_ocean().raw_values());
+        + size_of_val(relief.land_ocean().raw_values())
+        + size_of_val(mantle.heat_flow_mw_m2())
+        + size_of_val(mantle.volcanic_influence())
+        + size_of_val(geology.bedrock_kinds().raw_values())
+        + size_of_val(geology.fracture_intensity())
+        + size_of_val(geology.erosion_resistance())
+        + size_of_val(geology.relative_permeability())
+        + size_of_val(geology.metallic_mineral_potential())
+        + size_of_val(geology.geothermal_potential())
+        + size_of_val(geology.sedimentary_basin_potential());
     let continental = tectonic
         .crust_kinds()
         .raw_values()
@@ -94,5 +107,7 @@ fn profile_default_natural_foundation() {
 
     assert_eq!(spatial.cell_count(), 20_000);
     assert_eq!(tectonic.cell_count(), 20_000);
+    assert_eq!(mantle.cell_count(), 20_000);
     assert_eq!(relief.cell_count(), 20_000);
+    assert_eq!(geology.cell_count(), 20_000);
 }

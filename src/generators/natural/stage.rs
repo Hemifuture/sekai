@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AuthorConstraintsArtifact, GeologicSpecArtifact, MantleArtifact, MantleStage,
+    AuthorConstraintsArtifact, GeologicSpecArtifact, GeologicStage, MantleArtifact, MantleStage,
     ResolvedGeologicInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
     RuleGeologicResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
 };
@@ -298,6 +298,7 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .stage(TectonicStage)
         .stage(MantleStage)
         .stage(ReliefStage)
+        .stage(GeologicStage)
         .build()
 }
 

@@ -16,7 +16,10 @@ pub use geologic_rule_input::{
     ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, ResolvedGeologicInputStageInputs,
     RuleGeologicResolutionStage, RuleGeologicResolutionStageInputs,
 };
-pub use geologic_stage::{MantleArtifact, MantleStage, MantleStageInputs};
+pub use geologic_stage::{
+    GeologicArtifact, GeologicStage, GeologicStageInputs, MantleArtifact, MantleStage,
+    MantleStageInputs,
+};
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
