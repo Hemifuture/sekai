@@ -19,13 +19,19 @@ use crate::{
     },
     generators::{
         natural::{
-            natural_foundation_graph, ReliefArtifact, TectonicArtifact, TectonicSpecArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact,
+            RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
+            TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
     gpu::field::CellFieldRenderer,
     resource::{
         CanvasStateResource, FieldDisplayResource, FieldRendererResource, FieldViewerStateResource,
+    },
+    rules::{
+        default_rule_pack_set, AuthorConstraints, BuiltinRuleError, ConstraintAdoptionOutcome,
+        ConstraintSource, RulePackSet, TectonicRuleResolution,
     },
     ui::{
         canvas::canvas::Canvas,
@@ -45,6 +51,37 @@ use crate::{
 const DEFAULT_WORLD_WIDTH_M: f64 = 20_000_000.0;
 const DEFAULT_WORLD_HEIGHT_M: f64 = 10_000_000.0;
 const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RuleBuildSummary {
+    active_pack_count: usize,
+    author_constraint_count: usize,
+    satisfied_constraint_count: usize,
+    compromised_constraint_count: usize,
+}
+
+impl RuleBuildSummary {
+    fn from_resolution(resolution: &TectonicRuleResolution) -> Self {
+        let mut summary = Self {
+            active_pack_count: resolution.resolved_packs().len(),
+            ..Self::default()
+        };
+        for adoption in resolution.adoptions() {
+            if matches!(adoption.source(), ConstraintSource::Author(_)) {
+                summary.author_constraint_count += 1;
+            }
+            match adoption.outcome() {
+                ConstraintAdoptionOutcome::Satisfied => {
+                    summary.satisfied_constraint_count += 1;
+                }
+                ConstraintAdoptionOutcome::Compromised => {
+                    summary.compromised_constraint_count += 1;
+                }
+            }
+        }
+        summary
+    }
+}
 
 /// Persisted UI state plus skipped runtime resources for the current natural slice.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -66,6 +103,8 @@ pub struct TemplateApp {
     stage_cache: MemoryStageCache,
     #[serde(skip)]
     display_revision_clock: DisplayRevisionClock,
+    #[serde(skip)]
+    rule_build_summary: RuleBuildSummary,
 }
 
 impl Default for TemplateApp {
@@ -87,6 +126,7 @@ impl Default for TemplateApp {
             natural_document: None,
             stage_cache: MemoryStageCache::new(),
             display_revision_clock: DisplayRevisionClock::default(),
+            rule_build_summary: RuleBuildSummary::default(),
         }
     }
 }
@@ -159,13 +199,42 @@ impl TemplateApp {
         tectonic: &TectonicSpec,
     ) -> Result<(), NaturalWorldBuildError> {
         let current_state = self.field_viewer_state.read_resource(Clone::clone);
-        let candidate = match build_natural_candidate(
+        let candidate = build_natural_candidate(
             world,
             tectonic,
             &mut self.stage_cache,
             &current_state,
             &self.display_revision_clock,
-        ) {
+        );
+        self.publish_natural_candidate(candidate)
+    }
+
+    #[cfg(test)]
+    fn try_replace_natural_world_with_rule_inputs(
+        &mut self,
+        world: &WorldSpec,
+        tectonic: &TectonicSpec,
+        pack_set: RulePackSet,
+        author_constraints: AuthorConstraints,
+    ) -> Result<(), NaturalWorldBuildError> {
+        let current_state = self.field_viewer_state.read_resource(Clone::clone);
+        let candidate = build_natural_candidate_with_rule_inputs(
+            world,
+            tectonic,
+            pack_set,
+            author_constraints,
+            &mut self.stage_cache,
+            &current_state,
+            &self.display_revision_clock,
+        );
+        self.publish_natural_candidate(candidate)
+    }
+
+    fn publish_natural_candidate(
+        &mut self,
+        candidate: Result<NaturalWorldCandidate, NaturalWorldBuildError>,
+    ) -> Result<(), NaturalWorldBuildError> {
+        let candidate = match candidate {
             Ok(candidate) => candidate,
             Err(error) => {
                 self.field_display.with_resource(|resource| {
@@ -183,6 +252,7 @@ impl TemplateApp {
             packet,
             clock,
             report,
+            rule_summary,
         } = candidate;
         for stage in report.stages() {
             log::info!(
@@ -202,8 +272,10 @@ impl TemplateApp {
         self.field_display
             .with_resource(|resource| resource.replace(packet));
         self.display_revision_clock = clock;
+        self.rule_build_summary = rule_summary;
         log::info!(
-            "published natural slice: {cells} cells, {plates} plates, {segments} boundary segments"
+            "published natural slice: {cells} cells, {plates} plates, {segments} boundary segments, {} rule packs",
+            rule_summary.active_pack_count
         );
         Ok(())
     }
@@ -340,6 +412,13 @@ impl eframe::App for TemplateApp {
                             document.tectonic.snapshot().plates().len(),
                             document.tectonic.snapshot().boundary_segments().len()
                         ));
+                        ui.label(format!(
+                            "规则包 {}｜作者约束 {}｜满足 {}｜妥协 {}",
+                            self.rule_build_summary.active_pack_count,
+                            self.rule_build_summary.author_constraint_count,
+                            self.rule_build_summary.satisfied_constraint_count,
+                            self.rule_build_summary.compromised_constraint_count,
+                        ));
                         let catalog = document
                             .catalog()
                             .expect("the stored natural display document is validated");
@@ -409,11 +488,27 @@ fn build_natural_external_artifacts(
     world: &WorldSpec,
     tectonic: &TectonicSpec,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
+    build_natural_external_artifacts_with_rule_inputs(
+        world,
+        tectonic,
+        default_rule_pack_set()?,
+        AuthorConstraints::default(),
+    )
+}
+
+fn build_natural_external_artifacts_with_rule_inputs(
+    world: &WorldSpec,
+    tectonic: &TectonicSpec,
+    pack_set: RulePackSet,
+    author_constraints: AuthorConstraints,
+) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
     world.validate()?;
     tectonic.validate()?;
     let mut external = ExternalArtifacts::new();
     external.insert(PlanarSpaceArtifact::new(world.space.clone()))?;
     external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
+    external.insert(RulePackSetArtifact::new(pack_set))?;
+    external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
 }
 
@@ -425,8 +520,39 @@ fn build_natural_candidate(
     clock: &DisplayRevisionClock,
 ) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
     let external = build_natural_external_artifacts(world, tectonic)?;
+    build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
+}
+
+#[cfg(test)]
+fn build_natural_candidate_with_rule_inputs(
+    world: &WorldSpec,
+    tectonic: &TectonicSpec,
+    pack_set: RulePackSet,
+    author_constraints: AuthorConstraints,
+    cache: &mut MemoryStageCache,
+    current_state: &FieldDisplayState,
+    clock: &DisplayRevisionClock,
+) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
+    let external = build_natural_external_artifacts_with_rule_inputs(
+        world,
+        tectonic,
+        pack_set,
+        author_constraints,
+    )?;
+    build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
+}
+
+fn build_natural_candidate_from_external(
+    root_seed: RootSeed,
+    external: ExternalArtifacts,
+    cache: &mut MemoryStageCache,
+    current_state: &FieldDisplayState,
+    clock: &DisplayRevisionClock,
+) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
     let outcome =
-        BuildEngine::new(natural_foundation_graph()?).build(world.root_seed, external, cache)?;
+        BuildEngine::new(natural_foundation_graph()?).build(root_seed, external, cache)?;
+    let rule_resolution = outcome.artifacts.get::<TectonicRuleResolutionArtifact>()?;
+    let rule_summary = RuleBuildSummary::from_resolution(rule_resolution.resolution());
     let spatial = outcome.artifacts.get::<SpatialArtifact>()?;
     let tectonic = outcome.artifacts.get::<TectonicArtifact>()?;
     let relief = outcome.artifacts.get::<ReliefArtifact>()?;
@@ -439,6 +565,7 @@ fn build_natural_candidate(
         packet,
         clock: next_clock,
         report: outcome.report,
+        rule_summary,
     })
 }
 
@@ -448,6 +575,7 @@ struct NaturalWorldCandidate {
     packet: Arc<PreparedFieldDisplay>,
     clock: DisplayRevisionClock,
     report: BuildReport,
+    rule_summary: RuleBuildSummary,
 }
 
 #[derive(Debug, Error)]
@@ -456,6 +584,8 @@ enum NaturalWorldBuildError {
     WorldSpec(#[from] SpecError),
     #[error(transparent)]
     TectonicSpec(#[from] NaturalSpecError),
+    #[error(transparent)]
+    BuiltinRules(#[from] BuiltinRuleError),
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
@@ -477,12 +607,20 @@ mod natural_app_tests {
         DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
-    use crate::generators::natural::TectonicSpecArtifact;
+    use crate::generators::natural::{
+        AuthorConstraintsArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+    };
     use crate::generators::spatial::PlanarSpaceArtifact;
+    use crate::rules::{
+        default_rule_pack_set, earthlike_rule_pack, AuthorConstraint, AuthorConstraints,
+        CapabilityContribution, ConstraintStrength, CoreSchemaRange, RuleItemId, RulePack,
+        RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion,
+        TectonicConstraintClause, AUTHOR_CONSTRAINTS_SCHEMA_V1,
+    };
     use crate::view::FieldDisplayResourceState;
     use crate::world::natural::{elevation_field_id, TectonicActivity, TectonicSpec};
     use crate::world::spatial::Topology;
-    use crate::world::{RootSeed, TechnologyBaseline};
+    use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
 
     #[test]
     fn default_natural_specs_are_geological_and_semantic() {
@@ -507,9 +645,27 @@ mod natural_app_tests {
         let world = default_world_spec(RootSeed::new(7));
         let external: ExternalArtifacts =
             build_natural_external_artifacts(&world, &TectonicSpec::default()).unwrap();
-        assert_eq!(external.len(), 2);
+        assert_eq!(external.len(), 4);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
+        assert!(external.hash::<RulePackSetArtifact>().is_ok());
+        assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
+
+        let mut expected = ExternalArtifacts::new();
+        expected
+            .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+            .unwrap();
+        expected
+            .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
+            .unwrap();
+        assert_eq!(
+            external.hash::<RulePackSetArtifact>().unwrap(),
+            expected.hash::<RulePackSetArtifact>().unwrap()
+        );
+        assert_eq!(
+            external.hash::<AuthorConstraintsArtifact>().unwrap(),
+            expected.hash::<AuthorConstraintsArtifact>().unwrap()
+        );
     }
 
     #[test]
@@ -532,6 +688,10 @@ mod natural_app_tests {
             .read_resource(FieldDisplayResourceState::current_cloned)
             .unwrap();
         assert_eq!(packet.field().field_id(), &elevation_field_id());
+        assert_eq!(app.rule_build_summary.active_pack_count, 1);
+        assert_eq!(app.rule_build_summary.author_constraint_count, 0);
+        assert_eq!(app.rule_build_summary.satisfied_constraint_count, 0);
+        assert_eq!(app.rule_build_summary.compromised_constraint_count, 0);
     }
 
     #[test]
@@ -569,7 +729,80 @@ mod natural_app_tests {
         let source = include_str!("app.rs");
         let old_generator = ["Terrain", "Generator"].concat();
         let old_entrypoint = ["generate_terrain_with", "_template"].concat();
+        let projection_constructor = ["ResolvedTectonicInputArtifact", "::new"].concat();
+        let tectonic_generator = ["Tectonic", "Generator"].concat();
         assert!(!source.contains(&old_generator));
         assert!(!source.contains(&old_entrypoint));
+        assert!(!source.contains(&projection_constructor));
+        assert!(!source.contains(&tectonic_generator));
+    }
+
+    #[test]
+    fn rule_resolution_failure_preserves_document_packet_clock_and_summary() {
+        let mut app = TemplateApp::default();
+        let mut world = default_world_spec(RootSeed::new(17));
+        world.space.target_cell_count = 128;
+        app.try_replace_natural_world(&world, &TectonicSpec::default())
+            .unwrap();
+        let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
+        let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
+        let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
+        let packet_before = app
+            .field_display
+            .read_resource(FieldDisplayResourceState::current_cloned)
+            .unwrap();
+        let summary_before = app.rule_build_summary;
+        let mut expected_clock = app.display_revision_clock.clone();
+        let expected_next_revision = expected_clock.issue().unwrap();
+
+        let pack_constraint = RulePack::new(
+            RulePackId::new("sekai.test.low-plates").unwrap(),
+            RuleVersion::new(1, 0, 0).unwrap(),
+            RulePackKind::Ordinary,
+            CoreSchemaRange::new(1, 1).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            vec![CapabilityContribution::TectonicConstraint(
+                RuleTectonicConstraint::new(
+                    RuleItemId::new("low-range").unwrap(),
+                    ConstraintStrength::Hard,
+                    TectonicConstraintClause::plate_count(2, 4).unwrap(),
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let packs =
+            RulePackSet::new(vec![earthlike_rule_pack().unwrap(), pack_constraint]).unwrap();
+        let author_constraint = AuthorConstraint::new(
+            AuthorObjectId::from_raw(7),
+            ConstraintStrength::Hard,
+            TectonicConstraintClause::plate_count(20, 24).unwrap(),
+        )
+        .unwrap();
+        let authors =
+            AuthorConstraints::new(AUTHOR_CONSTRAINTS_SCHEMA_V1, vec![author_constraint]).unwrap();
+
+        assert!(app
+            .try_replace_natural_world_with_rule_inputs(
+                &world,
+                &TectonicSpec::default(),
+                packs,
+                authors,
+            )
+            .is_err());
+
+        let document_after = app.natural_document.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&spatial_before, &document_after.spatial));
+        assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
+        assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
+        let packet_after = app
+            .field_display
+            .read_resource(FieldDisplayResourceState::current_cloned)
+            .unwrap();
+        assert!(Arc::ptr_eq(&packet_before, &packet_after));
+        let mut actual_clock = app.display_revision_clock.clone();
+        assert_eq!(actual_clock.issue().unwrap(), expected_next_revision);
+        assert_eq!(app.rule_build_summary, summary_before);
     }
 }
