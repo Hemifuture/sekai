@@ -5,7 +5,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    CoreSchemaRange, RulePack, RulePackError, RulePackId, RuleVersion, RuleVersionRequirement,
+    CapabilityCardinality, CapabilityId, CapabilityRegistry, CoreSchemaRange, RulePack,
+    RulePackError, RulePackId, RulePackKind, RuleVersion, RuleVersionRequirement,
 };
 
 /// The maximum number of rule packs in one V1 resolved set.
@@ -83,6 +84,58 @@ pub enum RulePackSetError {
     DependencyCycle {
         /// The lexicographically smallest pack ID that is actually in a cycle.
         pack_id: RulePackId,
+    },
+    /// A pack provides a capability absent from the compiled registry.
+    #[error("rule pack {pack_id:?} provides unknown capability {capability_id:?}")]
+    UnknownProvidedCapability {
+        /// The pack declaring the provider.
+        pack_id: RulePackId,
+        /// The unregistered capability.
+        capability_id: CapabilityId,
+    },
+    /// A pack consumes a capability absent from the compiled registry.
+    #[error("rule pack {pack_id:?} consumes unknown capability {capability_id:?}")]
+    UnknownConsumedCapability {
+        /// The consuming pack.
+        pack_id: RulePackId,
+        /// The unregistered capability.
+        capability_id: CapabilityId,
+    },
+    /// A pack's permission class is too weak for a provided capability.
+    #[error(
+        "rule pack {pack_id:?} with permission {found:?} cannot provide {capability_id:?}, which requires {required:?}"
+    )]
+    InsufficientCapabilityPermission {
+        /// The rejected provider.
+        pack_id: RulePackId,
+        /// The protected capability.
+        capability_id: CapabilityId,
+        /// The provider's permission class.
+        found: RulePackKind,
+        /// The minimum required permission.
+        required: RulePackKind,
+    },
+    /// A registered capability consumed by a pack has no provider.
+    #[error("rule pack {pack_id:?} consumes unprovided capability {capability_id:?}")]
+    MissingConsumedCapability {
+        /// The consuming pack.
+        pack_id: RulePackId,
+        /// The capability with no provider.
+        capability_id: CapabilityId,
+    },
+    /// A required unique capability has no provider.
+    #[error("required capability {capability_id:?} has no provider")]
+    MissingRequiredCapability {
+        /// The missing capability.
+        capability_id: CapabilityId,
+    },
+    /// A unique capability has more than one provider.
+    #[error("unique capability {capability_id:?} has multiple providers {provider_ids:?}")]
+    MultipleCapabilityProviders {
+        /// The conflicted unique capability.
+        capability_id: CapabilityId,
+        /// All provider IDs in stable pack-ID order.
+        provider_ids: Vec<RulePackId>,
     },
 }
 
@@ -253,11 +306,98 @@ impl RulePackSet {
             });
         }
 
+        let ordered_packs = ordered_indices
+            .into_iter()
+            .map(|index| &self.packs[index])
+            .collect();
         Ok(ResolvedRulePackSet {
-            packs: ordered_indices
-                .into_iter()
-                .map(|index| &self.packs[index])
-                .collect(),
+            packs: ordered_packs,
+            providers: index_providers(&self.packs),
+        })
+    }
+
+    /// Resolves dependencies and enforces the compiled capability contracts.
+    pub fn resolve(
+        &self,
+        registry: &CapabilityRegistry,
+        active_core_schema: u16,
+    ) -> Result<ResolvedRulePackSet<'_>, RulePackSetError> {
+        let dependency_order = self.resolve_dependencies(active_core_schema)?;
+        let providers = index_providers(&self.packs);
+
+        for pack in &self.packs {
+            let manifest = pack.manifest();
+            for capability_id in manifest.provides() {
+                let Some(descriptor) = registry.get(capability_id) else {
+                    return Err(RulePackSetError::UnknownProvidedCapability {
+                        pack_id: manifest.id().clone(),
+                        capability_id: capability_id.clone(),
+                    });
+                };
+                if !descriptor.allows_pack_kind(manifest.kind()) {
+                    return Err(RulePackSetError::InsufficientCapabilityPermission {
+                        pack_id: manifest.id().clone(),
+                        capability_id: capability_id.clone(),
+                        found: manifest.kind(),
+                        required: descriptor.minimum_pack_kind(),
+                    });
+                }
+            }
+            for capability_id in manifest.consumes() {
+                if registry.get(capability_id).is_none() {
+                    return Err(RulePackSetError::UnknownConsumedCapability {
+                        pack_id: manifest.id().clone(),
+                        capability_id: capability_id.clone(),
+                    });
+                }
+            }
+        }
+
+        for pack in &self.packs {
+            for capability_id in pack.manifest().consumes() {
+                if providers
+                    .get(capability_id)
+                    .is_none_or(|capability_providers| capability_providers.is_empty())
+                {
+                    return Err(RulePackSetError::MissingConsumedCapability {
+                        pack_id: pack.manifest().id().clone(),
+                        capability_id: capability_id.clone(),
+                    });
+                }
+            }
+        }
+
+        for descriptor in registry.iter() {
+            let capability_providers = providers
+                .get(descriptor.id())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            match descriptor.cardinality() {
+                CapabilityCardinality::UniqueRequired if capability_providers.is_empty() => {
+                    return Err(RulePackSetError::MissingRequiredCapability {
+                        capability_id: descriptor.id().clone(),
+                    });
+                }
+                CapabilityCardinality::UniqueRequired | CapabilityCardinality::UniqueOptional
+                    if capability_providers.len() > 1 =>
+                {
+                    return Err(RulePackSetError::MultipleCapabilityProviders {
+                        capability_id: descriptor.id().clone(),
+                        provider_ids: capability_providers
+                            .iter()
+                            .map(|pack| pack.manifest().id().clone())
+                            .collect(),
+                    });
+                }
+                CapabilityCardinality::UniqueRequired
+                | CapabilityCardinality::UniqueOptional
+                | CapabilityCardinality::Merge => {}
+            }
+        }
+
+        Ok(ResolvedRulePackSet {
+            packs: dependency_order.packs,
+            providers,
         })
     }
 }
@@ -276,6 +416,7 @@ impl<'de> Deserialize<'de> for RulePackSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRulePackSet<'a> {
     packs: Vec<&'a RulePack>,
+    providers: BTreeMap<CapabilityId, Vec<&'a RulePack>>,
 }
 
 impl<'a> ResolvedRulePackSet<'a> {
@@ -293,4 +434,25 @@ impl<'a> ResolvedRulePackSet<'a> {
     pub fn is_empty(&self) -> bool {
         self.packs.is_empty()
     }
+
+    /// Returns providers in stable pack-ID order for one exact capability.
+    pub fn providers(&self, capability_id: &CapabilityId) -> &[&'a RulePack] {
+        self.providers
+            .get(capability_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+}
+
+fn index_providers(packs: &[RulePack]) -> BTreeMap<CapabilityId, Vec<&RulePack>> {
+    let mut providers = BTreeMap::<_, Vec<_>>::new();
+    for pack in packs {
+        for capability_id in pack.manifest().provides() {
+            providers
+                .entry(capability_id.clone())
+                .or_default()
+                .push(pack);
+        }
+    }
+    providers
 }

@@ -1,8 +1,10 @@
 use sekai::rules::{
-    CapabilityContribution, ConstraintStrength, CoreSchemaRange, RuleItemId, RulePack,
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, CapabilityDescriptor, CapabilityId, CapabilityRegistry,
+    CapabilityRegistryBuilder, ConstraintStrength, CoreSchemaRange, RuleItemId, RulePack,
     RulePackDependency, RulePackId, RulePackKind, RulePackSet, RulePackSetError,
     RuleTectonicConstraint, RuleVersion, RuleVersionRequirement, TectonicConstraintClause,
-    MAX_RULE_PACKS, MAX_RULE_SET_CONTRIBUTIONS,
+    TectonicModel, MAX_RULE_PACKS, MAX_RULE_SET_CONTRIBUTIONS,
 };
 use sekai::world::WORLD_SPEC_SCHEMA_V1;
 
@@ -46,6 +48,25 @@ fn pack_with(
     .unwrap()
 }
 
+fn typed_pack(
+    name: &str,
+    kind: RulePackKind,
+    dependencies: Vec<RulePackDependency>,
+    consumes: Vec<CapabilityId>,
+    contributions: Vec<CapabilityContribution>,
+) -> RulePack {
+    RulePack::new(
+        pack_id(name),
+        RuleVersion::new(1, 0, 0).unwrap(),
+        kind,
+        CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1).unwrap(),
+        dependencies,
+        consumes,
+        contributions,
+    )
+    .unwrap()
+}
+
 fn plate_constraint(index: usize) -> CapabilityContribution {
     CapabilityContribution::TectonicConstraint(
         RuleTectonicConstraint::new(
@@ -55,6 +76,38 @@ fn plate_constraint(index: usize) -> CapabilityContribution {
         )
         .unwrap(),
     )
+}
+
+fn model_contribution() -> CapabilityContribution {
+    CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1)
+}
+
+fn model_descriptor() -> CapabilityDescriptor {
+    CapabilityDescriptor::new(
+        tectonic_model_capability_id(),
+        CapabilityCardinality::UniqueRequired,
+        RulePackKind::WorldLaw,
+        false,
+    )
+}
+
+fn controls_descriptor() -> CapabilityDescriptor {
+    CapabilityDescriptor::new(
+        tectonic_controls_capability_id(),
+        CapabilityCardinality::Merge,
+        RulePackKind::Ordinary,
+        true,
+    )
+}
+
+fn capability_registry(
+    descriptors: impl IntoIterator<Item = CapabilityDescriptor>,
+) -> CapabilityRegistry {
+    let mut builder = CapabilityRegistryBuilder::new();
+    for descriptor in descriptors {
+        builder.register(descriptor).unwrap();
+    }
+    builder.build()
 }
 
 fn pack_names<'a>(packs: impl IntoIterator<Item = &'a RulePack>) -> Vec<&'a str> {
@@ -377,4 +430,241 @@ fn dependency_set_deserialization_revalidates_private_invariants() {
     let mut tampered = serde_json::to_value(&original).unwrap();
     tampered["packs"][0]["manifest"]["version"]["patch"] = serde_json::json!(9);
     assert!(serde_json::from_value::<RulePackSet>(tampered).is_err());
+}
+
+#[test]
+fn capability_resolution_rejects_unknown_provided_capability() {
+    let registry = capability_registry([controls_descriptor()]);
+    let set = RulePackSet::new(vec![typed_pack(
+        "world-law",
+        RulePackKind::WorldLaw,
+        Vec::new(),
+        Vec::new(),
+        vec![model_contribution()],
+    )])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::UnknownProvidedCapability {
+            pack_id: pack_id("world-law"),
+            capability_id: tectonic_model_capability_id(),
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_rejects_unknown_consumed_capability() {
+    let unknown = CapabilityId::new("sekai.test", "unknown", 1).unwrap();
+    let registry = capability_registry([controls_descriptor()]);
+    let set = RulePackSet::new(vec![typed_pack(
+        "consumer",
+        RulePackKind::Ordinary,
+        Vec::new(),
+        vec![unknown.clone()],
+        Vec::new(),
+    )])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::UnknownConsumedCapability {
+            pack_id: pack_id("consumer"),
+            capability_id: unknown,
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_rejects_ordinary_provider_of_world_law_capability() {
+    let registry = capability_registry([model_descriptor()]);
+    let set = RulePackSet::new(vec![typed_pack(
+        "ordinary",
+        RulePackKind::Ordinary,
+        Vec::new(),
+        Vec::new(),
+        vec![model_contribution()],
+    )])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::InsufficientCapabilityPermission {
+            pack_id: pack_id("ordinary"),
+            capability_id: tectonic_model_capability_id(),
+            found: RulePackKind::Ordinary,
+            required: RulePackKind::WorldLaw,
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_allows_world_law_provider_of_ordinary_capability() {
+    let registry = capability_registry([controls_descriptor()]);
+    let set = RulePackSet::new(vec![typed_pack(
+        "world-law-controls",
+        RulePackKind::WorldLaw,
+        Vec::new(),
+        Vec::new(),
+        vec![plate_constraint(1)],
+    )])
+    .unwrap();
+    let resolved = set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap();
+
+    assert_eq!(
+        pack_names(
+            resolved
+                .providers(&tectonic_controls_capability_id())
+                .iter()
+                .copied()
+        ),
+        vec!["sekai.test.world-law-controls"]
+    );
+}
+
+#[test]
+fn capability_resolution_rejects_missing_consumed_capability() {
+    let registry = capability_registry([controls_descriptor()]);
+    let set = RulePackSet::new(vec![typed_pack(
+        "consumer",
+        RulePackKind::Ordinary,
+        Vec::new(),
+        vec![tectonic_controls_capability_id()],
+        Vec::new(),
+    )])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::MissingConsumedCapability {
+            pack_id: pack_id("consumer"),
+            capability_id: tectonic_controls_capability_id(),
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_rejects_missing_required_unique_capability() {
+    let registry = capability_registry([model_descriptor()]);
+    let set = RulePackSet::new(Vec::new()).unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::MissingRequiredCapability {
+            capability_id: tectonic_model_capability_id(),
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_rejects_multiple_unique_providers_stably() {
+    let registry = capability_registry([model_descriptor()]);
+    let set = RulePackSet::new(vec![
+        typed_pack(
+            "zeta-law",
+            RulePackKind::WorldLaw,
+            Vec::new(),
+            Vec::new(),
+            vec![model_contribution()],
+        ),
+        typed_pack(
+            "alpha-law",
+            RulePackKind::WorldLaw,
+            Vec::new(),
+            Vec::new(),
+            vec![model_contribution()],
+        ),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap_err(),
+        RulePackSetError::MultipleCapabilityProviders {
+            capability_id: tectonic_model_capability_id(),
+            provider_ids: vec![pack_id("alpha-law"), pack_id("zeta-law")],
+        }
+    );
+}
+
+#[test]
+fn capability_resolution_merges_and_indexes_providers_by_pack_id() {
+    let registry = capability_registry([controls_descriptor()]);
+    let set = RulePackSet::new(vec![
+        typed_pack(
+            "alpha-controls",
+            RulePackKind::Ordinary,
+            vec![dependency("zeta-controls", 1, 0, 0)],
+            Vec::new(),
+            vec![plate_constraint(1)],
+        ),
+        typed_pack(
+            "zeta-controls",
+            RulePackKind::Ordinary,
+            Vec::new(),
+            Vec::new(),
+            vec![plate_constraint(2)],
+        ),
+    ])
+    .unwrap();
+    let resolved = set.resolve(&registry, WORLD_SPEC_SCHEMA_V1).unwrap();
+
+    assert_eq!(
+        pack_names(resolved.packs()),
+        vec!["sekai.test.zeta-controls", "sekai.test.alpha-controls"]
+    );
+    assert_eq!(
+        pack_names(
+            resolved
+                .providers(&tectonic_controls_capability_id())
+                .iter()
+                .copied()
+        ),
+        vec!["sekai.test.alpha-controls", "sekai.test.zeta-controls"]
+    );
+    assert!(resolved
+        .providers(&tectonic_model_capability_id())
+        .is_empty());
+}
+
+#[test]
+fn capability_payload_cannot_masquerade_as_another_capability() {
+    let pack = typed_pack(
+        "controls",
+        RulePackKind::Ordinary,
+        Vec::new(),
+        Vec::new(),
+        vec![plate_constraint(1)],
+    );
+    let mut tampered = serde_json::to_value(pack).unwrap();
+    tampered["manifest"]["provides"] = serde_json::json!([tectonic_model_capability_id()]);
+
+    assert!(serde_json::from_value::<RulePack>(tampered).is_err());
+}
+
+#[test]
+fn capability_registry_input_order_does_not_change_resolution() {
+    let forward = capability_registry([model_descriptor(), controls_descriptor()]);
+    let reverse = capability_registry([controls_descriptor(), model_descriptor()]);
+    let set = RulePackSet::new(vec![
+        typed_pack(
+            "world-law",
+            RulePackKind::WorldLaw,
+            Vec::new(),
+            Vec::new(),
+            vec![model_contribution()],
+        ),
+        typed_pack(
+            "controls",
+            RulePackKind::Ordinary,
+            Vec::new(),
+            Vec::new(),
+            vec![plate_constraint(1)],
+        ),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        set.resolve(&forward, WORLD_SPEC_SCHEMA_V1).unwrap(),
+        set.resolve(&reverse, WORLD_SPEC_SCHEMA_V1).unwrap()
+    );
 }
