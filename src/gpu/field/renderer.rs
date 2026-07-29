@@ -481,7 +481,6 @@ impl CellFieldRenderer {
 
     /// Returns cumulative upload evidence.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub const fn stats(&self) -> &RendererUploadStats {
         &self.stats
     }
@@ -761,13 +760,30 @@ fn checked_counter(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::{mpsc, Arc};
+
     use super::{
-        checked_buffer_bytes, combined_palette, next_buffer_capacity, FieldRenderError,
-        FieldUniforms, GpuCellVertex,
+        checked_buffer_bytes, combined_palette, next_buffer_capacity, wgpu, CellFieldRenderer,
+        FieldRenderError, FieldUniforms, GpuCellVertex,
     };
+    use crate::gpu::canvas_uniform::CanvasUniforms;
     use crate::view::{
-        LinearRgba, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
+        built_in_palette, prepare_cell_field, rasterize_reference, CellGeometrySource,
+        DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog, LinearRgba,
+        MeshCompleteness, PaletteId, PreparedCellMesh, PreparedDiagnosticMask,
+        PreparedFieldDisplay, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR,
+        DIAGNOSTIC_WARNING_COLOR,
     };
+    use crate::world::fields::{
+        DomainSizes, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain, FieldId,
+        FieldPaletteHint, FieldRegistryBuilder, FieldSchema, FieldUnit, FieldValueType,
+        MissingValuePolicy, ValueRange,
+    };
+    use crate::world::{CellId, Meters, WorldPoint, WorldRect};
+
+    const TEST_WIDTH: u32 = 128;
+    const TEST_HEIGHT: u32 = 64;
 
     #[test]
     fn gpu_struct_layouts_match_storage_and_uniform_contracts() {
@@ -804,5 +820,346 @@ mod tests {
         assert_eq!(combined[2], DIAGNOSTIC_INFO_COLOR.components());
         assert_eq!(combined[3], DIAGNOSTIC_WARNING_COLOR.components());
         assert_eq!(combined[4], DIAGNOSTIC_ERROR_COLOR.components());
+    }
+
+    #[test]
+    fn offscreen_scalar_and_category_match_cpu_reference() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        for packet in [
+            test_packet(TestFieldKind::Scalar),
+            test_packet(TestFieldKind::Category),
+        ] {
+            let gpu = render_offscreen(&device, &queue, &packet);
+            let cpu = rasterize_reference(&packet, TEST_WIDTH, TEST_HEIGHT).unwrap();
+            for (cell, (x, y)) in [(32, 16), (96, 16), (32, 48), (96, 48)]
+                .into_iter()
+                .enumerate()
+            {
+                let offset = (y as usize * TEST_WIDTH as usize + x as usize) * 4;
+                for channel in 0..3 {
+                    assert!(
+                        gpu[offset + channel].abs_diff(cpu.rgba8()[offset + channel]) <= 1,
+                        "cell {cell} channel {channel}: GPU={} CPU={}",
+                        gpu[offset + channel],
+                        cpu.rgba8()[offset + channel]
+                    );
+                }
+                assert_eq!(gpu[offset + 3], 255, "cell {cell} alpha");
+            }
+        }
+    }
+
+    #[test]
+    fn static_second_frame_uploads_only_uniforms() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let packet = test_packet(TestFieldKind::Scalar);
+        let canvas = test_canvas();
+        let mut renderer = CellFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+        renderer.prepare(&device, &queue, &packet, &canvas).unwrap();
+        renderer.prepare(&device, &queue, &packet, &canvas).unwrap();
+
+        let stats = renderer.stats();
+        assert_eq!(stats.geometry_uploads, 1);
+        assert_eq!(stats.field_uploads, 1);
+        assert_eq!(stats.diagnostic_uploads, 1);
+        assert_eq!(stats.palette_uploads, 1);
+        assert_eq!(stats.uniform_updates, 2);
+    }
+
+    fn request_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                })
+                .await;
+            let Some(adapter) = adapter else {
+                return gpu_unavailable("no fallback adapter is available");
+            };
+            match adapter
+                .request_device(
+                    &wgpu::DeviceDescriptor {
+                        label: Some("Field Display Test Device"),
+                        required_limits: wgpu::Limits::downlevel_defaults(),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+            {
+                Ok(device) => Some(device),
+                Err(error) => gpu_unavailable(&format!("fallback device request failed: {error}")),
+            }
+        })
+    }
+
+    fn gpu_unavailable<T>(reason: &str) -> Option<T> {
+        if std::env::var("SEKAI_REQUIRE_FIELD_GPU").as_deref() == Ok("1") {
+            panic!("field-display GPU evidence is required: {reason}");
+        }
+        eprintln!("skipping optional field-display GPU test: {reason}");
+        None
+    }
+
+    fn render_offscreen(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        packet: &PreparedFieldDisplay,
+    ) -> Vec<u8> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut renderer = CellFieldRenderer::new(device, format);
+        renderer
+            .prepare(device, queue, packet, &test_canvas())
+            .unwrap();
+
+        let extent = wgpu::Extent3d {
+            width: TEST_WIDTH,
+            height: TEST_HEIGHT,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Field Display Test Target"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let unpadded_bytes_per_row = TEST_WIDTH * 4;
+        let padded_bytes_per_row = unpadded_bytes_per_row
+            .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Field Display Test Readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(TEST_HEIGHT),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Field Display Test Encoder"),
+        });
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Field Display Test Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            renderer.render(&mut pass.forget_lifetime());
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(TEST_HEIGHT),
+                },
+            },
+            extent,
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).expect("mapping receiver is alive");
+        });
+        let _ = device.poll(wgpu::Maintain::Wait);
+        receiver
+            .recv()
+            .expect("mapping callback runs")
+            .expect("readback maps");
+
+        let mapped = slice.get_mapped_range();
+        let mut rgba8 = vec![0; unpadded_bytes_per_row as usize * TEST_HEIGHT as usize];
+        for row in 0..TEST_HEIGHT as usize {
+            let source_start = row * padded_bytes_per_row as usize;
+            let target_start = row * unpadded_bytes_per_row as usize;
+            rgba8[target_start..target_start + unpadded_bytes_per_row as usize].copy_from_slice(
+                &mapped[source_start..source_start + unpadded_bytes_per_row as usize],
+            );
+        }
+        drop(mapped);
+        readback.unmap();
+        rgba8
+    }
+
+    fn test_canvas() -> CanvasUniforms {
+        CanvasUniforms {
+            canvas_x: 0.0,
+            canvas_y: 0.0,
+            canvas_width: TEST_WIDTH as f32,
+            canvas_height: TEST_HEIGHT as f32,
+            translation_x: 0.0,
+            translation_y: 0.0,
+            scale: TEST_HEIGHT as f32,
+            padding1: 0.0,
+            padding2: 0.0,
+            padding3: 0.0,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TestFieldKind {
+        Scalar,
+        Category,
+    }
+
+    fn test_packet(kind: TestFieldKind) -> PreparedFieldDisplay {
+        let (schema, data, palette) = match kind {
+            TestFieldKind::Scalar => (
+                FieldSchema {
+                    id: FieldId::new("test.gpu", "scalar", 1).unwrap(),
+                    domain: FieldDomain::Cells,
+                    value_type: FieldValueType::ScalarF32,
+                    unit: FieldUnit::Unitless,
+                    valid_range: Some(ValueRange::new(0.0, 1.0).unwrap()),
+                    missing: MissingValuePolicy::Forbidden,
+                    dependencies: Vec::new(),
+                    category_labels: BTreeMap::new(),
+                    display: FieldDisplayMetadata::new(
+                        "field.test.gpu.scalar",
+                        FieldPaletteHint::Sequential,
+                        2,
+                    )
+                    .unwrap(),
+                },
+                FieldData::ScalarF32(vec![0.0, 0.35, 0.7, 1.0]),
+                PaletteId::Sequential,
+            ),
+            TestFieldKind::Category => (
+                FieldSchema {
+                    id: FieldId::new("test.gpu", "category", 1).unwrap(),
+                    domain: FieldDomain::Cells,
+                    value_type: FieldValueType::CategoryU32,
+                    unit: FieldUnit::Unitless,
+                    valid_range: None,
+                    missing: MissingValuePolicy::Forbidden,
+                    dependencies: Vec::new(),
+                    category_labels: BTreeMap::from([
+                        (10, "field.test.category.ten".into()),
+                        (20, "field.test.category.twenty".into()),
+                        (30, "field.test.category.thirty".into()),
+                        (40, "field.test.category.forty".into()),
+                    ]),
+                    display: FieldDisplayMetadata::new(
+                        "field.test.gpu.category",
+                        FieldPaletteHint::Categorical,
+                        0,
+                    )
+                    .unwrap(),
+                },
+                FieldData::CategoryU32(vec![10, 20, 30, 40]),
+                PaletteId::Categorical,
+            ),
+        };
+        let field_id = schema.id.clone();
+        let mut registry = FieldRegistryBuilder::new();
+        registry.register(schema).unwrap();
+        let registry = registry.build().unwrap();
+        let mut fields = ExtensionFieldSet::new();
+        fields
+            .insert(&registry, field_id.clone(), data, &DomainSizes::new(4, 0))
+            .unwrap();
+        let catalog = FieldCatalog::from_extension_fields(&registry, &fields).unwrap();
+        let field = Arc::new(
+            prepare_cell_field(
+                catalog.get(&field_id).unwrap().view().unwrap(),
+                4,
+                DisplayRangeMode::Schema,
+            )
+            .unwrap(),
+        );
+        let mut clock = DisplayRevisionClock::default();
+        let revisions = DisplayRevisions::new(
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+            clock.issue().unwrap(),
+        );
+        PreparedFieldDisplay::new(
+            Arc::new(
+                PreparedCellMesh::build(&FourCellGeometry::new(), MeshCompleteness::RequireAll)
+                    .unwrap(),
+            ),
+            field,
+            Arc::new(PreparedDiagnosticMask::empty(4)),
+            Arc::from(built_in_palette(palette)),
+            revisions,
+            false,
+        )
+        .unwrap()
+    }
+
+    struct FourCellGeometry {
+        bounds: WorldRect,
+        polygons: [Vec<WorldPoint>; 4],
+    }
+
+    impl FourCellGeometry {
+        fn new() -> Self {
+            Self {
+                bounds: WorldRect::new(point(0.0, 0.0), point(2.0, 1.0)).unwrap(),
+                polygons: [
+                    square(0.0, 0.0, 1.0, 0.5),
+                    square(1.0, 0.0, 2.0, 0.5),
+                    square(0.0, 0.5, 1.0, 1.0),
+                    square(1.0, 0.5, 2.0, 1.0),
+                ],
+            }
+        }
+    }
+
+    impl CellGeometrySource for FourCellGeometry {
+        fn bounds(&self) -> WorldRect {
+            self.bounds
+        }
+
+        fn cell_count(&self) -> usize {
+            self.polygons.len()
+        }
+
+        fn polygon(&self, cell: CellId) -> Option<&[WorldPoint]> {
+            self.polygons.get(cell.raw() as usize).map(Vec::as_slice)
+        }
+    }
+
+    fn square(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Vec<WorldPoint> {
+        vec![
+            point(min_x, min_y),
+            point(max_x, min_y),
+            point(max_x, max_y),
+            point(min_x, max_y),
+        ]
+    }
+
+    fn point(x: f64, y: f64) -> WorldPoint {
+        WorldPoint::new(Meters::new(x).unwrap(), Meters::new(y).unwrap())
     }
 }

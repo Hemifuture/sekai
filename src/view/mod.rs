@@ -5,6 +5,7 @@ mod field;
 mod mesh;
 mod palette;
 mod prepared;
+mod reference;
 mod state;
 
 pub use diagnostics::{
@@ -28,4 +29,5 @@ pub use prepared::{
     DisplayRevision, DisplayRevisionClock, DisplayRevisions, DisplayStatusError,
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
+pub use reference::{rasterize_reference, ReferenceImage};
 pub use state::{format_field_value, FieldDisplayState, FormattedFieldValue};

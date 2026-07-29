@@ -48,6 +48,10 @@ wasm-bindgen-futures = "0.4"
 web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "0.4"
+
 [profile.release]
 opt-level = 2 # fast and small wasm
 

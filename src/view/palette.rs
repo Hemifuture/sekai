@@ -304,6 +304,20 @@ pub enum DisplayPrepareError {
     /// No available scalar or category cell field could be prepared.
     #[error("no renderable cell field is available")]
     NoRenderableField,
+    /// A reference image used a zero width or height.
+    #[error("reference image dimensions must be non-zero, got {width} x {height}")]
+    InvalidReferenceImageDimensions {
+        /// Requested image width.
+        width: u32,
+        /// Requested image height.
+        height: u32,
+    },
+    /// A checked reference-image allocation could not be reserved.
+    #[error("could not allocate {bytes} bytes for the reference image")]
+    ReferenceImageAllocationFailed {
+        /// Requested RGBA8 byte count.
+        bytes: usize,
+    },
 }
 
 const SEQUENTIAL: [LinearRgba; 5] = [
