@@ -13,6 +13,7 @@ pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
 pub(super) const RELIEF_REGIONAL_LABEL: &str = "relief-regional-v1";
 pub(super) const HOTSPOT_SEEDS_LABEL: &str = "hotspot-seeds-v1";
 pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
+pub(super) const BEDROCK_PROVINCE_LABEL: &str = "bedrock-province-v1";
 
 pub(super) struct LabeledSubstreams {
     root: [u8; 32],
@@ -46,8 +47,8 @@ mod tests {
     use rand::RngCore;
 
     use super::{
-        LabeledSubstreams, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL, HOTSPOT_STRENGTH_LABEL,
-        PLATE_SEEDS_LABEL,
+        LabeledSubstreams, BEDROCK_PROVINCE_LABEL, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL,
+        HOTSPOT_STRENGTH_LABEL, PLATE_SEEDS_LABEL,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::world::RootSeed;
@@ -121,6 +122,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             (0..8)
                 .map(|_| pristine_strengths.next_u64())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn mantle_substreams_cannot_perturb_bedrock_provinces() {
+        let streams = LabeledSubstreams::capture(&mut stage_rng());
+        let mut hotspots = streams.stream(HOTSPOT_SEEDS_LABEL);
+        let mut provinces_after_hotspots = streams.stream(BEDROCK_PROVINCE_LABEL);
+        for _ in 0..100 {
+            hotspots.next_u64();
+        }
+
+        let pristine = LabeledSubstreams::capture(&mut stage_rng());
+        let mut pristine_provinces = pristine.stream(BEDROCK_PROVINCE_LABEL);
+        assert_eq!(
+            (0..8)
+                .map(|_| provinces_after_hotspots.next_u64())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|_| pristine_provinces.next_u64())
                 .collect::<Vec<_>>()
         );
     }

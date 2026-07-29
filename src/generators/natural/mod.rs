@@ -2,6 +2,7 @@
 
 mod geologic_rule_input;
 mod geologic_stage;
+mod geology;
 mod mantle;
 mod random;
 mod relief;
@@ -16,6 +17,7 @@ pub use geologic_rule_input::{
     RuleGeologicResolutionStage, RuleGeologicResolutionStageInputs,
 };
 pub use geologic_stage::{MantleArtifact, MantleStage, MantleStageInputs};
+pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{
