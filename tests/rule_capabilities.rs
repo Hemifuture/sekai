@@ -1,13 +1,22 @@
 use sekai::rules::{
-    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
-    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
-    CapabilityRegistryError, ConstraintStrength, RuleItemId, RulePackKind, RuleTectonicConstraint,
-    TectonicConstraintClause, TectonicModel,
+    geologic_model_capability_id, tectonic_controls_capability_id, tectonic_model_capability_id,
+    CapabilityCardinality, CapabilityContribution, CapabilityDescriptor, CapabilityRegistry,
+    CapabilityRegistryBuilder, CapabilityRegistryError, ConstraintStrength, GeologicModel,
+    RuleItemId, RulePackKind, RuleTectonicConstraint, TectonicConstraintClause, TectonicModel,
 };
 
 fn model_descriptor() -> CapabilityDescriptor {
     CapabilityDescriptor::new(
         tectonic_model_capability_id(),
+        CapabilityCardinality::UniqueRequired,
+        RulePackKind::WorldLaw,
+        false,
+    )
+}
+
+fn geologic_model_descriptor() -> CapabilityDescriptor {
+    CapabilityDescriptor::new(
+        geologic_model_capability_id(),
         CapabilityCardinality::UniqueRequired,
         RulePackKind::WorldLaw,
         false,
@@ -26,6 +35,7 @@ fn controls_descriptor() -> CapabilityDescriptor {
 #[test]
 fn capability_descriptors_keep_cardinality_permission_and_author_access() {
     let model = model_descriptor();
+    let geologic_model = geologic_model_descriptor();
     let controls = controls_descriptor();
 
     assert_eq!(model.id(), &tectonic_model_capability_id());
@@ -34,6 +44,16 @@ fn capability_descriptors_keep_cardinality_permission_and_author_access() {
     assert!(!model.author_allowed());
     assert!(!model.allows_pack_kind(RulePackKind::Ordinary));
     assert!(model.allows_pack_kind(RulePackKind::WorldLaw));
+
+    assert_eq!(geologic_model.id(), &geologic_model_capability_id());
+    assert_eq!(
+        geologic_model.cardinality(),
+        CapabilityCardinality::UniqueRequired
+    );
+    assert_eq!(geologic_model.minimum_pack_kind(), RulePackKind::WorldLaw);
+    assert!(!geologic_model.author_allowed());
+    assert!(!geologic_model.allows_pack_kind(RulePackKind::Ordinary));
+    assert!(geologic_model.allows_pack_kind(RulePackKind::WorldLaw));
 
     assert_eq!(controls.cardinality(), CapabilityCardinality::Merge);
     assert!(controls.author_allowed());
@@ -50,6 +70,7 @@ fn capability_registry_is_frozen_sorted_and_duplicate_safe() {
         duplicate,
         CapabilityRegistryError::DuplicateCapability { .. }
     ));
+    builder.register(geologic_model_descriptor()).unwrap();
     builder.register(controls_descriptor()).unwrap();
     let registry = builder.build();
 
@@ -60,7 +81,7 @@ fn capability_registry_is_frozen_sorted_and_duplicate_safe() {
     let mut sorted = ids.clone();
     sorted.sort();
     assert_eq!(ids, sorted);
-    assert_eq!(registry.len(), 2);
+    assert_eq!(registry.len(), 3);
     assert_eq!(
         registry
             .get(&tectonic_model_capability_id())
@@ -89,6 +110,7 @@ fn empty_capability_registry_is_valid_and_read_only() {
 #[test]
 fn closed_contributions_report_their_exact_capability() {
     let model = CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1);
+    let geologic_model = CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1);
     let constraint = CapabilityContribution::TectonicConstraint(
         RuleTectonicConstraint::new(
             RuleItemId::new("prefer-twelve-plates").unwrap(),
@@ -100,15 +122,21 @@ fn closed_contributions_report_their_exact_capability() {
 
     assert_eq!(model.capability_id(), tectonic_model_capability_id());
     assert_eq!(
+        geologic_model.capability_id(),
+        geologic_model_capability_id()
+    );
+    assert_eq!(
         constraint.capability_id(),
         tectonic_controls_capability_id()
     );
     assert_eq!(model.rule_item_id(), None);
+    assert_eq!(geologic_model.rule_item_id(), None);
     assert_eq!(
         constraint.rule_item_id().unwrap().as_str(),
         "prefer-twelve-plates"
     );
     model.validate().unwrap();
+    geologic_model.validate().unwrap();
     constraint.validate().unwrap();
 }
 
@@ -116,11 +144,13 @@ fn closed_contributions_report_their_exact_capability() {
 fn registry_serialization_is_stable_and_revalidates_duplicates() {
     let mut forward = CapabilityRegistryBuilder::new();
     forward.register(model_descriptor()).unwrap();
+    forward.register(geologic_model_descriptor()).unwrap();
     forward.register(controls_descriptor()).unwrap();
     let forward = forward.build();
 
     let mut reverse = CapabilityRegistryBuilder::new();
     reverse.register(controls_descriptor()).unwrap();
+    reverse.register(geologic_model_descriptor()).unwrap();
     reverse.register(model_descriptor()).unwrap();
     let reverse = reverse.build();
 

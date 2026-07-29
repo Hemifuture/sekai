@@ -1,10 +1,11 @@
 use thiserror::Error;
 
 use super::{
-    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
-    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
-    CapabilityRegistryError, CoreSchemaRange, RuleIdentityError, RulePack, RulePackError,
-    RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
+    geologic_model_capability_id, tectonic_controls_capability_id, tectonic_model_capability_id,
+    CapabilityCardinality, CapabilityContribution, CapabilityDescriptor, CapabilityRegistry,
+    CapabilityRegistryBuilder, CapabilityRegistryError, CoreSchemaRange, GeologicModel,
+    RuleIdentityError, RulePack, RulePackError, RulePackId, RulePackKind, RulePackSet,
+    RulePackSetError, RuleVersion, TectonicModel,
 };
 use crate::world::WORLD_SPEC_SCHEMA_V1;
 
@@ -32,6 +33,12 @@ pub enum BuiltinRuleError {
 pub fn core_capability_registry() -> Result<CapabilityRegistry, BuiltinRuleError> {
     let mut builder = CapabilityRegistryBuilder::new();
     builder.register(CapabilityDescriptor::new(
+        geologic_model_capability_id(),
+        CapabilityCardinality::UniqueRequired,
+        RulePackKind::WorldLaw,
+        false,
+    ))?;
+    builder.register(CapabilityDescriptor::new(
         tectonic_model_capability_id(),
         CapabilityCardinality::UniqueRequired,
         RulePackKind::WorldLaw,
@@ -55,9 +62,10 @@ pub fn earthlike_rule_pack() -> Result<RulePack, BuiltinRuleError> {
         CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1)?,
         Vec::new(),
         Vec::new(),
-        vec![CapabilityContribution::TectonicModel(
-            TectonicModel::CurrentSliceV1,
-        )],
+        vec![
+            CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
+            CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
+        ],
     )?)
 }
 

@@ -8,6 +8,7 @@ use super::{CapabilityId, ConstraintError, RuleItemId, RuleTectonicConstraint};
 
 const CORE_NATURAL_NAMESPACE: &str = "sekai.core.natural";
 const TECTONIC_MODEL_NAME: &str = "tectonic-model";
+const GEOLOGIC_MODEL_NAME: &str = "geologic-model";
 const TECTONIC_CONTROLS_NAME: &str = "tectonic-controls";
 const CAPABILITY_SCHEMA_V1: u16 = 1;
 
@@ -19,6 +20,16 @@ pub fn tectonic_model_capability_id() -> CapabilityId {
         CAPABILITY_SCHEMA_V1,
     )
     .expect("the engine-owned tectonic model capability ID is valid")
+}
+
+/// Returns the stable unique geologic-model capability ID.
+pub fn geologic_model_capability_id() -> CapabilityId {
+    CapabilityId::new(
+        CORE_NATURAL_NAMESPACE,
+        GEOLOGIC_MODEL_NAME,
+        CAPABILITY_SCHEMA_V1,
+    )
+    .expect("the engine-owned geologic model capability ID is valid")
 }
 
 /// Returns the stable mergeable tectonic-controls capability ID.
@@ -212,11 +223,20 @@ pub enum TectonicModel {
     CurrentSliceV1,
 }
 
+/// A trusted compiled surface-geology implementation selected by world law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum GeologicModel {
+    /// The deterministic current-slice geologic substrate synthesizer.
+    CurrentSliceV1,
+}
+
 /// A closed data contribution accepted by the V1 capability system.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CapabilityContribution {
     /// Selects one trusted compiled tectonic model.
     TectonicModel(TectonicModel),
+    /// Selects one trusted compiled geologic model.
+    GeologicModel(GeologicModel),
     /// Adds one typed tectonic control constraint.
     TectonicConstraint(RuleTectonicConstraint),
 }
@@ -226,6 +246,7 @@ impl CapabilityContribution {
     pub fn capability_id(&self) -> CapabilityId {
         match self {
             Self::TectonicModel(_) => tectonic_model_capability_id(),
+            Self::GeologicModel(_) => geologic_model_capability_id(),
             Self::TectonicConstraint(_) => tectonic_controls_capability_id(),
         }
     }
@@ -233,7 +254,7 @@ impl CapabilityContribution {
     /// Returns a local item ID for merge contributions that require uniqueness.
     pub fn rule_item_id(&self) -> Option<&RuleItemId> {
         match self {
-            Self::TectonicModel(_) => None,
+            Self::TectonicModel(_) | Self::GeologicModel(_) => None,
             Self::TectonicConstraint(constraint) => Some(constraint.item_id()),
         }
     }
@@ -241,7 +262,7 @@ impl CapabilityContribution {
     /// Revalidates the typed contribution payload.
     pub fn validate(&self) -> Result<(), ConstraintError> {
         match self {
-            Self::TectonicModel(_) => Ok(()),
+            Self::TectonicModel(_) | Self::GeologicModel(_) => Ok(()),
             Self::TectonicConstraint(constraint) => constraint.validate(),
         }
     }

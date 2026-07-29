@@ -1,9 +1,9 @@
 use sekai::rules::{
     tectonic_controls_capability_id, CapabilityContribution, ConstraintStrength, CoreSchemaRange,
-    RuleItemId, RulePack, RulePackDependency, RulePackError, RulePackId, RulePackKind,
-    RuleTectonicConstraint, RuleVersion, RuleVersionRequirement, TectonicConstraintClause,
-    TectonicModel, MAX_RULE_PACK_CAPABILITY_REQUIREMENTS, MAX_RULE_PACK_CONTRIBUTIONS,
-    MAX_RULE_PACK_DEPENDENCIES, RULE_PACK_SCHEMA_V1,
+    GeologicModel, RuleItemId, RulePack, RulePackDependency, RulePackError, RulePackId,
+    RulePackKind, RuleTectonicConstraint, RuleVersion, RuleVersionRequirement,
+    TectonicConstraintClause, TectonicModel, MAX_RULE_PACK_CAPABILITY_REQUIREMENTS,
+    MAX_RULE_PACK_CONTRIBUTIONS, MAX_RULE_PACK_DEPENDENCIES, RULE_PACK_SCHEMA_V1,
 };
 
 fn dependency(index: usize) -> RulePackDependency {
@@ -161,6 +161,17 @@ fn manifest_rejects_duplicate_structural_entries() {
             vec![
                 CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
                 CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1)
+            ]
+        ),
+        Err(RulePackError::DuplicateUniqueContribution { .. })
+    ));
+    assert!(matches!(
+        pack(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
+                CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1)
             ]
         ),
         Err(RulePackError::DuplicateUniqueContribution { .. })

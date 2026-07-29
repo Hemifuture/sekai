@@ -13,9 +13,9 @@ pub use builtin::{
     EARTHLIKE_RULE_PACK_ID,
 };
 pub use capability::{
-    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
-    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
-    CapabilityRegistryError, RulePackKind, TectonicModel,
+    geologic_model_capability_id, tectonic_controls_capability_id, tectonic_model_capability_id,
+    CapabilityCardinality, CapabilityContribution, CapabilityDescriptor, CapabilityRegistry,
+    CapabilityRegistryBuilder, CapabilityRegistryError, GeologicModel, RulePackKind, TectonicModel,
 };
 pub use constraints::{
     ActivitySet, AuthorConstraint, AuthorConstraints, ConstraintError, ConstraintSource,
