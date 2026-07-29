@@ -6,7 +6,7 @@ use crate::world::fields::{
 };
 
 /// One renderer-neutral field value borrowed by index.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FieldValue {
     /// A finite scalar value.
     Scalar(f32),

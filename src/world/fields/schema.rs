@@ -222,6 +222,16 @@ pub enum FieldUnit {
     },
 }
 
+impl FieldUnit {
+    /// Returns the human-readable unit symbol, or an empty string for unitless values.
+    pub fn symbol(&self) -> &str {
+        match self {
+            Self::Unitless => "",
+            Self::Custom { symbol, .. } => symbol,
+        }
+    }
+}
+
 /// An inclusive finite range for scalar field values.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ValueRange {

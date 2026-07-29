@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use super::{CellFillKind, FieldView, FieldViewError};
 use crate::world::fields::{FieldId, ValueRange};
+use crate::world::CellId;
 
 /// A linear-light RGBA color used consistently by CPU and GPU display paths.
 #[repr(C)]
@@ -207,6 +208,14 @@ pub enum DisplayPrepareError {
         field: FieldId,
         /// The unrepresentable category count.
         count: usize,
+    },
+    /// A diagnostic referenced a cell outside the prepared mask.
+    #[error("diagnostic cell {cell:?} is outside cell count {cell_count}")]
+    DiagnosticCellOutOfRange {
+        /// The invalid stable cell identifier.
+        cell: CellId,
+        /// The number of valid cells.
+        cell_count: usize,
     },
 }
 
