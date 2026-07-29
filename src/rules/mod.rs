@@ -2,6 +2,7 @@
 
 mod builtin;
 mod capability;
+mod climate;
 mod constraints;
 mod geology;
 mod ids;
@@ -19,6 +20,10 @@ pub use capability::{
     tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution,
     CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder, CapabilityRegistryError,
     ClimateModel, GeologicModel, RulePackKind, TectonicModel,
+};
+pub use climate::{
+    ClimateRuleResolution, ClimateRuleResolutionError, ClimateRuleResolver,
+    CLIMATE_RULE_RESOLUTION_SCHEMA_V1,
 };
 pub use constraints::{
     ActivitySet, AuthorConstraint, AuthorConstraints, ConstraintError, ConstraintSource,
