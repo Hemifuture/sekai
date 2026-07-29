@@ -373,7 +373,9 @@ impl GeometryWarnings {
 mod tests {
     use std::sync::Arc;
 
-    use super::super::{prepare_control_action, prepare_new_legacy_display};
+    use super::super::field_document::{
+        prepare_control_action, prepare_new_document_display as prepare_new_legacy_display,
+    };
     use super::{
         legacy_elevation_id, legacy_plate_id, LegacyDisplayError, LegacyTerrainDisplayAdapter,
     };
