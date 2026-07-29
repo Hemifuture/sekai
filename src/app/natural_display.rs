@@ -5,7 +5,8 @@ use thiserror::Error;
 use super::field_document::AppFieldDocument;
 use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::generators::natural::{
-    GeologicArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, TectonicArtifact,
+    GeologicArtifact, HydroErosionArtifact, MantleArtifact, PreliminaryClimateArtifact,
+    ReliefArtifact, TectonicArtifact,
 };
 use crate::generators::spatial::SpatialArtifact;
 use crate::view::{
@@ -14,19 +15,23 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldRegistry, ValueRange};
 use crate::world::natural::{
-    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
-    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
-    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
-    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,
+    boundary_strength_field_id, crust_base_elevation_field_id, crust_kind_field_id,
+    crust_thickness_field_id, drainage_area_km2_field_id, elevation_field_id,
+    erosion_resistance_field_id, fluvial_erosion_depth_m_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, lake_depth_m_field_id, land_ocean_field_id,
+    latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
+    mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
     natural_field_registry, plate_id_field_id, plate_velocity_field_id,
     preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
     preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
-    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    regional_offset_field_id, relative_permeability_field_id,
+    sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
+    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
-    ClimateValidationError, GeologicValidationError, MantleValidationError,
-    NaturalFieldDisplayCache, NaturalFieldRegistryError, ReliefValidationError,
-    TectonicValidationError,
+    ClimateValidationError, GeologicValidationError, HydroErosionValidationError,
+    MantleValidationError, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    ReliefValidationError, TectonicValidationError,
 };
 use crate::world::spatial::SpatialValidationError;
 
@@ -38,6 +43,7 @@ pub(super) struct NaturalFieldDocument {
     pub(super) relief: Arc<ReliefArtifact>,
     pub(super) geology: Arc<GeologicArtifact>,
     pub(super) climate: Arc<PreliminaryClimateArtifact>,
+    pub(super) hydro_erosion: Arc<HydroErosionArtifact>,
     registry: FieldRegistry,
     mesh: Arc<PreparedCellMesh>,
     diagnostics: Vec<OwnedViewDiagnostic>,
@@ -52,6 +58,7 @@ impl NaturalFieldDocument {
         relief: Arc<ReliefArtifact>,
         geology: Arc<GeologicArtifact>,
         climate: Arc<PreliminaryClimateArtifact>,
+        hydro_erosion: Arc<HydroErosionArtifact>,
         report: &BuildReport,
     ) -> Result<Self, NaturalDisplayError> {
         spatial.snapshot().validate()?;
@@ -67,6 +74,12 @@ impl NaturalFieldDocument {
         climate
             .snapshot()
             .validate_against(spatial.snapshot(), relief.snapshot())?;
+        hydro_erosion.snapshot().validate_against(
+            spatial.snapshot(),
+            relief.snapshot(),
+            geology.snapshot(),
+            climate.snapshot(),
+        )?;
         let plate_count = u16::try_from(tectonic.snapshot().plates().len())
             .map_err(|_| NaturalDisplayError::PlateCountOverflow)?;
         let registry = natural_field_registry(plate_count)?;
@@ -97,6 +110,7 @@ impl NaturalFieldDocument {
             relief,
             geology,
             climate,
+            hydro_erosion,
             registry,
             mesh,
             diagnostics,
@@ -218,6 +232,84 @@ impl NaturalFieldDocument {
                 preliminary_annual_precipitation_mm_field_id(),
                 FieldPayloadRef::ScalarF32(self.climate.snapshot().annual_precipitation_mm()),
             ),
+            (
+                surface_elevation_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .surface()
+                        .surface_elevation_m()
+                        .values(),
+                ),
+            ),
+            (
+                fluvial_erosion_depth_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion.snapshot().surface().erosion_depth_m(),
+                ),
+            ),
+            (
+                sediment_deposition_thickness_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .surface()
+                        .deposition_thickness_m(),
+                ),
+            ),
+            (
+                surface_water_kind_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .surface_water()
+                        .raw_values(),
+                ),
+            ),
+            (
+                lake_depth_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion.snapshot().hydrology().lake_depth_m(),
+                ),
+            ),
+            (
+                annual_local_runoff_mm_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .annual_local_runoff_mm(),
+                ),
+            ),
+            (
+                mean_annual_discharge_m3_s_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .mean_annual_discharge_m3_s(),
+                ),
+            ),
+            (
+                drainage_area_km2_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .drainage_area_km2(),
+                ),
+            ),
+            (
+                strahler_stream_order_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    self.hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .strahler_order()
+                        .raw_values(),
+                ),
+            ),
         ]
     }
 
@@ -226,11 +318,12 @@ impl NaturalFieldDocument {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
         use crate::generators::natural::{
             natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-            GeologicSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+            GeologicSpecArtifact, HydroErosionSpecArtifact, RulePackSetArtifact,
+            TectonicSpecArtifact,
         };
         use crate::generators::spatial::PlanarSpaceArtifact;
         use crate::rules::{default_rule_pack_set, AuthorConstraints};
-        use crate::world::natural::{ClimateSpec, GeologicSpec, TectonicSpec};
+        use crate::world::natural::{ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec};
         use crate::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
         let mut external = ExternalArtifacts::new();
@@ -252,6 +345,9 @@ impl NaturalFieldDocument {
             .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
             .unwrap();
         external
+            .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+            .unwrap();
+        external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
             .unwrap();
         external
@@ -270,6 +366,7 @@ impl NaturalFieldDocument {
                 .artifacts
                 .get::<PreliminaryClimateArtifact>()
                 .unwrap(),
+            outcome.artifacts.get::<HydroErosionArtifact>().unwrap(),
             &outcome.report,
         )
         .unwrap()
@@ -290,19 +387,20 @@ impl AppFieldDocument for NaturalFieldDocument {
     }
 
     fn preferred_field(&self) -> Option<FieldId> {
-        Some(elevation_field_id())
+        Some(surface_elevation_m_field_id())
     }
 
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
-        if field != &elevation_field_id() {
+        if field != &surface_elevation_m_field_id() {
             return None;
         }
         self.registry.get(field)?;
         let sea_level = self.relief.snapshot().sea_level_m();
         let radius = self
-            .relief
+            .hydro_erosion
             .snapshot()
-            .elevation_m()
+            .surface()
+            .surface_elevation_m()
             .values()
             .iter()
             .map(|value| (value - sea_level).abs())
@@ -328,6 +426,8 @@ pub(super) enum NaturalDisplayError {
     #[error(transparent)]
     Climate(#[from] ClimateValidationError),
     #[error(transparent)]
+    HydroErosion(#[from] HydroErosionValidationError),
+    #[error(transparent)]
     Registry(#[from] NaturalFieldRegistryError),
     #[error(transparent)]
     Display(#[from] DisplayPrepareError),
@@ -348,8 +448,9 @@ mod tests {
     };
     use crate::generators::natural::{
         natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-        GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
-        RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+        GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
+        PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+        TectonicSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
@@ -358,8 +459,9 @@ mod tests {
         bedrock_kind_field_id, elevation_field_id, geothermal_potential_field_id,
         mantle_heat_flow_field_id, plate_id_field_id, plate_velocity_field_id,
         preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
-        preliminary_prevailing_wind_m_s_field_id, volcanic_offset_field_id, ClimateSpec,
-        GeologicSpec, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
+        preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id,
+        surface_water_kind_field_id, volcanic_offset_field_id, ClimateSpec, GeologicSpec,
+        HydroErosionSpec, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
         TectonicSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
     };
     use crate::world::spatial::Topology;
@@ -385,6 +487,9 @@ mod tests {
             .unwrap();
         external
             .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
+            .unwrap();
+        external
+            .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -417,6 +522,7 @@ mod tests {
             .artifacts
             .get::<PreliminaryClimateArtifact>()
             .unwrap();
+        let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>().unwrap();
         NaturalFieldDocument::build(
             spatial,
             tectonic,
@@ -424,6 +530,7 @@ mod tests {
             relief,
             geology,
             climate,
+            hydro_erosion,
             &outcome.report,
         )
         .unwrap()
@@ -556,6 +663,40 @@ mod tests {
                 .as_ptr(),
             document.climate.snapshot().prevailing_wind_m_s().as_ptr()
         );
+        assert_eq!(
+            catalog
+                .get(&surface_elevation_m_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .hydro_erosion
+                .snapshot()
+                .surface()
+                .surface_elevation_m()
+                .values()
+                .as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&surface_water_kind_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .category_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .hydro_erosion
+                .snapshot()
+                .hydrology()
+                .surface_water()
+                .raw_values()
+                .as_ptr()
+        );
 
         let velocities = catalog
             .get(&plate_velocity_field_id())
@@ -626,6 +767,7 @@ mod tests {
             document.relief.clone(),
             document.geology.clone(),
             climate,
+            document.hydro_erosion.clone(),
             &BuildReport::new(),
         );
         assert!(matches!(
@@ -635,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_are_owned_and_default_display_is_symmetric_elevation() {
+    fn diagnostics_are_owned_and_default_display_is_symmetric_current_surface() {
         let document = build_document_with_diagnostic();
         assert_eq!(document.diagnostics().len(), 1);
         assert_eq!(
@@ -643,19 +785,23 @@ mod tests {
             ViewDiagnosticSeverity::Warning
         );
         assert_eq!(document.diagnostics()[0].message, "owned natural warning");
-        assert_eq!(document.preferred_field(), Some(elevation_field_id()));
+        assert_eq!(
+            document.preferred_field(),
+            Some(surface_elevation_m_field_id())
+        );
         let DisplayRangeMode::Manual(range) = document
-            .preferred_range(&elevation_field_id())
-            .expect("elevation has a preferred sea-level range")
+            .preferred_range(&surface_elevation_m_field_id())
+            .expect("current surface has a preferred sea-level range")
         else {
-            panic!("natural elevation must use an explicit symmetric range");
+            panic!("current surface must use an explicit symmetric range");
         };
         let sea_level = document.relief.snapshot().sea_level_m();
         assert!(((range.min() + range.max()) * 0.5 - sea_level).abs() < 0.001);
         let expected_radius = document
-            .relief
+            .hydro_erosion
             .snapshot()
-            .elevation_m()
+            .surface()
+            .surface_elevation_m()
             .values()
             .iter()
             .map(|value| (value - sea_level).abs())

@@ -20,9 +20,9 @@ use crate::{
     generators::{
         natural::{
             natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-            GeologicArtifact, GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact,
-            ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
-            TectonicSpecArtifact,
+            GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
+            MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact,
+            TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
@@ -41,8 +41,8 @@ use crate::{
     view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
     world::{
         natural::{
-            ClimateSpec, GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicActivity,
-            TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT,
+            ClimateSpec, GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
+            TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT,
             MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
         },
         BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
@@ -53,6 +53,9 @@ use crate::{
 const DEFAULT_WORLD_WIDTH_M: f64 = 20_000_000.0;
 const DEFAULT_WORLD_HEIGHT_M: f64 = 10_000_000.0;
 const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
+const CURRENT_SLICE_STATUS_TEXT: &str =
+    "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
+const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RuleBuildSummary {
@@ -350,7 +353,7 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候");
+                ui.label(CURRENT_SLICE_STATUS_TEXT);
                 ui.separator();
                 ui.hyperlink_to("egui", "https://github.com/emilk/egui");
                 egui::warn_if_debug_build(ui);
@@ -366,7 +369,7 @@ impl eframe::App for TemplateApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("自然世界");
-                    ui.label("前工业·中世纪幻想｜当前时间切片（含初步气候）");
+                    ui.label(CURRENT_SLICE_SUBTITLE);
                     ui.separator();
 
                     ui.horizontal(|ui| {
@@ -521,6 +524,7 @@ fn build_natural_external_artifacts_with_rule_inputs(
     external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
     external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
     external.insert(ClimateSpecArtifact::new(ClimateSpec::default()))?;
+    external.insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))?;
     external.insert(RulePackSetArtifact::new(pack_set))?;
     external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
@@ -576,6 +580,7 @@ fn build_natural_candidate_from_external(
     let relief = outcome.artifacts.get::<ReliefArtifact>()?;
     let geology = outcome.artifacts.get::<GeologicArtifact>()?;
     let climate = outcome.artifacts.get::<PreliminaryClimateArtifact>()?;
+    let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>()?;
     let document = NaturalFieldDocument::build(
         spatial,
         tectonic,
@@ -583,6 +588,7 @@ fn build_natural_candidate_from_external(
         relief,
         geology,
         climate,
+        hydro_erosion,
         &outcome.report,
     )?;
     let mut next_clock = clock.clone();
@@ -634,12 +640,12 @@ mod natural_app_tests {
 
     use super::{
         build_natural_external_artifacts, default_world_spec, TemplateApp,
-        DEFAULT_TARGET_CELL_COUNT,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
-        AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, RulePackSetArtifact,
-        TectonicSpecArtifact,
+        AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
+        HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
     };
     use crate::generators::spatial::PlanarSpaceArtifact;
     use crate::rules::{
@@ -650,8 +656,8 @@ mod natural_app_tests {
     };
     use crate::view::FieldDisplayResourceState;
     use crate::world::natural::{
-        elevation_field_id, preliminary_mean_air_temperature_c_field_id, ClimateSpec, GeologicSpec,
-        MantleActivity, TectonicActivity, TectonicSpec,
+        preliminary_mean_air_temperature_c_field_id, surface_elevation_m_field_id, ClimateSpec,
+        GeologicSpec, HydroErosionSpec, MantleActivity, TectonicActivity, TectonicSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -691,11 +697,12 @@ mod natural_app_tests {
             &GeologicSpec::default(),
         )
         .unwrap();
-        assert_eq!(external.len(), 6);
+        assert_eq!(external.len(), 7);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
         assert!(external.hash::<GeologicSpecArtifact>().is_ok());
         assert!(external.hash::<ClimateSpecArtifact>().is_ok());
+        assert!(external.hash::<HydroErosionSpecArtifact>().is_ok());
         assert!(external.hash::<RulePackSetArtifact>().is_ok());
         assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
 
@@ -712,6 +719,9 @@ mod natural_app_tests {
         expected
             .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
             .unwrap();
+        expected
+            .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+            .unwrap();
         assert_eq!(
             external.hash::<GeologicSpecArtifact>().unwrap(),
             expected.hash::<GeologicSpecArtifact>().unwrap()
@@ -719,6 +729,10 @@ mod natural_app_tests {
         assert_eq!(
             external.hash::<ClimateSpecArtifact>().unwrap(),
             expected.hash::<ClimateSpecArtifact>().unwrap()
+        );
+        assert_eq!(
+            external.hash::<HydroErosionSpecArtifact>().unwrap(),
+            expected.hash::<HydroErosionSpecArtifact>().unwrap()
         );
         assert_eq!(
             external.hash::<RulePackSetArtifact>().unwrap(),
@@ -748,11 +762,12 @@ mod natural_app_tests {
         assert_eq!(document.relief.snapshot().cell_count(), 128);
         assert_eq!(document.geology.snapshot().cell_count(), 128);
         assert_eq!(document.climate.snapshot().cell_count(), 128);
+        assert_eq!(document.hydro_erosion.snapshot().cell_count(), 128);
         let packet = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
             .unwrap();
-        assert_eq!(packet.field().field_id(), &elevation_field_id());
+        assert_eq!(packet.field().field_id(), &surface_elevation_m_field_id());
         assert_eq!(app.rule_build_summary.active_pack_count, 1);
         assert_eq!(app.rule_build_summary.author_constraint_count, 0);
         assert_eq!(app.rule_build_summary.satisfied_constraint_count, 0);
@@ -772,6 +787,7 @@ mod natural_app_tests {
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
         let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
         let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
+        let hydro_erosion_before = app.natural_document.as_ref().unwrap().hydro_erosion.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -797,6 +813,10 @@ mod natural_app_tests {
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
         assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
         assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
+        assert!(Arc::ptr_eq(
+            &hydro_erosion_before,
+            &document_after.hydro_erosion
+        ));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -845,6 +865,7 @@ mod natural_app_tests {
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
         let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
         let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
+        let hydro_erosion_before = app.natural_document.as_ref().unwrap().hydro_erosion.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -897,6 +918,10 @@ mod natural_app_tests {
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
         assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
         assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
+        assert!(Arc::ptr_eq(
+            &hydro_erosion_before,
+            &document_after.hydro_erosion
+        ));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -908,7 +933,7 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn selected_climate_field_survives_a_successful_rebuild() {
+    fn selected_hydro_field_survives_a_successful_rebuild() {
         use crate::ui::field::FieldControlAction;
 
         let mut app = TemplateApp::default();
@@ -916,7 +941,7 @@ mod natural_app_tests {
         first.space.target_cell_count = 128;
         app.try_replace_natural_world(&first, &TectonicSpec::default())
             .unwrap();
-        let selected = preliminary_mean_air_temperature_c_field_id();
+        let selected = surface_elevation_m_field_id();
         app.apply_field_control_action(FieldControlAction::SelectField(selected.clone()));
         assert_eq!(
             app.field_viewer_state
@@ -932,6 +957,20 @@ mod natural_app_tests {
             app.field_viewer_state
                 .read_resource(|state| state.selected_field().cloned()),
             Some(selected)
+        );
+    }
+
+    #[test]
+    fn application_copy_describes_hydrology_without_implying_history_or_final_climate() {
+        assert!(CURRENT_SLICE_STATUS_TEXT.contains("初步气候 → 水文/侵蚀"));
+        assert!(CURRENT_SLICE_SUBTITLE.contains("当前时间切片（含水文与地表塑形）"));
+        for copy in [CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE] {
+            assert!(!copy.contains("历史时间线"));
+            assert!(!copy.contains("最终气候"));
+        }
+        assert_ne!(
+            preliminary_mean_air_temperature_c_field_id(),
+            surface_elevation_m_field_id()
         );
     }
 }

@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
+    PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -13,20 +14,26 @@ use sekai::view::{
 };
 use sekai::world::fields::{FieldDomain, FieldPaletteHint, FieldValueType, MissingValuePolicy};
 use sekai::world::natural::{
-    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
-    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
-    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
-    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,
+    boundary_strength_field_id, crust_base_elevation_field_id, crust_kind_field_id,
+    crust_thickness_field_id, drainage_area_km2_field_id, elevation_field_id,
+    erosion_resistance_field_id, fluvial_erosion_depth_m_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, lake_depth_m_field_id, land_ocean_field_id,
+    latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
+    mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
     natural_field_registry, plate_id_field_id, plate_velocity_field_id,
     preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
     preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
-    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    regional_offset_field_id, relative_permeability_field_id,
+    sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
+    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id, ClimateSpec,
-    GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError, TectonicSpec,
-    AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT,
-    TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    GeologicSpec, HydroErosionSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    TectonicSpec, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT,
+    MAX_STRAHLER_ORDER, TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M,
+    VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -47,7 +54,7 @@ fn schema(
 #[test]
 fn schema_registry_contains_the_exact_formal_natural_fields() {
     let registry = registry();
-    assert_eq!(registry.len(), 27);
+    assert_eq!(registry.len(), 36);
     let expected = [
         (
             plate_id_field_id(),
@@ -211,6 +218,60 @@ fn schema_registry_contains_the_exact_formal_natural_fields() {
             FieldDomain::Cells,
             FieldValueType::ScalarF32,
         ),
+        (
+            surface_elevation_m_field_id(),
+            "surface_elevation_m",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            fluvial_erosion_depth_m_field_id(),
+            "fluvial_erosion_depth_m",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            sediment_deposition_thickness_m_field_id(),
+            "sediment_deposition_thickness_m",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            surface_water_kind_field_id(),
+            "surface_water_kind",
+            FieldDomain::Cells,
+            FieldValueType::CategoryU32,
+        ),
+        (
+            lake_depth_m_field_id(),
+            "lake_depth_m",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            annual_local_runoff_mm_field_id(),
+            "annual_local_runoff_mm",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            mean_annual_discharge_m3_s_field_id(),
+            "mean_annual_discharge_m3_s",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            drainage_area_km2_field_id(),
+            "drainage_area_km2",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            strahler_stream_order_field_id(),
+            "strahler_stream_order",
+            FieldDomain::Cells,
+            FieldValueType::CategoryU32,
+        ),
     ];
 
     for (id, name, domain, value_type) in expected {
@@ -222,6 +283,86 @@ fn schema_registry_contains_the_exact_formal_natural_fields() {
         assert_eq!(schema.value_type, value_type);
         assert_eq!(schema.missing, MissingValuePolicy::Forbidden);
     }
+}
+
+#[test]
+fn hydro_erosion_schemas_have_semantic_ranges_palettes_and_complete_categories() {
+    let registry = registry();
+    for (id, max, decimals) in [
+        (fluvial_erosion_depth_m_field_id(), MAX_EROSION_DEPTH_M, 1),
+        (
+            sediment_deposition_thickness_m_field_id(),
+            MAX_DEPOSITION_THICKNESS_M,
+            1,
+        ),
+        (lake_depth_m_field_id(), MAX_LAKE_DEPTH_M, 1),
+        (
+            annual_local_runoff_mm_field_id(),
+            ANNUAL_PRECIPITATION_MAX_MM,
+            0,
+        ),
+    ] {
+        let schema = schema(&registry, id);
+        assert_eq!(
+            schema.unit.symbol(),
+            if decimals == 0 { "mm/year" } else { "m" }
+        );
+        assert_eq!(
+            schema.valid_range.map(|range| (range.min(), range.max())),
+            Some((0.0, max))
+        );
+        assert_eq!(schema.display.palette(), FieldPaletteHint::Sequential);
+        assert_eq!(schema.display.decimal_places(), decimals);
+    }
+
+    let surface = schema(&registry, surface_elevation_m_field_id());
+    assert_eq!(surface.unit.symbol(), "m");
+    assert_eq!(
+        surface.valid_range.map(|range| (range.min(), range.max())),
+        Some((ELEVATION_MIN_M, ELEVATION_MAX_M))
+    );
+    assert_eq!(surface.display.palette(), FieldPaletteHint::Diverging);
+    assert_eq!(surface.display.decimal_places(), 0);
+
+    for (id, unit, decimals) in [
+        (mean_annual_discharge_m3_s_field_id(), "m³/s", 2),
+        (drainage_area_km2_field_id(), "km²", 1),
+    ] {
+        let schema = schema(&registry, id);
+        assert_eq!(schema.unit.symbol(), unit);
+        let range = schema.valid_range.expect("hydrology scalar has a range");
+        assert_eq!(range.min(), 0.0);
+        assert!(range.max().is_finite() && range.max() > 0.0);
+        assert_eq!(schema.display.palette(), FieldPaletteHint::Sequential);
+        assert_eq!(schema.display.decimal_places(), decimals);
+    }
+
+    assert_eq!(
+        schema(&registry, surface_water_kind_field_id()).category_labels,
+        BTreeMap::from([
+            (
+                0,
+                "field.sekai.core.natural.surface_water_kind.dry_land".into()
+            ),
+            (
+                1,
+                "field.sekai.core.natural.surface_water_kind.ocean".into()
+            ),
+            (2, "field.sekai.core.natural.surface_water_kind.lake".into()),
+        ])
+    );
+    let orders = &schema(&registry, strahler_stream_order_field_id()).category_labels;
+    assert_eq!(orders.len(), usize::from(MAX_STRAHLER_ORDER) + 1);
+    assert_eq!(
+        orders.get(&0).map(String::as_str),
+        Some("field.sekai.core.natural.strahler_stream_order.none")
+    );
+    assert_eq!(
+        orders
+            .get(&u32::from(MAX_STRAHLER_ORDER))
+            .map(String::as_str),
+        Some("field.sekai.core.natural.strahler_stream_order.order-255")
+    );
 }
 
 #[test]
@@ -457,9 +598,65 @@ fn schema_dependencies_are_closed_acyclic_and_stably_serialized() {
             preliminary_prevailing_wind_m_s_field_id(),
         ]
     );
-    assert!(first
-        .iter()
-        .all(|(_, schema)| !schema.id.name().contains("monthly")));
+    assert_eq!(
+        schema(&first, fluvial_erosion_depth_m_field_id()).dependencies,
+        vec![
+            elevation_field_id(),
+            erosion_resistance_field_id(),
+            preliminary_annual_precipitation_mm_field_id(),
+            relative_permeability_field_id(),
+        ]
+    );
+    assert_eq!(
+        schema(&first, sediment_deposition_thickness_m_field_id()).dependencies,
+        vec![elevation_field_id(), fluvial_erosion_depth_m_field_id(),]
+    );
+    assert_eq!(
+        schema(&first, surface_elevation_m_field_id()).dependencies,
+        vec![
+            elevation_field_id(),
+            fluvial_erosion_depth_m_field_id(),
+            sediment_deposition_thickness_m_field_id(),
+        ]
+    );
+    assert_eq!(
+        schema(&first, lake_depth_m_field_id()).dependencies,
+        vec![surface_elevation_m_field_id()]
+    );
+    assert_eq!(
+        schema(&first, surface_water_kind_field_id()).dependencies,
+        vec![lake_depth_m_field_id(), surface_elevation_m_field_id()]
+    );
+    assert_eq!(
+        schema(&first, annual_local_runoff_mm_field_id()).dependencies,
+        vec![
+            preliminary_annual_precipitation_mm_field_id(),
+            relative_permeability_field_id(),
+        ]
+    );
+    assert_eq!(
+        schema(&first, mean_annual_discharge_m3_s_field_id()).dependencies,
+        vec![annual_local_runoff_mm_field_id()]
+    );
+    assert!(schema(&first, drainage_area_km2_field_id())
+        .dependencies
+        .is_empty());
+    assert_eq!(
+        schema(&first, strahler_stream_order_field_id()).dependencies,
+        vec![
+            mean_annual_discharge_m3_s_field_id(),
+            surface_water_kind_field_id(),
+        ]
+    );
+    assert!(first.iter().all(|(_, schema)| [
+        "monthly",
+        "receiver",
+        "drainage_surface",
+        "flood_rank",
+        "normalized"
+    ]
+    .iter()
+    .all(|forbidden| !schema.id.name().contains(forbidden))));
     assert_eq!(
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&second).unwrap()
@@ -489,6 +686,7 @@ struct NaturalArtifacts {
     relief: std::sync::Arc<ReliefArtifact>,
     geology: std::sync::Arc<GeologicArtifact>,
     climate: std::sync::Arc<PreliminaryClimateArtifact>,
+    hydro_erosion: std::sync::Arc<HydroErosionArtifact>,
 }
 
 fn natural_artifacts() -> NaturalArtifacts {
@@ -511,6 +709,9 @@ fn natural_artifacts() -> NaturalArtifacts {
         .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
+        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
         .unwrap();
     external
@@ -529,6 +730,7 @@ fn natural_artifacts() -> NaturalArtifacts {
             .artifacts
             .get::<PreliminaryClimateArtifact>()
             .unwrap(),
+        hydro_erosion: outcome.artifacts.get::<HydroErosionArtifact>().unwrap(),
     }
 }
 
@@ -541,6 +743,7 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         relief,
         geology,
         climate,
+        hydro_erosion,
     } = natural_artifacts();
     let registry = natural_field_registry(tectonic.snapshot().plates().len() as u16).unwrap();
     let cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
@@ -652,6 +855,70 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         (
             preliminary_annual_precipitation_mm_field_id(),
             FieldPayloadRef::ScalarF32(climate.snapshot().annual_precipitation_mm()),
+        ),
+        (
+            surface_elevation_m_field_id(),
+            FieldPayloadRef::ScalarF32(
+                hydro_erosion
+                    .snapshot()
+                    .surface()
+                    .surface_elevation_m()
+                    .values(),
+            ),
+        ),
+        (
+            fluvial_erosion_depth_m_field_id(),
+            FieldPayloadRef::ScalarF32(hydro_erosion.snapshot().surface().erosion_depth_m()),
+        ),
+        (
+            sediment_deposition_thickness_m_field_id(),
+            FieldPayloadRef::ScalarF32(hydro_erosion.snapshot().surface().deposition_thickness_m()),
+        ),
+        (
+            surface_water_kind_field_id(),
+            FieldPayloadRef::CategoryU32(
+                hydro_erosion
+                    .snapshot()
+                    .hydrology()
+                    .surface_water()
+                    .raw_values(),
+            ),
+        ),
+        (
+            lake_depth_m_field_id(),
+            FieldPayloadRef::ScalarF32(hydro_erosion.snapshot().hydrology().lake_depth_m()),
+        ),
+        (
+            annual_local_runoff_mm_field_id(),
+            FieldPayloadRef::ScalarF32(
+                hydro_erosion
+                    .snapshot()
+                    .hydrology()
+                    .annual_local_runoff_mm(),
+            ),
+        ),
+        (
+            mean_annual_discharge_m3_s_field_id(),
+            FieldPayloadRef::ScalarF32(
+                hydro_erosion
+                    .snapshot()
+                    .hydrology()
+                    .mean_annual_discharge_m3_s(),
+            ),
+        ),
+        (
+            drainage_area_km2_field_id(),
+            FieldPayloadRef::ScalarF32(hydro_erosion.snapshot().hydrology().drainage_area_km2()),
+        ),
+        (
+            strahler_stream_order_field_id(),
+            FieldPayloadRef::CategoryU32(
+                hydro_erosion
+                    .snapshot()
+                    .hydrology()
+                    .strahler_order()
+                    .raw_values(),
+            ),
         ),
     ];
     let catalog = FieldCatalog::from_payloads(&registry, payloads).unwrap();
@@ -781,6 +1048,90 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     );
     for (id, source) in [
         (
+            surface_elevation_m_field_id(),
+            hydro_erosion
+                .snapshot()
+                .surface()
+                .surface_elevation_m()
+                .values(),
+        ),
+        (
+            fluvial_erosion_depth_m_field_id(),
+            hydro_erosion.snapshot().surface().erosion_depth_m(),
+        ),
+        (
+            sediment_deposition_thickness_m_field_id(),
+            hydro_erosion.snapshot().surface().deposition_thickness_m(),
+        ),
+        (
+            lake_depth_m_field_id(),
+            hydro_erosion.snapshot().hydrology().lake_depth_m(),
+        ),
+        (
+            annual_local_runoff_mm_field_id(),
+            hydro_erosion
+                .snapshot()
+                .hydrology()
+                .annual_local_runoff_mm(),
+        ),
+        (
+            mean_annual_discharge_m3_s_field_id(),
+            hydro_erosion
+                .snapshot()
+                .hydrology()
+                .mean_annual_discharge_m3_s(),
+        ),
+        (
+            drainage_area_km2_field_id(),
+            hydro_erosion.snapshot().hydrology().drainage_area_km2(),
+        ),
+    ] {
+        assert_eq!(
+            catalog
+                .get(&id)
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            source.as_ptr()
+        );
+    }
+    assert_eq!(
+        catalog
+            .get(&surface_water_kind_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .category_values()
+            .unwrap()
+            .as_ptr(),
+        hydro_erosion
+            .snapshot()
+            .hydrology()
+            .surface_water()
+            .raw_values()
+            .as_ptr()
+    );
+    assert_eq!(
+        catalog
+            .get(&strahler_stream_order_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .category_values()
+            .unwrap()
+            .as_ptr(),
+        hydro_erosion
+            .snapshot()
+            .hydrology()
+            .strahler_order()
+            .raw_values()
+            .as_ptr()
+    );
+    for (id, source) in [
+        (
             fracture_intensity_field_id(),
             geology.snapshot().fracture_intensity(),
         ),
@@ -838,6 +1189,15 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         preliminary_mean_air_temperature_c_field_id(),
         preliminary_temperature_seasonality_c_field_id(),
         preliminary_annual_precipitation_mm_field_id(),
+        surface_elevation_m_field_id(),
+        fluvial_erosion_depth_m_field_id(),
+        sediment_deposition_thickness_m_field_id(),
+        surface_water_kind_field_id(),
+        lake_depth_m_field_id(),
+        annual_local_runoff_mm_field_id(),
+        mean_annual_discharge_m3_s_field_id(),
+        drainage_area_km2_field_id(),
+        strahler_stream_order_field_id(),
     ] {
         assert!(catalog
             .get(&id)
@@ -860,6 +1220,7 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     let relief_before = serde_json::to_vec(relief.as_ref()).unwrap();
     let geology_before = serde_json::to_vec(geology.as_ref()).unwrap();
     let climate_before = serde_json::to_vec(climate.as_ref()).unwrap();
+    let hydro_erosion_before = serde_json::to_vec(hydro_erosion.as_ref()).unwrap();
     let mut state = FieldDisplayState::default();
     for id in [
         plate_id_field_id(),
@@ -869,6 +1230,9 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         geothermal_potential_field_id(),
         preliminary_mean_air_temperature_c_field_id(),
         preliminary_annual_precipitation_mm_field_id(),
+        surface_elevation_m_field_id(),
+        surface_water_kind_field_id(),
+        strahler_stream_order_field_id(),
     ] {
         state.select_field(id);
         state.reconcile(&catalog, spatial.snapshot().cell_count());
@@ -886,5 +1250,9 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     assert_eq!(
         serde_json::to_vec(climate.as_ref()).unwrap(),
         climate_before
+    );
+    assert_eq!(
+        serde_json::to_vec(hydro_erosion.as_ref()).unwrap(),
+        hydro_erosion_before
     );
 }
