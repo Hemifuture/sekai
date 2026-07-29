@@ -20,8 +20,8 @@ use crate::{
     generators::{
         natural::{
             natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-            GeologicArtifact, GeologicSpecArtifact, MantleArtifact, ReliefArtifact,
-            RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
+            GeologicArtifact, GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact,
+            ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
             TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
@@ -350,7 +350,7 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("当前切片：空间 → 板块/地壳 → 地形");
+                ui.label("当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候");
                 ui.separator();
                 ui.hyperlink_to("egui", "https://github.com/emilk/egui");
                 egui::warn_if_debug_build(ui);
@@ -366,7 +366,7 @@ impl eframe::App for TemplateApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("自然世界");
-                    ui.label("前工业·中世纪幻想｜当前时间切片");
+                    ui.label("前工业·中世纪幻想｜当前时间切片（含初步气候）");
                     ui.separator();
 
                     ui.horizontal(|ui| {
@@ -575,8 +575,16 @@ fn build_natural_candidate_from_external(
     let mantle = outcome.artifacts.get::<MantleArtifact>()?;
     let relief = outcome.artifacts.get::<ReliefArtifact>()?;
     let geology = outcome.artifacts.get::<GeologicArtifact>()?;
-    let document =
-        NaturalFieldDocument::build(spatial, tectonic, mantle, relief, geology, &outcome.report)?;
+    let climate = outcome.artifacts.get::<PreliminaryClimateArtifact>()?;
+    let document = NaturalFieldDocument::build(
+        spatial,
+        tectonic,
+        mantle,
+        relief,
+        geology,
+        climate,
+        &outcome.report,
+    )?;
     let mut next_clock = clock.clone();
     let (state, packet) = prepare_new_document_display(&document, current_state, &mut next_clock)?;
     Ok(NaturalWorldCandidate {
@@ -642,8 +650,8 @@ mod natural_app_tests {
     };
     use crate::view::FieldDisplayResourceState;
     use crate::world::natural::{
-        elevation_field_id, ClimateSpec, GeologicSpec, MantleActivity, TectonicActivity,
-        TectonicSpec,
+        elevation_field_id, preliminary_mean_air_temperature_c_field_id, ClimateSpec, GeologicSpec,
+        MantleActivity, TectonicActivity, TectonicSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -739,6 +747,7 @@ mod natural_app_tests {
         assert_eq!(document.mantle.snapshot().cell_count(), 128);
         assert_eq!(document.relief.snapshot().cell_count(), 128);
         assert_eq!(document.geology.snapshot().cell_count(), 128);
+        assert_eq!(document.climate.snapshot().cell_count(), 128);
         let packet = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -762,6 +771,7 @@ mod natural_app_tests {
         let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
         let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
+        let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -786,6 +796,7 @@ mod natural_app_tests {
         assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
         assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
+        assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -810,6 +821,7 @@ mod natural_app_tests {
         let tectonic_generator = ["Tectonic", "Generator"].concat();
         let mantle_generator = ["Mantle", "Generator"].concat();
         let geologic_generator = ["Geologic", "Generator"].concat();
+        let climate_generator = ["Climate", "Generator"].concat();
         assert!(!source.contains(&old_generator));
         assert!(!source.contains(&old_entrypoint));
         assert!(!source.contains(&projection_constructor));
@@ -817,6 +829,7 @@ mod natural_app_tests {
         assert!(!source.contains(&tectonic_generator));
         assert!(!source.contains(&mantle_generator));
         assert!(!source.contains(&geologic_generator));
+        assert!(!source.contains(&climate_generator));
     }
 
     #[test]
@@ -831,6 +844,7 @@ mod natural_app_tests {
         let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
         let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
+        let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -882,6 +896,7 @@ mod natural_app_tests {
         assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
         assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
+        assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -890,5 +905,33 @@ mod natural_app_tests {
         let mut actual_clock = app.display_revision_clock.clone();
         assert_eq!(actual_clock.issue().unwrap(), expected_next_revision);
         assert_eq!(app.rule_build_summary, summary_before);
+    }
+
+    #[test]
+    fn selected_climate_field_survives_a_successful_rebuild() {
+        use crate::ui::field::FieldControlAction;
+
+        let mut app = TemplateApp::default();
+        let mut first = default_world_spec(RootSeed::new(23));
+        first.space.target_cell_count = 128;
+        app.try_replace_natural_world(&first, &TectonicSpec::default())
+            .unwrap();
+        let selected = preliminary_mean_air_temperature_c_field_id();
+        app.apply_field_control_action(FieldControlAction::SelectField(selected.clone()));
+        assert_eq!(
+            app.field_viewer_state
+                .read_resource(|state| state.selected_field().cloned()),
+            Some(selected.clone())
+        );
+
+        let mut second = first;
+        second.root_seed = RootSeed::new(24);
+        app.try_replace_natural_world(&second, &TectonicSpec::default())
+            .unwrap();
+        assert_eq!(
+            app.field_viewer_state
+                .read_resource(|state| state.selected_field().cloned()),
+            Some(selected)
+        );
     }
 }

@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::field_document::AppFieldDocument;
 use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::generators::natural::{
-    GeologicArtifact, MantleArtifact, ReliefArtifact, TectonicArtifact,
+    GeologicArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, TectonicArtifact,
 };
 use crate::generators::spatial::SpatialArtifact;
 use crate::view::{
@@ -17,11 +17,14 @@ use crate::world::natural::{
     bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
     crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
     elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
-    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
-    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
-    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
-    volcanic_offset_field_id, GeologicValidationError, MantleValidationError,
+    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
+    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    natural_field_registry, plate_id_field_id, plate_velocity_field_id,
+    preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
+    preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
+    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
+    ClimateValidationError, GeologicValidationError, MantleValidationError,
     NaturalFieldDisplayCache, NaturalFieldRegistryError, ReliefValidationError,
     TectonicValidationError,
 };
@@ -34,6 +37,7 @@ pub(super) struct NaturalFieldDocument {
     pub(super) mantle: Arc<MantleArtifact>,
     pub(super) relief: Arc<ReliefArtifact>,
     pub(super) geology: Arc<GeologicArtifact>,
+    pub(super) climate: Arc<PreliminaryClimateArtifact>,
     registry: FieldRegistry,
     mesh: Arc<PreparedCellMesh>,
     diagnostics: Vec<OwnedViewDiagnostic>,
@@ -47,6 +51,7 @@ impl NaturalFieldDocument {
         mantle: Arc<MantleArtifact>,
         relief: Arc<ReliefArtifact>,
         geology: Arc<GeologicArtifact>,
+        climate: Arc<PreliminaryClimateArtifact>,
         report: &BuildReport,
     ) -> Result<Self, NaturalDisplayError> {
         spatial.snapshot().validate()?;
@@ -59,6 +64,9 @@ impl NaturalFieldDocument {
             mantle.snapshot(),
             relief.snapshot(),
         )?;
+        climate
+            .snapshot()
+            .validate_against(spatial.snapshot(), relief.snapshot())?;
         let plate_count = u16::try_from(tectonic.snapshot().plates().len())
             .map_err(|_| NaturalDisplayError::PlateCountOverflow)?;
         let registry = natural_field_registry(plate_count)?;
@@ -88,6 +96,7 @@ impl NaturalFieldDocument {
             mantle,
             relief,
             geology,
+            climate,
             registry,
             mesh,
             diagnostics,
@@ -185,6 +194,30 @@ impl NaturalFieldDocument {
                 sedimentary_basin_potential_field_id(),
                 FieldPayloadRef::ScalarF32(self.geology.snapshot().sedimentary_basin_potential()),
             ),
+            (
+                latitude_degrees_field_id(),
+                FieldPayloadRef::ScalarF32(self.climate.snapshot().latitude_degrees()),
+            ),
+            (
+                maritime_influence_field_id(),
+                FieldPayloadRef::ScalarF32(self.climate.snapshot().maritime_influence()),
+            ),
+            (
+                preliminary_prevailing_wind_m_s_field_id(),
+                FieldPayloadRef::Vector2F32(self.climate.snapshot().prevailing_wind_m_s()),
+            ),
+            (
+                preliminary_mean_air_temperature_c_field_id(),
+                FieldPayloadRef::ScalarF32(self.climate.snapshot().mean_annual_air_temperature_c()),
+            ),
+            (
+                preliminary_temperature_seasonality_c_field_id(),
+                FieldPayloadRef::ScalarF32(self.climate.snapshot().temperature_seasonality_c()),
+            ),
+            (
+                preliminary_annual_precipitation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(self.climate.snapshot().annual_precipitation_mm()),
+            ),
         ]
     }
 
@@ -233,6 +266,10 @@ impl NaturalFieldDocument {
             outcome.artifacts.get::<MantleArtifact>().unwrap(),
             outcome.artifacts.get::<ReliefArtifact>().unwrap(),
             outcome.artifacts.get::<GeologicArtifact>().unwrap(),
+            outcome
+                .artifacts
+                .get::<PreliminaryClimateArtifact>()
+                .unwrap(),
             &outcome.report,
         )
         .unwrap()
@@ -289,6 +326,8 @@ pub(super) enum NaturalDisplayError {
     #[error(transparent)]
     Geologic(#[from] GeologicValidationError),
     #[error(transparent)]
+    Climate(#[from] ClimateValidationError),
+    #[error(transparent)]
     Registry(#[from] NaturalFieldRegistryError),
     #[error(transparent)]
     Display(#[from] DisplayPrepareError),
@@ -300,15 +339,17 @@ pub(super) enum NaturalDisplayError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::app::field_document::AppFieldDocument;
     use crate::engine::{
-        BuildEngine, Diagnostic, DiagnosticContext, DiagnosticSeverity, ExternalArtifacts,
-        MemoryStageCache,
+        BuildEngine, BuildReport, Diagnostic, DiagnosticContext, DiagnosticSeverity,
+        ExternalArtifacts, MemoryStageCache,
     };
     use crate::generators::natural::{
         natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-        GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact,
-        TectonicArtifact, TectonicSpecArtifact,
+        GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
+        RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
@@ -316,7 +357,10 @@ mod tests {
     use crate::world::natural::{
         bedrock_kind_field_id, elevation_field_id, geothermal_potential_field_id,
         mantle_heat_flow_field_id, plate_id_field_id, plate_velocity_field_id,
-        volcanic_offset_field_id, ClimateSpec, GeologicSpec, TectonicSpec,
+        preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
+        preliminary_prevailing_wind_m_s_field_id, volcanic_offset_field_id, ClimateSpec,
+        GeologicSpec, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
+        TectonicSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
     };
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -369,14 +413,27 @@ mod tests {
         let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
         let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
         let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
-        NaturalFieldDocument::build(spatial, tectonic, mantle, relief, geology, &outcome.report)
-            .unwrap()
+        let climate = outcome
+            .artifacts
+            .get::<PreliminaryClimateArtifact>()
+            .unwrap();
+        NaturalFieldDocument::build(
+            spatial,
+            tectonic,
+            mantle,
+            relief,
+            geology,
+            climate,
+            &outcome.report,
+        )
+        .unwrap()
     }
 
     #[test]
     fn document_borrows_formal_fields_and_derives_cell_velocity() {
         let document = build_document_with_diagnostic();
         let catalog = document.catalog().unwrap();
+        assert!(catalog.entries().iter().all(|entry| entry.view().is_some()));
         let plate_values = catalog
             .get(&plate_id_field_id())
             .unwrap()
@@ -458,6 +515,47 @@ mod tests {
                 .as_ptr(),
             document.geology.snapshot().geothermal_potential().as_ptr()
         );
+        assert_eq!(
+            catalog
+                .get(&preliminary_mean_air_temperature_c_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .climate
+                .snapshot()
+                .mean_annual_air_temperature_c()
+                .as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&preliminary_annual_precipitation_mm_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .climate
+                .snapshot()
+                .annual_precipitation_mm()
+                .as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&preliminary_prevailing_wind_m_s_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .vector_values()
+                .unwrap()
+                .as_ptr(),
+            document.climate.snapshot().prevailing_wind_m_s().as_ptr()
+        );
 
         let velocities = catalog
             .get(&plate_velocity_field_id())
@@ -495,6 +593,45 @@ mod tests {
             seen[vertex.cell as usize] = true;
         }
         assert!(seen.into_iter().all(|present| present));
+    }
+
+    #[test]
+    fn document_rejects_a_self_valid_but_spatially_misaligned_climate() {
+        let document = build_document_with_diagnostic();
+        let monthly_scalar =
+            || MonthlyScalarField::from_values(vec![[0.0; CLIMATE_MONTH_COUNT]]).unwrap();
+        let monthly_vector =
+            MonthlyVectorField::from_values(vec![[[0.0; 2]; CLIMATE_MONTH_COUNT]]).unwrap();
+        let climate = Arc::new(PreliminaryClimateArtifact::new(
+            PreliminaryClimateSnapshot::new(
+                PRELIMINARY_CLIMATE_SCHEMA_V1,
+                1,
+                vec![0.0],
+                vec![0.0],
+                monthly_scalar(),
+                monthly_scalar(),
+                monthly_vector,
+                vec![0.0],
+                vec![0.0],
+                vec![0.0],
+                vec![[0.0; 2]],
+            )
+            .unwrap(),
+        ));
+
+        let result = NaturalFieldDocument::build(
+            document.spatial.clone(),
+            document.tectonic.clone(),
+            document.mantle.clone(),
+            document.relief.clone(),
+            document.geology.clone(),
+            climate,
+            &BuildReport::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(super::NaturalDisplayError::Climate(_))
+        ));
     }
 
     #[test]
