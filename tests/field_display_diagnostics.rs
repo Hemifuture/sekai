@@ -253,3 +253,44 @@ fn inspector_uses_schema_precision_units_and_category_labels() {
     );
     assert!(format_field_value(&category, 1).is_none());
 }
+
+#[test]
+fn unsupported_inspection_selection_is_orthogonal_to_rendered_field_selection() {
+    let (mut registry, mut fields) = fixture_with_renderable_fields();
+    let vector_id = field_id("wind");
+    let vector_schema = FieldSchema {
+        id: vector_id.clone(),
+        domain: FieldDomain::Cells,
+        value_type: FieldValueType::Vector2F32,
+        unit: FieldUnit::Unitless,
+        valid_range: None,
+        missing: MissingValuePolicy::Forbidden,
+        dependencies: Vec::new(),
+        category_labels: BTreeMap::new(),
+        display: FieldDisplayMetadata::new("field.test.wind", FieldPaletteHint::Vector, 1).unwrap(),
+    };
+    let mut builder = FieldRegistryBuilder::new();
+    for (_, schema) in registry.iter() {
+        builder.register(schema.clone()).unwrap();
+    }
+    builder.register(vector_schema).unwrap();
+    registry = builder.build().unwrap();
+    fields
+        .insert(
+            &registry,
+            vector_id.clone(),
+            FieldData::Vector2F32(vec![[1.0, 0.0]; 4]),
+            &DomainSizes::new(4, 0),
+        )
+        .unwrap();
+
+    let catalog = FieldCatalog::from_extension_fields(&registry, &fields).unwrap();
+    let mut state = FieldDisplayState::default();
+    state.reconcile(&catalog, 4);
+    let rendered = state.selected_field().cloned();
+    state.inspect_field(vector_id.clone());
+    state.reconcile(&catalog, 4);
+
+    assert_eq!(state.selected_field(), rendered.as_ref());
+    assert_eq!(state.inspected_field(), Some(&vector_id));
+}

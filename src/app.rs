@@ -4,13 +4,14 @@ use egui::Rect;
 use crate::{
     delaunay::{self, voronoi::generate_voronoi_render_data},
     gpu::{
-        delaunay::delaunay_renderer::DelaunayRenderer,
+        delaunay::delaunay_renderer::DelaunayRenderer, field::CellFieldRenderer,
         heightmap::heightmap_renderer::HeightmapRenderer, points_renderer::PointsRenderer,
         voronoi::voronoi_renderer::VoronoiRenderer,
     },
     resource::{
-        CanvasStateResource, DelaunayRendererResource, HeightmapRendererResource,
-        MapSystemResource, PointsRendererResource, VoronoiRendererResource,
+        CanvasStateResource, DelaunayRendererResource, FieldDisplayResource, FieldRendererResource,
+        FieldViewerStateResource, HeightmapRendererResource, MapSystemResource,
+        PointsRendererResource, VoronoiRendererResource,
     },
     terrain::TerrainGenerator,
     ui::canvas::canvas::Canvas,
@@ -70,16 +71,24 @@ pub struct TemplateApp {
     voronoi_renderer: Option<VoronoiRendererResource>,
     #[serde(skip)] // This how you opt-out of serialization of a field
     heightmap_renderer: Option<HeightmapRendererResource>,
+    #[serde(skip)]
+    field_renderer: Option<FieldRendererResource>,
     #[serde(skip)] // This how you opt-out of serialization of a field
     canvas_state: CanvasStateResource,
     #[serde(skip)] // This how you opt-out of serialization of a field
     map_system: MapSystemResource,
+    #[serde(skip)]
+    field_display: FieldDisplayResource,
+    #[serde(skip)]
+    field_viewer_state: FieldViewerStateResource,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         let canvas_resource = CanvasStateResource::default();
         let map_system_resource = MapSystemResource::default();
+        let field_display = FieldDisplayResource::default();
+        let field_viewer_state = FieldViewerStateResource::default();
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
@@ -88,13 +97,21 @@ impl Default for TemplateApp {
             selected_template: 0, // 默认 Earth-like
             terrain_seed: 42,
             use_fixed_seed: false,
-            canvas_widget: Canvas::new(canvas_resource.clone(), map_system_resource.clone()),
+            canvas_widget: Canvas::new(
+                canvas_resource.clone(),
+                map_system_resource.clone(),
+                field_display.clone(),
+                field_viewer_state.clone(),
+            ),
             points_renderer: None,
             delaunay_renderer: None,
             voronoi_renderer: None,
             heightmap_renderer: None,
+            field_renderer: None,
             canvas_state: canvas_resource,
             map_system: map_system_resource,
+            field_display,
+            field_viewer_state,
         }
     }
 }
@@ -114,6 +131,7 @@ impl TemplateApp {
             app.delaunay_renderer = None;
             app.voronoi_renderer = None;
             app.heightmap_renderer = None;
+            app.field_renderer = None;
             app
         } else {
             Default::default()
@@ -128,11 +146,13 @@ impl TemplateApp {
             let delaunay_renderer_resource = app.create_delaunay_renderer_resource(rs);
             let voronoi_renderer_resource = app.create_voronoi_renderer_resource(rs);
             let heightmap_renderer_resource = app.create_heightmap_renderer_resource(rs);
+            let field_renderer_resource = app.create_field_renderer_resource(rs);
 
             app.points_renderer = Some(points_renderer_resource.clone());
             app.delaunay_renderer = Some(delaunay_renderer_resource.clone());
             app.voronoi_renderer = Some(voronoi_renderer_resource.clone());
             app.heightmap_renderer = Some(heightmap_renderer_resource.clone());
+            app.field_renderer = Some(field_renderer_resource);
 
             // 生成初始地形
             app.generate_terrain();
@@ -377,6 +397,16 @@ impl TemplateApp {
             .insert::<HeightmapRendererResource>(heightmap_renderer_resource.clone());
 
         heightmap_renderer_resource
+    }
+
+    fn create_field_renderer_resource(&mut self, rs: &RenderState) -> FieldRendererResource {
+        let renderer = CellFieldRenderer::new(&rs.device, rs.target_format);
+        let resource = FieldRendererResource::new(renderer);
+        rs.renderer
+            .write()
+            .callback_resources
+            .insert::<FieldRendererResource>(resource.clone());
+        resource
     }
 
     /// 生成新的地形（使用选定的模板）

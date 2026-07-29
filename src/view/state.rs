@@ -7,6 +7,7 @@ use super::{DiagnosticScope, DisplayRangeMode, FieldCatalog, FieldValue, FieldVi
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDisplayState {
     selected_field: Option<FieldId>,
+    inspected_field: Option<FieldId>,
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostics_enabled: bool,
@@ -19,6 +20,7 @@ impl Default for FieldDisplayState {
     fn default() -> Self {
         Self {
             selected_field: None,
+            inspected_field: None,
             range_mode: DisplayRangeMode::Data,
             palette_override: None,
             diagnostics_enabled: true,
@@ -33,14 +35,25 @@ impl FieldDisplayState {
     /// Selects a field and marks schema-derived preferences for reconciliation.
     pub fn select_field(&mut self, field: FieldId) {
         if self.selected_field.as_ref() != Some(&field) {
-            self.selected_field = Some(field);
+            self.selected_field = Some(field.clone());
             self.selection_dirty = true;
         }
+        self.inspected_field = Some(field);
     }
 
     /// Returns the selected field identifier.
     pub fn selected_field(&self) -> Option<&FieldId> {
         self.selected_field.as_ref()
+    }
+
+    /// Selects any registered field for metadata and value inspection.
+    pub fn inspect_field(&mut self, field: FieldId) {
+        self.inspected_field = Some(field);
+    }
+
+    /// Returns the field selected for inspection, including unsupported fills.
+    pub fn inspected_field(&self) -> Option<&FieldId> {
+        self.inspected_field.as_ref()
     }
 
     /// Sets the active scalar range mode.
@@ -126,6 +139,19 @@ impl FieldDisplayState {
         } else if chosen.is_none() {
             self.palette_override = None;
         }
+
+        self.inspected_field = self
+            .inspected_field
+            .as_ref()
+            .and_then(|id| catalog.get(id))
+            .map(|entry| entry.schema().id.clone())
+            .or_else(|| self.selected_field.clone())
+            .or_else(|| {
+                catalog
+                    .entries()
+                    .first()
+                    .map(|entry| entry.schema().id.clone())
+            });
 
         if self
             .selected_cell
