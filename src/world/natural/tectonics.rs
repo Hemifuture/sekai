@@ -215,6 +215,21 @@ pub enum BoundaryKind {
     Transform,
 }
 
+impl BoundaryKind {
+    /// Returns the stable V1 category value used by field display adapters.
+    pub const fn raw(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Weak => 1,
+            Self::ContinentalCollision => 2,
+            Self::Subduction => 3,
+            Self::ContinentalRift => 4,
+            Self::OceanicRidge => 5,
+            Self::Transform => 6,
+        }
+    }
+}
+
 /// An edge-aligned current tectonic event.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundaryRecord {

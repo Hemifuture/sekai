@@ -1,9 +1,16 @@
 //! Contracts for the current-slice natural world.
 
+mod fields;
 mod relief;
 mod spec;
 mod tectonics;
 
+pub use fields::{
+    boundary_kind_field_id, boundary_strength_field_id, crust_base_elevation_field_id,
+    crust_kind_field_id, crust_thickness_field_id, elevation_field_id, land_ocean_field_id,
+    natural_field_registry, plate_id_field_id, plate_velocity_field_id, regional_offset_field_id,
+    tectonic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+};
 pub use relief::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
     COMPONENT_IDENTITY_TOLERANCE_M, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
