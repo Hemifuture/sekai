@@ -10,6 +10,7 @@ pub(super) const PLATE_MOTION_LABEL: &str = "plate-motion-v1";
 pub(super) const CRUST_SEEDS_LABEL: &str = "crust-seeds-v1";
 pub(super) const CRUST_SHAPE_LABEL: &str = "crust-shape-v1";
 pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
+pub(super) const RELIEF_REGIONAL_LABEL: &str = "relief-regional-v1";
 
 pub(super) struct LabeledSubstreams {
     root: [u8; 32],
