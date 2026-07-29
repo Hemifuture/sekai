@@ -13,6 +13,8 @@ mod gpu;
 mod map_layer;
 pub mod models;
 mod resource;
+/// Deterministic, data-only rule-pack and author-input contracts.
+pub mod rules;
 pub mod spatial;
 pub mod terrain;
 mod ui;
