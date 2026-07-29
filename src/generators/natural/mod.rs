@@ -7,6 +7,7 @@ mod geologic_rule_input;
 mod geologic_stage;
 mod geology;
 mod hydro_erosion_rule_input;
+mod hydrology;
 mod mantle;
 mod random;
 mod relief;
@@ -40,6 +41,7 @@ pub use hydro_erosion_rule_input::{
     ResolvedHydroErosionInputStageInputs, RuleHydroErosionResolutionStage,
     RuleHydroErosionResolutionStageInputs,
 };
+pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{
