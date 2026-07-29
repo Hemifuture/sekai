@@ -13,7 +13,8 @@ pub use diagnostics::{
     ViewDiagnosticSeverity,
 };
 pub use field::{
-    CellFillKind, FieldCatalog, FieldCatalogEntry, FieldValue, FieldView, FieldViewError,
+    CellFillKind, FieldCatalog, FieldCatalogEntry, FieldPayloadRef, FieldValue, FieldView,
+    FieldViewError,
 };
 pub use mesh::{
     CellGeometrySource, DisplayVertex, MeshCompleteness, PreparedCellMesh, MAX_DISPLAY_CELLS,

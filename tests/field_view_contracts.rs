@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use sekai::view::{CellFillKind, FieldCatalog, FieldValue, FieldView, FieldViewError};
+use sekai::view::{
+    CellFillKind, FieldCatalog, FieldPayloadRef, FieldValue, FieldView, FieldViewError,
+};
 use sekai::world::fields::{
     DomainSizes, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain, FieldId,
     FieldPaletteHint, FieldRegistry, FieldRegistryBuilder, FieldSchema, FieldUnit, FieldValueType,
@@ -243,5 +245,157 @@ fn direct_field_view_rejects_schema_payload_type_mismatch() {
     assert!(matches!(
         FieldView::new(&schema, &data),
         Err(FieldViewError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn borrowed_scalar_payload_reuses_the_source_slice() {
+    let registry = registry_with_all_types();
+    let scalar = vec![0.25_f32, 0.75];
+
+    let catalog = FieldCatalog::from_payloads(
+        &registry,
+        [(field_id("scalar"), FieldPayloadRef::ScalarF32(&scalar))],
+    )
+    .unwrap();
+    let borrowed = catalog
+        .get(&field_id("scalar"))
+        .unwrap()
+        .view()
+        .unwrap()
+        .scalar_values()
+        .unwrap();
+
+    assert_eq!(borrowed, scalar);
+    assert!(std::ptr::eq(borrowed.as_ptr(), scalar.as_ptr()));
+}
+
+#[test]
+fn borrowed_payloads_read_every_controlled_value_type() {
+    let registry = registry_with_all_types();
+    let categories = vec![7_u32, 9];
+    let booleans = vec![true, false];
+    let vectors = vec![[1.0_f32, -2.0], [3.0, 4.0]];
+    let stable_ids = vec![1_u32, 0];
+
+    let catalog = FieldCatalog::from_payloads(
+        &registry,
+        [
+            (
+                field_id("category"),
+                FieldPayloadRef::CategoryU32(&categories),
+            ),
+            (field_id("boolean"), FieldPayloadRef::Boolean(&booleans)),
+            (field_id("vector"), FieldPayloadRef::Vector2F32(&vectors)),
+            (
+                field_id("stable"),
+                FieldPayloadRef::StableIdU32 {
+                    target: StableIdKind::Cell,
+                    values: &stable_ids,
+                },
+            ),
+        ],
+    )
+    .unwrap();
+
+    let category = catalog.get(&field_id("category")).unwrap().view().unwrap();
+    assert_eq!(category.value(1), Some(FieldValue::Category(9)));
+    assert!(std::ptr::eq(
+        category.category_values().unwrap().as_ptr(),
+        categories.as_ptr()
+    ));
+    assert_eq!(
+        catalog
+            .get(&field_id("boolean"))
+            .unwrap()
+            .view()
+            .unwrap()
+            .value(1),
+        Some(FieldValue::Boolean(false))
+    );
+    let vector = catalog.get(&field_id("vector")).unwrap().view().unwrap();
+    assert_eq!(vector.value(0), Some(FieldValue::Vector2([1.0, -2.0])));
+    assert!(std::ptr::eq(
+        vector.vector_values().unwrap().as_ptr(),
+        vectors.as_ptr()
+    ));
+    let stable = catalog.get(&field_id("stable")).unwrap().view().unwrap();
+    assert_eq!(
+        stable.stable_id_values(),
+        Some((StableIdKind::Cell, stable_ids.as_slice()))
+    );
+}
+
+#[test]
+fn borrowed_catalog_rejects_unknown_and_duplicate_payload_ids() {
+    let registry = registry_with_all_types();
+    let values = vec![0.25_f32, 0.75];
+    let unknown = field_id("unknown");
+
+    assert!(matches!(
+        FieldCatalog::from_payloads(
+            &registry,
+            [(unknown.clone(), FieldPayloadRef::ScalarF32(&values))]
+        ),
+        Err(FieldViewError::UnknownPayload { field }) if field == unknown
+    ));
+    assert!(matches!(
+        FieldCatalog::from_payloads(
+            &registry,
+            [
+                (
+                    field_id("scalar"),
+                    FieldPayloadRef::ScalarF32(&values)
+                ),
+                (
+                    field_id("scalar"),
+                    FieldPayloadRef::ScalarF32(&values)
+                ),
+            ]
+        ),
+        Err(FieldViewError::DuplicatePayload { field }) if field == field_id("scalar")
+    ));
+}
+
+#[test]
+fn borrowed_catalog_keeps_absent_schemas_and_rejects_type_mismatches() {
+    let registry = registry_with_all_types();
+    let values = vec![true, false];
+
+    let catalog = FieldCatalog::from_payloads(
+        &registry,
+        [(field_id("boolean"), FieldPayloadRef::Boolean(&values))],
+    )
+    .unwrap();
+    assert!(catalog.get(&field_id("missing")).unwrap().view().is_none());
+    assert!(matches!(
+        FieldCatalog::from_payloads(
+            &registry,
+            [(
+                field_id("scalar"),
+                FieldPayloadRef::Boolean(&values)
+            )]
+        ),
+        Err(FieldViewError::TypeMismatch { field, .. }) if field == field_id("scalar")
+    ));
+}
+
+#[test]
+fn borrowed_stable_ids_require_the_schema_target_kind() {
+    let registry = registry_with_all_types();
+    let values = vec![1_u32, 0];
+
+    assert!(matches!(
+        FieldCatalog::from_payloads(
+            &registry,
+            [(
+                field_id("stable"),
+                FieldPayloadRef::StableIdU32 {
+                    target: StableIdKind::Edge,
+                    values: &values,
+                },
+            )]
+        ),
+        Err(FieldViewError::TypeMismatch { field, .. }) if field == field_id("stable")
     ));
 }

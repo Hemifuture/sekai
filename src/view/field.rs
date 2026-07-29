@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 use crate::world::fields::{
@@ -25,6 +27,57 @@ pub enum FieldValue {
     },
 }
 
+/// A renderer-neutral reference to one controlled field payload.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldPayloadRef<'a> {
+    /// Borrowed finite scalar values.
+    ScalarF32(&'a [f32]),
+    /// Borrowed unsigned category keys.
+    CategoryU32(&'a [u32]),
+    /// Borrowed bit-packed boolean values.
+    Boolean(&'a Vec<bool>),
+    /// Borrowed finite two-component vectors.
+    Vector2F32(&'a [[f32; 2]]),
+    /// Borrowed stable identifiers with their exact target kind.
+    StableIdU32 {
+        /// The kind referenced by every raw identifier.
+        target: StableIdKind,
+        /// Raw stable identifiers in domain order.
+        values: &'a [u32],
+    },
+}
+
+impl FieldPayloadRef<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::ScalarF32(values) => values.len(),
+            Self::CategoryU32(values) => values.len(),
+            Self::Boolean(values) => values.len(),
+            Self::Vector2F32(values) => values.len(),
+            Self::StableIdU32 { values, .. } => values.len(),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<'a> From<&'a FieldData> for FieldPayloadRef<'a> {
+    fn from(data: &'a FieldData) -> Self {
+        match data {
+            FieldData::ScalarF32(values) => Self::ScalarF32(values),
+            FieldData::CategoryU32(values) => Self::CategoryU32(values),
+            FieldData::Boolean(values) => Self::Boolean(values),
+            FieldData::Vector2F32(values) => Self::Vector2F32(values),
+            FieldData::StableIdU32 { target, values } => Self::StableIdU32 {
+                target: *target,
+                values,
+            },
+        }
+    }
+}
+
 /// Field representations supported by the V1 cell-fill renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellFillKind {
@@ -45,6 +98,18 @@ pub enum FieldViewError {
         /// The payload representation required by the schema.
         expected: FieldValueType,
     },
+    /// A borrowed payload was supplied for an unregistered field.
+    #[error("borrowed payload field {field:?} is not registered")]
+    UnknownPayload {
+        /// The unregistered payload identifier.
+        field: FieldId,
+    },
+    /// A borrowed payload identifier appeared more than once.
+    #[error("borrowed payload field {field:?} was supplied more than once")]
+    DuplicatePayload {
+        /// The duplicated payload identifier.
+        field: FieldId,
+    },
     /// The field cannot drive the V1 cell-fill renderer.
     #[error(
         "field {field:?} with domain {domain:?} and type {value_type:?} cannot fill cells in display V1"
@@ -63,19 +128,27 @@ pub enum FieldViewError {
 #[derive(Debug, Clone, Copy)]
 pub struct FieldView<'a> {
     schema: &'a FieldSchema,
-    data: &'a FieldData,
+    payload: FieldPayloadRef<'a>,
 }
 
 impl<'a> FieldView<'a> {
     /// Pairs a schema with a payload after checking their exact representations.
     pub fn new(schema: &'a FieldSchema, data: &'a FieldData) -> Result<Self, FieldViewError> {
-        if !data_matches(schema.value_type, data) {
+        Self::from_payload(schema, data.into())
+    }
+
+    /// Pairs a schema with a borrowed core or extension payload.
+    pub fn from_payload(
+        schema: &'a FieldSchema,
+        payload: FieldPayloadRef<'a>,
+    ) -> Result<Self, FieldViewError> {
+        if !payload_matches(schema.value_type, payload) {
             return Err(FieldViewError::TypeMismatch {
                 field: schema.id.clone(),
                 expected: schema.value_type,
             });
         }
-        Ok(Self { schema, data })
+        Ok(Self { schema, payload })
     }
 
     /// Returns the borrowed schema.
@@ -85,61 +158,62 @@ impl<'a> FieldView<'a> {
 
     /// Returns the number of values in the payload.
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.payload.len()
     }
 
     /// Returns whether the payload contains no values.
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.payload.is_empty()
     }
 
     /// Reads one value without copying the payload collection.
     pub fn value(&self, index: usize) -> Option<FieldValue> {
-        match self.data {
-            FieldData::ScalarF32(values) => values.get(index).copied().map(FieldValue::Scalar),
-            FieldData::CategoryU32(values) => values.get(index).copied().map(FieldValue::Category),
-            FieldData::Boolean(values) => values.get(index).copied().map(FieldValue::Boolean),
-            FieldData::Vector2F32(values) => values.get(index).copied().map(FieldValue::Vector2),
-            FieldData::StableIdU32 { target, values } => {
-                values
-                    .get(index)
-                    .copied()
-                    .map(|value| FieldValue::StableId {
-                        target: *target,
-                        value,
-                    })
+        match self.payload {
+            FieldPayloadRef::ScalarF32(values) => {
+                values.get(index).copied().map(FieldValue::Scalar)
             }
+            FieldPayloadRef::CategoryU32(values) => {
+                values.get(index).copied().map(FieldValue::Category)
+            }
+            FieldPayloadRef::Boolean(values) => values.get(index).copied().map(FieldValue::Boolean),
+            FieldPayloadRef::Vector2F32(values) => {
+                values.get(index).copied().map(FieldValue::Vector2)
+            }
+            FieldPayloadRef::StableIdU32 { target, values } => values
+                .get(index)
+                .copied()
+                .map(|value| FieldValue::StableId { target, value }),
         }
     }
 
     /// Borrows scalar values when this is a scalar field.
     pub fn scalar_values(&self) -> Option<&'a [f32]> {
-        match self.data {
-            FieldData::ScalarF32(values) => Some(values),
+        match self.payload {
+            FieldPayloadRef::ScalarF32(values) => Some(values),
             _ => None,
         }
     }
 
     /// Borrows category keys when this is a category field.
     pub fn category_values(&self) -> Option<&'a [u32]> {
-        match self.data {
-            FieldData::CategoryU32(values) => Some(values),
+        match self.payload {
+            FieldPayloadRef::CategoryU32(values) => Some(values),
             _ => None,
         }
     }
 
     /// Borrows vector values when this is a vector field.
     pub fn vector_values(&self) -> Option<&'a [[f32; 2]]> {
-        match self.data {
-            FieldData::Vector2F32(values) => Some(values),
+        match self.payload {
+            FieldPayloadRef::Vector2F32(values) => Some(values),
             _ => None,
         }
     }
 
     /// Borrows stable identifiers and returns their exact target kind.
     pub fn stable_id_values(&self) -> Option<(StableIdKind, &'a [u32])> {
-        match self.data {
-            FieldData::StableIdU32 { target, values } => Some((*target, values)),
+        match self.payload {
+            FieldPayloadRef::StableIdU32 { target, values } => Some((target, values)),
             _ => None,
         }
     }
@@ -202,6 +276,35 @@ impl<'a> FieldCatalog<'a> {
         Ok(Self { entries })
     }
 
+    /// Builds a catalog from borrowed core payloads without copying their arrays.
+    pub fn from_payloads(
+        registry: &'a FieldRegistry,
+        payloads: impl IntoIterator<Item = (FieldId, FieldPayloadRef<'a>)>,
+    ) -> Result<Self, FieldViewError> {
+        let mut payloads_by_id = BTreeMap::new();
+        for (field, payload) in payloads {
+            if registry.get(&field).is_none() {
+                return Err(FieldViewError::UnknownPayload { field });
+            }
+            if payloads_by_id.insert(field.clone(), payload).is_some() {
+                return Err(FieldViewError::DuplicatePayload { field });
+            }
+        }
+
+        let entries = registry
+            .iter()
+            .map(|(id, schema)| {
+                payloads_by_id
+                    .get(id)
+                    .copied()
+                    .map(|payload| FieldView::from_payload(schema, payload))
+                    .transpose()
+                    .map(|view| FieldCatalogEntry { schema, view })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { entries })
+    }
+
     /// Returns entries in stable field-identifier order.
     pub fn entries(&self) -> &[FieldCatalogEntry<'a>] {
         &self.entries
@@ -225,14 +328,14 @@ impl<'a> FieldCatalog<'a> {
     }
 }
 
-fn data_matches(expected: FieldValueType, data: &FieldData) -> bool {
-    match (expected, data) {
-        (FieldValueType::ScalarF32, FieldData::ScalarF32(_))
-        | (FieldValueType::CategoryU32, FieldData::CategoryU32(_))
-        | (FieldValueType::Boolean, FieldData::Boolean(_))
-        | (FieldValueType::Vector2F32, FieldData::Vector2F32(_)) => true,
-        (FieldValueType::StableIdU32(expected), FieldData::StableIdU32 { target, .. }) => {
-            expected == *target
+fn payload_matches(expected: FieldValueType, payload: FieldPayloadRef<'_>) -> bool {
+    match (expected, payload) {
+        (FieldValueType::ScalarF32, FieldPayloadRef::ScalarF32(_))
+        | (FieldValueType::CategoryU32, FieldPayloadRef::CategoryU32(_))
+        | (FieldValueType::Boolean, FieldPayloadRef::Boolean(_))
+        | (FieldValueType::Vector2F32, FieldPayloadRef::Vector2F32(_)) => true,
+        (FieldValueType::StableIdU32(expected), FieldPayloadRef::StableIdU32 { target, .. }) => {
+            expected == target
         }
         _ => false,
     }
