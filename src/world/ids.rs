@@ -27,6 +27,7 @@ define_id!(CellId, u32);
 define_id!(EdgeId, u32);
 define_id!(PlateId, u32);
 define_id!(BoundarySegmentId, u32);
+define_id!(HotspotId, u32);
 define_id!(SpeciesId, u32);
 define_id!(CultureId, u32);
 define_id!(SettlementId, u32);
