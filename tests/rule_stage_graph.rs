@@ -418,3 +418,36 @@ fn projection_audit_identity_changes_do_not_change_model_spec_hash() {
     );
     assert_eq!(default_projection.input().spec(), &TectonicSpec::default());
 }
+
+#[test]
+fn cache_projection_recomputes_for_changed_audit_but_publishes_same_hash() {
+    let default_audit = resolved_audit(default_rule_pack_set().unwrap());
+    let alternate_audit = resolved_audit(RulePackSet::new(vec![alternate_world_law()]).unwrap());
+    let engine = BuildEngine::new(projection_graph());
+    let mut cache = MemoryStageCache::new();
+
+    let mut first_external = ExternalArtifacts::new();
+    first_external.insert(default_audit).unwrap();
+    let first = engine
+        .build(RootSeed::new(42), first_external, &mut cache)
+        .unwrap();
+
+    let mut second_external = ExternalArtifacts::new();
+    second_external.insert(alternate_audit).unwrap();
+    let second = engine
+        .build(RootSeed::new(42), second_external, &mut cache)
+        .unwrap();
+
+    assert_eq!(second.report.cache_hits(), 0);
+    assert_eq!(second.report.cache_misses(), 1);
+    assert_eq!(
+        first
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap(),
+        second
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+    );
+}

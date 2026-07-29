@@ -5,11 +5,17 @@ use sekai::engine::{
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, ReliefStage,
     ResolvedTectonicInput, ResolvedTectonicInputArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact, TectonicStage,
+    TectonicRuleResolutionArtifact, TectonicSpecArtifact, TectonicStage,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
-use sekai::rules::{default_rule_pack_set, AuthorConstraints, TectonicModel};
+use sekai::rules::{
+    default_rule_pack_set, earthlike_rule_pack, AuthorConstraint, AuthorConstraints,
+    CapabilityContribution, ConstraintStrength, CoreSchemaRange, RuleItemId, RulePack, RulePackId,
+    RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion, TectonicConstraintClause,
+    TectonicModel, AUTHOR_CONSTRAINTS_SCHEMA_V1,
+};
 use sekai::world::natural::{TectonicActivity, TectonicSpec, TECTONIC_SPEC_SCHEMA_V1};
+use sekai::world::AuthorObjectId;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
 fn space() -> PlanarSpaceSpec {
@@ -31,18 +37,53 @@ fn tectonic_spec(plate_count: u16) -> TectonicSpec {
 }
 
 fn complete_external(plate_count: u16) -> ExternalArtifacts {
+    complete_external_with(
+        plate_count,
+        default_rule_pack_set().unwrap(),
+        AuthorConstraints::default(),
+    )
+}
+
+fn complete_external_with(
+    plate_count: u16,
+    packs: RulePackSet,
+    authors: AuthorConstraints,
+) -> ExternalArtifacts {
     let mut artifacts = ExternalArtifacts::new();
     artifacts.insert(PlanarSpaceArtifact::new(space())).unwrap();
     artifacts
         .insert(TectonicSpecArtifact::new(tectonic_spec(plate_count)))
         .unwrap();
+    artifacts.insert(RulePackSetArtifact::new(packs)).unwrap();
     artifacts
-        .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+        .insert(AuthorConstraintsArtifact::new(authors))
         .unwrap();
     artifacts
-        .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
-        .unwrap();
-    artifacts
+}
+
+fn plate_control_pack(
+    name: &str,
+    strength: ConstraintStrength,
+    minimum: u16,
+    maximum: u16,
+) -> RulePack {
+    RulePack::new(
+        RulePackId::new(format!("sekai.test.{name}")).unwrap(),
+        RuleVersion::new(1, 0, 0).unwrap(),
+        RulePackKind::Ordinary,
+        CoreSchemaRange::new(1, 1).unwrap(),
+        Vec::new(),
+        Vec::new(),
+        vec![CapabilityContribution::TectonicConstraint(
+            RuleTectonicConstraint::new(
+                RuleItemId::new("plate-control").unwrap(),
+                strength,
+                TectonicConstraintClause::plate_count(minimum, maximum).unwrap(),
+            )
+            .unwrap(),
+        )],
+    )
+    .unwrap()
 }
 
 fn tectonic_external(plate_count: u16) -> ExternalArtifacts {
@@ -358,4 +399,145 @@ fn malformed_relief_artifact_cannot_publish() {
     let error = invalid.validate().unwrap_err();
 
     assert_eq!(error.code(), "natural.invalid-relief");
+}
+
+#[test]
+fn cache_audit_only_rule_change_does_not_invalidate_tectonics_or_relief() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    let baseline = engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    let satisfied = plate_control_pack("satisfied-control", ConstraintStrength::Hard, 10, 14);
+    let changed_set = RulePackSet::new(vec![earthlike_rule_pack().unwrap(), satisfied]).unwrap();
+    let changed = engine
+        .build(
+            RootSeed::new(42),
+            complete_external_with(12, changed_set, AuthorConstraints::default()),
+            &mut cache,
+        )
+        .unwrap();
+
+    assert_eq!(changed.report.cache_hits(), 3);
+    assert_eq!(changed.report.cache_misses(), 2);
+    assert_ne!(
+        baseline
+            .artifacts
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap(),
+        changed
+            .artifacts
+            .hash::<TectonicRuleResolutionArtifact>()
+            .unwrap()
+    );
+    assert_eq!(
+        baseline
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap(),
+        changed
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+    );
+    assert_eq!(
+        baseline.artifacts.hash::<TectonicArtifact>().unwrap(),
+        changed.artifacts.hash::<TectonicArtifact>().unwrap()
+    );
+    assert_eq!(
+        baseline.artifacts.hash::<ReliefArtifact>().unwrap(),
+        changed.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+    assert_ne!(baseline.report.result_hash(), changed.report.result_hash());
+}
+
+#[test]
+fn cache_projected_spec_change_invalidates_only_natural_downstream() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    let baseline = engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    let force_seventeen = plate_control_pack("force-seventeen", ConstraintStrength::Hard, 17, 17);
+    let changed_set =
+        RulePackSet::new(vec![earthlike_rule_pack().unwrap(), force_seventeen]).unwrap();
+    let changed = engine
+        .build(
+            RootSeed::new(42),
+            complete_external_with(12, changed_set, AuthorConstraints::default()),
+            &mut cache,
+        )
+        .unwrap();
+
+    assert_eq!(changed.report.cache_hits(), 1);
+    assert_eq!(changed.report.cache_misses(), 4);
+    assert_eq!(
+        changed
+            .artifacts
+            .get::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+            .input()
+            .spec()
+            .plate_count,
+        17
+    );
+    assert_ne!(
+        baseline
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap(),
+        changed
+            .artifacts
+            .hash::<ResolvedTectonicInputArtifact>()
+            .unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<TectonicArtifact>().unwrap(),
+        changed.artifacts.hash::<TectonicArtifact>().unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<ReliefArtifact>().unwrap(),
+        changed.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+}
+
+#[test]
+fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    assert_eq!(cache.len(), 5);
+
+    let pack_hard = plate_control_pack("low-only", ConstraintStrength::Hard, 2, 4);
+    let conflict_set = RulePackSet::new(vec![earthlike_rule_pack().unwrap(), pack_hard]).unwrap();
+    let author_hard = AuthorConstraint::new(
+        AuthorObjectId::from_raw(99),
+        ConstraintStrength::Hard,
+        TectonicConstraintClause::plate_count(20, 24).unwrap(),
+    )
+    .unwrap();
+    let conflict_authors =
+        AuthorConstraints::new(AUTHOR_CONSTRAINTS_SCHEMA_V1, vec![author_hard]).unwrap();
+    let failure = engine
+        .build(
+            RootSeed::new(42),
+            complete_external_with(12, conflict_set, conflict_authors),
+            &mut cache,
+        )
+        .unwrap_err();
+
+    assert_eq!(failure.report.diagnostics().len(), 1);
+    assert_eq!(
+        failure.report.diagnostics()[0].code(),
+        "rules.hard-constraint-conflict"
+    );
+    assert_eq!(cache.len(), 5);
+
+    let recovered = engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    assert_eq!(recovered.report.cache_hits(), 5);
+    assert_eq!(recovered.report.cache_misses(), 0);
 }
