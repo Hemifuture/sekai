@@ -1,8 +1,14 @@
 //! Deterministic, data-only rule-pack and author-input contracts.
 
+mod capability;
 mod constraints;
 mod ids;
 
+pub use capability::{
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
+    CapabilityRegistryError, RulePackKind, TectonicModel,
+};
 pub use constraints::{
     ActivitySet, AuthorConstraint, AuthorConstraints, ConstraintError, ConstraintSource,
     ConstraintStrength, ConstraintWeight, InclusiveU16Range, RuleTectonicConstraint,
