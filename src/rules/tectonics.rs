@@ -268,7 +268,8 @@ impl TectonicRuleResolver {
                         }
                     }
                     CapabilityContribution::GeologicModel(_)
-                    | CapabilityContribution::ClimateModel(_) => {}
+                    | CapabilityContribution::ClimateModel(_)
+                    | CapabilityContribution::HydroErosionModel(_) => {}
                     CapabilityContribution::TectonicConstraint(constraint) => {
                         constraints.push(SourcedConstraint {
                             source: ConstraintSource::RulePack {

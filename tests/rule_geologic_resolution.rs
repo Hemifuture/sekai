@@ -2,8 +2,8 @@ use sekai::rules::{
     core_capability_registry, default_rule_pack_set, earthlike_rule_pack,
     geologic_model_capability_id, CapabilityContribution, ClimateModel, CoreSchemaRange,
     GeologicModel, GeologicRuleResolution, GeologicRuleResolutionError, GeologicRuleResolver,
-    RulePack, RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
-    GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
+    HydroErosionModel, RulePack, RulePackId, RulePackKind, RulePackSet, RulePackSetError,
+    RuleVersion, TectonicModel, GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
 };
 use sekai::world::natural::{GeologicSpec, MAX_HOTSPOT_COUNT};
 use sekai::world::WORLD_SPEC_SCHEMA_V1;
@@ -20,6 +20,9 @@ fn alternate_world_law(id: &str) -> RulePack {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1,
+            ),
         ],
     )
     .unwrap()

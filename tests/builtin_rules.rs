@@ -1,9 +1,10 @@
 use sekai::rules::{
     climate_model_capability_id, core_capability_registry, default_rule_pack_set,
-    earthlike_rule_pack, geologic_model_capability_id, tectonic_controls_capability_id,
-    tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution, ClimateModel,
-    CoreSchemaRange, GeologicModel, RulePack, RulePackId, RulePackKind, RulePackSet,
-    RulePackSetError, RuleVersion, TectonicModel, EARTHLIKE_RULE_PACK_ID,
+    earthlike_rule_pack, geologic_model_capability_id, hydro_erosion_model_capability_id,
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, ClimateModel, CoreSchemaRange, GeologicModel, HydroErosionModel,
+    RulePack, RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
+    EARTHLIKE_RULE_PACK_ID,
 };
 use sekai::world::WORLD_SPEC_SCHEMA_V1;
 
@@ -52,6 +53,21 @@ fn replacement_climate_model(name: &str, kind: RulePackKind) -> RulePack {
     .unwrap()
 }
 
+fn replacement_hydro_erosion_model(name: &str, kind: RulePackKind) -> RulePack {
+    RulePack::new(
+        RulePackId::new(format!("sekai.test.{name}")).unwrap(),
+        RuleVersion::new(1, 0, 0).unwrap(),
+        kind,
+        CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1).unwrap(),
+        Vec::new(),
+        Vec::new(),
+        vec![CapabilityContribution::HydroErosionModel(
+            HydroErosionModel::PriorityFloodStreamPowerV1,
+        )],
+    )
+    .unwrap()
+}
+
 #[test]
 fn builtin_capability_ids_are_exact_and_versioned() {
     let model = tectonic_model_capability_id();
@@ -68,6 +84,11 @@ fn builtin_capability_ids_are_exact_and_versioned() {
     assert_eq!(climate_model.namespace(), "sekai.core.natural");
     assert_eq!(climate_model.name(), "climate-model");
     assert_eq!(climate_model.version(), 1);
+
+    let hydro_erosion_model = hydro_erosion_model_capability_id();
+    assert_eq!(hydro_erosion_model.namespace(), "sekai.core.natural");
+    assert_eq!(hydro_erosion_model.name(), "hydro-erosion-model");
+    assert_eq!(hydro_erosion_model.version(), 1);
 
     let controls = tectonic_controls_capability_id();
     assert_eq!(controls.namespace(), "sekai.core.natural");
@@ -99,11 +120,22 @@ fn builtin_capability_contracts_are_exact() {
     assert_eq!(climate_model.minimum_pack_kind(), RulePackKind::WorldLaw);
     assert!(!climate_model.author_allowed());
 
+    let hydro_erosion_model = registry.get(&hydro_erosion_model_capability_id()).unwrap();
+    assert_eq!(
+        hydro_erosion_model.cardinality(),
+        CapabilityCardinality::UniqueRequired
+    );
+    assert_eq!(
+        hydro_erosion_model.minimum_pack_kind(),
+        RulePackKind::WorldLaw
+    );
+    assert!(!hydro_erosion_model.author_allowed());
+
     let controls = registry.get(&tectonic_controls_capability_id()).unwrap();
     assert_eq!(controls.cardinality(), CapabilityCardinality::Merge);
     assert_eq!(controls.minimum_pack_kind(), RulePackKind::Ordinary);
     assert!(controls.author_allowed());
-    assert_eq!(registry.len(), 4);
+    assert_eq!(registry.len(), 5);
 }
 
 #[test]
@@ -127,6 +159,7 @@ fn builtin_earthlike_pack_selects_exact_current_slice_model() {
         &[
             climate_model_capability_id(),
             geologic_model_capability_id(),
+            hydro_erosion_model_capability_id(),
             tectonic_model_capability_id()
         ]
     );
@@ -136,6 +169,9 @@ fn builtin_earthlike_pack_selects_exact_current_slice_model() {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1
+            ),
         ]
     );
 }
@@ -155,6 +191,16 @@ fn builtin_default_set_contains_exactly_earthlike_and_resolves() {
     assert_eq!(
         resolved
             .providers(&tectonic_model_capability_id())
+            .first()
+            .unwrap()
+            .manifest()
+            .id()
+            .as_str(),
+        EARTHLIKE_RULE_PACK_ID
+    );
+    assert_eq!(
+        resolved
+            .providers(&hydro_erosion_model_capability_id())
             .first()
             .unwrap()
             .manifest()
@@ -289,6 +335,42 @@ fn builtin_second_world_law_climate_model_fails_unique_cardinality() {
             capability_id,
             provider_ids,
         }) if capability_id == climate_model_capability_id() && provider_ids.len() == 2
+    ));
+}
+
+#[test]
+fn builtin_ordinary_hydro_erosion_model_fails_permission() {
+    let registry = core_capability_registry().unwrap();
+    let set = RulePackSet::new(vec![replacement_hydro_erosion_model(
+        "ordinary-hydro-erosion-model",
+        RulePackKind::Ordinary,
+    )])
+    .unwrap();
+
+    assert!(matches!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1),
+        Err(RulePackSetError::InsufficientCapabilityPermission {
+            capability_id,
+            ..
+        }) if capability_id == hydro_erosion_model_capability_id()
+    ));
+}
+
+#[test]
+fn builtin_second_world_law_hydro_erosion_model_fails_unique_cardinality() {
+    let registry = core_capability_registry().unwrap();
+    let set = RulePackSet::new(vec![
+        earthlike_rule_pack().unwrap(),
+        replacement_hydro_erosion_model("second-hydro-erosion-law", RulePackKind::WorldLaw),
+    ])
+    .unwrap();
+
+    assert!(matches!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1),
+        Err(RulePackSetError::MultipleCapabilityProviders {
+            capability_id,
+            provider_ids,
+        }) if capability_id == hydro_erosion_model_capability_id() && provider_ids.len() == 2
     ));
 }
 

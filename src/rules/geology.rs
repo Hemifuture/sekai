@@ -152,6 +152,7 @@ impl GeologicRuleResolver {
                     }
                     CapabilityContribution::TectonicModel(_)
                     | CapabilityContribution::ClimateModel(_)
+                    | CapabilityContribution::HydroErosionModel(_)
                     | CapabilityContribution::TectonicConstraint(_) => {}
                 }
             }

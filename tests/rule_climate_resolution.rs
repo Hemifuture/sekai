@@ -1,9 +1,9 @@
 use sekai::rules::{
     climate_model_capability_id, core_capability_registry, default_rule_pack_set,
     earthlike_rule_pack, CapabilityContribution, ClimateModel, ClimateRuleResolution,
-    ClimateRuleResolutionError, ClimateRuleResolver, CoreSchemaRange, GeologicModel, RulePack,
-    RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
-    CLIMATE_RULE_RESOLUTION_SCHEMA_V1,
+    ClimateRuleResolutionError, ClimateRuleResolver, CoreSchemaRange, GeologicModel,
+    HydroErosionModel, RulePack, RulePackId, RulePackKind, RulePackSet, RulePackSetError,
+    RuleVersion, TectonicModel, CLIMATE_RULE_RESOLUTION_SCHEMA_V1,
 };
 use sekai::world::natural::{ClimateSpec, MAX_MOISTURE_SCALE_PERMILLE};
 use sekai::world::WORLD_SPEC_SCHEMA_V1;
@@ -20,6 +20,9 @@ fn alternate_world_law(id: &str) -> RulePack {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1,
+            ),
         ],
     )
     .unwrap()

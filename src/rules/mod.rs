@@ -16,10 +16,11 @@ pub use builtin::{
     EARTHLIKE_RULE_PACK_ID,
 };
 pub use capability::{
-    climate_model_capability_id, geologic_model_capability_id, tectonic_controls_capability_id,
-    tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution,
-    CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder, CapabilityRegistryError,
-    ClimateModel, GeologicModel, RulePackKind, TectonicModel,
+    climate_model_capability_id, geologic_model_capability_id, hydro_erosion_model_capability_id,
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
+    CapabilityRegistryError, ClimateModel, GeologicModel, HydroErosionModel, RulePackKind,
+    TectonicModel,
 };
 pub use climate::{
     ClimateRuleResolution, ClimateRuleResolutionError, ClimateRuleResolver,
