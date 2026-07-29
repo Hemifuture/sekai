@@ -6,6 +6,7 @@ mod fields;
 mod geologic_spec;
 mod geology;
 mod hydro_erosion_spec;
+mod hydrology;
 mod mantle;
 mod relief;
 mod spec;
@@ -48,6 +49,14 @@ pub use hydro_erosion_spec::{
     HydroErosionSpec, HydroErosionSpecError, HYDRO_EROSION_SPEC_SCHEMA_V1,
     MAX_EROSION_STRENGTH_PERMILLE, MAX_LAKE_DEPTH_CM, MAX_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
     MIN_LAKE_DEPTH_CM, MIN_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
+};
+pub use hydrology::{
+    BasinOutletKind, DrainageBasin, HydrologySnapshot, HydrologyValidationError, Lake,
+    RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind,
+    CLIMATOLOGICAL_YEAR_SECONDS, DISCHARGE_ACCUMULATION_ABSOLUTE_TOLERANCE_M3_S,
+    DRAINAGE_AREA_ABSOLUTE_TOLERANCE_KM2, HYDROLOGY_SCHEMA_V1,
+    HYDROLOGY_SUMMARY_ABSOLUTE_TOLERANCE, HYDROLOGY_SUMMARY_RELATIVE_TOLERANCE, MAX_LAKE_DEPTH_M,
+    MAX_STRAHLER_ORDER, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
