@@ -4,6 +4,7 @@ mod capability;
 mod constraints;
 mod ids;
 mod manifest;
+mod registry;
 
 pub use capability::{
     tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
@@ -25,4 +26,7 @@ pub use manifest::{
     RulePack, RulePackDependency, RulePackError, RulePackManifest,
     MAX_RULE_PACK_CAPABILITY_REQUIREMENTS, MAX_RULE_PACK_CONTRIBUTIONS, MAX_RULE_PACK_DEPENDENCIES,
     RULE_PACK_SCHEMA_V1,
+};
+pub use registry::{
+    ResolvedRulePackSet, RulePackSet, RulePackSetError, MAX_RULE_PACKS, MAX_RULE_SET_CONTRIBUTIONS,
 };
