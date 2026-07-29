@@ -410,9 +410,10 @@ fn is_counter_clockwise_convex(polygon: &[[f32; 2]]) -> bool {
         return false;
     }
     let fan_origin = polygon[0];
+    // The emitted f32 triangle is usable whenever its exact normalized area stays positive.
     polygon[1..]
         .windows(2)
-        .all(|triangle| cross(fan_origin, triangle[0], triangle[1]) > POLYGON_EPSILON)
+        .all(|triangle| cross(fan_origin, triangle[0], triangle[1]) > 0.0)
 }
 
 fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {

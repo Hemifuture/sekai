@@ -16,7 +16,6 @@ use crate::world::fields::{
 use crate::world::{CellId, Meters, WorldPoint, WorldRect};
 
 const MAX_GEOMETRY_WARNINGS: usize = 64;
-const LEGACY_POLYGON_EPSILON: f32 = 1.0e-7;
 
 /// Owned renderer-neutral document adapted from the current legacy map generator.
 pub(super) struct LegacyTerrainDisplay {
@@ -295,14 +294,15 @@ fn is_renderable_convex(bounds: WorldRect, polygon: &[WorldPoint]) -> bool {
         let a = normalized[index];
         let b = normalized[(index + 1) % normalized.len()];
         let c = normalized[(index + 2) % normalized.len()];
-        if display_cross(a, b, c) <= LEGACY_POLYGON_EPSILON {
+        if display_cross(a, b, c) <= 0.0 {
             return false;
         }
     }
     let fan_origin = normalized[0];
-    normalized[1..].windows(2).all(|triangle| {
-        display_cross(fan_origin, triangle[0], triangle[1]) > LEGACY_POLYGON_EPSILON
-    })
+    // Dense legacy cells can have valid normalized areas below any fixed global epsilon.
+    normalized[1..]
+        .windows(2)
+        .all(|triangle| display_cross(fan_origin, triangle[0], triangle[1]) > 0.0)
 }
 
 fn display_cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
@@ -481,6 +481,36 @@ mod tests {
         );
         assert_eq!(display.diagnostics.len(), 1);
         assert_eq!(display.diagnostics[0].cell_id, Some(CellId::from_raw(1)));
+    }
+
+    #[test]
+    fn narrow_positive_legacy_triangles_remain_fillable() {
+        let bounds = WorldRect::new(point(0.0, 0.0), point(1.0, 1.0)).unwrap();
+        let voronoi = IndexedVoronoiDiagram {
+            vertices: vec![
+                egui::pos2(0.0, 0.0),
+                egui::pos2(0.01, 0.0),
+                egui::pos2(0.010005, 0.000005),
+                egui::pos2(0.01, 0.01),
+                egui::pos2(0.0, 0.01),
+            ],
+            indices: Vec::new(),
+            cells: vec![VoronoiCell {
+                site_idx: 0,
+                vertex_indices: vec![0, 1, 2, 3, 4],
+            }],
+        };
+
+        let display = LegacyTerrainDisplayAdapter::build(bounds, &voronoi, &[0], &[1]).unwrap();
+
+        assert!(
+            display.diagnostics.is_empty(),
+            "strictly positive display triangles are valid even when their area is small"
+        );
+        assert_eq!(
+            display.mesh.pick_local([0.005, 0.005]),
+            Some(CellId::from_raw(0))
+        );
     }
 
     #[test]
