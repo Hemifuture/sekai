@@ -3,9 +3,11 @@
 mod builtin;
 mod capability;
 mod constraints;
+mod geology;
 mod ids;
 mod manifest;
 mod registry;
+mod resolution;
 mod tectonics;
 
 pub use builtin::{
@@ -24,6 +26,10 @@ pub use constraints::{
     MAX_AUTHOR_CONSTRAINTS, MAX_CONSTRAINT_WEIGHT, MAX_CONTINENTAL_CRUST_PERMILLE,
     MIN_CONSTRAINT_WEIGHT, MIN_CONTINENTAL_CRUST_PERMILLE,
 };
+pub use geology::{
+    GeologicRuleResolution, GeologicRuleResolutionError, GeologicRuleResolver,
+    GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
+};
 pub use ids::{
     CapabilityId, CoreSchemaRange, RuleContentHash, RuleIdentityError, RuleItemId, RulePackId,
     RuleVersion, RuleVersionRequirement,
@@ -36,7 +42,8 @@ pub use manifest::{
 pub use registry::{
     ResolvedRulePackSet, RulePackSet, RulePackSetError, MAX_RULE_PACKS, MAX_RULE_SET_CONTRIBUTIONS,
 };
+pub use resolution::ResolvedRulePackRef;
 pub use tectonics::{
-    ConstraintAdoption, ConstraintAdoptionOutcome, ResolvedRulePackRef, TectonicRuleResolution,
+    ConstraintAdoption, ConstraintAdoptionOutcome, TectonicRuleResolution,
     TectonicRuleResolutionError, TectonicRuleResolver, TECTONIC_RULE_RESOLUTION_SCHEMA_V1,
 };

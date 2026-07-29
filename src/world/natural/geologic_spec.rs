@@ -18,7 +18,7 @@ pub enum MantleActivity {
 }
 
 /// A versioned description of current-slice mantle and surface-geology forcing.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GeologicSpec {
     /// The schema version used to interpret this specification.
     pub schema_version: u16,

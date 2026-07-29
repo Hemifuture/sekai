@@ -1,5 +1,6 @@
 //! Deterministic generation of the current natural world slice.
 
+mod geologic_rule_input;
 mod random;
 mod relief;
 mod rule_input;
@@ -7,6 +8,11 @@ mod stage;
 mod tectonics;
 mod topology;
 
+pub use geologic_rule_input::{
+    GeologicRuleResolutionArtifact, GeologicSpecArtifact, ResolvedGeologicInput,
+    ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, ResolvedGeologicInputStageInputs,
+    RuleGeologicResolutionStage, RuleGeologicResolutionStageInputs,
+};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{
     AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
