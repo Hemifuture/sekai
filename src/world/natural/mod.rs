@@ -1,5 +1,6 @@
 //! Contracts for the current-slice natural world.
 
+mod climate;
 mod climate_spec;
 mod fields;
 mod geologic_spec;
@@ -9,6 +10,12 @@ mod relief;
 mod spec;
 mod tectonics;
 
+pub use climate::{
+    ClimateValidationError, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
+    AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT,
+    CLIMATE_SUMMARY_IDENTITY_TOLERANCE, MONTHLY_PRECIPITATION_MAX_MM,
+    PRELIMINARY_CLIMATE_SCHEMA_V1, TEMPERATURE_SEASONALITY_MAX_C, WIND_COMPONENT_MAX_M_S,
+};
 pub use climate_spec::{
     ClimateSpec, ClimateSpecError, CLIMATE_SPEC_SCHEMA_V1, MAX_AXIAL_TILT_CENTIDEG,
     MAX_LATITUDE_CENTIDEG, MAX_MOISTURE_SCALE_PERMILLE, MAX_TEMPERATURE_OFFSET_DECI_C,
