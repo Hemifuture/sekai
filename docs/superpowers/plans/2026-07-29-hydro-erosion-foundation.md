@@ -156,7 +156,7 @@ feat: resolve hydro erosion rules
 - Stage versions and namespace are exact.
 - Rule stage depends only on spec, rule packs, and author constraints.
 - Projection stage depends only on resolution.
-- Projected input contains spec, model, and audit identity but no raw pack set.
+- Projected input contains only spec and model, with no audit identity or raw pack set.
 - Invalid cross-artifact combinations fail.
 
 **Command**

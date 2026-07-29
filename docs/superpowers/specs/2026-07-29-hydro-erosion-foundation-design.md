@@ -171,11 +171,10 @@ Earthlike 内置规则包提供该唯一能力。规则解析器遵循已有唯�
 pub struct ResolvedHydroErosionInput {
     spec: HydroErosionSpec,
     model: HydroErosionModel,
-    audit: HydroErosionRuleAudit,
 }
 ```
 
-生成器只读取该类型，不直接读取规则包或作者约束。
+完整规则审计保留在独立 resolution artifact；投影输入只含会改变生成结果的模型与规格。生成器不直接读取审计、规则包或作者约束，因此语义等价但来源身份不同的规则包不会污染生成阶段缓存键。
 
 ## 6. 正式世界契约
 
