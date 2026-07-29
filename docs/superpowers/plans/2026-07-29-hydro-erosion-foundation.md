@@ -151,10 +151,10 @@ feat: resolve hydro erosion rules
   - `rules.hydro-erosion-resolution`
   - `natural.resolved-hydro-erosion-input`
 - Stable stages:
-  - `rules.hydro-erosion-resolution`
-  - `natural.resolve-hydro-erosion-input`
+  - `natural.resolve-hydro-erosion-rules`
+  - `natural.project-hydro-erosion-input`
 - Stage versions and namespace are exact.
-- Rule stage depends only on spec, rule packs, and author constraints.
+- Rule stage depends only on spec and rule packs.
 - Projection stage depends only on resolution.
 - Projected input contains only spec and model, with no audit identity or raw pack set.
 - Invalid cross-artifact combinations fail.

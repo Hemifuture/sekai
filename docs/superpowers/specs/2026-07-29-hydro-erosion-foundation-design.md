@@ -435,8 +435,8 @@ natural.hydro-erosion-spec
 新增阶段：
 
 ```text
-rules.hydro-erosion-resolution
-natural.resolve-hydro-erosion-input
+natural.resolve-hydro-erosion-rules
+natural.project-hydro-erosion-input
 natural.hydro-erosion
 ```
 
