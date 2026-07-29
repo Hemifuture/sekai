@@ -4,8 +4,8 @@ use std::time::Instant;
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -51,19 +51,34 @@ fn profile_default_natural_foundation() {
     let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
     let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
     let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
+    let climate = outcome
+        .artifacts
+        .get::<PreliminaryClimateArtifact>()
+        .unwrap();
     let spatial = spatial.snapshot();
     let tectonic = tectonic.snapshot();
     let mantle = mantle.snapshot();
     let relief = relief.snapshot();
     let geology = geology.snapshot();
+    let climate = climate.snapshot();
     tectonic.validate_against(spatial).unwrap();
     mantle.validate_against(spatial).unwrap();
     relief.validate_against(spatial).unwrap();
     geology
         .validate_against(spatial, tectonic, mantle, relief)
         .unwrap();
-    assert_eq!(outcome.report.stages().len(), 9);
+    climate.validate_against(spatial, relief).unwrap();
+    assert_eq!(outcome.report.stages().len(), 12);
 
+    let climate_dense_bytes = size_of_val(climate.latitude_degrees())
+        + size_of_val(climate.maritime_influence())
+        + size_of_val(climate.monthly_air_temperature_c().values())
+        + size_of_val(climate.monthly_precipitation_mm().values())
+        + size_of_val(climate.monthly_wind_m_s().values())
+        + size_of_val(climate.mean_annual_air_temperature_c())
+        + size_of_val(climate.temperature_seasonality_c())
+        + size_of_val(climate.annual_precipitation_mm())
+        + size_of_val(climate.prevailing_wind_m_s());
     let dense_bytes = size_of_val(tectonic.cell_plates().raw_values())
         + size_of_val(tectonic.crust_kinds().raw_values())
         + size_of_val(tectonic.crust_thickness_km())
@@ -82,7 +97,8 @@ fn profile_default_natural_foundation() {
         + size_of_val(geology.relative_permeability())
         + size_of_val(geology.metallic_mineral_potential())
         + size_of_val(geology.geothermal_potential())
-        + size_of_val(geology.sedimentary_basin_potential());
+        + size_of_val(geology.sedimentary_basin_potential())
+        + climate_dense_bytes;
     let continental = tectonic
         .crust_kinds()
         .raw_values()
@@ -107,13 +123,14 @@ fn profile_default_natural_foundation() {
         );
     }
     eprintln!(
-        "total_ms={:.3} cells={} edges={} plates={} segments={} dense_bytes={} continental_fraction={continental:.4} land_fraction={land:.4}",
+        "total_ms={:.3} cells={} edges={} plates={} segments={} dense_bytes={} climate_dense_bytes={} continental_fraction={continental:.4} land_fraction={land:.4}",
         total.as_secs_f64() * 1000.0,
         spatial.cell_count(),
         spatial.edges().len(),
         tectonic.plates().len(),
         tectonic.boundary_segments().len(),
         dense_bytes,
+        climate_dense_bytes,
     );
 
     assert_eq!(spatial.cell_count(), 20_000);
@@ -121,4 +138,5 @@ fn profile_default_natural_foundation() {
     assert_eq!(mantle.cell_count(), 20_000);
     assert_eq!(relief.cell_count(), 20_000);
     assert_eq!(geology.cell_count(), 20_000);
+    assert_eq!(climate.cell_count(), 20_000);
 }

@@ -438,7 +438,7 @@ fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32
 
 fn annual_sea_level_temperature(latitude_degrees: f32) -> f32 {
     let latitude_factor = latitude_degrees.to_radians().sin().abs().powf(1.18);
-    29.0 - 50.0 * latitude_factor
+    29.0 - 35.0 * latitude_factor
 }
 
 fn circulation_wind(latitude_degrees: f32, declination_degrees: f32, maritime: f32) -> [f32; 2] {

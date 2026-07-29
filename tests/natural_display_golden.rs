@@ -5,8 +5,8 @@ use std::sync::Arc;
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -18,9 +18,11 @@ use sekai::view::{
 use sekai::world::fields::{FieldId, ValueRange};
 use sekai::world::natural::{
     bedrock_kind_field_id, crust_kind_field_id, elevation_field_id, geothermal_potential_field_id,
-    mantle_heat_flow_field_id, metallic_mineral_potential_field_id, natural_field_registry,
-    plate_id_field_id, sedimentary_basin_potential_field_id, volcanic_influence_field_id,
-    BedrockKind, BoundaryKind, ClimateSpec, GeologicSnapshot, GeologicSpec, MantleSnapshot,
+    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    natural_field_registry, plate_id_field_id, preliminary_annual_precipitation_mm_field_id,
+    preliminary_mean_air_temperature_c_field_id, preliminary_temperature_seasonality_c_field_id,
+    sedimentary_basin_potential_field_id, volcanic_influence_field_id, BedrockKind, BoundaryKind,
+    ClimateSpec, GeologicSnapshot, GeologicSpec, MantleSnapshot, PreliminaryClimateSnapshot,
     ReliefSnapshot, TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
@@ -76,18 +78,21 @@ fn run_multi_seed_quality_suite() {
         let mantle = fixture.mantle.snapshot();
         let relief = fixture.relief.snapshot();
         let geology = fixture.geology.snapshot();
+        let climate = fixture.climate.snapshot();
         tectonic.validate_against(spatial).unwrap();
         mantle.validate_against(spatial).unwrap();
         relief.validate_against(spatial).unwrap();
         geology
             .validate_against(spatial, tectonic, mantle, relief)
             .unwrap();
+        climate.validate_against(spatial, relief).unwrap();
 
         assert_eq!(spatial.cell_count(), QUALITY_CELL_COUNT as usize);
         assert_eq!(tectonic.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(mantle.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(relief.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(geology.cell_count(), QUALITY_CELL_COUNT);
+        assert_eq!(climate.cell_count(), QUALITY_CELL_COUNT);
         assert_plate_connectivity_and_balance(seed, spatial, tectonic);
         assert_boundary_partition_and_motion(seed, spatial, tectonic);
 
@@ -138,6 +143,7 @@ fn run_multi_seed_quality_suite() {
 
         assert_relief_finite_and_explainable(seed, relief);
         assert_geologic_quality(seed, tectonic, mantle, relief, geology);
+        assert_climate_quality(seed, spatial, relief, climate);
         let mesh = PreparedCellMesh::build(spatial, MeshCompleteness::RequireAll).unwrap();
         assert_eq!(mesh.cell_count(), QUALITY_CELL_COUNT as usize);
         let registry = natural_field_registry(tectonic.plates().len() as u16).unwrap();
@@ -155,12 +161,14 @@ fn run_multi_seed_quality_suite() {
         assert_eq!(prepared.len(), mesh.cell_count());
 
         eprintln!(
-            "seed={seed} cells={} edges={} plates={} segments={} continental={continental_fraction:.3} land={:.3}",
+            "seed={seed} cells={} edges={} plates={} segments={} continental={continental_fraction:.3} land={:.3} mean_temp={:.2} annual_precip={:.1}",
             spatial.cell_count(),
             spatial.edges().len(),
             tectonic.plates().len(),
             tectonic.boundary_segments().len(),
             land_cells as f32 / QUALITY_CELL_COUNT as f32,
+            mean(climate.mean_annual_air_temperature_c().iter().copied()),
+            mean(climate.annual_precipitation_mm().iter().copied()),
         );
     }
 
@@ -195,6 +203,7 @@ struct NaturalFixture {
     mantle: Arc<MantleArtifact>,
     relief: Arc<ReliefArtifact>,
     geology: Arc<GeologicArtifact>,
+    climate: Arc<PreliminaryClimateArtifact>,
 }
 
 fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
@@ -239,6 +248,10 @@ fn build_natural_with_geologic_spec(
         mantle: outcome.artifacts.get::<MantleArtifact>().unwrap(),
         relief: outcome.artifacts.get::<ReliefArtifact>().unwrap(),
         geology: outcome.artifacts.get::<GeologicArtifact>().unwrap(),
+        climate: outcome
+            .artifacts
+            .get::<PreliminaryClimateArtifact>()
+            .unwrap(),
     }
 }
 
@@ -503,6 +516,129 @@ fn assert_geologic_quality(
     assert!(oceanic_count > 0 && oceanic_count < tectonic.cell_count() as usize);
 }
 
+fn assert_climate_quality(
+    seed: u64,
+    spatial: &SpatialSnapshot,
+    relief: &ReliefSnapshot,
+    climate: &PreliminaryClimateSnapshot,
+) {
+    let northern = climate
+        .latitude_degrees()
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .unwrap()
+        .0;
+    let southern = climate
+        .latitude_degrees()
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .unwrap()
+        .0;
+    assert!(
+        climate.monthly_air_temperature_c().values()[northern][5]
+            > climate.monthly_air_temperature_c().values()[northern][11],
+        "seed {seed}: northern summer phase did not lead northern winter"
+    );
+    assert!(
+        climate.monthly_air_temperature_c().values()[southern][5]
+            < climate.monthly_air_temperature_c().values()[southern][11],
+        "seed {seed}: southern summer phase did not oppose the north"
+    );
+
+    let low_latitude = mean(
+        climate
+            .mean_annual_air_temperature_c()
+            .iter()
+            .enumerate()
+            .filter(|(cell, _)| climate.latitude_degrees()[*cell].abs() < 15.0)
+            .map(|(cell, &temperature)| {
+                temperature + relief.elevation_m().values()[cell].max(0.0) * 0.0065
+            }),
+    );
+    let high_latitude = mean(
+        climate
+            .mean_annual_air_temperature_c()
+            .iter()
+            .enumerate()
+            .filter(|(cell, _)| climate.latitude_degrees()[*cell].abs() > 50.0)
+            .map(|(cell, &temperature)| {
+                temperature + relief.elevation_m().values()[cell].max(0.0) * 0.0065
+            }),
+    );
+    assert!(
+        low_latitude > high_latitude + 10.0,
+        "seed {seed}: lapse-adjusted low/high latitude temperatures were {low_latitude}/{high_latitude}"
+    );
+
+    let ocean_seasonality = mean(
+        climate
+            .temperature_seasonality_c()
+            .iter()
+            .enumerate()
+            .filter(|(cell, _)| relief.land_ocean().raw_values()[*cell] == 0)
+            .map(|(_, &value)| value),
+    );
+    let interior_seasonality_values = climate
+        .temperature_seasonality_c()
+        .iter()
+        .enumerate()
+        .filter(|(cell, _)| {
+            relief.land_ocean().raw_values()[*cell] == 1
+                && climate.maritime_influence()[*cell] < 0.35
+        })
+        .map(|(_, &value)| value)
+        .collect::<Vec<_>>();
+    if !interior_seasonality_values.is_empty() {
+        let interior_seasonality = mean(interior_seasonality_values.into_iter());
+        assert!(
+            ocean_seasonality < interior_seasonality,
+            "seed {seed}: ocean/interior seasonality were {ocean_seasonality}/{interior_seasonality}"
+        );
+    }
+
+    let land_precipitation = climate
+        .annual_precipitation_mm()
+        .iter()
+        .enumerate()
+        .filter(|(cell, _)| relief.land_ocean().raw_values()[*cell] == 1)
+        .map(|(_, &value)| value)
+        .collect::<Vec<_>>();
+    let minimum = land_precipitation
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    let maximum = land_precipitation
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        maximum - minimum > 120.0,
+        "seed {seed}: land annual-precipitation spread was {}",
+        maximum - minimum
+    );
+    assert!(
+        climate
+            .monthly_air_temperature_c()
+            .values()
+            .iter()
+            .flatten()
+            .chain(climate.monthly_precipitation_mm().values().iter().flatten())
+            .all(|value| value.is_finite()),
+        "seed {seed}: non-finite monthly climate scalar"
+    );
+    assert_eq!(spatial.cell_count(), climate.cell_count() as usize);
+}
+
+fn mean(values: impl Iterator<Item = f32>) -> f32 {
+    let (sum, count) = values.fold((0.0_f32, 0_usize), |(sum, count), value| {
+        (sum + value, count + 1)
+    });
+    assert!(count > 0);
+    sum / count as f32
+}
+
 fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
     let fixture = build_natural(GOLDEN_SEED, QUALITY_CELL_COUNT);
     let mesh = Arc::new(
@@ -607,12 +743,58 @@ fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
             "sedimentary-basin-potential.png",
             natural_packet(
                 &fixture,
-                mesh,
+                mesh.clone(),
                 sedimentary_basin_potential_field_id(),
                 FieldPayloadRef::ScalarF32(
                     fixture.geology.snapshot().sedimentary_basin_potential(),
                 ),
                 DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "preliminary-mean-air-temperature.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                preliminary_mean_air_temperature_c_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    fixture.climate.snapshot().mean_annual_air_temperature_c(),
+                ),
+                symmetric_zero_range(fixture.climate.snapshot().mean_annual_air_temperature_c()),
+                PaletteId::Diverging,
+            ),
+        ),
+        (
+            "preliminary-annual-precipitation.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                preliminary_annual_precipitation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.climate.snapshot().annual_precipitation_mm()),
+                DisplayRangeMode::Data,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "maritime-influence.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                maritime_influence_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.climate.snapshot().maritime_influence()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "preliminary-temperature-seasonality.png",
+            natural_packet(
+                &fixture,
+                mesh,
+                preliminary_temperature_seasonality_c_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.climate.snapshot().temperature_seasonality_c()),
+                DisplayRangeMode::Data,
                 PaletteId::Sequential,
             ),
         ),
@@ -628,6 +810,14 @@ fn symmetric_elevation_range(relief: &ReliefSnapshot) -> DisplayRangeMode {
         .map(|value| (value - sea_level).abs())
         .fold(0.0_f32, f32::max);
     DisplayRangeMode::Manual(ValueRange::new(sea_level - radius, sea_level + radius).unwrap())
+}
+
+fn symmetric_zero_range(values: &[f32]) -> DisplayRangeMode {
+    let radius = values
+        .iter()
+        .map(|value| value.abs())
+        .fold(0.0_f32, f32::max);
+    DisplayRangeMode::Manual(ValueRange::new(-radius, radius).unwrap())
 }
 
 fn natural_packet(
