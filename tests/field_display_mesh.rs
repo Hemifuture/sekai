@@ -232,6 +232,22 @@ fn completeness_is_explicit_and_present_malformed_geometry_is_never_skipped() {
         PreparedCellMesh::build(&malformed, MeshCompleteness::AllowMissing),
         Err(DisplayPrepareError::MalformedCellGeometry { .. })
     ));
+
+    let repeated_vertex = TestGeometry {
+        bounds,
+        declared_cell_count: 1,
+        polygons: vec![Some(vec![
+            point(0.0, 0.0),
+            point(1.0, 0.0),
+            point(1.0, 0.0),
+            point(1.0, 1.0),
+            point(0.0, 1.0),
+        ])],
+    };
+    assert!(matches!(
+        PreparedCellMesh::build(&repeated_vertex, MeshCompleteness::AllowMissing),
+        Err(DisplayPrepareError::MalformedCellGeometry { .. })
+    ));
 }
 
 #[test]

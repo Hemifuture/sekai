@@ -406,7 +406,13 @@ fn is_counter_clockwise_convex(polygon: &[[f32; 2]]) -> bool {
             return false;
         }
     }
-    twice_area > POLYGON_EPSILON
+    if twice_area <= POLYGON_EPSILON {
+        return false;
+    }
+    let fan_origin = polygon[0];
+    polygon[1..]
+        .windows(2)
+        .all(|triangle| cross(fan_origin, triangle[0], triangle[1]) > POLYGON_EPSILON)
 }
 
 fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {

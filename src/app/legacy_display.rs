@@ -16,6 +16,7 @@ use crate::world::fields::{
 use crate::world::{CellId, Meters, WorldPoint, WorldRect};
 
 const MAX_GEOMETRY_WARNINGS: usize = 64;
+const LEGACY_POLYGON_EPSILON: f32 = 1.0e-7;
 
 /// Owned renderer-neutral document adapted from the current legacy map generator.
 pub(super) struct LegacyTerrainDisplay {
@@ -265,7 +266,7 @@ fn convert_polygon(
     if area < 0.0 {
         polygon.reverse();
     }
-    is_convex(&polygon).then_some(polygon)
+    is_renderable_convex(bounds, &polygon).then_some(polygon)
 }
 
 fn signed_area(polygon: &[WorldPoint]) -> f64 {
@@ -278,20 +279,34 @@ fn signed_area(polygon: &[WorldPoint]) -> f64 {
         * 0.5
 }
 
-fn is_convex(polygon: &[WorldPoint]) -> bool {
-    let mut positive_turn = false;
-    for index in 0..polygon.len() {
-        let a = polygon[index];
-        let b = polygon[(index + 1) % polygon.len()];
-        let c = polygon[(index + 2) % polygon.len()];
-        let cross = (b.x().get() - a.x().get()) * (c.y().get() - a.y().get())
-            - (b.y().get() - a.y().get()) * (c.x().get() - a.x().get());
-        if !cross.is_finite() || cross < -1.0e-9 {
+fn is_renderable_convex(bounds: WorldRect, polygon: &[WorldPoint]) -> bool {
+    let width = bounds.width().get();
+    let height = bounds.height().get();
+    let normalized: Vec<_> = polygon
+        .iter()
+        .map(|point| {
+            [
+                ((point.x().get() - bounds.min().x().get()) / width) as f32,
+                ((point.y().get() - bounds.min().y().get()) / height) as f32,
+            ]
+        })
+        .collect();
+    for index in 0..normalized.len() {
+        let a = normalized[index];
+        let b = normalized[(index + 1) % normalized.len()];
+        let c = normalized[(index + 2) % normalized.len()];
+        if display_cross(a, b, c) <= LEGACY_POLYGON_EPSILON {
             return false;
         }
-        positive_turn |= cross > 1.0e-9;
     }
-    positive_turn
+    let fan_origin = normalized[0];
+    normalized[1..].windows(2).all(|triangle| {
+        display_cross(fan_origin, triangle[0], triangle[1]) > LEGACY_POLYGON_EPSILON
+    })
+}
+
+fn display_cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
 #[derive(Default)]
@@ -449,6 +464,23 @@ mod tests {
             Some(crate::world::CellId::from_raw(1))
         );
         assert_eq!(display.diagnostics[0].code, "display.legacy.geometry");
+    }
+
+    #[test]
+    fn repeated_legacy_polygon_vertices_are_omitted_before_mesh_preparation() {
+        let (bounds, mut voronoi) = four_cell_legacy_geometry();
+        voronoi.cells[1].vertex_indices = vec![1, 2, 2, 5, 4];
+        let display =
+            LegacyTerrainDisplayAdapter::build(bounds, &voronoi, &[0; 4], &[1; 4]).unwrap();
+
+        assert_eq!(display.mesh.cell_count(), 4);
+        assert_eq!(
+            display.mesh.pick_local([1.5, 0.5]),
+            None,
+            "the malformed cell must not produce degenerate GPU triangles"
+        );
+        assert_eq!(display.diagnostics.len(), 1);
+        assert_eq!(display.diagnostics[0].cell_id, Some(CellId::from_raw(1)));
     }
 
     #[test]
