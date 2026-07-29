@@ -2,6 +2,7 @@
 
 mod fields;
 mod geologic_spec;
+mod mantle;
 mod relief;
 mod spec;
 mod tectonics;
@@ -14,6 +15,10 @@ pub use fields::{
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,
+};
+pub use mantle::{
+    Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_STRENGTH_PERMILLE, MIN_HOTSPOT_STRENGTH_PERMILLE,
 };
 pub use relief::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
