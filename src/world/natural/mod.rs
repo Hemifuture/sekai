@@ -2,6 +2,7 @@
 
 mod fields;
 mod geologic_spec;
+mod geology;
 mod mantle;
 mod relief;
 mod spec;
@@ -15,6 +16,10 @@ pub use fields::{
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,
+};
+pub use geology::{
+    BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
+    GEOLOGIC_SNAPSHOT_SCHEMA_V1,
 };
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
