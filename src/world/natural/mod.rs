@@ -1,5 +1,7 @@
 //! Contracts for the current-slice natural world.
 
+mod climate;
+mod climate_spec;
 mod fields;
 mod geologic_spec;
 mod geology;
@@ -8,15 +10,30 @@ mod relief;
 mod spec;
 mod tectonics;
 
+pub use climate::{
+    ClimateValidationError, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
+    AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT,
+    CLIMATE_SUMMARY_IDENTITY_TOLERANCE, MONTHLY_PRECIPITATION_MAX_MM,
+    PRELIMINARY_CLIMATE_SCHEMA_V1, TEMPERATURE_SEASONALITY_MAX_C, WIND_COMPONENT_MAX_M_S,
+};
+pub use climate_spec::{
+    ClimateSpec, ClimateSpecError, CLIMATE_SPEC_SCHEMA_V1, MAX_AXIAL_TILT_CENTIDEG,
+    MAX_LATITUDE_CENTIDEG, MAX_MOISTURE_SCALE_PERMILLE, MAX_TEMPERATURE_OFFSET_DECI_C,
+    MIN_LATITUDE_CENTIDEG, MIN_LATITUDE_SPAN_CENTIDEG, MIN_MOISTURE_SCALE_PERMILLE,
+    MIN_TEMPERATURE_OFFSET_DECI_C,
+};
 pub use fields::{
     bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
     crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
     elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
-    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
-    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
-    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
-    volcanic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
+    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    natural_field_registry, plate_id_field_id, plate_velocity_field_id,
+    preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
+    preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
+    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
+    NaturalFieldDisplayCache, NaturalFieldRegistryError,
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,

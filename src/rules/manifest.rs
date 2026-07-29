@@ -476,7 +476,9 @@ fn canonical_contributions(
         }
         if matches!(
             contribution,
-            CapabilityContribution::TectonicModel(_) | CapabilityContribution::GeologicModel(_)
+            CapabilityContribution::TectonicModel(_)
+                | CapabilityContribution::GeologicModel(_)
+                | CapabilityContribution::ClimateModel(_)
         ) {
             let capability_id = contribution.capability_id();
             if !unique_contributions.insert(capability_id.clone()) {

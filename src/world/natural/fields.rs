@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::{
-    TectonicSnapshot, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
-    HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    TectonicSnapshot, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT,
+    MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
+    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, TEMPERATURE_SEASONALITY_MAX_C,
     VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::fields::{
@@ -124,6 +125,36 @@ pub fn sedimentary_basin_potential_field_id() -> FieldId {
     field_id("sedimentary_basin_potential")
 }
 
+/// Returns the stable geographic-latitude field ID.
+pub fn latitude_degrees_field_id() -> FieldId {
+    field_id("latitude_degrees")
+}
+
+/// Returns the stable normalized maritime-influence field ID.
+pub fn maritime_influence_field_id() -> FieldId {
+    field_id("maritime_influence")
+}
+
+/// Returns the stable annual-mean preliminary prevailing-wind field ID.
+pub fn preliminary_prevailing_wind_m_s_field_id() -> FieldId {
+    field_id("preliminary_prevailing_wind_m_s")
+}
+
+/// Returns the stable preliminary annual-mean air-temperature field ID.
+pub fn preliminary_mean_air_temperature_c_field_id() -> FieldId {
+    field_id("preliminary_mean_air_temperature_c")
+}
+
+/// Returns the stable preliminary peak-to-trough temperature-seasonality field ID.
+pub fn preliminary_temperature_seasonality_c_field_id() -> FieldId {
+    field_id("preliminary_temperature_seasonality_c")
+}
+
+/// Returns the stable preliminary annual-precipitation field ID.
+pub fn preliminary_annual_precipitation_mm_field_id() -> FieldId {
+    field_id("preliminary_annual_precipitation_mm")
+}
+
 /// Builds the complete V1 natural-field registry for a validated plate cardinality.
 pub fn natural_field_registry(
     plate_count: u16,
@@ -165,6 +196,12 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
     let metallic_mineral_potential = metallic_mineral_potential_field_id();
     let geothermal_potential = geothermal_potential_field_id();
     let sedimentary_basin_potential = sedimentary_basin_potential_field_id();
+    let latitude_degrees = latitude_degrees_field_id();
+    let maritime_influence = maritime_influence_field_id();
+    let prevailing_wind = preliminary_prevailing_wind_m_s_field_id();
+    let mean_air_temperature = preliminary_mean_air_temperature_c_field_id();
+    let temperature_seasonality = preliminary_temperature_seasonality_c_field_id();
+    let annual_precipitation = preliminary_annual_precipitation_mm_field_id();
 
     Ok(vec![
         category_schema(
@@ -319,7 +356,7 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             ],
         )?,
         category_schema_with_dependencies(
-            land_ocean,
+            land_ocean.clone(),
             FieldDomain::Cells,
             BTreeMap::from([
                 (0, "field.sekai.core.natural.land_ocean.ocean".into()),
@@ -420,7 +457,75 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             1.0,
             FieldPaletteHint::Sequential,
             2,
-            vec![bedrock_kind, tectonic_offset, elevation],
+            vec![bedrock_kind, tectonic_offset, elevation.clone()],
+        )?,
+        scalar_schema(
+            latitude_degrees.clone(),
+            FieldDomain::Cells,
+            custom_unit("degree", "°"),
+            -90.0,
+            90.0,
+            FieldPaletteHint::Diverging,
+            1,
+            Vec::new(),
+        )?,
+        scalar_schema(
+            maritime_influence.clone(),
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![land_ocean],
+        )?,
+        vector_schema(
+            prevailing_wind.clone(),
+            custom_unit("meter-per-second", "m/s"),
+            vec![latitude_degrees.clone()],
+        )?,
+        scalar_schema(
+            mean_air_temperature.clone(),
+            FieldDomain::Cells,
+            custom_unit("degree-celsius", "°C"),
+            AIR_TEMPERATURE_MIN_C,
+            AIR_TEMPERATURE_MAX_C,
+            FieldPaletteHint::Diverging,
+            1,
+            vec![
+                latitude_degrees.clone(),
+                elevation.clone(),
+                maritime_influence.clone(),
+            ],
+        )?,
+        scalar_schema(
+            temperature_seasonality,
+            FieldDomain::Cells,
+            custom_unit("degree-celsius", "°C"),
+            0.0,
+            TEMPERATURE_SEASONALITY_MAX_C,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![
+                latitude_degrees,
+                elevation.clone(),
+                maritime_influence.clone(),
+            ],
+        )?,
+        scalar_schema(
+            annual_precipitation,
+            FieldDomain::Cells,
+            custom_unit("millimeter-per-year", "mm/year"),
+            0.0,
+            ANNUAL_PRECIPITATION_MAX_MM,
+            FieldPaletteHint::Sequential,
+            0,
+            vec![
+                mean_air_temperature,
+                elevation,
+                maritime_influence,
+                prevailing_wind,
+            ],
         )?,
     ])
 }

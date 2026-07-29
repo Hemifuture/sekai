@@ -267,7 +267,8 @@ impl TectonicRuleResolver {
                             return Err(TectonicRuleResolutionError::MultipleTectonicModels);
                         }
                     }
-                    CapabilityContribution::GeologicModel(_) => {}
+                    CapabilityContribution::GeologicModel(_)
+                    | CapabilityContribution::ClimateModel(_) => {}
                     CapabilityContribution::TectonicConstraint(constraint) => {
                         constraints.push(SourcedConstraint {
                             source: ConstraintSource::RulePack {

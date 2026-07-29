@@ -2,6 +2,7 @@
 
 mod builtin;
 mod capability;
+mod climate;
 mod constraints;
 mod geology;
 mod ids;
@@ -15,9 +16,14 @@ pub use builtin::{
     EARTHLIKE_RULE_PACK_ID,
 };
 pub use capability::{
-    geologic_model_capability_id, tectonic_controls_capability_id, tectonic_model_capability_id,
-    CapabilityCardinality, CapabilityContribution, CapabilityDescriptor, CapabilityRegistry,
-    CapabilityRegistryBuilder, CapabilityRegistryError, GeologicModel, RulePackKind, TectonicModel,
+    climate_model_capability_id, geologic_model_capability_id, tectonic_controls_capability_id,
+    tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution,
+    CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder, CapabilityRegistryError,
+    ClimateModel, GeologicModel, RulePackKind, TectonicModel,
+};
+pub use climate::{
+    ClimateRuleResolution, ClimateRuleResolutionError, ClimateRuleResolver,
+    CLIMATE_RULE_RESOLUTION_SCHEMA_V1,
 };
 pub use constraints::{
     ActivitySet, AuthorConstraint, AuthorConstraints, ConstraintError, ConstraintSource,

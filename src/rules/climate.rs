@@ -5,62 +5,62 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    CapabilityContribution, GeologicModel, ResolvedRulePackRef, ResolvedRulePackSet, RulePackId,
+    CapabilityContribution, ClimateModel, ResolvedRulePackRef, ResolvedRulePackSet, RulePackId,
 };
-use crate::world::natural::{GeologicSpec, GeologicSpecError};
+use crate::world::natural::{ClimateSpec, ClimateSpecError};
 
-/// The supported serialized schema for a geologic rule-resolution audit.
-pub const GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1: u16 = 1;
+/// The supported serialized schema for a preliminary-climate rule-resolution audit.
+pub const CLIMATE_RULE_RESOLUTION_SCHEMA_V1: u16 = 1;
 
-/// Errors returned while resolving or revalidating a geologic rule audit.
+/// Errors returned while resolving or revalidating a climate rule audit.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum GeologicRuleResolutionError {
-    /// The base geologic specification is invalid.
-    #[error("invalid base geologic specification: {0}")]
-    InvalidBaseSpec(GeologicSpecError),
-    /// A capability-resolved pack set contains no geologic model contribution.
-    #[error("resolved rule-pack set contains no geologic model")]
-    MissingGeologicModel,
-    /// A supposedly capability-resolved pack set contains several geologic models.
-    #[error("resolved rule-pack set contains several geologic model contributions")]
-    MultipleGeologicModels,
+pub enum ClimateRuleResolutionError {
+    /// The base climate specification is invalid.
+    #[error("invalid base climate specification: {0}")]
+    InvalidBaseSpec(ClimateSpecError),
+    /// A capability-resolved pack set contains no climate model contribution.
+    #[error("resolved rule-pack set contains no climate model")]
+    MissingClimateModel,
+    /// A supposedly capability-resolved pack set contains several climate models.
+    #[error("resolved rule-pack set contains several climate model contributions")]
+    MultipleClimateModels,
     /// The resolved specification failed the natural-domain contract.
-    #[error("invalid resolved geologic specification: {0}")]
-    InvalidResolvedSpec(GeologicSpecError),
+    #[error("invalid resolved climate specification: {0}")]
+    InvalidResolvedSpec(ClimateSpecError),
     /// A serialized audit uses an unsupported schema.
     #[error(
-        "unsupported geologic rule-resolution schema {found}; supported schema is {GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1}"
+        "unsupported climate rule-resolution schema {found}; supported schema is {CLIMATE_RULE_RESOLUTION_SCHEMA_V1}"
     )]
     UnsupportedSchema {
         /// The rejected schema version.
         found: u16,
     },
     /// A serialized audit repeats a participating pack ID.
-    #[error("resolved geologic rule-pack audit repeats pack {pack_id:?}")]
+    #[error("resolved climate rule-pack audit repeats pack {pack_id:?}")]
     DuplicateResolvedPack {
         /// The repeated pack ID.
         pack_id: RulePackId,
     },
 }
 
-/// A full deterministic audit of one geologic world-law resolution.
+/// A full deterministic audit of one preliminary-climate world-law resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GeologicRuleResolution {
+pub struct ClimateRuleResolution {
     schema_version: u16,
     resolved_packs: Vec<ResolvedRulePackRef>,
-    model: GeologicModel,
-    spec: GeologicSpec,
+    model: ClimateModel,
+    spec: ClimateSpec,
 }
 
 #[derive(Deserialize)]
-struct GeologicRuleResolutionWire {
+struct ClimateRuleResolutionWire {
     schema_version: u16,
     resolved_packs: Vec<ResolvedRulePackRef>,
-    model: GeologicModel,
-    spec: GeologicSpec,
+    model: ClimateModel,
+    spec: ClimateSpec,
 }
 
-impl GeologicRuleResolution {
+impl ClimateRuleResolution {
     /// Returns the serialized audit schema.
     pub const fn schema_version(&self) -> u16 {
         self.schema_version
@@ -71,31 +71,31 @@ impl GeologicRuleResolution {
         &self.resolved_packs
     }
 
-    /// Returns the selected trusted geologic model.
-    pub const fn model(&self) -> GeologicModel {
+    /// Returns the selected trusted preliminary-climate model.
+    pub const fn model(&self) -> ClimateModel {
         self.model
     }
 
-    /// Returns the final validated geologic specification.
-    pub const fn spec(&self) -> &GeologicSpec {
+    /// Returns the final validated climate specification.
+    pub const fn spec(&self) -> &ClimateSpec {
         &self.spec
     }
 
     /// Revalidates all serialized audit invariants.
-    pub fn validate(&self) -> Result<(), GeologicRuleResolutionError> {
-        if self.schema_version != GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1 {
-            return Err(GeologicRuleResolutionError::UnsupportedSchema {
+    pub fn validate(&self) -> Result<(), ClimateRuleResolutionError> {
+        if self.schema_version != CLIMATE_RULE_RESOLUTION_SCHEMA_V1 {
+            return Err(ClimateRuleResolutionError::UnsupportedSchema {
                 found: self.schema_version,
             });
         }
         self.spec
             .validate()
-            .map_err(GeologicRuleResolutionError::InvalidResolvedSpec)?;
+            .map_err(ClimateRuleResolutionError::InvalidResolvedSpec)?;
 
         let mut pack_ids = BTreeSet::new();
         for pack in &self.resolved_packs {
             if !pack_ids.insert(pack.pack_id().clone()) {
-                return Err(GeologicRuleResolutionError::DuplicateResolvedPack {
+                return Err(ClimateRuleResolutionError::DuplicateResolvedPack {
                     pack_id: pack.pack_id().clone(),
                 });
             }
@@ -104,12 +104,12 @@ impl GeologicRuleResolution {
     }
 }
 
-impl<'de> Deserialize<'de> for GeologicRuleResolution {
+impl<'de> Deserialize<'de> for ClimateRuleResolution {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let wire = GeologicRuleResolutionWire::deserialize(deserializer)?;
+        let wire = ClimateRuleResolutionWire::deserialize(deserializer)?;
         let resolution = Self {
             schema_version: wire.schema_version,
             resolved_packs: wire.resolved_packs,
@@ -121,18 +121,18 @@ impl<'de> Deserialize<'de> for GeologicRuleResolution {
     }
 }
 
-/// Stateless resolver for the closed V1 geologic world-law capability.
+/// Stateless resolver for the closed V1 preliminary-climate world-law capability.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GeologicRuleResolver;
+pub struct ClimateRuleResolver;
 
-impl GeologicRuleResolver {
-    /// Resolves capability-validated packs against one base geologic specification.
+impl ClimateRuleResolver {
+    /// Resolves capability-validated packs against one base climate specification.
     pub fn resolve(
-        base: &GeologicSpec,
+        base: &ClimateSpec,
         packs: &ResolvedRulePackSet<'_>,
-    ) -> Result<GeologicRuleResolution, GeologicRuleResolutionError> {
+    ) -> Result<ClimateRuleResolution, ClimateRuleResolutionError> {
         base.validate()
-            .map_err(GeologicRuleResolutionError::InvalidBaseSpec)?;
+            .map_err(ClimateRuleResolutionError::InvalidBaseSpec)?;
 
         let mut model = None;
         let mut resolved_packs = Vec::with_capacity(packs.len());
@@ -145,20 +145,20 @@ impl GeologicRuleResolver {
             ));
             for contribution in pack.contributions() {
                 match contribution {
-                    CapabilityContribution::GeologicModel(candidate) => {
+                    CapabilityContribution::ClimateModel(candidate) => {
                         if model.replace(*candidate).is_some() {
-                            return Err(GeologicRuleResolutionError::MultipleGeologicModels);
+                            return Err(ClimateRuleResolutionError::MultipleClimateModels);
                         }
                     }
                     CapabilityContribution::TectonicModel(_)
-                    | CapabilityContribution::ClimateModel(_)
+                    | CapabilityContribution::GeologicModel(_)
                     | CapabilityContribution::TectonicConstraint(_) => {}
                 }
             }
         }
-        let model = model.ok_or(GeologicRuleResolutionError::MissingGeologicModel)?;
-        let resolution = GeologicRuleResolution {
-            schema_version: GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
+        let model = model.ok_or(ClimateRuleResolutionError::MissingClimateModel)?;
+        let resolution = ClimateRuleResolution {
+            schema_version: CLIMATE_RULE_RESOLUTION_SCHEMA_V1,
             resolved_packs,
             model,
             spec: base.clone(),
