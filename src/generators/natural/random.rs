@@ -5,8 +5,10 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::engine::StageRng;
 
-pub(super) const PLATE_PARTITION_LABEL: &str = "plate-partition-v1";
-pub(super) const CRUST_FIELD_LABEL: &str = "crust-field-v1";
+pub(super) const PLATE_SEEDS_LABEL: &str = "plate-seeds-v1";
+pub(super) const CRUST_SEEDS_LABEL: &str = "crust-seeds-v1";
+pub(super) const CRUST_SHAPE_LABEL: &str = "crust-shape-v1";
+pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
 
 pub(super) struct LabeledSubstreams {
     root: [u8; 32],
@@ -39,7 +41,7 @@ impl LabeledSubstreams {
 mod tests {
     use rand::RngCore;
 
-    use super::{LabeledSubstreams, CRUST_FIELD_LABEL, PLATE_PARTITION_LABEL};
+    use super::{LabeledSubstreams, CRUST_SEEDS_LABEL, PLATE_SEEDS_LABEL};
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::world::RootSeed;
 
@@ -53,8 +55,8 @@ mod tests {
     #[test]
     fn labeled_substreams_repeat_exactly() {
         let streams = LabeledSubstreams::capture(&mut stage_rng());
-        let mut first = streams.stream(PLATE_PARTITION_LABEL);
-        let mut second = streams.stream(PLATE_PARTITION_LABEL);
+        let mut first = streams.stream(PLATE_SEEDS_LABEL);
+        let mut second = streams.stream(PLATE_SEEDS_LABEL);
 
         assert_eq!(
             (0..8).map(|_| first.next_u64()).collect::<Vec<_>>(),
@@ -65,14 +67,14 @@ mod tests {
     #[test]
     fn consuming_one_label_does_not_perturb_another() {
         let streams = LabeledSubstreams::capture(&mut stage_rng());
-        let mut plate = streams.stream(PLATE_PARTITION_LABEL);
-        let mut crust_after_plate = streams.stream(CRUST_FIELD_LABEL);
+        let mut plate = streams.stream(PLATE_SEEDS_LABEL);
+        let mut crust_after_plate = streams.stream(CRUST_SEEDS_LABEL);
         for _ in 0..100 {
             plate.next_u64();
         }
 
         let pristine = LabeledSubstreams::capture(&mut stage_rng());
-        let mut pristine_crust = pristine.stream(CRUST_FIELD_LABEL);
+        let mut pristine_crust = pristine.stream(CRUST_SEEDS_LABEL);
         assert_eq!(
             (0..8)
                 .map(|_| crust_after_plate.next_u64())
