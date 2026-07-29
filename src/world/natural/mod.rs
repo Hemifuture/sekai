@@ -9,6 +9,7 @@ mod hydro_erosion_spec;
 mod mantle;
 mod relief;
 mod spec;
+mod surface_process;
 mod tectonics;
 
 pub use climate::{
@@ -62,6 +63,11 @@ pub use relief::{
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
     MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
+};
+pub use surface_process::{
+    SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,
+    MAX_EROSION_DEPTH_M, SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3, SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
+    SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1,
 };
 pub use tectonics::{
     BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Plate, PlateIdField,

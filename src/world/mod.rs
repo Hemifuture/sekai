@@ -7,8 +7,8 @@ mod spec;
 mod units;
 
 pub use ids::{
-    AuthorObjectId, BoundarySegmentId, CellId, CultureId, EdgeId, HotspotId, PlateId, PolityId,
-    RootSeed, SettlementId, SpeciesId,
+    AuthorObjectId, BoundarySegmentId, CellId, CultureId, DrainageBasinId, EdgeId, HotspotId,
+    LakeId, PlateId, PolityId, RiverSegmentId, RootSeed, SettlementId, SpeciesId,
 };
 pub use spec::{
     BoundaryCondition, PlanarSpaceSpec, SpecError, TechnologyBaseline, WorldSpec, MAX_CELL_COUNT,
