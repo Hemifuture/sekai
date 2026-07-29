@@ -4,19 +4,23 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::{TectonicGenerationError, TectonicGenerator};
+use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
-    Stage, StageError, StageId, StageInputs, StageRng,
+    GraphError, Stage, StageError, StageGraph, StageGraphBuilder, StageId, StageInputs, StageRng,
 };
-use crate::generators::spatial::SpatialArtifact;
+use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use crate::world::natural::{
-    NaturalSpecError, TectonicSnapshot, TectonicSpec, TectonicValidationError,
+    NaturalSpecError, ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicSpec,
+    TectonicValidationError,
 };
 
 const INVALID_SPEC_CODE: &str = "natural.invalid-tectonic-spec";
 const BUILD_FAILED_CODE: &str = "natural.tectonic-build-failed";
 const INVALID_SNAPSHOT_CODE: &str = "natural.invalid-tectonic-snapshot";
+const INVALID_TECTONICS_CODE: &str = "natural.invalid-tectonics";
+const RELIEF_FAILED_CODE: &str = "natural.relief-failed";
+const INVALID_RELIEF_CODE: &str = "natural.invalid-relief";
 
 /// Engine transport wrapper for an externally supplied tectonic specification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,5 +159,137 @@ fn invalid_snapshot(error: TectonicValidationError) -> StageError {
     StageError::new(
         INVALID_SNAPSHOT_CODE,
         format!("generated tectonic snapshot failed validation: {error}"),
+    )
+}
+
+/// Engine transport wrapper for a complete validated relief snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReliefArtifact {
+    snapshot: ReliefSnapshot,
+}
+
+impl ReliefArtifact {
+    /// Wraps a complete relief snapshot for engine transport.
+    pub const fn new(snapshot: ReliefSnapshot) -> Self {
+        Self { snapshot }
+    }
+
+    /// Returns the wrapped relief snapshot.
+    pub const fn snapshot(&self) -> &ReliefSnapshot {
+        &self.snapshot
+    }
+}
+
+impl Artifact for ReliefArtifact {
+    const KEY: ArtifactKey = ArtifactKey::new("world.relief");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        self.snapshot
+            .validate()
+            .map_err(|error| ArtifactValidationError::new(INVALID_RELIEF_CODE, error.to_string()))
+    }
+}
+
+/// Restricted typed dependencies supplied to [`ReliefStage`].
+pub struct ReliefStageInputs {
+    spatial: Arc<SpatialArtifact>,
+    tectonic: Arc<TectonicArtifact>,
+}
+
+impl StageInputs for ReliefStageInputs {
+    fn dependencies() -> &'static [ArtifactKey] {
+        &[SpatialArtifact::KEY, TectonicArtifact::KEY]
+    }
+
+    fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+        Ok(Self {
+            spatial: artifacts.get::<SpatialArtifact>()?,
+            tectonic: artifacts.get::<TectonicArtifact>()?,
+        })
+    }
+}
+
+/// Deterministic stage that synthesizes explainable current-slice relief.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReliefStage;
+
+impl Stage for ReliefStage {
+    type Inputs = ReliefStageInputs;
+    type Output = ReliefArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("natural.relief")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "sekai.core"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        rng: &mut StageRng,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        inputs
+            .tectonic
+            .snapshot()
+            .validate_against(inputs.spatial.snapshot())
+            .map_err(invalid_tectonics)?;
+        let snapshot = ReliefGenerator::generate(
+            inputs.spatial.snapshot(),
+            inputs.tectonic.snapshot(),
+            rng,
+            diagnostics,
+        )
+        .map_err(relief_failure)?;
+        snapshot
+            .validate_against(inputs.spatial.snapshot())
+            .map_err(invalid_relief)?;
+        Ok(ReliefArtifact::new(snapshot))
+    }
+}
+
+/// Builds the complete current-slice natural foundation stage graph.
+///
+/// # Errors
+///
+/// Returns a graph error if the fixed stage declarations cease to satisfy the
+/// engine dependency contract.
+pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
+    StageGraphBuilder::new()
+        .external::<PlanarSpaceArtifact>()
+        .external::<TectonicSpecArtifact>()
+        .stage(SpatialStage)
+        .stage(TectonicStage)
+        .stage(ReliefStage)
+        .build()
+}
+
+fn invalid_tectonics(error: TectonicValidationError) -> StageError {
+    StageError::new(
+        INVALID_TECTONICS_CODE,
+        format!("tectonic input failed spatial validation: {error}"),
+    )
+}
+
+fn relief_failure(error: ReliefGenerationError) -> StageError {
+    match error {
+        ReliefGenerationError::InvalidTectonics(error) => invalid_tectonics(error),
+        ReliefGenerationError::InvalidRelief(error) => StageError::new(
+            RELIEF_FAILED_CODE,
+            format!("relief synthesis produced invalid fields: {error}"),
+        ),
+    }
+}
+
+fn invalid_relief(error: ReliefValidationError) -> StageError {
+    StageError::new(
+        INVALID_RELIEF_CODE,
+        format!("generated relief snapshot failed validation: {error}"),
     )
 }

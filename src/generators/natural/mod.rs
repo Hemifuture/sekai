@@ -7,5 +7,8 @@ mod tectonics;
 mod topology;
 
 pub use relief::{ReliefGenerationError, ReliefGenerator};
-pub use stage::{TectonicArtifact, TectonicSpecArtifact, TectonicStage};
+pub use stage::{
+    natural_foundation_graph, ReliefArtifact, ReliefStage, TectonicArtifact, TectonicSpecArtifact,
+    TectonicStage,
+};
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

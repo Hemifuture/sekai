@@ -2,7 +2,10 @@ use sekai::engine::{
     Artifact, ArtifactError, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage,
     StageGraphBuilder,
 };
-use sekai::generators::natural::{TectonicArtifact, TectonicSpecArtifact, TectonicStage};
+use sekai::generators::natural::{
+    natural_foundation_graph, ReliefArtifact, ReliefStage, TectonicArtifact, TectonicSpecArtifact,
+    TectonicStage,
+};
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use sekai::world::natural::{TectonicActivity, TectonicSpec, TECTONIC_SPEC_SCHEMA_V1};
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -176,4 +179,132 @@ fn changing_root_seed_reruns_both_tectonic_graph_stages() {
 
     assert_eq!(changed.report.cache_hits(), 0);
     assert_eq!(changed.report.cache_misses(), 2);
+}
+
+#[test]
+fn complete_natural_graph_publishes_relief_with_exact_stage_metadata() {
+    assert_eq!(ReliefArtifact::KEY.as_str(), "world.relief");
+    let stage = ReliefStage;
+    assert_eq!(stage.id().as_str(), "natural.relief");
+    assert_eq!(stage.namespace(), "sekai.core");
+    assert_eq!(stage.version(), 1);
+
+    let graph = natural_foundation_graph().unwrap();
+    assert_eq!(
+        graph.stage_ids(),
+        vec![
+            "spatial.planar-voronoi",
+            "natural.tectonics",
+            "natural.relief"
+        ]
+    );
+    let descriptor = &graph.descriptors()[2];
+    assert_eq!(
+        descriptor
+            .dependencies()
+            .iter()
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["world.spatial", "world.tectonics"]
+    );
+    assert_eq!(descriptor.output(), ReliefArtifact::KEY);
+}
+
+#[test]
+fn complete_natural_graph_artifacts_and_hashes_are_deterministic() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let first = engine
+        .build(
+            RootSeed::new(42),
+            external(12),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+    let second = engine
+        .build(
+            RootSeed::new(42),
+            external(12),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+    let spatial = first.artifacts.get::<SpatialArtifact>().unwrap();
+    let tectonic = first.artifacts.get::<TectonicArtifact>().unwrap();
+    let relief = first.artifacts.get::<ReliefArtifact>().unwrap();
+
+    tectonic
+        .snapshot()
+        .validate_against(spatial.snapshot())
+        .unwrap();
+    relief
+        .snapshot()
+        .validate_against(spatial.snapshot())
+        .unwrap();
+    assert_eq!(
+        first.artifacts.hash::<SpatialArtifact>().unwrap(),
+        second.artifacts.hash::<SpatialArtifact>().unwrap()
+    );
+    assert_eq!(
+        first.artifacts.hash::<TectonicArtifact>().unwrap(),
+        second.artifacts.hash::<TectonicArtifact>().unwrap()
+    );
+    assert_eq!(
+        first.artifacts.hash::<ReliefArtifact>().unwrap(),
+        second.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+    assert_eq!(first.report.result_hash(), second.report.result_hash());
+}
+
+#[test]
+fn complete_natural_graph_cache_tracks_transitive_tectonic_changes() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    engine
+        .build(RootSeed::new(42), external(12), &mut cache)
+        .unwrap();
+    let repeated = engine
+        .build(RootSeed::new(42), external(12), &mut cache)
+        .unwrap();
+    assert_eq!(repeated.report.cache_hits(), 3);
+    assert_eq!(repeated.report.cache_misses(), 0);
+
+    let changed = engine
+        .build(RootSeed::new(42), external(17), &mut cache)
+        .unwrap();
+    assert_eq!(changed.report.cache_hits(), 1);
+    assert_eq!(changed.report.cache_misses(), 2);
+}
+
+#[test]
+fn complete_natural_graph_requires_both_external_artifacts() {
+    let mut incomplete = ExternalArtifacts::new();
+    incomplete
+        .insert(PlanarSpaceArtifact::new(space()))
+        .unwrap();
+    let failure = BuildEngine::new(natural_foundation_graph().unwrap())
+        .build(RootSeed::new(42), incomplete, &mut MemoryStageCache::new())
+        .unwrap_err();
+
+    assert!(failure.report.stage_ids().is_empty());
+    assert_eq!(
+        failure.report.diagnostics()[0].code(),
+        "engine.external-artifact"
+    );
+}
+
+#[test]
+fn malformed_relief_artifact_cannot_publish() {
+    let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
+        .build(
+            RootSeed::new(42),
+            external(12),
+            &mut MemoryStageCache::new(),
+        )
+        .unwrap();
+    let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
+    let mut wire = serde_json::to_value(relief.as_ref()).unwrap();
+    wire["snapshot"]["elevation_m"][0] = serde_json::json!(50_000.0);
+    let invalid: ReliefArtifact = serde_json::from_value(wire).unwrap();
+    let error = invalid.validate().unwrap_err();
+
+    assert_eq!(error.code(), "natural.invalid-relief");
 }
