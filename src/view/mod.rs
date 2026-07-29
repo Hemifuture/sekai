@@ -2,6 +2,7 @@
 
 mod diagnostics;
 mod field;
+mod mesh;
 mod palette;
 mod state;
 
@@ -11,6 +12,10 @@ pub use diagnostics::{
 };
 pub use field::{
     CellFillKind, FieldCatalog, FieldCatalogEntry, FieldValue, FieldView, FieldViewError,
+};
+pub use mesh::{
+    CellGeometrySource, DisplayVertex, MeshCompleteness, PreparedCellMesh, MAX_DISPLAY_CELLS,
+    MAX_DISPLAY_INDICES, MAX_DISPLAY_VERTICES,
 };
 pub use palette::{
     built_in_palette, category_color, prepare_cell_field, resolve_display_range, sample_palette,

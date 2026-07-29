@@ -217,6 +217,76 @@ pub enum DisplayPrepareError {
         /// The number of valid cells.
         cell_count: usize,
     },
+    /// The source declared more cells than the display budget.
+    #[error("display cell count {actual} exceeds budget {max}")]
+    CellBudgetExceeded {
+        /// The declared cell count.
+        actual: usize,
+        /// The configured cell budget.
+        max: usize,
+    },
+    /// A required stable cell had no polygon.
+    #[error("cell {cell:?} has no display geometry")]
+    MissingCellGeometry {
+        /// The cell without a polygon.
+        cell: CellId,
+    },
+    /// A present polygon was too short, degenerate, clockwise, or non-convex.
+    #[error("cell {cell:?} has malformed display geometry")]
+    MalformedCellGeometry {
+        /// The cell with an invalid polygon.
+        cell: CellId,
+    },
+    /// A polygon point lay outside the declared world rectangle.
+    #[error("cell {cell:?} has a point outside display bounds")]
+    CoordinateOutOfBounds {
+        /// The cell with an out-of-bounds point.
+        cell: CellId,
+    },
+    /// A normalized coordinate could not be represented as finite `f32`.
+    #[error("cell {cell:?} has a coordinate that cannot be represented for display")]
+    CoordinateConversionFailed {
+        /// The cell with an unrepresentable point.
+        cell: CellId,
+    },
+    /// Origin-shifted local dimensions could not be represented as finite positive `f32`.
+    #[error("local display extent {width} x {height} cannot be represented")]
+    LocalExtentOutOfRange {
+        /// World width.
+        width: f64,
+        /// World height.
+        height: f64,
+    },
+    /// Prepared vertices exceeded the configured budget.
+    #[error("display vertex count {actual} exceeds budget {max}")]
+    VertexBudgetExceeded {
+        /// Required vertices.
+        actual: usize,
+        /// Configured vertex budget.
+        max: usize,
+    },
+    /// Prepared indices exceeded the configured budget.
+    #[error("display index count {actual} exceeds budget {max}")]
+    IndexBudgetExceeded {
+        /// Required indices.
+        actual: usize,
+        /// Configured index budget.
+        max: usize,
+    },
+    /// Picking-bin references exceeded the configured budget.
+    #[error("display picker reference count {actual} exceeds budget {max}")]
+    PickerBudgetExceeded {
+        /// Required picker references.
+        actual: usize,
+        /// Configured picker-reference budget.
+        max: usize,
+    },
+    /// Checked display arithmetic could not represent a result.
+    #[error("integer overflow while computing {context}")]
+    IntegerOverflow {
+        /// The checked operation's stable context.
+        context: &'static str,
+    },
 }
 
 const SEQUENTIAL: [LinearRgba; 5] = [
