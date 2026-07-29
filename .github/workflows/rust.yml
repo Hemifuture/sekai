@@ -48,6 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - run: cargo test --lib
+      - run: cargo test --test natural_display_golden
 
   field_display_gpu:
     name: Field display GPU reference
