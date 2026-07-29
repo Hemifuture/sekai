@@ -465,7 +465,7 @@ fn canonical_contributions(
     contributions.sort();
 
     let mut item_ids = BTreeSet::new();
-    let mut has_tectonic_model = false;
+    let mut unique_contributions = BTreeSet::new();
     for contribution in &contributions {
         if let Some(item_id) = contribution.rule_item_id() {
             if !item_ids.insert(item_id.clone()) {
@@ -474,13 +474,14 @@ fn canonical_contributions(
                 });
             }
         }
-        if matches!(contribution, CapabilityContribution::TectonicModel(_)) {
-            if has_tectonic_model {
-                return Err(RulePackError::DuplicateUniqueContribution {
-                    capability_id: contribution.capability_id(),
-                });
+        if matches!(
+            contribution,
+            CapabilityContribution::TectonicModel(_) | CapabilityContribution::GeologicModel(_)
+        ) {
+            let capability_id = contribution.capability_id();
+            if !unique_contributions.insert(capability_id.clone()) {
+                return Err(RulePackError::DuplicateUniqueContribution { capability_id });
             }
-            has_tectonic_model = true;
         }
     }
     Ok(contributions)

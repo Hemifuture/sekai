@@ -17,13 +17,14 @@ pub(super) struct NeighborArc {
     pub(super) traversal_cost: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct NaturalTopologyIndex {
     arcs: Vec<Vec<NeighborArc>>,
     edge_owners: Vec<[Option<CellId>; 2]>,
     quantized_centers: Vec<[i64; 2]>,
     area_weights: Vec<u64>,
     boundary_cells: Vec<bool>,
+    maximum_dimension_m: f64,
 }
 
 impl NaturalTopologyIndex {
@@ -98,6 +99,7 @@ impl NaturalTopologyIndex {
             quantized_centers,
             area_weights,
             boundary_cells,
+            maximum_dimension_m: coordinate_scale,
         }
     }
 
@@ -119,6 +121,15 @@ impl NaturalTopologyIndex {
 
     pub(super) fn boundary_cells(&self) -> &[bool] {
         &self.boundary_cells
+    }
+
+    pub(super) fn quantized_distance_for_meters(&self, distance_m: f64) -> u64 {
+        debug_assert!(distance_m.is_finite() && distance_m >= 0.0);
+        if distance_m <= 0.0 {
+            0
+        } else {
+            quantize_positive(distance_m / self.maximum_dimension_m, LENGTH_QUANTIZATION)
+        }
     }
 
     pub(super) fn edge_between(&self, first: CellId, second: CellId) -> Option<EdgeId> {
@@ -412,6 +423,11 @@ mod tests {
             .all(|coordinate| *coordinate > 0));
         assert!(index.area_weights().iter().all(|weight| *weight > 0));
         assert_eq!(index.boundary_cells(), &[true, true, true, true]);
+        assert_eq!(
+            index.quantized_distance_for_meters(1.0),
+            index.arcs()[0][0].traversal_cost
+        );
+        assert_eq!(index.quantized_distance_for_meters(f64::EPSILON), 1);
     }
 
     #[test]

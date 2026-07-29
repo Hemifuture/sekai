@@ -3,8 +3,10 @@ use sekai::engine::{
     StageGraphBuilder,
 };
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, ReliefStage,
-    ResolvedTectonicInput, ResolvedTectonicInputArtifact, RulePackSetArtifact, TectonicArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact,
+    GeologicRuleResolutionArtifact, GeologicSpecArtifact, GeologicStage, MantleArtifact,
+    ReliefArtifact, ReliefStage, ResolvedGeologicInputArtifact, ResolvedTectonicInput,
+    ResolvedTectonicInputArtifact, RulePackSetArtifact, TectonicArtifact,
     TectonicRuleResolutionArtifact, TectonicSpecArtifact, TectonicStage,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
@@ -14,7 +16,9 @@ use sekai::rules::{
     RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion, TectonicConstraintClause,
     TectonicModel, AUTHOR_CONSTRAINTS_SCHEMA_V1,
 };
-use sekai::world::natural::{TectonicActivity, TectonicSpec, TECTONIC_SPEC_SCHEMA_V1};
+use sekai::world::natural::{
+    GeologicSpec, TectonicActivity, TectonicSpec, TECTONIC_SPEC_SCHEMA_V1,
+};
 use sekai::world::AuthorObjectId;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -54,9 +58,28 @@ fn complete_external_with(
     artifacts
         .insert(TectonicSpecArtifact::new(tectonic_spec(plate_count)))
         .unwrap();
+    artifacts
+        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .unwrap();
     artifacts.insert(RulePackSetArtifact::new(packs)).unwrap();
     artifacts
         .insert(AuthorConstraintsArtifact::new(authors))
+        .unwrap();
+    artifacts
+}
+
+fn complete_external_with_geologic_spec(spec: GeologicSpec) -> ExternalArtifacts {
+    let mut artifacts = ExternalArtifacts::new();
+    artifacts.insert(PlanarSpaceArtifact::new(space())).unwrap();
+    artifacts
+        .insert(TectonicSpecArtifact::new(tectonic_spec(12)))
+        .unwrap();
+    artifacts.insert(GeologicSpecArtifact::new(spec)).unwrap();
+    artifacts
+        .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+        .unwrap();
+    artifacts
+        .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
         .unwrap();
     artifacts
 }
@@ -243,34 +266,57 @@ fn changing_root_seed_reruns_both_tectonic_graph_stages() {
 }
 
 #[test]
-fn complete_natural_graph_publishes_relief_with_exact_stage_metadata() {
+fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata() {
     assert_eq!(ReliefArtifact::KEY.as_str(), "world.relief");
-    let stage = ReliefStage;
-    assert_eq!(stage.id().as_str(), "natural.relief");
-    assert_eq!(stage.namespace(), "sekai.core");
-    assert_eq!(stage.version(), 1);
+    assert_eq!(ReliefStage.id().as_str(), "natural.relief");
+    assert_eq!(ReliefStage.namespace(), "sekai.core");
+    assert_eq!(ReliefStage.version(), 2);
+    assert_eq!(GeologicArtifact::KEY.as_str(), "world.geology");
+    assert_eq!(GeologicStage.id().as_str(), "natural.geology");
+    assert_eq!(GeologicStage.namespace(), "sekai.core");
+    assert_eq!(GeologicStage.version(), 1);
 
     let graph = natural_foundation_graph().unwrap();
     assert_eq!(
         graph.stage_ids(),
         vec![
+            "natural.resolve-geologic-rules",
+            "natural.project-geologic-input",
             "natural.resolve-tectonic-rules",
             "natural.project-tectonic-input",
             "spatial.planar-voronoi",
+            "natural.mantle",
             "natural.tectonics",
-            "natural.relief"
+            "natural.relief",
+            "natural.geology",
         ]
     );
-    let descriptor = &graph.descriptors()[4];
+    let relief_descriptor = &graph.descriptors()[7];
     assert_eq!(
-        descriptor
+        relief_descriptor
             .dependencies()
             .iter()
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
-        vec!["world.spatial", "world.tectonics"]
+        vec!["world.mantle", "world.spatial", "world.tectonics"]
     );
-    assert_eq!(descriptor.output(), ReliefArtifact::KEY);
+    assert_eq!(relief_descriptor.output(), ReliefArtifact::KEY);
+    let geologic_descriptor = &graph.descriptors()[8];
+    assert_eq!(
+        geologic_descriptor
+            .dependencies()
+            .iter()
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "natural.resolved-geologic-input",
+            "world.mantle",
+            "world.relief",
+            "world.spatial",
+            "world.tectonics",
+        ]
+    );
+    assert_eq!(geologic_descriptor.output(), GeologicArtifact::KEY);
 }
 
 #[test]
@@ -292,15 +338,30 @@ fn complete_natural_graph_artifacts_and_hashes_are_deterministic() {
         .unwrap();
     let spatial = first.artifacts.get::<SpatialArtifact>().unwrap();
     let tectonic = first.artifacts.get::<TectonicArtifact>().unwrap();
+    let mantle = first.artifacts.get::<MantleArtifact>().unwrap();
     let relief = first.artifacts.get::<ReliefArtifact>().unwrap();
+    let geology = first.artifacts.get::<GeologicArtifact>().unwrap();
 
     tectonic
+        .snapshot()
+        .validate_against(spatial.snapshot())
+        .unwrap();
+    mantle
         .snapshot()
         .validate_against(spatial.snapshot())
         .unwrap();
     relief
         .snapshot()
         .validate_against(spatial.snapshot())
+        .unwrap();
+    geology
+        .snapshot()
+        .validate_against(
+            spatial.snapshot(),
+            tectonic.snapshot(),
+            mantle.snapshot(),
+            relief.snapshot(),
+        )
         .unwrap();
     assert_eq!(
         first.artifacts.hash::<SpatialArtifact>().unwrap(),
@@ -311,8 +372,16 @@ fn complete_natural_graph_artifacts_and_hashes_are_deterministic() {
         second.artifacts.hash::<TectonicArtifact>().unwrap()
     );
     assert_eq!(
+        first.artifacts.hash::<MantleArtifact>().unwrap(),
+        second.artifacts.hash::<MantleArtifact>().unwrap()
+    );
+    assert_eq!(
         first.artifacts.hash::<ReliefArtifact>().unwrap(),
         second.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+    assert_eq!(
+        first.artifacts.hash::<GeologicArtifact>().unwrap(),
+        second.artifacts.hash::<GeologicArtifact>().unwrap()
     );
     assert_eq!(first.report.result_hash(), second.report.result_hash());
 }
@@ -327,14 +396,68 @@ fn complete_natural_graph_cache_tracks_transitive_tectonic_changes() {
     let repeated = engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 5);
+    assert_eq!(repeated.report.cache_hits(), 9);
     assert_eq!(repeated.report.cache_misses(), 0);
 
     let changed = engine
         .build(RootSeed::new(42), complete_external(17), &mut cache)
         .unwrap();
-    assert_eq!(changed.report.cache_hits(), 1);
-    assert_eq!(changed.report.cache_misses(), 4);
+    assert_eq!(changed.report.cache_hits(), 4);
+    assert_eq!(changed.report.cache_misses(), 5);
+    let baseline = engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    assert_eq!(
+        baseline.artifacts.hash::<MantleArtifact>().unwrap(),
+        changed.artifacts.hash::<MantleArtifact>().unwrap(),
+        "mantle forcing is independent of tectonic specification"
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<GeologicArtifact>().unwrap(),
+        changed.artifacts.hash::<GeologicArtifact>().unwrap()
+    );
+}
+
+#[test]
+fn geologic_spec_change_reuses_space_and_tectonics_but_invalidates_physical_downstream() {
+    let engine = BuildEngine::new(natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    let baseline = engine
+        .build(RootSeed::new(42), complete_external(12), &mut cache)
+        .unwrap();
+    let changed = engine
+        .build(
+            RootSeed::new(42),
+            complete_external_with_geologic_spec(GeologicSpec {
+                hotspot_count: 7,
+                ..GeologicSpec::default()
+            }),
+            &mut cache,
+        )
+        .unwrap();
+
+    assert_eq!(changed.report.cache_hits(), 4);
+    assert_eq!(changed.report.cache_misses(), 5);
+    assert_eq!(
+        baseline.artifacts.hash::<SpatialArtifact>().unwrap(),
+        changed.artifacts.hash::<SpatialArtifact>().unwrap()
+    );
+    assert_eq!(
+        baseline.artifacts.hash::<TectonicArtifact>().unwrap(),
+        changed.artifacts.hash::<TectonicArtifact>().unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<MantleArtifact>().unwrap(),
+        changed.artifacts.hash::<MantleArtifact>().unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<ReliefArtifact>().unwrap(),
+        changed.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<GeologicArtifact>().unwrap(),
+        changed.artifacts.hash::<GeologicArtifact>().unwrap()
+    );
 }
 
 #[test]
@@ -365,6 +488,9 @@ fn complete_natural_graph_requires_both_new_rule_external_artifacts() {
         .unwrap();
     missing_authors
         .insert(TectonicSpecArtifact::new(tectonic_spec(12)))
+        .unwrap();
+    missing_authors
+        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
         .unwrap();
     missing_authors
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -418,8 +544,28 @@ fn cache_audit_only_rule_change_does_not_invalidate_tectonics_or_relief() {
         )
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 3);
-    assert_eq!(changed.report.cache_misses(), 2);
+    assert_eq!(changed.report.cache_hits(), 5);
+    assert_eq!(changed.report.cache_misses(), 4);
+    assert_ne!(
+        baseline
+            .artifacts
+            .hash::<GeologicRuleResolutionArtifact>()
+            .unwrap(),
+        changed
+            .artifacts
+            .hash::<GeologicRuleResolutionArtifact>()
+            .unwrap()
+    );
+    assert_eq!(
+        baseline
+            .artifacts
+            .hash::<ResolvedGeologicInputArtifact>()
+            .unwrap(),
+        changed
+            .artifacts
+            .hash::<ResolvedGeologicInputArtifact>()
+            .unwrap()
+    );
     assert_ne!(
         baseline
             .artifacts
@@ -448,6 +594,14 @@ fn cache_audit_only_rule_change_does_not_invalidate_tectonics_or_relief() {
         baseline.artifacts.hash::<ReliefArtifact>().unwrap(),
         changed.artifacts.hash::<ReliefArtifact>().unwrap()
     );
+    assert_eq!(
+        baseline.artifacts.hash::<MantleArtifact>().unwrap(),
+        changed.artifacts.hash::<MantleArtifact>().unwrap()
+    );
+    assert_eq!(
+        baseline.artifacts.hash::<GeologicArtifact>().unwrap(),
+        changed.artifacts.hash::<GeologicArtifact>().unwrap()
+    );
     assert_ne!(baseline.report.result_hash(), changed.report.result_hash());
 }
 
@@ -469,8 +623,8 @@ fn cache_projected_spec_change_invalidates_only_natural_downstream() {
         )
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 1);
-    assert_eq!(changed.report.cache_misses(), 4);
+    assert_eq!(changed.report.cache_hits(), 2);
+    assert_eq!(changed.report.cache_misses(), 7);
     assert_eq!(
         changed
             .artifacts
@@ -499,6 +653,14 @@ fn cache_projected_spec_change_invalidates_only_natural_downstream() {
         baseline.artifacts.hash::<ReliefArtifact>().unwrap(),
         changed.artifacts.hash::<ReliefArtifact>().unwrap()
     );
+    assert_eq!(
+        baseline.artifacts.hash::<MantleArtifact>().unwrap(),
+        changed.artifacts.hash::<MantleArtifact>().unwrap()
+    );
+    assert_ne!(
+        baseline.artifacts.hash::<GeologicArtifact>().unwrap(),
+        changed.artifacts.hash::<GeologicArtifact>().unwrap()
+    );
 }
 
 #[test]
@@ -508,7 +670,7 @@ fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
     engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(cache.len(), 5);
+    assert_eq!(cache.len(), 9);
 
     let pack_hard = plate_control_pack("low-only", ConstraintStrength::Hard, 2, 4);
     let conflict_set = RulePackSet::new(vec![earthlike_rule_pack().unwrap(), pack_hard]).unwrap();
@@ -533,12 +695,16 @@ fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
         failure.report.diagnostics()[0].code(),
         "rules.hard-constraint-conflict"
     );
-    assert_eq!(cache.len(), 5);
+    assert_eq!(
+        cache.len(),
+        11,
+        "the independent geologic audit and projection remain valid"
+    );
 
     let recovered = engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(recovered.report.cache_hits(), 5);
+    assert_eq!(recovered.report.cache_hits(), 9);
     assert_eq!(recovered.report.cache_misses(), 0);
 }
 
@@ -560,6 +726,26 @@ fn property_root_seed_changes_nature_but_not_resolved_rule_input() {
         )
         .unwrap();
 
+    assert_eq!(
+        first
+            .artifacts
+            .hash::<GeologicRuleResolutionArtifact>()
+            .unwrap(),
+        second
+            .artifacts
+            .hash::<GeologicRuleResolutionArtifact>()
+            .unwrap()
+    );
+    assert_eq!(
+        first
+            .artifacts
+            .hash::<ResolvedGeologicInputArtifact>()
+            .unwrap(),
+        second
+            .artifacts
+            .hash::<ResolvedGeologicInputArtifact>()
+            .unwrap()
+    );
     assert_eq!(
         first
             .artifacts
@@ -589,7 +775,15 @@ fn property_root_seed_changes_nature_but_not_resolved_rule_input() {
         second.artifacts.hash::<TectonicArtifact>().unwrap()
     );
     assert_ne!(
+        first.artifacts.hash::<MantleArtifact>().unwrap(),
+        second.artifacts.hash::<MantleArtifact>().unwrap()
+    );
+    assert_ne!(
         first.artifacts.hash::<ReliefArtifact>().unwrap(),
         second.artifacts.hash::<ReliefArtifact>().unwrap()
+    );
+    assert_ne!(
+        first.artifacts.hash::<GeologicArtifact>().unwrap(),
+        second.artifacts.hash::<GeologicArtifact>().unwrap()
     );
 }

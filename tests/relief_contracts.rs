@@ -4,8 +4,8 @@ use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
     CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V1, TECTONIC_OFFSET_MAX_M,
-    TECTONIC_OFFSET_MIN_M,
+    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V2,
+    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec};
 
@@ -15,11 +15,12 @@ fn field(values: &[f32]) -> ElevationField {
 
 fn valid_snapshot() -> ReliefSnapshot {
     ReliefSnapshot::new(
-        RELIEF_SCHEMA_V1,
+        RELIEF_SCHEMA_V2,
         4,
         0.0,
         field(&[-4_000.0, 100.0, 500.0, -1_000.0]),
         field(&[0.0, 100.0, -50.0, 0.0]),
+        field(&[0.0, 0.0, 0.0, 0.0]),
         field(&[0.0, 0.0, 50.0, 0.0]),
         field(&[-4_000.0, 200.0, 500.0, -1_000.0]),
         LandOceanField::from_kinds(vec![
@@ -62,6 +63,8 @@ fn final_and_component_ranges_are_bounded() {
         ("crust_base_elevation_m", CRUST_BASE_ELEVATION_MAX_M + 1.0),
         ("tectonic_offset_m", TECTONIC_OFFSET_MIN_M - 1.0),
         ("tectonic_offset_m", TECTONIC_OFFSET_MAX_M + 1.0),
+        ("volcanic_offset_m", VOLCANIC_OFFSET_MIN_M - 1.0),
+        ("volcanic_offset_m", VOLCANIC_OFFSET_MAX_M + 1.0),
         ("regional_offset_m", REGIONAL_OFFSET_MIN_M - 1.0),
         ("regional_offset_m", REGIONAL_OFFSET_MAX_M + 1.0),
         ("elevation_m", ELEVATION_MIN_M - 1.0),
@@ -81,7 +84,7 @@ fn final_and_component_ranges_are_bounded() {
 }
 
 #[test]
-fn final_elevation_must_equal_the_three_components() {
+fn final_elevation_must_equal_the_four_components() {
     let mut wire = serde_json::to_value(valid_snapshot()).unwrap();
     wire["elevation_m"][1] = serde_json::json!(201.0);
     let invalid: ReliefSnapshot = serde_json::from_value(wire).unwrap();
@@ -93,12 +96,35 @@ fn final_elevation_must_equal_the_three_components() {
 }
 
 #[test]
+fn relief_v1_and_non_finite_volcanic_offsets_are_rejected() {
+    assert!(matches!(
+        ReliefSnapshot::new(
+            RELIEF_SCHEMA_V1,
+            1,
+            0.0,
+            field(&[0.0]),
+            field(&[0.0]),
+            field(&[0.0]),
+            field(&[0.0]),
+            field(&[0.0]),
+            LandOceanField::from_kinds(vec![LandOceanKind::Land]),
+        ),
+        Err(ReliefValidationError::UnsupportedSchema { .. })
+    ));
+    assert!(matches!(
+        ElevationField::from_values(vec![f32::NAN]),
+        Err(ReliefValidationError::NonFiniteFieldValue { .. })
+    ));
+}
+
+#[test]
 fn centimeter_quantization_defines_the_shoreline_consistently() {
     let snapshot = ReliefSnapshot::new(
-        RELIEF_SCHEMA_V1,
+        RELIEF_SCHEMA_V2,
         4,
         0.0,
         field(&[-0.006, -0.004, 0.0, 0.004]),
+        field(&[0.0; 4]),
         field(&[0.0; 4]),
         field(&[0.0; 4]),
         field(&[-0.006, -0.004, 0.0, 0.004]),

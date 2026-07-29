@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use super::{
     AuthorConstraints, CapabilityContribution, ConstraintError, ConstraintSource,
-    ConstraintStrength, ResolvedRulePackSet, RuleContentHash, RulePackId, RuleVersion,
+    ConstraintStrength, ResolvedRulePackRef, ResolvedRulePackSet, RulePackId,
     TectonicConstraintClause, TectonicControl, TectonicModel, MAX_CONTINENTAL_CRUST_PERMILLE,
     MIN_CONTINENTAL_CRUST_PERMILLE,
 };
@@ -24,31 +24,6 @@ pub enum ConstraintAdoptionOutcome {
     Satisfied,
     /// A lower-priority preference was not selected.
     Compromised,
-}
-
-/// One stable audit reference to a rule pack that participated in resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedRulePackRef {
-    pack_id: RulePackId,
-    version: RuleVersion,
-    content_hash: RuleContentHash,
-}
-
-impl ResolvedRulePackRef {
-    /// Returns the participating pack ID.
-    pub const fn pack_id(&self) -> &RulePackId {
-        &self.pack_id
-    }
-
-    /// Returns the exact participating pack version.
-    pub const fn version(&self) -> RuleVersion {
-        self.version
-    }
-
-    /// Returns the exact participating semantic content hash.
-    pub const fn content_hash(&self) -> RuleContentHash {
-        self.content_hash
-    }
 }
 
 /// One deterministic record of how a typed constraint affected the result.
@@ -205,9 +180,9 @@ impl TectonicRuleResolution {
 
         let mut pack_ids = BTreeSet::new();
         for pack in &self.resolved_packs {
-            if !pack_ids.insert(pack.pack_id.clone()) {
+            if !pack_ids.insert(pack.pack_id().clone()) {
                 return Err(TectonicRuleResolutionError::DuplicateResolvedPack {
-                    pack_id: pack.pack_id.clone(),
+                    pack_id: pack.pack_id().clone(),
                 });
             }
         }
@@ -280,11 +255,11 @@ impl TectonicRuleResolver {
         let mut resolved_packs = Vec::with_capacity(packs.len());
         for pack in packs.packs() {
             let manifest = pack.manifest();
-            resolved_packs.push(ResolvedRulePackRef {
-                pack_id: manifest.id().clone(),
-                version: manifest.version(),
-                content_hash: manifest.content_hash(),
-            });
+            resolved_packs.push(ResolvedRulePackRef::new(
+                manifest.id().clone(),
+                manifest.version(),
+                manifest.content_hash(),
+            ));
             for contribution in pack.contributions() {
                 match contribution {
                     CapabilityContribution::TectonicModel(candidate) => {
@@ -292,6 +267,7 @@ impl TectonicRuleResolver {
                             return Err(TectonicRuleResolutionError::MultipleTectonicModels);
                         }
                     }
+                    CapabilityContribution::GeologicModel(_) => {}
                     CapabilityContribution::TectonicConstraint(constraint) => {
                         constraints.push(SourcedConstraint {
                             source: ConstraintSource::RulePack {

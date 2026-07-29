@@ -4,7 +4,9 @@ use thiserror::Error;
 
 use super::field_document::AppFieldDocument;
 use crate::engine::{BuildReport, DiagnosticSeverity};
-use crate::generators::natural::{ReliefArtifact, TectonicArtifact};
+use crate::generators::natural::{
+    GeologicArtifact, MantleArtifact, ReliefArtifact, TectonicArtifact,
+};
 use crate::generators::spatial::SpatialArtifact;
 use crate::view::{
     DisplayPrepareError, DisplayRangeMode, FieldCatalog, FieldPayloadRef, FieldViewError,
@@ -12,11 +14,16 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldRegistry, ValueRange};
 use crate::world::natural::{
-    boundary_kind_field_id, boundary_strength_field_id, crust_base_elevation_field_id,
-    crust_kind_field_id, crust_thickness_field_id, elevation_field_id, land_ocean_field_id,
-    natural_field_registry, plate_id_field_id, plate_velocity_field_id, regional_offset_field_id,
-    tectonic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    ReliefValidationError, TectonicValidationError,
+    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
+    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
+    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
+    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
+    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
+    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
+    volcanic_offset_field_id, GeologicValidationError, MantleValidationError,
+    NaturalFieldDisplayCache, NaturalFieldRegistryError, ReliefValidationError,
+    TectonicValidationError,
 };
 use crate::world::spatial::SpatialValidationError;
 
@@ -24,7 +31,9 @@ use crate::world::spatial::SpatialValidationError;
 pub(super) struct NaturalFieldDocument {
     pub(super) spatial: Arc<SpatialArtifact>,
     pub(super) tectonic: Arc<TectonicArtifact>,
+    pub(super) mantle: Arc<MantleArtifact>,
     pub(super) relief: Arc<ReliefArtifact>,
+    pub(super) geology: Arc<GeologicArtifact>,
     registry: FieldRegistry,
     mesh: Arc<PreparedCellMesh>,
     diagnostics: Vec<OwnedViewDiagnostic>,
@@ -35,12 +44,21 @@ impl NaturalFieldDocument {
     pub(super) fn build(
         spatial: Arc<SpatialArtifact>,
         tectonic: Arc<TectonicArtifact>,
+        mantle: Arc<MantleArtifact>,
         relief: Arc<ReliefArtifact>,
+        geology: Arc<GeologicArtifact>,
         report: &BuildReport,
     ) -> Result<Self, NaturalDisplayError> {
         spatial.snapshot().validate()?;
         tectonic.snapshot().validate_against(spatial.snapshot())?;
+        mantle.snapshot().validate_against(spatial.snapshot())?;
         relief.snapshot().validate_against(spatial.snapshot())?;
+        geology.snapshot().validate_against(
+            spatial.snapshot(),
+            tectonic.snapshot(),
+            mantle.snapshot(),
+            relief.snapshot(),
+        )?;
         let plate_count = u16::try_from(tectonic.snapshot().plates().len())
             .map_err(|_| NaturalDisplayError::PlateCountOverflow)?;
         let registry = natural_field_registry(plate_count)?;
@@ -67,7 +85,9 @@ impl NaturalFieldDocument {
         let document = Self {
             spatial,
             tectonic,
+            mantle,
             relief,
+            geology,
             registry,
             mesh,
             diagnostics,
@@ -125,6 +145,46 @@ impl NaturalFieldDocument {
                 land_ocean_field_id(),
                 FieldPayloadRef::CategoryU32(self.relief.snapshot().land_ocean().raw_values()),
             ),
+            (
+                mantle_heat_flow_field_id(),
+                FieldPayloadRef::ScalarF32(self.mantle.snapshot().heat_flow_mw_m2()),
+            ),
+            (
+                volcanic_influence_field_id(),
+                FieldPayloadRef::ScalarF32(self.mantle.snapshot().volcanic_influence()),
+            ),
+            (
+                volcanic_offset_field_id(),
+                FieldPayloadRef::ScalarF32(self.relief.snapshot().volcanic_offset_m().values()),
+            ),
+            (
+                bedrock_kind_field_id(),
+                FieldPayloadRef::CategoryU32(self.geology.snapshot().bedrock_kinds().raw_values()),
+            ),
+            (
+                fracture_intensity_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().fracture_intensity()),
+            ),
+            (
+                erosion_resistance_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().erosion_resistance()),
+            ),
+            (
+                relative_permeability_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().relative_permeability()),
+            ),
+            (
+                metallic_mineral_potential_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().metallic_mineral_potential()),
+            ),
+            (
+                geothermal_potential_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().geothermal_potential()),
+            ),
+            (
+                sedimentary_basin_potential_field_id(),
+                FieldPayloadRef::ScalarF32(self.geology.snapshot().sedimentary_basin_potential()),
+            ),
         ]
     }
 
@@ -132,12 +192,12 @@ impl NaturalFieldDocument {
     pub(super) fn test_fixture() -> Self {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
         use crate::generators::natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, RulePackSetArtifact,
-            TectonicSpecArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact,
+            RulePackSetArtifact, TectonicSpecArtifact,
         };
         use crate::generators::spatial::PlanarSpaceArtifact;
         use crate::rules::{default_rule_pack_set, AuthorConstraints};
-        use crate::world::natural::TectonicSpec;
+        use crate::world::natural::{GeologicSpec, TectonicSpec};
         use crate::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
         let mut external = ExternalArtifacts::new();
@@ -153,6 +213,9 @@ impl NaturalFieldDocument {
             .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
             .unwrap();
         external
+            .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+            .unwrap();
+        external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
             .unwrap();
         external
@@ -164,7 +227,9 @@ impl NaturalFieldDocument {
         Self::build(
             outcome.artifacts.get::<SpatialArtifact>().unwrap(),
             outcome.artifacts.get::<TectonicArtifact>().unwrap(),
+            outcome.artifacts.get::<MantleArtifact>().unwrap(),
             outcome.artifacts.get::<ReliefArtifact>().unwrap(),
+            outcome.artifacts.get::<GeologicArtifact>().unwrap(),
             &outcome.report,
         )
         .unwrap()
@@ -215,7 +280,11 @@ pub(super) enum NaturalDisplayError {
     #[error(transparent)]
     Tectonic(#[from] TectonicValidationError),
     #[error(transparent)]
+    Mantle(#[from] MantleValidationError),
+    #[error(transparent)]
     Relief(#[from] ReliefValidationError),
+    #[error(transparent)]
+    Geologic(#[from] GeologicValidationError),
     #[error(transparent)]
     Registry(#[from] NaturalFieldRegistryError),
     #[error(transparent)]
@@ -234,14 +303,17 @@ mod tests {
         MemoryStageCache,
     };
     use crate::generators::natural::{
-        natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
+        natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact,
+        GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact,
         TectonicArtifact, TectonicSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
     use crate::view::{DisplayRangeMode, ViewDiagnosticSeverity};
     use crate::world::natural::{
-        elevation_field_id, plate_id_field_id, plate_velocity_field_id, TectonicSpec,
+        bedrock_kind_field_id, elevation_field_id, geothermal_potential_field_id,
+        mantle_heat_flow_field_id, plate_id_field_id, plate_velocity_field_id,
+        volcanic_offset_field_id, GeologicSpec, TectonicSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -260,6 +332,9 @@ mod tests {
             .unwrap();
         external
             .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+            .unwrap();
+        external
+            .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -285,8 +360,11 @@ mod tests {
         );
         let spatial = outcome.artifacts.get::<SpatialArtifact>().unwrap();
         let tectonic = outcome.artifacts.get::<TectonicArtifact>().unwrap();
+        let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
         let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
-        NaturalFieldDocument::build(spatial, tectonic, relief, &outcome.report).unwrap()
+        let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
+        NaturalFieldDocument::build(spatial, tectonic, mantle, relief, geology, &outcome.report)
+            .unwrap()
     }
 
     #[test]
@@ -319,6 +397,60 @@ mod tests {
         assert_eq!(
             elevation_values.as_ptr(),
             document.relief.snapshot().elevation_m().values().as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&mantle_heat_flow_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document.mantle.snapshot().heat_flow_mw_m2().as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&volcanic_offset_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .relief
+                .snapshot()
+                .volcanic_offset_m()
+                .values()
+                .as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&bedrock_kind_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .category_values()
+                .unwrap()
+                .as_ptr(),
+            document
+                .geology
+                .snapshot()
+                .bedrock_kinds()
+                .raw_values()
+                .as_ptr()
+        );
+        assert_eq!(
+            catalog
+                .get(&geothermal_potential_field_id())
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            document.geology.snapshot().geothermal_potential().as_ptr()
         );
 
         let velocities = catalog

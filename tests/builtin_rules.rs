@@ -1,8 +1,9 @@
 use sekai::rules::{
     core_capability_registry, default_rule_pack_set, earthlike_rule_pack,
-    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
-    CapabilityContribution, CoreSchemaRange, RulePack, RulePackId, RulePackKind, RulePackSet,
-    RulePackSetError, RuleVersion, TectonicModel, EARTHLIKE_RULE_PACK_ID,
+    geologic_model_capability_id, tectonic_controls_capability_id, tectonic_model_capability_id,
+    CapabilityCardinality, CapabilityContribution, CoreSchemaRange, GeologicModel, RulePack,
+    RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
+    EARTHLIKE_RULE_PACK_ID,
 };
 use sekai::world::WORLD_SPEC_SCHEMA_V1;
 
@@ -21,12 +22,32 @@ fn replacement_model(name: &str, kind: RulePackKind) -> RulePack {
     .unwrap()
 }
 
+fn replacement_geologic_model(name: &str, kind: RulePackKind) -> RulePack {
+    RulePack::new(
+        RulePackId::new(format!("sekai.test.{name}")).unwrap(),
+        RuleVersion::new(1, 0, 0).unwrap(),
+        kind,
+        CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1).unwrap(),
+        Vec::new(),
+        Vec::new(),
+        vec![CapabilityContribution::GeologicModel(
+            GeologicModel::CurrentSliceV1,
+        )],
+    )
+    .unwrap()
+}
+
 #[test]
 fn builtin_capability_ids_are_exact_and_versioned() {
     let model = tectonic_model_capability_id();
     assert_eq!(model.namespace(), "sekai.core.natural");
     assert_eq!(model.name(), "tectonic-model");
     assert_eq!(model.version(), 1);
+
+    let geologic_model = geologic_model_capability_id();
+    assert_eq!(geologic_model.namespace(), "sekai.core.natural");
+    assert_eq!(geologic_model.name(), "geologic-model");
+    assert_eq!(geologic_model.version(), 1);
 
     let controls = tectonic_controls_capability_id();
     assert_eq!(controls.namespace(), "sekai.core.natural");
@@ -42,11 +63,19 @@ fn builtin_capability_contracts_are_exact() {
     assert_eq!(model.minimum_pack_kind(), RulePackKind::WorldLaw);
     assert!(!model.author_allowed());
 
+    let geologic_model = registry.get(&geologic_model_capability_id()).unwrap();
+    assert_eq!(
+        geologic_model.cardinality(),
+        CapabilityCardinality::UniqueRequired
+    );
+    assert_eq!(geologic_model.minimum_pack_kind(), RulePackKind::WorldLaw);
+    assert!(!geologic_model.author_allowed());
+
     let controls = registry.get(&tectonic_controls_capability_id()).unwrap();
     assert_eq!(controls.cardinality(), CapabilityCardinality::Merge);
     assert_eq!(controls.minimum_pack_kind(), RulePackKind::Ordinary);
     assert!(controls.author_allowed());
-    assert_eq!(registry.len(), 2);
+    assert_eq!(registry.len(), 3);
 }
 
 #[test]
@@ -67,13 +96,17 @@ fn builtin_earthlike_pack_selects_exact_current_slice_model() {
     assert!(earthlike.manifest().consumes().is_empty());
     assert_eq!(
         earthlike.manifest().provides(),
-        &[tectonic_model_capability_id()]
+        &[
+            geologic_model_capability_id(),
+            tectonic_model_capability_id()
+        ]
     );
     assert_eq!(
         earthlike.contributions(),
-        &[CapabilityContribution::TectonicModel(
-            TectonicModel::CurrentSliceV1
-        )]
+        &[
+            CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
+            CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
+        ]
     );
 }
 
@@ -92,6 +125,16 @@ fn builtin_default_set_contains_exactly_earthlike_and_resolves() {
     assert_eq!(
         resolved
             .providers(&tectonic_model_capability_id())
+            .first()
+            .unwrap()
+            .manifest()
+            .id()
+            .as_str(),
+        EARTHLIKE_RULE_PACK_ID
+    );
+    assert_eq!(
+        resolved
+            .providers(&geologic_model_capability_id())
             .first()
             .unwrap()
             .manifest()
@@ -134,6 +177,42 @@ fn builtin_second_world_law_model_fails_unique_cardinality() {
             capability_id,
             provider_ids,
         }) if capability_id == tectonic_model_capability_id() && provider_ids.len() == 2
+    ));
+}
+
+#[test]
+fn builtin_ordinary_geologic_model_fails_permission() {
+    let registry = core_capability_registry().unwrap();
+    let set = RulePackSet::new(vec![replacement_geologic_model(
+        "ordinary-geologic-model",
+        RulePackKind::Ordinary,
+    )])
+    .unwrap();
+
+    assert!(matches!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1),
+        Err(RulePackSetError::InsufficientCapabilityPermission {
+            capability_id,
+            ..
+        }) if capability_id == geologic_model_capability_id()
+    ));
+}
+
+#[test]
+fn builtin_second_world_law_geologic_model_fails_unique_cardinality() {
+    let registry = core_capability_registry().unwrap();
+    let set = RulePackSet::new(vec![
+        earthlike_rule_pack().unwrap(),
+        replacement_geologic_model("second-geologic-law", RulePackKind::WorldLaw),
+    ])
+    .unwrap();
+
+    assert!(matches!(
+        set.resolve(&registry, WORLD_SPEC_SCHEMA_V1),
+        Err(RulePackSetError::MultipleCapabilityProviders {
+            capability_id,
+            provider_ids,
+        }) if capability_id == geologic_model_capability_id() && provider_ids.len() == 2
     ));
 }
 

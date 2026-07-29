@@ -303,11 +303,11 @@ impl Stage for RuleTectonicResolutionStage {
     }
 }
 
-fn invalid_builtin_definition(error: BuiltinRuleError) -> StageError {
+pub(super) fn invalid_builtin_definition(error: BuiltinRuleError) -> StageError {
     StageError::new(BUILTIN_DEFINITION_CODE, error.to_string())
 }
 
-fn pack_resolution_failure(error: RulePackSetError) -> StageError {
+pub(super) fn pack_resolution_failure(error: RulePackSetError) -> StageError {
     let code = match error {
         RulePackSetError::IncompatibleCoreSchema { .. }
         | RulePackSetError::MissingDependency { .. }
