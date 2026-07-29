@@ -118,7 +118,8 @@ pub enum FieldData {
 }
 
 impl FieldData {
-    fn len(&self) -> usize {
+    /// Returns the number of values in this payload.
+    pub fn len(&self) -> usize {
         match self {
             Self::ScalarF32(values) => values.len(),
             Self::CategoryU32(values) => values.len(),
@@ -126,6 +127,11 @@ impl FieldData {
             Self::Vector2F32(values) => values.len(),
             Self::StableIdU32 { values, .. } => values.len(),
         }
+    }
+
+    /// Returns whether this payload contains no values.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

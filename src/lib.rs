@@ -16,5 +16,7 @@ mod resource;
 pub mod spatial;
 pub mod terrain;
 mod ui;
+/// Renderer-neutral, read-only world presentation contracts.
+pub mod view;
 pub mod world;
 pub use app::TemplateApp;
