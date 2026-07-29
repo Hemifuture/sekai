@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -16,13 +16,17 @@ use sekai::world::natural::{
     bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
     crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
     elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
-    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
-    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
-    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
-    volcanic_offset_field_id, ClimateSpec, GeologicSpec, NaturalFieldDisplayCache,
-    NaturalFieldRegistryError, TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
-    HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
+    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    natural_field_registry, plate_id_field_id, plate_velocity_field_id,
+    preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
+    preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
+    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id, ClimateSpec,
+    GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError, TectonicSpec,
+    AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT,
+    TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -43,7 +47,7 @@ fn schema(
 #[test]
 fn schema_registry_contains_the_exact_formal_natural_fields() {
     let registry = registry();
-    assert_eq!(registry.len(), 21);
+    assert_eq!(registry.len(), 27);
     let expected = [
         (
             plate_id_field_id(),
@@ -171,6 +175,42 @@ fn schema_registry_contains_the_exact_formal_natural_fields() {
             FieldDomain::Cells,
             FieldValueType::ScalarF32,
         ),
+        (
+            latitude_degrees_field_id(),
+            "latitude_degrees",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            maritime_influence_field_id(),
+            "maritime_influence",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            preliminary_prevailing_wind_m_s_field_id(),
+            "preliminary_prevailing_wind_m_s",
+            FieldDomain::Cells,
+            FieldValueType::Vector2F32,
+        ),
+        (
+            preliminary_mean_air_temperature_c_field_id(),
+            "preliminary_mean_air_temperature_c",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            preliminary_temperature_seasonality_c_field_id(),
+            "preliminary_temperature_seasonality_c",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            preliminary_annual_precipitation_mm_field_id(),
+            "preliminary_annual_precipitation_mm",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
     ];
 
     for (id, name, domain, value_type) in expected {
@@ -246,6 +286,53 @@ fn schema_units_ranges_labels_and_palettes_are_semantic() {
             .display
             .palette(),
         FieldPaletteHint::Vector
+    );
+    let latitude = schema(&registry, latitude_degrees_field_id());
+    assert_eq!(latitude.unit.symbol(), "°");
+    assert_eq!(
+        latitude.valid_range.map(|range| (range.min(), range.max())),
+        Some((-90.0, 90.0))
+    );
+    assert_eq!(latitude.display.palette(), FieldPaletteHint::Diverging);
+    assert_eq!(latitude.display.decimal_places(), 1);
+    let maritime = schema(&registry, maritime_influence_field_id());
+    assert_eq!(maritime.unit.symbol(), "");
+    assert_eq!(
+        maritime.valid_range.map(|range| (range.min(), range.max())),
+        Some((0.0, 1.0))
+    );
+    assert_eq!(maritime.display.palette(), FieldPaletteHint::Sequential);
+    assert_eq!(
+        schema(&registry, preliminary_prevailing_wind_m_s_field_id())
+            .unit
+            .symbol(),
+        "m/s"
+    );
+    for id in [
+        preliminary_mean_air_temperature_c_field_id(),
+        preliminary_temperature_seasonality_c_field_id(),
+    ] {
+        assert_eq!(schema(&registry, id).unit.symbol(), "°C");
+    }
+    assert_eq!(
+        schema(&registry, preliminary_mean_air_temperature_c_field_id())
+            .valid_range
+            .map(|range| (range.min(), range.max())),
+        Some((AIR_TEMPERATURE_MIN_C, AIR_TEMPERATURE_MAX_C))
+    );
+    assert_eq!(
+        schema(&registry, preliminary_temperature_seasonality_c_field_id())
+            .valid_range
+            .map(|range| (range.min(), range.max())),
+        Some((0.0, TEMPERATURE_SEASONALITY_MAX_C))
+    );
+    let precipitation = schema(&registry, preliminary_annual_precipitation_mm_field_id());
+    assert_eq!(precipitation.unit.symbol(), "mm/year");
+    assert_eq!(
+        precipitation
+            .valid_range
+            .map(|range| (range.min(), range.max())),
+        Some((0.0, ANNUAL_PRECIPITATION_MAX_MM))
     );
     assert_eq!(
         schema(&registry, land_ocean_field_id()).category_labels,
@@ -337,6 +424,42 @@ fn schema_dependencies_are_closed_acyclic_and_stably_serialized() {
         schema(&first, geothermal_potential_field_id()).dependencies,
         vec![fracture_intensity_field_id(), mantle_heat_flow_field_id()]
     );
+    assert!(schema(&first, latitude_degrees_field_id())
+        .dependencies
+        .is_empty());
+    assert_eq!(
+        schema(&first, maritime_influence_field_id()).dependencies,
+        vec![land_ocean_field_id()]
+    );
+    assert_eq!(
+        schema(&first, preliminary_prevailing_wind_m_s_field_id()).dependencies,
+        vec![latitude_degrees_field_id()]
+    );
+    for id in [
+        preliminary_mean_air_temperature_c_field_id(),
+        preliminary_temperature_seasonality_c_field_id(),
+    ] {
+        assert_eq!(
+            schema(&first, id).dependencies,
+            vec![
+                elevation_field_id(),
+                latitude_degrees_field_id(),
+                maritime_influence_field_id(),
+            ]
+        );
+    }
+    assert_eq!(
+        schema(&first, preliminary_annual_precipitation_mm_field_id()).dependencies,
+        vec![
+            elevation_field_id(),
+            maritime_influence_field_id(),
+            preliminary_mean_air_temperature_c_field_id(),
+            preliminary_prevailing_wind_m_s_field_id(),
+        ]
+    );
+    assert!(first
+        .iter()
+        .all(|(_, schema)| !schema.id.name().contains("monthly")));
     assert_eq!(
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&second).unwrap()
@@ -365,6 +488,7 @@ struct NaturalArtifacts {
     mantle: std::sync::Arc<MantleArtifact>,
     relief: std::sync::Arc<ReliefArtifact>,
     geology: std::sync::Arc<GeologicArtifact>,
+    climate: std::sync::Arc<PreliminaryClimateArtifact>,
 }
 
 fn natural_artifacts() -> NaturalArtifacts {
@@ -401,6 +525,10 @@ fn natural_artifacts() -> NaturalArtifacts {
         mantle: outcome.artifacts.get::<MantleArtifact>().unwrap(),
         relief: outcome.artifacts.get::<ReliefArtifact>().unwrap(),
         geology: outcome.artifacts.get::<GeologicArtifact>().unwrap(),
+        climate: outcome
+            .artifacts
+            .get::<PreliminaryClimateArtifact>()
+            .unwrap(),
     }
 }
 
@@ -412,6 +540,7 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         mantle,
         relief,
         geology,
+        climate,
     } = natural_artifacts();
     let registry = natural_field_registry(tectonic.snapshot().plates().len() as u16).unwrap();
     let cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
@@ -500,6 +629,30 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
             sedimentary_basin_potential_field_id(),
             FieldPayloadRef::ScalarF32(geology.snapshot().sedimentary_basin_potential()),
         ),
+        (
+            latitude_degrees_field_id(),
+            FieldPayloadRef::ScalarF32(climate.snapshot().latitude_degrees()),
+        ),
+        (
+            maritime_influence_field_id(),
+            FieldPayloadRef::ScalarF32(climate.snapshot().maritime_influence()),
+        ),
+        (
+            preliminary_prevailing_wind_m_s_field_id(),
+            FieldPayloadRef::Vector2F32(climate.snapshot().prevailing_wind_m_s()),
+        ),
+        (
+            preliminary_mean_air_temperature_c_field_id(),
+            FieldPayloadRef::ScalarF32(climate.snapshot().mean_annual_air_temperature_c()),
+        ),
+        (
+            preliminary_temperature_seasonality_c_field_id(),
+            FieldPayloadRef::ScalarF32(climate.snapshot().temperature_seasonality_c()),
+        ),
+        (
+            preliminary_annual_precipitation_mm_field_id(),
+            FieldPayloadRef::ScalarF32(climate.snapshot().annual_precipitation_mm()),
+        ),
     ];
     let catalog = FieldCatalog::from_payloads(&registry, payloads).unwrap();
 
@@ -583,6 +736,51 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     );
     for (id, source) in [
         (
+            latitude_degrees_field_id(),
+            climate.snapshot().latitude_degrees(),
+        ),
+        (
+            maritime_influence_field_id(),
+            climate.snapshot().maritime_influence(),
+        ),
+        (
+            preliminary_mean_air_temperature_c_field_id(),
+            climate.snapshot().mean_annual_air_temperature_c(),
+        ),
+        (
+            preliminary_temperature_seasonality_c_field_id(),
+            climate.snapshot().temperature_seasonality_c(),
+        ),
+        (
+            preliminary_annual_precipitation_mm_field_id(),
+            climate.snapshot().annual_precipitation_mm(),
+        ),
+    ] {
+        assert_eq!(
+            catalog
+                .get(&id)
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            source.as_ptr()
+        );
+    }
+    assert_eq!(
+        catalog
+            .get(&preliminary_prevailing_wind_m_s_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .vector_values()
+            .unwrap()
+            .as_ptr(),
+        climate.snapshot().prevailing_wind_m_s().as_ptr()
+    );
+    for (id, source) in [
+        (
             fracture_intensity_field_id(),
             geology.snapshot().fracture_intensity(),
         ),
@@ -634,11 +832,34 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     )
     .unwrap();
     assert_eq!(prepared.len(), spatial.snapshot().cell_count());
+    for id in [
+        latitude_degrees_field_id(),
+        maritime_influence_field_id(),
+        preliminary_mean_air_temperature_c_field_id(),
+        preliminary_temperature_seasonality_c_field_id(),
+        preliminary_annual_precipitation_mm_field_id(),
+    ] {
+        assert!(catalog
+            .get(&id)
+            .unwrap()
+            .view()
+            .unwrap()
+            .cell_fill_kind()
+            .is_ok());
+    }
+    assert!(catalog
+        .get(&preliminary_prevailing_wind_m_s_field_id())
+        .unwrap()
+        .view()
+        .unwrap()
+        .cell_fill_kind()
+        .is_err());
 
     let tectonic_before = serde_json::to_vec(tectonic.as_ref()).unwrap();
     let mantle_before = serde_json::to_vec(mantle.as_ref()).unwrap();
     let relief_before = serde_json::to_vec(relief.as_ref()).unwrap();
     let geology_before = serde_json::to_vec(geology.as_ref()).unwrap();
+    let climate_before = serde_json::to_vec(climate.as_ref()).unwrap();
     let mut state = FieldDisplayState::default();
     for id in [
         plate_id_field_id(),
@@ -646,6 +867,8 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         elevation_field_id(),
         bedrock_kind_field_id(),
         geothermal_potential_field_id(),
+        preliminary_mean_air_temperature_c_field_id(),
+        preliminary_annual_precipitation_mm_field_id(),
     ] {
         state.select_field(id);
         state.reconcile(&catalog, spatial.snapshot().cell_count());
@@ -659,5 +882,9 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     assert_eq!(
         serde_json::to_vec(geology.as_ref()).unwrap(),
         geology_before
+    );
+    assert_eq!(
+        serde_json::to_vec(climate.as_ref()).unwrap(),
+        climate_before
     );
 }
