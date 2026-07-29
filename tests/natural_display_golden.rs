@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
+    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -16,9 +16,11 @@ use sekai::view::{
 };
 use sekai::world::fields::{FieldId, ValueRange};
 use sekai::world::natural::{
-    crust_kind_field_id, elevation_field_id, natural_field_registry, plate_id_field_id,
-    BoundaryKind, GeologicSpec, ReliefSnapshot, TectonicSnapshot, TectonicSpec,
-    COMPONENT_IDENTITY_TOLERANCE_M,
+    bedrock_kind_field_id, crust_kind_field_id, elevation_field_id, geothermal_potential_field_id,
+    mantle_heat_flow_field_id, metallic_mineral_potential_field_id, natural_field_registry,
+    plate_id_field_id, sedimentary_basin_potential_field_id, volcanic_influence_field_id,
+    BedrockKind, BoundaryKind, GeologicSnapshot, GeologicSpec, MantleSnapshot, ReliefSnapshot,
+    TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -70,13 +72,21 @@ fn run_multi_seed_quality_suite() {
         let fixture = build_natural(seed, QUALITY_CELL_COUNT);
         let spatial = fixture.spatial.snapshot();
         let tectonic = fixture.tectonic.snapshot();
+        let mantle = fixture.mantle.snapshot();
         let relief = fixture.relief.snapshot();
+        let geology = fixture.geology.snapshot();
         tectonic.validate_against(spatial).unwrap();
+        mantle.validate_against(spatial).unwrap();
         relief.validate_against(spatial).unwrap();
+        geology
+            .validate_against(spatial, tectonic, mantle, relief)
+            .unwrap();
 
         assert_eq!(spatial.cell_count(), QUALITY_CELL_COUNT as usize);
         assert_eq!(tectonic.cell_count(), QUALITY_CELL_COUNT);
+        assert_eq!(mantle.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(relief.cell_count(), QUALITY_CELL_COUNT);
+        assert_eq!(geology.cell_count(), QUALITY_CELL_COUNT);
         assert_plate_connectivity_and_balance(seed, spatial, tectonic);
         assert_boundary_partition_and_motion(seed, spatial, tectonic);
 
@@ -126,6 +136,7 @@ fn run_multi_seed_quality_suite() {
         );
 
         assert_relief_finite_and_explainable(seed, relief);
+        assert_geologic_quality(seed, tectonic, mantle, relief, geology);
         let mesh = PreparedCellMesh::build(spatial, MeshCompleteness::RequireAll).unwrap();
         assert_eq!(mesh.cell_count(), QUALITY_CELL_COUNT as usize);
         let registry = natural_field_registry(tectonic.plates().len() as u16).unwrap();
@@ -160,15 +171,40 @@ fn run_multi_seed_quality_suite() {
         saw_cross_plate_crust_component,
         "the fixed quality set must contain a crust component crossing plate boundaries"
     );
+
+    let baseline = build_natural(GOLDEN_SEED, QUALITY_CELL_COUNT);
+    let changed = build_natural_with_geologic_spec(
+        GOLDEN_SEED,
+        QUALITY_CELL_COUNT,
+        GeologicSpec {
+            hotspot_count: 0,
+            ..GeologicSpec::default()
+        },
+    );
+    assert_eq!(
+        serde_json::to_vec(baseline.tectonic.as_ref()).unwrap(),
+        serde_json::to_vec(changed.tectonic.as_ref()).unwrap(),
+        "geologic configuration must not perturb plates or crust"
+    );
 }
 
 struct NaturalFixture {
     spatial: Arc<SpatialArtifact>,
     tectonic: Arc<TectonicArtifact>,
+    mantle: Arc<MantleArtifact>,
     relief: Arc<ReliefArtifact>,
+    geology: Arc<GeologicArtifact>,
 }
 
 fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
+    build_natural_with_geologic_spec(seed, cell_count, GeologicSpec::default())
+}
+
+fn build_natural_with_geologic_spec(
+    seed: u64,
+    cell_count: u32,
+    geologic_spec: GeologicSpec,
+) -> NaturalFixture {
     let mut external = ExternalArtifacts::new();
     external
         .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
@@ -182,7 +218,7 @@ fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
         .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
         .unwrap();
     external
-        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .insert(GeologicSpecArtifact::new(geologic_spec))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -196,7 +232,9 @@ fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
     NaturalFixture {
         spatial: outcome.artifacts.get::<SpatialArtifact>().unwrap(),
         tectonic: outcome.artifacts.get::<TectonicArtifact>().unwrap(),
+        mantle: outcome.artifacts.get::<MantleArtifact>().unwrap(),
         relief: outcome.artifacts.get::<ReliefArtifact>().unwrap(),
+        geology: outcome.artifacts.get::<GeologicArtifact>().unwrap(),
     }
 }
 
@@ -355,6 +393,112 @@ fn assert_relief_finite_and_explainable(seed: u64, relief: &ReliefSnapshot) {
     }
 }
 
+fn assert_geologic_quality(
+    seed: u64,
+    tectonic: &TectonicSnapshot,
+    mantle: &MantleSnapshot,
+    relief: &ReliefSnapshot,
+    geology: &GeologicSnapshot,
+) {
+    assert!(
+        mantle.hotspots().iter().any(|hotspot| {
+            relief.volcanic_offset_m().values()[hotspot.source_cell().raw() as usize] > 0.0
+        }),
+        "seed {seed}: a hotspot must produce positive local volcanic relief"
+    );
+    let heat_min = mantle
+        .heat_flow_mw_m2()
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    let heat_max = mantle
+        .heat_flow_mw_m2()
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        heat_max - heat_min >= 100.0,
+        "seed {seed}: heat-flow anomaly spread was {}",
+        heat_max - heat_min
+    );
+
+    let categories: BTreeSet<_> = (0..geology.cell_count())
+        .map(|index| {
+            geology
+                .bedrock_kind(CellId::from_raw(index))
+                .expect("geologic field is dense")
+        })
+        .collect();
+    assert!(
+        categories.contains(&BedrockKind::OceanicMafic),
+        "seed {seed}: missing oceanic mafic bedrock"
+    );
+    assert!(
+        categories.contains(&BedrockKind::ContinentalCrystalline),
+        "seed {seed}: missing continental crystalline bedrock"
+    );
+    assert!(
+        categories.iter().any(|kind| matches!(
+            kind,
+            BedrockKind::Volcanic | BedrockKind::Metamorphic | BedrockKind::Sedimentary
+        )),
+        "seed {seed}: missing active bedrock class"
+    );
+
+    let potentials = [
+        geology.metallic_mineral_potential(),
+        geology.geothermal_potential(),
+        geology.sedimentary_basin_potential(),
+    ];
+    for (name, values) in [
+        ("metallic", potentials[0]),
+        ("geothermal", potentials[1]),
+        ("sedimentary", potentials[2]),
+    ] {
+        let minimum = values.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            maximum - minimum > 0.02,
+            "seed {seed}: {name} potential spread was {}",
+            maximum - minimum
+        );
+    }
+    assert_ne!(potentials[0], potentials[1]);
+    assert_ne!(potentials[0], potentials[2]);
+    assert_ne!(potentials[1], potentials[2]);
+
+    let mut sorted_geothermal = geology.geothermal_potential().to_vec();
+    sorted_geothermal.sort_by(f32::total_cmp);
+    let upper_quartile = sorted_geothermal[sorted_geothermal.len() * 3 / 4];
+    let hottest_fractured_source = mantle
+        .hotspots()
+        .iter()
+        .max_by(|first, second| {
+            let first_index = first.source_cell().raw() as usize;
+            let second_index = second.source_cell().raw() as usize;
+            (mantle.heat_flow_mw_m2()[first_index]
+                * (0.45 + 0.55 * geology.fracture_intensity()[first_index]),)
+                .partial_cmp(&(mantle.heat_flow_mw_m2()[second_index]
+                    * (0.45 + 0.55 * geology.fracture_intensity()[second_index]),))
+                .unwrap()
+        })
+        .expect("default geology has hotspots")
+        .source_cell()
+        .raw() as usize;
+    assert!(
+        geology.geothermal_potential()[hottest_fractured_source] >= upper_quartile,
+        "seed {seed}: high heat plus fracture must rank in the upper geothermal quartile"
+    );
+
+    let oceanic_count = tectonic
+        .crust_kinds()
+        .raw_values()
+        .iter()
+        .filter(|&&kind| kind == 0)
+        .count();
+    assert!(oceanic_count > 0 && oceanic_count < tectonic.cell_count() as usize);
+}
+
 fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
     let fixture = build_natural(GOLDEN_SEED, QUALITY_CELL_COUNT);
     let mesh = Arc::new(
@@ -391,11 +535,81 @@ fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
             "elevation.png",
             natural_packet(
                 &fixture,
-                mesh,
+                mesh.clone(),
                 elevation_field_id(),
                 FieldPayloadRef::ScalarF32(fixture.relief.snapshot().elevation_m().values()),
                 symmetric_elevation_range(fixture.relief.snapshot()),
                 PaletteId::Diverging,
+            ),
+        ),
+        (
+            "heat-flow.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                mantle_heat_flow_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.mantle.snapshot().heat_flow_mw_m2()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "volcanic-influence.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                volcanic_influence_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.mantle.snapshot().volcanic_influence()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "bedrock.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                bedrock_kind_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    fixture.geology.snapshot().bedrock_kinds().raw_values(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Categorical,
+            ),
+        ),
+        (
+            "metallic-potential.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                metallic_mineral_potential_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.geology.snapshot().metallic_mineral_potential()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "geothermal-potential.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                geothermal_potential_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.geology.snapshot().geothermal_potential()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "sedimentary-basin-potential.png",
+            natural_packet(
+                &fixture,
+                mesh,
+                sedimentary_basin_potential_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    fixture.geology.snapshot().sedimentary_basin_potential(),
+                ),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
             ),
         ),
     ]

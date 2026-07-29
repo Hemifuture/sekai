@@ -52,6 +52,13 @@ fn profile_default_natural_foundation() {
     let mantle = mantle.snapshot();
     let relief = relief.snapshot();
     let geology = geology.snapshot();
+    tectonic.validate_against(spatial).unwrap();
+    mantle.validate_against(spatial).unwrap();
+    relief.validate_against(spatial).unwrap();
+    geology
+        .validate_against(spatial, tectonic, mantle, relief)
+        .unwrap();
+    assert_eq!(outcome.report.stages().len(), 9);
 
     let dense_bytes = size_of_val(tectonic.cell_plates().raw_values())
         + size_of_val(tectonic.crust_kinds().raw_values())
