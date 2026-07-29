@@ -31,6 +31,7 @@ impl UploadPlan {
     }
 
     /// Returns a plan with no immutable uploads.
+    #[cfg(test)]
     pub const fn none() -> Self {
         Self {
             mesh: false,

@@ -4,4 +4,4 @@ mod renderer;
 
 pub use callback::FieldFillCallback;
 pub use planner::UploadPlan;
-pub use renderer::{CellFieldRenderer, FieldRenderError, RendererUploadStats};
+pub use renderer::CellFieldRenderer;

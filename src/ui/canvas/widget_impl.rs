@@ -3,8 +3,7 @@ use egui::Widget;
 
 use crate::gpu::{
     delaunay::delaunay_callback::DelaunayCallback, field::FieldFillCallback,
-    heightmap::heightmap_callback::HeightmapCallback, points_callback::PointsCallback,
-    voronoi::voronoi_callback::VoronoiCallback,
+    points_callback::PointsCallback, voronoi::voronoi_callback::VoronoiCallback,
 };
 
 use super::{canvas::Canvas, helpers::draw_grid};
@@ -27,10 +26,6 @@ impl Widget for &mut Canvas {
         let layer_visibility = self
             .map_system_resource
             .read_resource(|map_system| map_system.layer_visibility);
-        let has_field_packet = self
-            .field_display_resource
-            .read_resource(|display| display.current().is_some());
-
         if canvas_response.clicked_by(egui::PointerButton::Primary) {
             if let Some(screen_position) = canvas_response.interact_pointer_pos() {
                 let local = self
@@ -48,28 +43,16 @@ impl Widget for &mut Canvas {
 
         // 图层按照从底到顶的顺序渲染
         // 1. 字段填色图层 - 底层
-        if layer_visibility.heightmap {
-            if has_field_packet {
-                let field_callback = FieldFillCallback::new(
-                    self.canvas_state_resource.clone(),
-                    self.field_display_resource.clone(),
-                    screen_rect,
-                );
-                ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                    screen_rect,
-                    field_callback,
-                ));
-            } else {
-                let heightmap_callback = HeightmapCallback::new(
-                    self.canvas_state_resource.clone(),
-                    self.map_system_resource.clone(),
-                    screen_rect,
-                );
-                ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                    screen_rect,
-                    heightmap_callback,
-                ));
-            }
+        if layer_visibility.cell_fill {
+            let field_callback = FieldFillCallback::new(
+                self.canvas_state_resource.clone(),
+                self.field_display_resource.clone(),
+                screen_rect,
+            );
+            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                screen_rect,
+                field_callback,
+            ));
         }
 
         // 2. Delaunay三角剖分图层 - 中层

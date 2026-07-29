@@ -1,7 +1,6 @@
 pub mod canvas_uniform;
 pub mod delaunay;
 pub mod field;
-pub mod heightmap;
 mod helpers;
 pub mod map_renderer;
 mod pipelines;

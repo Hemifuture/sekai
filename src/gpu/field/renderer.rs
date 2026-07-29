@@ -480,6 +480,8 @@ impl CellFieldRenderer {
     }
 
     /// Returns cumulative upload evidence.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub const fn stats(&self) -> &RendererUploadStats {
         &self.stats
     }

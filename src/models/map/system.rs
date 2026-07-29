@@ -11,8 +11,8 @@ use super::{cells_data::CellsData, grid::Grid};
 /// 图层可见性设置
 #[derive(Debug, Clone, Copy)]
 pub struct LayerVisibility {
-    /// 高度图图层（填充的Voronoi单元格）
-    pub heightmap: bool,
+    /// Renderer-neutral field fill for Voronoi cells.
+    pub cell_fill: bool,
     /// Voronoi边线图层
     pub voronoi_edges: bool,
     /// Delaunay三角剖分图层
@@ -24,7 +24,7 @@ pub struct LayerVisibility {
 impl Default for LayerVisibility {
     fn default() -> Self {
         Self {
-            heightmap: true,
+            cell_fill: true,
             voronoi_edges: false,
             delaunay: false,
             points: false,

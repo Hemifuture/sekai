@@ -23,11 +23,6 @@ impl FieldFillCallback {
             canvas_rect,
         }
     }
-
-    /// Returns the callback's exact canvas rectangle.
-    pub const fn canvas_rect(&self) -> egui::Rect {
-        self.canvas_rect
-    }
 }
 
 impl egui_wgpu::CallbackTrait for FieldFillCallback {
@@ -105,11 +100,10 @@ mod tests {
 
     #[test]
     fn callback_accepts_an_explicitly_empty_display_resource() {
-        let callback = FieldFillCallback::new(
+        let _callback = FieldFillCallback::new(
             CanvasStateResource::default(),
             FieldDisplayResource::default(),
             egui::Rect::ZERO,
         );
-        assert_eq!(callback.canvas_rect(), egui::Rect::ZERO);
     }
 }

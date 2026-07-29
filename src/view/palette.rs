@@ -157,6 +157,9 @@ impl PreparedCellField {
 /// Failures returned while preparing renderer-neutral display data.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum DisplayPrepareError {
+    /// A registered schema and its current payload could not form a field view.
+    #[error(transparent)]
+    FieldView(#[from] FieldViewError),
     /// A display range was non-finite or reversed.
     #[error("display range must have finite bounds with min <= max")]
     InvalidRange,
@@ -298,6 +301,9 @@ pub enum DisplayPrepareError {
     /// A runtime status code violated the stable lowercase syntax.
     #[error("display runtime status code is invalid")]
     InvalidStatusCode,
+    /// No available scalar or category cell field could be prepared.
+    #[error("no renderable cell field is available")]
+    NoRenderableField,
 }
 
 const SEQUENTIAL: [LinearRgba; 5] = [
