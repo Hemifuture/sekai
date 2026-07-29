@@ -1,5 +1,6 @@
 //! Contracts for the current-slice natural world.
 
+mod climate_spec;
 mod fields;
 mod geologic_spec;
 mod geology;
@@ -8,6 +9,12 @@ mod relief;
 mod spec;
 mod tectonics;
 
+pub use climate_spec::{
+    ClimateSpec, ClimateSpecError, CLIMATE_SPEC_SCHEMA_V1, MAX_AXIAL_TILT_CENTIDEG,
+    MAX_LATITUDE_CENTIDEG, MAX_MOISTURE_SCALE_PERMILLE, MAX_TEMPERATURE_OFFSET_DECI_C,
+    MIN_LATITUDE_CENTIDEG, MIN_LATITUDE_SPAN_CENTIDEG, MIN_MOISTURE_SCALE_PERMILLE,
+    MIN_TEMPERATURE_OFFSET_DECI_C,
+};
 pub use fields::{
     bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
     crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
