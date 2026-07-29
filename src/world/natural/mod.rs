@@ -5,6 +5,7 @@ mod climate_spec;
 mod fields;
 mod geologic_spec;
 mod geology;
+mod hydro_erosion;
 mod hydro_erosion_spec;
 mod hydrology;
 mod mantle;
@@ -44,6 +45,10 @@ pub use geologic_spec::{
 pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1,
+};
+pub use hydro_erosion::{
+    HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,
+    RUNOFF_IDENTITY_TOLERANCE_MM,
 };
 pub use hydro_erosion_spec::{
     HydroErosionSpec, HydroErosionSpecError, HYDRO_EROSION_SPEC_SCHEMA_V1,
