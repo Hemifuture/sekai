@@ -1,5 +1,6 @@
 //! Deterministic, data-only rule-pack and author-input contracts.
 
+mod builtin;
 mod capability;
 mod constraints;
 mod ids;
@@ -7,6 +8,10 @@ mod manifest;
 mod registry;
 mod tectonics;
 
+pub use builtin::{
+    core_capability_registry, default_rule_pack_set, earthlike_rule_pack, BuiltinRuleError,
+    EARTHLIKE_RULE_PACK_ID,
+};
 pub use capability::{
     tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
     CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
