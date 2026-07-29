@@ -6,16 +6,17 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, LandOceanKind, Plate,
-    PlateIdField, PlateVelocity, ReliefSnapshot, TectonicSnapshot, TectonicSpec,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Hotspot,
+    LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
+    TectonicSnapshot, TectonicSpec, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M,
+    REGIONAL_OFFSET_MIN_M, TECTONIC_SNAPSHOT_SCHEMA_V1,
 };
 use sekai::world::spatial::{
     SpatialCell, SpatialEdge, SpatialSnapshot, Topology, SPATIAL_SCHEMA_V1,
 };
 use sekai::world::{
-    BoundaryCondition, BoundarySegmentId, CellId, EdgeId, Meters, PlanarSpaceSpec, PlateId,
-    RootSeed, SquareMeters, WorldPoint, WorldRect,
+    BoundaryCondition, BoundarySegmentId, CellId, EdgeId, HotspotId, Meters, PlanarSpaceSpec,
+    PlateId, RootSeed, SquareMeters, WorldPoint, WorldRect,
 };
 
 const GRID_COLUMNS: usize = 8;
@@ -208,8 +209,19 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 1, "sekai.core"),
+        StageIdentity::new("natural.relief", 2, "sekai.core"),
     ))
+}
+
+fn zero_hotspot_mantle(spatial: &SpatialSnapshot) -> MantleSnapshot {
+    MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        Vec::new(),
+        vec![65.0; spatial.cell_count()],
+        vec![0.0; spatial.cell_count()],
+    )
+    .unwrap()
 }
 
 fn generate_relief(
@@ -220,6 +232,23 @@ fn generate_relief(
     ReliefGenerator::generate(
         spatial,
         tectonic,
+        &zero_hotspot_mantle(spatial),
+        &mut relief_rng(seed),
+        &mut Vec::<Diagnostic>::new(),
+    )
+    .unwrap()
+}
+
+fn generate_relief_with_mantle(
+    spatial: &SpatialSnapshot,
+    tectonic: &TectonicSnapshot,
+    mantle: &MantleSnapshot,
+    seed: u64,
+) -> ReliefSnapshot {
+    ReliefGenerator::generate(
+        spatial,
+        tectonic,
+        mantle,
         &mut relief_rng(seed),
         &mut Vec::<Diagnostic>::new(),
     )
@@ -394,6 +423,47 @@ fn regional_relief_is_repeatable_bounded_and_near_zero_mean() {
 }
 
 #[test]
+fn mantle_influence_adds_local_explainable_volcanic_relief() {
+    let spatial = regular_grid();
+    let tectonic = custom_tectonics(&spatial, BoundaryKind::ContinentalCollision);
+    let source = cell_at(1, 2);
+    let nearby = cell_at(1, 3);
+    let zero = zero_hotspot_mantle(&spatial);
+    let mut influence = vec![0.0; spatial.cell_count()];
+    influence[source.raw() as usize] = 1.0;
+    influence[nearby.raw() as usize] = 0.5;
+    let mantle = MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        vec![Hotspot::new(HotspotId::from_raw(0), source, 800, meters(2.0)).unwrap()],
+        influence
+            .iter()
+            .map(|&value| 65.0 + 220.0 * value)
+            .collect(),
+        influence,
+    )
+    .unwrap();
+    let baseline = generate_relief_with_mantle(&spatial, &tectonic, &zero, 7);
+    let volcanic = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 7);
+
+    assert!(baseline
+        .volcanic_offset_m()
+        .values()
+        .iter()
+        .all(|&value| value == 0.0));
+    assert!(volcanic.volcanic_offset_m().values()[source.raw() as usize] > 0.0);
+    assert!(
+        volcanic.elevation_m().values()[source.raw() as usize]
+            > baseline.elevation_m().values()[source.raw() as usize]
+    );
+    assert!(
+        volcanic.elevation_m().values()[nearby.raw() as usize]
+            > baseline.elevation_m().values()[nearby.raw() as usize]
+    );
+    volcanic.validate_against(&spatial).unwrap();
+}
+
+#[test]
 fn final_relief_is_explainable_and_default_has_land_and_ocean() {
     let (spatial, tectonic) = generated_fixture();
     let relief = generate_relief(spatial, &tectonic, 42);
@@ -401,6 +471,7 @@ fn final_relief_is_explainable_and_default_has_land_and_ocean() {
     for index in 0..spatial.cell_count() {
         let expected = relief.crust_base_elevation_m().values()[index]
             + relief.tectonic_offset_m().values()[index]
+            + relief.volcanic_offset_m().values()[index]
             + relief.regional_offset_m().values()[index];
         assert!((relief.elevation_m().values()[index] - expected).abs() <= 0.01);
         match relief

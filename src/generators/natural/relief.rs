@@ -8,10 +8,11 @@ use super::random::{LabeledSubstreams, RELIEF_REGIONAL_LABEL};
 use super::topology::{multi_source_distance, multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
 use crate::world::natural::{
-    BoundaryKind, CrustKind, ElevationField, LandOceanField, ReliefSnapshot, ReliefValidationError,
-    TectonicSnapshot, TectonicValidationError, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M,
-    REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V1, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    BoundaryKind, CrustKind, ElevationField, LandOceanField, MantleSnapshot, MantleValidationError,
+    ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicValidationError,
+    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V2, TECTONIC_OFFSET_MAX_M,
+    TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{CellId, PlateId};
@@ -27,37 +28,43 @@ const CLAMP_DIAGNOSTIC_CODE: &str = "natural.relief-clamped";
 pub struct ReliefGenerator;
 
 impl ReliefGenerator {
-    /// Generates crust-base, tectonic, regional, and final elevation fields.
+    /// Generates crust-base, tectonic, volcanic, regional, and final elevation fields.
     pub fn generate(
         spatial: &SpatialSnapshot,
         tectonic: &TectonicSnapshot,
+        mantle: &MantleSnapshot,
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<ReliefSnapshot, ReliefGenerationError> {
         tectonic.validate_against(spatial)?;
+        mantle.validate_against(spatial)?;
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
         let mut crust_base = synthesize_crust_base(&topology, tectonic);
         let mut tectonic_offset = synthesize_tectonic_offset(spatial, &topology, tectonic);
+        let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
         let elevation = reconcile_final_safety(
             &mut crust_base,
             &mut tectonic_offset,
+            &mut volcanic_offset,
             &mut regional_offset,
             diagnostics,
         );
 
         let crust_base = ElevationField::from_values(crust_base)?;
         let tectonic_offset = ElevationField::from_values(tectonic_offset)?;
+        let volcanic_offset = ElevationField::from_values(volcanic_offset)?;
         let regional_offset = ElevationField::from_values(regional_offset)?;
         let elevation = ElevationField::from_values(elevation)?;
         let land_ocean = LandOceanField::classify(&elevation, SEA_LEVEL_M);
         let snapshot = ReliefSnapshot::new(
-            RELIEF_SCHEMA_V1,
+            RELIEF_SCHEMA_V2,
             spatial.cell_count() as u32,
             SEA_LEVEL_M,
             crust_base,
             tectonic_offset,
+            volcanic_offset,
             regional_offset,
             elevation,
             land_ocean,
@@ -65,6 +72,26 @@ impl ReliefGenerator {
         snapshot.validate_against(spatial)?;
         Ok(snapshot)
     }
+}
+
+fn synthesize_volcanic_offset(tectonic: &TectonicSnapshot, mantle: &MantleSnapshot) -> Vec<f32> {
+    mantle
+        .volcanic_influence()
+        .iter()
+        .enumerate()
+        .map(|(index, &influence)| {
+            let cell = CellId::from_raw(index as u32);
+            let amplitude = match tectonic
+                .crust_kind(cell)
+                .expect("tectonic and mantle fields are cell aligned")
+            {
+                CrustKind::Oceanic => 3_200.0,
+                CrustKind::Continental => 2_200.0,
+            };
+            let response = influence * influence * (3.0 - 2.0 * influence);
+            (amplitude * response).clamp(VOLCANIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M)
+        })
+        .collect()
 }
 
 fn synthesize_crust_base(topology: &NaturalTopologyIndex, tectonic: &TectonicSnapshot) -> Vec<f32> {
@@ -365,17 +392,29 @@ fn center_and_bound(values: &mut [f32], min: f32, max: f32) {
 fn reconcile_final_safety(
     crust_base: &mut [f32],
     tectonic_offset: &mut [f32],
+    volcanic_offset: &mut [f32],
     regional_offset: &mut [f32],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<f32> {
     let mut elevation = Vec::with_capacity(crust_base.len());
     let mut clamped_count = 0_usize;
     for index in 0..crust_base.len() {
-        let raw = crust_base[index] + tectonic_offset[index] + regional_offset[index];
+        let raw = crust_base[index]
+            + tectonic_offset[index]
+            + volcanic_offset[index]
+            + regional_offset[index];
         let target = raw.clamp(ELEVATION_MIN_M, ELEVATION_MAX_M);
         if target != raw {
             clamped_count += 1;
             let mut remaining = target - raw;
+            if remaining < 0.0 {
+                remaining = adjust_component(
+                    &mut volcanic_offset[index],
+                    remaining,
+                    VOLCANIC_OFFSET_MIN_M,
+                    VOLCANIC_OFFSET_MAX_M,
+                );
+            }
             remaining = adjust_component(
                 &mut regional_offset[index],
                 remaining,
@@ -409,7 +448,12 @@ fn reconcile_final_safety(
                 );
             }
         }
-        elevation.push(crust_base[index] + tectonic_offset[index] + regional_offset[index]);
+        elevation.push(
+            crust_base[index]
+                + tectonic_offset[index]
+                + volcanic_offset[index]
+                + regional_offset[index],
+        );
     }
     if clamped_count > MAX_CLAMP_DIAGNOSTICS {
         diagnostics.push(
@@ -468,6 +512,9 @@ pub enum ReliefGenerationError {
     /// The supplied tectonic snapshot is incompatible with the spatial snapshot.
     #[error("invalid tectonic input: {0}")]
     InvalidTectonics(#[from] TectonicValidationError),
+    /// The supplied mantle snapshot is incompatible with the spatial snapshot.
+    #[error("invalid mantle input: {0}")]
+    InvalidMantle(#[from] MantleValidationError),
     /// Generated relief fields violate the relief snapshot contract.
     #[error("invalid generated relief: {0}")]
     InvalidRelief(#[from] ReliefValidationError),

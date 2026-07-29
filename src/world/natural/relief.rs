@@ -6,6 +6,8 @@ use crate::world::CellId;
 
 /// The supported version of the serialized relief snapshot schema.
 pub const RELIEF_SCHEMA_V1: u16 = 1;
+/// The current supported relief schema with an explicit volcanic component.
+pub const RELIEF_SCHEMA_V2: u16 = 2;
 /// The minimum safe final elevation, in meters.
 pub const ELEVATION_MIN_M: f32 = -11_000.0;
 /// The maximum safe final elevation, in meters.
@@ -18,6 +20,10 @@ pub const CRUST_BASE_ELEVATION_MAX_M: f32 = 5_000.0;
 pub const TECTONIC_OFFSET_MIN_M: f32 = -6_000.0;
 /// The maximum supported tectonic-event component, in meters.
 pub const TECTONIC_OFFSET_MAX_M: f32 = 7_000.0;
+/// The minimum supported current volcanic-relief contribution, in meters.
+pub const VOLCANIC_OFFSET_MIN_M: f32 = 0.0;
+/// The maximum supported current volcanic-relief contribution, in meters.
+pub const VOLCANIC_OFFSET_MAX_M: f32 = 4_000.0;
 /// The minimum supported regional-relief component, in meters.
 pub const REGIONAL_OFFSET_MIN_M: f32 = -3_000.0;
 /// The maximum supported regional-relief component, in meters.
@@ -165,19 +171,21 @@ pub struct ReliefSnapshot {
     sea_level_m: f32,
     crust_base_elevation_m: ElevationField,
     tectonic_offset_m: ElevationField,
+    volcanic_offset_m: ElevationField,
     regional_offset_m: ElevationField,
     elevation_m: ElevationField,
     land_ocean_kind: LandOceanField,
 }
 
 impl ReliefSnapshot {
-    /// Constructs a snapshot only when all V1 relief invariants hold.
+    /// Constructs a snapshot only when all V2 relief invariants hold.
     pub fn new(
         schema_version: u16,
         cell_count: u32,
         sea_level_m: f32,
         crust_base_elevation_m: ElevationField,
         tectonic_offset_m: ElevationField,
+        volcanic_offset_m: ElevationField,
         regional_offset_m: ElevationField,
         elevation_m: ElevationField,
         land_ocean_kind: LandOceanField,
@@ -188,6 +196,7 @@ impl ReliefSnapshot {
             sea_level_m,
             crust_base_elevation_m,
             tectonic_offset_m,
+            volcanic_offset_m,
             regional_offset_m,
             elevation_m,
             land_ocean_kind,
@@ -198,10 +207,10 @@ impl ReliefSnapshot {
 
     /// Rechecks every self-contained relief invariant.
     pub fn validate(&self) -> Result<(), ReliefValidationError> {
-        if self.schema_version != RELIEF_SCHEMA_V1 {
+        if self.schema_version != RELIEF_SCHEMA_V2 {
             return Err(ReliefValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: RELIEF_SCHEMA_V1,
+                supported: RELIEF_SCHEMA_V2,
             });
         }
         if !self.sea_level_m.is_finite() {
@@ -213,6 +222,7 @@ impl ReliefSnapshot {
         for (name, field) in [
             ("crust_base_elevation_m", &self.crust_base_elevation_m),
             ("tectonic_offset_m", &self.tectonic_offset_m),
+            ("volcanic_offset_m", &self.volcanic_offset_m),
             ("regional_offset_m", &self.regional_offset_m),
             ("elevation_m", &self.elevation_m),
         ] {
@@ -238,6 +248,12 @@ impl ReliefSnapshot {
             TECTONIC_OFFSET_MAX_M,
         )?;
         validate_range(
+            "volcanic_offset_m",
+            self.volcanic_offset_m.values(),
+            VOLCANIC_OFFSET_MIN_M,
+            VOLCANIC_OFFSET_MAX_M,
+        )?;
+        validate_range(
             "regional_offset_m",
             self.regional_offset_m.values(),
             REGIONAL_OFFSET_MIN_M,
@@ -254,9 +270,10 @@ impl ReliefSnapshot {
             let cell = CellId::from_raw(index as u32);
             let base = self.crust_base_elevation_m.values()[index];
             let tectonic = self.tectonic_offset_m.values()[index];
+            let volcanic = self.volcanic_offset_m.values()[index];
             let regional = self.regional_offset_m.values()[index];
             let elevation = self.elevation_m.values()[index];
-            let calculated = base + tectonic + regional;
+            let calculated = base + tectonic + volcanic + regional;
             if (elevation - calculated).abs() > COMPONENT_IDENTITY_TOLERANCE_M {
                 return Err(ReliefValidationError::ComponentIdentityMismatch {
                     cell,
@@ -319,6 +336,11 @@ impl ReliefSnapshot {
     /// Returns the net contribution from current tectonic boundary events.
     pub const fn tectonic_offset_m(&self) -> &ElevationField {
         &self.tectonic_offset_m
+    }
+
+    /// Returns the present-day mantle-driven volcanic relief contribution.
+    pub const fn volcanic_offset_m(&self) -> &ElevationField {
+        &self.volcanic_offset_m
     }
 
     /// Returns the graph-smoothed regional relief contribution.
@@ -402,7 +424,7 @@ fn quantized_centimeters(value: f32) -> i64 {
     (f64::from(value) * 100.0).round() as i64
 }
 
-/// Errors returned when relief fields violate V1 numerical or alignment invariants.
+/// Errors returned when relief fields violate V2 numerical or alignment invariants.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ReliefValidationError {
     /// The snapshot uses an unsupported schema version.
@@ -439,7 +461,7 @@ pub enum ReliefValidationError {
         /// The invalid value.
         found: f32,
     },
-    /// A field value lies outside its V1 physical safety bound.
+    /// A field value lies outside its V2 physical safety bound.
     #[error("field {field} value {found} at {cell:?} is outside {min}..={max}")]
     FieldValueOutOfRange {
         /// The stable field name.

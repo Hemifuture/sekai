@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
-    TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -15,8 +15,8 @@ use sekai::world::natural::{
     boundary_kind_field_id, boundary_strength_field_id, crust_base_elevation_field_id,
     crust_kind_field_id, crust_thickness_field_id, elevation_field_id, land_ocean_field_id,
     natural_field_registry, plate_id_field_id, plate_velocity_field_id, regional_offset_field_id,
-    tectonic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError, TectonicSpec,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
+    tectonic_offset_field_id, GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -231,6 +231,9 @@ fn natural_artifacts() -> (
         .unwrap();
     external
         .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+        .unwrap();
+    external
+        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

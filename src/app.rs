@@ -19,8 +19,8 @@ use crate::{
     },
     generators::{
         natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact,
-            RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact,
+            ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
             TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
@@ -40,8 +40,9 @@ use crate::{
     view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
     world::{
         natural::{
-            NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
-            MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
+            GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicActivity, TectonicSpec,
+            MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
+            MIN_PLATE_COUNT,
         },
         BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
         WorldSpec, WORLD_SPEC_SCHEMA_V1,
@@ -89,6 +90,7 @@ impl RuleBuildSummary {
 pub struct TemplateApp {
     world_seed: u64,
     tectonic_spec: TectonicSpec,
+    geologic_spec: GeologicSpec,
     #[serde(skip)]
     canvas_widget: Canvas,
     #[serde(skip)]
@@ -115,6 +117,7 @@ impl Default for TemplateApp {
         Self {
             world_seed: 42,
             tectonic_spec: TectonicSpec::default(),
+            geologic_spec: GeologicSpec::default(),
             canvas_widget: Canvas::new(
                 canvas_state,
                 field_display.clone(),
@@ -199,9 +202,11 @@ impl TemplateApp {
         tectonic: &TectonicSpec,
     ) -> Result<(), NaturalWorldBuildError> {
         let current_state = self.field_viewer_state.read_resource(Clone::clone);
+        let geologic = self.geologic_spec.clone();
         let candidate = build_natural_candidate(
             world,
             tectonic,
+            &geologic,
             &mut self.stage_cache,
             &current_state,
             &self.display_revision_clock,
@@ -218,9 +223,11 @@ impl TemplateApp {
         author_constraints: AuthorConstraints,
     ) -> Result<(), NaturalWorldBuildError> {
         let current_state = self.field_viewer_state.read_resource(Clone::clone);
+        let geologic = self.geologic_spec.clone();
         let candidate = build_natural_candidate_with_rule_inputs(
             world,
             tectonic,
+            &geologic,
             pack_set,
             author_constraints,
             &mut self.stage_cache,
@@ -487,10 +494,12 @@ fn default_world_spec(root_seed: RootSeed) -> WorldSpec {
 fn build_natural_external_artifacts(
     world: &WorldSpec,
     tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
     build_natural_external_artifacts_with_rule_inputs(
         world,
         tectonic,
+        geologic,
         default_rule_pack_set()?,
         AuthorConstraints::default(),
     )
@@ -499,14 +508,17 @@ fn build_natural_external_artifacts(
 fn build_natural_external_artifacts_with_rule_inputs(
     world: &WorldSpec,
     tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
     pack_set: RulePackSet,
     author_constraints: AuthorConstraints,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
     world.validate()?;
     tectonic.validate()?;
+    geologic.validate()?;
     let mut external = ExternalArtifacts::new();
     external.insert(PlanarSpaceArtifact::new(world.space.clone()))?;
     external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
+    external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
     external.insert(RulePackSetArtifact::new(pack_set))?;
     external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
@@ -515,11 +527,12 @@ fn build_natural_external_artifacts_with_rule_inputs(
 fn build_natural_candidate(
     world: &WorldSpec,
     tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     current_state: &FieldDisplayState,
     clock: &DisplayRevisionClock,
 ) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
-    let external = build_natural_external_artifacts(world, tectonic)?;
+    let external = build_natural_external_artifacts(world, tectonic, geologic)?;
     build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
 }
 
@@ -527,6 +540,7 @@ fn build_natural_candidate(
 fn build_natural_candidate_with_rule_inputs(
     world: &WorldSpec,
     tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
     pack_set: RulePackSet,
     author_constraints: AuthorConstraints,
     cache: &mut MemoryStageCache,
@@ -536,6 +550,7 @@ fn build_natural_candidate_with_rule_inputs(
     let external = build_natural_external_artifacts_with_rule_inputs(
         world,
         tectonic,
+        geologic,
         pack_set,
         author_constraints,
     )?;
@@ -585,6 +600,8 @@ enum NaturalWorldBuildError {
     #[error(transparent)]
     TectonicSpec(#[from] NaturalSpecError),
     #[error(transparent)]
+    GeologicSpec(#[from] GeologicSpecError),
+    #[error(transparent)]
     BuiltinRules(#[from] BuiltinRuleError),
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
@@ -608,7 +625,7 @@ mod natural_app_tests {
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
-        AuthorConstraintsArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+        AuthorConstraintsArtifact, GeologicSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
     };
     use crate::generators::spatial::PlanarSpaceArtifact;
     use crate::rules::{
@@ -618,7 +635,9 @@ mod natural_app_tests {
         TectonicConstraintClause, AUTHOR_CONSTRAINTS_SCHEMA_V1,
     };
     use crate::view::FieldDisplayResourceState;
-    use crate::world::natural::{elevation_field_id, TectonicActivity, TectonicSpec};
+    use crate::world::natural::{
+        elevation_field_id, GeologicSpec, MantleActivity, TectonicActivity, TectonicSpec,
+    };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
 
@@ -638,16 +657,29 @@ mod natural_app_tests {
                 activity: TectonicActivity::Moderate,
             }
         );
+        assert_eq!(
+            GeologicSpec::default(),
+            GeologicSpec {
+                schema_version: 1,
+                hotspot_count: 4,
+                mantle_activity: MantleActivity::Moderate,
+            }
+        );
     }
 
     #[test]
     fn natural_build_supplies_the_exact_external_artifact_set() {
         let world = default_world_spec(RootSeed::new(7));
-        let external: ExternalArtifacts =
-            build_natural_external_artifacts(&world, &TectonicSpec::default()).unwrap();
-        assert_eq!(external.len(), 4);
+        let external: ExternalArtifacts = build_natural_external_artifacts(
+            &world,
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+        )
+        .unwrap();
+        assert_eq!(external.len(), 5);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
+        assert!(external.hash::<GeologicSpecArtifact>().is_ok());
         assert!(external.hash::<RulePackSetArtifact>().is_ok());
         assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
 
@@ -658,6 +690,13 @@ mod natural_app_tests {
         expected
             .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
             .unwrap();
+        expected
+            .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+            .unwrap();
+        assert_eq!(
+            external.hash::<GeologicSpecArtifact>().unwrap(),
+            expected.hash::<GeologicSpecArtifact>().unwrap()
+        );
         assert_eq!(
             external.hash::<RulePackSetArtifact>().unwrap(),
             expected.hash::<RulePackSetArtifact>().unwrap()

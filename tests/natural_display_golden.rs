@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
-    TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -17,7 +17,8 @@ use sekai::view::{
 use sekai::world::fields::{FieldId, ValueRange};
 use sekai::world::natural::{
     crust_kind_field_id, elevation_field_id, natural_field_registry, plate_id_field_id,
-    BoundaryKind, ReliefSnapshot, TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
+    BoundaryKind, GeologicSpec, ReliefSnapshot, TectonicSnapshot, TectonicSpec,
+    COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -181,6 +182,9 @@ fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
         .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
         .unwrap();
     external
+        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .unwrap();
+    external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
         .unwrap();
     external
@@ -327,6 +331,7 @@ fn assert_relief_finite_and_explainable(seed: u64, relief: &ReliefSnapshot) {
     let fields = [
         relief.crust_base_elevation_m().values(),
         relief.tectonic_offset_m().values(),
+        relief.volcanic_offset_m().values(),
         relief.regional_offset_m().values(),
         relief.elevation_m().values(),
     ];
@@ -340,6 +345,7 @@ fn assert_relief_finite_and_explainable(seed: u64, relief: &ReliefSnapshot) {
     for index in 0..relief.cell_count() as usize {
         let expected = relief.crust_base_elevation_m().values()[index]
             + relief.tectonic_offset_m().values()[index]
+            + relief.volcanic_offset_m().values()[index]
             + relief.regional_offset_m().values()[index];
         let actual = relief.elevation_m().values()[index];
         assert!(

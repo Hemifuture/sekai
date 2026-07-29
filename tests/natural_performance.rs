@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
-    TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
-use sekai::world::natural::TectonicSpec;
+use sekai::world::natural::{GeologicSpec, TectonicSpec};
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -26,6 +26,9 @@ fn profile_default_natural_foundation() {
         .unwrap();
     external
         .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+        .unwrap();
+    external
+        .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -52,6 +55,7 @@ fn profile_default_natural_foundation() {
         + size_of_val(tectonic.boundaries())
         + size_of_val(relief.crust_base_elevation_m().values())
         + size_of_val(relief.tectonic_offset_m().values())
+        + size_of_val(relief.volcanic_offset_m().values())
         + size_of_val(relief.regional_offset_m().values())
         + size_of_val(relief.elevation_m().values())
         + size_of_val(relief.land_ocean().raw_values());

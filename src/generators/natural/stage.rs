@@ -5,8 +5,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AuthorConstraintsArtifact, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
-    RulePackSetArtifact, RuleTectonicResolutionStage,
+    AuthorConstraintsArtifact, GeologicSpecArtifact, MantleArtifact, MantleStage,
+    ResolvedGeologicInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
+    RuleGeologicResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
 };
 use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
@@ -16,14 +17,15 @@ use crate::engine::{
 use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use crate::rules::TectonicModel;
 use crate::world::natural::{
-    NaturalSpecError, ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicSpec,
-    TectonicValidationError,
+    MantleValidationError, NaturalSpecError, ReliefSnapshot, ReliefValidationError,
+    TectonicSnapshot, TectonicSpec, TectonicValidationError,
 };
 
 const INVALID_SPEC_CODE: &str = "natural.invalid-tectonic-spec";
 const BUILD_FAILED_CODE: &str = "natural.tectonic-build-failed";
 const INVALID_SNAPSHOT_CODE: &str = "natural.invalid-tectonic-snapshot";
 const INVALID_TECTONICS_CODE: &str = "natural.invalid-tectonics";
+const INVALID_MANTLE_CODE: &str = "natural.invalid-mantle";
 const RELIEF_FAILED_CODE: &str = "natural.relief-failed";
 const INVALID_RELIEF_CODE: &str = "natural.invalid-relief";
 
@@ -201,17 +203,23 @@ impl Artifact for ReliefArtifact {
 
 /// Restricted typed dependencies supplied to [`ReliefStage`].
 pub struct ReliefStageInputs {
+    mantle: Arc<MantleArtifact>,
     spatial: Arc<SpatialArtifact>,
     tectonic: Arc<TectonicArtifact>,
 }
 
 impl StageInputs for ReliefStageInputs {
     fn dependencies() -> &'static [ArtifactKey] {
-        &[SpatialArtifact::KEY, TectonicArtifact::KEY]
+        &[
+            MantleArtifact::KEY,
+            SpatialArtifact::KEY,
+            TectonicArtifact::KEY,
+        ]
     }
 
     fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
         Ok(Self {
+            mantle: artifacts.get::<MantleArtifact>()?,
             spatial: artifacts.get::<SpatialArtifact>()?,
             tectonic: artifacts.get::<TectonicArtifact>()?,
         })
@@ -231,7 +239,7 @@ impl Stage for ReliefStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {
@@ -249,9 +257,15 @@ impl Stage for ReliefStage {
             .snapshot()
             .validate_against(inputs.spatial.snapshot())
             .map_err(invalid_tectonics)?;
+        inputs
+            .mantle
+            .snapshot()
+            .validate_against(inputs.spatial.snapshot())
+            .map_err(invalid_mantle)?;
         let snapshot = ReliefGenerator::generate(
             inputs.spatial.snapshot(),
             inputs.tectonic.snapshot(),
+            inputs.mantle.snapshot(),
             rng,
             diagnostics,
         )
@@ -273,12 +287,16 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
     StageGraphBuilder::new()
         .external::<PlanarSpaceArtifact>()
         .external::<TectonicSpecArtifact>()
+        .external::<GeologicSpecArtifact>()
         .external::<RulePackSetArtifact>()
         .external::<AuthorConstraintsArtifact>()
         .stage(SpatialStage)
         .stage(RuleTectonicResolutionStage)
+        .stage(RuleGeologicResolutionStage)
         .stage(ResolvedTectonicInputStage)
+        .stage(ResolvedGeologicInputStage)
         .stage(TectonicStage)
+        .stage(MantleStage)
         .stage(ReliefStage)
         .build()
 }
@@ -290,9 +308,17 @@ fn invalid_tectonics(error: TectonicValidationError) -> StageError {
     )
 }
 
+fn invalid_mantle(error: MantleValidationError) -> StageError {
+    StageError::new(
+        INVALID_MANTLE_CODE,
+        format!("mantle input failed spatial validation: {error}"),
+    )
+}
+
 fn relief_failure(error: ReliefGenerationError) -> StageError {
     match error {
         ReliefGenerationError::InvalidTectonics(error) => invalid_tectonics(error),
+        ReliefGenerationError::InvalidMantle(error) => invalid_mantle(error),
         ReliefGenerationError::InvalidRelief(error) => StageError::new(
             RELIEF_FAILED_CODE,
             format!("relief synthesis produced invalid fields: {error}"),
