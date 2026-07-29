@@ -182,12 +182,16 @@ impl AppFieldDocument for NaturalFieldDocument {
         if field != &elevation_field_id() {
             return None;
         }
-        let schema = self.registry.get(field)?;
-        let schema_range = schema.valid_range?;
+        self.registry.get(field)?;
         let sea_level = self.relief.snapshot().sea_level_m();
-        let radius = (schema_range.min() - sea_level)
-            .abs()
-            .max((schema_range.max() - sea_level).abs());
+        let radius = self
+            .relief
+            .snapshot()
+            .elevation_m()
+            .values()
+            .iter()
+            .map(|value| (value - sea_level).abs())
+            .fold(0.0_f32, f32::max);
         ValueRange::new(sea_level - radius, sea_level + radius)
             .ok()
             .map(DisplayRangeMode::Manual)
@@ -355,5 +359,14 @@ mod tests {
         };
         let sea_level = document.relief.snapshot().sea_level_m();
         assert!(((range.min() + range.max()) * 0.5 - sea_level).abs() < 0.001);
+        let expected_radius = document
+            .relief
+            .snapshot()
+            .elevation_m()
+            .values()
+            .iter()
+            .map(|value| (value - sea_level).abs())
+            .fold(0.0_f32, f32::max);
+        assert!((range.max() - sea_level - expected_radius).abs() < 0.001);
     }
 }
