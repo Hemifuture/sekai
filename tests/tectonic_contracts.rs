@@ -412,3 +412,18 @@ fn topology_validation_rejects_seed_ownership_and_disconnected_plates() {
         Err(TectonicValidationError::DisconnectedPlate { .. })
     ));
 }
+
+#[test]
+fn topology_validation_rejects_co_moving_adjacent_plates() {
+    let spatial = spatial_fixture();
+    let snapshot = valid_tectonic_fixture();
+    let mut wire = serde_json::to_value(snapshot).unwrap();
+    wire["plates"][1]["velocity"] = wire["plates"][0]["velocity"].clone();
+    let invalid: TectonicSnapshot = serde_json::from_value(wire).unwrap();
+
+    invalid.validate().unwrap();
+    assert!(matches!(
+        invalid.validate_against(&spatial),
+        Err(TectonicValidationError::AdjacentPlatesCoMoving { .. })
+    ));
+}

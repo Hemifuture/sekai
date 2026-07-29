@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::world::spatial::{SpatialEdge, SpatialSnapshot, Topology};
-use crate::world::{BoundarySegmentId, CellId, EdgeId, PlateId, WorldPoint};
+use crate::world::{BoundarySegmentId, CellId, EdgeId, PlateId, WorldPoint, WorldRect};
 
 /// The supported version of the serialized tectonic snapshot schema.
 pub const TECTONIC_SNAPSHOT_SCHEMA_V1: u16 = 1;
@@ -697,6 +697,14 @@ impl TectonicSnapshot {
                     });
                 }
                 if crosses_plate {
+                    if self.plates[first_plate.raw() as usize].velocity
+                        == self.plates[second_plate.raw() as usize].velocity
+                    {
+                        return Err(TectonicValidationError::AdjacentPlatesCoMoving {
+                            edge: edge.id,
+                            plates: normalized_plate_pair(first_plate, second_plate),
+                        });
+                    }
                     let segment = &self.boundary_segments
                         [record.segment_id.expect("validated boundary segment").raw() as usize];
                     if segment.plates != normalized_plate_pair(first_plate, second_plate) {
@@ -733,7 +741,11 @@ impl TectonicSnapshot {
         while let Some(index) = queue.pop_front() {
             for candidate in 0..member_edges.len() {
                 if !visited[candidate]
-                    && edges_share_endpoint(member_edges[index], member_edges[candidate])
+                    && edges_share_endpoint(
+                        member_edges[index],
+                        member_edges[candidate],
+                        spatial.bounds(),
+                    )
                 {
                     visited[candidate] = true;
                     queue.push_back(candidate);
@@ -782,14 +794,18 @@ fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
     }
 }
 
-fn edges_share_endpoint(first: &SpatialEdge, second: &SpatialEdge) -> bool {
-    [first.start, first.end]
-        .into_iter()
-        .any(|point| point_matches(point, second.start) || point_matches(point, second.end))
+fn edges_share_endpoint(first: &SpatialEdge, second: &SpatialEdge, bounds: WorldRect) -> bool {
+    [first.start, first.end].into_iter().any(|point| {
+        point_matches(point, second.start, bounds) || point_matches(point, second.end, bounds)
+    })
 }
 
-fn point_matches(first: WorldPoint, second: WorldPoint) -> bool {
-    first == second
+fn point_matches(first: WorldPoint, second: WorldPoint, bounds: WorldRect) -> bool {
+    const NORMALIZED_ENDPOINT_TOLERANCE: f64 = 1.0e-9;
+    let scale = bounds.width().get().max(bounds.height().get());
+    let tolerance = scale * NORMALIZED_ENDPOINT_TOLERANCE;
+    (first.x().get() - second.x().get()).abs() <= tolerance
+        && (first.y().get() - second.y().get()).abs() <= tolerance
 }
 
 /// Errors returned when tectonic data violates V1 local or topology-aware invariants.
@@ -998,6 +1014,14 @@ pub enum TectonicValidationError {
     BoundaryTopologyMismatch {
         /// The affected edge.
         edge: EdgeId,
+    },
+    /// Two adjacent plates have identical velocity and therefore no relative motion.
+    #[error("edge {edge:?} joins co-moving plates {plates:?}")]
+    AdjacentPlatesCoMoving {
+        /// The cross-plate edge that exposed the violation.
+        edge: EdgeId,
+        /// The adjacent plate pair in stable order.
+        plates: [PlateId; 2],
     },
     /// A segment plate pair disagrees with one of its member edges.
     #[error("boundary segment {segment:?} plate pair disagrees with edge {edge:?}")]

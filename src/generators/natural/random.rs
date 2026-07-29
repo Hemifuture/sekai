@@ -6,6 +6,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::engine::StageRng;
 
 pub(super) const PLATE_SEEDS_LABEL: &str = "plate-seeds-v1";
+pub(super) const PLATE_MOTION_LABEL: &str = "plate-motion-v1";
 pub(super) const CRUST_SEEDS_LABEL: &str = "crust-seeds-v1";
 pub(super) const CRUST_SHAPE_LABEL: &str = "crust-shape-v1";
 pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
