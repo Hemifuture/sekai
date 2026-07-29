@@ -315,8 +315,8 @@ impl PreliminaryClimateSnapshot {
                 self.annual_precipitation_mm[index],
                 annual_precipitation,
             )?;
-            for component in 0..2 {
-                if (self.prevailing_wind_m_s[index][component] - prevailing_wind[component]).abs()
+            for (component, calculated) in prevailing_wind.iter().enumerate() {
+                if (self.prevailing_wind_m_s[index][component] - *calculated).abs()
                     > CLIMATE_SUMMARY_IDENTITY_TOLERANCE
                 {
                     return Err(ClimateValidationError::VectorSummaryIdentityMismatch {
@@ -324,7 +324,7 @@ impl PreliminaryClimateSnapshot {
                         cell: CellId::from_raw(index as u32),
                         component,
                         stored: self.prevailing_wind_m_s[index][component],
-                        calculated: prevailing_wind[component],
+                        calculated: *calculated,
                     });
                 }
             }
