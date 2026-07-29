@@ -4,9 +4,10 @@ use thiserror::Error;
 
 use super::{
     TectonicSnapshot, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT, MIN_PLATE_COUNT,
-    OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
-    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
+    HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::fields::{
     FieldDisplayMetadata, FieldDomain, FieldId, FieldPaletteHint, FieldRegistry,
@@ -73,6 +74,56 @@ pub fn land_ocean_field_id() -> FieldId {
     field_id("land_ocean")
 }
 
+/// Returns the stable mantle heat-flow field ID.
+pub fn mantle_heat_flow_field_id() -> FieldId {
+    field_id("mantle_heat_flow_mw_m2")
+}
+
+/// Returns the stable mantle volcanic-influence field ID.
+pub fn volcanic_influence_field_id() -> FieldId {
+    field_id("volcanic_influence")
+}
+
+/// Returns the stable volcanic elevation contribution field ID.
+pub fn volcanic_offset_field_id() -> FieldId {
+    field_id("volcanic_offset_m")
+}
+
+/// Returns the stable surface-bedrock category field ID.
+pub fn bedrock_kind_field_id() -> FieldId {
+    field_id("bedrock_kind")
+}
+
+/// Returns the stable fracture-intensity field ID.
+pub fn fracture_intensity_field_id() -> FieldId {
+    field_id("fracture_intensity")
+}
+
+/// Returns the stable erosion-resistance field ID.
+pub fn erosion_resistance_field_id() -> FieldId {
+    field_id("erosion_resistance")
+}
+
+/// Returns the stable relative-permeability field ID.
+pub fn relative_permeability_field_id() -> FieldId {
+    field_id("relative_permeability")
+}
+
+/// Returns the stable metallic-mineral formation-potential field ID.
+pub fn metallic_mineral_potential_field_id() -> FieldId {
+    field_id("metallic_mineral_potential")
+}
+
+/// Returns the stable geothermal formation-potential field ID.
+pub fn geothermal_potential_field_id() -> FieldId {
+    field_id("geothermal_potential")
+}
+
+/// Returns the stable sedimentary-basin formation-potential field ID.
+pub fn sedimentary_basin_potential_field_id() -> FieldId {
+    field_id("sedimentary_basin_potential")
+}
+
 /// Builds the complete V1 natural-field registry for a validated plate cardinality.
 pub fn natural_field_registry(
     plate_count: u16,
@@ -104,6 +155,16 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
     let regional_offset = regional_offset_field_id();
     let elevation = elevation_field_id();
     let land_ocean = land_ocean_field_id();
+    let mantle_heat_flow = mantle_heat_flow_field_id();
+    let volcanic_influence = volcanic_influence_field_id();
+    let volcanic_offset = volcanic_offset_field_id();
+    let bedrock_kind = bedrock_kind_field_id();
+    let fracture_intensity = fracture_intensity_field_id();
+    let erosion_resistance = erosion_resistance_field_id();
+    let relative_permeability = relative_permeability_field_id();
+    let metallic_mineral_potential = metallic_mineral_potential_field_id();
+    let geothermal_potential = geothermal_potential_field_id();
+    let sedimentary_basin_potential = sedimentary_basin_potential_field_id();
 
     Ok(vec![
         category_schema(
@@ -183,6 +244,26 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             vec![boundary_kind.clone(), plate_velocity],
         )?,
         scalar_schema(
+            mantle_heat_flow.clone(),
+            FieldDomain::Cells,
+            custom_unit("milliwatt-per-square-meter", "mW/m²"),
+            HEAT_FLOW_MIN_MW_M2,
+            HEAT_FLOW_MAX_MW_M2,
+            FieldPaletteHint::Sequential,
+            1,
+            Vec::new(),
+        )?,
+        scalar_schema(
+            volcanic_influence.clone(),
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![mantle_heat_flow.clone()],
+        )?,
+        scalar_schema(
             crust_base.clone(),
             FieldDomain::Cells,
             custom_unit("meter", "m"),
@@ -190,7 +271,7 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             CRUST_BASE_ELEVATION_MAX_M,
             FieldPaletteHint::Diverging,
             0,
-            vec![crust_kind, crust_thickness],
+            vec![crust_kind.clone(), crust_thickness],
         )?,
         scalar_schema(
             tectonic_offset.clone(),
@@ -200,7 +281,17 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             TECTONIC_OFFSET_MAX_M,
             FieldPaletteHint::Diverging,
             0,
-            vec![boundary_kind, boundary_strength],
+            vec![boundary_kind.clone(), boundary_strength.clone()],
+        )?,
+        scalar_schema(
+            volcanic_offset.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            VOLCANIC_OFFSET_MIN_M,
+            VOLCANIC_OFFSET_MAX_M,
+            FieldPaletteHint::Sequential,
+            0,
+            vec![volcanic_influence.clone()],
         )?,
         scalar_schema(
             regional_offset.clone(),
@@ -220,7 +311,12 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             ELEVATION_MAX_M,
             FieldPaletteHint::Diverging,
             0,
-            vec![crust_base, tectonic_offset, regional_offset],
+            vec![
+                crust_base,
+                tectonic_offset.clone(),
+                volcanic_offset,
+                regional_offset,
+            ],
         )?,
         category_schema_with_dependencies(
             land_ocean,
@@ -229,7 +325,102 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
                 (0, "field.sekai.core.natural.land_ocean.ocean".into()),
                 (1, "field.sekai.core.natural.land_ocean.land".into()),
             ]),
-            vec![elevation],
+            vec![elevation.clone()],
+        )?,
+        category_schema_with_dependencies(
+            bedrock_kind.clone(),
+            FieldDomain::Cells,
+            BTreeMap::from([
+                (
+                    0,
+                    "field.sekai.core.natural.bedrock_kind.oceanic_mafic".into(),
+                ),
+                (
+                    1,
+                    "field.sekai.core.natural.bedrock_kind.continental_crystalline".into(),
+                ),
+                (
+                    2,
+                    "field.sekai.core.natural.bedrock_kind.sedimentary".into(),
+                ),
+                (
+                    3,
+                    "field.sekai.core.natural.bedrock_kind.metamorphic".into(),
+                ),
+                (4, "field.sekai.core.natural.bedrock_kind.volcanic".into()),
+            ]),
+            vec![
+                crust_kind,
+                boundary_kind.clone(),
+                volcanic_influence.clone(),
+                elevation.clone(),
+            ],
+        )?,
+        scalar_schema(
+            fracture_intensity.clone(),
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![boundary_strength.clone(), volcanic_influence.clone()],
+        )?,
+        scalar_schema(
+            erosion_resistance,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![bedrock_kind.clone(), fracture_intensity.clone()],
+        )?,
+        scalar_schema(
+            relative_permeability,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![bedrock_kind.clone(), fracture_intensity.clone()],
+        )?,
+        scalar_schema(
+            metallic_mineral_potential,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![
+                bedrock_kind.clone(),
+                boundary_kind,
+                boundary_strength,
+                fracture_intensity.clone(),
+                volcanic_influence,
+            ],
+        )?,
+        scalar_schema(
+            geothermal_potential,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![mantle_heat_flow, fracture_intensity],
+        )?,
+        scalar_schema(
+            sedimentary_basin_potential,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![bedrock_kind, tectonic_offset, elevation],
         )?,
     ])
 }

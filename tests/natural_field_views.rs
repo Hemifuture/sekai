@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
+    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -12,11 +12,16 @@ use sekai::view::{
 };
 use sekai::world::fields::{FieldDomain, FieldPaletteHint, FieldValueType, MissingValuePolicy};
 use sekai::world::natural::{
-    boundary_kind_field_id, boundary_strength_field_id, crust_base_elevation_field_id,
-    crust_kind_field_id, crust_thickness_field_id, elevation_field_id, land_ocean_field_id,
-    natural_field_registry, plate_id_field_id, plate_velocity_field_id, regional_offset_field_id,
-    tectonic_offset_field_id, GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
+    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
+    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
+    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
+    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
+    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
+    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
+    volcanic_offset_field_id, GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    MAX_PLATE_COUNT, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -37,7 +42,7 @@ fn schema(
 #[test]
 fn schema_registry_contains_the_exact_formal_natural_fields() {
     let registry = registry();
-    assert_eq!(registry.len(), 11);
+    assert_eq!(registry.len(), 21);
     let expected = [
         (
             plate_id_field_id(),
@@ -105,6 +110,66 @@ fn schema_registry_contains_the_exact_formal_natural_fields() {
             FieldDomain::Cells,
             FieldValueType::CategoryU32,
         ),
+        (
+            mantle_heat_flow_field_id(),
+            "mantle_heat_flow_mw_m2",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            volcanic_influence_field_id(),
+            "volcanic_influence",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            volcanic_offset_field_id(),
+            "volcanic_offset_m",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            bedrock_kind_field_id(),
+            "bedrock_kind",
+            FieldDomain::Cells,
+            FieldValueType::CategoryU32,
+        ),
+        (
+            fracture_intensity_field_id(),
+            "fracture_intensity",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            erosion_resistance_field_id(),
+            "erosion_resistance",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            relative_permeability_field_id(),
+            "relative_permeability",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            metallic_mineral_potential_field_id(),
+            "metallic_mineral_potential",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            geothermal_potential_field_id(),
+            "geothermal_potential",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
+        (
+            sedimentary_basin_potential_field_id(),
+            "sedimentary_basin_potential",
+            FieldDomain::Cells,
+            FieldValueType::ScalarF32,
+        ),
     ];
 
     for (id, name, domain, value_type) in expected {
@@ -132,6 +197,7 @@ fn schema_units_ranges_labels_and_palettes_are_semantic() {
     for id in [
         crust_base_elevation_field_id(),
         tectonic_offset_field_id(),
+        volcanic_offset_field_id(),
         regional_offset_field_id(),
         elevation_field_id(),
     ] {
@@ -144,6 +210,36 @@ fn schema_units_ranges_labels_and_palettes_are_semantic() {
         (ELEVATION_MIN_M, ELEVATION_MAX_M)
     );
     assert_eq!(elevation.display.palette(), FieldPaletteHint::Diverging);
+    let heat = schema(&registry, mantle_heat_flow_field_id());
+    assert_eq!(heat.unit.symbol(), "mW/m²");
+    assert_eq!(
+        heat.valid_range.map(|range| (range.min(), range.max())),
+        Some((HEAT_FLOW_MIN_MW_M2, HEAT_FLOW_MAX_MW_M2))
+    );
+    let volcanic_offset = schema(&registry, volcanic_offset_field_id());
+    assert_eq!(
+        volcanic_offset
+            .valid_range
+            .map(|range| (range.min(), range.max())),
+        Some((VOLCANIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M))
+    );
+    for id in [
+        volcanic_influence_field_id(),
+        fracture_intensity_field_id(),
+        erosion_resistance_field_id(),
+        relative_permeability_field_id(),
+        metallic_mineral_potential_field_id(),
+        geothermal_potential_field_id(),
+        sedimentary_basin_potential_field_id(),
+    ] {
+        let schema = schema(&registry, id);
+        assert_eq!(schema.unit.symbol(), "");
+        assert_eq!(
+            schema.valid_range.map(|range| (range.min(), range.max())),
+            Some((0.0, 1.0))
+        );
+        assert_eq!(schema.display.palette(), FieldPaletteHint::Sequential);
+    }
     assert_eq!(
         schema(&registry, plate_velocity_field_id())
             .display
@@ -155,6 +251,28 @@ fn schema_units_ranges_labels_and_palettes_are_semantic() {
         BTreeMap::from([
             (0, "field.sekai.core.natural.land_ocean.ocean".into()),
             (1, "field.sekai.core.natural.land_ocean.land".into()),
+        ])
+    );
+    assert_eq!(
+        schema(&registry, bedrock_kind_field_id()).category_labels,
+        BTreeMap::from([
+            (
+                0,
+                "field.sekai.core.natural.bedrock_kind.oceanic_mafic".into()
+            ),
+            (
+                1,
+                "field.sekai.core.natural.bedrock_kind.continental_crystalline".into()
+            ),
+            (
+                2,
+                "field.sekai.core.natural.bedrock_kind.sedimentary".into()
+            ),
+            (
+                3,
+                "field.sekai.core.natural.bedrock_kind.metamorphic".into()
+            ),
+            (4, "field.sekai.core.natural.bedrock_kind.volcanic".into()),
         ])
     );
     assert_eq!(
@@ -187,11 +305,36 @@ fn schema_dependencies_are_closed_acyclic_and_stably_serialized() {
             crust_base_elevation_field_id(),
             regional_offset_field_id(),
             tectonic_offset_field_id(),
+            volcanic_offset_field_id(),
         ]
     );
     assert_eq!(
         schema(&first, land_ocean_field_id()).dependencies,
         vec![elevation_field_id()]
+    );
+    assert_eq!(
+        schema(&first, volcanic_influence_field_id()).dependencies,
+        vec![mantle_heat_flow_field_id()]
+    );
+    assert_eq!(
+        schema(&first, volcanic_offset_field_id()).dependencies,
+        vec![volcanic_influence_field_id()]
+    );
+    assert_eq!(
+        schema(&first, fracture_intensity_field_id()).dependencies,
+        vec![boundary_strength_field_id(), volcanic_influence_field_id()]
+    );
+    assert_eq!(
+        schema(&first, erosion_resistance_field_id()).dependencies,
+        vec![bedrock_kind_field_id(), fracture_intensity_field_id()]
+    );
+    assert_eq!(
+        schema(&first, relative_permeability_field_id()).dependencies,
+        vec![bedrock_kind_field_id(), fracture_intensity_field_id()]
+    );
+    assert_eq!(
+        schema(&first, geothermal_potential_field_id()).dependencies,
+        vec![fracture_intensity_field_id(), mantle_heat_flow_field_id()]
     );
     assert_eq!(
         serde_json::to_vec(&first).unwrap(),
@@ -215,11 +358,15 @@ fn schema_plate_labels_are_bounded_by_the_validated_maximum() {
     ));
 }
 
-fn natural_artifacts() -> (
-    std::sync::Arc<SpatialArtifact>,
-    std::sync::Arc<TectonicArtifact>,
-    std::sync::Arc<ReliefArtifact>,
-) {
+struct NaturalArtifacts {
+    spatial: std::sync::Arc<SpatialArtifact>,
+    tectonic: std::sync::Arc<TectonicArtifact>,
+    mantle: std::sync::Arc<MantleArtifact>,
+    relief: std::sync::Arc<ReliefArtifact>,
+    geology: std::sync::Arc<GeologicArtifact>,
+}
+
+fn natural_artifacts() -> NaturalArtifacts {
     let mut external = ExternalArtifacts::new();
     external
         .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
@@ -244,16 +391,24 @@ fn natural_artifacts() -> (
     let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
         .build(RootSeed::new(42), external, &mut MemoryStageCache::new())
         .unwrap();
-    (
-        outcome.artifacts.get::<SpatialArtifact>().unwrap(),
-        outcome.artifacts.get::<TectonicArtifact>().unwrap(),
-        outcome.artifacts.get::<ReliefArtifact>().unwrap(),
-    )
+    NaturalArtifacts {
+        spatial: outcome.artifacts.get::<SpatialArtifact>().unwrap(),
+        tectonic: outcome.artifacts.get::<TectonicArtifact>().unwrap(),
+        mantle: outcome.artifacts.get::<MantleArtifact>().unwrap(),
+        relief: outcome.artifacts.get::<ReliefArtifact>().unwrap(),
+        geology: outcome.artifacts.get::<GeologicArtifact>().unwrap(),
+    }
 }
 
 #[test]
 fn borrowed_natural_payloads_match_every_registered_domain() {
-    let (spatial, tectonic, relief) = natural_artifacts();
+    let NaturalArtifacts {
+        spatial,
+        tectonic,
+        mantle,
+        relief,
+        geology,
+    } = natural_artifacts();
     let registry = natural_field_registry(tectonic.snapshot().plates().len() as u16).unwrap();
     let cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
     let payloads = vec![
@@ -300,6 +455,46 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         (
             land_ocean_field_id(),
             FieldPayloadRef::CategoryU32(relief.snapshot().land_ocean().raw_values()),
+        ),
+        (
+            mantle_heat_flow_field_id(),
+            FieldPayloadRef::ScalarF32(mantle.snapshot().heat_flow_mw_m2()),
+        ),
+        (
+            volcanic_influence_field_id(),
+            FieldPayloadRef::ScalarF32(mantle.snapshot().volcanic_influence()),
+        ),
+        (
+            volcanic_offset_field_id(),
+            FieldPayloadRef::ScalarF32(relief.snapshot().volcanic_offset_m().values()),
+        ),
+        (
+            bedrock_kind_field_id(),
+            FieldPayloadRef::CategoryU32(geology.snapshot().bedrock_kinds().raw_values()),
+        ),
+        (
+            fracture_intensity_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().fracture_intensity()),
+        ),
+        (
+            erosion_resistance_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().erosion_resistance()),
+        ),
+        (
+            relative_permeability_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().relative_permeability()),
+        ),
+        (
+            metallic_mineral_potential_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().metallic_mineral_potential()),
+        ),
+        (
+            geothermal_potential_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().geothermal_potential()),
+        ),
+        (
+            sedimentary_basin_potential_field_id(),
+            FieldPayloadRef::ScalarF32(geology.snapshot().sedimentary_basin_potential()),
         ),
     ];
     let catalog = FieldCatalog::from_payloads(&registry, payloads).unwrap();
@@ -349,6 +544,77 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
             .as_ptr(),
         cache.plate_velocity_cm_per_year().as_ptr()
     );
+    assert_eq!(
+        catalog
+            .get(&mantle_heat_flow_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .scalar_values()
+            .unwrap()
+            .as_ptr(),
+        mantle.snapshot().heat_flow_mw_m2().as_ptr()
+    );
+    assert_eq!(
+        catalog
+            .get(&volcanic_offset_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .scalar_values()
+            .unwrap()
+            .as_ptr(),
+        relief.snapshot().volcanic_offset_m().values().as_ptr()
+    );
+    assert_eq!(
+        catalog
+            .get(&bedrock_kind_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .category_values()
+            .unwrap()
+            .as_ptr(),
+        geology.snapshot().bedrock_kinds().raw_values().as_ptr()
+    );
+    for (id, source) in [
+        (
+            fracture_intensity_field_id(),
+            geology.snapshot().fracture_intensity(),
+        ),
+        (
+            erosion_resistance_field_id(),
+            geology.snapshot().erosion_resistance(),
+        ),
+        (
+            relative_permeability_field_id(),
+            geology.snapshot().relative_permeability(),
+        ),
+        (
+            metallic_mineral_potential_field_id(),
+            geology.snapshot().metallic_mineral_potential(),
+        ),
+        (
+            geothermal_potential_field_id(),
+            geology.snapshot().geothermal_potential(),
+        ),
+        (
+            sedimentary_basin_potential_field_id(),
+            geology.snapshot().sedimentary_basin_potential(),
+        ),
+    ] {
+        assert_eq!(
+            catalog
+                .get(&id)
+                .unwrap()
+                .view()
+                .unwrap()
+                .scalar_values()
+                .unwrap()
+                .as_ptr(),
+            source.as_ptr()
+        );
+    }
 
     let edge_view = catalog
         .get(&boundary_kind_field_id())
@@ -366,12 +632,16 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
     assert_eq!(prepared.len(), spatial.snapshot().cell_count());
 
     let tectonic_before = serde_json::to_vec(tectonic.as_ref()).unwrap();
+    let mantle_before = serde_json::to_vec(mantle.as_ref()).unwrap();
     let relief_before = serde_json::to_vec(relief.as_ref()).unwrap();
+    let geology_before = serde_json::to_vec(geology.as_ref()).unwrap();
     let mut state = FieldDisplayState::default();
     for id in [
         plate_id_field_id(),
         crust_kind_field_id(),
         elevation_field_id(),
+        bedrock_kind_field_id(),
+        geothermal_potential_field_id(),
     ] {
         state.select_field(id);
         state.reconcile(&catalog, spatial.snapshot().cell_count());
@@ -380,5 +650,10 @@ fn borrowed_natural_payloads_match_every_registered_domain() {
         serde_json::to_vec(tectonic.as_ref()).unwrap(),
         tectonic_before
     );
+    assert_eq!(serde_json::to_vec(mantle.as_ref()).unwrap(), mantle_before);
     assert_eq!(serde_json::to_vec(relief.as_ref()).unwrap(), relief_before);
+    assert_eq!(
+        serde_json::to_vec(geology.as_ref()).unwrap(),
+        geology_before
+    );
 }

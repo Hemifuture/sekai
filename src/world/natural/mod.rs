@@ -9,10 +9,14 @@ mod spec;
 mod tectonics;
 
 pub use fields::{
-    boundary_kind_field_id, boundary_strength_field_id, crust_base_elevation_field_id,
-    crust_kind_field_id, crust_thickness_field_id, elevation_field_id, land_ocean_field_id,
-    natural_field_registry, plate_id_field_id, plate_velocity_field_id, regional_offset_field_id,
-    tectonic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
+    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
+    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, land_ocean_field_id, mantle_heat_flow_field_id,
+    metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
+    plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
+    sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
+    volcanic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,

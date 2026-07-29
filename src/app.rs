@@ -19,9 +19,9 @@ use crate::{
     },
     generators::{
         natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact,
-            ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
-            TectonicSpecArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact,
+            GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact,
+            TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
@@ -570,8 +570,11 @@ fn build_natural_candidate_from_external(
     let rule_summary = RuleBuildSummary::from_resolution(rule_resolution.resolution());
     let spatial = outcome.artifacts.get::<SpatialArtifact>()?;
     let tectonic = outcome.artifacts.get::<TectonicArtifact>()?;
+    let mantle = outcome.artifacts.get::<MantleArtifact>()?;
     let relief = outcome.artifacts.get::<ReliefArtifact>()?;
-    let document = NaturalFieldDocument::build(spatial, tectonic, relief, &outcome.report)?;
+    let geology = outcome.artifacts.get::<GeologicArtifact>()?;
+    let document =
+        NaturalFieldDocument::build(spatial, tectonic, mantle, relief, geology, &outcome.report)?;
     let mut next_clock = clock.clone();
     let (state, packet) = prepare_new_document_display(&document, current_state, &mut next_clock)?;
     Ok(NaturalWorldCandidate {
@@ -721,7 +724,9 @@ mod natural_app_tests {
             .expect("successful replacement publishes a document");
         assert_eq!(document.spatial.snapshot().cell_count(), 128);
         assert_eq!(document.tectonic.snapshot().cell_count(), 128);
+        assert_eq!(document.mantle.snapshot().cell_count(), 128);
         assert_eq!(document.relief.snapshot().cell_count(), 128);
+        assert_eq!(document.geology.snapshot().cell_count(), 128);
         let packet = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -741,10 +746,18 @@ mod natural_app_tests {
         app.try_replace_natural_world(&valid, &TectonicSpec::default())
             .unwrap();
         let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
+        let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
+        let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
+        let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
+        let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
             .unwrap();
+        let state_before = app.field_viewer_state.read_resource(Clone::clone);
+        let summary_before = app.rule_build_summary;
+        let mut expected_clock = app.display_revision_clock.clone();
+        let expected_next_revision = expected_clock.issue().unwrap();
 
         let mut invalid = valid;
         invalid.space.target_cell_count = 1;
@@ -756,11 +769,23 @@ mod natural_app_tests {
             &spatial_before,
             &app.natural_document.as_ref().unwrap().spatial
         ));
+        let document_after = app.natural_document.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
+        assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
+        assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
+        assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
             .unwrap();
         assert!(Arc::ptr_eq(&packet_before, &packet_after));
+        assert_eq!(
+            app.field_viewer_state.read_resource(Clone::clone),
+            state_before
+        );
+        assert_eq!(app.rule_build_summary, summary_before);
+        let mut actual_clock = app.display_revision_clock.clone();
+        assert_eq!(actual_clock.issue().unwrap(), expected_next_revision);
     }
 
     #[test]
@@ -769,11 +794,17 @@ mod natural_app_tests {
         let old_generator = ["Terrain", "Generator"].concat();
         let old_entrypoint = ["generate_terrain_with", "_template"].concat();
         let projection_constructor = ["ResolvedTectonicInputArtifact", "::new"].concat();
+        let geologic_projection_constructor = ["ResolvedGeologicInputArtifact", "::new"].concat();
         let tectonic_generator = ["Tectonic", "Generator"].concat();
+        let mantle_generator = ["Mantle", "Generator"].concat();
+        let geologic_generator = ["Geologic", "Generator"].concat();
         assert!(!source.contains(&old_generator));
         assert!(!source.contains(&old_entrypoint));
         assert!(!source.contains(&projection_constructor));
+        assert!(!source.contains(&geologic_projection_constructor));
         assert!(!source.contains(&tectonic_generator));
+        assert!(!source.contains(&mantle_generator));
+        assert!(!source.contains(&geologic_generator));
     }
 
     #[test]
@@ -785,7 +816,9 @@ mod natural_app_tests {
             .unwrap();
         let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
         let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
+        let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
+        let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -834,7 +867,9 @@ mod natural_app_tests {
         let document_after = app.natural_document.as_ref().unwrap();
         assert!(Arc::ptr_eq(&spatial_before, &document_after.spatial));
         assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
+        assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
+        assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
         let packet_after = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
