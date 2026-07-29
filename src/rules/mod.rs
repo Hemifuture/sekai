@@ -5,6 +5,7 @@ mod capability;
 mod climate;
 mod constraints;
 mod geology;
+mod hydro_erosion;
 mod ids;
 mod manifest;
 mod registry;
@@ -36,6 +37,10 @@ pub use constraints::{
 pub use geology::{
     GeologicRuleResolution, GeologicRuleResolutionError, GeologicRuleResolver,
     GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
+};
+pub use hydro_erosion::{
+    HydroErosionRuleResolution, HydroErosionRuleResolutionError, HydroErosionRuleResolver,
+    HYDRO_EROSION_RULE_RESOLUTION_SCHEMA_V1,
 };
 pub use ids::{
     CapabilityId, CoreSchemaRange, RuleContentHash, RuleIdentityError, RuleItemId, RulePackId,
