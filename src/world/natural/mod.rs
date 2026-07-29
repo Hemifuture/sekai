@@ -5,6 +5,7 @@ mod climate_spec;
 mod fields;
 mod geologic_spec;
 mod geology;
+mod hydro_erosion_spec;
 mod mantle;
 mod relief;
 mod spec;
@@ -41,6 +42,11 @@ pub use geologic_spec::{
 pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1,
+};
+pub use hydro_erosion_spec::{
+    HydroErosionSpec, HydroErosionSpecError, HYDRO_EROSION_SPEC_SCHEMA_V1,
+    MAX_EROSION_STRENGTH_PERMILLE, MAX_LAKE_DEPTH_CM, MAX_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
+    MIN_LAKE_DEPTH_CM, MIN_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
 };
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
