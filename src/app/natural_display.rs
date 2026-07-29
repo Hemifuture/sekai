@@ -131,8 +131,12 @@ impl NaturalFieldDocument {
     #[cfg(test)]
     pub(super) fn test_fixture() -> Self {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
-        use crate::generators::natural::{natural_foundation_graph, TectonicSpecArtifact};
+        use crate::generators::natural::{
+            natural_foundation_graph, AuthorConstraintsArtifact, RulePackSetArtifact,
+            TectonicSpecArtifact,
+        };
         use crate::generators::spatial::PlanarSpaceArtifact;
+        use crate::rules::{default_rule_pack_set, AuthorConstraints};
         use crate::world::natural::TectonicSpec;
         use crate::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -147,6 +151,12 @@ impl NaturalFieldDocument {
             .unwrap();
         external
             .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+            .unwrap();
+        external
+            .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+            .unwrap();
+        external
+            .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
             .unwrap();
         let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
             .build(RootSeed::new(42), external, &mut MemoryStageCache::new())
@@ -224,9 +234,11 @@ mod tests {
         MemoryStageCache,
     };
     use crate::generators::natural::{
-        natural_foundation_graph, ReliefArtifact, TectonicArtifact, TectonicSpecArtifact,
+        natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
+        TectonicArtifact, TectonicSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
+    use crate::rules::{default_rule_pack_set, AuthorConstraints};
     use crate::view::{DisplayRangeMode, ViewDiagnosticSeverity};
     use crate::world::natural::{
         elevation_field_id, plate_id_field_id, plate_velocity_field_id, TectonicSpec,
@@ -248,6 +260,12 @@ mod tests {
             .unwrap();
         external
             .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+            .unwrap();
+        external
+            .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+            .unwrap();
+        external
+            .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
             .unwrap();
         let mut outcome = BuildEngine::new(natural_foundation_graph().unwrap())
             .build(RootSeed::new(42), external, &mut MemoryStageCache::new())

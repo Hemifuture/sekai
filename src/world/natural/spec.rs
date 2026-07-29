@@ -13,7 +13,7 @@ pub const MIN_CONTINENTAL_CRUST_FRACTION: f32 = 0.10;
 pub const MAX_CONTINENTAL_CRUST_FRACTION: f32 = 0.75;
 
 /// The broad present-day strength of tectonic motion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TectonicActivity {
     /// Favors relatively slow plate motion and subdued boundary relief.
     Quiet,

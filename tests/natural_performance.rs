@@ -3,9 +3,11 @@ use std::time::Instant;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, ReliefArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ReliefArtifact, RulePackSetArtifact,
+    TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
+use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::TectonicSpec;
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -24,6 +26,12 @@ fn profile_default_natural_foundation() {
         .unwrap();
     external
         .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+        .unwrap();
+    external
+        .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
+        .unwrap();
+    external
+        .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
         .unwrap();
 
     let started = Instant::now();
