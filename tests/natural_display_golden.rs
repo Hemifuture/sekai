@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
-    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
+    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -19,8 +20,8 @@ use sekai::world::natural::{
     bedrock_kind_field_id, crust_kind_field_id, elevation_field_id, geothermal_potential_field_id,
     mantle_heat_flow_field_id, metallic_mineral_potential_field_id, natural_field_registry,
     plate_id_field_id, sedimentary_basin_potential_field_id, volcanic_influence_field_id,
-    BedrockKind, BoundaryKind, GeologicSnapshot, GeologicSpec, MantleSnapshot, ReliefSnapshot,
-    TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
+    BedrockKind, BoundaryKind, ClimateSpec, GeologicSnapshot, GeologicSpec, MantleSnapshot,
+    ReliefSnapshot, TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -219,6 +220,9 @@ fn build_natural_with_geologic_spec(
         .unwrap();
     external
         .insert(GeologicSpecArtifact::new(geologic_spec))
+        .unwrap();
+    external
+        .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

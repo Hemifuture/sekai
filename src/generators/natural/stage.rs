@@ -5,9 +5,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AuthorConstraintsArtifact, GeologicSpecArtifact, GeologicStage, MantleArtifact, MantleStage,
+    AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, GeologicStage,
+    MantleArtifact, MantleStage, PreliminaryClimateStage, ResolvedClimateInputStage,
     ResolvedGeologicInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
-    RuleGeologicResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
+    RuleClimateResolutionStage, RuleGeologicResolutionStage, RulePackSetArtifact,
+    RuleTectonicResolutionStage,
 };
 use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
@@ -288,17 +290,21 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .external::<PlanarSpaceArtifact>()
         .external::<TectonicSpecArtifact>()
         .external::<GeologicSpecArtifact>()
+        .external::<ClimateSpecArtifact>()
         .external::<RulePackSetArtifact>()
         .external::<AuthorConstraintsArtifact>()
         .stage(SpatialStage)
         .stage(RuleTectonicResolutionStage)
         .stage(RuleGeologicResolutionStage)
+        .stage(RuleClimateResolutionStage)
         .stage(ResolvedTectonicInputStage)
         .stage(ResolvedGeologicInputStage)
+        .stage(ResolvedClimateInputStage)
         .stage(TectonicStage)
         .stage(MantleStage)
         .stage(ReliefStage)
         .stage(GeologicStage)
+        .stage(PreliminaryClimateStage)
         .build()
 }
 

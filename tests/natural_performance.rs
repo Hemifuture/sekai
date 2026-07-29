@@ -3,12 +3,13 @@ use std::time::Instant;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
-    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
+    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
-use sekai::world::natural::{GeologicSpec, TectonicSpec};
+use sekai::world::natural::{ClimateSpec, GeologicSpec, TectonicSpec};
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -29,6 +30,9 @@ fn profile_default_natural_foundation() {
         .unwrap();
     external
         .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .unwrap();
+    external
+        .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

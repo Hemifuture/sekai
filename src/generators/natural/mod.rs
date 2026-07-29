@@ -2,6 +2,7 @@
 
 mod climate;
 mod climate_rule_input;
+mod climate_stage;
 mod geologic_rule_input;
 mod geologic_stage;
 mod geology;
@@ -18,6 +19,9 @@ pub use climate_rule_input::{
     ClimateRuleResolutionArtifact, ClimateSpecArtifact, ResolvedClimateInput,
     ResolvedClimateInputArtifact, ResolvedClimateInputStage, ResolvedClimateInputStageInputs,
     RuleClimateResolutionStage, RuleClimateResolutionStageInputs,
+};
+pub use climate_stage::{
+    PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
 pub use geologic_rule_input::{
     GeologicRuleResolutionArtifact, GeologicSpecArtifact, ResolvedGeologicInput,

@@ -19,9 +19,10 @@ use crate::{
     },
     generators::{
         natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact,
-            GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact,
-            TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+            GeologicArtifact, GeologicSpecArtifact, MantleArtifact, ReliefArtifact,
+            RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact,
+            TectonicSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
@@ -40,9 +41,9 @@ use crate::{
     view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
     world::{
         natural::{
-            GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicActivity, TectonicSpec,
-            MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
-            MIN_PLATE_COUNT,
+            ClimateSpec, GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicActivity,
+            TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT,
+            MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
         },
         BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
         WorldSpec, WORLD_SPEC_SCHEMA_V1,
@@ -519,6 +520,7 @@ fn build_natural_external_artifacts_with_rule_inputs(
     external.insert(PlanarSpaceArtifact::new(world.space.clone()))?;
     external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
     external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
+    external.insert(ClimateSpecArtifact::new(ClimateSpec::default()))?;
     external.insert(RulePackSetArtifact::new(pack_set))?;
     external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
@@ -628,7 +630,8 @@ mod natural_app_tests {
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
-        AuthorConstraintsArtifact, GeologicSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+        AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, RulePackSetArtifact,
+        TectonicSpecArtifact,
     };
     use crate::generators::spatial::PlanarSpaceArtifact;
     use crate::rules::{
@@ -639,7 +642,8 @@ mod natural_app_tests {
     };
     use crate::view::FieldDisplayResourceState;
     use crate::world::natural::{
-        elevation_field_id, GeologicSpec, MantleActivity, TectonicActivity, TectonicSpec,
+        elevation_field_id, ClimateSpec, GeologicSpec, MantleActivity, TectonicActivity,
+        TectonicSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -679,10 +683,11 @@ mod natural_app_tests {
             &GeologicSpec::default(),
         )
         .unwrap();
-        assert_eq!(external.len(), 5);
+        assert_eq!(external.len(), 6);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
         assert!(external.hash::<GeologicSpecArtifact>().is_ok());
+        assert!(external.hash::<ClimateSpecArtifact>().is_ok());
         assert!(external.hash::<RulePackSetArtifact>().is_ok());
         assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
 
@@ -696,9 +701,16 @@ mod natural_app_tests {
         expected
             .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
             .unwrap();
+        expected
+            .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
+            .unwrap();
         assert_eq!(
             external.hash::<GeologicSpecArtifact>().unwrap(),
             expected.hash::<GeologicSpecArtifact>().unwrap()
+        );
+        assert_eq!(
+            external.hash::<ClimateSpecArtifact>().unwrap(),
+            expected.hash::<ClimateSpecArtifact>().unwrap()
         );
         assert_eq!(
             external.hash::<RulePackSetArtifact>().unwrap(),

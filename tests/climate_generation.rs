@@ -2,8 +2,8 @@ use std::sync::{Arc, OnceLock};
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, ClimateGenerator, GeologicSpecArtifact,
-    ReliefArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ClimateGenerator, ClimateSpecArtifact,
+    GeologicSpecArtifact, ReliefArtifact, RulePackSetArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -31,6 +31,9 @@ fn natural_artifacts() -> &'static (Arc<SpatialArtifact>, Arc<ReliefArtifact>) {
             .unwrap();
         external
             .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+            .unwrap();
+        external
+            .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

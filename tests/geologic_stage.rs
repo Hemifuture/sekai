@@ -2,14 +2,14 @@ use sekai::engine::{
     Artifact, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage, StageGraphBuilder,
 };
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
-    GeologicStage, MantleArtifact, ReliefArtifact, ResolvedGeologicInputArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
+    GeologicSpecArtifact, GeologicStage, MantleArtifact, ReliefArtifact,
+    ResolvedGeologicInputArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    GeologicSpec, MantleSnapshot, TectonicSpec, MANTLE_SNAPSHOT_SCHEMA_V1,
+    ClimateSpec, GeologicSpec, MantleSnapshot, TectonicSpec, MANTLE_SNAPSHOT_SCHEMA_V1,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -28,6 +28,9 @@ fn complete_external() -> ExternalArtifacts {
         .unwrap();
     external
         .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .unwrap();
+    external
+        .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -100,7 +103,7 @@ fn production_stage_builds_and_publishes_a_valid_snapshot() {
 }
 
 #[test]
-fn complete_graph_second_build_hits_all_nine_stage_caches() {
+fn complete_graph_second_build_hits_all_twelve_stage_caches() {
     let engine = BuildEngine::new(natural_foundation_graph().unwrap());
     let mut cache = MemoryStageCache::new();
     let first = engine
@@ -110,7 +113,7 @@ fn complete_graph_second_build_hits_all_nine_stage_caches() {
         .build(RootSeed::new(42), complete_external(), &mut cache)
         .unwrap();
 
-    assert_eq!(repeated.report.cache_hits(), 9);
+    assert_eq!(repeated.report.cache_hits(), 12);
     assert_eq!(repeated.report.cache_misses(), 0);
     assert_eq!(
         first.artifacts.hash::<GeologicArtifact>().unwrap(),

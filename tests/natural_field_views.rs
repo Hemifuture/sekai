@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact, GeologicSpecArtifact,
-    MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
+    GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -19,9 +20,9 @@ use sekai::world::natural::{
     metallic_mineral_potential_field_id, natural_field_registry, plate_id_field_id,
     plate_velocity_field_id, regional_offset_field_id, relative_permeability_field_id,
     sedimentary_basin_potential_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
-    volcanic_offset_field_id, GeologicSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
-    MAX_PLATE_COUNT, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    volcanic_offset_field_id, ClimateSpec, GeologicSpec, NaturalFieldDisplayCache,
+    NaturalFieldRegistryError, TectonicSpec, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
+    HEAT_FLOW_MIN_MW_M2, MAX_PLATE_COUNT, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -381,6 +382,9 @@ fn natural_artifacts() -> NaturalArtifacts {
         .unwrap();
     external
         .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+        .unwrap();
+    external
+        .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

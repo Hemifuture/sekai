@@ -192,12 +192,12 @@ impl NaturalFieldDocument {
     pub(super) fn test_fixture() -> Self {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
         use crate::generators::natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, GeologicSpecArtifact,
-            RulePackSetArtifact, TectonicSpecArtifact,
+            natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+            GeologicSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
         };
         use crate::generators::spatial::PlanarSpaceArtifact;
         use crate::rules::{default_rule_pack_set, AuthorConstraints};
-        use crate::world::natural::{GeologicSpec, TectonicSpec};
+        use crate::world::natural::{ClimateSpec, GeologicSpec, TectonicSpec};
         use crate::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
         let mut external = ExternalArtifacts::new();
@@ -214,6 +214,9 @@ impl NaturalFieldDocument {
             .unwrap();
         external
             .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+            .unwrap();
+        external
+            .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -303,7 +306,7 @@ mod tests {
         MemoryStageCache,
     };
     use crate::generators::natural::{
-        natural_foundation_graph, AuthorConstraintsArtifact, GeologicArtifact,
+        natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
         GeologicSpecArtifact, MantleArtifact, ReliefArtifact, RulePackSetArtifact,
         TectonicArtifact, TectonicSpecArtifact,
     };
@@ -313,7 +316,7 @@ mod tests {
     use crate::world::natural::{
         bedrock_kind_field_id, elevation_field_id, geothermal_potential_field_id,
         mantle_heat_flow_field_id, plate_id_field_id, plate_velocity_field_id,
-        volcanic_offset_field_id, GeologicSpec, TectonicSpec,
+        volcanic_offset_field_id, ClimateSpec, GeologicSpec, TectonicSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -335,6 +338,9 @@ mod tests {
             .unwrap();
         external
             .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
+            .unwrap();
+        external
+            .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
