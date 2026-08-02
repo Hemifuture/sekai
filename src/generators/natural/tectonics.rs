@@ -265,28 +265,42 @@ fn generate_crust(
     }
     let assignment = multi_source_ownership(topology, &continental_nuclei);
     let nucleus_cells: BTreeSet<_> = continental_nuclei.iter().copied().collect();
-    let divider_cells = ownership_dividers(topology, &assignment.owners);
+    let divider_distance = ownership_divider_distance(topology, &assignment.owners);
     let mut shape_rng = streams.stream(CRUST_SHAPE_LABEL);
     let shape_noise = smooth_noise(
         topology,
         random_noise(topology.arcs().len(), &mut shape_rng),
         CRUST_SMOOTHING_PASSES,
     );
-    let typical_cost = typical_traversal_cost(topology) as i128;
+    let typical_cost_u64 = typical_traversal_cost(topology).max(1);
+    let typical_cost = i128::from(typical_cost_u64);
     let target_weight =
         crust_target_weight(topology.area_weights(), spec.continental_crust_fraction);
     let frame_options = [maximum_frame, maximum_frame * 2 / 3, maximum_frame / 3, 0];
     let mut best_available = 0_u128;
     let mut ranked_cells = None;
-    'corridor_fallback: for preserve_corridors in [profile.hard_corridor, false] {
+    let corridor_options = if continental_nuclei.len() > 1 {
+        (0..=profile.corridor_half_width_steps)
+            .rev()
+            .map(Some)
+            .chain(std::iter::once(None))
+            .collect::<Vec<_>>()
+    } else {
+        vec![None]
+    };
+    'corridor_fallback: for corridor_half_width_steps in corridor_options {
         for frame in frame_options {
             let scores: Vec<_> = (0..topology.arcs().len())
                 .map(|index| {
                     let cell = CellId::from_raw(index as u32);
+                    let local_half_width_steps = corridor_half_width_steps.map(|steps| {
+                        steps.saturating_add(u64::from(steps > 0 && shape_noise[index] > 0))
+                    });
+                    let inside_corridor = local_half_width_steps.is_some_and(|steps| {
+                        divider_distance[index] <= typical_cost_u64.saturating_mul(steps)
+                    });
                     if boundary_distance[index] <= frame
-                        || (preserve_corridors
-                            && divider_cells[index]
-                            && !nucleus_cells.contains(&cell))
+                        || (inside_corridor && !nucleus_cells.contains(&cell))
                     {
                         return None;
                     }
@@ -345,7 +359,7 @@ const VOLCANIC_ISLAND_OWNER_SCALES: [u16; 10] = [1_000; 10];
 #[derive(Debug, Clone, Copy)]
 struct CrustFormationProfile {
     nucleus_count: usize,
-    hard_corridor: bool,
+    corridor_half_width_steps: u64,
     owner_scales_permille: &'static [u16],
     shape_noise_permille: i64,
     primary_interior: bool,
@@ -356,35 +370,35 @@ impl CrustFormationProfile {
         match preset {
             ResolvedWorldFormationPreset::Continents => Self {
                 nucleus_count: CONTINENT_OWNER_SCALES.len(),
-                hard_corridor: true,
+                corridor_half_width_steps: 2,
                 owner_scales_permille: &CONTINENT_OWNER_SCALES,
                 shape_noise_permille: 1_000,
                 primary_interior: true,
             },
             ResolvedWorldFormationPreset::Archipelago => Self {
                 nucleus_count: ARCHIPELAGO_OWNER_SCALES.len(),
-                hard_corridor: true,
+                corridor_half_width_steps: 1,
                 owner_scales_permille: &ARCHIPELAGO_OWNER_SCALES,
                 shape_noise_permille: 1_250,
                 primary_interior: false,
             },
             ResolvedWorldFormationPreset::Supercontinent => Self {
                 nucleus_count: SUPERCONTINENT_OWNER_SCALES.len(),
-                hard_corridor: false,
+                corridor_half_width_steps: 0,
                 owner_scales_permille: &SUPERCONTINENT_OWNER_SCALES,
                 shape_noise_permille: 1_500,
                 primary_interior: true,
             },
             ResolvedWorldFormationPreset::GreatIsland => Self {
                 nucleus_count: GREAT_ISLAND_OWNER_SCALES.len(),
-                hard_corridor: true,
+                corridor_half_width_steps: 0,
                 owner_scales_permille: &GREAT_ISLAND_OWNER_SCALES,
                 shape_noise_permille: 1_250,
                 primary_interior: true,
             },
             ResolvedWorldFormationPreset::VolcanicIslands => Self {
                 nucleus_count: VOLCANIC_ISLAND_OWNER_SCALES.len(),
-                hard_corridor: true,
+                corridor_half_width_steps: 1,
                 owner_scales_permille: &VOLCANIC_ISLAND_OWNER_SCALES,
                 shape_noise_permille: 1_000,
                 primary_interior: false,
@@ -470,16 +484,18 @@ fn spread_crust_nuclei(
     (nuclei, maximum_frame)
 }
 
-fn ownership_dividers(topology: &NaturalTopologyIndex, owners: &[u32]) -> Vec<bool> {
-    topology
+fn ownership_divider_distance(topology: &NaturalTopologyIndex, owners: &[u32]) -> Vec<u64> {
+    let sources = topology
         .arcs()
         .iter()
         .enumerate()
-        .map(|(index, arcs)| {
+        .filter_map(|(index, arcs)| {
             arcs.iter()
                 .any(|arc| owners[arc.neighbor.raw() as usize] != owners[index])
+                .then_some(CellId::from_raw(index as u32))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    multi_source_distance(topology, &sources, None)
 }
 
 fn connected_crust_order(

@@ -48,8 +48,8 @@ fn ocean_basin_base_depends_on_crust_transition_distance_not_component_ownership
     let relief = generate_relief(&spatial, &tectonic, 7);
 
     // Columns 3 and 4 are one graph step from equal oceanic transition cells.
-    // margin=-200, interior=-4430, smoothstep(1/4)=0.15625.
-    let expected = -200.0 + (-4_430.0 + 200.0) * 0.15625;
+    // margin=-2400, interior=-4430, smoothstep(1/4)=0.15625.
+    let expected = -2_400.0 + (-4_430.0 + 2_400.0) * 0.15625;
     for column in [3, 4] {
         let found = relief
             .crust_base_elevation_m()
@@ -120,7 +120,7 @@ Use exact profile values:
 Continents => 2,
 Archipelago => 1,
 Supercontinent => 0,
-GreatIsland => 2,
+GreatIsland => 0,
 VolcanicIslands => 1,
 ```
 
@@ -145,7 +145,7 @@ fn ownership_divider_distance(
 }
 ```
 
-For multi-nucleus profiles, try corridor options in stable order: `base`, `base - 1`, `0`, then disabled. Deduplicate equal options. For a positive option, add one local step where the already-smoothed `shape_noise[index] > 0`; for option zero reserve only exact divider cells. A cell is excluded when:
+For multi-nucleus profiles, try every corridor width from `base` down to `0`, then disabled. For a positive option, add one local step where the already-smoothed `shape_noise[index] > 0`; for option zero reserve only exact divider cells. A cell is excluded when:
 
 ```rust
 divider_distance[index]
@@ -165,6 +165,8 @@ fn apply_oceanic_component_separators(...);
 ```
 
 Also remove the now-unused `VecDeque` import. Do not add a replacement Relief mask or component lookup.
+
+Set the generic oceanic transition baseline to `-2400 m`, independently of continent ownership. Add `non_volcanic_ocean_corridor_stays_submerged_under_ridge_uplift` to prove an ordinary ridge cannot turn the corridor into a land bridge without volcanic input.
 
 - [ ] **Step 7: Run focused tests and make them green**
 

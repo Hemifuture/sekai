@@ -90,6 +90,93 @@ fn generate_quality(
     .unwrap()
 }
 
+fn current_app_spatial_fixture() -> &'static SpatialSnapshot {
+    static SPATIAL: OnceLock<SpatialSnapshot> = OnceLock::new();
+    SPATIAL.get_or_init(|| {
+        const CURRENT_APP_SEED: u64 = 14_971_025_413_948_366_848;
+        let space = PlanarSpaceSpec {
+            width: Meters::new(20_000_000.0).unwrap(),
+            height: Meters::new(10_000_000.0).unwrap(),
+            target_cell_count: 20_000,
+            boundary: BoundaryCondition::Closed,
+        };
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(CURRENT_APP_SEED),
+            StageIdentity::new("spatial.planar-voronoi", 1, "sekai.core"),
+        ));
+        PlanarVoronoiBuilder::build(&space, &mut rng).unwrap()
+    })
+}
+
+fn minimum_ocean_layers_between_continental_components(
+    spatial: &SpatialSnapshot,
+    snapshot: &sekai::world::natural::TectonicSnapshot,
+) -> usize {
+    let mut component_by_cell = vec![usize::MAX; spatial.cell_count()];
+    let mut component_count = 0_usize;
+    for start_index in 0..spatial.cell_count() {
+        if component_by_cell[start_index] != usize::MAX
+            || snapshot.crust_kind(CellId::from_raw(start_index as u32))
+                != Some(CrustKind::Continental)
+        {
+            continue;
+        }
+        component_by_cell[start_index] = component_count;
+        let mut queue = VecDeque::from([CellId::from_raw(start_index as u32)]);
+        while let Some(cell) = queue.pop_front() {
+            for &neighbor in &spatial.cell(cell).unwrap().neighbors {
+                let neighbor_index = neighbor.raw() as usize;
+                if component_by_cell[neighbor_index] == usize::MAX
+                    && snapshot.crust_kind(neighbor) == Some(CrustKind::Continental)
+                {
+                    component_by_cell[neighbor_index] = component_count;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        component_count += 1;
+    }
+    assert!(
+        component_count >= 2,
+        "corridor measurement requires multiple continental components"
+    );
+
+    let mut minimum = usize::MAX;
+    for component in 0..component_count {
+        let mut distances = vec![usize::MAX; spatial.cell_count()];
+        let mut queue = VecDeque::new();
+        for (index, &owner) in component_by_cell.iter().enumerate() {
+            if owner == component {
+                distances[index] = 0;
+                queue.push_back(CellId::from_raw(index as u32));
+            }
+        }
+        while let Some(cell) = queue.pop_front() {
+            let index = cell.raw() as usize;
+            if distances[index] >= minimum {
+                continue;
+            }
+            for &neighbor in &spatial.cell(cell).unwrap().neighbors {
+                let neighbor_index = neighbor.raw() as usize;
+                match snapshot.crust_kind(neighbor).unwrap() {
+                    CrustKind::Continental => {
+                        let owner = component_by_cell[neighbor_index];
+                        if owner != component {
+                            minimum = minimum.min(distances[index]);
+                        }
+                    }
+                    CrustKind::Oceanic if distances[neighbor_index] == usize::MAX => {
+                        distances[neighbor_index] = distances[index] + 1;
+                        queue.push_back(neighbor);
+                    }
+                    CrustKind::Oceanic => {}
+                }
+            }
+        }
+    }
+    minimum
+}
+
 #[test]
 fn generation_is_repeatable_and_root_seed_sensitive() {
     let spec = TectonicSpec::default();
@@ -167,6 +254,32 @@ fn crust_area_and_thickness_obey_physical_contracts() {
         kind_counts[1],
         continental_area / total_area
     );
+}
+
+#[test]
+fn recommended_continents_keep_multiple_ocean_cell_layers_between_components() {
+    const CURRENT_APP_SEED: u64 = 14_971_025_413_948_366_848;
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Continents,
+    )
+    .unwrap();
+    let snapshot = TectonicGenerator::generate(
+        current_app_spatial_fixture(),
+        &TectonicSpec {
+            continental_crust_fraction: 0.38,
+            ..TectonicSpec::default()
+        },
+        &formation,
+        &mut natural_rng(CURRENT_APP_SEED),
+    )
+    .unwrap();
+    let minimum = minimum_ocean_layers_between_continental_components(
+        current_app_spatial_fixture(),
+        &snapshot,
+    );
+    assert!(minimum >= 3, "only {minimum} ocean layers");
 }
 
 #[test]

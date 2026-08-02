@@ -207,6 +207,44 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
     snapshot
 }
 
+fn separated_continental_components(spatial: &SpatialSnapshot) -> TectonicSnapshot {
+    separated_continental_components_with_boundary(spatial, BoundaryKind::ContinentalCollision)
+}
+
+fn separated_continental_components_with_boundary(
+    spatial: &SpatialSnapshot,
+    boundary_kind: BoundaryKind,
+) -> TectonicSnapshot {
+    let base = custom_tectonics(spatial, boundary_kind);
+    let crust = (0..spatial.cell_count())
+        .map(|index| match index % GRID_COLUMNS {
+            0 | 1 | 6 | 7 => CrustKind::Continental,
+            _ => CrustKind::Oceanic,
+        })
+        .collect::<Vec<_>>();
+    let thickness = crust
+        .iter()
+        .map(|kind| match kind {
+            CrustKind::Oceanic => 7.0,
+            CrustKind::Continental => 35.0,
+        })
+        .collect();
+    let snapshot = TectonicSnapshot::new(
+        base.schema_version(),
+        base.cell_count(),
+        base.edge_count(),
+        base.plates().to_vec(),
+        base.cell_plates().clone(),
+        CrustKindField::from_kinds(crust),
+        thickness,
+        base.boundaries().to_vec(),
+        base.boundary_segments().to_vec(),
+    )
+    .unwrap();
+    snapshot.validate_against(spatial).unwrap();
+    snapshot
+}
+
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
@@ -346,6 +384,41 @@ fn crust_base_separates_interiors_and_softens_both_margins() {
     assert!(continental_interior > ocean_interior);
     assert!(ocean_margin.abs() < ocean_interior.abs());
     assert!(continental_margin.abs() < continental_interior.abs());
+}
+
+#[test]
+fn ocean_basin_base_depends_on_crust_transition_distance_not_component_ownership() {
+    let spatial = regular_grid();
+    let tectonic = separated_continental_components(&spatial);
+    let relief = generate_relief(&spatial, &tectonic, 7);
+
+    let expected = -2_400.0 + (-4_430.0 + 2_400.0) * 0.15625;
+    for column in [3, 4] {
+        let found = relief
+            .crust_base_elevation_m()
+            .get(cell_at(1, column).raw() as usize)
+            .unwrap();
+        assert!(
+            (found - expected).abs() <= 0.01,
+            "column {column}: expected {expected}, found {found}"
+        );
+    }
+}
+
+#[test]
+fn non_volcanic_ocean_corridor_stays_submerged_under_ridge_uplift() {
+    let spatial = regular_grid();
+    let tectonic =
+        separated_continental_components_with_boundary(&spatial, BoundaryKind::OceanicRidge);
+    let relief = generate_relief(&spatial, &tectonic, 7);
+
+    for column in [3, 4] {
+        assert_eq!(
+            relief.land_ocean_kind(cell_at(1, column)),
+            Some(LandOceanKind::Ocean),
+            "column {column} was lifted above sea level"
+        );
+    }
 }
 
 #[test]

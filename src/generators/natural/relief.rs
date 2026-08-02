@@ -1,5 +1,5 @@
 use std::array;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use rand::RngCore;
 use thiserror::Error;
@@ -20,7 +20,7 @@ use crate::world::{CellId, PlateId};
 const SEA_LEVEL_M: f32 = 0.0;
 const CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION: f64 = 0.08;
 const OCEAN_FRAME_BASE_M: f32 = -5_200.0;
-const OCEAN_COMPONENT_SEPARATOR_BASE_M: f32 = -2_400.0;
+const OCEANIC_MARGIN_BASE_M: f32 = -2_400.0;
 const MARGIN_SUPPORT_STEPS: u64 = 4;
 const REGIONAL_NOISE_SCALE: i64 = 1_000;
 const MAX_CLAMP_DIAGNOSTICS: usize = 32;
@@ -47,14 +47,6 @@ impl ReliefGenerator {
         let mut tectonic_offset = synthesize_tectonic_offset(spatial, &topology, tectonic);
         let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
-        apply_oceanic_component_separators(
-            &topology,
-            tectonic,
-            &mut crust_base,
-            &mut tectonic_offset,
-            &mut volcanic_offset,
-            &mut regional_offset,
-        );
         apply_closed_ocean_frame(
             &topology,
             &mut crust_base,
@@ -90,73 +82,6 @@ impl ReliefGenerator {
         )?;
         snapshot.validate_against(spatial)?;
         Ok(snapshot)
-    }
-}
-
-fn apply_oceanic_component_separators(
-    topology: &NaturalTopologyIndex,
-    tectonic: &TectonicSnapshot,
-    crust_base: &mut [f32],
-    tectonic_offset: &mut [f32],
-    volcanic_offset: &mut [f32],
-    regional_offset: &mut [f32],
-) {
-    let mut component_by_cell = vec![u32::MAX; topology.arcs().len()];
-    let mut component_count = 0_u32;
-    for start_index in 0..topology.arcs().len() {
-        if component_by_cell[start_index] != u32::MAX
-            || tectonic.crust_kind(CellId::from_raw(start_index as u32))
-                != Some(CrustKind::Continental)
-        {
-            continue;
-        }
-        let mut queue = VecDeque::from([CellId::from_raw(start_index as u32)]);
-        component_by_cell[start_index] = component_count;
-        while let Some(cell) = queue.pop_front() {
-            for arc in &topology.arcs()[cell.raw() as usize] {
-                let neighbor_index = arc.neighbor.raw() as usize;
-                if component_by_cell[neighbor_index] == u32::MAX
-                    && tectonic.crust_kind(arc.neighbor) == Some(CrustKind::Continental)
-                {
-                    component_by_cell[neighbor_index] = component_count;
-                    queue.push_back(arc.neighbor);
-                }
-            }
-        }
-        component_count += 1;
-    }
-    if component_count < 2 {
-        return;
-    }
-
-    let mut sources = Vec::new();
-    let mut source_components = Vec::new();
-    for (index, &component) in component_by_cell.iter().enumerate() {
-        if component != u32::MAX {
-            sources.push(CellId::from_raw(index as u32));
-            source_components.push(component);
-        }
-    }
-    let assignment = multi_source_ownership(topology, &sources);
-    let nearest_component = assignment
-        .owners
-        .iter()
-        .map(|&owner| source_components[owner as usize])
-        .collect::<Vec<_>>();
-    let separators = (0..topology.arcs().len())
-        .filter(|&index| {
-            tectonic.crust_kind(CellId::from_raw(index as u32)) == Some(CrustKind::Oceanic)
-                && topology.arcs()[index].iter().any(|arc| {
-                    nearest_component[arc.neighbor.raw() as usize] != nearest_component[index]
-                })
-        })
-        .collect::<Vec<_>>();
-
-    for index in separators {
-        crust_base[index] = crust_base[index].min(OCEAN_COMPONENT_SEPARATOR_BASE_M);
-        tectonic_offset[index] = attenuate_positive(tectonic_offset[index], 0.0);
-        volcanic_offset[index] = attenuate_positive(volcanic_offset[index], 0.0);
-        regional_offset[index] = attenuate_positive(regional_offset[index], 0.0);
     }
 }
 
@@ -262,7 +187,7 @@ fn synthesize_crust_base(topology: &NaturalTopologyIndex, tectonic: &TectonicSna
                 .crust_thickness_for_cell(cell)
                 .expect("tectonic field is cell aligned");
             let (margin, interior) = match kind {
-                CrustKind::Oceanic => (-200.0, -5_200.0 + thickness * 110.0),
+                CrustKind::Oceanic => (OCEANIC_MARGIN_BASE_M, -5_200.0 + thickness * 110.0),
                 CrustKind::Continental => (100.0, 250.0 + (thickness - 25.0) * 45.0),
             };
             let blend = if distance[index] == u64::MAX {

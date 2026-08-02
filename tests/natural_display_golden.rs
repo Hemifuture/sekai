@@ -421,9 +421,21 @@ fn assert_preset_component_profile(
                 "preset {preset:?}, seed {seed}: largest share was {:.3}",
                 metrics.largest_continental_share
             );
-            assert!(metrics.land_component_count >= 3);
-            assert!(metrics.current_land_component_count >= 3);
-            assert!((2..=6).contains(&metrics.major_land_component_count));
+            assert!(
+                metrics.land_component_count >= 3,
+                "preset {preset:?}, seed {seed}: expected at least 3 visible continents, got {}",
+                metrics.land_component_count
+            );
+            assert!(
+                metrics.current_land_component_count >= 3,
+                "preset {preset:?}, seed {seed}: expected at least 3 current continents, got {}",
+                metrics.current_land_component_count
+            );
+            assert!(
+                (2..=6).contains(&metrics.major_land_component_count),
+                "preset {preset:?}, seed {seed}: expected 2-6 major visible continents, got {}",
+                metrics.major_land_component_count
+            );
             if seed == 42 {
                 assert!(
                     metrics.largest_land_share <= 0.75,
@@ -444,9 +456,21 @@ fn assert_preset_component_profile(
                 "preset {preset:?}, seed {seed}: largest share was {:.3}",
                 metrics.largest_continental_share
             );
-            assert!(metrics.land_component_count >= 6);
-            assert!(metrics.current_land_component_count >= 6);
-            assert!(metrics.major_land_component_count >= 3);
+            assert!(
+                metrics.land_component_count >= 6,
+                "preset {preset:?}, seed {seed}: expected at least 6 visible islands, got {}",
+                metrics.land_component_count
+            );
+            assert!(
+                metrics.current_land_component_count >= 6,
+                "preset {preset:?}, seed {seed}: expected at least 6 current islands, got {}",
+                metrics.current_land_component_count
+            );
+            assert!(
+                metrics.major_land_component_count >= 3,
+                "preset {preset:?}, seed {seed}: expected at least 3 major visible islands, got {}",
+                metrics.major_land_component_count
+            );
             assert!(
                 metrics.largest_land_share <= 0.55,
                 "preset {preset:?}, seed {seed}: largest visible land share was {:.3}",
