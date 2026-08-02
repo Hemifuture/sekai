@@ -13,6 +13,7 @@ mod hydro_erosion;
 mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;
 mod hydrology;
+mod island_relief;
 mod mantle;
 mod random;
 mod relief;

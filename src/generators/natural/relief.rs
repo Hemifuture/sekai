@@ -4,7 +4,11 @@ use std::collections::BTreeMap;
 use rand::RngCore;
 use thiserror::Error;
 
-use super::random::{LabeledSubstreams, RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL};
+use super::island_relief::synthesize_hotspot_offset;
+use super::random::{
+    LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_REGIONAL_LABEL,
+    RELIEF_TECTONIC_DETAIL_LABEL,
+};
 use super::topology::{multi_source_distance, multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
 use crate::world::natural::{
@@ -47,7 +51,9 @@ impl ReliefGenerator {
         let mut crust_base = synthesize_crust_base(&topology, tectonic);
         let mut tectonic_offset =
             synthesize_tectonic_offset(spatial, &topology, tectonic, &streams);
-        let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
+        let mut hotspot_rng = streams.stream(RELIEF_HOTSPOT_MORPHOLOGY_LABEL);
+        let mut volcanic_offset =
+            synthesize_hotspot_offset(spatial, tectonic, mantle, hotspot_rng.next_u32());
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
         apply_closed_ocean_frame(
             &topology,
@@ -134,26 +140,6 @@ fn verify_closed_ocean_frame(
         }
     }
     Ok(())
-}
-
-fn synthesize_volcanic_offset(tectonic: &TectonicSnapshot, mantle: &MantleSnapshot) -> Vec<f32> {
-    mantle
-        .volcanic_influence()
-        .iter()
-        .enumerate()
-        .map(|(index, &influence)| {
-            let cell = CellId::from_raw(index as u32);
-            let amplitude = match tectonic
-                .crust_kind(cell)
-                .expect("tectonic and mantle fields are cell aligned")
-            {
-                CrustKind::Oceanic => 3_200.0,
-                CrustKind::Continental => 2_200.0,
-            };
-            let response = influence * influence * (3.0 - 2.0 * influence);
-            (amplitude * response).clamp(VOLCANIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M)
-        })
-        .collect()
 }
 
 fn synthesize_crust_base(topology: &NaturalTopologyIndex, tectonic: &TectonicSnapshot) -> Vec<f32> {

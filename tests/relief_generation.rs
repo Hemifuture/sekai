@@ -22,6 +22,8 @@ use sekai::world::{
 
 const GRID_COLUMNS: usize = 8;
 const GRID_ROWS: usize = 3;
+const LARGE_GRID_COLUMNS: usize = 21;
+const LARGE_GRID_ROWS: usize = 13;
 
 fn meters(value: f64) -> Meters {
     Meters::new(value).unwrap()
@@ -32,22 +34,30 @@ fn point(x: f64, y: f64) -> WorldPoint {
 }
 
 fn regular_grid() -> SpatialSnapshot {
+    regular_grid_with_size(GRID_COLUMNS, GRID_ROWS)
+}
+
+fn large_regular_grid() -> SpatialSnapshot {
+    regular_grid_with_size(LARGE_GRID_COLUMNS, LARGE_GRID_ROWS)
+}
+
+fn regular_grid_with_size(columns: usize, rows: usize) -> SpatialSnapshot {
     let mut cells = Vec::new();
-    for row in 0..GRID_ROWS {
-        for column in 0..GRID_COLUMNS {
-            let id = row * GRID_COLUMNS + column;
+    for row in 0..rows {
+        for column in 0..columns {
+            let id = row * columns + column;
             let mut neighbors = Vec::new();
             if column > 0 {
                 neighbors.push(CellId::from_raw((id - 1) as u32));
             }
-            if column + 1 < GRID_COLUMNS {
+            if column + 1 < columns {
                 neighbors.push(CellId::from_raw((id + 1) as u32));
             }
             if row > 0 {
-                neighbors.push(CellId::from_raw((id - GRID_COLUMNS) as u32));
+                neighbors.push(CellId::from_raw((id - columns) as u32));
             }
-            if row + 1 < GRID_ROWS {
-                neighbors.push(CellId::from_raw((id + GRID_COLUMNS) as u32));
+            if row + 1 < rows {
+                neighbors.push(CellId::from_raw((id + columns) as u32));
             }
             neighbors.sort_unstable();
             cells.push(SpatialCell {
@@ -67,14 +77,14 @@ fn regular_grid() -> SpatialSnapshot {
     }
 
     let mut edges = Vec::new();
-    for y in 0..=GRID_ROWS {
-        for x in 0..GRID_COLUMNS {
+    for y in 0..=rows {
+        for x in 0..columns {
             let owners = if y == 0 {
                 [Some(x), None]
-            } else if y == GRID_ROWS {
-                [Some((GRID_ROWS - 1) * GRID_COLUMNS + x), None]
+            } else if y == rows {
+                [Some((rows - 1) * columns + x), None]
             } else {
-                [Some((y - 1) * GRID_COLUMNS + x), Some(y * GRID_COLUMNS + x)]
+                [Some((y - 1) * columns + x), Some(y * columns + x)]
             };
             edges.push(spatial_edge(
                 edges.len(),
@@ -84,14 +94,14 @@ fn regular_grid() -> SpatialSnapshot {
             ));
         }
     }
-    for x in 0..=GRID_COLUMNS {
-        for y in 0..GRID_ROWS {
+    for x in 0..=columns {
+        for y in 0..rows {
             let owners = if x == 0 {
-                [Some(y * GRID_COLUMNS), None]
-            } else if x == GRID_COLUMNS {
-                [Some(y * GRID_COLUMNS + GRID_COLUMNS - 1), None]
+                [Some(y * columns), None]
+            } else if x == columns {
+                [Some(y * columns + columns - 1), None]
             } else {
-                [Some(y * GRID_COLUMNS + x - 1), Some(y * GRID_COLUMNS + x)]
+                [Some(y * columns + x - 1), Some(y * columns + x)]
             };
             edges.push(spatial_edge(
                 edges.len(),
@@ -104,14 +114,75 @@ fn regular_grid() -> SpatialSnapshot {
 
     SpatialSnapshot::new(
         SPATIAL_SCHEMA_V1,
-        WorldRect::new(
-            point(0.0, 0.0),
-            point(GRID_COLUMNS as f64, GRID_ROWS as f64),
-        )
-        .unwrap(),
+        WorldRect::new(point(0.0, 0.0), point(columns as f64, rows as f64)).unwrap(),
         BoundaryCondition::Closed,
         cells,
         edges,
+    )
+    .unwrap()
+}
+
+fn uniform_oceanic_tectonics(
+    spatial: &SpatialSnapshot,
+    velocity: PlateVelocity,
+) -> TectonicSnapshot {
+    let snapshot = TectonicSnapshot::new(
+        TECTONIC_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        spatial.edges().len() as u32,
+        vec![Plate {
+            id: PlateId::from_raw(0),
+            seed_cell: CellId::from_raw(0),
+            velocity,
+        }],
+        PlateIdField::from_ids(vec![PlateId::from_raw(0); spatial.cell_count()]),
+        CrustKindField::from_kinds(vec![CrustKind::Oceanic; spatial.cell_count()]),
+        vec![14.0; spatial.cell_count()],
+        vec![BoundaryRecord::none(); spatial.edges().len()],
+        Vec::new(),
+    )
+    .unwrap();
+    snapshot.validate_against(spatial).unwrap();
+    snapshot
+}
+
+fn centered_hotspot_mantle(spatial: &SpatialSnapshot) -> MantleSnapshot {
+    let source = CellId::from_raw(
+        ((LARGE_GRID_ROWS / 2) * LARGE_GRID_COLUMNS + LARGE_GRID_COLUMNS / 2) as u32,
+    );
+    let source_point = spatial.cell(source).unwrap().centroid;
+    let support_radius_m = 5.5;
+    let influence = (0..spatial.cell_count())
+        .map(|index| {
+            let center = spatial
+                .cell(CellId::from_raw(index as u32))
+                .unwrap()
+                .centroid;
+            let distance = (center.x().get() - source_point.x().get())
+                .hypot(center.y().get() - source_point.y().get());
+            if distance >= support_radius_m {
+                0.0
+            } else {
+                let t = distance / support_radius_m;
+                (1.0 - t * t * (3.0 - 2.0 * t)) as f32
+            }
+        })
+        .collect::<Vec<_>>();
+    MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        vec![Hotspot::new(
+            HotspotId::from_raw(0),
+            source,
+            1_000,
+            meters(support_radius_m),
+        )
+        .unwrap()],
+        influence
+            .iter()
+            .map(|&value| 65.0 + 220.0 * value)
+            .collect(),
+        influence,
     )
     .unwrap()
 }
@@ -602,6 +673,61 @@ fn mantle_influence_adds_local_explainable_volcanic_relief() {
             > baseline.elevation_m().values()[nearby.raw() as usize]
     );
     volcanic.validate_against(&spatial).unwrap();
+}
+
+#[test]
+fn hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle(&spatial);
+    let eastward = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 0).expect("test velocity is valid"),
+    );
+    let northward = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(0, 80).expect("test velocity is valid"),
+    );
+
+    let first = generate_relief_with_mantle(&spatial, &eastward, &mantle, 71);
+    let repeated = generate_relief_with_mantle(&spatial, &eastward, &mantle, 71);
+    let changed_seed = generate_relief_with_mantle(&spatial, &eastward, &mantle, 72);
+    let changed_velocity = generate_relief_with_mantle(&spatial, &northward, &mantle, 71);
+
+    assert_eq!(first.volcanic_offset_m(), repeated.volcanic_offset_m());
+    assert_ne!(first.volcanic_offset_m(), changed_seed.volcanic_offset_m());
+    assert_ne!(
+        first.volcanic_offset_m(),
+        changed_velocity.volcanic_offset_m()
+    );
+    assert!(mantle
+        .volcanic_influence()
+        .iter()
+        .zip(first.volcanic_offset_m().values())
+        .all(|(&influence, &offset)| influence > 0.0 || offset == 0.0));
+}
+
+#[test]
+fn strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle(&spatial);
+    let tectonic = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 20).expect("test velocity is valid"),
+    );
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 71);
+    let source = mantle.hotspots()[0].source_cell();
+
+    assert_eq!(relief.land_ocean_kind(source), Some(LandOceanKind::Land));
+    assert!(
+        (0..spatial.cell_count()).any(|index| {
+            let cell = CellId::from_raw(index as u32);
+            cell != source
+                && mantle.volcanic_influence()[index] > 0.0
+                && relief.volcanic_offset_m().values()[index] > 0.0
+                && relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean)
+        }),
+        "a hotspot island group should taper through submerged seamounts"
+    );
 }
 
 #[test]
