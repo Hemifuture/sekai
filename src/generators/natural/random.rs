@@ -13,6 +13,7 @@ pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
 pub(super) const RELIEF_REGIONAL_LABEL: &str = "relief-regional-v1";
 pub(super) const RELIEF_TECTONIC_DETAIL_LABEL: &str = "relief-tectonic-detail-v1";
 pub(super) const RELIEF_HOTSPOT_MORPHOLOGY_LABEL: &str = "relief-hotspot-morphology-v1";
+pub(super) const RELIEF_ISLAND_ARC_LABEL: &str = "relief-island-arc-v1";
 pub(super) const HOTSPOT_SEEDS_LABEL: &str = "hotspot-seeds-v1";
 pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
 pub(super) const BEDROCK_PROVINCE_LABEL: &str = "bedrock-province-v1";
@@ -51,7 +52,7 @@ mod tests {
     use super::{
         LabeledSubstreams, BEDROCK_PROVINCE_LABEL, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL,
         HOTSPOT_STRENGTH_LABEL, PLATE_SEEDS_LABEL, RELIEF_HOTSPOT_MORPHOLOGY_LABEL,
-        RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL,
+        RELIEF_ISLAND_ARC_LABEL, RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::world::RootSeed;
@@ -174,6 +175,37 @@ mod tests {
         assert_eq!(
             (0..8)
                 .map(|_| detail_after_morphology.next_u64())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|_| pristine_detail.next_u64())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn island_arc_morphology_cannot_perturb_existing_relief_streams() {
+        let streams = LabeledSubstreams::capture(&mut stage_rng());
+        let mut island_arcs = streams.stream(RELIEF_ISLAND_ARC_LABEL);
+        let mut regional_after_arcs = streams.stream(RELIEF_REGIONAL_LABEL);
+        let mut detail_after_arcs = streams.stream(RELIEF_TECTONIC_DETAIL_LABEL);
+        for _ in 0..100 {
+            island_arcs.next_u64();
+        }
+
+        let pristine = LabeledSubstreams::capture(&mut stage_rng());
+        let mut pristine_regional = pristine.stream(RELIEF_REGIONAL_LABEL);
+        let mut pristine_detail = pristine.stream(RELIEF_TECTONIC_DETAIL_LABEL);
+        assert_eq!(
+            (0..8)
+                .map(|_| regional_after_arcs.next_u64())
+                .collect::<Vec<_>>(),
+            (0..8)
+                .map(|_| pristine_regional.next_u64())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (0..8)
+                .map(|_| detail_after_arcs.next_u64())
                 .collect::<Vec<_>>(),
             (0..8)
                 .map(|_| pristine_detail.next_u64())

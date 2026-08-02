@@ -278,6 +278,24 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
     snapshot
 }
 
+fn all_oceanic_subduction_tectonics(spatial: &SpatialSnapshot) -> TectonicSnapshot {
+    let base = custom_tectonics(spatial, BoundaryKind::Subduction);
+    let snapshot = TectonicSnapshot::new(
+        base.schema_version(),
+        base.cell_count(),
+        base.edge_count(),
+        base.plates().to_vec(),
+        base.cell_plates().clone(),
+        CrustKindField::from_kinds(vec![CrustKind::Oceanic; spatial.cell_count()]),
+        vec![7.0; spatial.cell_count()],
+        base.boundaries().to_vec(),
+        base.boundary_segments().to_vec(),
+    )
+    .unwrap();
+    snapshot.validate_against(spatial).unwrap();
+    snapshot
+}
+
 fn separated_continental_components(spatial: &SpatialSnapshot) -> TectonicSnapshot {
     separated_continental_components_with_boundary(spatial, BoundaryKind::ContinentalCollision)
 }
@@ -554,6 +572,52 @@ fn targeted_boundary_events_have_the_expected_signed_relief() {
             .get(cell_at(1, 3).raw() as usize)
             .unwrap()
             < 0.0
+    );
+}
+
+#[test]
+fn ocean_ocean_subduction_adds_discrete_arc_peaks_without_erasing_the_trench() {
+    let spatial = regular_grid();
+    let mixed = generate_relief(
+        &spatial,
+        &custom_tectonics(&spatial, BoundaryKind::Subduction),
+        7,
+    );
+    let oceanic = generate_relief(&spatial, &all_oceanic_subduction_tectonics(&spatial), 7);
+    let mixed_max = mixed
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let oceanic_max = oceanic
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        oceanic_max > mixed_max + 500.0,
+        "ocean-ocean arc max {oceanic_max} did not exceed mixed arc max {mixed_max}"
+    );
+    assert!(
+        oceanic
+            .tectonic_offset_m()
+            .get(cell_at(1, 3).raw() as usize)
+            .unwrap()
+            < 0.0,
+        "the descending-side trench must remain negative"
+    );
+    let enhanced_cells = oceanic
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .zip(mixed.tectonic_offset_m().values())
+        .filter(|(oceanic, mixed)| **oceanic > **mixed + 250.0)
+        .count();
+    assert!(
+        (1..spatial.cell_count() / 2).contains(&enhanced_cells),
+        "arc summits should be selective, found {enhanced_cells} enhanced cells"
     );
 }
 

@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use rand::RngCore;
 use thiserror::Error;
 
-use super::island_relief::synthesize_hotspot_offset;
+use super::island_relief::{synthesize_hotspot_offset, synthesize_oceanic_arc_peaks};
 use super::random::{
-    LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_REGIONAL_LABEL,
-    RELIEF_TECTONIC_DETAIL_LABEL,
+    LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL,
+    RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL,
 };
 use super::topology::{multi_source_distance, multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
@@ -358,6 +358,12 @@ fn synthesize_tectonic_offset(
             *value *= multiplier;
         }
         *value = value.clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
+    }
+    let mut island_arc_rng = streams.stream(RELIEF_ISLAND_ARC_LABEL);
+    let island_arc =
+        synthesize_oceanic_arc_peaks(spatial, topology, tectonic, island_arc_rng.next_u32());
+    for (value, island_peak) in result.iter_mut().zip(island_arc) {
+        *value = (*value + island_peak).clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
     }
     result
 }
