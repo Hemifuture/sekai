@@ -641,6 +641,22 @@ impl HydrologySnapshot {
     ) -> Result<(), HydrologyValidationError> {
         self.validate()?;
         spatial.validate()?;
+        self.validate_spatial_relations(spatial)
+    }
+
+    /// Rechecks topology-dependent invariants when the spatial artifact is already validated.
+    pub(crate) fn validate_against_validated_spatial(
+        &self,
+        spatial: &SpatialSnapshot,
+    ) -> Result<(), HydrologyValidationError> {
+        self.validate()?;
+        self.validate_spatial_relations(spatial)
+    }
+
+    fn validate_spatial_relations(
+        &self,
+        spatial: &SpatialSnapshot,
+    ) -> Result<(), HydrologyValidationError> {
         if self.cell_count as usize != spatial.cell_count() {
             return Err(HydrologyValidationError::SpatialCellCountMismatch {
                 hydrology: self.cell_count,

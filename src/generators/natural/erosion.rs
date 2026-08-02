@@ -31,7 +31,24 @@ impl FluvialErosionGenerator {
         hydrology: &HydrologySnapshot,
         spec: &HydroErosionSpec,
     ) -> Result<SurfaceProcessSnapshot, FluvialErosionError> {
-        validate_inputs(spatial, relief, erosion_resistance, hydrology, spec)?;
+        spatial.validate()?;
+        Self::generate_from_validated_spatial(spatial, relief, erosion_resistance, hydrology, spec)
+    }
+
+    pub(crate) fn generate_from_validated_spatial(
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+        erosion_resistance: &[f32],
+        hydrology: &HydrologySnapshot,
+        spec: &HydroErosionSpec,
+    ) -> Result<SurfaceProcessSnapshot, FluvialErosionError> {
+        validate_inputs_against_validated_spatial(
+            spatial,
+            relief,
+            erosion_resistance,
+            hydrology,
+            spec,
+        )?;
         let energy = stream_energy(spatial, hydrology);
         let erosion_depth_m = incision(relief, erosion_resistance, &energy, spec);
         let order = upstream_to_downstream_order(hydrology.flow_receiver())?;
@@ -67,21 +84,20 @@ impl FluvialErosionGenerator {
             sediment.throughput_m3,
             sediment.export_m3,
         )?;
-        snapshot.validate_against(spatial, relief)?;
+        snapshot.validate_against_validated_spatial(spatial, relief)?;
         Ok(snapshot)
     }
 }
 
-fn validate_inputs(
+fn validate_inputs_against_validated_spatial(
     spatial: &SpatialSnapshot,
     relief: &ReliefSnapshot,
     erosion_resistance: &[f32],
     hydrology: &HydrologySnapshot,
     spec: &HydroErosionSpec,
 ) -> Result<(), FluvialErosionError> {
-    spatial.validate()?;
     relief.validate_against(spatial)?;
-    hydrology.validate_against_spatial(spatial)?;
+    hydrology.validate_against_validated_spatial(spatial)?;
     spec.validate()?;
     if erosion_resistance.len() != spatial.cell_count() {
         return Err(FluvialErosionError::CellCountMismatch {

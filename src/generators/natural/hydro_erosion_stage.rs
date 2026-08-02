@@ -110,17 +110,19 @@ impl Stage for HydroErosionStage {
             .validate()
             .map_err(|error| invalid_input(error.to_string()))?;
         let snapshot = match resolved.model() {
-            HydroErosionModel::PriorityFloodStreamPowerV1 => HydroErosionGenerator::generate(
-                inputs.spatial.snapshot(),
-                inputs.relief.snapshot(),
-                inputs.geology.snapshot(),
-                inputs.climate.snapshot(),
-                resolved.spec(),
-            ),
+            HydroErosionModel::PriorityFloodStreamPowerV1 => {
+                HydroErosionGenerator::generate_from_validated_spatial(
+                    inputs.spatial.snapshot(),
+                    inputs.relief.snapshot(),
+                    inputs.geology.snapshot(),
+                    inputs.climate.snapshot(),
+                    resolved.spec(),
+                )
+            }
         }
         .map_err(generation_failure)?;
         snapshot
-            .validate_against(
+            .validate_against_validated_spatial(
                 inputs.spatial.snapshot(),
                 inputs.relief.snapshot(),
                 inputs.geology.snapshot(),

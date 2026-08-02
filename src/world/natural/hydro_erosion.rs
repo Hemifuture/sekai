@@ -76,6 +76,28 @@ impl HydroErosionSnapshot {
     ) -> Result<(), HydroErosionValidationError> {
         self.validate()?;
         spatial.validate()?;
+        self.validate_relations(spatial, relief, geology, climate)
+    }
+
+    /// Rechecks all cross-domain identities when the spatial artifact is already validated.
+    pub(crate) fn validate_against_validated_spatial(
+        &self,
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+        geology: &GeologicSnapshot,
+        climate: &PreliminaryClimateSnapshot,
+    ) -> Result<(), HydroErosionValidationError> {
+        self.validate()?;
+        self.validate_relations(spatial, relief, geology, climate)
+    }
+
+    fn validate_relations(
+        &self,
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+        geology: &GeologicSnapshot,
+        climate: &PreliminaryClimateSnapshot,
+    ) -> Result<(), HydroErosionValidationError> {
         if spatial.cell_count() != self.cell_count() as usize {
             return Err(HydroErosionValidationError::SpatialCellCountMismatch {
                 snapshot: self.cell_count(),
@@ -104,8 +126,9 @@ impl HydroErosionSnapshot {
         relief.validate_against(spatial)?;
         geology.validate()?;
         climate.validate_against(spatial, relief)?;
-        self.surface.validate_against(spatial, relief)?;
-        self.hydrology.validate_against_spatial(spatial)?;
+        self.surface
+            .validate_against_validated_spatial(spatial, relief)?;
+        self.hydrology.validate_against_validated_spatial(spatial)?;
 
         for index in 0..self.cell_count() as usize {
             let cell = CellId::from_raw(index as u32);

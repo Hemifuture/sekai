@@ -137,6 +137,24 @@ impl SurfaceProcessSnapshot {
     ) -> Result<(), SurfaceProcessValidationError> {
         self.validate()?;
         spatial.validate()?;
+        self.validate_relations(spatial, relief)
+    }
+
+    /// Rechecks cross-input identities when the spatial artifact is already validated.
+    pub(crate) fn validate_against_validated_spatial(
+        &self,
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+    ) -> Result<(), SurfaceProcessValidationError> {
+        self.validate()?;
+        self.validate_relations(spatial, relief)
+    }
+
+    fn validate_relations(
+        &self,
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+    ) -> Result<(), SurfaceProcessValidationError> {
         if self.cell_count as usize != spatial.cell_count() {
             return Err(SurfaceProcessValidationError::SpatialCellCountMismatch {
                 surface: self.cell_count,

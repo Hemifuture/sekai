@@ -25,6 +25,16 @@ impl HydroErosionGenerator {
         spec: &HydroErosionSpec,
     ) -> Result<HydroErosionSnapshot, HydroErosionGenerationError> {
         spatial.validate()?;
+        Self::generate_from_validated_spatial(spatial, relief, geology, climate, spec)
+    }
+
+    pub(crate) fn generate_from_validated_spatial(
+        spatial: &SpatialSnapshot,
+        relief: &ReliefSnapshot,
+        geology: &GeologicSnapshot,
+        climate: &PreliminaryClimateSnapshot,
+        spec: &HydroErosionSpec,
+    ) -> Result<HydroErosionSnapshot, HydroErosionGenerationError> {
         relief.validate_against(spatial)?;
         geology.validate()?;
         climate.validate_against(spatial, relief)?;
@@ -37,7 +47,7 @@ impl HydroErosionGenerator {
             });
         }
 
-        let initial_hydrology = HydrologyGenerator::generate(
+        let initial_hydrology = HydrologyGenerator::generate_from_validated_spatial(
             spatial,
             relief.elevation_m(),
             relief.sea_level_m(),
@@ -46,14 +56,14 @@ impl HydroErosionGenerator {
             spec,
         )
         .map_err(HydroErosionGenerationError::InitialHydrology)?;
-        let surface = FluvialErosionGenerator::generate(
+        let surface = FluvialErosionGenerator::generate_from_validated_spatial(
             spatial,
             relief,
             geology.erosion_resistance(),
             &initial_hydrology,
             spec,
         )?;
-        let final_hydrology = HydrologyGenerator::generate(
+        let final_hydrology = HydrologyGenerator::generate_from_validated_spatial(
             spatial,
             surface.surface_elevation_m(),
             relief.sea_level_m(),
@@ -64,7 +74,7 @@ impl HydroErosionGenerator {
         .map_err(HydroErosionGenerationError::FinalHydrology)?;
         let snapshot =
             HydroErosionSnapshot::new(HYDRO_EROSION_SNAPSHOT_SCHEMA_V1, surface, final_hydrology)?;
-        snapshot.validate_against(spatial, relief, geology, climate)?;
+        snapshot.validate_against_validated_spatial(spatial, relief, geology, climate)?;
         Ok(snapshot)
     }
 }

@@ -30,7 +30,26 @@ impl HydrologyGenerator {
         climate: &PreliminaryClimateSnapshot,
         spec: &HydroErosionSpec,
     ) -> Result<HydrologySnapshot, HydrologyGenerationError> {
-        validate_inputs(
+        spatial.validate()?;
+        Self::generate_from_validated_spatial(
+            spatial,
+            surface_elevation_m,
+            sea_level_m,
+            relative_permeability,
+            climate,
+            spec,
+        )
+    }
+
+    pub(crate) fn generate_from_validated_spatial(
+        spatial: &SpatialSnapshot,
+        surface_elevation_m: &ElevationField,
+        sea_level_m: f32,
+        relative_permeability: &[f32],
+        climate: &PreliminaryClimateSnapshot,
+        spec: &HydroErosionSpec,
+    ) -> Result<HydrologySnapshot, HydrologyGenerationError> {
+        validate_inputs_against_validated_spatial(
             spatial,
             surface_elevation_m,
             sea_level_m,
@@ -119,12 +138,12 @@ impl HydrologyGenerator {
             lake_records,
             river_segments,
         )?;
-        snapshot.validate_against_spatial(spatial)?;
+        snapshot.validate_against_validated_spatial(spatial)?;
         Ok(snapshot)
     }
 }
 
-fn validate_inputs(
+fn validate_inputs_against_validated_spatial(
     spatial: &SpatialSnapshot,
     surface_elevation_m: &ElevationField,
     sea_level_m: f32,
@@ -132,7 +151,6 @@ fn validate_inputs(
     climate: &PreliminaryClimateSnapshot,
     spec: &HydroErosionSpec,
 ) -> Result<(), HydrologyGenerationError> {
-    spatial.validate()?;
     climate.validate()?;
     spec.validate()?;
     let cell_count = spatial.cell_count();
