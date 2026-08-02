@@ -6,7 +6,7 @@ use super::field_document::AppFieldDocument;
 use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::generators::natural::{
     GeologicArtifact, HydroErosionArtifact, MantleArtifact, PreliminaryClimateArtifact,
-    ReliefArtifact, TectonicArtifact,
+    ReliefArtifact, ResolvedWorldFormationArtifact, TectonicArtifact,
 };
 use crate::generators::spatial::SpatialArtifact;
 use crate::view::{
@@ -31,13 +31,14 @@ use crate::world::natural::{
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
     ClimateValidationError, GeologicValidationError, HydroErosionValidationError,
     MantleValidationError, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    ReliefValidationError, TectonicValidationError,
+    ReliefValidationError, TectonicValidationError, WorldFormationSpecError,
 };
 use crate::world::spatial::SpatialValidationError;
 
 /// Immutable formal natural-world document used by the application display boundary.
 pub(super) struct NaturalFieldDocument {
     pub(super) spatial: Arc<SpatialArtifact>,
+    pub(super) formation: Arc<ResolvedWorldFormationArtifact>,
     pub(super) tectonic: Arc<TectonicArtifact>,
     pub(super) mantle: Arc<MantleArtifact>,
     pub(super) relief: Arc<ReliefArtifact>,
@@ -53,6 +54,7 @@ pub(super) struct NaturalFieldDocument {
 impl NaturalFieldDocument {
     pub(super) fn build(
         spatial: Arc<SpatialArtifact>,
+        formation: Arc<ResolvedWorldFormationArtifact>,
         tectonic: Arc<TectonicArtifact>,
         mantle: Arc<MantleArtifact>,
         relief: Arc<ReliefArtifact>,
@@ -62,6 +64,7 @@ impl NaturalFieldDocument {
         report: &BuildReport,
     ) -> Result<Self, NaturalDisplayError> {
         spatial.snapshot().validate()?;
+        formation.formation().validate()?;
         tectonic.snapshot().validate_against(spatial.snapshot())?;
         mantle.snapshot().validate_against(spatial.snapshot())?;
         relief.snapshot().validate_against(spatial.snapshot())?;
@@ -107,6 +110,7 @@ impl NaturalFieldDocument {
         let display_cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
         let document = Self {
             spatial,
+            formation,
             tectonic,
             mantle,
             relief,
@@ -367,6 +371,10 @@ impl NaturalFieldDocument {
             .unwrap();
         Self::build(
             outcome.artifacts.get::<SpatialArtifact>().unwrap(),
+            outcome
+                .artifacts
+                .get::<ResolvedWorldFormationArtifact>()
+                .unwrap(),
             outcome.artifacts.get::<TectonicArtifact>().unwrap(),
             outcome.artifacts.get::<MantleArtifact>().unwrap(),
             outcome.artifacts.get::<ReliefArtifact>().unwrap(),
@@ -435,6 +443,8 @@ pub(super) enum NaturalDisplayError {
     #[error(transparent)]
     Spatial(#[from] SpatialValidationError),
     #[error(transparent)]
+    Formation(#[from] WorldFormationSpecError),
+    #[error(transparent)]
     Tectonic(#[from] TectonicValidationError),
     #[error(transparent)]
     Mantle(#[from] MantleValidationError),
@@ -468,8 +478,8 @@ mod tests {
     use crate::generators::natural::{
         natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
         GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
-        PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-        TectonicSpecArtifact, WorldFormationSpecArtifact,
+        PreliminaryClimateArtifact, ReliefArtifact, ResolvedWorldFormationArtifact,
+        RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
@@ -481,7 +491,8 @@ mod tests {
         preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id,
         surface_water_kind_field_id, volcanic_offset_field_id, ClimateSpec, GeologicSpec,
         HydroErosionSpec, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
-        TectonicSpec, WorldFormationSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
+        TectonicSpec, WorldFormationPreset, WorldFormationSpec, CLIMATE_MONTH_COUNT,
+        PRELIMINARY_CLIMATE_SCHEMA_V1,
     };
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -538,6 +549,10 @@ mod tests {
             .unwrap(),
         );
         let spatial = outcome.artifacts.get::<SpatialArtifact>().unwrap();
+        let formation = outcome
+            .artifacts
+            .get::<ResolvedWorldFormationArtifact>()
+            .unwrap();
         let tectonic = outcome.artifacts.get::<TectonicArtifact>().unwrap();
         let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
         let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
@@ -549,6 +564,7 @@ mod tests {
         let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>().unwrap();
         NaturalFieldDocument::build(
             spatial,
+            formation,
             tectonic,
             mantle,
             relief,
@@ -563,6 +579,10 @@ mod tests {
     #[test]
     fn document_borrows_formal_fields_and_derives_cell_velocity() {
         let document = build_document_with_diagnostic();
+        assert_eq!(
+            document.formation.formation().requested(),
+            WorldFormationPreset::Continents
+        );
         let catalog = document.catalog().unwrap();
         assert!(catalog.entries().iter().all(|entry| entry.view().is_some()));
         let plate_values = catalog
@@ -786,6 +806,7 @@ mod tests {
 
         let result = NaturalFieldDocument::build(
             document.spatial.clone(),
+            document.formation.clone(),
             document.tectonic.clone(),
             document.mantle.clone(),
             document.relief.clone(),

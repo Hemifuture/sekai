@@ -38,6 +38,19 @@ pub enum ResolvedWorldFormationPreset {
     VolcanicIslands,
 }
 
+impl ResolvedWorldFormationPreset {
+    /// Returns the authoring recommendation paired with this concrete morphology.
+    pub const fn recommended_continental_crust_fraction(self) -> f32 {
+        match self {
+            Self::Continents => 0.38,
+            Self::Archipelago => 0.26,
+            Self::Supercontinent => 0.42,
+            Self::GreatIsland => 0.28,
+            Self::VolcanicIslands => 0.16,
+        }
+    }
+}
+
 /// The narrow mantle-facing projection of a resolved formation choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum MantleFormationBias {
@@ -157,13 +170,7 @@ impl ResolvedWorldFormation {
 
     /// Returns the visible authoring recommendation for continental-crust share.
     pub const fn recommended_continental_crust_fraction(&self) -> f32 {
-        match self.resolved {
-            ResolvedWorldFormationPreset::Continents => 0.38,
-            ResolvedWorldFormationPreset::Archipelago => 0.26,
-            ResolvedWorldFormationPreset::Supercontinent => 0.42,
-            ResolvedWorldFormationPreset::GreatIsland => 0.28,
-            ResolvedWorldFormationPreset::VolcanicIslands => 0.16,
-        }
+        self.resolved.recommended_continental_crust_fraction()
     }
 }
 

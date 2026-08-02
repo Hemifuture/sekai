@@ -278,41 +278,43 @@ fn generate_crust(
     let frame_options = [maximum_frame, maximum_frame * 2 / 3, maximum_frame / 3, 0];
     let mut best_available = 0_u128;
     let mut ranked_cells = None;
-    for frame in frame_options {
-        let scores: Vec<_> = (0..topology.arcs().len())
-            .map(|index| {
-                let cell = CellId::from_raw(index as u32);
-                if boundary_distance[index] <= frame
-                    || (profile.hard_corridor
-                        && divider_cells[index]
-                        && !nucleus_cells.contains(&cell))
-                {
-                    return None;
-                }
-                let owner = assignment.owners[index] as usize;
-                let distance_score = i128::from(assignment.distances[index])
-                    * i128::from(profile.owner_scale_permille(owner));
-                let perturbation = i128::from(shape_noise[index])
-                    * typical_cost
-                    * i128::from(profile.shape_noise_permille)
-                    / i128::from(CRUST_NOISE_SCALE * 1_000);
-                let score = if nucleus_cells.contains(&cell) {
-                    i128::MIN / 2 + owner as i128
-                } else {
-                    distance_score.saturating_add(perturbation)
-                };
-                Some((score, cell))
-            })
-            .collect();
-        let candidates = connected_crust_order(topology, &scores, &continental_nuclei);
-        let available = candidates
-            .iter()
-            .map(|&(_, cell)| u128::from(topology.area_weights()[cell.raw() as usize]))
-            .sum();
-        best_available = best_available.max(available);
-        if available * u128::from(FRACTION_QUANTIZATION) >= target_weight {
-            ranked_cells = Some(candidates);
-            break;
+    'corridor_fallback: for preserve_corridors in [profile.hard_corridor, false] {
+        for frame in frame_options {
+            let scores: Vec<_> = (0..topology.arcs().len())
+                .map(|index| {
+                    let cell = CellId::from_raw(index as u32);
+                    if boundary_distance[index] <= frame
+                        || (preserve_corridors
+                            && divider_cells[index]
+                            && !nucleus_cells.contains(&cell))
+                    {
+                        return None;
+                    }
+                    let owner = assignment.owners[index] as usize;
+                    let distance_score = i128::from(assignment.distances[index])
+                        * i128::from(profile.owner_scale_permille(owner));
+                    let perturbation = i128::from(shape_noise[index])
+                        * typical_cost
+                        * i128::from(profile.shape_noise_permille)
+                        / i128::from(CRUST_NOISE_SCALE * 1_000);
+                    let score = if nucleus_cells.contains(&cell) {
+                        i128::MIN / 2 + owner as i128
+                    } else {
+                        distance_score.saturating_add(perturbation)
+                    };
+                    Some((score, cell))
+                })
+                .collect();
+            let candidates = connected_crust_order(topology, &scores, &continental_nuclei);
+            let available = candidates
+                .iter()
+                .map(|&(_, cell)| u128::from(topology.area_weights()[cell.raw() as usize]))
+                .sum();
+            best_available = best_available.max(available);
+            if available * u128::from(FRACTION_QUANTIZATION) >= target_weight {
+                ranked_cells = Some(candidates);
+                break 'corridor_fallback;
+            }
         }
     }
     let ranked_cells =
