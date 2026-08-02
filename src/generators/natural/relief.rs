@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use rand::RngCore;
 use thiserror::Error;
 
-use super::random::{LabeledSubstreams, RELIEF_REGIONAL_LABEL};
+use super::random::{LabeledSubstreams, RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL};
 use super::topology::{multi_source_distance, multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
 use crate::world::natural::{
@@ -44,7 +44,8 @@ impl ReliefGenerator {
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
         let mut crust_base = synthesize_crust_base(&topology, tectonic);
-        let mut tectonic_offset = synthesize_tectonic_offset(spatial, &topology, tectonic);
+        let mut tectonic_offset =
+            synthesize_tectonic_offset(spatial, &topology, tectonic, &streams);
         let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
         apply_closed_ocean_frame(
@@ -234,6 +235,7 @@ fn synthesize_tectonic_offset(
     spatial: &SpatialSnapshot,
     topology: &NaturalTopologyIndex,
     tectonic: &TectonicSnapshot,
+    streams: &LabeledSubstreams,
 ) -> Vec<f32> {
     let mut sources: [BTreeMap<CellId, f32>; EffectClass::COUNT] =
         array::from_fn(|_| BTreeMap::new());
@@ -356,7 +358,18 @@ fn synthesize_tectonic_offset(
             *value += amplitudes[owner as usize] * kernel;
         }
     }
-    for value in &mut result {
+    let mut detail_rng = streams.stream(RELIEF_TECTONIC_DETAIL_LABEL);
+    let detail = diffuse(
+        topology,
+        random_noise(topology.arcs().len(), &mut detail_rng),
+        3,
+    );
+    for (value, detail) in result.iter_mut().zip(detail) {
+        if *value != 0.0 {
+            let normalized = (detail as f32 / REGIONAL_NOISE_SCALE as f32).clamp(-1.0, 1.0);
+            let multiplier = (1.0 + normalized * 0.25).clamp(0.75, 1.25);
+            *value *= multiplier;
+        }
         *value = value.clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
     }
     result

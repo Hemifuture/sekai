@@ -487,6 +487,24 @@ fn targeted_boundary_events_have_the_expected_signed_relief() {
 }
 
 #[test]
+fn tectonic_relief_detail_is_seeded_repeatable_and_sign_preserving() {
+    let spatial = regular_grid();
+    let tectonic = custom_tectonics(&spatial, BoundaryKind::ContinentalCollision);
+    let first = generate_relief(&spatial, &tectonic, 7);
+    let repeated = generate_relief(&spatial, &tectonic, 7);
+    let changed = generate_relief(&spatial, &tectonic, 8);
+
+    assert_eq!(first.tectonic_offset_m(), repeated.tectonic_offset_m());
+    assert_ne!(first.tectonic_offset_m(), changed.tectonic_offset_m());
+    assert!(first
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .zip(changed.tectonic_offset_m().values())
+        .all(|(&a, &b)| a == 0.0 || b == 0.0 || a.is_sign_positive() == b.is_sign_positive()));
+}
+
+#[test]
 fn transform_is_weaker_than_collision_and_event_support_is_compact() {
     let spatial = regular_grid();
     let collision = generate_relief(

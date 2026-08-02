@@ -11,6 +11,7 @@ pub(super) const CRUST_SEEDS_LABEL: &str = "crust-seeds-v1";
 pub(super) const CRUST_SHAPE_LABEL: &str = "crust-shape-v1";
 pub(super) const CRUST_THICKNESS_LABEL: &str = "crust-thickness-v1";
 pub(super) const RELIEF_REGIONAL_LABEL: &str = "relief-regional-v1";
+pub(super) const RELIEF_TECTONIC_DETAIL_LABEL: &str = "relief-tectonic-detail-v1";
 pub(super) const HOTSPOT_SEEDS_LABEL: &str = "hotspot-seeds-v1";
 pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
 pub(super) const BEDROCK_PROVINCE_LABEL: &str = "bedrock-province-v1";

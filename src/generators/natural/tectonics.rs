@@ -745,12 +745,12 @@ fn classify_kinematics(
         i64::from(second_velocity[1]) - i64::from(first_velocity[1]),
     ];
     let speed_squared = relative[0] * relative[0] + relative[1] * relative[1];
-    let maximum_speed = f32::from(MAX_PLATE_VELOCITY_MM_PER_YEAR) * 2.0_f32.sqrt();
-    let strength = ((speed_squared as f32).sqrt() / maximum_speed).clamp(0.0, 1.0);
+    let speed = (speed_squared as f32).sqrt();
+    let maximum_relative_speed = f32::from(MAX_PLATE_VELOCITY_MM_PER_YEAR) * 2.0 * 2.0_f32.sqrt();
     if speed_squared < WEAK_RELATIVE_SPEED_MM_PER_YEAR * WEAK_RELATIVE_SPEED_MM_PER_YEAR {
         return KinematicClassification {
             kind: BoundaryKind::Weak,
-            strength,
+            strength: (speed / maximum_relative_speed).clamp(0.0, 1.0),
             subducting_plate: None,
         };
     }
@@ -759,15 +759,24 @@ fn classify_kinematics(
         + i128::from(normal[1]) * i128::from(normal[1]);
     let projection = i128::from(relative[0]) * i128::from(normal[0])
         + i128::from(relative[1]) * i128::from(normal[1]);
+    let normal_speed = if normal_squared == 0 {
+        0.0
+    } else {
+        projection.unsigned_abs() as f32 / (normal_squared as f32).sqrt()
+    };
+    let tangent_speed = (speed * speed - normal_speed * normal_speed)
+        .max(0.0)
+        .sqrt();
     let has_strong_normal_component = normal_squared > 0
         && projection * projection * 100 >= i128::from(speed_squared) * normal_squared * 16;
     if !has_strong_normal_component {
         return KinematicClassification {
             kind: BoundaryKind::Transform,
-            strength,
+            strength: (tangent_speed / maximum_relative_speed).clamp(0.0, 1.0),
             subducting_plate: None,
         };
     }
+    let strength = (normal_speed / maximum_relative_speed).clamp(0.0, 1.0);
 
     if projection < 0 {
         if crust == [CrustKind::Continental, CrustKind::Continental] {
@@ -1128,5 +1137,41 @@ mod tests {
             [7.0, 35.0],
         );
         assert_eq!(weak.kind, BoundaryKind::Weak);
+    }
+
+    #[test]
+    fn oblique_middle_plate_classifies_opposite_sides_without_inflating_normal_strength() {
+        let left = PlateId::from_raw(0);
+        let middle = PlateId::from_raw(1);
+        let right = PlateId::from_raw(2);
+        let normal = [1_000, 0];
+        let crust = [CrustKind::Continental, CrustKind::Continental];
+        let thickness = [35.0, 35.0];
+
+        let pure_left = classify_kinematics(
+            [left, middle],
+            [velocity(0, 0), velocity(-30, 0)],
+            normal,
+            crust,
+            thickness,
+        );
+        let oblique_left = classify_kinematics(
+            [left, middle],
+            [velocity(0, 0), velocity(-30, 40)],
+            normal,
+            crust,
+            thickness,
+        );
+        let oblique_right = classify_kinematics(
+            [middle, right],
+            [velocity(-30, 40), velocity(0, 0)],
+            normal,
+            crust,
+            thickness,
+        );
+
+        assert_eq!(oblique_left.kind, BoundaryKind::ContinentalCollision);
+        assert_eq!(oblique_right.kind, BoundaryKind::ContinentalRift);
+        assert!((oblique_left.strength - pure_left.strength).abs() <= f32::EPSILON);
     }
 }
