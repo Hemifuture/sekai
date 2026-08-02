@@ -25,10 +25,11 @@ use sekai::world::natural::{
     preliminary_mean_air_temperature_c_field_id, preliminary_temperature_seasonality_c_field_id,
     sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    volcanic_influence_field_id, BedrockKind, BoundaryKind, ClimateSpec, CrustKind,
-    GeologicSnapshot, GeologicSpec, HydroErosionSnapshot, HydroErosionSpec, MantleSnapshot,
-    PreliminaryClimateSnapshot, ReliefSnapshot, SurfaceWaterKind, TectonicSnapshot, TectonicSpec,
-    WorldFormationPreset, WorldFormationSpec, COMPONENT_IDENTITY_TOLERANCE_M,
+    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id, BedrockKind,
+    BoundaryKind, ClimateSpec, CrustKind, GeologicSnapshot, GeologicSpec, HydroErosionSnapshot,
+    HydroErosionSpec, MantleSnapshot, PreliminaryClimateSnapshot, ReliefSnapshot, SurfaceWaterKind,
+    TectonicSnapshot, TectonicSpec, WorldFormationPreset, WorldFormationSpec,
+    COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -1420,6 +1421,28 @@ fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
                 FieldPayloadRef::ScalarF32(fixture.relief.snapshot().elevation_m().values()),
                 symmetric_elevation_range(fixture.relief.snapshot()),
                 PaletteId::Diverging,
+            ),
+        ),
+        (
+            "tectonic-offset.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                tectonic_offset_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.relief.snapshot().tectonic_offset_m().values()),
+                DisplayRangeMode::Schema,
+                PaletteId::Diverging,
+            ),
+        ),
+        (
+            "volcanic-offset.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                volcanic_offset_field_id(),
+                FieldPayloadRef::ScalarF32(fixture.relief.snapshot().volcanic_offset_m().values()),
+                DisplayRangeMode::Schema,
+                PaletteId::Sequential,
             ),
         ),
         (
