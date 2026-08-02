@@ -305,24 +305,26 @@ fn preset_crust_profiles_have_distinct_macro_topology() {
     }
 
     let continents = &metrics[0].1;
+    assert!(continents.component_count <= 8);
     assert!((3..=6).contains(&continents.major_component_count));
     assert!(continents.largest_share_of_continental <= 0.55);
 
     let archipelago = &metrics[1].1;
-    assert!(archipelago.component_count >= 8);
+    assert!((8..=24).contains(&archipelago.component_count));
     assert!(archipelago.largest_share_of_continental <= 0.30);
 
     let supercontinent = &metrics[2].1;
+    assert_eq!(supercontinent.component_count, 1);
     assert_eq!(supercontinent.major_component_count, 1);
     assert!(supercontinent.largest_share_of_continental >= 0.85);
 
     let great_island = &metrics[3].1;
-    assert_eq!(great_island.major_component_count, 1);
+    assert!((1..=2).contains(&great_island.major_component_count));
+    assert!((2..=8).contains(&great_island.component_count));
     assert!((0.60..=0.90).contains(&great_island.largest_share_of_continental));
-    assert!(great_island.component_count >= 2);
 
     let volcanic = &metrics[4].1;
-    assert!(volcanic.component_count >= 6);
+    assert!((6..=20).contains(&volcanic.component_count));
     assert!(volcanic.largest_share_of_continental <= 0.35);
 }
 

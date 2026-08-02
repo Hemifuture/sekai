@@ -279,8 +279,8 @@ fn generate_crust(
     let mut best_available = 0_u128;
     let mut ranked_cells = None;
     for frame in frame_options {
-        let mut candidates: Vec<_> = (0..topology.arcs().len())
-            .filter_map(|index| {
+        let scores: Vec<_> = (0..topology.arcs().len())
+            .map(|index| {
                 let cell = CellId::from_raw(index as u32);
                 if boundary_distance[index] <= frame
                     || (profile.hard_corridor
@@ -304,13 +304,13 @@ fn generate_crust(
                 Some((score, cell))
             })
             .collect();
+        let candidates = connected_crust_order(topology, &scores, &continental_nuclei);
         let available = candidates
             .iter()
             .map(|&(_, cell)| u128::from(topology.area_weights()[cell.raw() as usize]))
             .sum();
         best_available = best_available.max(available);
         if available * u128::from(FRACTION_QUANTIZATION) >= target_weight {
-            candidates.sort_by_key(|&(score, cell)| (score, cell));
             ranked_cells = Some(candidates);
             break;
         }
@@ -337,7 +337,7 @@ fn generate_crust(
 const CONTINENT_OWNER_SCALES: [u16; 4] = [1_000; 4];
 const ARCHIPELAGO_OWNER_SCALES: [u16; 12] = [1_000; 12];
 const SUPERCONTINENT_OWNER_SCALES: [u16; 1] = [1_000];
-const GREAT_ISLAND_OWNER_SCALES: [u16; 4] = [800, 2_800, 2_800, 2_800];
+const GREAT_ISLAND_OWNER_SCALES: [u16; 4] = [800, 2_500, 2_200, 3_500];
 const VOLCANIC_ISLAND_OWNER_SCALES: [u16; 10] = [1_000; 10];
 
 #[derive(Debug, Clone, Copy)]
@@ -478,6 +478,37 @@ fn ownership_dividers(topology: &NaturalTopologyIndex, owners: &[u32]) -> Vec<bo
                 .any(|arc| owners[arc.neighbor.raw() as usize] != owners[index])
         })
         .collect()
+}
+
+fn connected_crust_order(
+    topology: &NaturalTopologyIndex,
+    scores: &[Option<(i128, CellId)>],
+    nuclei: &[CellId],
+) -> Vec<(i128, CellId)> {
+    let mut frontier = BTreeSet::new();
+    let mut queued = vec![false; scores.len()];
+    for &nucleus in nuclei {
+        let index = nucleus.raw() as usize;
+        if let Some(candidate) = scores[index] {
+            frontier.insert(candidate);
+            queued[index] = true;
+        }
+    }
+
+    let mut ordered = Vec::new();
+    while let Some(candidate @ (_, cell)) = frontier.pop_first() {
+        ordered.push(candidate);
+        for arc in &topology.arcs()[cell.raw() as usize] {
+            let neighbor_index = arc.neighbor.raw() as usize;
+            if !queued[neighbor_index] {
+                if let Some(neighbor) = scores[neighbor_index] {
+                    frontier.insert(neighbor);
+                    queued[neighbor_index] = true;
+                }
+            }
+        }
+    }
+    ordered
 }
 
 fn crust_target_weight(area_weights: &[u64], fraction: f32) -> u128 {
