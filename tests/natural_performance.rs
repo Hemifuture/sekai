@@ -6,11 +6,13 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
     PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
-use sekai::world::natural::{ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec};
+use sekai::world::natural::{
+    ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec, WorldFormationSpec,
+};
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -40,6 +42,11 @@ fn release_default_hydro_erosion_budget() {
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -82,7 +89,7 @@ fn release_default_hydro_erosion_budget() {
     hydro_erosion
         .validate_against(spatial, relief, geology, climate)
         .unwrap();
-    assert_eq!(outcome.report.stages().len(), 15);
+    assert_eq!(outcome.report.stages().len(), 16);
 
     let hydro_dense_bytes = size_of_val(surface.erosion_depth_m())
         + size_of_val(surface.deposition_thickness_m())

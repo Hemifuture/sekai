@@ -321,11 +321,13 @@ impl NaturalFieldDocument {
         use crate::generators::natural::{
             natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
             GeologicSpecArtifact, HydroErosionSpecArtifact, RulePackSetArtifact,
-            TectonicSpecArtifact,
+            TectonicSpecArtifact, WorldFormationSpecArtifact,
         };
         use crate::generators::spatial::PlanarSpaceArtifact;
         use crate::rules::{default_rule_pack_set, AuthorConstraints};
-        use crate::world::natural::{ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec};
+        use crate::world::natural::{
+            ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec, WorldFormationSpec,
+        };
         use crate::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
         let mut external = ExternalArtifacts::new();
@@ -348,6 +350,11 @@ impl NaturalFieldDocument {
             .unwrap();
         external
             .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+            .unwrap();
+        external
+            .insert(WorldFormationSpecArtifact::new(
+                WorldFormationSpec::default(),
+            ))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -462,7 +469,7 @@ mod tests {
         natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
         GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
         PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-        TectonicSpecArtifact,
+        TectonicSpecArtifact, WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
@@ -474,7 +481,7 @@ mod tests {
         preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id,
         surface_water_kind_field_id, volcanic_offset_field_id, ClimateSpec, GeologicSpec,
         HydroErosionSpec, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
-        TectonicSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
+        TectonicSpec, WorldFormationSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
     };
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -502,6 +509,11 @@ mod tests {
             .unwrap();
         external
             .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+            .unwrap();
+        external
+            .insert(WorldFormationSpecArtifact::new(
+                WorldFormationSpec::default(),
+            ))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

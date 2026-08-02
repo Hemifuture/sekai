@@ -23,6 +23,7 @@ use crate::{
             GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
             MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact,
             TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
+            WorldFormationSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
@@ -42,8 +43,8 @@ use crate::{
     world::{
         natural::{
             ClimateSpec, GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
-            TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT,
-            MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
+            TectonicActivity, TectonicSpec, WorldFormationSpec, MAX_CONTINENTAL_CRUST_FRACTION,
+            MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
         },
         BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
         WorldSpec, WORLD_SPEC_SCHEMA_V1,
@@ -525,6 +526,9 @@ fn build_natural_external_artifacts_with_rule_inputs(
     external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
     external.insert(ClimateSpecArtifact::new(ClimateSpec::default()))?;
     external.insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))?;
+    external.insert(WorldFormationSpecArtifact::new(
+        WorldFormationSpec::default(),
+    ))?;
     external.insert(RulePackSetArtifact::new(pack_set))?;
     external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
@@ -646,6 +650,7 @@ mod natural_app_tests {
     use crate::generators::natural::{
         AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
         HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+        WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::PlanarSpaceArtifact;
     use crate::rules::{
@@ -658,6 +663,7 @@ mod natural_app_tests {
     use crate::world::natural::{
         preliminary_mean_air_temperature_c_field_id, surface_elevation_m_field_id, ClimateSpec,
         GeologicSpec, HydroErosionSpec, MantleActivity, TectonicActivity, TectonicSpec,
+        WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -697,12 +703,13 @@ mod natural_app_tests {
             &GeologicSpec::default(),
         )
         .unwrap();
-        assert_eq!(external.len(), 7);
+        assert_eq!(external.len(), 8);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
         assert!(external.hash::<GeologicSpecArtifact>().is_ok());
         assert!(external.hash::<ClimateSpecArtifact>().is_ok());
         assert!(external.hash::<HydroErosionSpecArtifact>().is_ok());
+        assert!(external.hash::<WorldFormationSpecArtifact>().is_ok());
         assert!(external.hash::<RulePackSetArtifact>().is_ok());
         assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
 
@@ -722,6 +729,11 @@ mod natural_app_tests {
         expected
             .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
             .unwrap();
+        expected
+            .insert(WorldFormationSpecArtifact::new(
+                WorldFormationSpec::default(),
+            ))
+            .unwrap();
         assert_eq!(
             external.hash::<GeologicSpecArtifact>().unwrap(),
             expected.hash::<GeologicSpecArtifact>().unwrap()
@@ -733,6 +745,10 @@ mod natural_app_tests {
         assert_eq!(
             external.hash::<HydroErosionSpecArtifact>().unwrap(),
             expected.hash::<HydroErosionSpecArtifact>().unwrap()
+        );
+        assert_eq!(
+            external.hash::<WorldFormationSpecArtifact>().unwrap(),
+            expected.hash::<WorldFormationSpecArtifact>().unwrap()
         );
         assert_eq!(
             external.hash::<RulePackSetArtifact>().unwrap(),

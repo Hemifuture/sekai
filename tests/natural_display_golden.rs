@@ -7,7 +7,7 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
     PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -28,7 +28,7 @@ use sekai::world::natural::{
     volcanic_influence_field_id, BedrockKind, BoundaryKind, ClimateSpec, GeologicSnapshot,
     GeologicSpec, HydroErosionSnapshot, HydroErosionSpec, MantleSnapshot,
     PreliminaryClimateSnapshot, ReliefSnapshot, SurfaceWaterKind, TectonicSnapshot, TectonicSpec,
-    COMPONENT_IDENTITY_TOLERANCE_M,
+    WorldFormationSpec, COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -247,6 +247,11 @@ fn build_natural_with_geologic_spec(
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

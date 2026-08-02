@@ -5,12 +5,13 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
     HydroErosionSpecArtifact, PreliminaryClimateArtifact, PreliminaryClimateStage, ReliefArtifact,
     ResolvedClimateInputArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     ClimateSpec, ElevationField, GeologicSpec, HydroErosionSpec, LandOceanField, ReliefSnapshot,
-    TectonicSpec, RELIEF_SCHEMA_V2,
+    TectonicSpec, WorldFormationSpec, RELIEF_SCHEMA_V2,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -35,6 +36,11 @@ fn complete_external(climate_spec: ClimateSpec) -> ExternalArtifacts {
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -107,7 +113,7 @@ fn production_graph_publishes_valid_climate_and_caches_all_fifteen_stages() {
         .snapshot()
         .validate_against(spatial.snapshot(), relief.snapshot())
         .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 15);
+    assert_eq!(repeated.report.cache_hits(), 16);
     assert_eq!(repeated.report.cache_misses(), 0);
     assert_eq!(
         first
@@ -140,7 +146,7 @@ fn climate_spec_change_reuses_every_non_climate_stage() {
         .build(RootSeed::new(42), complete_external(warm_spec), &mut cache)
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 11);
+    assert_eq!(changed.report.cache_hits(), 12);
     assert_eq!(changed.report.cache_misses(), 4);
     assert_eq!(
         baseline.artifacts.hash::<SpatialArtifact>().unwrap(),

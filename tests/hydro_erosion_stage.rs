@@ -5,13 +5,13 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, HydroErosionStage,
     PreliminaryClimateArtifact, ReliefArtifact, ResolvedHydroErosionInputArtifact,
-    RulePackSetArtifact, TectonicSpecArtifact,
+    RulePackSetArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     ClimateSpec, ElevationField, GeologicSpec, HydroErosionSpec, LandOceanField, ReliefSnapshot,
-    TectonicSpec, RELIEF_SCHEMA_V2,
+    TectonicSpec, WorldFormationSpec, RELIEF_SCHEMA_V2,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -36,6 +36,11 @@ fn complete_external(spec: HydroErosionSpec) -> ExternalArtifacts {
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(spec))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -132,7 +137,7 @@ fn repeated_build_hits_all_fifteen_stages_and_hydro_spec_change_reruns_three() {
             &mut cache,
         )
         .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 15);
+    assert_eq!(repeated.report.cache_hits(), 16);
     assert_eq!(repeated.report.cache_misses(), 0);
 
     let changed_spec = HydroErosionSpec {
@@ -146,7 +151,7 @@ fn repeated_build_hits_all_fifteen_stages_and_hydro_spec_change_reruns_three() {
             &mut cache,
         )
         .unwrap();
-    assert_eq!(changed.report.cache_hits(), 12);
+    assert_eq!(changed.report.cache_hits(), 13);
     assert_eq!(changed.report.cache_misses(), 3);
     assert_ne!(
         baseline.artifacts.hash::<HydroErosionArtifact>().unwrap(),

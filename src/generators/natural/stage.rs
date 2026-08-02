@@ -10,7 +10,8 @@ use super::{
     PreliminaryClimateStage, ResolvedClimateInputStage, ResolvedGeologicInputStage,
     ResolvedHydroErosionInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
     RuleClimateResolutionStage, RuleGeologicResolutionStage, RuleHydroErosionResolutionStage,
-    RulePackSetArtifact, RuleTectonicResolutionStage,
+    RulePackSetArtifact, RuleTectonicResolutionStage, WorldFormationSpecArtifact,
+    WorldFormationStage,
 };
 use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
@@ -293,6 +294,7 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .external::<GeologicSpecArtifact>()
         .external::<ClimateSpecArtifact>()
         .external::<HydroErosionSpecArtifact>()
+        .external::<WorldFormationSpecArtifact>()
         .external::<RulePackSetArtifact>()
         .external::<AuthorConstraintsArtifact>()
         .stage(SpatialStage)
@@ -304,6 +306,7 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .stage(ResolvedGeologicInputStage)
         .stage(ResolvedClimateInputStage)
         .stage(ResolvedHydroErosionInputStage)
+        .stage(WorldFormationStage)
         .stage(TectonicStage)
         .stage(MantleStage)
         .stage(ReliefStage)

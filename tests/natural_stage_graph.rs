@@ -9,6 +9,7 @@ use sekai::generators::natural::{
     PreliminaryClimateStage, ReliefArtifact, ReliefStage, ResolvedGeologicInputArtifact,
     ResolvedTectonicInput, ResolvedTectonicInputArtifact, RulePackSetArtifact, TectonicArtifact,
     TectonicRuleResolutionArtifact, TectonicSpecArtifact, TectonicStage,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use sekai::rules::{
@@ -19,7 +20,7 @@ use sekai::rules::{
 };
 use sekai::world::natural::{
     ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicActivity, TectonicSpec,
-    TECTONIC_SPEC_SCHEMA_V1,
+    WorldFormationSpec, TECTONIC_SPEC_SCHEMA_V1,
 };
 use sekai::world::AuthorObjectId;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -69,6 +70,11 @@ fn complete_external_with(
     artifacts
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
+    artifacts
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
+        .unwrap();
     artifacts.insert(RulePackSetArtifact::new(packs)).unwrap();
     artifacts
         .insert(AuthorConstraintsArtifact::new(authors))
@@ -88,6 +94,11 @@ fn complete_external_with_geologic_spec(spec: GeologicSpec) -> ExternalArtifacts
         .unwrap();
     artifacts
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    artifacts
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     artifacts
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -316,6 +327,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
             "natural.project-hydro-erosion-input",
             "natural.resolve-tectonic-rules",
             "natural.project-tectonic-input",
+            "natural.resolve-world-formation",
             "spatial.planar-voronoi",
             "natural.mantle",
             "natural.tectonics",
@@ -325,7 +337,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
             "natural.hydro-erosion",
         ]
     );
-    let relief_descriptor = &graph.descriptors()[11];
+    let relief_descriptor = &graph.descriptors()[12];
     assert_eq!(
         relief_descriptor
             .dependencies()
@@ -335,7 +347,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
         vec!["world.mantle", "world.spatial", "world.tectonics"]
     );
     assert_eq!(relief_descriptor.output(), ReliefArtifact::KEY);
-    let geologic_descriptor = &graph.descriptors()[12];
+    let geologic_descriptor = &graph.descriptors()[13];
     assert_eq!(
         geologic_descriptor
             .dependencies()
@@ -351,7 +363,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
         ]
     );
     assert_eq!(geologic_descriptor.output(), GeologicArtifact::KEY);
-    let climate_descriptor = &graph.descriptors()[13];
+    let climate_descriptor = &graph.descriptors()[14];
     assert_eq!(
         climate_descriptor
             .dependencies()
@@ -365,7 +377,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
         ]
     );
     assert_eq!(climate_descriptor.output(), PreliminaryClimateArtifact::KEY);
-    let hydro_descriptor = &graph.descriptors()[14];
+    let hydro_descriptor = &graph.descriptors()[15];
     assert_eq!(
         hydro_descriptor
             .dependencies()
@@ -485,13 +497,13 @@ fn complete_natural_graph_cache_tracks_transitive_tectonic_changes() {
     let repeated = engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 15);
+    assert_eq!(repeated.report.cache_hits(), 16);
     assert_eq!(repeated.report.cache_misses(), 0);
 
     let changed = engine
         .build(RootSeed::new(42), complete_external(17), &mut cache)
         .unwrap();
-    assert_eq!(changed.report.cache_hits(), 8);
+    assert_eq!(changed.report.cache_hits(), 9);
     assert_eq!(changed.report.cache_misses(), 7);
     let baseline = engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
@@ -525,7 +537,7 @@ fn geologic_spec_change_reuses_space_and_tectonics_but_invalidates_physical_down
         )
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 8);
+    assert_eq!(changed.report.cache_hits(), 9);
     assert_eq!(changed.report.cache_misses(), 7);
     assert_eq!(
         baseline.artifacts.hash::<SpatialArtifact>().unwrap(),
@@ -588,6 +600,11 @@ fn complete_natural_graph_requires_both_new_rule_external_artifacts() {
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
     missing_authors
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
+        .unwrap();
+    missing_authors
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
         .unwrap();
     let failure = BuildEngine::new(natural_foundation_graph().unwrap())
@@ -639,7 +656,7 @@ fn cache_audit_only_rule_change_does_not_invalidate_tectonics_or_relief() {
         )
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 7);
+    assert_eq!(changed.report.cache_hits(), 8);
     assert_eq!(changed.report.cache_misses(), 8);
     assert_ne!(
         baseline
@@ -718,7 +735,7 @@ fn cache_projected_spec_change_invalidates_only_natural_downstream() {
         )
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 2);
+    assert_eq!(changed.report.cache_hits(), 3);
     assert_eq!(changed.report.cache_misses(), 13);
     assert_eq!(
         changed
@@ -765,7 +782,7 @@ fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
     engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(cache.len(), 15);
+    assert_eq!(cache.len(), 16);
 
     let pack_hard = plate_control_pack("low-only", ConstraintStrength::Hard, 2, 4);
     let conflict_set = RulePackSet::new(vec![earthlike_rule_pack().unwrap(), pack_hard]).unwrap();
@@ -792,14 +809,14 @@ fn cache_rule_failure_publishes_nothing_and_preserves_prior_valid_entries() {
     );
     assert_eq!(
         cache.len(),
-        21,
+        22,
         "the independent climate, geologic, and hydro audits and projections remain valid"
     );
 
     let recovered = engine
         .build(RootSeed::new(42), complete_external(12), &mut cache)
         .unwrap();
-    assert_eq!(recovered.report.cache_hits(), 15);
+    assert_eq!(recovered.report.cache_hits(), 16);
     assert_eq!(recovered.report.cache_misses(), 0);
 }
 

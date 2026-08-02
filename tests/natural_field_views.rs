@@ -5,7 +5,7 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
     PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicSpecArtifact,
+    TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -29,10 +29,10 @@ use sekai::world::natural::{
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id, ClimateSpec,
     GeologicSpec, HydroErosionSpec, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    TectonicSpec, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
-    MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT,
-    MAX_STRAHLER_ORDER, TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M,
+    TectonicSpec, WorldFormationSpec, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C,
+    ANNUAL_PRECIPITATION_MAX_MM, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
+    HEAT_FLOW_MIN_MW_M2, MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M,
+    MAX_PLATE_COUNT, MAX_STRAHLER_ORDER, TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M,
     VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::Topology;
@@ -710,6 +710,11 @@ fn natural_artifacts() -> NaturalArtifacts {
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
