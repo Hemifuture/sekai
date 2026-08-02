@@ -210,7 +210,7 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 3, "sekai.core"),
+        StageIdentity::new("natural.relief", 4, "sekai.core"),
     ))
 }
 

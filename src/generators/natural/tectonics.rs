@@ -336,10 +336,10 @@ fn generate_crust(
     Ok((CrustKindField::from_kinds(kinds), thickness))
 }
 
-const CONTINENT_OWNER_SCALES: [u16; 4] = [1_000; 4];
+const CONTINENT_OWNER_SCALES: [u16; 6] = [1_000; 6];
 const ARCHIPELAGO_OWNER_SCALES: [u16; 12] = [1_000; 12];
 const SUPERCONTINENT_OWNER_SCALES: [u16; 1] = [1_000];
-const GREAT_ISLAND_OWNER_SCALES: [u16; 4] = [800, 2_500, 2_200, 3_500];
+const GREAT_ISLAND_OWNER_SCALES: [u16; 4] = [800, 1_000, 1_000, 1_200];
 const VOLCANIC_ISLAND_OWNER_SCALES: [u16; 10] = [1_000; 10];
 
 #[derive(Debug, Clone, Copy)]
@@ -358,8 +358,8 @@ impl CrustFormationProfile {
                 nucleus_count: CONTINENT_OWNER_SCALES.len(),
                 hard_corridor: true,
                 owner_scales_permille: &CONTINENT_OWNER_SCALES,
-                shape_noise_permille: 1_500,
-                primary_interior: false,
+                shape_noise_permille: 1_000,
+                primary_interior: true,
             },
             ResolvedWorldFormationPreset::Archipelago => Self {
                 nucleus_count: ARCHIPELAGO_OWNER_SCALES.len(),
