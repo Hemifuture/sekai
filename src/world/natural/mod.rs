@@ -3,6 +3,7 @@
 mod climate;
 mod climate_spec;
 mod fields;
+mod formation;
 mod geologic_spec;
 mod geology;
 mod hydro_erosion;
@@ -42,6 +43,11 @@ pub use fields::{
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
     NaturalFieldDisplayCache, NaturalFieldRegistryError,
+};
+pub use formation::{
+    MantleFormationBias, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1, WORLD_FORMATION_SPEC_SCHEMA_V1,
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,
