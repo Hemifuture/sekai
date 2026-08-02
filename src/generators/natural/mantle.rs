@@ -31,7 +31,7 @@ impl MantleGenerator {
         let (hotspot_count, mantle_activity) = match formation_bias {
             MantleFormationBias::Neutral => (spec.hotspot_count, spec.mantle_activity),
             MantleFormationBias::VolcanicIslands => (
-                spec.hotspot_count.max(9).min(MAX_HOTSPOT_COUNT),
+                spec.hotspot_count.clamp(9, MAX_HOTSPOT_COUNT),
                 MantleActivity::Active,
             ),
         };

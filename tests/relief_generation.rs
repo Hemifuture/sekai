@@ -559,7 +559,7 @@ fn closed_world_boundary_is_ocean_after_every_relief_component() {
         }
         let mut west_count = 0;
         let mut east_count = 0;
-        for index in 0..spatial.cell_count() {
+        for (index, is_boundary) in boundary_cells.iter().copied().enumerate() {
             let cell = CellId::from_raw(index as u32);
             let elevation = relief.elevation_m().values()[index];
             let expected = relief.crust_base_elevation_m().values()[index]
@@ -567,7 +567,7 @@ fn closed_world_boundary_is_ocean_after_every_relief_component() {
                 + relief.volcanic_offset_m().values()[index]
                 + relief.regional_offset_m().values()[index];
             assert!((elevation - expected).abs() <= 0.01);
-            if boundary_cells[index] {
+            if is_boundary {
                 assert!(elevation < relief.sea_level_m(), "{preset:?} {cell:?}");
                 assert_eq!(relief.land_ocean_kind(cell), Some(LandOceanKind::Ocean));
             }
