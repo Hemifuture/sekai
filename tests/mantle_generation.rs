@@ -32,7 +32,7 @@ fn spatial_fixture() -> &'static SpatialSnapshot {
 fn mantle_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.mantle", 1, "sekai.core"),
+        StageIdentity::new("natural.mantle", 3, "sekai.core"),
     ))
 }
 
@@ -49,7 +49,7 @@ fn neutral_mantle_golden_remains_byte_stable() {
     let encoded = serde_json::to_vec(&generate(42, &GeologicSpec::default())).unwrap();
     assert_eq!(
         blake3::hash(&encoded).to_hex().as_str(),
-        "3414f758f35cbfbf439d7068b38649651e3b24a163bf8ca542da3d172cca40d0"
+        "9d7beb0e7739b223bacc64e19fbafaaaf314a72eb728bae1e3b091fb49580047"
     );
 }
 
@@ -91,6 +91,34 @@ fn configured_hotspots_are_exact_unique_and_spatially_valid() {
         assert_eq!(mantle.hotspots().len(), spec.hotspot_count as usize);
         assert_eq!(sources.len(), spec.hotspot_count as usize);
         mantle.validate_against(spatial_fixture()).unwrap();
+    }
+}
+
+#[test]
+fn hotspot_sources_avoid_the_closed_world_edge_margin() {
+    let spatial = spatial_fixture();
+    let snapshot = generate_with_bias(
+        0x00C0_FFEE,
+        &GeologicSpec::default(),
+        MantleFormationBias::VolcanicIslands,
+    );
+    let bounds = spatial.bounds();
+    let margin = bounds.width().get().min(bounds.height().get()) * 0.10;
+    let min_x = bounds.min().x().get() + margin;
+    let max_x = bounds.max().x().get() - margin;
+    let min_y = bounds.min().y().get() + margin;
+    let max_y = bounds.max().y().get() - margin;
+
+    for hotspot in snapshot.hotspots() {
+        let center = spatial.cell(hotspot.source_cell()).unwrap().centroid;
+        assert!(
+            (min_x..=max_x).contains(&center.x().get())
+                && (min_y..=max_y).contains(&center.y().get()),
+            "hotspot source {:?} at ({:.0}, {:.0}) entered the artificial edge margin",
+            hotspot.source_cell(),
+            center.x().get(),
+            center.y().get(),
+        );
     }
 }
 

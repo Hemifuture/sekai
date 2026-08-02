@@ -5,7 +5,8 @@ use sekai::world::natural::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
     CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
     REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V2,
-    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    RELIEF_SCHEMA_V3, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M,
+    VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec};
 
@@ -15,7 +16,7 @@ fn field(values: &[f32]) -> ElevationField {
 
 fn valid_snapshot() -> ReliefSnapshot {
     ReliefSnapshot::new(
-        RELIEF_SCHEMA_V2,
+        RELIEF_SCHEMA_V3,
         4,
         0.0,
         field(&[-4_000.0, 100.0, 500.0, -1_000.0]),
@@ -114,6 +115,32 @@ fn relief_v1_and_non_finite_volcanic_offsets_are_rejected() {
     assert!(matches!(
         ElevationField::from_values(vec![f32::NAN]),
         Err(ReliefValidationError::NonFiniteFieldValue { .. })
+    ));
+}
+
+#[test]
+fn relief_v3_expands_volcanic_relief_without_reinterpreting_v2() {
+    let snapshot = |schema_version| {
+        ReliefSnapshot::new(
+            schema_version,
+            1,
+            0.0,
+            field(&[-5_000.0]),
+            field(&[0.0]),
+            field(&[5_000.0]),
+            field(&[0.0]),
+            field(&[0.0]),
+            LandOceanField::from_kinds(vec![LandOceanKind::Land]),
+        )
+    };
+
+    assert!(snapshot(RELIEF_SCHEMA_V3).is_ok());
+    assert!(matches!(
+        snapshot(RELIEF_SCHEMA_V2),
+        Err(ReliefValidationError::FieldValueOutOfRange {
+            field: "volcanic_offset_m",
+            ..
+        })
     ));
 }
 

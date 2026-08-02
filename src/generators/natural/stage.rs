@@ -259,7 +259,7 @@ impl Stage for ReliefStage {
     }
 
     fn version(&self) -> u32 {
-        6
+        8
     }
 
     fn namespace(&self) -> &'static str {

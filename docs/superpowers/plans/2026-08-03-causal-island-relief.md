@@ -16,7 +16,7 @@
 - Noise may modulate morphology only inside hotspot or oceanic-subduction causal support. Global noise alone must never create land.
 - `mantle.volcanic_influence == 0` implies `relief.volcanic_offset_m == 0`.
 - Hotspot contributions stay in `volcanic_offset_m`; oceanic subduction-arc contributions stay in `tectonic_offset_m`.
-- Keep `ReliefSnapshot` V2 fields and current component ranges, including `volcanic_offset_m: 0..=4_000 m`.
+- Preserve the Relief field structure and V2 compatibility. The release-quality amendment emits Relief V3 with `volcanic_offset_m: 0..=6_000 m`, while V2 retains its original `0..=4_000 m` validation range.
 - Preserve `elevation = crust_base + tectonic_offset + volcanic_offset + regional_offset` within the existing tolerance.
 - Preserve the formal closed-boundary ocean guarantee and the visible east/west ocean band.
 - Sample continuous noise from quantized world coordinates or radius-normalized local coordinates, never UI pixels, cell IDs, or iteration order.
@@ -38,7 +38,7 @@
 - Consumes: only numeric coordinates and `noise::Perlin`; no world, engine, UI, GPU, or legacy terrain types.
 - Guarantees: fBm in `[-1, 1]`, ridged in `[0, 1]`, finite bounded warp, independent octave sources, deterministic output.
 
-- [ ] **Step 1: Declare the private module and write failing sampler tests**
+- [x] **Step 1: Declare the private module and write failing sampler tests**
 
 Add `mod relief_noise;` beside the other private natural-generator modules. Create `relief_noise.rs` with tests written against the desired API before defining it:
 
@@ -82,7 +82,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the unit tests and verify the expected red result**
+- [x] **Step 2: Run the unit tests and verify the expected red result**
 
 Run:
 
@@ -92,7 +92,7 @@ cargo test --lib generators::natural::relief_noise::tests -- --nocapture
 
 Expected: compile failure because `FractalProfile` and `ReliefNoise2d` do not yet exist.
 
-- [ ] **Step 3: Implement the bounded sampler minimally**
+- [x] **Step 3: Implement the bounded sampler minimally**
 
 Implement six independently seeded Perlin octave sources plus two warp sources. Rotate the sampling coordinate by a fixed non-axis-aligned matrix between octaves, multiply frequency by `lacunarity`, multiply amplitude by `persistence`, and normalize by the accumulated amplitude:
 
@@ -114,7 +114,7 @@ pub(super) struct ReliefNoise2d {
 
 Use `debug_assert!` for compile-time-owned valid profiles, clamp returned fBm/ridged values to their documented ranges, and do not add a general public noise framework.
 
-- [ ] **Step 4: Run focused green tests and formatting**
+- [x] **Step 4: Run focused green tests and formatting**
 
 ```powershell
 cargo test --lib generators::natural::relief_noise::tests -- --nocapture
@@ -122,7 +122,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-- [ ] **Step 5: Commit the independently testable sampler**
+- [x] **Step 5: Commit the independently testable sampler**
 
 ```powershell
 git add src/generators/natural/mod.rs src/generators/natural/relief_noise.rs
@@ -146,7 +146,7 @@ git commit -m "feat: add bounded relief noise sampler"
 - Uses: `Hotspot::{source_cell, strength_permille, support_radius_m}`, current source-cell plate velocity, quantized world/local coordinates, and `ReliefNoise2d`.
 - Preserves: `MantleSnapshot`, `TectonicSnapshot`, `ReliefGenerator::generate`, and every public field ID.
 
-- [ ] **Step 1: Add the independent hotspot substream test**
+- [x] **Step 1: Add the independent hotspot substream test**
 
 Add this constant to `random.rs`:
 
@@ -157,7 +157,7 @@ pub(super) const RELIEF_HOTSPOT_MORPHOLOGY_LABEL: &str =
 
 Before using it in production, add a test that consumes 100 values from this stream and proves the first eight values from `RELIEF_REGIONAL_LABEL` and `RELIEF_TECTONIC_DETAIL_LABEL` remain identical to pristine captures.
 
-- [ ] **Step 2: Write failing integration tests for support, seed, and velocity semantics**
+- [x] **Step 2: Write failing integration tests for support, seed, and velocity semantics**
 
 In `tests/relief_generation.rs`, add a validated rectangular oceanic fixture with one plate, oceanic thickness `14.0 km`, and a centered hotspot whose support does not reach the closed frame. Add:
 
@@ -187,7 +187,7 @@ fn hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented() {
 
 The production change that makes this pass is Relief-owned stochastic/kinematic hotspot morphology; the current purely radial `synthesize_volcanic_offset` must fail the changed-seed and changed-velocity assertions.
 
-- [ ] **Step 3: Run the hotspot test and verify the intended red result**
+- [x] **Step 3: Run the hotspot test and verify the intended red result**
 
 ```powershell
 cargo test --test relief_generation hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented -- --exact --nocapture
@@ -195,7 +195,7 @@ cargo test --test relief_generation hotspot_morphology_is_seeded_support_bounded
 
 Expected: FAIL because the current volcanic offset ignores both Relief seed and plate velocity.
 
-- [ ] **Step 4: Write the failing emergent-peak behavior test**
+- [x] **Step 4: Write the failing emergent-peak behavior test**
 
 Using the same fixture, assert the hotspot source is formal land, at least one supported non-source cell remains ocean with positive volcanic relief, and every formal land cell on oceanic crust is separated from the closed boundary:
 
@@ -220,7 +220,7 @@ fn strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts() {
 }
 ```
 
-- [ ] **Step 5: Run the emergent-peak test and verify red**
+- [x] **Step 5: Run the emergent-peak test and verify red**
 
 ```powershell
 cargo test --test relief_generation strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts -- --exact --nocapture
@@ -228,7 +228,7 @@ cargo test --test relief_generation strong_oceanic_hotspot_creates_an_island_amo
 
 Expected: FAIL because the existing oceanic hotspot amplitude tops out at `3_200 m` and the radial response does not create a distinct exposed peak in the chosen deep-ocean fixture.
 
-- [ ] **Step 6: Implement causal hotspot morphology**
+- [x] **Step 6: Implement causal hotspot morphology**
 
 Create `island_relief.rs` and implement:
 
@@ -256,7 +256,7 @@ For each hotspot in stable ID order:
 
 Replace the old radial `synthesize_volcanic_offset(tectonic, mantle)` call with this function, drawing exactly one seed from `RELIEF_HOTSPOT_MORPHOLOGY_LABEL`.
 
-- [ ] **Step 7: Run hotspot green tests and existing Relief regressions**
+- [x] **Step 7: Run hotspot green tests and existing Relief regressions**
 
 ```powershell
 cargo test --test relief_generation hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented -- --exact --nocapture
@@ -266,7 +266,7 @@ cargo test --test relief_generation closed_world_boundary_is_ocean_after_every_r
 git diff --check
 ```
 
-- [ ] **Step 8: Commit the hotspot morphology slice**
+- [x] **Step 8: Commit the hotspot morphology slice**
 
 ```powershell
 git add src/generators/natural/island_relief.rs src/generators/natural/mod.rs src/generators/natural/random.rs src/generators/natural/relief.rs tests/relief_generation.rs
@@ -288,7 +288,7 @@ git commit -m "feat: synthesize causal hotspot island groups"
 - Produces: `synthesize_oceanic_arc_peaks(...) -> Vec<f32>` aligned to spatial cells.
 - Adds: only a nonnegative extra contribution to `tectonic_offset_m`; broad existing arc/trench effects remain unchanged.
 
-- [ ] **Step 1: Add and isolate the island-arc substream**
+- [x] **Step 1: Add and isolate the island-arc substream**
 
 Add:
 
@@ -298,7 +298,7 @@ pub(super) const RELIEF_ISLAND_ARC_LABEL: &str = "relief-island-arc-v1";
 
 Extend the random-substream isolation test so consuming hotspot or arc morphology cannot perturb regional, tectonic-detail, or each other.
 
-- [ ] **Step 2: Write a failing oceanic-arc ownership test**
+- [x] **Step 2: Write a failing oceanic-arc ownership test**
 
 Add a fixture pair with identical plates, velocities, `Subduction` records, strengths, segments, and Relief seed. One fixture has oceanic crust on both sides; the other has oceanic descending crust and continental overriding crust. Assert:
 
@@ -336,7 +336,7 @@ fn ocean_ocean_subduction_adds_discrete_arc_peaks_without_changing_polarity() {
 
 The current implementation gives both overriding sides the same arc amplitude, so the first assertion must fail while the negative trench assertion continues to pass.
 
-- [ ] **Step 3: Run the arc test and verify red**
+- [x] **Step 3: Run the arc test and verify red**
 
 ```powershell
 cargo test --test relief_generation ocean_ocean_subduction_adds_discrete_arc_peaks_without_changing_polarity -- --exact --nocapture
@@ -344,7 +344,7 @@ cargo test --test relief_generation ocean_ocean_subduction_adds_discrete_arc_pea
 
 Expected: FAIL because no oceanic-island-arc specialization exists.
 
-- [ ] **Step 4: Implement sparse segment-owned peak selection**
+- [x] **Step 4: Implement sparse segment-owned peak selection**
 
 Implement:
 
@@ -369,7 +369,7 @@ For each stable `BoundarySegmentId` whose kind is `Subduction`:
 
 In `synthesize_tectonic_offset`, preserve the old broad field and old detail substream, then add the independently generated arc-peak field before the final clamp. Do not modify `BoundaryRecord`, `BoundarySegment`, polarity, or sign.
 
-- [ ] **Step 5: Run arc and signed-relief green tests**
+- [x] **Step 5: Run arc and signed-relief green tests**
 
 ```powershell
 cargo test --test relief_generation ocean_ocean_subduction_adds_discrete_arc_peaks_without_changing_polarity -- --exact --nocapture
@@ -379,7 +379,7 @@ cargo test --test tectonic_boundaries
 git diff --check
 ```
 
-- [ ] **Step 6: Commit the island-arc slice**
+- [x] **Step 6: Commit the island-arc slice**
 
 ```powershell
 git add src/generators/natural/island_relief.rs src/generators/natural/random.rs src/generators/natural/relief.rs tests/relief_generation.rs
@@ -402,7 +402,7 @@ git commit -m "feat: add oceanic subduction island arcs"
 - Adds quality metrics for oceanic land components that are separated from continental crust and causally supported by mantle influence or oceanic-subduction arc support.
 - Changes `ReliefStage::version()` from `5` to `6`; artifact key and snapshot schema remain unchanged.
 
-- [ ] **Step 1: Add a failing causal-ocean-island metric**
+- [x] **Step 1: Add a failing causal-ocean-island metric**
 
 Extend `PresetMorphologyMetrics` with:
 
@@ -428,7 +428,7 @@ if preset == WorldFormationPreset::Continents && seed == 42 {
 }
 ```
 
-- [ ] **Step 2: Run the quality matrix and verify the old generator fails the new metric**
+- [x] **Step 2: Run the quality matrix and verify the old generator fails the new metric**
 
 ```powershell
 cargo test --test natural_display_golden quality_across_fixed_seed_set -- --exact --nocapture
@@ -436,7 +436,7 @@ cargo test --test natural_display_golden quality_across_fixed_seed_set -- --exac
 
 Expected before the island implementation is applied: FAIL because existing formal land components are overwhelmingly continental-crust components and smooth hotspot support rarely exposes deep-ocean islands. When executing this task after Tasks 2–3, temporarily revert only the island calls, run the test to confirm the regression gate fails, then restore them and continue.
 
-- [ ] **Step 3: Tune only Relief-owned constants until the fixed gates pass**
+- [x] **Step 3: Tune only Relief-owned constants until the fixed gates pass**
 
 Allowed tuning variables are local hotspot envelope radii, warp strength, fBm/ridged profiles, peak exponent, bounded hotspot amplitude response, arc score threshold, and arc compact support. Do not tune crust fraction, formation corridors, hotspot count, plate count, plate motion, sea level, field ranges, or display colors to satisfy this gate.
 
@@ -447,7 +447,7 @@ cargo test --test relief_generation
 cargo test --test natural_display_golden quality_across_fixed_seed_set -- --exact --nocapture
 ```
 
-- [ ] **Step 4: Add the failing stage-version assertion and bump to version 6**
+- [x] **Step 4: Add the failing stage-version assertion and bump to version 6**
 
 Change the test expectation first:
 
@@ -463,11 +463,11 @@ cargo test --test natural_stage_graph complete_natural_graph_publishes_physical_
 
 Expected: FAIL with actual version `5`. Then return `6` from `ReliefStage::version`, update test-only `StageIdentity::new("natural.relief", 5, ...)` fixtures to version `6`, and rerun the focused graph/Relief suites.
 
-- [ ] **Step 5: Update the older geology design's superseded hotspot clause**
+- [x] **Step 5: Update the older geology design's superseded hotspot clause**
 
 In `2026-07-29-geologic-substrate-design.md`, replace the absolute prohibition on velocity-oriented hotspot morphology with a link to the approved 2026-08-03 design and this exact boundary: current velocity may shape a present-day anisotropic island group, but no age, event sequence, old-volcano entity, or historical state is generated.
 
-- [ ] **Step 6: Commit the quality and version gate**
+- [x] **Step 6: Commit the quality and version gate**
 
 ```powershell
 git add src/generators/natural/stage.rs tests/natural_stage_graph.rs tests/natural_display_golden.rs tests/relief_generation.rs docs/superpowers/specs/2026-07-29-geologic-substrate-design.md docs/superpowers/specs/2026-08-03-causal-island-relief-design.md docs/superpowers/plans/2026-08-03-causal-island-relief.md
@@ -486,7 +486,7 @@ git commit -m "test: enforce causal ocean island morphology"
 - Consumes: the fixed `GOLDEN_SEED`, formal field schemas, palettes, and CPU reference rasterizer.
 - Produces: reviewed reference images only; no runtime code or display mask.
 
-- [ ] **Step 1: Prove the reviewed golden test is red for algorithm-owned pixels**
+- [x] **Step 1: Prove the reviewed golden test is red for algorithm-owned pixels**
 
 ```powershell
 cargo test --test natural_display_golden reviewed_natural_goldens_match -- --exact --nocapture
@@ -494,7 +494,7 @@ cargo test --test natural_display_golden reviewed_natural_goldens_match -- --exa
 
 Expected: FAIL for at least `elevation.png` and `current-surface.png`; downstream bedrock, hydrology, erosion, or climate images may also fail because formal land/ocean changed.
 
-- [ ] **Step 2: Regenerate with the repository's sole update path**
+- [x] **Step 2: Regenerate with the repository's sole update path**
 
 ```powershell
 $env:SEKAI_UPDATE_NATURAL_GOLDENS='1'
@@ -502,7 +502,7 @@ cargo test --test natural_display_golden regenerate_natural_goldens -- --exact -
 Remove-Item Env:SEKAI_UPDATE_NATURAL_GOLDENS
 ```
 
-- [ ] **Step 3: Inspect every changed PNG**
+- [x] **Step 3: Inspect every changed PNG**
 
 Use `git status --short tests/golden/natural-foundation` to enumerate exact changes. Inspect each changed image at original resolution, with special attention to:
 
@@ -513,7 +513,7 @@ Use `git status --short tests/golden/natural-foundation` to enumerate exact chan
 
 If a visible defect remains, add a failing behavioral regression to Task 2 or 3 and fix the owning generator before accepting the PNG.
 
-- [ ] **Step 4: Re-run golden and release morphology tests**
+- [x] **Step 4: Re-run golden and release morphology tests**
 
 ```powershell
 cargo test --test natural_display_golden reviewed_natural_goldens_match -- --exact
@@ -521,7 +521,7 @@ cargo test --release --test natural_display_golden quality_across_fixed_seed_set
 git diff --check
 ```
 
-- [ ] **Step 5: Commit reviewed generated evidence**
+- [x] **Step 5: Commit reviewed generated evidence**
 
 ```powershell
 git add tests/golden/natural-foundation
@@ -538,7 +538,7 @@ git commit -m "test: review causal island relief goldens"
 **Interfaces:**
 - Produces: verification evidence for the approved design and existing CI contract.
 
-- [ ] **Step 1: Run formatting, diff, focused tests, and the full suite**
+- [x] **Step 1: Run formatting, diff, focused tests, and the full suite**
 
 ```powershell
 cargo fmt --all -- --check
@@ -549,7 +549,7 @@ cargo test --test natural_display_golden
 cargo test
 ```
 
-- [ ] **Step 2: Run strict compiler and Clippy gates**
+- [x] **Step 2: Run strict compiler and Clippy gates**
 
 ```powershell
 $env:RUSTFLAGS='-D warnings'
@@ -558,14 +558,14 @@ cargo clippy -- -D warnings
 Remove-Item Env:RUSTFLAGS
 ```
 
-- [ ] **Step 3: Run release quality and performance gates**
+- [x] **Step 3: Run release quality and performance gates**
 
 ```powershell
 cargo test --release --test natural_display_golden
 cargo test --release --test natural_performance release_default_hydro_erosion_budget -- --exact --ignored --nocapture
 ```
 
-- [ ] **Step 4: Run WASM and Trunk gates with the CI backend flag**
+- [x] **Step 4: Run WASM and Trunk gates with the CI backend flag**
 
 ```powershell
 $env:RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
@@ -576,7 +576,7 @@ Remove-Item Env:RUSTFLAGS
 Remove-Item Env:RUSTDOCFLAGS
 ```
 
-- [ ] **Step 5: Run and inspect the desktop application**
+- [x] **Step 5: Run and inspect the desktop application**
 
 Start the release application, rebuild the fixed default multi-continent world, and inspect at least formal elevation, current surface, volcanic offset/influence, tectonic offset, crust kind, and land/ocean. Confirm:
 
@@ -586,7 +586,7 @@ Start the release application, rebuild the fixed default multi-continent world, 
 - no global salt-and-pepper land, circular stamps, equal-spacing beads, or exposed outer frame;
 - changing seed changes local island morphology while leaving system responsibilities intact.
 
-- [ ] **Step 6: Audit scope and final repository state**
+- [x] **Step 6: Audit scope and final repository state**
 
 ```powershell
 git status --short
@@ -595,6 +595,43 @@ git diff -- src/generators/natural src/world/natural tests docs/superpowers
 ```
 
 Re-read `docs/superpowers/specs/2026-08-03-causal-island-relief-design.md` line by line and map every acceptance item to a passing test or inspected view. Do not claim completion if any required gate is unavailable or failing; report the exact evidence instead.
+
+---
+
+## Release-quality amendment: edge-safe hotspots and Relief V3
+
+The first release matrix exposed two contracts that the initial plan deliberately left for visual validation:
+
+1. Geometric inset alone does not match Voronoi graph-distance propagation, so farthest-point hotspot sources can still fall inside the formal ocean-frame attenuation support.
+2. A `4_000 m` volcanic component cannot lift a typical deep-ocean hotspot edifice above sea level. Raising peaks without changing their formal range would either clamp valid morphology or falsify the component identity.
+
+The accepted corrective work is:
+
+- [x] Add candidate-restricted farthest-point sampling without changing the original Tectonics seed sampler.
+- [x] Select Mantle hotspot sources at least `10%` of the world short side from the closed boundary in the same quantized graph metric used by volcanic support and the ocean frame; retain deterministic fallbacks for small worlds.
+- [x] Bump `MantleStage` to version `3` and add source-domain regression tests.
+- [x] Add `RELIEF_SCHEMA_V3` with a `6_000 m` volcanic maximum, keep V2 readable under its original `4_000 m` maximum, and bump `ReliefStage` to version `7`.
+- [x] Require a moderate hotspot to be capable of breaching typical `8 km` oceanic crust while preserving submerged supported cells.
+- [x] Treat the Volcanic Islands preset as a sparse ocean world: release land fraction may be `0.04..=0.22`, but every fixed release seed must still have at least two causally supported oceanic island components, no boundary land, and stronger oceanic mantle influence than the neutral archipelago case.
+- [x] Regenerate and inspect every affected golden after the amendment.
+- [x] Repeat all native, release, performance, WASM, Trunk, and desktop visual gates.
+
+## Code-review hardening amendment
+
+- [x] Apply seed rotation modulo in the original `u64` domain before narrowing to `usize`; cover high-bit seeds and both farthest-point entry points.
+- [x] Replace the forced top-quarter island-arc selection with a fixed upper-tail threshold, adjacency-local maxima, stable `CellId` ties, and one stable segment fallback; remove the selected-vector adjacency scan.
+- [x] Limit fBm/ridged octaves from physical coordinate scale and representative cell spacing using a two-sample wavelength cutoff; retain one base octave on extremely coarse meshes.
+- [x] Bump `ReliefStage` from `7` to `8` for the observable morphology change while preserving the Relief V3 wire contract.
+- [x] Re-run the 8-seed × 5-preset release morphology matrix after the cutoff and sparse-selection changes.
+
+### Final verification record (2026-08-03)
+
+- `cargo fmt --all -- --check`, `git diff --check`, `cargo check --all-features`, and strict all-target/all-feature Clippy passed.
+- `cargo test --all-targets --all-features` passed with 191 library tests passing and one pre-existing stress test ignored; integration, executable, benchmark, and GPU reference targets also passed.
+- Release golden review and the 8-seed × 5-preset morphology matrix passed; Volcanic Islands retained 6–18 causal oceanic island components per fixed seed, including 11 for `0x00C0_FFEE`, with zero boundary/east-west land.
+- The 20,000-cell release performance gate passed in `1794.625 ms` total, with Mantle at `12.805 ms` and Relief at `38.459 ms`.
+- wasm32 all-feature library check and `trunk build` passed with the CI `getrandom` backend configuration.
+- The final release desktop build was inspected at 20,000 cells in current-surface, land/ocean, crust, tectonic-offset, volcanic-influence, and volcanic-offset views; the artificial frame remained ocean, and causal islands appeared as sparse irregular groups rather than global noise or uniform beads.
 
 ---
 

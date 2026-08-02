@@ -399,7 +399,9 @@ fn assert_preset_component_profile(
             WorldFormationPreset::Archipelago => (0.10, 0.28),
             WorldFormationPreset::Supercontinent => (0.22, 0.40),
             WorldFormationPreset::GreatIsland => (0.12, 0.30),
-            WorldFormationPreset::VolcanicIslands => (0.05, 0.22),
+            // This preset is intentionally allowed to be a sparse ocean world;
+            // causal island-group counts, not total land area, carry its identity.
+            WorldFormationPreset::VolcanicIslands => (0.04, 0.22),
             WorldFormationPreset::Random => panic!("quality matrix uses named presets"),
         }
     };

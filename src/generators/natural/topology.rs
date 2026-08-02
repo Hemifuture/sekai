@@ -210,7 +210,7 @@ pub(super) fn farthest_point_seeds(
     }
 
     let cell_count = topology.cell_count();
-    let rotation = tie_rotation as usize % cell_count;
+    let rotation = stable_rotation_index(tie_rotation, cell_count);
     let mut selected = vec![false; cell_count];
     let mut seeds = Vec::with_capacity(count);
     seeds.push(CellId::from_raw(rotation as u32));
@@ -233,6 +233,62 @@ pub(super) fn farthest_point_seeds(
         seeds.push(CellId::from_raw(next as u32));
     }
     seeds
+}
+
+pub(super) fn farthest_point_seeds_from_candidates(
+    topology: &NaturalTopologyIndex,
+    candidates: &[CellId],
+    count: usize,
+    tie_rotation: u64,
+) -> Vec<CellId> {
+    assert!(
+        count <= candidates.len(),
+        "seed count cannot exceed candidate count"
+    );
+    let mut candidate_flags = vec![false; topology.cell_count()];
+    for &candidate in candidates {
+        let index = candidate.raw() as usize;
+        assert!(index < topology.cell_count(), "candidate cell must exist");
+        assert!(!candidate_flags[index], "candidate cells must be unique");
+        candidate_flags[index] = true;
+    }
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let rotation = stable_rotation_index(tie_rotation, candidates.len());
+    let mut selected = vec![false; topology.cell_count()];
+    let mut seeds = Vec::with_capacity(count);
+    let first = candidates[rotation];
+    seeds.push(first);
+    selected[first.raw() as usize] = true;
+
+    while seeds.len() < count {
+        let distances = multi_source_distance(topology, &seeds, None);
+        let mut best = None;
+        for offset in 0..candidates.len() {
+            let candidate = candidates[(rotation + offset) % candidates.len()];
+            let index = candidate.raw() as usize;
+            if selected[index] {
+                continue;
+            }
+            if best
+                .is_none_or(|current: CellId| distances[index] > distances[current.raw() as usize])
+            {
+                best = Some(candidate);
+            }
+        }
+        let next = best.expect("at least one unselected candidate remains");
+        selected[next.raw() as usize] = true;
+        seeds.push(next);
+    }
+    seeds
+}
+
+fn stable_rotation_index(tie_rotation: u64, domain_len: usize) -> usize {
+    assert!(domain_len > 0, "rotation domain cannot be empty");
+    let domain_len = u64::try_from(domain_len).expect("cell domains fit in u64");
+    usize::try_from(tie_rotation % domain_len).expect("remainder fits in the source domain")
 }
 
 fn propagate(
@@ -309,7 +365,8 @@ fn normalized_owner_pair(first: CellId, second: CellId) -> [CellId; 2] {
 #[cfg(test)]
 mod tests {
     use super::{
-        farthest_point_seeds, multi_source_distance, multi_source_ownership, NaturalTopologyIndex,
+        farthest_point_seeds, farthest_point_seeds_from_candidates, multi_source_distance,
+        multi_source_ownership, stable_rotation_index, NaturalTopologyIndex,
     };
     use crate::world::spatial::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
     use crate::world::{
@@ -403,6 +460,49 @@ mod tests {
         .unwrap()
     }
 
+    fn three_cell_fixture() -> SpatialSnapshot {
+        let cells = vec![
+            cell(
+                0,
+                (0.5, 0.5),
+                &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+                &[1],
+            ),
+            cell(
+                1,
+                (1.5, 0.5),
+                &[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)],
+                &[0, 2],
+            ),
+            cell(
+                2,
+                (2.5, 0.5),
+                &[(2.0, 0.0), (3.0, 0.0), (3.0, 1.0), (2.0, 1.0)],
+                &[1],
+            ),
+        ];
+        let edges = vec![
+            edge(0, (0.0, 0.0), (1.0, 0.0), [Some(0), None]),
+            edge(1, (0.0, 1.0), (0.0, 0.0), [Some(0), None]),
+            edge(2, (1.0, 1.0), (0.0, 1.0), [Some(0), None]),
+            edge(3, (1.0, 0.0), (2.0, 0.0), [Some(1), None]),
+            edge(4, (2.0, 1.0), (1.0, 1.0), [Some(1), None]),
+            edge(5, (2.0, 0.0), (3.0, 0.0), [Some(2), None]),
+            edge(6, (3.0, 0.0), (3.0, 1.0), [Some(2), None]),
+            edge(7, (3.0, 1.0), (2.0, 1.0), [Some(2), None]),
+            edge(8, (1.0, 0.0), (1.0, 1.0), [Some(0), Some(1)]),
+            edge(9, (2.0, 0.0), (2.0, 1.0), [Some(1), Some(2)]),
+        ];
+        SpatialSnapshot::new(
+            SPATIAL_SCHEMA_V1,
+            WorldRect::new(point(0.0, 0.0), point(3.0, 1.0)).unwrap(),
+            BoundaryCondition::Closed,
+            cells,
+            edges,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn index_maps_topology_and_quantizes_positive_values() {
         let index = NaturalTopologyIndex::new(&fixture(false));
@@ -455,6 +555,43 @@ mod tests {
                 CellId::from_raw(3),
                 CellId::from_raw(1)
             ]
+        );
+    }
+
+    #[test]
+    fn farthest_point_seed_selection_respects_the_candidate_domain() {
+        let index = NaturalTopologyIndex::new(&fixture(false));
+        let candidates = [CellId::from_raw(1), CellId::from_raw(2)];
+
+        assert_eq!(
+            farthest_point_seeds_from_candidates(&index, &candidates, 2, 0),
+            candidates
+        );
+        assert_eq!(
+            farthest_point_seeds_from_candidates(&index, &candidates, 1, 1),
+            vec![CellId::from_raw(2)]
+        );
+    }
+
+    #[test]
+    fn rotation_uses_the_full_u64_seed_before_narrowing_to_an_index() {
+        assert_eq!(stable_rotation_index(u64::MAX, 3), 0);
+        assert_eq!(stable_rotation_index(1_u64 << 32, 3), 1);
+
+        let index = NaturalTopologyIndex::new(&three_cell_fixture());
+        let candidates = [
+            CellId::from_raw(0),
+            CellId::from_raw(1),
+            CellId::from_raw(2),
+        ];
+        let high_bit_seed = (1_u64 << 32) + 1;
+        assert_eq!(
+            farthest_point_seeds(&index, 1, high_bit_seed),
+            vec![CellId::from_raw(2)]
+        );
+        assert_eq!(
+            farthest_point_seeds_from_candidates(&index, &candidates, 1, high_bit_seed),
+            vec![CellId::from_raw(2)]
         );
     }
 

@@ -10,7 +10,8 @@ use sekai::world::natural::{
     Hotspot, LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
     ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSnapshot, TectonicSpec,
     WorldFormationPreset, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    RELIEF_SCHEMA_V3, RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    VOLCANIC_OFFSET_MAX_M,
 };
 use sekai::world::spatial::{
     SpatialCell, SpatialEdge, SpatialSnapshot, Topology, SPATIAL_SCHEMA_V1,
@@ -125,6 +126,7 @@ fn regular_grid_with_size(columns: usize, rows: usize) -> SpatialSnapshot {
 fn uniform_oceanic_tectonics(
     spatial: &SpatialSnapshot,
     velocity: PlateVelocity,
+    crust_thickness_km: f32,
 ) -> TectonicSnapshot {
     let snapshot = TectonicSnapshot::new(
         TECTONIC_SNAPSHOT_SCHEMA_V1,
@@ -137,7 +139,7 @@ fn uniform_oceanic_tectonics(
         }],
         PlateIdField::from_ids(vec![PlateId::from_raw(0); spatial.cell_count()]),
         CrustKindField::from_kinds(vec![CrustKind::Oceanic; spatial.cell_count()]),
-        vec![14.0; spatial.cell_count()],
+        vec![crust_thickness_km; spatial.cell_count()],
         vec![BoundaryRecord::none(); spatial.edges().len()],
         Vec::new(),
     )
@@ -147,6 +149,13 @@ fn uniform_oceanic_tectonics(
 }
 
 fn centered_hotspot_mantle(spatial: &SpatialSnapshot) -> MantleSnapshot {
+    centered_hotspot_mantle_with_strength(spatial, 1_000)
+}
+
+fn centered_hotspot_mantle_with_strength(
+    spatial: &SpatialSnapshot,
+    strength_permille: u16,
+) -> MantleSnapshot {
     let source = CellId::from_raw(
         ((LARGE_GRID_ROWS / 2) * LARGE_GRID_COLUMNS + LARGE_GRID_COLUMNS / 2) as u32,
     );
@@ -174,7 +183,7 @@ fn centered_hotspot_mantle(spatial: &SpatialSnapshot) -> MantleSnapshot {
         vec![Hotspot::new(
             HotspotId::from_raw(0),
             source,
-            1_000,
+            strength_permille,
             meters(support_radius_m),
         )
         .unwrap()],
@@ -337,14 +346,14 @@ fn separated_continental_components_with_boundary(
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 6, "sekai.core"),
+        StageIdentity::new("natural.relief", 8, "sekai.core"),
     ))
 }
 
 fn mantle_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.mantle", 2, "sekai.core"),
+        StageIdentity::new("natural.mantle", 3, "sekai.core"),
     ))
 }
 
@@ -425,6 +434,13 @@ fn generated_fixture() -> (&'static SpatialSnapshot, TectonicSnapshot) {
 }
 
 fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSnapshot {
+    generated_layers_for_preset(preset, 42).2
+}
+
+fn generated_layers_for_preset(
+    preset: ResolvedWorldFormationPreset,
+    seed: u64,
+) -> (TectonicSnapshot, MantleSnapshot, ReliefSnapshot) {
     let (spatial, _) = generated_fixture();
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -440,7 +456,7 @@ fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSn
         },
         &formation,
         &mut StageRng::from_seed(derive_stage_seed(
-            RootSeed::new(42),
+            RootSeed::new(seed),
             StageIdentity::new("natural.tectonics", 3, "sekai.core"),
         )),
     )
@@ -449,10 +465,11 @@ fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSn
         spatial,
         &GeologicSpec::default(),
         formation.mantle_bias(),
-        &mut mantle_rng(42),
+        &mut mantle_rng(seed),
     )
     .unwrap();
-    generate_relief_with_mantle(spatial, &tectonic, &mantle, 42)
+    let relief = generate_relief_with_mantle(spatial, &tectonic, &mantle, seed);
+    (tectonic, mantle, relief)
 }
 
 fn cell_at(row: usize, column: usize) -> CellId {
@@ -766,16 +783,40 @@ fn mantle_influence_field_remains_authoritative_beyond_the_local_shape_core() {
 }
 
 #[test]
+fn closed_ocean_frame_preserves_interior_oceanic_hotspot_peaks() {
+    let (tectonic, mantle, relief) =
+        generated_layers_for_preset(ResolvedWorldFormationPreset::VolcanicIslands, 0x00C0_FFEE);
+    let mut oceanic_sources = 0;
+
+    for hotspot in mantle.hotspots() {
+        if tectonic.crust_kind(hotspot.source_cell()) != Some(CrustKind::Oceanic) {
+            continue;
+        }
+        oceanic_sources += 1;
+        let expected = VOLCANIC_OFFSET_MAX_M * f32::from(hotspot.strength_permille()) / 1_000.0;
+        let actual = relief.volcanic_offset_m().values()[hotspot.source_cell().raw() as usize];
+        assert!(
+            actual + 0.1 >= expected,
+            "ocean-frame attenuation reached interior hotspot {:?}: {actual} < {expected}",
+            hotspot.id()
+        );
+    }
+    assert!(oceanic_sources > 0);
+}
+
+#[test]
 fn hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented() {
     let spatial = large_regular_grid();
     let mantle = centered_hotspot_mantle(&spatial);
     let eastward = uniform_oceanic_tectonics(
         &spatial,
         PlateVelocity::new(80, 0).expect("test velocity is valid"),
+        14.0,
     );
     let northward = uniform_oceanic_tectonics(
         &spatial,
         PlateVelocity::new(0, 80).expect("test velocity is valid"),
+        14.0,
     );
 
     let first = generate_relief_with_mantle(&spatial, &eastward, &mantle, 71);
@@ -803,6 +844,7 @@ fn strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts() {
     let tectonic = uniform_oceanic_tectonics(
         &spatial,
         PlateVelocity::new(80, 20).expect("test velocity is valid"),
+        14.0,
     );
     let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 71);
     let source = mantle.hotspots()[0].source_cell();
@@ -821,9 +863,28 @@ fn strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts() {
 }
 
 #[test]
+fn moderate_oceanic_hotspot_can_breach_typical_deep_seafloor() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle_with_strength(&spatial, 800);
+    let tectonic = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 20).expect("test velocity is valid"),
+        8.0,
+    );
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 71);
+
+    assert_eq!(
+        relief.land_ocean_kind(mantle.hotspots()[0].source_cell()),
+        Some(LandOceanKind::Land),
+        "a moderate hotspot should be capable of building an island from typical oceanic crust"
+    );
+}
+
+#[test]
 fn final_relief_is_explainable_and_default_has_land_and_ocean() {
     let (spatial, tectonic) = generated_fixture();
     let relief = generate_relief(spatial, &tectonic, 42);
+    assert_eq!(relief.schema_version(), RELIEF_SCHEMA_V3);
     let mut counts = [0_usize; 2];
     for index in 0..spatial.cell_count() {
         let expected = relief.crust_base_elevation_m().values()[index]

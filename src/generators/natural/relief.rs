@@ -15,7 +15,7 @@ use crate::world::natural::{
     BoundaryKind, CrustKind, ElevationField, LandOceanField, MantleSnapshot, MantleValidationError,
     ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicValidationError,
     CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V2, TECTONIC_OFFSET_MAX_M,
+    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V3, TECTONIC_OFFSET_MAX_M,
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
@@ -78,7 +78,7 @@ impl ReliefGenerator {
         let elevation = ElevationField::from_values(elevation)?;
         let land_ocean = LandOceanField::classify(&elevation, SEA_LEVEL_M);
         let snapshot = ReliefSnapshot::new(
-            RELIEF_SCHEMA_V2,
+            RELIEF_SCHEMA_V3,
             spatial.cell_count() as u32,
             SEA_LEVEL_M,
             crust_base,

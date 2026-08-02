@@ -2,18 +2,24 @@ use rand::RngCore;
 use thiserror::Error;
 
 use super::random::{LabeledSubstreams, HOTSPOT_SEEDS_LABEL, HOTSPOT_STRENGTH_LABEL};
-use super::topology::{farthest_point_seeds, multi_source_distance, NaturalTopologyIndex};
+use super::topology::{
+    farthest_point_seeds, farthest_point_seeds_from_candidates, multi_source_distance,
+    NaturalTopologyIndex,
+};
 use crate::engine::StageRng;
 use crate::world::natural::{
     GeologicSpec, GeologicSpecError, Hotspot, MantleActivity, MantleFormationBias, MantleSnapshot,
     MantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_COUNT,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
-use crate::world::{HotspotId, Meters};
+use crate::world::{CellId, HotspotId, Meters};
 
 const BACKGROUND_HEAT_FLOW: [f32; 3] = [45.0, 65.0, 85.0];
 const HOTSPOT_ANOMALY_MAX: [f32; 3] = [160.0, 220.0, 280.0];
 const HOTSPOT_RADIUS_SHORT_SIDE: [f64; 3] = [0.04, 0.055, 0.07];
+// The strongest active support reaches 8.4% of the short side. A 10% graph
+// inset keeps both its center and support away from the artificial map edge.
+const HOTSPOT_SOURCE_MARGIN_SHORT_SIDE: f64 = 0.10;
 
 /// Deterministic current-slice mantle forcing independent of tectonic state.
 #[derive(Debug, Clone, Copy, Default)]
@@ -47,7 +53,7 @@ impl MantleGenerator {
         let topology = NaturalTopologyIndex::new(spatial);
         let mut seed_rng = streams.stream(HOTSPOT_SEEDS_LABEL);
         let sources =
-            farthest_point_seeds(&topology, usize::from(hotspot_count), seed_rng.next_u64());
+            select_hotspot_sources(&topology, usize::from(hotspot_count), seed_rng.next_u64());
         let mut strength_rng = streams.stream(HOTSPOT_STRENGTH_LABEL);
         let short_side_m = spatial
             .bounds()
@@ -108,6 +114,50 @@ impl MantleGenerator {
             .validate_against(spatial)
             .map_err(MantleGenerationError::InvalidSnapshot)?;
         Ok(snapshot)
+    }
+}
+
+fn select_hotspot_sources(
+    topology: &NaturalTopologyIndex,
+    count: usize,
+    tie_rotation: u64,
+) -> Vec<CellId> {
+    let boundary_sources = topology
+        .boundary_cells()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &is_boundary)| is_boundary.then_some(CellId::from_raw(index as u32)))
+        .collect::<Vec<_>>();
+    let boundary_distance = multi_source_distance(topology, &boundary_sources, None);
+    let margin = topology.quantized_short_side_fraction(HOTSPOT_SOURCE_MARGIN_SHORT_SIDE);
+    let margin_candidates = boundary_distance
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &distance)| {
+            (distance >= margin).then_some(CellId::from_raw(index as u32))
+        })
+        .collect::<Vec<_>>();
+    if margin_candidates.len() >= count {
+        return farthest_point_seeds_from_candidates(
+            topology,
+            &margin_candidates,
+            count,
+            tie_rotation,
+        );
+    }
+
+    let interior_candidates = topology
+        .boundary_cells()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &is_boundary)| {
+            (!is_boundary).then_some(CellId::from_raw(index as u32))
+        })
+        .collect::<Vec<_>>();
+    if interior_candidates.len() >= count {
+        farthest_point_seeds_from_candidates(topology, &interior_candidates, count, tie_rotation)
+    } else {
+        farthest_point_seeds(topology, count, tie_rotation)
     }
 }
 

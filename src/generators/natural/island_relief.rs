@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::relief_noise::{FractalProfile, ReliefNoise2d};
-use super::topology::NaturalTopologyIndex;
+use super::topology::{NaturalTopologyIndex, NeighborArc};
 use crate::world::natural::{
     BoundaryKind, CrustKind, MantleSnapshot, TectonicSnapshot, VOLCANIC_OFFSET_MAX_M,
     VOLCANIC_OFFSET_MIN_M,
@@ -22,6 +22,7 @@ const HOTSPOT_RIDGES: FractalProfile = FractalProfile {
     persistence: 0.46,
 };
 const HOTSPOT_SEED_STEP: u32 = 0x9E37_79B9;
+const HOTSPOT_TRAIL_COORDINATE_STRETCH: f64 = 5.3;
 const SUPPORTED_BACKGROUND_FRACTION: f64 = 0.015;
 const ARC_SEED_STEP: u32 = 0x85EB_CA6B;
 const ARC_FBM: FractalProfile = FractalProfile {
@@ -36,6 +37,7 @@ const ARC_RIDGES: FractalProfile = FractalProfile {
     lacunarity: 2.07,
     persistence: 0.44,
 };
+const ARC_PEAK_SCORE_THRESHOLD: f64 = 0.52;
 
 /// Interprets present-day mantle forcing as compact volcanic morphology.
 ///
@@ -48,6 +50,7 @@ pub(super) fn synthesize_hotspot_offset(
     mantle: &MantleSnapshot,
     morphology_seed: u32,
 ) -> Vec<f32> {
+    let sample_spacing_m = representative_cell_spacing_m(spatial);
     let mut result = mantle
         .volcanic_influence()
         .iter()
@@ -79,6 +82,12 @@ pub(super) fn synthesize_hotspot_offset(
         let speed = f64::from(velocity[0]).hypot(f64::from(velocity[1]));
         let speed_fraction = (speed / (120.0_f64 * 2.0_f64.sqrt())).clamp(0.0, 1.0);
         let radius_m = hotspot.support_radius_m().get();
+        let surface_fbm = HOTSPOT_FBM.limited_to_resolution(radius_m, sample_spacing_m);
+        let surface_ridges = HOTSPOT_RIDGES.limited_to_resolution(radius_m, sample_spacing_m);
+        let trail_fbm = HOTSPOT_FBM.limited_to_resolution(
+            radius_m / HOTSPOT_TRAIL_COORDINATE_STRETCH,
+            sample_spacing_m,
+        );
         let strength = f64::from(hotspot.strength_permille()) / 1_000.0;
         let noise = ReliefNoise2d::new(
             morphology_seed
@@ -105,16 +114,16 @@ pub(super) fn synthesize_hotspot_offset(
 
             let warped = noise.warp(local, 1.15, 0.1);
             let current_edifice = compact_peak(warped[0].hypot(warped[1]) / 0.48);
-            let trail = directional_trail(warped, direction, speed_fraction, &noise);
+            let trail = directional_trail(warped, direction, speed_fraction, &noise, trail_fbm);
             let morphology = current_edifice.max(trail);
             if morphology <= 0.0 {
                 continue;
             }
 
-            let fbm = ((noise.fbm(warped, HOTSPOT_FBM) + 1.0) * 0.5)
+            let fbm = ((noise.fbm(warped, surface_fbm) + 1.0) * 0.5)
                 .clamp(0.0, 1.0)
                 .powf(1.65);
-            let ridges = noise.ridged(warped, HOTSPOT_RIDGES).powf(2.2);
+            let ridges = noise.ridged(warped, surface_ridges).powf(2.2);
             let surface_detail = 0.72 + 0.18 * fbm + 0.10 * ridges;
             let support = mantle_envelope.powf(0.35);
             let amplitude = f64::from(volcanic_amplitude(tectonic, cell));
@@ -162,6 +171,12 @@ pub(super) fn synthesize_oceanic_arc_peaks(
     morphology_seed: u32,
 ) -> Vec<f32> {
     let mut result = vec![0.0_f32; spatial.cell_count()];
+    let sample_spacing_m = representative_cell_spacing_m(spatial);
+    let bounds = spatial.bounds();
+    let coordinate_scale_m = bounds.width().get().max(bounds.height().get());
+    let arc_fbm = ARC_FBM.limited_to_resolution(coordinate_scale_m, sample_spacing_m);
+    let arc_ridges = ARC_RIDGES.limited_to_resolution(coordinate_scale_m, sample_spacing_m);
+    let mut candidate_scores = vec![None; spatial.cell_count()];
 
     for segment in tectonic
         .boundary_segments()
@@ -224,7 +239,7 @@ pub(super) fn synthesize_oceanic_arc_peaks(
             morphology_seed
                 .wrapping_add(ARC_SEED_STEP.wrapping_mul(segment.id.raw().wrapping_add(1))),
         );
-        let mut ranked = candidates
+        let ranked = candidates
             .into_iter()
             .map(|(cell, strength)| {
                 let center = topology.quantized_centers()[cell.raw() as usize];
@@ -233,34 +248,15 @@ pub(super) fn synthesize_oceanic_arc_peaks(
                     center[1] as f64 / 1_000_000.0,
                 ];
                 let warped = noise.warp(point, 3.0, 0.035);
-                let fbm = ((noise.fbm(warped, ARC_FBM) + 1.0) * 0.5)
+                let fbm = ((noise.fbm(warped, arc_fbm) + 1.0) * 0.5)
                     .clamp(0.0, 1.0)
                     .powf(2.0);
-                let ridge = noise.ridged(warped, ARC_RIDGES).powf(2.5);
+                let ridge = noise.ridged(warped, arc_ridges).powf(2.5);
                 let score = (0.68 * fbm + 0.32 * ridge).clamp(0.0, 1.0);
                 (cell, strength, score)
             })
             .collect::<Vec<_>>();
-        ranked.sort_by(|first, second| {
-            second
-                .2
-                .total_cmp(&first.2)
-                .then_with(|| first.0.cmp(&second.0))
-        });
-
-        let target_count = ranked.len().div_ceil(4).max(1);
-        let mut selected = Vec::with_capacity(target_count);
-        for &(cell, strength, score) in &ranked {
-            if selected
-                .iter()
-                .all(|&(other, _, _)| topology.edge_between(cell, other).is_none())
-            {
-                selected.push((cell, strength, score));
-                if selected.len() == target_count {
-                    break;
-                }
-            }
-        }
+        let selected = select_sparse_arc_peaks(topology.arcs(), &ranked, &mut candidate_scores);
 
         for (cell, strength, score) in selected {
             let amplitude = ((1_900.0 + 900.0 * score) * f64::from(strength)) as f32;
@@ -279,6 +275,58 @@ pub(super) fn synthesize_oceanic_arc_peaks(
     }
 
     result
+}
+
+type ArcPeakCandidate = (CellId, f32, f64);
+
+fn select_sparse_arc_peaks(
+    arcs: &[Vec<NeighborArc>],
+    candidates: &[ArcPeakCandidate],
+    candidate_scores: &mut [Option<f64>],
+) -> Vec<ArcPeakCandidate> {
+    debug_assert_eq!(arcs.len(), candidate_scores.len());
+    let Some(stable_maximum) = candidates.iter().copied().reduce(|best, candidate| {
+        if candidate.2 > best.2 || (candidate.2 == best.2 && candidate.0 < best.0) {
+            candidate
+        } else {
+            best
+        }
+    }) else {
+        return Vec::new();
+    };
+
+    for &(cell, _, score) in candidates {
+        let slot = &mut candidate_scores[cell.raw() as usize];
+        debug_assert!(
+            slot.is_none(),
+            "arc candidate cells are unique within a segment"
+        );
+        *slot = Some(score);
+    }
+
+    let mut selected = Vec::new();
+    for &candidate @ (cell, _, score) in candidates {
+        let is_fallback = cell == stable_maximum.0;
+        if !is_fallback && score < ARC_PEAK_SCORE_THRESHOLD {
+            continue;
+        }
+        let is_local_maximum = arcs[cell.raw() as usize].iter().all(|arc| {
+            candidate_scores[arc.neighbor.raw() as usize].is_none_or(|neighbor_score| {
+                score > neighbor_score || (score == neighbor_score && cell < arc.neighbor)
+            })
+        });
+        if is_local_maximum {
+            selected.push(candidate);
+        }
+    }
+
+    for &(cell, _, _) in candidates {
+        candidate_scores[cell.raw() as usize] = None;
+    }
+    debug_assert!(selected
+        .iter()
+        .any(|candidate| candidate.0 == stable_maximum.0));
+    selected
 }
 
 fn inland_arc_cell(
@@ -349,6 +397,7 @@ fn directional_trail(
     direction: Option<[f64; 2]>,
     speed_fraction: f64,
     noise: &ReliefNoise2d,
+    profile: FractalProfile,
 ) -> f64 {
     let Some(direction) = direction else {
         return 0.0;
@@ -363,7 +412,11 @@ fn directional_trail(
         return 0.0;
     }
 
-    let chain_signal = ((noise.fbm([along * 3.1, across * 5.3], HOTSPOT_FBM) + 1.0) * 0.5)
+    let chain_signal = ((noise.fbm(
+        [along * 3.1, across * HOTSPOT_TRAIL_COORDINATE_STRETCH],
+        profile,
+    ) + 1.0)
+        * 0.5)
         .clamp(0.0, 1.0)
         .powf(2.0);
     let lateral_width = 0.13 + 0.05 * chain_signal;
@@ -382,4 +435,80 @@ fn compact_peak(normalized_distance: f64) -> f64 {
     }
     let remaining = 1.0 - normalized_distance * normalized_distance;
     remaining * remaining
+}
+
+fn representative_cell_spacing_m(spatial: &SpatialSnapshot) -> f64 {
+    let bounds = spatial.bounds();
+    let world_area_m2 = bounds.width().get() * bounds.height().get();
+    (world_area_m2 / spatial.cell_count() as f64).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_sparse_arc_peaks, ARC_PEAK_SCORE_THRESHOLD};
+    use crate::generators::natural::topology::NeighborArc;
+    use crate::world::{CellId, EdgeId};
+
+    fn line_graph(cell_count: u32) -> Vec<Vec<NeighborArc>> {
+        (0..cell_count)
+            .map(|cell| {
+                let mut neighbors = Vec::new();
+                if cell > 0 {
+                    neighbors.push(NeighborArc {
+                        neighbor: CellId::from_raw(cell - 1),
+                        edge: EdgeId::from_raw(cell - 1),
+                        traversal_cost: 1,
+                    });
+                }
+                if cell + 1 < cell_count {
+                    neighbors.push(NeighborArc {
+                        neighbor: CellId::from_raw(cell + 1),
+                        edge: EdgeId::from_raw(cell),
+                        traversal_cost: 1,
+                    });
+                }
+                neighbors
+            })
+            .collect()
+    }
+
+    #[test]
+    fn arc_peak_selection_keeps_only_thresholded_local_maxima() {
+        let arcs = line_graph(5);
+        let candidates = [
+            (CellId::from_raw(0), 1.0, ARC_PEAK_SCORE_THRESHOLD + 0.01),
+            (CellId::from_raw(1), 1.0, ARC_PEAK_SCORE_THRESHOLD + 0.15),
+            (CellId::from_raw(2), 1.0, ARC_PEAK_SCORE_THRESHOLD + 0.03),
+            (CellId::from_raw(3), 1.0, ARC_PEAK_SCORE_THRESHOLD - 0.20),
+            (CellId::from_raw(4), 1.0, ARC_PEAK_SCORE_THRESHOLD + 0.05),
+        ];
+        let mut scores = vec![None; arcs.len()];
+
+        let selected = select_sparse_arc_peaks(&arcs, &candidates, &mut scores);
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|candidate| candidate.0)
+                .collect::<Vec<_>>(),
+            vec![CellId::from_raw(1), CellId::from_raw(4)]
+        );
+        assert!(scores.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn arc_peak_selection_falls_back_to_one_stable_maximum() {
+        let arcs = line_graph(3);
+        let candidates = [
+            (CellId::from_raw(0), 1.0, ARC_PEAK_SCORE_THRESHOLD - 0.20),
+            (CellId::from_raw(1), 1.0, ARC_PEAK_SCORE_THRESHOLD - 0.10),
+            (CellId::from_raw(2), 1.0, ARC_PEAK_SCORE_THRESHOLD - 0.10),
+        ];
+        let mut scores = vec![None; arcs.len()];
+
+        let selected = select_sparse_arc_peaks(&arcs, &candidates, &mut scores);
+
+        assert_eq!(selected, vec![candidates[1]]);
+        assert!(scores.iter().all(Option::is_none));
+    }
 }

@@ -3,6 +3,7 @@ use std::array;
 use noise::{NoiseFn, Perlin};
 
 const MAX_OCTAVES: usize = 6;
+const MIN_SAMPLES_PER_WAVELENGTH: f64 = 2.0;
 const OCTAVE_ROTATION_COS: f64 = 0.819_152_044_288_991_8;
 const OCTAVE_ROTATION_SIN: f64 = 0.573_576_436_351_046;
 const OCTAVE_SEED_STEP: u32 = 0x9E37_79B9;
@@ -24,6 +25,32 @@ impl FractalProfile {
         debug_assert!(
             self.persistence.is_finite() && self.persistence > 0.0 && self.persistence < 1.0
         );
+    }
+
+    /// Drops detail octaves whose physical wavelength is below the sampling
+    /// grid's Nyquist limit. The base octave remains so a causal morphology
+    /// does not disappear entirely on very coarse meshes.
+    pub(super) fn limited_to_resolution(
+        self,
+        coordinate_scale_m: f64,
+        sample_spacing_m: f64,
+    ) -> Self {
+        self.assert_valid();
+        debug_assert!(coordinate_scale_m.is_finite() && coordinate_scale_m > 0.0);
+        debug_assert!(sample_spacing_m.is_finite() && sample_spacing_m > 0.0);
+
+        let maximum_frequency =
+            coordinate_scale_m / (MIN_SAMPLES_PER_WAVELENGTH * sample_spacing_m);
+        let mut frequency = self.frequency;
+        let mut octaves = 1;
+        for octave in 1..self.octaves {
+            frequency *= self.lacunarity;
+            if frequency > maximum_frequency {
+                break;
+            }
+            octaves = octave + 1;
+        }
+        Self { octaves, ..self }
     }
 }
 
@@ -135,5 +162,20 @@ mod tests {
             assert!((warped[0] - point[0]).abs() <= 0.12);
             assert!((warped[1] - point[1]).abs() <= 0.12);
         }
+    }
+
+    #[test]
+    fn octave_limit_stops_before_frequencies_the_cell_spacing_cannot_resolve() {
+        let coarse = PROFILE.limited_to_resolution(40.0, 10.0);
+        let medium = PROFILE.limited_to_resolution(100.0, 5.0);
+
+        assert_eq!(coarse.octaves, 1);
+        assert_eq!(medium.octaves, 3);
+        assert_eq!(PROFILE.octaves, 5);
+    }
+
+    #[test]
+    fn octave_limit_preserves_the_profile_when_all_scales_are_resolvable() {
+        assert_eq!(PROFILE.limited_to_resolution(100.0, 1.0).octaves, 5);
     }
 }
