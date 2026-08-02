@@ -25,8 +25,8 @@ use sekai::world::natural::{
     preliminary_mean_air_temperature_c_field_id, preliminary_temperature_seasonality_c_field_id,
     sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    volcanic_influence_field_id, BedrockKind, BoundaryKind, ClimateSpec, GeologicSnapshot,
-    GeologicSpec, HydroErosionSnapshot, HydroErosionSpec, MantleSnapshot,
+    volcanic_influence_field_id, BedrockKind, BoundaryKind, ClimateSpec, CrustKind,
+    GeologicSnapshot, GeologicSpec, HydroErosionSnapshot, HydroErosionSpec, MantleSnapshot,
     PreliminaryClimateSnapshot, ReliefSnapshot, SurfaceWaterKind, TectonicSnapshot, TectonicSpec,
     WorldFormationPreset, WorldFormationSpec, COMPONENT_IDENTITY_TOLERANCE_M,
 };
@@ -266,6 +266,7 @@ struct PresetMorphologyMetrics {
     east_west_band_land_count: usize,
     current_east_west_band_land_count: usize,
     mean_oceanic_volcanic_influence: f32,
+    causal_oceanic_island_component_count: usize,
 }
 
 fn assert_preset_morphology_quality_matrix() {
@@ -318,7 +319,7 @@ fn assert_preset_morphology_quality_matrix() {
 
             let metrics = preset_morphology_metrics(&fixture);
             eprintln!(
-                "preset={:?} seed={seed} crust_components={} major_crust_components={} largest_crust_share={:.3} continental={:.3} land={:.3} land_components={} major_land_components={} largest_land_share={:.3} current_land_components={} current_largest_land_share={:.3} boundary_land={} current_boundary_land={} east_west_land={} current_east_west_land={} oceanic_volcanism={:.3}",
+                "preset={:?} seed={seed} crust_components={} major_crust_components={} largest_crust_share={:.3} continental={:.3} land={:.3} land_components={} major_land_components={} largest_land_share={:.3} current_land_components={} current_largest_land_share={:.3} boundary_land={} current_boundary_land={} east_west_land={} current_east_west_land={} oceanic_volcanism={:.3} causal_oceanic_islands={}",
                 case.preset,
                 metrics.component_count,
                 metrics.major_component_count,
@@ -335,6 +336,7 @@ fn assert_preset_morphology_quality_matrix() {
                 metrics.east_west_band_land_count,
                 metrics.current_east_west_band_land_count,
                 metrics.mean_oceanic_volcanic_influence,
+                metrics.causal_oceanic_island_component_count,
             );
             assert!(
                 (metrics.continental_fraction - f64::from(case.continental_fraction)).abs()
@@ -438,6 +440,10 @@ fn assert_preset_component_profile(
             );
             if seed == 42 {
                 assert!(
+                    metrics.causal_oceanic_island_component_count >= 1,
+                    "preset {preset:?}, seed {seed}: expected a causally supported oceanic island"
+                );
+                assert!(
                     metrics.largest_land_share <= 0.75,
                     "preset {preset:?}, seed {seed}: largest visible land share was {:.3}",
                     metrics.largest_land_share
@@ -527,6 +533,11 @@ fn assert_preset_component_profile(
                 metrics.land_component_count
             );
             assert!(metrics.current_land_component_count >= 3);
+            assert!(
+                metrics.causal_oceanic_island_component_count >= 2,
+                "preset {preset:?}, seed {seed}: expected at least two causally supported oceanic island groups, got {}",
+                metrics.causal_oceanic_island_component_count
+            );
             assert!(
                 metrics.largest_land_share <= 0.75,
                 "preset {preset:?}, seed {seed}: largest visible land share was {:.3}",
@@ -637,6 +648,8 @@ fn preset_morphology_metrics(fixture: &NaturalFixture) -> PresetMorphologyMetric
         .fold((0.0_f32, 0_usize), |(sum, count), (_, &value)| {
             (sum + value, count + 1)
         });
+    let causal_oceanic_island_component_count =
+        causal_oceanic_island_component_count(spatial, tectonic, fixture.mantle.snapshot(), relief);
 
     PresetMorphologyMetrics {
         component_count: component_areas.len(),
@@ -663,7 +676,96 @@ fn preset_morphology_metrics(fixture: &NaturalFixture) -> PresetMorphologyMetric
         east_west_band_land_count,
         current_east_west_band_land_count,
         mean_oceanic_volcanic_influence: oceanic_volcanism / oceanic_cells as f32,
+        causal_oceanic_island_component_count,
     }
+}
+
+fn causal_oceanic_island_component_count(
+    spatial: &SpatialSnapshot,
+    tectonic: &TectonicSnapshot,
+    mantle: &MantleSnapshot,
+    relief: &ReliefSnapshot,
+) -> usize {
+    let continental_sources = tectonic
+        .crust_kinds()
+        .raw_values()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &kind)| (kind == 1).then_some(CellId::from_raw(index as u32)))
+        .collect::<Vec<_>>();
+    let near_continental = cells_within_steps(spatial, &continental_sources, 1);
+
+    let mut oceanic_arc_sources = Vec::new();
+    for edge in spatial.edges() {
+        let record = &tectonic.boundaries()[edge.id.raw() as usize];
+        if record.kind != BoundaryKind::Subduction {
+            continue;
+        }
+        let [Some(first), Some(second)] = edge.cells else {
+            continue;
+        };
+        if tectonic.crust_kind(first) != Some(CrustKind::Oceanic)
+            || tectonic.crust_kind(second) != Some(CrustKind::Oceanic)
+        {
+            continue;
+        }
+        let subducting = record
+            .subducting_plate
+            .expect("validated subduction has a descending plate");
+        let overriding_cell = if tectonic.plate_for_cell(first) == Some(subducting) {
+            second
+        } else {
+            first
+        };
+        oceanic_arc_sources.push(overriding_cell);
+    }
+    oceanic_arc_sources.sort_unstable();
+    oceanic_arc_sources.dedup();
+    let near_oceanic_arc = cells_within_steps(spatial, &oceanic_arc_sources, 2);
+
+    let included = (0..spatial.cell_count())
+        .map(|index| {
+            relief.land_ocean().raw_values()[index] == 1
+                && tectonic.crust_kinds().raw_values()[index] == 0
+                && !near_continental[index]
+                && (mantle.volcanic_influence()[index] > 0.0 || near_oceanic_arc[index])
+        })
+        .collect::<Vec<_>>();
+    connected_area_components(spatial, &included).len()
+}
+
+fn cells_within_steps(
+    spatial: &SpatialSnapshot,
+    sources: &[CellId],
+    maximum_steps: usize,
+) -> Vec<bool> {
+    let mut distance = vec![usize::MAX; spatial.cell_count()];
+    let mut queue = VecDeque::new();
+    for &source in sources {
+        let index = source.raw() as usize;
+        if distance[index] == 0 {
+            continue;
+        }
+        distance[index] = 0;
+        queue.push_back(source);
+    }
+    while let Some(cell) = queue.pop_front() {
+        let next_distance = distance[cell.raw() as usize] + 1;
+        if next_distance > maximum_steps {
+            continue;
+        }
+        for &neighbor in spatial.neighbors(cell).unwrap() {
+            let index = neighbor.raw() as usize;
+            if next_distance < distance[index] {
+                distance[index] = next_distance;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    distance
+        .into_iter()
+        .map(|steps| steps <= maximum_steps)
+        .collect()
 }
 
 fn connected_area_components(spatial: &SpatialSnapshot, included: &[bool]) -> Vec<f64> {

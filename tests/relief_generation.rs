@@ -337,7 +337,7 @@ fn separated_continental_components_with_boundary(
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 5, "sekai.core"),
+        StageIdentity::new("natural.relief", 6, "sekai.core"),
     ))
 }
 
