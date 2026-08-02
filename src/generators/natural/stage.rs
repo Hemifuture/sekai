@@ -9,9 +9,9 @@ use super::{
     HydroErosionSpecArtifact, HydroErosionStage, MantleArtifact, MantleStage,
     PreliminaryClimateStage, ResolvedClimateInputStage, ResolvedGeologicInputStage,
     ResolvedHydroErosionInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
-    RuleClimateResolutionStage, RuleGeologicResolutionStage, RuleHydroErosionResolutionStage,
-    RulePackSetArtifact, RuleTectonicResolutionStage, WorldFormationSpecArtifact,
-    WorldFormationStage,
+    ResolvedWorldFormationArtifact, RuleClimateResolutionStage, RuleGeologicResolutionStage,
+    RuleHydroErosionResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
+    WorldFormationSpecArtifact, WorldFormationStage,
 };
 use super::{ReliefGenerationError, ReliefGenerator, TectonicGenerationError, TectonicGenerator};
 use crate::engine::{
@@ -91,17 +91,23 @@ impl Artifact for TectonicArtifact {
 
 /// Restricted typed dependencies supplied to [`TectonicStage`].
 pub struct TectonicStageInputs {
+    formation: Arc<ResolvedWorldFormationArtifact>,
     resolved_input: Arc<ResolvedTectonicInputArtifact>,
     spatial: Arc<SpatialArtifact>,
 }
 
 impl StageInputs for TectonicStageInputs {
     fn dependencies() -> &'static [ArtifactKey] {
-        &[ResolvedTectonicInputArtifact::KEY, SpatialArtifact::KEY]
+        &[
+            ResolvedTectonicInputArtifact::KEY,
+            ResolvedWorldFormationArtifact::KEY,
+            SpatialArtifact::KEY,
+        ]
     }
 
     fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
         Ok(Self {
+            formation: artifacts.get::<ResolvedWorldFormationArtifact>()?,
             resolved_input: artifacts.get::<ResolvedTectonicInputArtifact>()?,
             spatial: artifacts.get::<SpatialArtifact>()?,
         })
@@ -121,7 +127,7 @@ impl Stage for TectonicStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {
@@ -137,9 +143,12 @@ impl Stage for TectonicStage {
         let resolved_input = inputs.resolved_input.input();
         resolved_input.spec().validate().map_err(invalid_spec)?;
         let snapshot = match resolved_input.model() {
-            TectonicModel::CurrentSliceV1 => {
-                TectonicGenerator::generate(inputs.spatial.snapshot(), resolved_input.spec(), rng)
-            }
+            TectonicModel::CurrentSliceV1 => TectonicGenerator::generate(
+                inputs.spatial.snapshot(),
+                resolved_input.spec(),
+                inputs.formation.formation(),
+                rng,
+            ),
         }
         .map_err(generation_failure)?;
         snapshot
@@ -159,10 +168,17 @@ fn invalid_spec(error: NaturalSpecError) -> StageError {
 fn generation_failure(error: TectonicGenerationError) -> StageError {
     match error {
         TectonicGenerationError::InvalidSpec(error) => invalid_spec(error),
+        TectonicGenerationError::InvalidFormation(error) => StageError::new(
+            INVALID_SPEC_CODE,
+            format!("resolved world formation is invalid: {error}"),
+        ),
         TectonicGenerationError::PlateCountExceedsCells { .. } => StageError::new(
             INVALID_SPEC_CODE,
             format!("tectonic specification is incompatible with spatial input: {error}"),
         ),
+        TectonicGenerationError::InsufficientCrustFormationArea { .. } => {
+            StageError::new(BUILD_FAILED_CODE, error.to_string())
+        }
         TectonicGenerationError::InvalidSnapshot(error) => invalid_snapshot(error),
         TectonicGenerationError::UnsatisfiedRelativeMotion { .. } => {
             StageError::new(BUILD_FAILED_CODE, error.to_string())

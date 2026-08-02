@@ -13,8 +13,9 @@ use super::topology::{
 use crate::engine::StageRng;
 use crate::world::natural::{
     BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, NaturalSpecError,
-    Plate, PlateIdField, PlateVelocity, TectonicActivity, TectonicSnapshot, TectonicSpec,
-    TectonicValidationError, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+    Plate, PlateIdField, PlateVelocity, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    TectonicActivity, TectonicSnapshot, TectonicSpec, TectonicValidationError,
+    WorldFormationSpecError, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
     CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_PLATE_VELOCITY_MM_PER_YEAR,
     OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM, TECTONIC_SNAPSHOT_SCHEMA_V1,
 };
@@ -40,9 +41,11 @@ impl TectonicGenerator {
     pub fn generate(
         spatial: &SpatialSnapshot,
         spec: &TectonicSpec,
+        formation: &ResolvedWorldFormation,
         rng: &mut StageRng,
     ) -> Result<TectonicSnapshot, TectonicGenerationError> {
         spec.validate()?;
+        formation.validate()?;
         if spec.plate_count as usize > spatial.cell_count() {
             return Err(TectonicGenerationError::PlateCountExceedsCells {
                 plates: spec.plate_count,
@@ -53,7 +56,8 @@ impl TectonicGenerator {
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
         let (plates, cell_plates) = generate_plates(&topology, spec, &streams)?;
-        let (crust_kinds, crust_thickness_km) = generate_crust(&topology, spec, &streams);
+        let (crust_kinds, crust_thickness_km) =
+            generate_crust(&topology, spec, formation.resolved(), &streams)?;
         let (boundaries, segments) = classify_and_aggregate_boundaries(
             spatial,
             &topology,
@@ -229,8 +233,9 @@ fn relative_speed_squared(first: PlateVelocity, second: PlateVelocity) -> i64 {
 fn generate_crust(
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
+    preset: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
-) -> (CrustKindField, Vec<f32>) {
+) -> Result<(CrustKindField, Vec<f32>), TectonicGenerationError> {
     let boundary_sources: Vec<_> = topology
         .boundary_cells()
         .iter()
@@ -238,26 +243,29 @@ fn generate_crust(
         .filter_map(|(index, &boundary)| boundary.then_some(CellId::from_raw(index as u32)))
         .collect();
     let boundary_distance = multi_source_distance(topology, &boundary_sources, None);
-    let nucleus_count = crust_nucleus_count(topology.arcs().len());
+    let profile = CrustFormationProfile::for_preset(preset);
+    let desired_frame = topology.quantized_short_side_fraction(0.04);
     let mut seed_rng = streams.stream(CRUST_SEEDS_LABEL);
-    let continental_nuclei = select_nuclei(
+    let (continental_nuclei, maximum_frame) = spread_crust_nuclei(
+        topology,
         &boundary_distance,
-        nucleus_count,
-        true,
-        &BTreeSet::new(),
+        desired_frame,
+        profile.nucleus_count,
+        profile.primary_interior,
         &mut seed_rng,
     );
-    let excluded: BTreeSet<_> = continental_nuclei.iter().copied().collect();
-    let oceanic_nuclei = select_nuclei(
-        &boundary_distance,
-        nucleus_count.saturating_add(1),
-        false,
-        &excluded,
-        &mut seed_rng,
-    );
-
-    let continental_distance = multi_source_distance(topology, &continental_nuclei, None);
-    let oceanic_distance = multi_source_distance(topology, &oceanic_nuclei, None);
+    if continental_nuclei.is_empty() {
+        return Err(TectonicGenerationError::InsufficientCrustFormationArea {
+            requested_area_weight: crust_target_weight(
+                topology.area_weights(),
+                spec.continental_crust_fraction,
+            ) / u128::from(FRACTION_QUANTIZATION),
+            available_area_weight: 0,
+        });
+    }
+    let assignment = multi_source_ownership(topology, &continental_nuclei);
+    let nucleus_cells: BTreeSet<_> = continental_nuclei.iter().copied().collect();
+    let divider_cells = ownership_dividers(topology, &assignment.owners);
     let mut shape_rng = streams.stream(CRUST_SHAPE_LABEL);
     let shape_noise = smooth_noise(
         topology,
@@ -265,18 +273,53 @@ fn generate_crust(
         CRUST_SMOOTHING_PASSES,
     );
     let typical_cost = typical_traversal_cost(topology) as i128;
-    let mut ranked_cells: Vec<_> = (0..topology.arcs().len())
-        .map(|index| {
-            let contrast = continental_distance[index] as i128 - oceanic_distance[index] as i128;
-            let perturbation =
-                i128::from(shape_noise[index]) * typical_cost / i128::from(CRUST_NOISE_SCALE * 2);
-            (
-                contrast.saturating_add(perturbation),
-                CellId::from_raw(index as u32),
-            )
-        })
-        .collect();
-    ranked_cells.sort_by_key(|&(score, cell)| (score, cell));
+    let target_weight =
+        crust_target_weight(topology.area_weights(), spec.continental_crust_fraction);
+    let frame_options = [maximum_frame, maximum_frame * 2 / 3, maximum_frame / 3, 0];
+    let mut best_available = 0_u128;
+    let mut ranked_cells = None;
+    for frame in frame_options {
+        let mut candidates: Vec<_> = (0..topology.arcs().len())
+            .filter_map(|index| {
+                let cell = CellId::from_raw(index as u32);
+                if boundary_distance[index] <= frame
+                    || (profile.hard_corridor
+                        && divider_cells[index]
+                        && !nucleus_cells.contains(&cell))
+                {
+                    return None;
+                }
+                let owner = assignment.owners[index] as usize;
+                let distance_score = i128::from(assignment.distances[index])
+                    * i128::from(profile.owner_scale_permille(owner));
+                let perturbation = i128::from(shape_noise[index])
+                    * typical_cost
+                    * i128::from(profile.shape_noise_permille)
+                    / i128::from(CRUST_NOISE_SCALE * 1_000);
+                let score = if nucleus_cells.contains(&cell) {
+                    i128::MIN / 2 + owner as i128
+                } else {
+                    distance_score.saturating_add(perturbation)
+                };
+                Some((score, cell))
+            })
+            .collect();
+        let available = candidates
+            .iter()
+            .map(|&(_, cell)| u128::from(topology.area_weights()[cell.raw() as usize]))
+            .sum();
+        best_available = best_available.max(available);
+        if available * u128::from(FRACTION_QUANTIZATION) >= target_weight {
+            candidates.sort_by_key(|&(score, cell)| (score, cell));
+            ranked_cells = Some(candidates);
+            break;
+        }
+    }
+    let ranked_cells =
+        ranked_cells.ok_or(TectonicGenerationError::InsufficientCrustFormationArea {
+            requested_area_weight: target_weight / u128::from(FRACTION_QUANTIZATION),
+            available_area_weight: best_available,
+        })?;
     let continental_count = closest_area_prefix(
         &ranked_cells,
         topology.area_weights(),
@@ -288,45 +331,159 @@ fn generate_crust(
     }
 
     let thickness = generate_crust_thickness(topology, &kinds, streams);
-    (CrustKindField::from_kinds(kinds), thickness)
+    Ok((CrustKindField::from_kinds(kinds), thickness))
 }
 
-fn crust_nucleus_count(cell_count: usize) -> usize {
-    let proposed = ((cell_count as f64).sqrt() / 18.0).round() as usize;
-    proposed.clamp(2, 24).min(cell_count.saturating_sub(1) / 2)
+const CONTINENT_OWNER_SCALES: [u16; 4] = [1_000; 4];
+const ARCHIPELAGO_OWNER_SCALES: [u16; 12] = [1_000; 12];
+const SUPERCONTINENT_OWNER_SCALES: [u16; 1] = [1_000];
+const GREAT_ISLAND_OWNER_SCALES: [u16; 4] = [800, 2_800, 2_800, 2_800];
+const VOLCANIC_ISLAND_OWNER_SCALES: [u16; 10] = [1_000; 10];
+
+#[derive(Debug, Clone, Copy)]
+struct CrustFormationProfile {
+    nucleus_count: usize,
+    hard_corridor: bool,
+    owner_scales_permille: &'static [u16],
+    shape_noise_permille: i64,
+    primary_interior: bool,
 }
 
-fn select_nuclei(
+impl CrustFormationProfile {
+    const fn for_preset(preset: ResolvedWorldFormationPreset) -> Self {
+        match preset {
+            ResolvedWorldFormationPreset::Continents => Self {
+                nucleus_count: CONTINENT_OWNER_SCALES.len(),
+                hard_corridor: true,
+                owner_scales_permille: &CONTINENT_OWNER_SCALES,
+                shape_noise_permille: 1_500,
+                primary_interior: false,
+            },
+            ResolvedWorldFormationPreset::Archipelago => Self {
+                nucleus_count: ARCHIPELAGO_OWNER_SCALES.len(),
+                hard_corridor: true,
+                owner_scales_permille: &ARCHIPELAGO_OWNER_SCALES,
+                shape_noise_permille: 1_250,
+                primary_interior: false,
+            },
+            ResolvedWorldFormationPreset::Supercontinent => Self {
+                nucleus_count: SUPERCONTINENT_OWNER_SCALES.len(),
+                hard_corridor: false,
+                owner_scales_permille: &SUPERCONTINENT_OWNER_SCALES,
+                shape_noise_permille: 1_500,
+                primary_interior: true,
+            },
+            ResolvedWorldFormationPreset::GreatIsland => Self {
+                nucleus_count: GREAT_ISLAND_OWNER_SCALES.len(),
+                hard_corridor: true,
+                owner_scales_permille: &GREAT_ISLAND_OWNER_SCALES,
+                shape_noise_permille: 1_250,
+                primary_interior: true,
+            },
+            ResolvedWorldFormationPreset::VolcanicIslands => Self {
+                nucleus_count: VOLCANIC_ISLAND_OWNER_SCALES.len(),
+                hard_corridor: true,
+                owner_scales_permille: &VOLCANIC_ISLAND_OWNER_SCALES,
+                shape_noise_permille: 1_000,
+                primary_interior: false,
+            },
+        }
+    }
+
+    fn owner_scale_permille(self, owner: usize) -> u16 {
+        self.owner_scales_permille[owner % self.owner_scales_permille.len()]
+    }
+}
+
+fn spread_crust_nuclei(
+    topology: &NaturalTopologyIndex,
     boundary_distance: &[u64],
+    desired_frame: u64,
     requested: usize,
-    prefer_interior: bool,
-    excluded: &BTreeSet<CellId>,
+    primary_interior: bool,
     rng: &mut impl RngCore,
-) -> Vec<CellId> {
+) -> (Vec<CellId>, u64) {
+    let mut maximum_frame = desired_frame;
     let mut candidates: Vec<_> = boundary_distance
         .iter()
         .enumerate()
         .filter_map(|(index, &distance)| {
-            let cell = CellId::from_raw(index as u32);
-            (!excluded.contains(&cell)).then_some((distance, rng.next_u64(), cell))
+            (distance > maximum_frame).then_some(CellId::from_raw(index as u32))
         })
         .collect();
-    if prefer_interior {
-        candidates.sort_by(|first, second| {
-            second
-                .0
-                .cmp(&first.0)
-                .then_with(|| first.1.cmp(&second.1))
-                .then_with(|| first.2.cmp(&second.2))
-        });
-    } else {
-        candidates.sort_by_key(|&(distance, random, cell)| (distance, random, cell));
+    if candidates.len() < requested {
+        maximum_frame = 0;
+        candidates = boundary_distance
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &distance)| {
+                (distance > 0).then_some(CellId::from_raw(index as u32))
+            })
+            .collect();
     }
-    candidates
-        .into_iter()
-        .take(requested)
-        .map(|(_, _, cell)| cell)
+    if candidates.is_empty() {
+        return (Vec::new(), maximum_frame);
+    }
+
+    let count = requested.min(candidates.len());
+    let rotation = rng.next_u64() as usize % candidates.len();
+    let first = if primary_interior {
+        candidates
+            .iter()
+            .copied()
+            .max_by_key(|cell| {
+                (
+                    boundary_distance[cell.raw() as usize],
+                    std::cmp::Reverse(*cell),
+                )
+            })
+            .expect("candidate list is non-empty")
+    } else {
+        candidates[rotation]
+    };
+    let mut nuclei = vec![first];
+    let mut minimum_squared_distance = vec![u128::MAX; candidates.len()];
+    while nuclei.len() < count {
+        let newest = *nuclei.last().expect("one nucleus was selected");
+        let newest_center = topology.quantized_centers()[newest.raw() as usize];
+        for (candidate_index, &candidate) in candidates.iter().enumerate() {
+            let center = topology.quantized_centers()[candidate.raw() as usize];
+            let dx = i128::from(center[0]) - i128::from(newest_center[0]);
+            let dy = i128::from(center[1]) - i128::from(newest_center[1]);
+            let squared = (dx * dx + dy * dy) as u128;
+            minimum_squared_distance[candidate_index] =
+                minimum_squared_distance[candidate_index].min(squared);
+        }
+        let next = (0..candidates.len())
+            .filter(|&index| !nuclei.contains(&candidates[index]))
+            .max_by_key(|&index| {
+                (
+                    minimum_squared_distance[index],
+                    std::cmp::Reverse((index + candidates.len() - rotation) % candidates.len()),
+                )
+            })
+            .expect("at least one unselected candidate remains");
+        nuclei.push(candidates[next]);
+    }
+    (nuclei, maximum_frame)
+}
+
+fn ownership_dividers(topology: &NaturalTopologyIndex, owners: &[u32]) -> Vec<bool> {
+    topology
+        .arcs()
+        .iter()
+        .enumerate()
+        .map(|(index, arcs)| {
+            arcs.iter()
+                .any(|arc| owners[arc.neighbor.raw() as usize] != owners[index])
+        })
         .collect()
+}
+
+fn crust_target_weight(area_weights: &[u64], fraction: f32) -> u128 {
+    let fraction = (f64::from(fraction) * FRACTION_QUANTIZATION as f64).round() as u64;
+    let total: u128 = area_weights.iter().map(|&area| u128::from(area)).sum();
+    total * u128::from(fraction)
 }
 
 fn closest_area_prefix(
@@ -793,6 +950,9 @@ pub enum TectonicGenerationError {
     /// The requested tectonic specification is invalid.
     #[error("invalid tectonic specification: {0}")]
     InvalidSpec(#[from] NaturalSpecError),
+    /// The supplied resolved formation selection is invalid.
+    #[error("invalid resolved world formation: {0}")]
+    InvalidFormation(#[from] WorldFormationSpecError),
     /// The requested plate count exceeds the available spatial cells.
     #[error("requested {plates} plates for only {cells} spatial cells")]
     PlateCountExceedsCells {
@@ -800,6 +960,16 @@ pub enum TectonicGenerationError {
         plates: u16,
         /// The number of available cells.
         cells: usize,
+    },
+    /// The required land fraction cannot fit after preserving the formal ocean frame.
+    #[error(
+        "continental crust needs area weight {requested_area_weight}, but only {available_area_weight} remains inside the ocean frame"
+    )]
+    InsufficientCrustFormationArea {
+        /// Quantized area required by the explicit tectonic specification.
+        requested_area_weight: u128,
+        /// Quantized non-frame area available to continental crust.
+        available_area_weight: u128,
     },
     /// The fixed velocity lattice could not separate one adjacent plate pair.
     #[error(

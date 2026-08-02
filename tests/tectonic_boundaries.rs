@@ -7,7 +7,9 @@ use sekai::engine::{derive_stage_seed, StageIdentity, StageRng};
 use sekai::generators::natural::TectonicGenerator;
 use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, TectonicSnapshot, TectonicSpec, MAX_PLATE_VELOCITY_MM_PER_YEAR,
+    BoundaryKind, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSnapshot,
+    TectonicSpec, WorldFormationPreset, MAX_PLATE_VELOCITY_MM_PER_YEAR,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, PlateId, RootSeed};
@@ -31,12 +33,24 @@ fn spatial_fixture() -> &'static SpatialSnapshot {
 fn natural_rng() -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.tectonics", 1, "sekai.core"),
+        StageIdentity::new("natural.tectonics", 2, "sekai.core"),
     ))
 }
 
 fn generate(spatial: &SpatialSnapshot) -> TectonicSnapshot {
-    TectonicGenerator::generate(spatial, &TectonicSpec::default(), &mut natural_rng()).unwrap()
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Continents,
+    )
+    .unwrap();
+    TectonicGenerator::generate(
+        spatial,
+        &TectonicSpec::default(),
+        &formation,
+        &mut natural_rng(),
+    )
+    .unwrap()
 }
 
 fn normalized_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {

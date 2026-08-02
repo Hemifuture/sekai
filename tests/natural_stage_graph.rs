@@ -7,9 +7,9 @@ use sekai::generators::natural::{
     GeologicRuleResolutionArtifact, GeologicSpecArtifact, GeologicStage, HydroErosionArtifact,
     HydroErosionSpecArtifact, HydroErosionStage, MantleArtifact, PreliminaryClimateArtifact,
     PreliminaryClimateStage, ReliefArtifact, ReliefStage, ResolvedGeologicInputArtifact,
-    ResolvedTectonicInput, ResolvedTectonicInputArtifact, RulePackSetArtifact, TectonicArtifact,
-    TectonicRuleResolutionArtifact, TectonicSpecArtifact, TectonicStage,
-    WorldFormationSpecArtifact,
+    ResolvedTectonicInput, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
+    RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
+    TectonicStage, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use sekai::rules::{
@@ -19,8 +19,9 @@ use sekai::rules::{
     TectonicModel, AUTHOR_CONSTRAINTS_SCHEMA_V1,
 };
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicActivity, TectonicSpec,
-    WorldFormationSpec, TECTONIC_SPEC_SCHEMA_V1,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
+    WorldFormationSpec, RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SPEC_SCHEMA_V1,
 };
 use sekai::world::AuthorObjectId;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -144,12 +145,23 @@ fn tectonic_external(plate_count: u16) -> ExternalArtifacts {
         ))
         .unwrap();
     artifacts
+        .insert(ResolvedWorldFormationArtifact::new(
+            ResolvedWorldFormation::new(
+                RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+                WorldFormationPreset::Continents,
+                ResolvedWorldFormationPreset::Continents,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    artifacts
 }
 
 fn graph() -> sekai::engine::StageGraph {
     StageGraphBuilder::new()
         .external::<PlanarSpaceArtifact>()
         .external::<ResolvedTectonicInputArtifact>()
+        .external::<ResolvedWorldFormationArtifact>()
         .stage(TectonicStage)
         .stage(SpatialStage)
         .build()
@@ -186,7 +198,7 @@ fn tectonic_stage_declares_exact_identity_and_dependencies() {
     let stage = TectonicStage;
     assert_eq!(stage.id().as_str(), "natural.tectonics");
     assert_eq!(stage.namespace(), "sekai.core");
-    assert_eq!(stage.version(), 1);
+    assert_eq!(stage.version(), 2);
 
     let graph = graph();
     assert_eq!(
@@ -200,7 +212,11 @@ fn tectonic_stage_declares_exact_identity_and_dependencies() {
             .iter()
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
-        vec!["natural.resolved-tectonic-input", "world.spatial"]
+        vec![
+            "natural.resolved-tectonic-input",
+            "natural.resolved-world-formation",
+            "world.spatial",
+        ]
     );
     assert_eq!(descriptor.output(), TectonicArtifact::KEY);
 }

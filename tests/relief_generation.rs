@@ -8,8 +8,9 @@ use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
     BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Hotspot,
     LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
-    TectonicSnapshot, TectonicSpec, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M,
-    REGIONAL_OFFSET_MIN_M, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSnapshot, TectonicSpec,
+    WorldFormationPreset, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
 };
 use sekai::world::spatial::{
     SpatialCell, SpatialEdge, SpatialSnapshot, Topology, SPATIAL_SCHEMA_V1,
@@ -271,10 +272,21 @@ fn generated_fixture() -> (&'static SpatialSnapshot, TectonicSnapshot) {
     });
     let mut tectonic_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.tectonics", 1, "sekai.core"),
+        StageIdentity::new("natural.tectonics", 2, "sekai.core"),
     ));
-    let tectonic =
-        TectonicGenerator::generate(spatial, &TectonicSpec::default(), &mut tectonic_rng).unwrap();
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Continents,
+    )
+    .unwrap();
+    let tectonic = TectonicGenerator::generate(
+        spatial,
+        &TectonicSpec::default(),
+        &formation,
+        &mut tectonic_rng,
+    )
+    .unwrap();
     (spatial, tectonic)
 }
 
