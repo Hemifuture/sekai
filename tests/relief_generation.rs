@@ -740,6 +740,32 @@ fn mantle_influence_adds_local_explainable_volcanic_relief() {
 }
 
 #[test]
+fn mantle_influence_field_remains_authoritative_beyond_the_local_shape_core() {
+    let spatial = regular_grid();
+    let tectonic = custom_tectonics(&spatial, BoundaryKind::ContinentalCollision);
+    let source = cell_at(1, 2);
+    let graph_supported = cell_at(1, 6);
+    let mut influence = vec![0.0; spatial.cell_count()];
+    influence[source.raw() as usize] = 1.0;
+    influence[graph_supported.raw() as usize] = 0.5;
+    let mantle = MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        vec![Hotspot::new(HotspotId::from_raw(0), source, 800, meters(2.0)).unwrap()],
+        influence
+            .iter()
+            .map(|&value| 65.0 + 220.0 * value)
+            .collect(),
+        influence,
+    )
+    .unwrap();
+
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 7);
+
+    assert!(relief.volcanic_offset_m().values()[graph_supported.raw() as usize] > 0.0);
+}
+
+#[test]
 fn hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented() {
     let spatial = large_regular_grid();
     let mantle = centered_hotspot_mantle(&spatial);

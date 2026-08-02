@@ -22,6 +22,7 @@ const HOTSPOT_RIDGES: FractalProfile = FractalProfile {
     persistence: 0.46,
 };
 const HOTSPOT_SEED_STEP: u32 = 0x9E37_79B9;
+const SUPPORTED_BACKGROUND_FRACTION: f64 = 0.015;
 const ARC_SEED_STEP: u32 = 0x85EB_CA6B;
 const ARC_FBM: FractalProfile = FractalProfile {
     octaves: 5,
@@ -47,7 +48,20 @@ pub(super) fn synthesize_hotspot_offset(
     mantle: &MantleSnapshot,
     morphology_seed: u32,
 ) -> Vec<f32> {
-    let mut result = vec![0.0_f32; spatial.cell_count()];
+    let mut result = mantle
+        .volcanic_influence()
+        .iter()
+        .enumerate()
+        .map(|(index, &influence)| {
+            if influence <= 0.0 {
+                return 0.0;
+            }
+            let cell = CellId::from_raw(index as u32);
+            let amplitude = volcanic_amplitude(tectonic, cell);
+            (f64::from(amplitude) * SUPPORTED_BACKGROUND_FRACTION * f64::from(influence).powf(2.0))
+                as f32
+        })
+        .collect::<Vec<_>>();
 
     for hotspot in mantle.hotspots() {
         let source = hotspot.source_cell();
@@ -92,8 +106,7 @@ pub(super) fn synthesize_hotspot_offset(
             let warped = noise.warp(local, 1.15, 0.1);
             let current_edifice = compact_peak(warped[0].hypot(warped[1]) / 0.48);
             let trail = directional_trail(warped, direction, speed_fraction, &noise);
-            let supported_background = 0.08 * mantle_envelope.powf(1.4);
-            let morphology = current_edifice.max(trail).max(supported_background);
+            let morphology = current_edifice.max(trail);
             if morphology <= 0.0 {
                 continue;
             }
@@ -104,13 +117,7 @@ pub(super) fn synthesize_hotspot_offset(
             let ridges = noise.ridged(warped, HOTSPOT_RIDGES).powf(2.2);
             let surface_detail = 0.72 + 0.18 * fbm + 0.10 * ridges;
             let support = mantle_envelope.powf(0.35);
-            let crust = tectonic
-                .crust_kind(cell)
-                .expect("validated tectonic field is cell aligned");
-            let amplitude = match crust {
-                CrustKind::Oceanic => VOLCANIC_OFFSET_MAX_M as f64,
-                CrustKind::Continental => 2_400.0,
-            };
+            let amplitude = f64::from(volcanic_amplitude(tectonic, cell));
             let strength_response = 0.55 + 0.45 * strength;
             let candidate =
                 amplitude * strength_response * morphology.powf(1.15) * support * surface_detail;
@@ -121,13 +128,7 @@ pub(super) fn synthesize_hotspot_offset(
         // shapes its slopes and satellites, but cannot erase the causal source.
         let source_index = source.raw() as usize;
         if mantle.volcanic_influence()[source_index] > 0.0 {
-            let source_amplitude = match tectonic
-                .crust_kind(source)
-                .expect("validated tectonic field is cell aligned")
-            {
-                CrustKind::Oceanic => VOLCANIC_OFFSET_MAX_M,
-                CrustKind::Continental => 2_400.0,
-            };
+            let source_amplitude = volcanic_amplitude(tectonic, source);
             result[source_index] = result[source_index].max(source_amplitude * strength as f32);
         }
     }
@@ -140,6 +141,16 @@ pub(super) fn synthesize_hotspot_offset(
         }
     }
     result
+}
+
+fn volcanic_amplitude(tectonic: &TectonicSnapshot, cell: CellId) -> f32 {
+    match tectonic
+        .crust_kind(cell)
+        .expect("validated tectonic field is cell aligned")
+    {
+        CrustKind::Oceanic => VOLCANIC_OFFSET_MAX_M,
+        CrustKind::Continental => 2_400.0,
+    }
 }
 
 /// Adds narrow volcanic summits only where an oceanic plate overrides another
