@@ -1,5 +1,5 @@
 use std::array;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use rand::RngCore;
 use thiserror::Error;
@@ -18,6 +18,9 @@ use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{CellId, PlateId};
 
 const SEA_LEVEL_M: f32 = 0.0;
+const CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION: f64 = 0.08;
+const OCEAN_FRAME_BASE_M: f32 = -5_200.0;
+const OCEAN_COMPONENT_SEPARATOR_BASE_M: f32 = -2_400.0;
 const MARGIN_SUPPORT_STEPS: u64 = 4;
 const REGIONAL_NOISE_SCALE: i64 = 1_000;
 const MAX_CLAMP_DIAGNOSTICS: usize = 32;
@@ -44,6 +47,21 @@ impl ReliefGenerator {
         let mut tectonic_offset = synthesize_tectonic_offset(spatial, &topology, tectonic);
         let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
+        apply_oceanic_component_separators(
+            &topology,
+            tectonic,
+            &mut crust_base,
+            &mut tectonic_offset,
+            &mut volcanic_offset,
+            &mut regional_offset,
+        );
+        apply_closed_ocean_frame(
+            &topology,
+            &mut crust_base,
+            &mut tectonic_offset,
+            &mut volcanic_offset,
+            &mut regional_offset,
+        );
         let elevation = reconcile_final_safety(
             &mut crust_base,
             &mut tectonic_offset,
@@ -51,6 +69,7 @@ impl ReliefGenerator {
             &mut regional_offset,
             diagnostics,
         );
+        verify_closed_ocean_frame(&topology, &elevation)?;
 
         let crust_base = ElevationField::from_values(crust_base)?;
         let tectonic_offset = ElevationField::from_values(tectonic_offset)?;
@@ -72,6 +91,122 @@ impl ReliefGenerator {
         snapshot.validate_against(spatial)?;
         Ok(snapshot)
     }
+}
+
+fn apply_oceanic_component_separators(
+    topology: &NaturalTopologyIndex,
+    tectonic: &TectonicSnapshot,
+    crust_base: &mut [f32],
+    tectonic_offset: &mut [f32],
+    volcanic_offset: &mut [f32],
+    regional_offset: &mut [f32],
+) {
+    let mut component_by_cell = vec![u32::MAX; topology.arcs().len()];
+    let mut component_count = 0_u32;
+    for start_index in 0..topology.arcs().len() {
+        if component_by_cell[start_index] != u32::MAX
+            || tectonic.crust_kind(CellId::from_raw(start_index as u32))
+                != Some(CrustKind::Continental)
+        {
+            continue;
+        }
+        let mut queue = VecDeque::from([CellId::from_raw(start_index as u32)]);
+        component_by_cell[start_index] = component_count;
+        while let Some(cell) = queue.pop_front() {
+            for arc in &topology.arcs()[cell.raw() as usize] {
+                let neighbor_index = arc.neighbor.raw() as usize;
+                if component_by_cell[neighbor_index] == u32::MAX
+                    && tectonic.crust_kind(arc.neighbor) == Some(CrustKind::Continental)
+                {
+                    component_by_cell[neighbor_index] = component_count;
+                    queue.push_back(arc.neighbor);
+                }
+            }
+        }
+        component_count += 1;
+    }
+    if component_count < 2 {
+        return;
+    }
+
+    let mut sources = Vec::new();
+    let mut source_components = Vec::new();
+    for (index, &component) in component_by_cell.iter().enumerate() {
+        if component != u32::MAX {
+            sources.push(CellId::from_raw(index as u32));
+            source_components.push(component);
+        }
+    }
+    let assignment = multi_source_ownership(topology, &sources);
+    let nearest_component = assignment
+        .owners
+        .iter()
+        .map(|&owner| source_components[owner as usize])
+        .collect::<Vec<_>>();
+    let separators = (0..topology.arcs().len())
+        .filter(|&index| {
+            tectonic.crust_kind(CellId::from_raw(index as u32)) == Some(CrustKind::Oceanic)
+                && topology.arcs()[index].iter().any(|arc| {
+                    nearest_component[arc.neighbor.raw() as usize] != nearest_component[index]
+                })
+        })
+        .collect::<Vec<_>>();
+
+    for index in separators {
+        crust_base[index] = crust_base[index].min(OCEAN_COMPONENT_SEPARATOR_BASE_M);
+        tectonic_offset[index] = attenuate_positive(tectonic_offset[index], 0.0);
+        volcanic_offset[index] = attenuate_positive(volcanic_offset[index], 0.0);
+        regional_offset[index] = attenuate_positive(regional_offset[index], 0.0);
+    }
+}
+
+fn apply_closed_ocean_frame(
+    topology: &NaturalTopologyIndex,
+    crust_base: &mut [f32],
+    tectonic_offset: &mut [f32],
+    volcanic_offset: &mut [f32],
+    regional_offset: &mut [f32],
+) {
+    let boundary_sources: Vec<_> = topology
+        .boundary_cells()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &boundary)| boundary.then_some(CellId::from_raw(index as u32)))
+        .collect();
+    let distance = multi_source_distance(topology, &boundary_sources, None);
+    let support = topology
+        .quantized_short_side_fraction(CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION)
+        .max(1);
+    for index in 0..crust_base.len() {
+        let weight = smooth_rise(distance[index], support);
+        crust_base[index] = OCEAN_FRAME_BASE_M + (crust_base[index] - OCEAN_FRAME_BASE_M) * weight;
+        tectonic_offset[index] = attenuate_positive(tectonic_offset[index], weight);
+        volcanic_offset[index] = attenuate_positive(volcanic_offset[index], weight);
+        regional_offset[index] = attenuate_positive(regional_offset[index], weight);
+    }
+}
+
+fn attenuate_positive(value: f32, weight: f32) -> f32 {
+    if value > 0.0 {
+        value * weight
+    } else {
+        value
+    }
+}
+
+fn verify_closed_ocean_frame(
+    topology: &NaturalTopologyIndex,
+    elevation: &[f32],
+) -> Result<(), ReliefGenerationError> {
+    for (index, &boundary) in topology.boundary_cells().iter().enumerate() {
+        if boundary && elevation[index] >= SEA_LEVEL_M {
+            return Err(ReliefGenerationError::ExposedBoundaryCell {
+                cell: CellId::from_raw(index as u32),
+                elevation_m: elevation[index],
+            });
+        }
+    }
+    Ok(())
 }
 
 fn synthesize_volcanic_offset(tectonic: &TectonicSnapshot, mantle: &MantleSnapshot) -> Vec<f32> {
@@ -515,6 +650,14 @@ pub enum ReliefGenerationError {
     /// The supplied mantle snapshot is incompatible with the spatial snapshot.
     #[error("invalid mantle input: {0}")]
     InvalidMantle(#[from] MantleValidationError),
+    /// The closed planar boundary escaped the formal ocean envelope.
+    #[error("closed boundary cell {cell:?} has exposed elevation {elevation_m} m")]
+    ExposedBoundaryCell {
+        /// Boundary cell that reached or exceeded sea level.
+        cell: CellId,
+        /// Reconciled constructional elevation at the boundary.
+        elevation_m: f32,
+    },
     /// Generated relief fields violate the relief snapshot contract.
     #[error("invalid generated relief: {0}")]
     InvalidRelief(#[from] ReliefValidationError),

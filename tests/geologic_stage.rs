@@ -5,11 +5,12 @@ use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicSpecArtifact, GeologicStage, HydroErosionSpecArtifact, MantleArtifact, ReliefArtifact,
     ResolvedGeologicInputArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, MantleSnapshot, TectonicSpec,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, MantleSnapshot, TectonicSpec, WorldFormationSpec,
     MANTLE_SNAPSHOT_SCHEMA_V1,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -35,6 +36,11 @@ fn complete_external() -> ExternalArtifacts {
         .unwrap();
     external
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
+        .insert(WorldFormationSpecArtifact::new(
+            WorldFormationSpec::default(),
+        ))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -117,7 +123,7 @@ fn complete_graph_second_build_hits_all_fifteen_stage_caches() {
         .build(RootSeed::new(42), complete_external(), &mut cache)
         .unwrap();
 
-    assert_eq!(repeated.report.cache_hits(), 15);
+    assert_eq!(repeated.report.cache_hits(), 16);
     assert_eq!(repeated.report.cache_misses(), 0);
     assert_eq!(
         first.artifacts.hash::<GeologicArtifact>().unwrap(),

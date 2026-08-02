@@ -24,6 +24,7 @@ pub(super) struct NaturalTopologyIndex {
     quantized_centers: Vec<[i64; 2]>,
     area_weights: Vec<u64>,
     boundary_cells: Vec<bool>,
+    minimum_dimension_m: f64,
     maximum_dimension_m: f64,
 }
 
@@ -99,6 +100,7 @@ impl NaturalTopologyIndex {
             quantized_centers,
             area_weights,
             boundary_cells,
+            minimum_dimension_m: bounds.width().get().min(bounds.height().get()),
             maximum_dimension_m: coordinate_scale,
         }
     }
@@ -130,6 +132,11 @@ impl NaturalTopologyIndex {
         } else {
             quantize_positive(distance_m / self.maximum_dimension_m, LENGTH_QUANTIZATION)
         }
+    }
+
+    pub(super) fn quantized_short_side_fraction(&self, fraction: f64) -> u64 {
+        debug_assert!(fraction.is_finite() && fraction >= 0.0);
+        self.quantized_distance_for_meters(self.minimum_dimension_m * fraction)
     }
 
     pub(super) fn edge_between(&self, first: CellId, second: CellId) -> Option<EdgeId> {

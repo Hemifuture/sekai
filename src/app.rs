@@ -21,8 +21,9 @@ use crate::{
         natural::{
             natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
             GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
-            MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact,
-            TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
+            MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
+            ResolvedWorldFormationArtifact, RulePackSetArtifact, TectonicArtifact,
+            TectonicRuleResolutionArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
         },
         spatial::{PlanarSpaceArtifact, SpatialArtifact},
     },
@@ -42,8 +43,10 @@ use crate::{
     world::{
         natural::{
             ClimateSpec, GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
-            TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT,
-            MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
+            ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+            WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
+            MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
+            MIN_PLATE_COUNT,
         },
         BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
         WorldSpec, WORLD_SPEC_SCHEMA_V1,
@@ -93,6 +96,7 @@ impl RuleBuildSummary {
 #[serde(default)]
 pub struct TemplateApp {
     world_seed: u64,
+    formation_spec: WorldFormationSpec,
     tectonic_spec: TectonicSpec,
     geologic_spec: GeologicSpec,
     #[serde(skip)]
@@ -120,6 +124,7 @@ impl Default for TemplateApp {
         let field_viewer_state = FieldViewerStateResource::default();
         Self {
             world_seed: 42,
+            formation_spec: WorldFormationSpec::default(),
             tectonic_spec: TectonicSpec::default(),
             geologic_spec: GeologicSpec::default(),
             canvas_widget: Canvas::new(
@@ -209,6 +214,7 @@ impl TemplateApp {
         let geologic = self.geologic_spec.clone();
         let candidate = build_natural_candidate(
             world,
+            &self.formation_spec,
             tectonic,
             &geologic,
             &mut self.stage_cache,
@@ -230,6 +236,7 @@ impl TemplateApp {
         let geologic = self.geologic_spec.clone();
         let candidate = build_natural_candidate_with_rule_inputs(
             world,
+            &self.formation_spec,
             tectonic,
             &geologic,
             pack_set,
@@ -381,6 +388,33 @@ impl eframe::App for TemplateApp {
                     }
 
                     ui.add_space(8.0);
+                    let previous_preset = self.formation_spec.preset;
+                    egui::ComboBox::from_label("世界形态")
+                        .selected_text(formation_preset_label(self.formation_spec.preset))
+                        .show_ui(ui, |ui| {
+                            for preset in [
+                                WorldFormationPreset::Random,
+                                WorldFormationPreset::Continents,
+                                WorldFormationPreset::Archipelago,
+                                WorldFormationPreset::Supercontinent,
+                                WorldFormationPreset::GreatIsland,
+                                WorldFormationPreset::VolcanicIslands,
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.formation_spec.preset,
+                                    preset,
+                                    formation_preset_label(preset),
+                                );
+                            }
+                        });
+                    if self.formation_spec.preset != previous_preset {
+                        let selected = self.formation_spec.preset;
+                        apply_formation_preset_selection(
+                            &mut self.formation_spec,
+                            &mut self.tectonic_spec,
+                            selected,
+                        );
+                    }
                     ui.horizontal(|ui| {
                         ui.label("板块数量");
                         ui.add(
@@ -423,6 +457,7 @@ impl eframe::App for TemplateApp {
                             document.tectonic.snapshot().plates().len(),
                             document.tectonic.snapshot().boundary_segments().len()
                         ));
+                        ui.label(formation_provenance_label(document.formation.formation()));
                         ui.label(format!(
                             "规则包 {}｜作者约束 {}｜满足 {}｜妥协 {}",
                             self.rule_build_summary.active_pack_count,
@@ -479,6 +514,63 @@ fn activity_label(activity: TectonicActivity) -> &'static str {
     }
 }
 
+fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
+    match preset {
+        WorldFormationPreset::Random => "随机（按种子）",
+        WorldFormationPreset::Continents => "多大陆",
+        WorldFormationPreset::Archipelago => "群岛",
+        WorldFormationPreset::Supercontinent => "超级大陆",
+        WorldFormationPreset::GreatIsland => "大岛与卫星岛",
+        WorldFormationPreset::VolcanicIslands => "火山群岛",
+    }
+}
+
+fn resolved_formation_preset_label(preset: ResolvedWorldFormationPreset) -> &'static str {
+    match preset {
+        ResolvedWorldFormationPreset::Continents => "多大陆",
+        ResolvedWorldFormationPreset::Archipelago => "群岛",
+        ResolvedWorldFormationPreset::Supercontinent => "超级大陆",
+        ResolvedWorldFormationPreset::GreatIsland => "大岛与卫星岛",
+        ResolvedWorldFormationPreset::VolcanicIslands => "火山群岛",
+    }
+}
+
+fn formation_provenance_label(formation: &ResolvedWorldFormation) -> String {
+    if formation.requested() == WorldFormationPreset::Random {
+        format!(
+            "世界形态：{} → {}",
+            formation_preset_label(formation.requested()),
+            resolved_formation_preset_label(formation.resolved())
+        )
+    } else {
+        format!(
+            "世界形态：{}",
+            formation_preset_label(formation.requested())
+        )
+    }
+}
+
+fn apply_formation_preset_selection(
+    formation: &mut WorldFormationSpec,
+    tectonic: &mut TectonicSpec,
+    selected: WorldFormationPreset,
+) {
+    formation.preset = selected;
+    let resolved = match selected {
+        WorldFormationPreset::Random => None,
+        WorldFormationPreset::Continents => Some(ResolvedWorldFormationPreset::Continents),
+        WorldFormationPreset::Archipelago => Some(ResolvedWorldFormationPreset::Archipelago),
+        WorldFormationPreset::Supercontinent => Some(ResolvedWorldFormationPreset::Supercontinent),
+        WorldFormationPreset::GreatIsland => Some(ResolvedWorldFormationPreset::GreatIsland),
+        WorldFormationPreset::VolcanicIslands => {
+            Some(ResolvedWorldFormationPreset::VolcanicIslands)
+        }
+    };
+    if let Some(resolved) = resolved {
+        tectonic.continental_crust_fraction = resolved.recommended_continental_crust_fraction();
+    }
+}
+
 fn default_world_spec(root_seed: RootSeed) -> WorldSpec {
     WorldSpec {
         schema_version: WORLD_SPEC_SCHEMA_V1,
@@ -497,11 +589,13 @@ fn default_world_spec(root_seed: RootSeed) -> WorldSpec {
 
 fn build_natural_external_artifacts(
     world: &WorldSpec,
+    formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
     build_natural_external_artifacts_with_rule_inputs(
         world,
+        formation,
         tectonic,
         geologic,
         default_rule_pack_set()?,
@@ -511,12 +605,14 @@ fn build_natural_external_artifacts(
 
 fn build_natural_external_artifacts_with_rule_inputs(
     world: &WorldSpec,
+    formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
     pack_set: RulePackSet,
     author_constraints: AuthorConstraints,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
     world.validate()?;
+    formation.validate()?;
     tectonic.validate()?;
     geologic.validate()?;
     let mut external = ExternalArtifacts::new();
@@ -525,6 +621,7 @@ fn build_natural_external_artifacts_with_rule_inputs(
     external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
     external.insert(ClimateSpecArtifact::new(ClimateSpec::default()))?;
     external.insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))?;
+    external.insert(WorldFormationSpecArtifact::new(formation.clone()))?;
     external.insert(RulePackSetArtifact::new(pack_set))?;
     external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
     Ok(external)
@@ -532,19 +629,21 @@ fn build_natural_external_artifacts_with_rule_inputs(
 
 fn build_natural_candidate(
     world: &WorldSpec,
+    formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     current_state: &FieldDisplayState,
     clock: &DisplayRevisionClock,
 ) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
-    let external = build_natural_external_artifacts(world, tectonic, geologic)?;
+    let external = build_natural_external_artifacts(world, formation, tectonic, geologic)?;
     build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
 }
 
 #[cfg(test)]
 fn build_natural_candidate_with_rule_inputs(
     world: &WorldSpec,
+    formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
     pack_set: RulePackSet,
@@ -555,6 +654,7 @@ fn build_natural_candidate_with_rule_inputs(
 ) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
     let external = build_natural_external_artifacts_with_rule_inputs(
         world,
+        formation,
         tectonic,
         geologic,
         pack_set,
@@ -575,6 +675,7 @@ fn build_natural_candidate_from_external(
     let rule_resolution = outcome.artifacts.get::<TectonicRuleResolutionArtifact>()?;
     let rule_summary = RuleBuildSummary::from_resolution(rule_resolution.resolution());
     let spatial = outcome.artifacts.get::<SpatialArtifact>()?;
+    let formation = outcome.artifacts.get::<ResolvedWorldFormationArtifact>()?;
     let tectonic = outcome.artifacts.get::<TectonicArtifact>()?;
     let mantle = outcome.artifacts.get::<MantleArtifact>()?;
     let relief = outcome.artifacts.get::<ReliefArtifact>()?;
@@ -583,6 +684,7 @@ fn build_natural_candidate_from_external(
     let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>()?;
     let document = NaturalFieldDocument::build(
         spatial,
+        formation,
         tectonic,
         mantle,
         relief,
@@ -619,6 +721,8 @@ enum NaturalWorldBuildError {
     #[error(transparent)]
     TectonicSpec(#[from] NaturalSpecError),
     #[error(transparent)]
+    WorldFormationSpec(#[from] WorldFormationSpecError),
+    #[error(transparent)]
     GeologicSpec(#[from] GeologicSpecError),
     #[error(transparent)]
     BuiltinRules(#[from] BuiltinRuleError),
@@ -639,13 +743,15 @@ mod natural_app_tests {
     use std::sync::Arc;
 
     use super::{
-        build_natural_external_artifacts, default_world_spec, TemplateApp,
-        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        apply_formation_preset_selection, build_natural_external_artifacts, default_world_spec,
+        formation_provenance_label, NaturalWorldBuildError, TemplateApp, CURRENT_SLICE_STATUS_TEXT,
+        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
         AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
         HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+        WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::PlanarSpaceArtifact;
     use crate::rules::{
@@ -657,10 +763,51 @@ mod natural_app_tests {
     use crate::view::FieldDisplayResourceState;
     use crate::world::natural::{
         preliminary_mean_air_temperature_c_field_id, surface_elevation_m_field_id, ClimateSpec,
-        GeologicSpec, HydroErosionSpec, MantleActivity, TectonicActivity, TectonicSpec,
+        GeologicSpec, HydroErosionSpec, MantleActivity, ResolvedWorldFormationPreset,
+        TectonicActivity, TectonicSpec, WorldFormationPreset, WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
+
+    #[test]
+    fn default_application_persists_continents_with_missing_field_compatibility() {
+        let app = TemplateApp::default();
+        assert_eq!(app.formation_spec.preset, WorldFormationPreset::Continents);
+
+        let mut encoded = serde_json::to_value(&app).unwrap();
+        encoded.as_object_mut().unwrap().remove("formation_spec");
+        let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            restored.formation_spec.preset,
+            WorldFormationPreset::Continents
+        );
+    }
+
+    #[test]
+    fn named_preset_applies_recommendation_while_random_preserves_author_value() {
+        let mut formation = WorldFormationSpec::default();
+        let mut tectonic = TectonicSpec::default();
+        for (preset, expected) in [
+            (WorldFormationPreset::Continents, 0.38),
+            (WorldFormationPreset::Archipelago, 0.26),
+            (WorldFormationPreset::Supercontinent, 0.42),
+            (WorldFormationPreset::GreatIsland, 0.28),
+            (WorldFormationPreset::VolcanicIslands, 0.16),
+        ] {
+            apply_formation_preset_selection(&mut formation, &mut tectonic, preset);
+            assert_eq!(formation.preset, preset);
+            assert_eq!(tectonic.continental_crust_fraction, expected);
+        }
+
+        tectonic.continental_crust_fraction = 0.33;
+        apply_formation_preset_selection(
+            &mut formation,
+            &mut tectonic,
+            WorldFormationPreset::Random,
+        );
+        assert_eq!(formation.preset, WorldFormationPreset::Random);
+        assert_eq!(tectonic.continental_crust_fraction, 0.33);
+    }
 
     #[test]
     fn default_natural_specs_are_geological_and_semantic() {
@@ -691,18 +838,24 @@ mod natural_app_tests {
     #[test]
     fn natural_build_supplies_the_exact_external_artifact_set() {
         let world = default_world_spec(RootSeed::new(7));
+        let formation = WorldFormationSpec {
+            preset: WorldFormationPreset::Archipelago,
+            ..WorldFormationSpec::default()
+        };
         let external: ExternalArtifacts = build_natural_external_artifacts(
             &world,
+            &formation,
             &TectonicSpec::default(),
             &GeologicSpec::default(),
         )
         .unwrap();
-        assert_eq!(external.len(), 7);
+        assert_eq!(external.len(), 8);
         assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
         assert!(external.hash::<TectonicSpecArtifact>().is_ok());
         assert!(external.hash::<GeologicSpecArtifact>().is_ok());
         assert!(external.hash::<ClimateSpecArtifact>().is_ok());
         assert!(external.hash::<HydroErosionSpecArtifact>().is_ok());
+        assert!(external.hash::<WorldFormationSpecArtifact>().is_ok());
         assert!(external.hash::<RulePackSetArtifact>().is_ok());
         assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
 
@@ -722,6 +875,9 @@ mod natural_app_tests {
         expected
             .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
             .unwrap();
+        expected
+            .insert(WorldFormationSpecArtifact::new(formation))
+            .unwrap();
         assert_eq!(
             external.hash::<GeologicSpecArtifact>().unwrap(),
             expected.hash::<GeologicSpecArtifact>().unwrap()
@@ -735,6 +891,10 @@ mod natural_app_tests {
             expected.hash::<HydroErosionSpecArtifact>().unwrap()
         );
         assert_eq!(
+            external.hash::<WorldFormationSpecArtifact>().unwrap(),
+            expected.hash::<WorldFormationSpecArtifact>().unwrap()
+        );
+        assert_eq!(
             external.hash::<RulePackSetArtifact>().unwrap(),
             expected.hash::<RulePackSetArtifact>().unwrap()
         );
@@ -742,6 +902,23 @@ mod natural_app_tests {
             external.hash::<AuthorConstraintsArtifact>().unwrap(),
             expected.hash::<AuthorConstraintsArtifact>().unwrap()
         );
+    }
+
+    #[test]
+    fn invalid_formation_spec_is_rejected_by_the_narrow_app_boundary() {
+        let world = default_world_spec(RootSeed::new(7));
+        let mut formation = WorldFormationSpec::default();
+        formation.schema_version += 1;
+        let result = build_natural_external_artifacts(
+            &world,
+            &formation,
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+        );
+        assert!(matches!(
+            result,
+            Err(NaturalWorldBuildError::WorldFormationSpec(_))
+        ));
     }
 
     #[test]
@@ -757,6 +934,10 @@ mod natural_app_tests {
             .as_ref()
             .expect("successful replacement publishes a document");
         assert_eq!(document.spatial.snapshot().cell_count(), 128);
+        assert_eq!(
+            document.formation.formation().requested(),
+            WorldFormationPreset::Continents
+        );
         assert_eq!(document.tectonic.snapshot().cell_count(), 128);
         assert_eq!(document.mantle.snapshot().cell_count(), 128);
         assert_eq!(document.relief.snapshot().cell_count(), 128);
@@ -775,6 +956,30 @@ mod natural_app_tests {
     }
 
     #[test]
+    fn random_request_publishes_resolved_formation_provenance() {
+        let mut app = TemplateApp::default();
+        app.formation_spec.preset = WorldFormationPreset::Random;
+        let mut world = default_world_spec(RootSeed::new(11));
+        world.space.target_cell_count = 128;
+        app.try_replace_natural_world(&world, &TectonicSpec::default())
+            .unwrap();
+
+        let formation = app.natural_document.as_ref().unwrap().formation.formation();
+        assert_eq!(formation.requested(), WorldFormationPreset::Random);
+        assert!(matches!(
+            formation.resolved(),
+            ResolvedWorldFormationPreset::Continents
+                | ResolvedWorldFormationPreset::Archipelago
+                | ResolvedWorldFormationPreset::Supercontinent
+                | ResolvedWorldFormationPreset::GreatIsland
+                | ResolvedWorldFormationPreset::VolcanicIslands
+        ));
+        let provenance = formation_provenance_label(formation);
+        assert!(provenance.contains("随机（按种子）"));
+        assert!(provenance.contains('→'));
+    }
+
+    #[test]
     fn failed_candidate_preserves_last_complete_document_and_packet() {
         let mut app = TemplateApp::default();
         let mut valid = default_world_spec(RootSeed::new(13));
@@ -782,6 +987,7 @@ mod natural_app_tests {
         app.try_replace_natural_world(&valid, &TectonicSpec::default())
             .unwrap();
         let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
+        let formation_before = app.natural_document.as_ref().unwrap().formation.clone();
         let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
         let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
@@ -808,6 +1014,7 @@ mod natural_app_tests {
             &app.natural_document.as_ref().unwrap().spatial
         ));
         let document_after = app.natural_document.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
         assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
         assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
@@ -860,6 +1067,7 @@ mod natural_app_tests {
         app.try_replace_natural_world(&world, &TectonicSpec::default())
             .unwrap();
         let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
+        let formation_before = app.natural_document.as_ref().unwrap().formation.clone();
         let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
         let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
         let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
@@ -913,6 +1121,7 @@ mod natural_app_tests {
 
         let document_after = app.natural_document.as_ref().unwrap();
         assert!(Arc::ptr_eq(&spatial_before, &document_after.spatial));
+        assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
         assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
         assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
         assert!(Arc::ptr_eq(&relief_before, &document_after.relief));

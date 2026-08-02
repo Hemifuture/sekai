@@ -241,7 +241,7 @@ fn hotspot_mantle(spatial: &SpatialSnapshot, source: CellId) -> MantleSnapshot {
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 2, "sekai.core"),
+        StageIdentity::new("natural.relief", 4, "sekai.core"),
     ))
 }
 
@@ -340,7 +340,7 @@ fn collision_creates_metamorphic_fractured_metallic_margin() {
     let relief = generate_relief(&spatial, &tectonic, &mantle);
     let geology = generate_geology(&spatial, &tectonic, &mantle, &relief, 7);
     let margin = cell_at(1, 3).raw() as usize;
-    let interior = cell_at(1, 0).raw() as usize;
+    let interior = cell_at(1, 1).raw() as usize;
 
     assert_eq!(
         geology.bedrock_kind(CellId::from_raw(margin as u32)),

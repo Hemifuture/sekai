@@ -219,6 +219,26 @@ fn zero_erosion_strength_preserves_constructional_relief_exactly() {
 }
 
 #[test]
+fn ocean_current_surface_preserves_constructional_relief_exactly() {
+    let spatial = linear_spatial(4, 10_000.0);
+    let relief = relief(&[200.0, 120.0, -60.25, -10.75], 0.0);
+    let geology = geology(4, vec![0.0; 4], vec![0.3; 4], 0.0);
+    let climate = climate(4, 500.0);
+    let output =
+        HydroErosionGenerator::generate(&spatial, &relief, &geology, &climate, &spec(1_000))
+            .unwrap();
+
+    for index in 2..4 {
+        assert_eq!(
+            output.surface().surface_elevation_m().values()[index],
+            relief.elevation_m().values()[index]
+        );
+        assert_eq!(output.surface().erosion_depth_m()[index], 0.0);
+        assert_eq!(output.surface().deposition_thickness_m()[index], 0.0);
+    }
+}
+
+#[test]
 fn softer_rock_more_water_and_steeper_slope_increase_incision() {
     let spatial = linear_spatial(3, 10_000.0);
     let base_relief = relief(&[200.0, 100.0, -10.0], 0.0);

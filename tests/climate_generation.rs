@@ -4,13 +4,13 @@ use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateGenerator, ClimateSpecArtifact,
     GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefArtifact, RulePackSetArtifact,
-    TectonicSpecArtifact,
+    TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     ClimateSpec, ElevationField, GeologicSpec, HydroErosionSpec, LandOceanField,
-    PreliminaryClimateSnapshot, ReliefSnapshot, TectonicSpec, RELIEF_SCHEMA_V2,
+    PreliminaryClimateSnapshot, ReliefSnapshot, TectonicSpec, WorldFormationSpec, RELIEF_SCHEMA_V2,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -38,6 +38,11 @@ fn natural_artifacts() -> &'static (Arc<SpatialArtifact>, Arc<ReliefArtifact>) {
             .unwrap();
         external
             .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+            .unwrap();
+        external
+            .insert(WorldFormationSpecArtifact::new(
+                WorldFormationSpec::default(),
+            ))
             .unwrap();
         external
             .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

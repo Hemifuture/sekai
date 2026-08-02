@@ -51,8 +51,10 @@ jobs:
       - run: cargo test --test rule_pack_resolution --test rule_tectonic_resolution --test rule_hydro_erosion_resolution --test rule_stage_graph
       - run: cargo test --test mantle_generation --test geologic_generation --test hydrology_generation --test hydro_erosion_generation --test natural_stage_graph
       - run: cargo test --test rule_climate_stage --test rule_hydro_erosion_stage --test climate_generation --test climate_stage --test hydro_erosion_stage
-      - run: cargo test --release --test natural_display_golden
-      - run: cargo test --release --test natural_performance release_default_hydro_erosion_budget -- --exact --ignored --nocapture
+      - name: Natural formation quality matrix and reviewed goldens
+        run: cargo test --release --test natural_display_golden
+      - name: Natural 20,000-cell performance budget
+        run: cargo test --release --test natural_performance release_default_hydro_erosion_budget -- --exact --ignored --nocapture
 
   field_display_gpu:
     name: Field display GPU reference
