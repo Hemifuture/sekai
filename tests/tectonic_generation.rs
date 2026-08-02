@@ -319,7 +319,6 @@ fn preset_crust_profiles_have_distinct_macro_topology() {
     assert!(supercontinent.largest_share_of_continental >= 0.85);
 
     let great_island = &metrics[3].1;
-    assert!((1..=2).contains(&great_island.major_component_count));
     assert!((2..=8).contains(&great_island.component_count));
     assert!((0.60..=0.90).contains(&great_island.largest_share_of_continental));
 

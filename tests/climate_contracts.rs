@@ -9,7 +9,7 @@ use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     ClimateSpec, ClimateValidationError, GeologicSpec, HydroErosionSpec, MonthlyScalarField,
     MonthlyVectorField, PreliminaryClimateSnapshot, TectonicSpec, WorldFormationSpec,
-    CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
+    CLIMATE_MONTH_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, PRELIMINARY_CLIMATE_SCHEMA_V1,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -109,7 +109,10 @@ fn natural_artifacts(
         }))
         .unwrap();
     external
-        .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+        .insert(TectonicSpecArtifact::new(TectonicSpec {
+            continental_crust_fraction: MIN_CONTINENTAL_CRUST_FRACTION,
+            ..TectonicSpec::default()
+        }))
         .unwrap();
     external
         .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
