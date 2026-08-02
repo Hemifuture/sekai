@@ -3,18 +3,19 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, GeologicStage, HydroErosionSpecArtifact, MantleArtifact, ReliefArtifact,
-    ResolvedGeologicInputArtifact, RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, HydroErosionStage,
+    PreliminaryClimateArtifact, ReliefArtifact, ResolvedHydroErosionInputArtifact,
+    RulePackSetArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, MantleSnapshot, TectonicSpec,
-    MANTLE_SNAPSHOT_SCHEMA_V1,
+    ClimateSpec, ElevationField, GeologicSpec, HydroErosionSpec, LandOceanField, ReliefSnapshot,
+    TectonicSpec, RELIEF_SCHEMA_V2,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
-fn complete_external() -> ExternalArtifacts {
+fn complete_external(spec: HydroErosionSpec) -> ExternalArtifacts {
     let mut external = ExternalArtifacts::new();
     external
         .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
@@ -34,7 +35,7 @@ fn complete_external() -> ExternalArtifacts {
         .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
-        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .insert(HydroErosionSpecArtifact::new(spec))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -46,19 +47,19 @@ fn complete_external() -> ExternalArtifacts {
 }
 
 #[test]
-fn geologic_artifact_and_stage_have_exact_stable_contracts() {
-    assert_eq!(GeologicArtifact::KEY.as_str(), "world.geology");
-    assert_eq!(GeologicStage.id().as_str(), "natural.geology");
-    assert_eq!(GeologicStage.version(), 1);
-    assert_eq!(GeologicStage.namespace(), "sekai.core");
+fn artifact_and_stage_have_exact_stable_contracts() {
+    assert_eq!(HydroErosionArtifact::KEY.as_str(), "world.hydro-erosion");
+    assert_eq!(HydroErosionStage.id().as_str(), "natural.hydro-erosion");
+    assert_eq!(HydroErosionStage.version(), 1);
+    assert_eq!(HydroErosionStage.namespace(), "sekai.core");
 
     let graph = StageGraphBuilder::new()
-        .external::<ResolvedGeologicInputArtifact>()
-        .external::<MantleArtifact>()
-        .external::<ReliefArtifact>()
+        .external::<ResolvedHydroErosionInputArtifact>()
         .external::<SpatialArtifact>()
-        .external::<TectonicArtifact>()
-        .stage(GeologicStage)
+        .external::<ReliefArtifact>()
+        .external::<GeologicArtifact>()
+        .external::<PreliminaryClimateArtifact>()
+        .stage(HydroErosionStage)
         .build()
         .unwrap();
     let descriptor = &graph.descriptors()[0];
@@ -69,105 +70,122 @@ fn geologic_artifact_and_stage_have_exact_stable_contracts() {
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "natural.resolved-geologic-input",
-            "world.mantle",
+            "natural.resolved-hydro-erosion-input",
+            "world.geology",
+            "world.preliminary-climate",
             "world.relief",
             "world.spatial",
-            "world.tectonics",
         ]
     );
-    assert_eq!(descriptor.output(), GeologicArtifact::KEY);
+    assert_eq!(descriptor.output(), HydroErosionArtifact::KEY);
 }
 
 #[test]
-fn production_stage_builds_and_publishes_a_valid_snapshot() {
+fn production_stage_publishes_cross_validated_atomic_snapshot() {
     let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
         .build(
             RootSeed::new(42),
-            complete_external(),
+            complete_external(HydroErosionSpec::default()),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
-    let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
+    let hydro = outcome.artifacts.get::<HydroErosionArtifact>().unwrap();
     let spatial = outcome.artifacts.get::<SpatialArtifact>().unwrap();
-    let tectonic = outcome.artifacts.get::<TectonicArtifact>().unwrap();
-    let mantle = outcome.artifacts.get::<MantleArtifact>().unwrap();
     let relief = outcome.artifacts.get::<ReliefArtifact>().unwrap();
+    let geology = outcome.artifacts.get::<GeologicArtifact>().unwrap();
+    let climate = outcome
+        .artifacts
+        .get::<PreliminaryClimateArtifact>()
+        .unwrap();
 
-    geology.validate().unwrap();
-    geology
+    hydro.validate().unwrap();
+    hydro
         .snapshot()
         .validate_against(
             spatial.snapshot(),
-            tectonic.snapshot(),
-            mantle.snapshot(),
             relief.snapshot(),
+            geology.snapshot(),
+            climate.snapshot(),
         )
         .unwrap();
+    let encoded = serde_json::to_vec(hydro.as_ref()).unwrap();
+    let decoded: HydroErosionArtifact = serde_json::from_slice(&encoded).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
 }
 
 #[test]
-fn complete_graph_second_build_hits_all_fifteen_stage_caches() {
+fn repeated_build_hits_all_fifteen_stages_and_hydro_spec_change_reruns_three() {
     let engine = BuildEngine::new(natural_foundation_graph().unwrap());
     let mut cache = MemoryStageCache::new();
-    let first = engine
-        .build(RootSeed::new(42), complete_external(), &mut cache)
+    let baseline = engine
+        .build(
+            RootSeed::new(42),
+            complete_external(HydroErosionSpec::default()),
+            &mut cache,
+        )
         .unwrap();
     let repeated = engine
-        .build(RootSeed::new(42), complete_external(), &mut cache)
+        .build(
+            RootSeed::new(42),
+            complete_external(HydroErosionSpec::default()),
+            &mut cache,
+        )
         .unwrap();
-
     assert_eq!(repeated.report.cache_hits(), 15);
     assert_eq!(repeated.report.cache_misses(), 0);
-    assert_eq!(
-        first.artifacts.hash::<GeologicArtifact>().unwrap(),
-        repeated.artifacts.hash::<GeologicArtifact>().unwrap()
+
+    let changed_spec = HydroErosionSpec {
+        erosion_strength_permille: 500,
+        ..HydroErosionSpec::default()
+    };
+    let changed = engine
+        .build(
+            RootSeed::new(42),
+            complete_external(changed_spec),
+            &mut cache,
+        )
+        .unwrap();
+    assert_eq!(changed.report.cache_hits(), 12);
+    assert_eq!(changed.report.cache_misses(), 3);
+    assert_ne!(
+        baseline.artifacts.hash::<HydroErosionArtifact>().unwrap(),
+        changed.artifacts.hash::<HydroErosionArtifact>().unwrap()
     );
 }
 
 #[test]
-fn invalid_cross_artifact_input_does_not_poison_a_valid_cached_geology() {
+fn cross_artifact_failure_cannot_poison_valid_cached_hydro_output() {
     let upstream = BuildEngine::new(natural_foundation_graph().unwrap())
         .build(
             RootSeed::new(42),
-            complete_external(),
+            complete_external(HydroErosionSpec::default()),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
     let graph = StageGraphBuilder::new()
-        .external::<ResolvedGeologicInputArtifact>()
-        .external::<MantleArtifact>()
-        .external::<ReliefArtifact>()
+        .external::<ResolvedHydroErosionInputArtifact>()
         .external::<SpatialArtifact>()
-        .external::<TectonicArtifact>()
-        .stage(GeologicStage)
+        .external::<ReliefArtifact>()
+        .external::<GeologicArtifact>()
+        .external::<PreliminaryClimateArtifact>()
+        .stage(HydroErosionStage)
         .build()
         .unwrap();
     let engine = BuildEngine::new(graph);
-    let valid_mantle = upstream
+    let valid_relief = upstream
         .artifacts
-        .get::<MantleArtifact>()
+        .get::<ReliefArtifact>()
         .unwrap()
         .as_ref()
         .clone();
-    let inputs_with_mantle = |mantle: MantleArtifact| {
+    let inputs_with_relief = |relief: ReliefArtifact| {
         let mut external = ExternalArtifacts::new();
         external
             .insert(
                 upstream
                     .artifacts
-                    .get::<ResolvedGeologicInputArtifact>()
-                    .unwrap()
-                    .as_ref()
-                    .clone(),
-            )
-            .unwrap();
-        external.insert(mantle).unwrap();
-        external
-            .insert(
-                upstream
-                    .artifacts
-                    .get::<ReliefArtifact>()
+                    .get::<ResolvedHydroErosionInputArtifact>()
                     .unwrap()
                     .as_ref()
                     .clone(),
@@ -183,11 +201,22 @@ fn invalid_cross_artifact_input_does_not_poison_a_valid_cached_geology() {
                     .clone(),
             )
             .unwrap();
+        external.insert(relief).unwrap();
         external
             .insert(
                 upstream
                     .artifacts
-                    .get::<TectonicArtifact>()
+                    .get::<GeologicArtifact>()
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+            )
+            .unwrap();
+        external
+            .insert(
+                upstream
+                    .artifacts
+                    .get::<PreliminaryClimateArtifact>()
                     .unwrap()
                     .as_ref()
                     .clone(),
@@ -199,33 +228,42 @@ fn invalid_cross_artifact_input_does_not_poison_a_valid_cached_geology() {
     engine
         .build(
             RootSeed::new(42),
-            inputs_with_mantle(valid_mantle.clone()),
+            inputs_with_relief(valid_relief.clone()),
             &mut cache,
         )
         .unwrap();
 
-    let invalid = inputs_with_mantle(MantleArtifact::new(
-        MantleSnapshot::new(
-            MANTLE_SNAPSHOT_SCHEMA_V1,
+    let field = || ElevationField::from_values(vec![0.0]).unwrap();
+    let invalid_relief = ReliefArtifact::new(
+        ReliefSnapshot::new(
+            RELIEF_SCHEMA_V2,
             1,
-            Vec::new(),
-            vec![65.0],
-            vec![0.0],
+            0.0,
+            field(),
+            field(),
+            field(),
+            field(),
+            field(),
+            LandOceanField::classify(&field(), 0.0),
         )
         .unwrap(),
-    ));
+    );
     let failure = engine
-        .build(RootSeed::new(42), invalid, &mut cache)
+        .build(
+            RootSeed::new(42),
+            inputs_with_relief(invalid_relief),
+            &mut cache,
+        )
         .unwrap_err();
     assert_eq!(
         failure.report.diagnostics()[0].code(),
-        "natural.invalid-geologic-input"
+        "natural.invalid-hydro-erosion-input"
     );
 
     let recovered = engine
         .build(
             RootSeed::new(42),
-            inputs_with_mantle(valid_mantle),
+            inputs_with_relief(valid_relief),
             &mut cache,
         )
         .unwrap();

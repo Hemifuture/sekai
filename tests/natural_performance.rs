@@ -1,21 +1,25 @@
-use std::mem::size_of_val;
+use std::mem::{size_of, size_of_val};
 use std::time::Instant;
 
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
+    PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
-use sekai::world::natural::{ClimateSpec, GeologicSpec, TectonicSpec};
+use sekai::world::natural::{ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec};
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
+const HYDRO_EROSION_STAGE_BUDGET_MS: f64 = 350.0;
+const HYDRO_EROSION_MEMORY_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+
 #[test]
-#[ignore = "records a machine-specific release baseline without enforcing a duration"]
-fn profile_default_natural_foundation() {
+#[ignore = "release-only 20,000-cell performance and memory budget"]
+fn release_default_hydro_erosion_budget() {
     let mut external = ExternalArtifacts::new();
     external
         .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
@@ -33,6 +37,9 @@ fn profile_default_natural_foundation() {
         .unwrap();
     external
         .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
+        .unwrap();
+    external
+        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -55,12 +62,16 @@ fn profile_default_natural_foundation() {
         .artifacts
         .get::<PreliminaryClimateArtifact>()
         .unwrap();
+    let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>().unwrap();
     let spatial = spatial.snapshot();
     let tectonic = tectonic.snapshot();
     let mantle = mantle.snapshot();
     let relief = relief.snapshot();
     let geology = geology.snapshot();
     let climate = climate.snapshot();
+    let hydro_erosion = hydro_erosion.snapshot();
+    let surface = hydro_erosion.surface();
+    let hydrology = hydro_erosion.hydrology();
     tectonic.validate_against(spatial).unwrap();
     mantle.validate_against(spatial).unwrap();
     relief.validate_against(spatial).unwrap();
@@ -68,7 +79,60 @@ fn profile_default_natural_foundation() {
         .validate_against(spatial, tectonic, mantle, relief)
         .unwrap();
     climate.validate_against(spatial, relief).unwrap();
-    assert_eq!(outcome.report.stages().len(), 12);
+    hydro_erosion
+        .validate_against(spatial, relief, geology, climate)
+        .unwrap();
+    assert_eq!(outcome.report.stages().len(), 15);
+
+    let hydro_dense_bytes = size_of_val(surface.erosion_depth_m())
+        + size_of_val(surface.deposition_thickness_m())
+        + size_of_val(surface.surface_elevation_m().values())
+        + size_of_val(surface.sediment_throughput_m3())
+        + size_of_val(hydrology.monthly_local_runoff_mm())
+        + size_of_val(hydrology.monthly_discharge_m3_s())
+        + size_of_val(hydrology.annual_local_runoff_mm())
+        + size_of_val(hydrology.mean_annual_discharge_m3_s())
+        + size_of_val(hydrology.drainage_area_km2())
+        + size_of_val(hydrology.drainage_surface_elevation_m().values())
+        + size_of_val(hydrology.lake_depth_m())
+        + size_of_val(hydrology.surface_water().raw_values())
+        + size_of_val(hydrology.flow_receiver())
+        + size_of_val(hydrology.basin_id())
+        + size_of_val(hydrology.strahler_order().raw_values())
+        + size_of_val(hydrology.basins())
+        + size_of_val(hydrology.lakes())
+        + hydrology
+            .lakes()
+            .iter()
+            .map(|lake| size_of_val(lake.cells()))
+            .sum::<usize>()
+        + size_of_val(hydrology.river_segments())
+        + size_of::<f64>();
+    assert!(
+        hydro_dense_bytes <= HYDRO_EROSION_MEMORY_BUDGET_BYTES,
+        "hydro-erosion data uses {hydro_dense_bytes} bytes; budget is \
+         {HYDRO_EROSION_MEMORY_BUDGET_BYTES}"
+    );
+
+    let hydro_stage = outcome
+        .report
+        .stages()
+        .iter()
+        .find(|stage| stage.stage_id() == "natural.hydro-erosion")
+        .expect("production report contains the hydro-erosion stage");
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "debug build: hydro stage timing is informational only ({:.3} ms)",
+            hydro_stage.duration().as_secs_f64() * 1000.0
+        );
+    } else {
+        assert!(
+            hydro_stage.duration().as_secs_f64() * 1000.0 <= HYDRO_EROSION_STAGE_BUDGET_MS,
+            "hydro-erosion stage took {:.3} ms; release budget is {:.3} ms",
+            hydro_stage.duration().as_secs_f64() * 1000.0,
+            HYDRO_EROSION_STAGE_BUDGET_MS
+        );
+    }
 
     let climate_dense_bytes = size_of_val(climate.latitude_degrees())
         + size_of_val(climate.maritime_influence())
@@ -98,7 +162,8 @@ fn profile_default_natural_foundation() {
         + size_of_val(geology.metallic_mineral_potential())
         + size_of_val(geology.geothermal_potential())
         + size_of_val(geology.sedimentary_basin_potential())
-        + climate_dense_bytes;
+        + climate_dense_bytes
+        + hydro_dense_bytes;
     let continental = tectonic
         .crust_kinds()
         .raw_values()
@@ -123,7 +188,7 @@ fn profile_default_natural_foundation() {
         );
     }
     eprintln!(
-        "total_ms={:.3} cells={} edges={} plates={} segments={} dense_bytes={} climate_dense_bytes={} continental_fraction={continental:.4} land_fraction={land:.4}",
+        "total_ms={:.3} cells={} edges={} plates={} segments={} dense_bytes={} climate_dense_bytes={} hydro_dense_bytes={} continental_fraction={continental:.4} land_fraction={land:.4}",
         total.as_secs_f64() * 1000.0,
         spatial.cell_count(),
         spatial.edges().len(),
@@ -131,6 +196,7 @@ fn profile_default_natural_foundation() {
         tectonic.boundary_segments().len(),
         dense_bytes,
         climate_dense_bytes,
+        hydro_dense_bytes,
     );
 
     assert_eq!(spatial.cell_count(), 20_000);
@@ -139,4 +205,5 @@ fn profile_default_natural_foundation() {
     assert_eq!(relief.cell_count(), 20_000);
     assert_eq!(geology.cell_count(), 20_000);
     assert_eq!(climate.cell_count(), 20_000);
+    assert_eq!(hydro_erosion.cell_count(), 20_000);
 }

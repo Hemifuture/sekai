@@ -3,14 +3,14 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
-    PreliminaryClimateArtifact, PreliminaryClimateStage, ReliefArtifact,
+    HydroErosionSpecArtifact, PreliminaryClimateArtifact, PreliminaryClimateStage, ReliefArtifact,
     ResolvedClimateInputArtifact, RulePackSetArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, ElevationField, GeologicSpec, LandOceanField, ReliefSnapshot, TectonicSpec,
-    RELIEF_SCHEMA_V2,
+    ClimateSpec, ElevationField, GeologicSpec, HydroErosionSpec, LandOceanField, ReliefSnapshot,
+    TectonicSpec, RELIEF_SCHEMA_V2,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
 
@@ -32,6 +32,9 @@ fn complete_external(climate_spec: ClimateSpec) -> ExternalArtifacts {
         .unwrap();
     external
         .insert(ClimateSpecArtifact::new(climate_spec))
+        .unwrap();
+    external
+        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
@@ -79,7 +82,7 @@ fn artifact_and_stage_have_exact_stable_contracts() {
 }
 
 #[test]
-fn production_graph_publishes_valid_climate_and_caches_all_twelve_stages() {
+fn production_graph_publishes_valid_climate_and_caches_all_fifteen_stages() {
     let engine = BuildEngine::new(natural_foundation_graph().unwrap());
     let mut cache = MemoryStageCache::new();
     let first = engine
@@ -104,7 +107,7 @@ fn production_graph_publishes_valid_climate_and_caches_all_twelve_stages() {
         .snapshot()
         .validate_against(spatial.snapshot(), relief.snapshot())
         .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 12);
+    assert_eq!(repeated.report.cache_hits(), 15);
     assert_eq!(repeated.report.cache_misses(), 0);
     assert_eq!(
         first
@@ -137,8 +140,8 @@ fn climate_spec_change_reuses_every_non_climate_stage() {
         .build(RootSeed::new(42), complete_external(warm_spec), &mut cache)
         .unwrap();
 
-    assert_eq!(changed.report.cache_hits(), 9);
-    assert_eq!(changed.report.cache_misses(), 3);
+    assert_eq!(changed.report.cache_hits(), 11);
+    assert_eq!(changed.report.cache_misses(), 4);
     assert_eq!(
         baseline.artifacts.hash::<SpatialArtifact>().unwrap(),
         changed.artifacts.hash::<SpatialArtifact>().unwrap()

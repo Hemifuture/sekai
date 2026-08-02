@@ -3,38 +3,40 @@ use sekai::engine::{
     StageGraphBuilder,
 };
 use sekai::generators::natural::{
-    GeologicRuleResolutionArtifact, GeologicSpecArtifact, ResolvedGeologicInput,
-    ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, RuleGeologicResolutionStage,
-    RulePackSetArtifact,
+    HydroErosionRuleResolutionArtifact, HydroErosionSpecArtifact, ResolvedHydroErosionInput,
+    ResolvedHydroErosionInputArtifact, ResolvedHydroErosionInputStage,
+    RuleHydroErosionResolutionStage, RulePackSetArtifact,
 };
 use sekai::rules::{
     default_rule_pack_set, CapabilityContribution, ClimateModel, CoreSchemaRange, GeologicModel,
     HydroErosionModel, RulePack, RulePackId, RulePackKind, RulePackSet, RuleVersion, TectonicModel,
 };
-use sekai::world::natural::GeologicSpec;
+use sekai::world::natural::HydroErosionSpec;
 use sekai::world::{RootSeed, WORLD_SPEC_SCHEMA_V1};
 
-fn geologic_rule_graph() -> StageGraph {
+fn hydro_rule_graph() -> StageGraph {
     StageGraphBuilder::new()
-        .external::<GeologicSpecArtifact>()
+        .external::<HydroErosionSpecArtifact>()
         .external::<RulePackSetArtifact>()
-        .stage(RuleGeologicResolutionStage)
-        .stage(ResolvedGeologicInputStage)
+        .stage(RuleHydroErosionResolutionStage)
+        .stage(ResolvedHydroErosionInputStage)
         .build()
         .unwrap()
 }
 
-fn inputs(spec: GeologicSpec, packs: RulePackSet) -> ExternalArtifacts {
+fn inputs(spec: HydroErosionSpec, packs: RulePackSet) -> ExternalArtifacts {
     let mut artifacts = ExternalArtifacts::new();
-    artifacts.insert(GeologicSpecArtifact::new(spec)).unwrap();
+    artifacts
+        .insert(HydroErosionSpecArtifact::new(spec))
+        .unwrap();
     artifacts.insert(RulePackSetArtifact::new(packs)).unwrap();
     artifacts
 }
 
 fn alternate_world_law() -> RulePack {
     RulePack::new(
-        RulePackId::new("sekai.test.geologic-audit-alternate").unwrap(),
-        RuleVersion::new(1, 4, 0).unwrap(),
+        RulePackId::new("sekai.test.hydro-audit-alternate").unwrap(),
+        RuleVersion::new(1, 6, 0).unwrap(),
         RulePackKind::WorldLaw,
         CoreSchemaRange::new(WORLD_SPEC_SCHEMA_V1, WORLD_SPEC_SCHEMA_V1).unwrap(),
         Vec::new(),
@@ -52,39 +54,42 @@ fn alternate_world_law() -> RulePack {
 }
 
 #[test]
-fn geologic_rule_artifacts_have_exact_stable_keys() {
-    assert_eq!(GeologicSpecArtifact::KEY.as_str(), "natural.geologic-spec");
+fn artifacts_have_exact_stable_keys() {
     assert_eq!(
-        GeologicRuleResolutionArtifact::KEY.as_str(),
-        "rules.geologic-resolution"
+        HydroErosionSpecArtifact::KEY.as_str(),
+        "natural.hydro-erosion-spec"
     );
     assert_eq!(
-        ResolvedGeologicInputArtifact::KEY.as_str(),
-        "natural.resolved-geologic-input"
+        HydroErosionRuleResolutionArtifact::KEY.as_str(),
+        "rules.hydro-erosion-resolution"
+    );
+    assert_eq!(
+        ResolvedHydroErosionInputArtifact::KEY.as_str(),
+        "natural.resolved-hydro-erosion-input"
     );
 }
 
 #[test]
-fn geologic_rule_stages_have_exact_identity_dependencies_and_outputs() {
+fn stages_have_exact_identity_dependencies_and_outputs() {
     assert_eq!(
-        RuleGeologicResolutionStage.id().as_str(),
-        "natural.resolve-geologic-rules"
+        RuleHydroErosionResolutionStage.id().as_str(),
+        "natural.resolve-hydro-erosion-rules"
     );
-    assert_eq!(RuleGeologicResolutionStage.version(), 1);
-    assert_eq!(RuleGeologicResolutionStage.namespace(), "sekai.core");
+    assert_eq!(RuleHydroErosionResolutionStage.version(), 1);
+    assert_eq!(RuleHydroErosionResolutionStage.namespace(), "sekai.core");
     assert_eq!(
-        ResolvedGeologicInputStage.id().as_str(),
-        "natural.project-geologic-input"
+        ResolvedHydroErosionInputStage.id().as_str(),
+        "natural.project-hydro-erosion-input"
     );
-    assert_eq!(ResolvedGeologicInputStage.version(), 1);
-    assert_eq!(ResolvedGeologicInputStage.namespace(), "sekai.core");
+    assert_eq!(ResolvedHydroErosionInputStage.version(), 1);
+    assert_eq!(ResolvedHydroErosionInputStage.namespace(), "sekai.core");
 
-    let graph = geologic_rule_graph();
+    let graph = hydro_rule_graph();
     assert_eq!(
         graph.stage_ids(),
         vec![
-            "natural.resolve-geologic-rules",
-            "natural.project-geologic-input"
+            "natural.resolve-hydro-erosion-rules",
+            "natural.project-hydro-erosion-input",
         ]
     );
     let resolution = &graph.descriptors()[0];
@@ -94,9 +99,9 @@ fn geologic_rule_stages_have_exact_identity_dependencies_and_outputs() {
             .iter()
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
-        vec!["natural.geologic-spec", "rules.pack-set"]
+        vec!["natural.hydro-erosion-spec", "rules.pack-set"]
     );
-    assert_eq!(resolution.output(), GeologicRuleResolutionArtifact::KEY);
+    assert_eq!(resolution.output(), HydroErosionRuleResolutionArtifact::KEY);
 
     let projection = &graph.descriptors()[1];
     assert_eq!(
@@ -105,48 +110,58 @@ fn geologic_rule_stages_have_exact_identity_dependencies_and_outputs() {
             .iter()
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
-        vec!["rules.geologic-resolution"]
+        vec!["rules.hydro-erosion-resolution"]
     );
-    assert_eq!(projection.output(), ResolvedGeologicInputArtifact::KEY);
+    assert_eq!(projection.output(), ResolvedHydroErosionInputArtifact::KEY);
 }
 
 #[test]
-fn geologic_transport_round_trips_and_revalidates_private_state() {
-    let spec = GeologicSpecArtifact::new(GeologicSpec::default());
+fn transport_round_trips_and_revalidates_private_state() {
+    let spec = HydroErosionSpecArtifact::new(HydroErosionSpec::default());
     let encoded = serde_json::to_vec(&spec).unwrap();
-    let decoded: GeologicSpecArtifact = serde_json::from_slice(&encoded).unwrap();
+    let decoded: HydroErosionSpecArtifact = serde_json::from_slice(&encoded).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, spec);
 
-    let projection = ResolvedGeologicInputArtifact::new(
-        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, GeologicSpec::default()).unwrap(),
+    let projection = ResolvedHydroErosionInputArtifact::new(
+        ResolvedHydroErosionInput::new(
+            HydroErosionModel::PriorityFloodStreamPowerV1,
+            HydroErosionSpec::default(),
+        )
+        .unwrap(),
     );
     let encoded = serde_json::to_vec(&projection).unwrap();
-    let decoded: ResolvedGeologicInputArtifact = serde_json::from_slice(&encoded).unwrap();
+    let decoded: ResolvedHydroErosionInputArtifact = serde_json::from_slice(&encoded).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, projection);
 
     let mut malformed = serde_json::to_value(&projection).unwrap();
     malformed["input"]["spec"]["schema_version"] = serde_json::json!(2);
-    assert!(serde_json::from_value::<ResolvedGeologicInputArtifact>(malformed).is_err());
+    assert!(serde_json::from_value::<ResolvedHydroErosionInputArtifact>(malformed).is_err());
 }
 
 #[test]
 fn projection_contains_only_validated_model_and_spec() {
-    let outcome = BuildEngine::new(geologic_rule_graph())
+    let outcome = BuildEngine::new(hydro_rule_graph())
         .build(
             RootSeed::new(42),
-            inputs(GeologicSpec::default(), default_rule_pack_set().unwrap()),
+            inputs(
+                HydroErosionSpec::default(),
+                default_rule_pack_set().unwrap(),
+            ),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
     let projection = outcome
         .artifacts
-        .get::<ResolvedGeologicInputArtifact>()
+        .get::<ResolvedHydroErosionInputArtifact>()
         .unwrap();
 
-    assert_eq!(projection.input().model(), GeologicModel::CurrentSliceV1);
-    assert_eq!(projection.input().spec(), &GeologicSpec::default());
+    assert_eq!(
+        projection.input().model(),
+        HydroErosionModel::PriorityFloodStreamPowerV1
+    );
+    assert_eq!(projection.input().spec(), &HydroErosionSpec::default());
     let object = serde_json::to_value(projection.input()).unwrap();
     assert_eq!(object.as_object().unwrap().len(), 2);
     projection.validate().unwrap();
@@ -154,18 +169,24 @@ fn projection_contains_only_validated_model_and_spec() {
 
 #[test]
 fn stages_ignore_rng_for_identical_semantic_inputs() {
-    let engine = BuildEngine::new(geologic_rule_graph());
+    let engine = BuildEngine::new(hydro_rule_graph());
     let first = engine
         .build(
             RootSeed::new(1),
-            inputs(GeologicSpec::default(), default_rule_pack_set().unwrap()),
+            inputs(
+                HydroErosionSpec::default(),
+                default_rule_pack_set().unwrap(),
+            ),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
     let second = engine
         .build(
             RootSeed::new(2),
-            inputs(GeologicSpec::default(), default_rule_pack_set().unwrap()),
+            inputs(
+                HydroErosionSpec::default(),
+                default_rule_pack_set().unwrap(),
+            ),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
@@ -173,32 +194,35 @@ fn stages_ignore_rng_for_identical_semantic_inputs() {
     assert_eq!(
         first
             .artifacts
-            .hash::<GeologicRuleResolutionArtifact>()
+            .hash::<HydroErosionRuleResolutionArtifact>()
             .unwrap(),
         second
             .artifacts
-            .hash::<GeologicRuleResolutionArtifact>()
+            .hash::<HydroErosionRuleResolutionArtifact>()
             .unwrap()
     );
     assert_eq!(
         first
             .artifacts
-            .hash::<ResolvedGeologicInputArtifact>()
+            .hash::<ResolvedHydroErosionInputArtifact>()
             .unwrap(),
         second
             .artifacts
-            .hash::<ResolvedGeologicInputArtifact>()
+            .hash::<ResolvedHydroErosionInputArtifact>()
             .unwrap()
     );
 }
 
 #[test]
 fn audit_identity_changes_without_invalidating_projected_input() {
-    let engine = BuildEngine::new(geologic_rule_graph());
+    let engine = BuildEngine::new(hydro_rule_graph());
     let default = engine
         .build(
             RootSeed::new(42),
-            inputs(GeologicSpec::default(), default_rule_pack_set().unwrap()),
+            inputs(
+                HydroErosionSpec::default(),
+                default_rule_pack_set().unwrap(),
+            ),
             &mut MemoryStageCache::new(),
         )
         .unwrap();
@@ -206,7 +230,7 @@ fn audit_identity_changes_without_invalidating_projected_input() {
         .build(
             RootSeed::new(42),
             inputs(
-                GeologicSpec::default(),
+                HydroErosionSpec::default(),
                 RulePackSet::new(vec![alternate_world_law()]).unwrap(),
             ),
             &mut MemoryStageCache::new(),
@@ -216,21 +240,21 @@ fn audit_identity_changes_without_invalidating_projected_input() {
     assert_ne!(
         default
             .artifacts
-            .hash::<GeologicRuleResolutionArtifact>()
+            .hash::<HydroErosionRuleResolutionArtifact>()
             .unwrap(),
         alternate
             .artifacts
-            .hash::<GeologicRuleResolutionArtifact>()
+            .hash::<HydroErosionRuleResolutionArtifact>()
             .unwrap()
     );
     assert_eq!(
         default
             .artifacts
-            .hash::<ResolvedGeologicInputArtifact>()
+            .hash::<ResolvedHydroErosionInputArtifact>()
             .unwrap(),
         alternate
             .artifacts
-            .hash::<ResolvedGeologicInputArtifact>()
+            .hash::<ResolvedHydroErosionInputArtifact>()
             .unwrap()
     );
 }

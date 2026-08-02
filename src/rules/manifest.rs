@@ -479,6 +479,7 @@ fn canonical_contributions(
             CapabilityContribution::TectonicModel(_)
                 | CapabilityContribution::GeologicModel(_)
                 | CapabilityContribution::ClimateModel(_)
+                | CapabilityContribution::HydroErosionModel(_)
         ) {
             let capability_id = contribution.capability_id();
             if !unique_contributions.insert(capability_id.clone()) {

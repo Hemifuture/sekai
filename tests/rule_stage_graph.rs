@@ -9,9 +9,9 @@ use sekai::generators::natural::{
 };
 use sekai::rules::{
     default_rule_pack_set, earthlike_rule_pack, AuthorConstraints, CapabilityContribution,
-    ClimateModel, ConstraintStrength, CoreSchemaRange, GeologicModel, RuleItemId, RulePack,
-    RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion,
-    TectonicConstraintClause, TectonicModel,
+    ClimateModel, ConstraintStrength, CoreSchemaRange, GeologicModel, HydroErosionModel,
+    RuleItemId, RulePack, RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint,
+    RuleVersion, TectonicConstraintClause, TectonicModel,
 };
 use sekai::world::natural::{TectonicSpec, TECTONIC_SPEC_SCHEMA_V1};
 use sekai::world::{RootSeed, WORLD_SPEC_SCHEMA_V1};
@@ -82,6 +82,9 @@ fn alternate_world_law() -> RulePack {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1,
+            ),
         ],
     )
     .unwrap()

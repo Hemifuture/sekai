@@ -1,12 +1,31 @@
-use sekai::world::{AuthorObjectId, CellId, Meters, RootSeed, SquareMeters, WorldPoint, WorldRect};
+use sekai::world::{
+    AuthorObjectId, CellId, DrainageBasinId, LakeId, Meters, RiverSegmentId, RootSeed,
+    SquareMeters, WorldPoint, WorldRect,
+};
 use serde::de::value::{Error as ValueError, F64Deserializer};
 use serde::Deserialize;
 
 #[test]
 fn typed_ids_round_trip_raw_values() {
     assert_eq!(CellId::from_raw(7).raw(), 7);
+    assert_eq!(DrainageBasinId::from_raw(8).raw(), 8);
+    assert_eq!(LakeId::from_raw(9).raw(), 9);
+    assert_eq!(RiverSegmentId::from_raw(10).raw(), 10);
     assert_eq!(AuthorObjectId::from_raw(99).raw(), 99);
     assert_eq!(RootSeed::new(42).raw(), 42);
+
+    for encoded in ["8", "9", "10"] {
+        let decoded = match encoded {
+            "8" => serde_json::from_str::<DrainageBasinId>(encoded)
+                .unwrap()
+                .raw(),
+            "9" => serde_json::from_str::<LakeId>(encoded).unwrap().raw(),
+            _ => serde_json::from_str::<RiverSegmentId>(encoded)
+                .unwrap()
+                .raw(),
+        };
+        assert_eq!(decoded.to_string(), encoded);
+    }
 }
 
 #[test]

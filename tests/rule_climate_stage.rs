@@ -9,7 +9,7 @@ use sekai::generators::natural::{
 };
 use sekai::rules::{
     default_rule_pack_set, CapabilityContribution, ClimateModel, CoreSchemaRange, GeologicModel,
-    RulePack, RulePackId, RulePackKind, RulePackSet, RuleVersion, TectonicModel,
+    HydroErosionModel, RulePack, RulePackId, RulePackKind, RulePackSet, RuleVersion, TectonicModel,
 };
 use sekai::world::natural::ClimateSpec;
 use sekai::world::{RootSeed, WORLD_SPEC_SCHEMA_V1};
@@ -43,6 +43,9 @@ fn alternate_world_law() -> RulePack {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1,
+            ),
         ],
     )
     .unwrap()

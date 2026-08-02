@@ -5,6 +5,7 @@ mod capability;
 mod climate;
 mod constraints;
 mod geology;
+mod hydro_erosion;
 mod ids;
 mod manifest;
 mod registry;
@@ -16,10 +17,11 @@ pub use builtin::{
     EARTHLIKE_RULE_PACK_ID,
 };
 pub use capability::{
-    climate_model_capability_id, geologic_model_capability_id, tectonic_controls_capability_id,
-    tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution,
-    CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder, CapabilityRegistryError,
-    ClimateModel, GeologicModel, RulePackKind, TectonicModel,
+    climate_model_capability_id, geologic_model_capability_id, hydro_erosion_model_capability_id,
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
+    CapabilityRegistryError, ClimateModel, GeologicModel, HydroErosionModel, RulePackKind,
+    TectonicModel,
 };
 pub use climate::{
     ClimateRuleResolution, ClimateRuleResolutionError, ClimateRuleResolver,
@@ -35,6 +37,10 @@ pub use constraints::{
 pub use geology::{
     GeologicRuleResolution, GeologicRuleResolutionError, GeologicRuleResolver,
     GEOLOGIC_RULE_RESOLUTION_SCHEMA_V1,
+};
+pub use hydro_erosion::{
+    HydroErosionRuleResolution, HydroErosionRuleResolutionError, HydroErosionRuleResolver,
+    HYDRO_EROSION_RULE_RESOLUTION_SCHEMA_V1,
 };
 pub use ids::{
     CapabilityId, CoreSchemaRange, RuleContentHash, RuleIdentityError, RuleItemId, RulePackId,

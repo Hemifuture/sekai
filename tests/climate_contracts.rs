@@ -1,13 +1,14 @@
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
-    ReliefArtifact, RulePackSetArtifact, TectonicSpecArtifact,
+    HydroErosionSpecArtifact, ReliefArtifact, RulePackSetArtifact, TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, ClimateValidationError, GeologicSpec, MonthlyScalarField, MonthlyVectorField,
-    PreliminaryClimateSnapshot, TectonicSpec, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V1,
+    ClimateSpec, ClimateValidationError, GeologicSpec, HydroErosionSpec, MonthlyScalarField,
+    MonthlyVectorField, PreliminaryClimateSnapshot, TectonicSpec, CLIMATE_MONTH_COUNT,
+    PRELIMINARY_CLIMATE_SCHEMA_V1,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -114,6 +115,9 @@ fn natural_artifacts(
         .unwrap();
     external
         .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
+        .unwrap();
+    external
+        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
     external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))

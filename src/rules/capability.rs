@@ -10,6 +10,7 @@ const CORE_NATURAL_NAMESPACE: &str = "sekai.core.natural";
 const TECTONIC_MODEL_NAME: &str = "tectonic-model";
 const GEOLOGIC_MODEL_NAME: &str = "geologic-model";
 const CLIMATE_MODEL_NAME: &str = "climate-model";
+const HYDRO_EROSION_MODEL_NAME: &str = "hydro-erosion-model";
 const TECTONIC_CONTROLS_NAME: &str = "tectonic-controls";
 const CAPABILITY_SCHEMA_V1: u16 = 1;
 
@@ -41,6 +42,16 @@ pub fn climate_model_capability_id() -> CapabilityId {
         CAPABILITY_SCHEMA_V1,
     )
     .expect("the engine-owned climate model capability ID is valid")
+}
+
+/// Returns the stable unique current-slice hydro-erosion-model capability ID.
+pub fn hydro_erosion_model_capability_id() -> CapabilityId {
+    CapabilityId::new(
+        CORE_NATURAL_NAMESPACE,
+        HYDRO_EROSION_MODEL_NAME,
+        CAPABILITY_SCHEMA_V1,
+    )
+    .expect("the engine-owned hydro-erosion model capability ID is valid")
 }
 
 /// Returns the stable mergeable tectonic-controls capability ID.
@@ -248,6 +259,13 @@ pub enum ClimateModel {
     SeasonalEnergyMoistureV1,
 }
 
+/// A trusted compiled current-slice hydro-erosion implementation selected by world law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum HydroErosionModel {
+    /// Deterministic Priority-Flood drainage plus bounded stream-power formation.
+    PriorityFloodStreamPowerV1,
+}
+
 /// A closed data contribution accepted by the V1 capability system.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CapabilityContribution {
@@ -257,6 +275,8 @@ pub enum CapabilityContribution {
     GeologicModel(GeologicModel),
     /// Selects one trusted compiled preliminary-climate model.
     ClimateModel(ClimateModel),
+    /// Selects one trusted compiled current-slice hydro-erosion model.
+    HydroErosionModel(HydroErosionModel),
     /// Adds one typed tectonic control constraint.
     TectonicConstraint(RuleTectonicConstraint),
 }
@@ -268,6 +288,7 @@ impl CapabilityContribution {
             Self::TectonicModel(_) => tectonic_model_capability_id(),
             Self::GeologicModel(_) => geologic_model_capability_id(),
             Self::ClimateModel(_) => climate_model_capability_id(),
+            Self::HydroErosionModel(_) => hydro_erosion_model_capability_id(),
             Self::TectonicConstraint(_) => tectonic_controls_capability_id(),
         }
     }
@@ -275,7 +296,10 @@ impl CapabilityContribution {
     /// Returns a local item ID for merge contributions that require uniqueness.
     pub fn rule_item_id(&self) -> Option<&RuleItemId> {
         match self {
-            Self::TectonicModel(_) | Self::GeologicModel(_) | Self::ClimateModel(_) => None,
+            Self::TectonicModel(_)
+            | Self::GeologicModel(_)
+            | Self::ClimateModel(_)
+            | Self::HydroErosionModel(_) => None,
             Self::TectonicConstraint(constraint) => Some(constraint.item_id()),
         }
     }
@@ -283,7 +307,10 @@ impl CapabilityContribution {
     /// Revalidates the typed contribution payload.
     pub fn validate(&self) -> Result<(), ConstraintError> {
         match self {
-            Self::TectonicModel(_) | Self::GeologicModel(_) | Self::ClimateModel(_) => Ok(()),
+            Self::TectonicModel(_)
+            | Self::GeologicModel(_)
+            | Self::ClimateModel(_)
+            | Self::HydroErosionModel(_) => Ok(()),
             Self::TectonicConstraint(constraint) => constraint.validate(),
         }
     }

@@ -5,9 +5,13 @@ mod climate_spec;
 mod fields;
 mod geologic_spec;
 mod geology;
+mod hydro_erosion;
+mod hydro_erosion_spec;
+mod hydrology;
 mod mantle;
 mod relief;
 mod spec;
+mod surface_process;
 mod tectonics;
 
 pub use climate::{
@@ -23,15 +27,19 @@ pub use climate_spec::{
     MIN_TEMPERATURE_OFFSET_DECI_C,
 };
 pub use fields::{
-    bedrock_kind_field_id, boundary_kind_field_id, boundary_strength_field_id,
-    crust_base_elevation_field_id, crust_kind_field_id, crust_thickness_field_id,
-    elevation_field_id, erosion_resistance_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, land_ocean_field_id, latitude_degrees_field_id,
-    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
+    annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,
+    boundary_strength_field_id, crust_base_elevation_field_id, crust_kind_field_id,
+    crust_thickness_field_id, drainage_area_km2_field_id, elevation_field_id,
+    erosion_resistance_field_id, fluvial_erosion_depth_m_field_id, fracture_intensity_field_id,
+    geothermal_potential_field_id, lake_depth_m_field_id, land_ocean_field_id,
+    latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
+    mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
     natural_field_registry, plate_id_field_id, plate_velocity_field_id,
     preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
     preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
-    regional_offset_field_id, relative_permeability_field_id, sedimentary_basin_potential_field_id,
+    regional_offset_field_id, relative_permeability_field_id,
+    sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
+    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
     NaturalFieldDisplayCache, NaturalFieldRegistryError,
 };
@@ -41,6 +49,23 @@ pub use geologic_spec::{
 pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1,
+};
+pub use hydro_erosion::{
+    HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,
+    RUNOFF_IDENTITY_TOLERANCE_MM,
+};
+pub use hydro_erosion_spec::{
+    HydroErosionSpec, HydroErosionSpecError, HYDRO_EROSION_SPEC_SCHEMA_V1,
+    MAX_EROSION_STRENGTH_PERMILLE, MAX_LAKE_DEPTH_CM, MAX_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
+    MIN_LAKE_DEPTH_CM, MIN_RIVER_DISCHARGE_THRESHOLD_DECI_M3_S,
+};
+pub use hydrology::{
+    BasinOutletKind, DrainageBasin, HydrologySnapshot, HydrologyValidationError, Lake,
+    RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind,
+    CLIMATOLOGICAL_YEAR_SECONDS, DISCHARGE_ACCUMULATION_ABSOLUTE_TOLERANCE_M3_S,
+    DRAINAGE_AREA_ABSOLUTE_TOLERANCE_KM2, HYDROLOGY_SCHEMA_V1,
+    HYDROLOGY_SUMMARY_ABSOLUTE_TOLERANCE, HYDROLOGY_SUMMARY_RELATIVE_TOLERANCE, MAX_LAKE_DEPTH_M,
+    MAX_STRAHLER_ORDER, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
@@ -56,6 +81,11 @@ pub use relief::{
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
     MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
+};
+pub use surface_process::{
+    SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,
+    MAX_EROSION_DEPTH_M, SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3, SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
+    SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1,
 };
 pub use tectonics::{
     BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Plate, PlateIdField,

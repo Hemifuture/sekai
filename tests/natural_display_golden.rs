@@ -5,8 +5,9 @@ use std::sync::Arc;
 use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-    GeologicSpecArtifact, MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact,
+    GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
+    PreliminaryClimateArtifact, ReliefArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
@@ -17,13 +18,17 @@ use sekai::view::{
 };
 use sekai::world::fields::{FieldId, ValueRange};
 use sekai::world::natural::{
-    bedrock_kind_field_id, crust_kind_field_id, elevation_field_id, geothermal_potential_field_id,
-    mantle_heat_flow_field_id, maritime_influence_field_id, metallic_mineral_potential_field_id,
-    natural_field_registry, plate_id_field_id, preliminary_annual_precipitation_mm_field_id,
+    bedrock_kind_field_id, crust_kind_field_id, elevation_field_id,
+    fluvial_erosion_depth_m_field_id, geothermal_potential_field_id, mantle_heat_flow_field_id,
+    maritime_influence_field_id, metallic_mineral_potential_field_id, natural_field_registry,
+    plate_id_field_id, preliminary_annual_precipitation_mm_field_id,
     preliminary_mean_air_temperature_c_field_id, preliminary_temperature_seasonality_c_field_id,
-    sedimentary_basin_potential_field_id, volcanic_influence_field_id, BedrockKind, BoundaryKind,
-    ClimateSpec, GeologicSnapshot, GeologicSpec, MantleSnapshot, PreliminaryClimateSnapshot,
-    ReliefSnapshot, TectonicSnapshot, TectonicSpec, COMPONENT_IDENTITY_TOLERANCE_M,
+    sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
+    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
+    volcanic_influence_field_id, BedrockKind, BoundaryKind, ClimateSpec, GeologicSnapshot,
+    GeologicSpec, HydroErosionSnapshot, HydroErosionSpec, MantleSnapshot,
+    PreliminaryClimateSnapshot, ReliefSnapshot, SurfaceWaterKind, TectonicSnapshot, TectonicSpec,
+    COMPONENT_IDENTITY_TOLERANCE_M,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -79,6 +84,7 @@ fn run_multi_seed_quality_suite() {
         let relief = fixture.relief.snapshot();
         let geology = fixture.geology.snapshot();
         let climate = fixture.climate.snapshot();
+        let hydro_erosion = fixture.hydro_erosion.snapshot();
         tectonic.validate_against(spatial).unwrap();
         mantle.validate_against(spatial).unwrap();
         relief.validate_against(spatial).unwrap();
@@ -86,6 +92,9 @@ fn run_multi_seed_quality_suite() {
             .validate_against(spatial, tectonic, mantle, relief)
             .unwrap();
         climate.validate_against(spatial, relief).unwrap();
+        hydro_erosion
+            .validate_against(spatial, relief, geology, climate)
+            .unwrap();
 
         assert_eq!(spatial.cell_count(), QUALITY_CELL_COUNT as usize);
         assert_eq!(tectonic.cell_count(), QUALITY_CELL_COUNT);
@@ -93,6 +102,7 @@ fn run_multi_seed_quality_suite() {
         assert_eq!(relief.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(geology.cell_count(), QUALITY_CELL_COUNT);
         assert_eq!(climate.cell_count(), QUALITY_CELL_COUNT);
+        assert_eq!(hydro_erosion.cell_count(), QUALITY_CELL_COUNT);
         assert_plate_connectivity_and_balance(seed, spatial, tectonic);
         assert_boundary_partition_and_motion(seed, spatial, tectonic);
 
@@ -144,6 +154,7 @@ fn run_multi_seed_quality_suite() {
         assert_relief_finite_and_explainable(seed, relief);
         assert_geologic_quality(seed, tectonic, mantle, relief, geology);
         assert_climate_quality(seed, spatial, relief, climate);
+        assert_hydro_erosion_quality(seed, spatial, hydro_erosion);
         let mesh = PreparedCellMesh::build(spatial, MeshCompleteness::RequireAll).unwrap();
         assert_eq!(mesh.cell_count(), QUALITY_CELL_COUNT as usize);
         let registry = natural_field_registry(tectonic.plates().len() as u16).unwrap();
@@ -204,6 +215,7 @@ struct NaturalFixture {
     relief: Arc<ReliefArtifact>,
     geology: Arc<GeologicArtifact>,
     climate: Arc<PreliminaryClimateArtifact>,
+    hydro_erosion: Arc<HydroErosionArtifact>,
 }
 
 fn build_natural(seed: u64, cell_count: u32) -> NaturalFixture {
@@ -234,6 +246,9 @@ fn build_natural_with_geologic_spec(
         .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
         .unwrap();
     external
+        .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
+        .unwrap();
+    external
         .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
         .unwrap();
     external
@@ -252,6 +267,7 @@ fn build_natural_with_geologic_spec(
             .artifacts
             .get::<PreliminaryClimateArtifact>()
             .unwrap(),
+        hydro_erosion: outcome.artifacts.get::<HydroErosionArtifact>().unwrap(),
     }
 }
 
@@ -631,6 +647,109 @@ fn assert_climate_quality(
     assert_eq!(spatial.cell_count(), climate.cell_count() as usize);
 }
 
+fn assert_hydro_erosion_quality(
+    seed: u64,
+    spatial: &SpatialSnapshot,
+    snapshot: &HydroErosionSnapshot,
+) {
+    let surface = snapshot.surface();
+    let hydrology = snapshot.hydrology();
+    let cell_count = spatial.cell_count();
+
+    for origin in 0..cell_count {
+        let mut current = Some(CellId::from_raw(origin as u32));
+        let mut steps = 0;
+        while let Some(cell) = current {
+            steps += 1;
+            assert!(
+                steps <= cell_count,
+                "seed {seed}: receiver chain from cell {origin} did not terminate"
+            );
+            current = hydrology.flow_receiver()[cell.raw() as usize];
+        }
+    }
+    assert!(
+        hydrology
+            .drainage_area_km2()
+            .iter()
+            .all(|&area| area.is_finite() && area > 0.0),
+        "seed {seed}: every cell must accumulate a positive finite drainage area"
+    );
+
+    let lake_cells = hydrology
+        .surface_water()
+        .raw_values()
+        .iter()
+        .filter(|&&kind| kind == SurfaceWaterKind::Lake.raw())
+        .count();
+    let eroded_cells = surface
+        .erosion_depth_m()
+        .iter()
+        .filter(|&&depth| depth > 0.0)
+        .count();
+    let deposited_cells = surface
+        .deposition_thickness_m()
+        .iter()
+        .filter(|&&depth| depth > 0.0)
+        .count();
+    let max_order = hydrology
+        .strahler_order()
+        .raw_values()
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let isolated_eroded = isolated_positive_cells(spatial, surface.erosion_depth_m());
+    let isolated_deposited = isolated_positive_cells(spatial, surface.deposition_thickness_m());
+    assert!(
+        !hydrology.lakes().is_empty() && lake_cells > 0,
+        "seed {seed}: expected at least one published lake"
+    );
+    assert!(
+        !hydrology.river_segments().is_empty() && max_order >= 2,
+        "seed {seed}: expected a branching published river network"
+    );
+    assert!(
+        eroded_cells > 0,
+        "seed {seed}: expected nonzero fluvial erosion"
+    );
+    assert!(
+        deposited_cells > 0
+            && surface
+                .sediment_throughput_m3()
+                .iter()
+                .any(|&volume| volume > 0.0)
+            && surface.sediment_export_m3() > 0.0,
+        "seed {seed}: expected routed, deposited, and exported sediment"
+    );
+    assert!(
+        isolated_eroded <= 2 && isolated_deposited <= 2,
+        "seed {seed}: process fill contains too many isolated one-cell speckles \
+         (erosion={isolated_eroded}, deposition={isolated_deposited})"
+    );
+    eprintln!(
+        "seed={seed} hydro lakes={} lake_cells={lake_cells} rivers={} max_order={max_order} eroded={eroded_cells} deposited={deposited_cells} isolated_eroded={isolated_eroded} isolated_deposited={isolated_deposited} export_m3={:.3}",
+        hydrology.lakes().len(),
+        hydrology.river_segments().len(),
+        surface.sediment_export_m3(),
+    );
+}
+
+fn isolated_positive_cells(spatial: &SpatialSnapshot, values: &[f32]) -> usize {
+    values
+        .iter()
+        .enumerate()
+        .filter(|&(index, value)| {
+            *value > 0.0
+                && spatial
+                    .neighbors(CellId::from_raw(index as u32))
+                    .expect("quality fixture has every cell")
+                    .iter()
+                    .all(|neighbor| values[neighbor.raw() as usize] == 0.0)
+        })
+        .count()
+}
+
 fn mean(values: impl Iterator<Item = f32>) -> f32 {
     let (sum, count) = values.fold((0.0_f32, 0_usize), |(sum, count), value| {
         (sum + value, count + 1)
@@ -680,6 +799,98 @@ fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
                 FieldPayloadRef::ScalarF32(fixture.relief.snapshot().elevation_m().values()),
                 symmetric_elevation_range(fixture.relief.snapshot()),
                 PaletteId::Diverging,
+            ),
+        ),
+        (
+            "current-surface.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                surface_elevation_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    fixture
+                        .hydro_erosion
+                        .snapshot()
+                        .surface()
+                        .surface_elevation_m()
+                        .values(),
+                ),
+                symmetric_surface_range(
+                    fixture.relief.snapshot(),
+                    fixture
+                        .hydro_erosion
+                        .snapshot()
+                        .surface()
+                        .surface_elevation_m()
+                        .values(),
+                ),
+                PaletteId::Diverging,
+            ),
+        ),
+        (
+            "surface-water.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                surface_water_kind_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    fixture
+                        .hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .surface_water()
+                        .raw_values(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Categorical,
+            ),
+        ),
+        (
+            "strahler-order.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                strahler_stream_order_field_id(),
+                FieldPayloadRef::CategoryU32(
+                    fixture
+                        .hydro_erosion
+                        .snapshot()
+                        .hydrology()
+                        .strahler_order()
+                        .raw_values(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Categorical,
+            ),
+        ),
+        (
+            "fluvial-erosion-depth.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                fluvial_erosion_depth_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    fixture.hydro_erosion.snapshot().surface().erosion_depth_m(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Sequential,
+            ),
+        ),
+        (
+            "sediment-deposition-thickness.png",
+            natural_packet(
+                &fixture,
+                mesh.clone(),
+                sediment_deposition_thickness_m_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    fixture
+                        .hydro_erosion
+                        .snapshot()
+                        .surface()
+                        .deposition_thickness_m(),
+                ),
+                DisplayRangeMode::Data,
+                PaletteId::Sequential,
             ),
         ),
         (
@@ -802,10 +1013,12 @@ fn golden_packets() -> Vec<(&'static str, PreparedFieldDisplay)> {
 }
 
 fn symmetric_elevation_range(relief: &ReliefSnapshot) -> DisplayRangeMode {
+    symmetric_surface_range(relief, relief.elevation_m().values())
+}
+
+fn symmetric_surface_range(relief: &ReliefSnapshot, values: &[f32]) -> DisplayRangeMode {
     let sea_level = relief.sea_level_m();
-    let radius = relief
-        .elevation_m()
-        .values()
+    let radius = values
         .iter()
         .map(|value| (value - sea_level).abs())
         .fold(0.0_f32, f32::max);

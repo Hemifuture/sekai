@@ -3,9 +3,14 @@
 mod climate;
 mod climate_rule_input;
 mod climate_stage;
+mod erosion;
 mod geologic_rule_input;
 mod geologic_stage;
 mod geology;
+mod hydro_erosion;
+mod hydro_erosion_rule_input;
+mod hydro_erosion_stage;
+mod hydrology;
 mod mantle;
 mod random;
 mod relief;
@@ -23,6 +28,7 @@ pub use climate_rule_input::{
 pub use climate_stage::{
     PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
+pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
 pub use geologic_rule_input::{
     GeologicRuleResolutionArtifact, GeologicSpecArtifact, ResolvedGeologicInput,
     ResolvedGeologicInputArtifact, ResolvedGeologicInputStage, ResolvedGeologicInputStageInputs,
@@ -33,6 +39,15 @@ pub use geologic_stage::{
     MantleStageInputs,
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
+pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
+pub use hydro_erosion_rule_input::{
+    HydroErosionRuleResolutionArtifact, HydroErosionSpecArtifact, ResolvedHydroErosionInput,
+    ResolvedHydroErosionInputArtifact, ResolvedHydroErosionInputStage,
+    ResolvedHydroErosionInputStageInputs, RuleHydroErosionResolutionStage,
+    RuleHydroErosionResolutionStageInputs,
+};
+pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroErosionStageInputs};
+pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use rule_input::{

@@ -1,11 +1,12 @@
 use thiserror::Error;
 
 use super::{
-    climate_model_capability_id, geologic_model_capability_id, tectonic_controls_capability_id,
-    tectonic_model_capability_id, CapabilityCardinality, CapabilityContribution,
-    CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder, CapabilityRegistryError,
-    ClimateModel, CoreSchemaRange, GeologicModel, RuleIdentityError, RulePack, RulePackError,
-    RulePackId, RulePackKind, RulePackSet, RulePackSetError, RuleVersion, TectonicModel,
+    climate_model_capability_id, geologic_model_capability_id, hydro_erosion_model_capability_id,
+    tectonic_controls_capability_id, tectonic_model_capability_id, CapabilityCardinality,
+    CapabilityContribution, CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryBuilder,
+    CapabilityRegistryError, ClimateModel, CoreSchemaRange, GeologicModel, HydroErosionModel,
+    RuleIdentityError, RulePack, RulePackError, RulePackId, RulePackKind, RulePackSet,
+    RulePackSetError, RuleVersion, TectonicModel,
 };
 use crate::world::WORLD_SPEC_SCHEMA_V1;
 
@@ -45,6 +46,12 @@ pub fn core_capability_registry() -> Result<CapabilityRegistry, BuiltinRuleError
         false,
     ))?;
     builder.register(CapabilityDescriptor::new(
+        hydro_erosion_model_capability_id(),
+        CapabilityCardinality::UniqueRequired,
+        RulePackKind::WorldLaw,
+        false,
+    ))?;
+    builder.register(CapabilityDescriptor::new(
         tectonic_model_capability_id(),
         CapabilityCardinality::UniqueRequired,
         RulePackKind::WorldLaw,
@@ -72,6 +79,9 @@ pub fn earthlike_rule_pack() -> Result<RulePack, BuiltinRuleError> {
             CapabilityContribution::TectonicModel(TectonicModel::CurrentSliceV1),
             CapabilityContribution::GeologicModel(GeologicModel::CurrentSliceV1),
             CapabilityContribution::ClimateModel(ClimateModel::SeasonalEnergyMoistureV1),
+            CapabilityContribution::HydroErosionModel(
+                HydroErosionModel::PriorityFloodStreamPowerV1,
+            ),
         ],
     )?)
 }
