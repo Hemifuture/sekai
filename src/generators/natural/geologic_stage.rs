@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     GeologicGenerationError, GeologicGenerator, MantleGenerationError, MantleGenerator,
-    ReliefArtifact, ResolvedGeologicInputArtifact, TectonicArtifact,
+    ReliefArtifact, ResolvedGeologicInputArtifact, ResolvedWorldFormationArtifact,
+    TectonicArtifact,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
@@ -56,17 +57,23 @@ impl Artifact for MantleArtifact {
 
 /// Restricted typed dependencies supplied to [`MantleStage`].
 pub struct MantleStageInputs {
+    formation: Arc<ResolvedWorldFormationArtifact>,
     resolved_input: Arc<ResolvedGeologicInputArtifact>,
     spatial: Arc<SpatialArtifact>,
 }
 
 impl StageInputs for MantleStageInputs {
     fn dependencies() -> &'static [ArtifactKey] {
-        &[ResolvedGeologicInputArtifact::KEY, SpatialArtifact::KEY]
+        &[
+            ResolvedGeologicInputArtifact::KEY,
+            ResolvedWorldFormationArtifact::KEY,
+            SpatialArtifact::KEY,
+        ]
     }
 
     fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
         Ok(Self {
+            formation: artifacts.get::<ResolvedWorldFormationArtifact>()?,
             resolved_input: artifacts.get::<ResolvedGeologicInputArtifact>()?,
             spatial: artifacts.get::<SpatialArtifact>()?,
         })
@@ -86,7 +93,7 @@ impl Stage for MantleStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {
@@ -102,9 +109,12 @@ impl Stage for MantleStage {
         let resolved_input = inputs.resolved_input.input();
         resolved_input.spec().validate().map_err(invalid_spec)?;
         let snapshot = match resolved_input.model() {
-            GeologicModel::CurrentSliceV1 => {
-                MantleGenerator::generate(inputs.spatial.snapshot(), resolved_input.spec(), rng)
-            }
+            GeologicModel::CurrentSliceV1 => MantleGenerator::generate(
+                inputs.spatial.snapshot(),
+                resolved_input.spec(),
+                inputs.formation.formation().mantle_bias(),
+                rng,
+            ),
         }
         .map_err(generation_failure)?;
         snapshot

@@ -5,11 +5,12 @@ use sekai::engine::{
 use sekai::generators::natural::{
     natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
     GeologicRuleResolutionArtifact, GeologicSpecArtifact, GeologicStage, HydroErosionArtifact,
-    HydroErosionSpecArtifact, HydroErosionStage, MantleArtifact, PreliminaryClimateArtifact,
-    PreliminaryClimateStage, ReliefArtifact, ReliefStage, ResolvedGeologicInputArtifact,
-    ResolvedTectonicInput, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
-    RulePackSetArtifact, TectonicArtifact, TectonicRuleResolutionArtifact, TectonicSpecArtifact,
-    TectonicStage, WorldFormationSpecArtifact,
+    HydroErosionSpecArtifact, HydroErosionStage, MantleArtifact, MantleStage,
+    PreliminaryClimateArtifact, PreliminaryClimateStage, ReliefArtifact, ReliefStage,
+    ResolvedGeologicInputArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    ResolvedWorldFormationArtifact, RulePackSetArtifact, TectonicArtifact,
+    TectonicRuleResolutionArtifact, TectonicSpecArtifact, TectonicStage,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact, SpatialStage};
 use sekai::rules::{
@@ -308,6 +309,10 @@ fn changing_root_seed_reruns_both_tectonic_graph_stages() {
 
 #[test]
 fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata() {
+    assert_eq!(MantleArtifact::KEY.as_str(), "world.mantle");
+    assert_eq!(MantleStage.id().as_str(), "natural.mantle");
+    assert_eq!(MantleStage.namespace(), "sekai.core");
+    assert_eq!(MantleStage.version(), 2);
     assert_eq!(ReliefArtifact::KEY.as_str(), "world.relief");
     assert_eq!(ReliefStage.id().as_str(), "natural.relief");
     assert_eq!(ReliefStage.namespace(), "sekai.core");
@@ -353,6 +358,20 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
             "natural.hydro-erosion",
         ]
     );
+    let mantle_descriptor = &graph.descriptors()[10];
+    assert_eq!(
+        mantle_descriptor
+            .dependencies()
+            .iter()
+            .map(|key| key.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "natural.resolved-geologic-input",
+            "natural.resolved-world-formation",
+            "world.spatial",
+        ]
+    );
+    assert_eq!(mantle_descriptor.output(), MantleArtifact::KEY);
     let relief_descriptor = &graph.descriptors()[12];
     assert_eq!(
         relief_descriptor

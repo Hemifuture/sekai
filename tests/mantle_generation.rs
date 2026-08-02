@@ -7,7 +7,8 @@ use sekai::engine::{derive_stage_seed, StageIdentity, StageRng};
 use sekai::generators::natural::MantleGenerator;
 use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
-    GeologicSpec, MantleActivity, MantleSnapshot, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    GeologicSpec, MantleActivity, MantleFormationBias, MantleSnapshot, HEAT_FLOW_MAX_MW_M2,
+    HEAT_FLOW_MIN_MW_M2, MAX_HOTSPOT_COUNT,
 };
 use sekai::world::spatial::{SpatialSnapshot, Topology};
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed};
@@ -36,7 +37,43 @@ fn mantle_rng(seed: u64) -> StageRng {
 }
 
 fn generate(seed: u64, spec: &GeologicSpec) -> MantleSnapshot {
-    MantleGenerator::generate(spatial_fixture(), spec, &mut mantle_rng(seed)).unwrap()
+    generate_with_bias(seed, spec, MantleFormationBias::Neutral)
+}
+
+fn generate_with_bias(seed: u64, spec: &GeologicSpec, bias: MantleFormationBias) -> MantleSnapshot {
+    MantleGenerator::generate(spatial_fixture(), spec, bias, &mut mantle_rng(seed)).unwrap()
+}
+
+#[test]
+fn neutral_mantle_golden_remains_byte_stable() {
+    let encoded = serde_json::to_vec(&generate(42, &GeologicSpec::default())).unwrap();
+    assert_eq!(
+        blake3::hash(&encoded).to_hex().as_str(),
+        "3414f758f35cbfbf439d7068b38649651e3b24a163bf8ca542da3d172cca40d0"
+    );
+}
+
+#[test]
+fn volcanic_island_bias_adds_bounded_active_hotspots() {
+    let spec = GeologicSpec {
+        hotspot_count: 2,
+        mantle_activity: MantleActivity::Quiet,
+        ..GeologicSpec::default()
+    };
+    let neutral = generate_with_bias(42, &spec, MantleFormationBias::Neutral);
+    let volcanic = generate_with_bias(42, &spec, MantleFormationBias::VolcanicIslands);
+
+    assert_eq!(neutral.hotspots().len(), 2);
+    assert!((9..=usize::from(MAX_HOTSPOT_COUNT)).contains(&volcanic.hotspots().len()));
+    let mean_heat = |snapshot: &MantleSnapshot| {
+        snapshot
+            .heat_flow_mw_m2()
+            .iter()
+            .map(|&value| f64::from(value))
+            .sum::<f64>()
+            / snapshot.heat_flow_mw_m2().len() as f64
+    };
+    assert!(mean_heat(&volcanic) > mean_heat(&neutral));
 }
 
 #[test]

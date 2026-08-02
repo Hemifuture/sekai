@@ -5,8 +5,8 @@ use super::random::{LabeledSubstreams, HOTSPOT_SEEDS_LABEL, HOTSPOT_STRENGTH_LAB
 use super::topology::{farthest_point_seeds, multi_source_distance, NaturalTopologyIndex};
 use crate::engine::StageRng;
 use crate::world::natural::{
-    GeologicSpec, GeologicSpecError, Hotspot, MantleActivity, MantleSnapshot,
-    MantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V1,
+    GeologicSpec, GeologicSpecError, Hotspot, MantleActivity, MantleFormationBias, MantleSnapshot,
+    MantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_COUNT,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{HotspotId, Meters};
@@ -24,25 +24,30 @@ impl MantleGenerator {
     pub fn generate(
         spatial: &SpatialSnapshot,
         spec: &GeologicSpec,
+        formation_bias: MantleFormationBias,
         rng: &mut StageRng,
     ) -> Result<MantleSnapshot, MantleGenerationError> {
         spec.validate()?;
-        if usize::from(spec.hotspot_count) > spatial.cell_count() {
+        let (hotspot_count, mantle_activity) = match formation_bias {
+            MantleFormationBias::Neutral => (spec.hotspot_count, spec.mantle_activity),
+            MantleFormationBias::VolcanicIslands => (
+                spec.hotspot_count.max(9).min(MAX_HOTSPOT_COUNT),
+                MantleActivity::Active,
+            ),
+        };
+        if usize::from(hotspot_count) > spatial.cell_count() {
             return Err(MantleGenerationError::HotspotCountExceedsCells {
-                hotspots: spec.hotspot_count,
+                hotspots: hotspot_count,
                 cells: spatial.cell_count(),
             });
         }
 
-        let activity_index = activity_index(spec.mantle_activity);
+        let activity_index = activity_index(mantle_activity);
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
         let mut seed_rng = streams.stream(HOTSPOT_SEEDS_LABEL);
-        let sources = farthest_point_seeds(
-            &topology,
-            usize::from(spec.hotspot_count),
-            seed_rng.next_u64(),
-        );
+        let sources =
+            farthest_point_seeds(&topology, usize::from(hotspot_count), seed_rng.next_u64());
         let mut strength_rng = streams.stream(HOTSPOT_STRENGTH_LABEL);
         let short_side_m = spatial
             .bounds()
