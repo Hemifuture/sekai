@@ -259,7 +259,7 @@ impl Stage for ReliefStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {
@@ -350,6 +350,9 @@ fn relief_failure(error: ReliefGenerationError) -> StageError {
     match error {
         ReliefGenerationError::InvalidTectonics(error) => invalid_tectonics(error),
         ReliefGenerationError::InvalidMantle(error) => invalid_mantle(error),
+        ReliefGenerationError::ExposedBoundaryCell { .. } => {
+            StageError::new(RELIEF_FAILED_CODE, error.to_string())
+        }
         ReliefGenerationError::InvalidRelief(error) => StageError::new(
             RELIEF_FAILED_CODE,
             format!("relief synthesis produced invalid fields: {error}"),

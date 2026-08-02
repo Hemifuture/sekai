@@ -316,7 +316,7 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
     assert_eq!(ReliefArtifact::KEY.as_str(), "world.relief");
     assert_eq!(ReliefStage.id().as_str(), "natural.relief");
     assert_eq!(ReliefStage.namespace(), "sekai.core");
-    assert_eq!(ReliefStage.version(), 2);
+    assert_eq!(ReliefStage.version(), 3);
     assert_eq!(GeologicArtifact::KEY.as_str(), "world.geology");
     assert_eq!(GeologicStage.id().as_str(), "natural.geology");
     assert_eq!(GeologicStage.namespace(), "sekai.core");

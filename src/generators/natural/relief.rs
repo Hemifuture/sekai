@@ -18,6 +18,8 @@ use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{CellId, PlateId};
 
 const SEA_LEVEL_M: f32 = 0.0;
+const CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION: f64 = 0.08;
+const OCEAN_FRAME_BASE_M: f32 = -5_200.0;
 const MARGIN_SUPPORT_STEPS: u64 = 4;
 const REGIONAL_NOISE_SCALE: i64 = 1_000;
 const MAX_CLAMP_DIAGNOSTICS: usize = 32;
@@ -44,6 +46,13 @@ impl ReliefGenerator {
         let mut tectonic_offset = synthesize_tectonic_offset(spatial, &topology, tectonic);
         let mut volcanic_offset = synthesize_volcanic_offset(tectonic, mantle);
         let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
+        apply_closed_ocean_frame(
+            &topology,
+            &mut crust_base,
+            &mut tectonic_offset,
+            &mut volcanic_offset,
+            &mut regional_offset,
+        );
         let elevation = reconcile_final_safety(
             &mut crust_base,
             &mut tectonic_offset,
@@ -51,6 +60,7 @@ impl ReliefGenerator {
             &mut regional_offset,
             diagnostics,
         );
+        verify_closed_ocean_frame(&topology, &elevation)?;
 
         let crust_base = ElevationField::from_values(crust_base)?;
         let tectonic_offset = ElevationField::from_values(tectonic_offset)?;
@@ -72,6 +82,55 @@ impl ReliefGenerator {
         snapshot.validate_against(spatial)?;
         Ok(snapshot)
     }
+}
+
+fn apply_closed_ocean_frame(
+    topology: &NaturalTopologyIndex,
+    crust_base: &mut [f32],
+    tectonic_offset: &mut [f32],
+    volcanic_offset: &mut [f32],
+    regional_offset: &mut [f32],
+) {
+    let boundary_sources: Vec<_> = topology
+        .boundary_cells()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &boundary)| boundary.then_some(CellId::from_raw(index as u32)))
+        .collect();
+    let distance = multi_source_distance(topology, &boundary_sources, None);
+    let support = topology
+        .quantized_short_side_fraction(CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION)
+        .max(1);
+    for index in 0..crust_base.len() {
+        let weight = smooth_rise(distance[index], support);
+        crust_base[index] = OCEAN_FRAME_BASE_M + (crust_base[index] - OCEAN_FRAME_BASE_M) * weight;
+        tectonic_offset[index] = attenuate_positive(tectonic_offset[index], weight);
+        volcanic_offset[index] = attenuate_positive(volcanic_offset[index], weight);
+        regional_offset[index] = attenuate_positive(regional_offset[index], weight);
+    }
+}
+
+fn attenuate_positive(value: f32, weight: f32) -> f32 {
+    if value > 0.0 {
+        value * weight
+    } else {
+        value
+    }
+}
+
+fn verify_closed_ocean_frame(
+    topology: &NaturalTopologyIndex,
+    elevation: &[f32],
+) -> Result<(), ReliefGenerationError> {
+    for (index, &boundary) in topology.boundary_cells().iter().enumerate() {
+        if boundary && elevation[index] >= SEA_LEVEL_M {
+            return Err(ReliefGenerationError::ExposedBoundaryCell {
+                cell: CellId::from_raw(index as u32),
+                elevation_m: elevation[index],
+            });
+        }
+    }
+    Ok(())
 }
 
 fn synthesize_volcanic_offset(tectonic: &TectonicSnapshot, mantle: &MantleSnapshot) -> Vec<f32> {
@@ -515,6 +574,14 @@ pub enum ReliefGenerationError {
     /// The supplied mantle snapshot is incompatible with the spatial snapshot.
     #[error("invalid mantle input: {0}")]
     InvalidMantle(#[from] MantleValidationError),
+    /// The closed planar boundary escaped the formal ocean envelope.
+    #[error("closed boundary cell {cell:?} has exposed elevation {elevation_m} m")]
+    ExposedBoundaryCell {
+        /// Boundary cell that reached or exceeded sea level.
+        cell: CellId,
+        /// Reconciled constructional elevation at the boundary.
+        elevation_m: f32,
+    },
     /// Generated relief fields violate the relief snapshot contract.
     #[error("invalid generated relief: {0}")]
     InvalidRelief(#[from] ReliefValidationError),

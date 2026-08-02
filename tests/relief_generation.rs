@@ -3,11 +3,11 @@ use std::sync::OnceLock;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
-use sekai::generators::natural::{ReliefGenerator, TectonicGenerator};
+use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::PlanarVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Hotspot,
-    LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
+    BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, GeologicSpec,
+    Hotspot, LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
     ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSnapshot, TectonicSpec,
     WorldFormationPreset, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
@@ -210,7 +210,14 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 2, "sekai.core"),
+        StageIdentity::new("natural.relief", 3, "sekai.core"),
+    ))
+}
+
+fn mantle_rng(seed: u64) -> StageRng {
+    StageRng::from_seed(derive_stage_seed(
+        RootSeed::new(seed),
+        StageIdentity::new("natural.mantle", 2, "sekai.core"),
     ))
 }
 
@@ -290,6 +297,37 @@ fn generated_fixture() -> (&'static SpatialSnapshot, TectonicSnapshot) {
     (spatial, tectonic)
 }
 
+fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSnapshot {
+    let (spatial, _) = generated_fixture();
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Random,
+        preset,
+    )
+    .unwrap();
+    let tectonic = TectonicGenerator::generate(
+        spatial,
+        &TectonicSpec {
+            continental_crust_fraction: formation.recommended_continental_crust_fraction(),
+            ..TectonicSpec::default()
+        },
+        &formation,
+        &mut StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(42),
+            StageIdentity::new("natural.tectonics", 2, "sekai.core"),
+        )),
+    )
+    .unwrap();
+    let mantle = MantleGenerator::generate(
+        spatial,
+        &GeologicSpec::default(),
+        formation.mantle_bias(),
+        &mut mantle_rng(42),
+    )
+    .unwrap();
+    generate_relief_with_mantle(spatial, &tectonic, &mantle, 42)
+}
+
 fn cell_at(row: usize, column: usize) -> CellId {
     CellId::from_raw((row * GRID_COLUMNS + column) as u32)
 }
@@ -300,10 +338,10 @@ fn crust_base_separates_interiors_and_softens_both_margins() {
     let tectonic = custom_tectonics(&spatial, BoundaryKind::Subduction);
     let relief = generate_relief(&spatial, &tectonic, 7);
     let base = relief.crust_base_elevation_m();
-    let ocean_interior = base.get(cell_at(1, 0).raw() as usize).unwrap();
+    let ocean_interior = base.get(cell_at(1, 1).raw() as usize).unwrap();
     let ocean_margin = base.get(cell_at(1, 3).raw() as usize).unwrap();
     let continental_margin = base.get(cell_at(1, 4).raw() as usize).unwrap();
-    let continental_interior = base.get(cell_at(1, 7).raw() as usize).unwrap();
+    let continental_interior = base.get(cell_at(1, 6).raw() as usize).unwrap();
 
     assert!(continental_interior > ocean_interior);
     assert!(ocean_margin.abs() < ocean_interior.abs());
@@ -496,4 +534,53 @@ fn final_relief_is_explainable_and_default_has_land_and_ocean() {
     }
     assert!(counts.iter().all(|&count| count > 0));
     println!("ocean={} land={}", counts[0], counts[1]);
+}
+
+#[test]
+fn closed_world_boundary_is_ocean_after_every_relief_component() {
+    let (spatial, _) = generated_fixture();
+    let bounds = spatial.bounds();
+    let west_limit = bounds.min().x().get() + bounds.width().get() * 0.02;
+    let east_limit = bounds.max().x().get() - bounds.width().get() * 0.02;
+    for preset in [
+        ResolvedWorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Archipelago,
+        ResolvedWorldFormationPreset::Supercontinent,
+        ResolvedWorldFormationPreset::GreatIsland,
+        ResolvedWorldFormationPreset::VolcanicIslands,
+    ] {
+        let relief = generated_relief_for_preset(preset);
+        let mut boundary_cells = vec![false; spatial.cell_count()];
+        for edge in spatial.edges() {
+            let ([Some(owner), None] | [None, Some(owner)]) = edge.cells else {
+                continue;
+            };
+            boundary_cells[owner.raw() as usize] = true;
+        }
+        let mut west_count = 0;
+        let mut east_count = 0;
+        for index in 0..spatial.cell_count() {
+            let cell = CellId::from_raw(index as u32);
+            let elevation = relief.elevation_m().values()[index];
+            let expected = relief.crust_base_elevation_m().values()[index]
+                + relief.tectonic_offset_m().values()[index]
+                + relief.volcanic_offset_m().values()[index]
+                + relief.regional_offset_m().values()[index];
+            assert!((elevation - expected).abs() <= 0.01);
+            if boundary_cells[index] {
+                assert!(elevation < relief.sea_level_m(), "{preset:?} {cell:?}");
+                assert_eq!(relief.land_ocean_kind(cell), Some(LandOceanKind::Ocean));
+            }
+            let x = spatial.cell(cell).unwrap().centroid.x().get();
+            if x <= west_limit {
+                west_count += 1;
+                assert_eq!(relief.land_ocean_kind(cell), Some(LandOceanKind::Ocean));
+            }
+            if x >= east_limit {
+                east_count += 1;
+                assert_eq!(relief.land_ocean_kind(cell), Some(LandOceanKind::Ocean));
+            }
+        }
+        assert!(west_count > 0 && east_count > 0);
+    }
 }
