@@ -74,12 +74,14 @@ impl NaturalFieldDocument {
         climate
             .snapshot()
             .validate_against(spatial.snapshot(), relief.snapshot())?;
-        hydro_erosion.snapshot().validate_against(
-            spatial.snapshot(),
-            relief.snapshot(),
-            geology.snapshot(),
-            climate.snapshot(),
-        )?;
+        hydro_erosion
+            .snapshot()
+            .validate_against_validated_spatial(
+                spatial.snapshot(),
+                relief.snapshot(),
+                geology.snapshot(),
+                climate.snapshot(),
+            )?;
         let plate_count = u16::try_from(tectonic.snapshot().plates().len())
             .map_err(|_| NaturalDisplayError::PlateCountOverflow)?;
         let registry = natural_field_registry(plate_count)?;
@@ -391,9 +393,19 @@ impl AppFieldDocument for NaturalFieldDocument {
     }
 
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
-        if field != &surface_elevation_m_field_id() {
-            return None;
+        if [
+            annual_local_runoff_mm_field_id(),
+            drainage_area_km2_field_id(),
+            fluvial_erosion_depth_m_field_id(),
+            lake_depth_m_field_id(),
+            mean_annual_discharge_m3_s_field_id(),
+            sediment_deposition_thickness_m_field_id(),
+        ]
+        .contains(field)
+        {
+            return Some(DisplayRangeMode::Data);
         }
+        (field == &surface_elevation_m_field_id()).then_some(())?;
         self.registry.get(field)?;
         let sea_level = self.relief.snapshot().sea_level_m();
         let radius = self

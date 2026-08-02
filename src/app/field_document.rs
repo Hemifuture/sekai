@@ -80,6 +80,12 @@ pub(super) fn prepare_control_action(
         FieldControlAction::SelectField(field) => {
             state.select_field(field);
             state.reconcile(&catalog, document.mesh().cell_count());
+            if let Some(mode) = state
+                .selected_field()
+                .and_then(|field| document.preferred_range(field))
+            {
+                state.set_range_mode(mode);
+            }
             let parts = prepare_display_parts(document, &catalog, state)?;
             rebuild_changed_packet(current, parts, state.diagnostics_enabled(), clock)
         }
@@ -263,11 +269,11 @@ mod tests {
     use crate::app::natural_display::NaturalFieldDocument;
     use crate::ui::field::FieldControlAction;
     use crate::view::{
-        DisplayRevisionClock, FieldCatalog, FieldDisplayState, FieldViewError, OwnedViewDiagnostic,
-        PreparedCellMesh,
+        DisplayRangeMode, DisplayRevisionClock, FieldCatalog, FieldDisplayState, FieldViewError,
+        OwnedViewDiagnostic, PreparedCellMesh,
     };
     use crate::world::fields::FieldId;
-    use crate::world::natural::plate_id_field_id;
+    use crate::world::natural::{fluvial_erosion_depth_m_field_id, plate_id_field_id};
 
     struct InvalidDocument {
         mesh: Arc<PreparedCellMesh>,
@@ -321,6 +327,36 @@ mod tests {
         ));
         assert!(!Arc::ptr_eq(initial.field_arc(), switched.field_arc()));
         assert!(!Arc::ptr_eq(initial.palette_arc(), switched.palette_arc()));
+    }
+
+    #[test]
+    fn switching_to_a_process_field_uses_its_document_preferred_range() {
+        let document = NaturalFieldDocument::test_fixture();
+        let mut clock = DisplayRevisionClock::default();
+        let (mut state, initial) =
+            prepare_new_document_display(&document, &FieldDisplayState::default(), &mut clock)
+                .unwrap();
+
+        let switched = prepare_control_action(
+            &document,
+            &initial,
+            &mut state,
+            &mut clock,
+            FieldControlAction::SelectField(fluvial_erosion_depth_m_field_id()),
+        )
+        .unwrap();
+
+        assert_eq!(state.range_mode(), DisplayRangeMode::Data);
+        let values = document
+            .hydro_erosion
+            .snapshot()
+            .surface()
+            .erosion_depth_m();
+        let expected_max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(
+            switched.field().display_range().unwrap().bounds(),
+            (0.0, expected_max)
+        );
     }
 
     #[test]
