@@ -33,7 +33,7 @@ fn spatial_fixture() -> &'static SpatialSnapshot {
 fn natural_rng() -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.tectonics", 2, "sekai.core"),
+        StageIdentity::new("natural.tectonics", 3, "sekai.core"),
     ))
 }
 

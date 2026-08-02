@@ -121,7 +121,7 @@ Continents => 2,
 Archipelago => 1,
 Supercontinent => 0,
 GreatIsland => 0,
-VolcanicIslands => 1,
+VolcanicIslands => 3,
 ```
 
 Replace `ownership_dividers` with a helper that turns divider cells into sources and calls `multi_source_distance`:
@@ -166,7 +166,7 @@ fn apply_oceanic_component_separators(...);
 
 Also remove the now-unused `VecDeque` import. Do not add a replacement Relief mask or component lookup.
 
-Set the generic oceanic transition baseline to `-2400 m`, independently of continent ownership. Add `non_volcanic_ocean_corridor_stays_submerged_under_ridge_uplift` to prove an ordinary ridge cannot turn the corridor into a land bridge without volcanic input.
+Set the generic oceanic transition baseline to `-2400 m`, independently of continent ownership. Add `non_volcanic_ocean_corridor_stays_submerged_under_ridge_uplift` to prove an ordinary ridge cannot turn the corridor into a land bridge without volcanic input. The 20,000-cell named-preset matrix additionally verifies that the wider volcanic-island corridors remain islands rather than joining into one dominant land bridge.
 
 - [ ] **Step 7: Run focused tests and make them green**
 
@@ -528,6 +528,8 @@ for (value, detail) in result.iter_mut().zip(detail) {
 ```
 
 Reuse the existing private `random_noise` and `diffuse`; do not add another generic noise abstraction or consume `RELIEF_REGIONAL_LABEL`.
+
+Because the corrected theoretical maximum is exactly twice the former normalization denominator, multiply the existing Relief event amplitudes by the explicit private constant `TECTONIC_RELIEF_RESPONSE_SCALE = 2.0`. This calibrates terrain response without changing the physical meaning or stored range of `BoundaryRecord::strength`.
 
 - [ ] **Step 8: Run focused Relief and invariant tests**
 

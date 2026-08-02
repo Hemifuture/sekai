@@ -22,6 +22,7 @@ const CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION: f64 = 0.08;
 const OCEAN_FRAME_BASE_M: f32 = -5_200.0;
 const OCEANIC_MARGIN_BASE_M: f32 = -2_400.0;
 const MARGIN_SUPPORT_STEPS: u64 = 4;
+const TECTONIC_RELIEF_RESPONSE_SCALE: f32 = 2.0;
 const REGIONAL_NOISE_SCALE: i64 = 1_000;
 const MAX_CLAMP_DIAGNOSTICS: usize = 32;
 const CLAMP_DIAGNOSTIC_CODE: &str = "natural.relief-clamped";
@@ -262,12 +263,12 @@ fn synthesize_tectonic_offset(
                 insert_source(
                     &mut sources[EffectClass::Collision.index()],
                     first,
-                    2_200.0 * strength,
+                    2_200.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
                 insert_source(
                     &mut sources[EffectClass::Collision.index()],
                     second,
-                    2_200.0 * strength,
+                    2_200.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
             }
             BoundaryKind::Subduction => {
@@ -279,36 +280,36 @@ fn synthesize_tectonic_offset(
                 insert_source(
                     &mut sources[EffectClass::Trench.index()],
                     trench_cell,
-                    -2_800.0 * strength,
+                    -2_800.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
                 insert_source(
                     &mut sources[EffectClass::Arc.index()],
                     arc_cell,
-                    1_800.0 * strength,
+                    1_800.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
             }
             BoundaryKind::ContinentalRift => {
                 insert_source(
                     &mut sources[EffectClass::Rift.index()],
                     first,
-                    -1_500.0 * strength,
+                    -1_500.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
                 insert_source(
                     &mut sources[EffectClass::Rift.index()],
                     second,
-                    -1_500.0 * strength,
+                    -1_500.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
             }
             BoundaryKind::OceanicRidge => {
                 insert_source(
                     &mut sources[EffectClass::Ridge.index()],
                     first,
-                    1_200.0 * strength,
+                    1_200.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
                 insert_source(
                     &mut sources[EffectClass::Ridge.index()],
                     second,
-                    1_200.0 * strength,
+                    1_200.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
             }
             BoundaryKind::Transform => {
@@ -320,12 +321,12 @@ fn synthesize_tectonic_offset(
                 insert_source(
                     &mut sources[EffectClass::Transform.index()],
                     positive,
-                    350.0 * strength,
+                    350.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
                 insert_source(
                     &mut sources[EffectClass::Transform.index()],
                     negative,
-                    -350.0 * strength,
+                    -350.0 * TECTONIC_RELIEF_RESPONSE_SCALE * strength,
                 );
             }
         }

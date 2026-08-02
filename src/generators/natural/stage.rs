@@ -127,7 +127,7 @@ impl Stage for TectonicStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {
@@ -259,7 +259,7 @@ impl Stage for ReliefStage {
     }
 
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn namespace(&self) -> &'static str {

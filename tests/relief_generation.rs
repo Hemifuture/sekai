@@ -248,7 +248,7 @@ fn separated_continental_components_with_boundary(
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 4, "sekai.core"),
+        StageIdentity::new("natural.relief", 5, "sekai.core"),
     ))
 }
 
@@ -317,7 +317,7 @@ fn generated_fixture() -> (&'static SpatialSnapshot, TectonicSnapshot) {
     });
     let mut tectonic_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.tectonics", 2, "sekai.core"),
+        StageIdentity::new("natural.tectonics", 3, "sekai.core"),
     ));
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -352,7 +352,7 @@ fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSn
         &formation,
         &mut StageRng::from_seed(derive_stage_seed(
             RootSeed::new(42),
-            StageIdentity::new("natural.tectonics", 2, "sekai.core"),
+            StageIdentity::new("natural.tectonics", 3, "sekai.core"),
         )),
     )
     .unwrap();

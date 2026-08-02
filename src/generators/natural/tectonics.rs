@@ -398,7 +398,7 @@ impl CrustFormationProfile {
             },
             ResolvedWorldFormationPreset::VolcanicIslands => Self {
                 nucleus_count: VOLCANIC_ISLAND_OWNER_SCALES.len(),
-                corridor_half_width_steps: 1,
+                corridor_half_width_steps: 3,
                 owner_scales_permille: &VOLCANIC_ISLAND_OWNER_SCALES,
                 shape_noise_permille: 1_000,
                 primary_interior: false,
