@@ -16,6 +16,7 @@ mod hydrology;
 mod mantle;
 mod random;
 mod relief;
+mod relief_noise;
 mod rule_input;
 mod stage;
 mod tectonics;
