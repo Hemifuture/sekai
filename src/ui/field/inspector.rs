@@ -6,6 +6,7 @@ use crate::view::{
 use crate::world::fields::FieldPaletteHint;
 
 use super::controls::field_status_text;
+use super::localization::{localized_domain, localized_field_key, localized_value_type};
 
 /// Draws schema metadata, a legend, one selected value, and matching diagnostics.
 pub fn show_field_inspector(
@@ -21,7 +22,7 @@ pub fn show_field_inspector(
         return;
     };
     let schema = entry.schema();
-    ui.strong(schema.display.label_key());
+    ui.strong(localized_field_key(schema.display.label_key()).as_ref());
     ui.monospace(format!(
         "{}.{}@{}",
         schema.id.namespace(),
@@ -29,13 +30,13 @@ pub fn show_field_inspector(
         schema.id.version()
     ));
     ui.label(field_status_text(entry));
-    ui.label(format!("域: {:?}", schema.domain));
-    ui.label(format!("类型: {:?}", schema.value_type));
+    ui.label(format!("域: {}", localized_domain(schema.domain)));
+    ui.label(format!("类型: {}", localized_value_type(schema.value_type)));
     if !schema.unit.symbol().is_empty() {
         ui.label(format!("单位: {}", schema.unit.symbol()));
     }
     if let Some(range) = schema.valid_range {
-        ui.label(format!("Schema 范围: {} – {}", range.min(), range.max()));
+        ui.label(format!("字段定义范围: {} – {}", range.min(), range.max()));
     }
 
     let Some(view) = entry.view() else {
@@ -50,7 +51,7 @@ pub fn show_field_inspector(
                 .unwrap_or_else(|| palette_for_hint(schema.display.palette()));
             if let Ok(range) = resolve_display_range(view, state.range_mode()) {
                 let (min, max) = range.bounds();
-                ui.label(format!("显示范围: {min} – {max}"));
+                ui.label(format!("当前显示范围: {min} – {max}"));
                 draw_scalar_legend(ui, built_in_palette(palette));
             }
         }
@@ -61,7 +62,7 @@ pub fn show_field_inspector(
                 let color = category_color(compact as u32, palette);
                 ui.horizontal(|ui| {
                     color_swatch(ui, color);
-                    ui.label(format!("{key}: {label}"));
+                    ui.label(format!("{key}: {}", localized_field_key(label)));
                 });
             }
             if total > 256 {
@@ -85,7 +86,7 @@ pub fn show_field_inspector(
         };
         ui.label(format!("值: {}{unit}", value.text));
         if let Some(label) = value.category_label_key {
-            ui.label(format!("分类: {label}"));
+            ui.label(format!("分类: {}", localized_field_key(&label)));
         }
     } else {
         ui.label("该字段在此单元格没有值");

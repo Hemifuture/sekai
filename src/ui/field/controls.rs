@@ -4,6 +4,8 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldPaletteHint, ValueRange};
 
+use super::localization::{localized_field_key, localized_palette};
+
 /// Declarative field-viewer changes emitted for the app composition layer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldControlAction {
@@ -95,9 +97,9 @@ pub fn show_field_controls(
             .add_enabled(
                 schema.valid_range.is_some() && !schema_selected,
                 egui::Button::new(if schema_selected {
-                    "Schema ✓"
+                    "字段定义 ✓"
                 } else {
-                    "Schema"
+                    "字段定义"
                 }),
             )
             .clicked()
@@ -108,7 +110,11 @@ pub fn show_field_controls(
         if ui
             .add_enabled(
                 !data_selected,
-                egui::Button::new(if data_selected { "Data ✓" } else { "Data" }),
+                egui::Button::new(if data_selected {
+                    "数据范围 ✓"
+                } else {
+                    "数据范围"
+                }),
             )
             .clicked()
         {
@@ -147,7 +153,7 @@ pub fn show_field_controls(
         ui.label("调色板");
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(state.palette_override().is_none(), "Schema 默认")
+                .selectable_label(state.palette_override().is_none(), "字段默认")
                 .clicked()
             {
                 actions.push(FieldControlAction::SetPaletteOverride(None));
@@ -156,7 +162,7 @@ pub fn show_field_controls(
                 if ui
                     .selectable_label(
                         state.palette_override() == Some(*palette),
-                        palette_label(*palette),
+                        localized_palette(*palette),
                     )
                     .clicked()
                 {
@@ -202,15 +208,7 @@ fn field_label(schema: &crate::world::fields::FieldSchema) -> String {
             schema.id.version()
         )
     } else {
-        label.to_owned()
-    }
-}
-
-fn palette_label(palette: PaletteId) -> &'static str {
-    match palette {
-        PaletteId::Sequential => "Sequential",
-        PaletteId::Diverging => "Diverging",
-        PaletteId::Categorical => "Categorical",
+        localized_field_key(label).into_owned()
     }
 }
 
@@ -219,6 +217,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{compatible_palettes, field_status_text, show_field_controls};
+    use crate::ui::field::localization::{
+        localized_domain, localized_field_key, localized_palette, localized_value_type,
+    };
     use crate::ui::field::show_field_inspector;
     use crate::view::{FieldCatalog, FieldDisplayState, PaletteId};
     use crate::world::fields::{
@@ -226,6 +227,7 @@ mod tests {
         FieldPaletteHint, FieldRegistry, FieldRegistryBuilder, FieldSchema, FieldUnit,
         FieldValueType, MissingValuePolicy,
     };
+    use crate::world::natural::natural_field_registry;
 
     fn field_id(name: &str) -> FieldId {
         FieldId::new("test.ui", name, 1).unwrap()
@@ -336,5 +338,66 @@ mod tests {
             });
         });
         assert_eq!(serde_json::to_vec(&fields).unwrap(), before);
+    }
+
+    #[test]
+    fn formal_natural_field_and_category_keys_have_chinese_labels() {
+        assert_eq!(
+            localized_field_key("field.sekai.core.natural.surface_elevation_m"),
+            "当前地表高程"
+        );
+        assert_eq!(
+            localized_field_key("field.sekai.core.natural.boundary_kind.subduction"),
+            "俯冲"
+        );
+        assert_eq!(
+            localized_field_key("field.sekai.core.natural.plate_id.plate-03"),
+            "板块 03"
+        );
+        assert_eq!(
+            localized_field_key("field.sekai.core.natural.strahler_stream_order.order-004"),
+            "4 级河流"
+        );
+    }
+
+    #[test]
+    fn unknown_extension_label_keys_remain_inspectable() {
+        assert_eq!(
+            localized_field_key("field.example.magic_flux"),
+            "field.example.magic_flux"
+        );
+        assert_eq!(
+            localized_field_key("field.sekai.core.natural.plate_id.plate-bad"),
+            "field.sekai.core.natural.plate_id.plate-bad"
+        );
+    }
+
+    #[test]
+    fn every_formal_natural_field_and_category_has_a_chinese_label() {
+        let registry = natural_field_registry(12).unwrap();
+        for (_, schema) in registry.iter() {
+            let key = schema.display.label_key();
+            assert_ne!(localized_field_key(key), key, "missing label for {key}");
+            for category_key in schema.category_labels.values() {
+                assert_ne!(
+                    localized_field_key(category_key),
+                    category_key.as_str(),
+                    "missing label for {category_key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn schema_shape_and_palette_labels_are_chinese() {
+        assert_eq!(localized_domain(FieldDomain::Global), "全局");
+        assert_eq!(localized_domain(FieldDomain::Cells), "单元格");
+        assert_eq!(localized_domain(FieldDomain::Edges), "边");
+        assert_eq!(localized_value_type(FieldValueType::ScalarF32), "标量");
+        assert_eq!(localized_value_type(FieldValueType::CategoryU32), "分类");
+        assert_eq!(localized_value_type(FieldValueType::Vector2F32), "二维向量");
+        assert_eq!(localized_palette(PaletteId::Sequential), "顺序");
+        assert_eq!(localized_palette(PaletteId::Diverging), "发散");
+        assert_eq!(localized_palette(PaletteId::Categorical), "分类");
     }
 }
