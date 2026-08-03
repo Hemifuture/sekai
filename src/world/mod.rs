@@ -8,10 +8,12 @@ mod units;
 
 pub use ids::{
     AuthorObjectId, BoundarySegmentId, CellId, CultureId, DrainageBasinId, EdgeId, HotspotId,
-    LakeId, PlateId, PolityId, RiverSegmentId, RootSeed, SettlementId, SpeciesId,
+    LakeId, PlateId, PolityId, RiverSegmentId, RootSeed, SettlementId, SpeciesId, SurfaceVertexId,
 };
 pub use spec::{
-    BoundaryCondition, PlanarSpaceSpec, SpecError, TechnologyBaseline, WorldSpec, MAX_CELL_COUNT,
-    MAX_DIMENSION_METERS, MIN_CELL_COUNT, MIN_DIMENSION_METERS, WORLD_SPEC_SCHEMA_V1,
+    BoundaryCondition, PlanarSpaceSpec, SpecError, SphericalSpaceSpec, SphericalSpecError,
+    TechnologyBaseline, WorldSpec, MAX_CELL_COUNT, MAX_DIMENSION_METERS, MAX_GEODESIC_FREQUENCY,
+    MAX_SPHERICAL_CELL_COUNT, MIN_CELL_COUNT, MIN_DIMENSION_METERS, MIN_SPHERICAL_CELL_COUNT,
+    WORLD_SPEC_SCHEMA_V1,
 };
 pub use units::{Meters, SquareMeters, UnitError, WorldPoint, WorldRect};

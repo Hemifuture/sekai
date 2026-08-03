@@ -25,6 +25,7 @@ macro_rules! define_id {
 
 define_id!(CellId, u32);
 define_id!(EdgeId, u32);
+define_id!(SurfaceVertexId, u32);
 define_id!(PlateId, u32);
 define_id!(BoundarySegmentId, u32);
 define_id!(HotspotId, u32);

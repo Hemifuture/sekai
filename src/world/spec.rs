@@ -13,6 +13,16 @@ pub const MAX_CELL_COUNT: u32 = 200_000;
 pub const MIN_DIMENSION_METERS: f64 = 1.0;
 /// The largest planar dimension allowed by the V1 numerical-safety budget, in meters.
 pub const MAX_DIMENSION_METERS: f64 = 100_000_000.0;
+/// The smallest supported geodesic cell allocation.
+pub const MIN_SPHERICAL_CELL_COUNT: u32 = 42;
+/// The largest supported geodesic cell allocation.
+pub const MAX_SPHERICAL_CELL_COUNT: u32 = 198_812;
+/// The largest supported geodesic subdivision frequency.
+pub const MAX_GEODESIC_FREQUENCY: u32 = 141;
+
+const MIN_SPHERICAL_RADIUS_METERS: f64 = 1.0;
+const MAX_SPHERICAL_RADIUS_METERS: f64 = 100_000_000.0;
+const MIN_GEODESIC_FREQUENCY: u32 = 2;
 
 const MIN_ASPECT_RATIO: f64 = 1.0 / 16.0;
 const MAX_ASPECT_RATIO: f64 = 16.0;
@@ -78,6 +88,74 @@ impl PlanarSpaceSpec {
     }
 }
 
+/// The validated radius and allocation budget for a geodesic spherical world.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SphericalSpaceSpec {
+    /// The radius of the spherical world.
+    pub radius: Meters,
+    /// The requested number of generated surface cells.
+    pub target_cell_count: u32,
+}
+
+impl SphericalSpaceSpec {
+    /// Validates the spherical numerical-safety and allocation budgets.
+    pub fn validate(&self) -> Result<(), SphericalSpecError> {
+        let radius = self.radius.get();
+        if !(MIN_SPHERICAL_RADIUS_METERS..=MAX_SPHERICAL_RADIUS_METERS).contains(&radius) {
+            return Err(SphericalSpecError::RadiusOutOfRange {
+                found: radius,
+                min: MIN_SPHERICAL_RADIUS_METERS,
+                max: MAX_SPHERICAL_RADIUS_METERS,
+            });
+        }
+
+        if !(MIN_SPHERICAL_CELL_COUNT..=MAX_SPHERICAL_CELL_COUNT).contains(&self.target_cell_count)
+        {
+            return Err(SphericalSpecError::CellCountOutOfRange {
+                found: self.target_cell_count,
+                min: MIN_SPHERICAL_CELL_COUNT,
+                max: MAX_SPHERICAL_CELL_COUNT,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Resolves the requested allocation to the nearest available geodesic frequency.
+    pub fn resolved_frequency(&self) -> u32 {
+        let estimate = ((f64::from(self.target_cell_count) - 2.0) / 10.0).sqrt();
+        let lower = (estimate.floor() as u32).clamp(MIN_GEODESIC_FREQUENCY, MAX_GEODESIC_FREQUENCY);
+        let upper = lower
+            .checked_add(1)
+            .expect("bounded geodesic frequency")
+            .min(MAX_GEODESIC_FREQUENCY);
+        let lower_count = geodesic_cell_count(lower).expect("bounded geodesic frequency");
+        let upper_count = geodesic_cell_count(upper).expect("bounded geodesic frequency");
+
+        if self.target_cell_count.abs_diff(lower_count)
+            <= self.target_cell_count.abs_diff(upper_count)
+        {
+            lower
+        } else {
+            upper
+        }
+    }
+
+    /// Returns the exact generated cell count for the resolved geodesic frequency.
+    pub fn resolved_cell_count(&self) -> u32 {
+        geodesic_cell_count(self.resolved_frequency()).expect("bounded geodesic frequency")
+    }
+}
+
+fn geodesic_cell_count(frequency: u32) -> Option<u32> {
+    let frequency = u64::from(frequency);
+    let count = frequency
+        .checked_mul(frequency)?
+        .checked_mul(10)?
+        .checked_add(2)?;
+    u32::try_from(count).ok()
+}
+
 /// A versioned, deterministic description of a world to generate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldSpec {
@@ -137,6 +215,31 @@ pub enum SpecError {
         max: f64,
     },
     /// The requested cell count lies outside the V1 allocation-safety budget.
+    #[error("cell count {found} is outside {min}..={max}")]
+    CellCountOutOfRange {
+        /// The cell count that failed validation.
+        found: u32,
+        /// The inclusive lower cell-count limit.
+        min: u32,
+        /// The inclusive upper cell-count limit.
+        max: u32,
+    },
+}
+
+/// Errors returned when a spherical world specification exceeds its safety budget.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum SphericalSpecError {
+    /// A spherical radius lies outside the numerical-safety budget.
+    #[error("radius {found} is outside {min}..={max} meters")]
+    RadiusOutOfRange {
+        /// The radius that failed validation, in meters.
+        found: f64,
+        /// The inclusive lower radius limit, in meters.
+        min: f64,
+        /// The inclusive upper radius limit, in meters.
+        max: f64,
+    },
+    /// The requested cell count lies outside the spherical allocation-safety budget.
     #[error("cell count {found} is outside {min}..={max}")]
     CellCountOutOfRange {
         /// The cell count that failed validation.
