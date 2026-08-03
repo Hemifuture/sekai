@@ -10,7 +10,8 @@ use sekai::world::natural::{
     Hotspot, LandOceanKind, MantleSnapshot, Plate, PlateIdField, PlateVelocity, ReliefSnapshot,
     ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSnapshot, TectonicSpec,
     WorldFormationPreset, MANTLE_SNAPSHOT_SCHEMA_V1, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    RELIEF_SCHEMA_V3, RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_SNAPSHOT_SCHEMA_V1,
+    VOLCANIC_OFFSET_MAX_M,
 };
 use sekai::world::spatial::{
     SpatialCell, SpatialEdge, SpatialSnapshot, Topology, SPATIAL_SCHEMA_V1,
@@ -22,6 +23,8 @@ use sekai::world::{
 
 const GRID_COLUMNS: usize = 8;
 const GRID_ROWS: usize = 3;
+const LARGE_GRID_COLUMNS: usize = 21;
+const LARGE_GRID_ROWS: usize = 13;
 
 fn meters(value: f64) -> Meters {
     Meters::new(value).unwrap()
@@ -32,22 +35,30 @@ fn point(x: f64, y: f64) -> WorldPoint {
 }
 
 fn regular_grid() -> SpatialSnapshot {
+    regular_grid_with_size(GRID_COLUMNS, GRID_ROWS)
+}
+
+fn large_regular_grid() -> SpatialSnapshot {
+    regular_grid_with_size(LARGE_GRID_COLUMNS, LARGE_GRID_ROWS)
+}
+
+fn regular_grid_with_size(columns: usize, rows: usize) -> SpatialSnapshot {
     let mut cells = Vec::new();
-    for row in 0..GRID_ROWS {
-        for column in 0..GRID_COLUMNS {
-            let id = row * GRID_COLUMNS + column;
+    for row in 0..rows {
+        for column in 0..columns {
+            let id = row * columns + column;
             let mut neighbors = Vec::new();
             if column > 0 {
                 neighbors.push(CellId::from_raw((id - 1) as u32));
             }
-            if column + 1 < GRID_COLUMNS {
+            if column + 1 < columns {
                 neighbors.push(CellId::from_raw((id + 1) as u32));
             }
             if row > 0 {
-                neighbors.push(CellId::from_raw((id - GRID_COLUMNS) as u32));
+                neighbors.push(CellId::from_raw((id - columns) as u32));
             }
-            if row + 1 < GRID_ROWS {
-                neighbors.push(CellId::from_raw((id + GRID_COLUMNS) as u32));
+            if row + 1 < rows {
+                neighbors.push(CellId::from_raw((id + columns) as u32));
             }
             neighbors.sort_unstable();
             cells.push(SpatialCell {
@@ -67,14 +78,14 @@ fn regular_grid() -> SpatialSnapshot {
     }
 
     let mut edges = Vec::new();
-    for y in 0..=GRID_ROWS {
-        for x in 0..GRID_COLUMNS {
+    for y in 0..=rows {
+        for x in 0..columns {
             let owners = if y == 0 {
                 [Some(x), None]
-            } else if y == GRID_ROWS {
-                [Some((GRID_ROWS - 1) * GRID_COLUMNS + x), None]
+            } else if y == rows {
+                [Some((rows - 1) * columns + x), None]
             } else {
-                [Some((y - 1) * GRID_COLUMNS + x), Some(y * GRID_COLUMNS + x)]
+                [Some((y - 1) * columns + x), Some(y * columns + x)]
             };
             edges.push(spatial_edge(
                 edges.len(),
@@ -84,14 +95,14 @@ fn regular_grid() -> SpatialSnapshot {
             ));
         }
     }
-    for x in 0..=GRID_COLUMNS {
-        for y in 0..GRID_ROWS {
+    for x in 0..=columns {
+        for y in 0..rows {
             let owners = if x == 0 {
-                [Some(y * GRID_COLUMNS), None]
-            } else if x == GRID_COLUMNS {
-                [Some(y * GRID_COLUMNS + GRID_COLUMNS - 1), None]
+                [Some(y * columns), None]
+            } else if x == columns {
+                [Some(y * columns + columns - 1), None]
             } else {
-                [Some(y * GRID_COLUMNS + x - 1), Some(y * GRID_COLUMNS + x)]
+                [Some(y * columns + x - 1), Some(y * columns + x)]
             };
             edges.push(spatial_edge(
                 edges.len(),
@@ -104,14 +115,83 @@ fn regular_grid() -> SpatialSnapshot {
 
     SpatialSnapshot::new(
         SPATIAL_SCHEMA_V1,
-        WorldRect::new(
-            point(0.0, 0.0),
-            point(GRID_COLUMNS as f64, GRID_ROWS as f64),
-        )
-        .unwrap(),
+        WorldRect::new(point(0.0, 0.0), point(columns as f64, rows as f64)).unwrap(),
         BoundaryCondition::Closed,
         cells,
         edges,
+    )
+    .unwrap()
+}
+
+fn uniform_oceanic_tectonics(
+    spatial: &SpatialSnapshot,
+    velocity: PlateVelocity,
+    crust_thickness_km: f32,
+) -> TectonicSnapshot {
+    let snapshot = TectonicSnapshot::new(
+        TECTONIC_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        spatial.edges().len() as u32,
+        vec![Plate {
+            id: PlateId::from_raw(0),
+            seed_cell: CellId::from_raw(0),
+            velocity,
+        }],
+        PlateIdField::from_ids(vec![PlateId::from_raw(0); spatial.cell_count()]),
+        CrustKindField::from_kinds(vec![CrustKind::Oceanic; spatial.cell_count()]),
+        vec![crust_thickness_km; spatial.cell_count()],
+        vec![BoundaryRecord::none(); spatial.edges().len()],
+        Vec::new(),
+    )
+    .unwrap();
+    snapshot.validate_against(spatial).unwrap();
+    snapshot
+}
+
+fn centered_hotspot_mantle(spatial: &SpatialSnapshot) -> MantleSnapshot {
+    centered_hotspot_mantle_with_strength(spatial, 1_000)
+}
+
+fn centered_hotspot_mantle_with_strength(
+    spatial: &SpatialSnapshot,
+    strength_permille: u16,
+) -> MantleSnapshot {
+    let source = CellId::from_raw(
+        ((LARGE_GRID_ROWS / 2) * LARGE_GRID_COLUMNS + LARGE_GRID_COLUMNS / 2) as u32,
+    );
+    let source_point = spatial.cell(source).unwrap().centroid;
+    let support_radius_m = 5.5;
+    let influence = (0..spatial.cell_count())
+        .map(|index| {
+            let center = spatial
+                .cell(CellId::from_raw(index as u32))
+                .unwrap()
+                .centroid;
+            let distance = (center.x().get() - source_point.x().get())
+                .hypot(center.y().get() - source_point.y().get());
+            if distance >= support_radius_m {
+                0.0
+            } else {
+                let t = distance / support_radius_m;
+                (1.0 - t * t * (3.0 - 2.0 * t)) as f32
+            }
+        })
+        .collect::<Vec<_>>();
+    MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        vec![Hotspot::new(
+            HotspotId::from_raw(0),
+            source,
+            strength_permille,
+            meters(support_radius_m),
+        )
+        .unwrap()],
+        influence
+            .iter()
+            .map(|&value| 65.0 + 220.0 * value)
+            .collect(),
+        influence,
     )
     .unwrap()
 }
@@ -207,6 +287,24 @@ fn custom_tectonics(spatial: &SpatialSnapshot, kind: BoundaryKind) -> TectonicSn
     snapshot
 }
 
+fn all_oceanic_subduction_tectonics(spatial: &SpatialSnapshot) -> TectonicSnapshot {
+    let base = custom_tectonics(spatial, BoundaryKind::Subduction);
+    let snapshot = TectonicSnapshot::new(
+        base.schema_version(),
+        base.cell_count(),
+        base.edge_count(),
+        base.plates().to_vec(),
+        base.cell_plates().clone(),
+        CrustKindField::from_kinds(vec![CrustKind::Oceanic; spatial.cell_count()]),
+        vec![7.0; spatial.cell_count()],
+        base.boundaries().to_vec(),
+        base.boundary_segments().to_vec(),
+    )
+    .unwrap();
+    snapshot.validate_against(spatial).unwrap();
+    snapshot
+}
+
 fn separated_continental_components(spatial: &SpatialSnapshot) -> TectonicSnapshot {
     separated_continental_components_with_boundary(spatial, BoundaryKind::ContinentalCollision)
 }
@@ -248,14 +346,14 @@ fn separated_continental_components_with_boundary(
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 5, "sekai.core"),
+        StageIdentity::new("natural.relief", 8, "sekai.core"),
     ))
 }
 
 fn mantle_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.mantle", 2, "sekai.core"),
+        StageIdentity::new("natural.mantle", 3, "sekai.core"),
     ))
 }
 
@@ -336,6 +434,13 @@ fn generated_fixture() -> (&'static SpatialSnapshot, TectonicSnapshot) {
 }
 
 fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSnapshot {
+    generated_layers_for_preset(preset, 42).2
+}
+
+fn generated_layers_for_preset(
+    preset: ResolvedWorldFormationPreset,
+    seed: u64,
+) -> (TectonicSnapshot, MantleSnapshot, ReliefSnapshot) {
     let (spatial, _) = generated_fixture();
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -351,7 +456,7 @@ fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSn
         },
         &formation,
         &mut StageRng::from_seed(derive_stage_seed(
-            RootSeed::new(42),
+            RootSeed::new(seed),
             StageIdentity::new("natural.tectonics", 3, "sekai.core"),
         )),
     )
@@ -360,10 +465,11 @@ fn generated_relief_for_preset(preset: ResolvedWorldFormationPreset) -> ReliefSn
         spatial,
         &GeologicSpec::default(),
         formation.mantle_bias(),
-        &mut mantle_rng(42),
+        &mut mantle_rng(seed),
     )
     .unwrap();
-    generate_relief_with_mantle(spatial, &tectonic, &mantle, 42)
+    let relief = generate_relief_with_mantle(spatial, &tectonic, &mantle, seed);
+    (tectonic, mantle, relief)
 }
 
 fn cell_at(row: usize, column: usize) -> CellId {
@@ -487,6 +593,52 @@ fn targeted_boundary_events_have_the_expected_signed_relief() {
 }
 
 #[test]
+fn ocean_ocean_subduction_adds_discrete_arc_peaks_without_erasing_the_trench() {
+    let spatial = regular_grid();
+    let mixed = generate_relief(
+        &spatial,
+        &custom_tectonics(&spatial, BoundaryKind::Subduction),
+        7,
+    );
+    let oceanic = generate_relief(&spatial, &all_oceanic_subduction_tectonics(&spatial), 7);
+    let mixed_max = mixed
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let oceanic_max = oceanic
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        oceanic_max > mixed_max + 500.0,
+        "ocean-ocean arc max {oceanic_max} did not exceed mixed arc max {mixed_max}"
+    );
+    assert!(
+        oceanic
+            .tectonic_offset_m()
+            .get(cell_at(1, 3).raw() as usize)
+            .unwrap()
+            < 0.0,
+        "the descending-side trench must remain negative"
+    );
+    let enhanced_cells = oceanic
+        .tectonic_offset_m()
+        .values()
+        .iter()
+        .zip(mixed.tectonic_offset_m().values())
+        .filter(|(oceanic, mixed)| **oceanic > **mixed + 250.0)
+        .count();
+    assert!(
+        (1..spatial.cell_count() / 2).contains(&enhanced_cells),
+        "arc summits should be selective, found {enhanced_cells} enhanced cells"
+    );
+}
+
+#[test]
 fn tectonic_relief_detail_is_seeded_repeatable_and_sign_preserving() {
     let spatial = regular_grid();
     let tectonic = custom_tectonics(&spatial, BoundaryKind::ContinentalCollision);
@@ -605,9 +757,134 @@ fn mantle_influence_adds_local_explainable_volcanic_relief() {
 }
 
 #[test]
+fn mantle_influence_field_remains_authoritative_beyond_the_local_shape_core() {
+    let spatial = regular_grid();
+    let tectonic = custom_tectonics(&spatial, BoundaryKind::ContinentalCollision);
+    let source = cell_at(1, 2);
+    let graph_supported = cell_at(1, 6);
+    let mut influence = vec![0.0; spatial.cell_count()];
+    influence[source.raw() as usize] = 1.0;
+    influence[graph_supported.raw() as usize] = 0.5;
+    let mantle = MantleSnapshot::new(
+        MANTLE_SNAPSHOT_SCHEMA_V1,
+        spatial.cell_count() as u32,
+        vec![Hotspot::new(HotspotId::from_raw(0), source, 800, meters(2.0)).unwrap()],
+        influence
+            .iter()
+            .map(|&value| 65.0 + 220.0 * value)
+            .collect(),
+        influence,
+    )
+    .unwrap();
+
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 7);
+
+    assert!(relief.volcanic_offset_m().values()[graph_supported.raw() as usize] > 0.0);
+}
+
+#[test]
+fn closed_ocean_frame_preserves_interior_oceanic_hotspot_peaks() {
+    let (tectonic, mantle, relief) =
+        generated_layers_for_preset(ResolvedWorldFormationPreset::VolcanicIslands, 0x00C0_FFEE);
+    let mut oceanic_sources = 0;
+
+    for hotspot in mantle.hotspots() {
+        if tectonic.crust_kind(hotspot.source_cell()) != Some(CrustKind::Oceanic) {
+            continue;
+        }
+        oceanic_sources += 1;
+        let expected = VOLCANIC_OFFSET_MAX_M * f32::from(hotspot.strength_permille()) / 1_000.0;
+        let actual = relief.volcanic_offset_m().values()[hotspot.source_cell().raw() as usize];
+        assert!(
+            actual + 0.1 >= expected,
+            "ocean-frame attenuation reached interior hotspot {:?}: {actual} < {expected}",
+            hotspot.id()
+        );
+    }
+    assert!(oceanic_sources > 0);
+}
+
+#[test]
+fn hotspot_morphology_is_seeded_support_bounded_and_kinematically_oriented() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle(&spatial);
+    let eastward = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 0).expect("test velocity is valid"),
+        14.0,
+    );
+    let northward = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(0, 80).expect("test velocity is valid"),
+        14.0,
+    );
+
+    let first = generate_relief_with_mantle(&spatial, &eastward, &mantle, 71);
+    let repeated = generate_relief_with_mantle(&spatial, &eastward, &mantle, 71);
+    let changed_seed = generate_relief_with_mantle(&spatial, &eastward, &mantle, 72);
+    let changed_velocity = generate_relief_with_mantle(&spatial, &northward, &mantle, 71);
+
+    assert_eq!(first.volcanic_offset_m(), repeated.volcanic_offset_m());
+    assert_ne!(first.volcanic_offset_m(), changed_seed.volcanic_offset_m());
+    assert_ne!(
+        first.volcanic_offset_m(),
+        changed_velocity.volcanic_offset_m()
+    );
+    assert!(mantle
+        .volcanic_influence()
+        .iter()
+        .zip(first.volcanic_offset_m().values())
+        .all(|(&influence, &offset)| influence > 0.0 || offset == 0.0));
+}
+
+#[test]
+fn strong_oceanic_hotspot_creates_an_island_among_submerged_seamounts() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle(&spatial);
+    let tectonic = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 20).expect("test velocity is valid"),
+        14.0,
+    );
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 71);
+    let source = mantle.hotspots()[0].source_cell();
+
+    assert_eq!(relief.land_ocean_kind(source), Some(LandOceanKind::Land));
+    assert!(
+        (0..spatial.cell_count()).any(|index| {
+            let cell = CellId::from_raw(index as u32);
+            cell != source
+                && mantle.volcanic_influence()[index] > 0.0
+                && relief.volcanic_offset_m().values()[index] > 0.0
+                && relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean)
+        }),
+        "a hotspot island group should taper through submerged seamounts"
+    );
+}
+
+#[test]
+fn moderate_oceanic_hotspot_can_breach_typical_deep_seafloor() {
+    let spatial = large_regular_grid();
+    let mantle = centered_hotspot_mantle_with_strength(&spatial, 800);
+    let tectonic = uniform_oceanic_tectonics(
+        &spatial,
+        PlateVelocity::new(80, 20).expect("test velocity is valid"),
+        8.0,
+    );
+    let relief = generate_relief_with_mantle(&spatial, &tectonic, &mantle, 71);
+
+    assert_eq!(
+        relief.land_ocean_kind(mantle.hotspots()[0].source_cell()),
+        Some(LandOceanKind::Land),
+        "a moderate hotspot should be capable of building an island from typical oceanic crust"
+    );
+}
+
+#[test]
 fn final_relief_is_explainable_and_default_has_land_and_ocean() {
     let (spatial, tectonic) = generated_fixture();
     let relief = generate_relief(spatial, &tectonic, 42);
+    assert_eq!(relief.schema_version(), RELIEF_SCHEMA_V3);
     let mut counts = [0_usize; 2];
     for index in 0..spatial.cell_count() {
         let expected = relief.crust_base_elevation_m().values()[index]

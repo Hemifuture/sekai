@@ -99,7 +99,7 @@ fn volcanic_formation_bias_reaches_the_mantle_stage() {
 fn mantle_artifact_and_stage_have_exact_stable_contracts() {
     assert_eq!(MantleArtifact::KEY.as_str(), "world.mantle");
     assert_eq!(MantleStage.id().as_str(), "natural.mantle");
-    assert_eq!(MantleStage.version(), 2);
+    assert_eq!(MantleStage.version(), 3);
     assert_eq!(MantleStage.namespace(), "sekai.core");
 
     let graph = StageGraphBuilder::new()

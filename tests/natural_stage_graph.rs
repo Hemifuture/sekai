@@ -312,11 +312,11 @@ fn complete_natural_graph_publishes_physical_artifacts_with_exact_stage_metadata
     assert_eq!(MantleArtifact::KEY.as_str(), "world.mantle");
     assert_eq!(MantleStage.id().as_str(), "natural.mantle");
     assert_eq!(MantleStage.namespace(), "sekai.core");
-    assert_eq!(MantleStage.version(), 2);
+    assert_eq!(MantleStage.version(), 3);
     assert_eq!(ReliefArtifact::KEY.as_str(), "world.relief");
     assert_eq!(ReliefStage.id().as_str(), "natural.relief");
     assert_eq!(ReliefStage.namespace(), "sekai.core");
-    assert_eq!(ReliefStage.version(), 5);
+    assert_eq!(ReliefStage.version(), 8);
     assert_eq!(GeologicArtifact::KEY.as_str(), "world.geology");
     assert_eq!(GeologicStage.id().as_str(), "natural.geology");
     assert_eq!(GeologicStage.namespace(), "sekai.core");

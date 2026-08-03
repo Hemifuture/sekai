@@ -6,8 +6,10 @@ use crate::world::CellId;
 
 /// The supported version of the serialized relief snapshot schema.
 pub const RELIEF_SCHEMA_V1: u16 = 1;
-/// The current supported relief schema with an explicit volcanic component.
+/// The legacy supported relief schema with an explicit 4,000 m volcanic component.
 pub const RELIEF_SCHEMA_V2: u16 = 2;
+/// The current relief schema with deep-ocean volcanic edifices up to 6,000 m.
+pub const RELIEF_SCHEMA_V3: u16 = 3;
 /// The minimum safe final elevation, in meters.
 pub const ELEVATION_MIN_M: f32 = -11_000.0;
 /// The maximum safe final elevation, in meters.
@@ -23,7 +25,8 @@ pub const TECTONIC_OFFSET_MAX_M: f32 = 7_000.0;
 /// The minimum supported current volcanic-relief contribution, in meters.
 pub const VOLCANIC_OFFSET_MIN_M: f32 = 0.0;
 /// The maximum supported current volcanic-relief contribution, in meters.
-pub const VOLCANIC_OFFSET_MAX_M: f32 = 4_000.0;
+pub const VOLCANIC_OFFSET_MAX_M: f32 = 6_000.0;
+const VOLCANIC_OFFSET_V2_MAX_M: f32 = 4_000.0;
 /// The minimum supported regional-relief component, in meters.
 pub const REGIONAL_OFFSET_MIN_M: f32 = -3_000.0;
 /// The maximum supported regional-relief component, in meters.
@@ -178,7 +181,7 @@ pub struct ReliefSnapshot {
 }
 
 impl ReliefSnapshot {
-    /// Constructs a snapshot only when all V2 relief invariants hold.
+    /// Constructs a snapshot only when all invariants for a supported relief schema hold.
     pub fn new(
         schema_version: u16,
         cell_count: u32,
@@ -207,12 +210,16 @@ impl ReliefSnapshot {
 
     /// Rechecks every self-contained relief invariant.
     pub fn validate(&self) -> Result<(), ReliefValidationError> {
-        if self.schema_version != RELIEF_SCHEMA_V2 {
-            return Err(ReliefValidationError::UnsupportedSchema {
-                found: self.schema_version,
-                supported: RELIEF_SCHEMA_V2,
-            });
-        }
+        let volcanic_offset_max_m = match self.schema_version {
+            RELIEF_SCHEMA_V2 => VOLCANIC_OFFSET_V2_MAX_M,
+            RELIEF_SCHEMA_V3 => VOLCANIC_OFFSET_MAX_M,
+            found => {
+                return Err(ReliefValidationError::UnsupportedSchema {
+                    found,
+                    supported: RELIEF_SCHEMA_V3,
+                });
+            }
+        };
         if !self.sea_level_m.is_finite() {
             return Err(ReliefValidationError::NonFiniteSeaLevel {
                 found: self.sea_level_m,
@@ -251,7 +258,7 @@ impl ReliefSnapshot {
             "volcanic_offset_m",
             self.volcanic_offset_m.values(),
             VOLCANIC_OFFSET_MIN_M,
-            VOLCANIC_OFFSET_MAX_M,
+            volcanic_offset_max_m,
         )?;
         validate_range(
             "regional_offset_m",

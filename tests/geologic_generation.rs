@@ -241,7 +241,7 @@ fn hotspot_mantle(spatial: &SpatialSnapshot, source: CellId) -> MantleSnapshot {
 fn relief_rng(seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.relief", 5, "sekai.core"),
+        StageIdentity::new("natural.relief", 8, "sekai.core"),
     ))
 }
 

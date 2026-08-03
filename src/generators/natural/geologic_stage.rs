@@ -93,7 +93,7 @@ impl Stage for MantleStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {
