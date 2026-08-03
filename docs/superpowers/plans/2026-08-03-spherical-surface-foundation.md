@@ -260,6 +260,7 @@ git commit -m "feat: define authoritative spherical surface snapshot"
 
 **Files:**
 - Create: `src/generators/spatial/geodesic_voronoi.rs`
+- Modify: `src/generators/spatial/mod.rs` (private module declaration only)
 - Test: unit tests in `src/generators/spatial/geodesic_voronoi.rs`
 
 **Interfaces:**
@@ -321,7 +322,7 @@ Expected: exact private-mesh counts, deterministic IDs, and ordered-record equal
 Commit:
 
 ```powershell
-git add src/generators/spatial/geodesic_voronoi.rs
+git add src/generators/spatial/geodesic_voronoi.rs src/generators/spatial/mod.rs
 git commit -m "feat: build deterministic geodesic mesh"
 ```
 
