@@ -466,7 +466,9 @@ impl SphericalSurfaceSnapshot {
 
         for (position, (incident_edges, link)) in incident_edges.iter().zip(&links).enumerate() {
             if incident_edges.is_empty() {
-                continue;
+                return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                    vertex: SurfaceVertexId::from_raw(position as u32),
+                });
             }
             if link.len() != incident_edges.len()
                 || link.keys().any(|edge| !incident_edges.contains(edge))
@@ -541,7 +543,8 @@ impl SphericalSurfaceSnapshot {
             }
 
             let calculated_length = radius * central_angle(first_vertex, second_vertex);
-            if calculated_length <= 0.0
+            if edge.length.get() <= 0.0
+                || calculated_length <= 0.0
                 || !metric_close(edge.length.get(), calculated_length, radius)
             {
                 return Err(SphericalSurfaceValidationError::EdgeLengthMismatch {
@@ -554,7 +557,8 @@ impl SphericalSurfaceSnapshot {
             let first_site = self.cells[edge.cells[0].raw() as usize].site;
             let second_site = self.cells[edge.cells[1].raw() as usize].site;
             let calculated_center_distance = radius * central_angle(first_site, second_site);
-            if calculated_center_distance <= 0.0
+            if edge.center_distance.get() <= 0.0
+                || calculated_center_distance <= 0.0
                 || !metric_close(
                     edge.center_distance.get(),
                     calculated_center_distance,
@@ -573,7 +577,7 @@ impl SphericalSurfaceSnapshot {
             for (owner, site) in [first_site, second_site].into_iter().enumerate() {
                 let calculated = radius * central_angle(site, midpoint);
                 let stored = edge.center_distances_to_midpoint[owner].get();
-                if calculated <= 0.0 || !metric_close(stored, calculated, radius) {
+                if stored <= 0.0 || calculated <= 0.0 || !metric_close(stored, calculated, radius) {
                     return Err(
                         SphericalSurfaceValidationError::EdgeMidpointDistanceMismatch {
                             edge: edge.id,

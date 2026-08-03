@@ -236,7 +236,7 @@ fn validation_rejects_incorrect_tangent_normal() {
 }
 
 #[test]
-fn validation_rejects_broken_euler_topology() {
+fn validation_rejects_an_unused_authoritative_vertex_link() {
     let error = mutated_snapshot(|json| {
         json["vertices"].as_array_mut().unwrap().push(json!({
             "id": 4,
@@ -244,14 +244,15 @@ fn validation_rejects_broken_euler_topology() {
         }));
     })
     .unwrap_err();
-    assert!(matches!(
-        error,
-        SphericalSurfaceValidationError::EulerCharacteristicMismatch {
-            vertices: 5,
-            edges: 6,
-            cells: 4
-        }
-    ));
+    let unexpected = format!("{error:?}");
+    assert!(
+        matches!(
+            error,
+            SphericalSurfaceValidationError::VertexLinkNotSingleCycle { vertex }
+                if vertex == SurfaceVertexId::from_raw(4)
+        ),
+        "unexpected error: {unexpected}"
+    );
 }
 
 #[test]
@@ -343,6 +344,67 @@ fn refined_metric_and_area_roundoff_floors_scale_with_radius() {
             edges,
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn validation_rejects_non_positive_stored_short_edge_metrics_before_tolerance() {
+    let snapshot = close_site_short_edge_snapshot();
+    let cases = [
+        ("length", None),
+        ("center_distance", None),
+        ("center_distances_to_midpoint", Some(0_usize)),
+        ("center_distances_to_midpoint", Some(1_usize)),
+    ];
+
+    for stored_value in [-f64::EPSILON, 0.0] {
+        for (field, owner) in cases {
+            let mut json = serde_json::to_value(&snapshot).unwrap();
+            if let Some(owner) = owner {
+                json["edges"][0][field][owner] = Value::from(stored_value);
+            } else {
+                json["edges"][0][field] = Value::from(stored_value);
+            }
+            let decoded: SphericalSurfaceSnapshot = serde_json::from_value(json).unwrap();
+            let error = decoded.validate().unwrap_err();
+            let unexpected = format!("{error:?}");
+            match (field, owner) {
+                ("length", None) => assert!(
+                    matches!(
+                        error,
+                        SphericalSurfaceValidationError::EdgeLengthMismatch { edge, stored, .. }
+                            if edge == EdgeId::from_raw(0) && stored == stored_value
+                    ),
+                    "unexpected error: {unexpected}"
+                ),
+                ("center_distance", None) => assert!(
+                    matches!(
+                        error,
+                        SphericalSurfaceValidationError::EdgeCenterDistanceMismatch {
+                            edge,
+                            stored,
+                            ..
+                        } if edge == EdgeId::from_raw(0) && stored == stored_value
+                    ),
+                    "unexpected error: {unexpected}"
+                ),
+                ("center_distances_to_midpoint", Some(owner)) => assert!(
+                    matches!(
+                        error,
+                        SphericalSurfaceValidationError::EdgeMidpointDistanceMismatch {
+                            edge,
+                            owner: found_owner,
+                            stored,
+                            ..
+                        } if edge == EdgeId::from_raw(0)
+                            && found_owner == owner
+                            && stored == stored_value
+                    ),
+                    "unexpected error: {unexpected}"
+                ),
+                _ => unreachable!(),
+            }
+        }
     }
 }
 
@@ -529,6 +591,39 @@ fn refined_tetrahedral_records(
         )
         .collect();
     (vertices, cells, edges)
+}
+
+fn close_site_short_edge_snapshot() -> SphericalSurfaceSnapshot {
+    let radius = 1.0;
+    let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-16);
+    let midpoint = edges[0].midpoint.components();
+    let offset = 1.0e-16;
+    for (cell, toward_vertex) in [(2_usize, 3_usize), (3_usize, 2_usize)] {
+        let toward = vertices[toward_vertex].position.components();
+        cells[cell].site = unit(
+            midpoint[0] + offset * toward[0],
+            midpoint[1] + offset * toward[1],
+            midpoint[2] + offset * toward[2],
+        );
+    }
+    for edge in &mut edges {
+        let first_site = cells[edge.cells[0].raw() as usize].site;
+        let second_site = cells[edge.cells[1].raw() as usize].site;
+        edge.center_distance = meters(radius * central_angle(first_site, second_site));
+        edge.center_distances_to_midpoint = [
+            meters(radius * central_angle(first_site, edge.midpoint)),
+            meters(radius * central_angle(second_site, edge.midpoint)),
+        ];
+        edge.normal_from_first = direction_between(first_site, second_site, edge.midpoint);
+    }
+    SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(radius),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap()
 }
 
 fn polygon_centroid(polygon: &[UnitVector3]) -> UnitVector3 {
