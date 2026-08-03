@@ -1,18 +1,27 @@
+use std::{hint::black_box, mem::size_of_val, time::Instant};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::world::natural::{
     CirculationSnapshot, CirculationSnapshotError, CirculationSolveStats, CirculationSolverId,
-    CLIMATE_MONTH_COUNT,
+    CirculationSpec, CLIMATE_MONTH_COUNT, MAX_CUBED_SPHERE_FACE_RESOLUTION,
 };
 
-use super::{CirculationFixture, CubedSphereGrid};
+use super::{
+    build_fixture, BalancedSteadySolver, CirculationFixture, CirculationSolveError,
+    CirculationSolver, CubedSphereGrid, CubedSphereGridError, FixtureBuildError,
+    TransientShallowWaterSolver,
+};
 
 const VECTOR_RMS_EPSILON: f64 = 1.0e-12;
 const SCALAR_MEAN_EPSILON: f64 = 1.0e-12;
 const COSINE_45_DEGREES: f64 = std::f64::consts::FRAC_1_SQRT_2;
 const WIND_DIRECTION_THRESHOLD_M_S: f64 = 0.1;
 const CURRENT_DIRECTION_THRESHOLD_M_S: f64 = 0.01;
+const COMPARISON_SUITE_SCHEMA_V1: u16 = 1;
+const COMPARISON_WARMUP_RUNS: u8 = 2;
+const MAX_MEASUREMENT_SAMPLES: usize = 1_000;
 
 /// Area-weighted agreement for one monthly tangent-vector field.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -202,6 +211,61 @@ pub struct FixtureComparison {
     pub report: ComparisonReport,
 }
 
+/// Distribution summary for one independently timed operation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TimingSummary {
+    pub samples: u32,
+    pub median_ns: u64,
+    pub maximum_ns: u64,
+    pub median_ns_per_cell_month: f64,
+}
+
+/// The seven non-overlapping categories measured for one comparison case.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonTimings {
+    pub grid_build: TimingSummary,
+    pub forcing_build: TimingSummary,
+    pub steady_solve: TimingSummary,
+    pub transient_cold_solve: TimingSummary,
+    pub transient_warm_solve: TimingSummary,
+    pub validation: TimingSummary,
+    pub comparison: TimingSummary,
+}
+
+/// Dense output and solver-working-array byte counts, excluding process RSS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DenseByteSummary {
+    pub steady_output: u64,
+    pub transient_cold_output: u64,
+    pub transient_warm_output: u64,
+    pub steady_working_state: u64,
+    pub transient_cold_working_state: u64,
+    pub transient_warm_working_state: u64,
+}
+
+/// One measured resolution/fixture combination in the sole report schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonCaseReport {
+    pub face_resolution: u16,
+    pub cell_count: u32,
+    pub fixture: CirculationFixture,
+    pub timings: ComparisonTimings,
+    pub dense_bytes: DenseByteSummary,
+    pub steady_stats: CirculationSolveStats,
+    pub transient_cold_stats: CirculationSolveStats,
+    pub transient_warm_stats: CirculationSolveStats,
+    pub comparison: ComparisonReport,
+}
+
+/// Complete serializable output shared by the library and measurement CLI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComparisonSuiteReport {
+    pub schema_version: u16,
+    pub warmup_runs: u8,
+    pub measured_samples: u32,
+    pub cases: Vec<ComparisonCaseReport>,
+}
+
 /// Compares two immutable snapshots on their shared closed spherical grid.
 pub fn compare_snapshots(
     grid: &CubedSphereGrid,
@@ -212,6 +276,14 @@ pub fn compare_snapshots(
     reference.validate()?;
     validate_identity(grid, candidate, reference)?;
 
+    Ok(compare_snapshots_validated(grid, candidate, reference))
+}
+
+fn compare_snapshots_validated(
+    grid: &CubedSphereGrid,
+    candidate: &CirculationSnapshot,
+    reference: &CirculationSnapshot,
+) -> ComparisonReport {
     let mut monthly = Vec::with_capacity(CLIMATE_MONTH_COUNT);
     for month in 0..CLIMATE_MONTH_COUNT {
         monthly.push(MonthlyAgreement {
@@ -269,7 +341,7 @@ pub fn compare_snapshots(
         });
     }
     let wysiwyg = WysiwygEligibility::evaluate(&monthly);
-    Ok(ComparisonReport {
+    ComparisonReport {
         cell_count: candidate.cell_count(),
         spec_fingerprint: *candidate.spec_fingerprint(),
         grid_fingerprint: *candidate.grid_fingerprint(),
@@ -280,7 +352,260 @@ pub fn compare_snapshots(
         reference_stats: *reference.stats(),
         monthly,
         wysiwyg,
+    }
+}
+
+/// Runs deterministic warmups and Release-oriented measurements for every case.
+pub fn run_comparison_suite(
+    resolutions: &[u16],
+    fixtures: &[CirculationFixture],
+    measured_samples: usize,
+) -> Result<ComparisonSuiteReport, ComparisonError> {
+    validate_suite_request(resolutions, fixtures, measured_samples)?;
+    let mut cases = Vec::with_capacity(
+        resolutions
+            .len()
+            .checked_mul(fixtures.len())
+            .ok_or(ComparisonError::AllocationOverflow)?,
+    );
+    for &face_resolution in resolutions {
+        let spec = CirculationSpec {
+            face_resolution,
+            ..CirculationSpec::default()
+        };
+        for &fixture in fixtures {
+            for _ in 0..COMPARISON_WARMUP_RUNS {
+                warm_up_case(&spec, fixture)?;
+            }
+            cases.push(measure_case(&spec, fixture, measured_samples)?);
+        }
+    }
+    Ok(ComparisonSuiteReport {
+        schema_version: COMPARISON_SUITE_SCHEMA_V1,
+        warmup_runs: COMPARISON_WARMUP_RUNS,
+        measured_samples: measured_samples as u32,
+        cases,
     })
+}
+
+fn validate_suite_request(
+    resolutions: &[u16],
+    fixtures: &[CirculationFixture],
+    measured_samples: usize,
+) -> Result<(), ComparisonError> {
+    if resolutions.is_empty() {
+        return Err(ComparisonError::EmptyResolutions);
+    }
+    for &resolution in resolutions {
+        if !(1..=MAX_CUBED_SPHERE_FACE_RESOLUTION).contains(&resolution) {
+            return Err(ComparisonError::InvalidResolution { found: resolution });
+        }
+    }
+    if fixtures.is_empty() {
+        return Err(ComparisonError::EmptyFixtures);
+    }
+    if measured_samples == 0 {
+        return Err(ComparisonError::ZeroMeasurementSamples);
+    }
+    if measured_samples > MAX_MEASUREMENT_SAMPLES || measured_samples > u32::MAX as usize {
+        return Err(ComparisonError::MeasurementSamplesOutOfRange {
+            found: measured_samples,
+            max: MAX_MEASUREMENT_SAMPLES,
+        });
+    }
+    Ok(())
+}
+
+fn warm_up_case(
+    spec: &CirculationSpec,
+    fixture: CirculationFixture,
+) -> Result<(), ComparisonError> {
+    let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m)?;
+    let forcing = build_fixture(&grid, fixture)?;
+    let steady = BalancedSteadySolver.solve(&grid, &forcing, spec)?;
+    let transient_cold = TransientShallowWaterSolver::cold_start().solve(&grid, &forcing, spec)?;
+    let transient_warm =
+        TransientShallowWaterSolver::warm_start(&steady).solve(&grid, &forcing, spec)?;
+    validate_case_outputs(&grid, &steady, &transient_cold, &transient_warm)?;
+    let comparison = compare_snapshots_validated(&grid, &steady, &transient_cold);
+    let _ = black_box((
+        &grid,
+        &forcing,
+        &steady,
+        &transient_cold,
+        &transient_warm,
+        &comparison,
+    ));
+    Ok(())
+}
+
+#[derive(Default)]
+struct RawTimings {
+    grid_build: Vec<u64>,
+    forcing_build: Vec<u64>,
+    steady_solve: Vec<u64>,
+    transient_cold_solve: Vec<u64>,
+    transient_warm_solve: Vec<u64>,
+    validation: Vec<u64>,
+    comparison: Vec<u64>,
+}
+
+struct MeasuredOutputs {
+    steady: CirculationSnapshot,
+    transient_cold: CirculationSnapshot,
+    transient_warm: CirculationSnapshot,
+    comparison: ComparisonReport,
+}
+
+fn measure_case(
+    spec: &CirculationSpec,
+    fixture: CirculationFixture,
+    measured_samples: usize,
+) -> Result<ComparisonCaseReport, ComparisonError> {
+    let mut raw = RawTimings::default();
+    let mut final_outputs = None;
+    let mut final_cell_count = 0_usize;
+    for _ in 0..measured_samples {
+        let started = Instant::now();
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m)?;
+        raw.grid_build.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        let forcing = build_fixture(&grid, fixture)?;
+        raw.forcing_build.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        let steady = BalancedSteadySolver.solve(&grid, &forcing, spec)?;
+        raw.steady_solve.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        let transient_cold =
+            TransientShallowWaterSolver::cold_start().solve(&grid, &forcing, spec)?;
+        raw.transient_cold_solve.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        let transient_warm =
+            TransientShallowWaterSolver::warm_start(&steady).solve(&grid, &forcing, spec)?;
+        raw.transient_warm_solve.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        validate_case_outputs(&grid, &steady, &transient_cold, &transient_warm)?;
+        raw.validation.push(elapsed_ns(started)?);
+
+        let started = Instant::now();
+        let comparison = compare_snapshots_validated(&grid, &steady, &transient_cold);
+        raw.comparison.push(elapsed_ns(started)?);
+
+        let _ = black_box((
+            &grid,
+            &forcing,
+            &steady,
+            &transient_cold,
+            &transient_warm,
+            &comparison,
+        ));
+        final_cell_count = grid.cell_count();
+        final_outputs = Some(MeasuredOutputs {
+            steady,
+            transient_cold,
+            transient_warm,
+            comparison,
+        });
+    }
+
+    let outputs = final_outputs.ok_or(ComparisonError::ZeroMeasurementSamples)?;
+    let cell_count = u32::try_from(final_cell_count).map_err(|_| ComparisonError::ByteOverflow)?;
+    let timings = summarize_timings(raw, cell_count)?;
+    let dense_bytes = DenseByteSummary {
+        steady_output: snapshot_output_bytes(&outputs.steady)?,
+        transient_cold_output: snapshot_output_bytes(&outputs.transient_cold)?,
+        transient_warm_output: snapshot_output_bytes(&outputs.transient_warm)?,
+        steady_working_state: outputs.steady.stats().dense_state_bytes,
+        transient_cold_working_state: outputs.transient_cold.stats().dense_state_bytes,
+        transient_warm_working_state: outputs.transient_warm.stats().dense_state_bytes,
+    };
+    Ok(ComparisonCaseReport {
+        face_resolution: spec.face_resolution,
+        cell_count,
+        fixture,
+        timings,
+        dense_bytes,
+        steady_stats: *outputs.steady.stats(),
+        transient_cold_stats: *outputs.transient_cold.stats(),
+        transient_warm_stats: *outputs.transient_warm.stats(),
+        comparison: outputs.comparison,
+    })
+}
+
+fn validate_case_outputs(
+    grid: &CubedSphereGrid,
+    steady: &CirculationSnapshot,
+    transient_cold: &CirculationSnapshot,
+    transient_warm: &CirculationSnapshot,
+) -> Result<(), ComparisonError> {
+    steady.validate()?;
+    transient_cold.validate()?;
+    transient_warm.validate()?;
+    validate_identity(grid, steady, transient_cold)?;
+    validate_identity(grid, steady, transient_warm)?;
+    Ok(())
+}
+
+fn elapsed_ns(started: Instant) -> Result<u64, ComparisonError> {
+    u64::try_from(started.elapsed().as_nanos()).map_err(|_| ComparisonError::TimingOverflow)
+}
+
+fn summarize_timings(
+    raw: RawTimings,
+    cell_count: u32,
+) -> Result<ComparisonTimings, ComparisonError> {
+    Ok(ComparisonTimings {
+        grid_build: summarize(raw.grid_build, cell_count)?,
+        forcing_build: summarize(raw.forcing_build, cell_count)?,
+        steady_solve: summarize(raw.steady_solve, cell_count)?,
+        transient_cold_solve: summarize(raw.transient_cold_solve, cell_count)?,
+        transient_warm_solve: summarize(raw.transient_warm_solve, cell_count)?,
+        validation: summarize(raw.validation, cell_count)?,
+        comparison: summarize(raw.comparison, cell_count)?,
+    })
+}
+
+fn summarize(mut samples: Vec<u64>, cell_count: u32) -> Result<TimingSummary, ComparisonError> {
+    if samples.is_empty() {
+        return Err(ComparisonError::ZeroMeasurementSamples);
+    }
+    samples.sort_unstable();
+    let median_ns = samples[samples.len() / 2];
+    let maximum_ns = *samples
+        .last()
+        .ok_or(ComparisonError::ZeroMeasurementSamples)?;
+    let sample_count = u32::try_from(samples.len()).map_err(|_| ComparisonError::TimingOverflow)?;
+    let cell_months = f64::from(cell_count) * CLIMATE_MONTH_COUNT as f64;
+    Ok(TimingSummary {
+        samples: sample_count,
+        median_ns,
+        maximum_ns,
+        median_ns_per_cell_month: median_ns as f64 / cell_months,
+    })
+}
+
+fn snapshot_output_bytes(snapshot: &CirculationSnapshot) -> Result<u64, ComparisonError> {
+    let mut bytes = 0_usize;
+    for field_bytes in [
+        size_of_val(snapshot.monthly_wind_m_s()),
+        size_of_val(snapshot.monthly_ocean_current_m_s()),
+        size_of_val(snapshot.monthly_air_temperature_c()),
+        size_of_val(snapshot.monthly_surface_temperature_c()),
+        size_of_val(snapshot.monthly_specific_humidity()),
+        size_of_val(snapshot.monthly_precipitation_mm_day()),
+        size_of_val(snapshot.monthly_atmosphere_height_anomaly_m()),
+        size_of_val(snapshot.monthly_sea_surface_height_anomaly_m()),
+    ] {
+        bytes = bytes
+            .checked_add(field_bytes)
+            .ok_or(ComparisonError::ByteOverflow)?;
+    }
+    u64::try_from(bytes).map_err(|_| ComparisonError::ByteOverflow)
 }
 
 fn validate_identity(
@@ -592,4 +917,28 @@ pub enum ComparisonError {
     GridFingerprintMismatch,
     #[error("snapshots use different planetary forcing")]
     ForcingFingerprintMismatch,
+    #[error("at least one grid resolution is required")]
+    EmptyResolutions,
+    #[error(
+        "cubed-sphere face resolution {found} is outside 1..={MAX_CUBED_SPHERE_FACE_RESOLUTION}"
+    )]
+    InvalidResolution { found: u16 },
+    #[error("at least one deterministic fixture is required")]
+    EmptyFixtures,
+    #[error("at least one measured sample is required")]
+    ZeroMeasurementSamples,
+    #[error("measurement sample count {found} exceeds the bounded maximum {max}")]
+    MeasurementSamplesOutOfRange { found: usize, max: usize },
+    #[error(transparent)]
+    Grid(#[from] CubedSphereGridError),
+    #[error(transparent)]
+    Fixture(#[from] FixtureBuildError),
+    #[error(transparent)]
+    Solve(#[from] CirculationSolveError),
+    #[error("comparison case-count allocation overflowed")]
+    AllocationOverflow,
+    #[error("nanosecond timing exceeded the report representation")]
+    TimingOverflow,
+    #[error("dense byte-count arithmetic overflowed")]
+    ByteOverflow,
 }

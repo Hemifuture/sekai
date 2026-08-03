@@ -20,6 +20,8 @@ const DAYS_PER_CLIMATOLOGICAL_MONTH: u64 = 30;
 const SECONDS_PER_CLIMATOLOGICAL_MONTH: u64 = SECONDS_PER_DAY * DAYS_PER_CLIMATOLOGICAL_MONTH;
 const TRANSIENT_DENSE_STATE_MULTIPLIER: u64 = 6;
 const ROUND_OFF_TENDENCY_FLOOR: f32 = 1.0e-30;
+const CLASSIC_RK3_IMAGINARY_STABILITY_RADIUS: f64 = 1.732_050_807_568_877_2;
+const TEMPORAL_STABILITY_SAFETY_FACTOR: f64 = 0.9;
 
 /// Time-dependent reduced shallow-water solver using deterministic classic RK3 steps.
 #[derive(Debug, Clone, Default)]
@@ -45,9 +47,17 @@ impl TransientShallowWaterSolver {
     ) -> Result<u64, CirculationSolveError> {
         validate_grid_spec(grid, spec)?;
         let maximum_wave_speed = maximum_wave_speed(spec);
-        let raw_seconds = (f64::from(spec.cfl_limit) * grid.minimum_center_distance_m()
+        let wave_limited_seconds = (f64::from(spec.cfl_limit) * grid.minimum_center_distance_m()
             / maximum_wave_speed)
             .floor();
+        let maximum_coriolis_frequency = 2.0 * spec.rotation_rate_rad_s.abs();
+        let rotation_limited_seconds = if maximum_coriolis_frequency > 0.0 {
+            TEMPORAL_STABILITY_SAFETY_FACTOR * CLASSIC_RK3_IMAGINARY_STABILITY_RADIUS
+                / maximum_coriolis_frequency
+        } else {
+            f64::INFINITY
+        };
+        let raw_seconds = wave_limited_seconds.min(rotation_limited_seconds).floor();
         if !raw_seconds.is_finite() || raw_seconds < 60.0 {
             return Err(CirculationSolveError::InvalidTimeStep {
                 found_seconds: raw_seconds.max(0.0) as u64,

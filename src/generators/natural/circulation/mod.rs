@@ -13,8 +13,10 @@ mod thermodynamics;
 mod transient;
 
 pub use comparison::{
-    compare_snapshots, ComparisonError, ComparisonReport, EligibilityFailure, EligibilityRule,
-    FixtureComparison, MonthlyAgreement, ScalarAgreement, VectorAgreement, WysiwygEligibility,
+    compare_snapshots, run_comparison_suite, ComparisonCaseReport, ComparisonError,
+    ComparisonReport, ComparisonSuiteReport, ComparisonTimings, DenseByteSummary,
+    EligibilityFailure, EligibilityRule, FixtureComparison, MonthlyAgreement, ScalarAgreement,
+    TimingSummary, VectorAgreement, WysiwygEligibility,
 };
 pub use fixtures::{build_fixture, CirculationFixture, FixtureBuildError};
 pub use grid::{CubedSphereGrid, CubedSphereGridError, SphericalCell, SphericalEdge};

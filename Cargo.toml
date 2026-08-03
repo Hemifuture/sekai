@@ -73,3 +73,7 @@ opt-level = 2
 [[bench]]
 name = "delaunay"
 harness = false
+
+[[bin]]
+name = "circulation_compare"
+path = "src/bin/circulation_compare.rs"

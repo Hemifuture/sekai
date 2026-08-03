@@ -541,7 +541,7 @@ Expected: compilation fails because `TransientShallowWaterSolver` does not exist
 
 - [ ] **Step 3: Implement deterministic CFL selection and tendency evaluation**
 
-Compute the maximum wave speed as the maximum of `sqrt(g' H)` for atmosphere and ocean. Choose `floor(cfl_limit * minimum_center_distance / max_wave_speed)` seconds, round down to a whole minute, and reject a result below 60 seconds. One `evaluate_tendencies` function must call shared gradient, divergence, Coriolis, drag, linear wind stress, and thermodynamics without mutating input state.
+Compute the maximum wave speed as the maximum of `sqrt(g' H)` for atmosphere and ocean. Take the smaller of `cfl_limit * minimum_center_distance / max_wave_speed` and the classic-RK3 Coriolis stability bound `0.9 sqrt(3) / (2 |Ω|)`, round down to a whole minute, and reject a result below 60 seconds. The second bound is required on coarse grids where the propagation CFL alone permits a step outside RK3's imaginary-axis stability interval. One `evaluate_tendencies` function must call shared gradient, divergence, Coriolis, drag, linear wind stress, and thermodynamics without mutating input state.
 
 - [ ] **Step 4: Implement classic RK3 annual cycling and convergence**
 

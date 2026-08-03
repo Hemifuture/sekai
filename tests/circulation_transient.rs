@@ -46,6 +46,15 @@ fn transient_solver_uses_a_valid_quantized_cfl_step_and_preserves_uniform_equili
 }
 
 #[test]
+fn coarse_grid_time_step_respects_the_rk3_coriolis_stability_interval() {
+    let (grid, _, spec) = uniform_fixture(1);
+    let solver = TransientShallowWaterSolver::cold_start();
+    let dt = solver.time_step_seconds(&grid, &spec).unwrap();
+    let maximum_coriolis_radians = dt as f64 * 2.0 * spec.rotation_rate_rad_s.abs();
+    assert!(maximum_coriolis_radians <= 0.9 * 3.0_f64.sqrt());
+}
+
+#[test]
 fn transient_cold_and_steady_warm_starts_converge_on_all_fixtures() {
     let spec = CirculationSpec {
         face_resolution: 8,
