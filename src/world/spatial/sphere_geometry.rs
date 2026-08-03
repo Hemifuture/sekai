@@ -69,7 +69,9 @@ pub enum SphereGeometryError {
 
 /// Returns the shortest angular separation between two unit vectors in radians.
 pub fn central_angle(a: UnitVector3, b: UnitVector3) -> f64 {
-    a.dot(b).clamp(-1.0, 1.0).acos()
+    let cross = cross(a.components(), b.components());
+    let sine = cross[0].hypot(cross[1]).hypot(cross[2]);
+    sine.atan2(a.dot(b).clamp(-1.0, 1.0))
 }
 
 /// Orthogonally projects a vector onto the tangent plane at a radial direction.

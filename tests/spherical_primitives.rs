@@ -1,4 +1,4 @@
-use sekai::world::spatial::UnitVector3;
+use sekai::world::spatial::{central_angle, UnitVector3};
 use sekai::world::{Meters, SphericalSpaceSpec, SurfaceVertexId};
 
 #[test]
@@ -15,6 +15,14 @@ fn unit_vectors_are_canonical_and_validated_on_deserialization() {
 fn unit_vectors_normalize_large_finite_components() {
     let point = UnitVector3::new(f64::MAX, f64::MAX, f64::MAX).unwrap();
     assert!((point.norm() - 1.0).abs() <= 1.0e-15);
+}
+
+#[test]
+fn central_angle_preserves_near_coincident_vector_separation() {
+    let east = UnitVector3::new(1.0, 0.0, 0.0).unwrap();
+    let nearly_east = UnitVector3::new(1.0, 1.0e-10, 0.0).unwrap();
+
+    assert!((central_angle(east, nearly_east) - 1.0e-10).abs() <= 1.0e-20);
 }
 
 #[test]
