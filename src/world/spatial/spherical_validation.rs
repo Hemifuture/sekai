@@ -543,10 +543,7 @@ impl SphericalSurfaceSnapshot {
             }
 
             let calculated_length = radius * central_angle(first_vertex, second_vertex);
-            if edge.length.get() <= 0.0
-                || calculated_length <= 0.0
-                || !metric_close(edge.length.get(), calculated_length, radius)
-            {
+            if !positive_metric_close(edge.length.get(), calculated_length, radius) {
                 return Err(SphericalSurfaceValidationError::EdgeLengthMismatch {
                     edge: edge.id,
                     stored: edge.length.get(),
@@ -557,14 +554,11 @@ impl SphericalSurfaceSnapshot {
             let first_site = self.cells[edge.cells[0].raw() as usize].site;
             let second_site = self.cells[edge.cells[1].raw() as usize].site;
             let calculated_center_distance = radius * central_angle(first_site, second_site);
-            if edge.center_distance.get() <= 0.0
-                || calculated_center_distance <= 0.0
-                || !metric_close(
-                    edge.center_distance.get(),
-                    calculated_center_distance,
-                    radius,
-                )
-            {
+            if !positive_metric_close(
+                edge.center_distance.get(),
+                calculated_center_distance,
+                radius,
+            ) {
                 return Err(
                     SphericalSurfaceValidationError::EdgeCenterDistanceMismatch {
                         edge: edge.id,
@@ -577,7 +571,7 @@ impl SphericalSurfaceSnapshot {
             for (owner, site) in [first_site, second_site].into_iter().enumerate() {
                 let calculated = radius * central_angle(site, midpoint);
                 let stored = edge.center_distances_to_midpoint[owner].get();
-                if stored <= 0.0 || calculated <= 0.0 || !metric_close(stored, calculated, radius) {
+                if !positive_metric_close(stored, calculated, radius) {
                     return Err(
                         SphericalSurfaceValidationError::EdgeMidpointDistanceMismatch {
                             edge: edge.id,
@@ -762,6 +756,10 @@ fn metric_close(stored: f64, calculated: f64, radius: f64) -> bool {
                 + METRIC_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs())
 }
 
+fn positive_metric_close(stored: f64, calculated: f64, radius: f64) -> bool {
+    stored > 0.0 && calculated > 0.0 && metric_close(stored, calculated, radius)
+}
+
 fn area_close(stored: f64, calculated: f64, radius_squared: f64) -> bool {
     stored.is_finite()
         && calculated.is_finite()
@@ -800,6 +798,69 @@ impl CompensatedSum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn positive_metric_matching_uses_the_absolute_floor_without_admitting_zero() {
+        let metric_kinds = [
+            ("edge length", 1.0),
+            ("center distance", 2.0),
+            ("first midpoint distance", 3.0),
+            ("second midpoint distance", 4.0),
+        ];
+
+        for radius in [1.0, 6_371_000.0, 100_000_000.0] {
+            let absolute_floor = ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius;
+            let perturbation = 4.0 * f64::EPSILON * radius;
+            assert!(perturbation < absolute_floor);
+
+            for (kind, calculated_ulps) in metric_kinds {
+                let calculated = calculated_ulps * f64::EPSILON * radius;
+                let stored = calculated + perturbation;
+                let relative_allowance =
+                    METRIC_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs());
+                assert!(
+                    absolute_floor > relative_allowance,
+                    "absolute floor must dominate for {kind}"
+                );
+                assert!(
+                    perturbation > relative_allowance,
+                    "perturbation must exceed relative tolerance for {kind}"
+                );
+                assert!(
+                    positive_metric_close(stored, calculated, radius),
+                    "absolute floor must accept positive roundoff for {kind}"
+                );
+
+                for non_positive in [0.0, -f64::EPSILON * radius] {
+                    assert!(
+                        metric_close(non_positive, calculated, radius),
+                        "tolerance alone must admit the {kind} witness"
+                    );
+                    assert!(
+                        !positive_metric_close(non_positive, calculated, radius),
+                        "positivity must be checked before tolerance for {kind}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn area_matching_uses_the_absolute_floor_for_positive_roundoff() {
+        for radius in [1.0, 6_371_000.0, 100_000_000.0] {
+            let radius_squared = radius * radius;
+            let calculated = 4.0 * f64::EPSILON * radius_squared;
+            let perturbation = 4.0 * f64::EPSILON * radius_squared;
+            let stored = calculated + perturbation;
+            let absolute_floor = ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius_squared;
+            let relative_allowance = AREA_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs());
+
+            assert!(absolute_floor > relative_allowance);
+            assert!(perturbation > relative_allowance);
+            assert!(perturbation < absolute_floor);
+            assert!(area_close(stored, calculated, radius_squared));
+        }
+    }
 
     #[test]
     fn generic_rotation_near_coincident_polygon_metrics_remain_well_conditioned() {

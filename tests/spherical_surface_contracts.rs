@@ -7,6 +7,8 @@ use sekai::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
 use serde_json::{json, Value};
 
 const RADIUS: f64 = 2.0;
+const VALIDATION_RELATIVE_TOLERANCE: f64 = 1.0e-10;
+const VALIDATION_ABSOLUTE_SCALE_ULPS: f64 = 16.0;
 
 #[test]
 fn snapshot_is_the_single_source_of_surface_geometry_and_adjacency() {
@@ -364,11 +366,28 @@ fn validation_rejects_an_owner_derived_normal_oblique_to_the_endpoint_arc() {
 }
 
 #[test]
-fn refined_metric_and_area_roundoff_floors_scale_with_radius() {
+fn refined_metric_and_area_roundoff_stays_within_combined_tolerance() {
     for radius in [1.0, 6_371_000.0, 100_000_000.0] {
         let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-5);
-        edges[0].length = meters(edges[0].length.get() + 4.0 * f64::EPSILON * radius);
-        cells[2].area = square_meters(cells[2].area.get() + 4.0 * f64::EPSILON * radius * radius);
+        let metric_perturbation = 4.0 * f64::EPSILON * radius;
+        let metric_absolute_floor = VALIDATION_ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius;
+        let perturbed_length = edges[0].length.get() + metric_perturbation;
+        let metric_relative_allowance =
+            VALIDATION_RELATIVE_TOLERANCE * perturbed_length.abs().max(edges[0].length.get().abs());
+        assert!(metric_perturbation < metric_absolute_floor);
+        assert!(metric_perturbation < metric_absolute_floor + metric_relative_allowance);
+
+        let radius_squared = radius * radius;
+        let area_perturbation = 4.0 * f64::EPSILON * radius_squared;
+        let area_absolute_floor = VALIDATION_ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius_squared;
+        let perturbed_area = cells[2].area.get() + area_perturbation;
+        let area_relative_allowance =
+            VALIDATION_RELATIVE_TOLERANCE * perturbed_area.abs().max(cells[2].area.get().abs());
+        assert!(area_perturbation < area_absolute_floor);
+        assert!(area_perturbation < area_absolute_floor + area_relative_allowance);
+
+        edges[0].length = meters(perturbed_length);
+        cells[2].area = square_meters(perturbed_area);
 
         SphericalSurfaceSnapshot::new(
             SPHERICAL_SURFACE_SCHEMA_V1,
@@ -382,8 +401,8 @@ fn refined_metric_and_area_roundoff_floors_scale_with_radius() {
 }
 
 #[test]
-fn validation_rejects_non_positive_stored_short_edge_metrics_before_tolerance() {
-    let snapshot = close_site_short_edge_snapshot();
+fn validation_rejects_non_positive_stored_edge_metrics() {
+    let snapshot = refined_tetrahedral_snapshot();
     let cases = [
         ("length", None),
         ("center_distance", None),
@@ -635,7 +654,7 @@ fn refined_tetrahedral_records(
     (vertices, cells, edges)
 }
 
-fn close_site_short_edge_snapshot() -> SphericalSurfaceSnapshot {
+fn refined_tetrahedral_snapshot() -> SphericalSurfaceSnapshot {
     let radius = 1.0;
     let (vertices, cells, edges) = refined_tetrahedral_records(radius, 1.0e-5);
     SphericalSurfaceSnapshot::new(
