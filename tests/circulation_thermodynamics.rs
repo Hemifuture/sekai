@@ -267,3 +267,46 @@ fn noncondensing_transport_preserves_global_moisture() {
     let after = total_moisture(&grid, &advanced);
     assert!((after - before).abs() / before.abs() < 1.0e-6);
 }
+
+#[test]
+fn precipitation_column_mass_uses_the_configured_planetary_gravity() {
+    let (grid, forcing, earth_spec) = uniform_fixture(8);
+    let state = ThermodynamicState::new(
+        vec![15.0; grid.cell_count()],
+        vec![15.0; grid.cell_count()],
+        vec![0.02; grid.cell_count()],
+    )
+    .unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+    let zero = zero_velocity(&grid);
+    let precipitation_for = |gravity_m_s2| {
+        let spec = sekai::world::natural::CirculationSpec {
+            gravity_m_s2,
+            ..earth_spec.clone()
+        };
+        thermodynamic_tendencies(
+            &operators,
+            &forcing,
+            &spec,
+            &state,
+            &zero,
+            &zero,
+            &permeability,
+            0,
+            3_600.0,
+        )
+        .unwrap()
+        .precipitation_mm_day()[0]
+    };
+
+    let earth = f64::from(precipitation_for(9.806_65));
+    let low_gravity = f64::from(precipitation_for(4.903_325));
+    let high_gravity = f64::from(precipitation_for(19.613_3));
+    assert!((low_gravity / earth - 2.0).abs() < 1.0e-6);
+    assert!((high_gravity / earth - 0.5).abs() < 1.0e-6);
+
+    let condensation = f64::from(0.02 - saturation_specific_humidity(15.0).unwrap()) / 21_600.0;
+    let earth_baseline = condensation * (101_325.0 / 9.806_65) * 86_400.0;
+    assert!((earth - earth_baseline).abs() / earth_baseline < 1.0e-6);
+}

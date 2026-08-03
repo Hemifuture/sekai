@@ -364,7 +364,7 @@ impl<'grid> CirculationOperators<'grid> {
         })
     }
 
-    /// Advances a cell-mean mixing ratio with constant-preserving upwind inflow.
+    /// Advances an intensive scalar with constant-preserving upwind inflow.
     pub fn advect_scalar_upwind_tracer(
         &self,
         scalar: &[f32],
@@ -381,6 +381,44 @@ impl<'grid> CirculationOperators<'grid> {
 
         let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
         self.advect_scalar_upwind_tracer_from_fluxes_validated(scalar, &fluxes, dt_seconds)
+    }
+
+    /// Advances a mixing ratio and its carrier-layer depth together.
+    ///
+    /// One signed edge flux transports both layer amount and `layer * mixing_ratio` from
+    /// the same donor. Dividing the paired extensive updates recovers a bounded mixing
+    /// ratio under divergent flow.
+    pub fn advect_layer_mixing_ratio_conservative(
+        &self,
+        layer_amount: &[f32],
+        mixing_ratio: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        dt_seconds: f64,
+    ) -> Result<UpwindTracerTransport, CirculationOperatorError> {
+        validate_scalar_field("layer_amount", layer_amount, self.grid.cell_count())?;
+        for (index, value) in layer_amount.iter().copied().enumerate() {
+            if value <= 0.0 {
+                return Err(CirculationOperatorError::NonPositiveLayerAmount {
+                    index,
+                    found: value,
+                });
+            }
+        }
+        validate_scalar_field("mixing_ratio", mixing_ratio, self.grid.cell_count())?;
+        validate_vector_field("velocity", velocity, self.grid.cell_count())?;
+        validate_permeability(edge_permeability, self.grid.edges().len())?;
+        if !dt_seconds.is_finite() || dt_seconds < 0.0 {
+            return Err(CirculationOperatorError::InvalidTimeStep { found: dt_seconds });
+        }
+
+        let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
+        self.advect_layer_mixing_ratio_from_fluxes_validated(
+            layer_amount,
+            mixing_ratio,
+            &fluxes,
+            dt_seconds,
+        )
     }
 
     pub(crate) fn upwind_fluxes_validated(
@@ -418,6 +456,71 @@ impl<'grid> CirculationOperators<'grid> {
         let scale = extensive_total(self.grid, scalar, true).max(f64::MIN_POSITIVE);
         Ok(UpwindTracerTransport {
             values,
+            layer_amounts: vec![1.0; self.grid.cell_count()],
+            relative_mass_error: (after - before).abs() / scale,
+        })
+    }
+
+    pub(crate) fn advect_layer_mixing_ratio_from_fluxes_validated(
+        &self,
+        layer_amount: &[f32],
+        scalar: &[f32],
+        fluxes: &[UpwindFlux],
+        dt_seconds: f64,
+    ) -> Result<UpwindTracerTransport, CirculationOperatorError> {
+        debug_assert_eq!(layer_amount.len(), self.grid.cell_count());
+        debug_assert!(layer_amount.iter().all(|value| *value > 0.0));
+        debug_assert_eq!(scalar.len(), self.grid.cell_count());
+        let mut layer_delta = vec![0.0_f64; self.grid.cell_count()];
+        let mut tracer_delta = vec![0.0_f64; self.grid.cell_count()];
+        let mut outgoing_layer = vec![0.0_f64; self.grid.cell_count()];
+        for flux in fluxes {
+            let transported_layer =
+                flux.magnitude_m2_s * f64::from(layer_amount[flux.donor]) * dt_seconds;
+            let transported_tracer = transported_layer * f64::from(scalar[flux.donor]);
+            outgoing_layer[flux.donor] += transported_layer;
+            layer_delta[flux.donor] -= transported_layer;
+            layer_delta[flux.receiver] += transported_layer;
+            tracer_delta[flux.donor] -= transported_tracer;
+            tracer_delta[flux.receiver] += transported_tracer;
+        }
+        let mut values = Vec::with_capacity(self.grid.cell_count());
+        let mut transported_layer_amounts = Vec::with_capacity(self.grid.cell_count());
+        for (index, ((((cell, original_layer), original), layer_delta), tracer_delta)) in self
+            .grid
+            .cells()
+            .iter()
+            .zip(layer_amount)
+            .zip(scalar)
+            .zip(layer_delta)
+            .zip(tracer_delta)
+            .enumerate()
+        {
+            let initial_extensive_layer = cell.area_m2() * f64::from(*original_layer);
+            if outgoing_layer[index] > initial_extensive_layer {
+                return Err(CirculationOperatorError::TransportCflViolation { index });
+            }
+            let transported_layer = f64::from(*original_layer) + layer_delta / cell.area_m2();
+            let layer_tracer =
+                f64::from(*original_layer) * f64::from(*original) + tracer_delta / cell.area_m2();
+            if !transported_layer.is_finite() || transported_layer <= 0.0 {
+                return Err(CirculationOperatorError::TransportCflViolation { index });
+            }
+            let value = layer_tracer / transported_layer;
+            if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+                return Err(CirculationOperatorError::NumericalOverflow);
+            }
+            values.push(value as f32);
+            transported_layer_amounts.push(transported_layer as f32);
+        }
+        let before = extensive_layer_tracer_total(self.grid, layer_amount, scalar, false);
+        let after =
+            extensive_layer_tracer_total(self.grid, &transported_layer_amounts, &values, false);
+        let scale = extensive_layer_tracer_total(self.grid, layer_amount, scalar, true)
+            .max(f64::MIN_POSITIVE);
+        Ok(UpwindTracerTransport {
+            values,
+            layer_amounts: transported_layer_amounts,
             relative_mass_error: (after - before).abs() / scale,
         })
     }
@@ -457,6 +560,86 @@ impl<'grid> CirculationOperators<'grid> {
             });
         }
 
+        let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
+        self.solve_steady_upwind_tracer_source_from_fluxes(
+            initial,
+            &fluxes,
+            sink_rate_s_inv,
+            source_per_s,
+            max_iterations,
+            relative_tolerance,
+        )
+    }
+
+    /// Solves the stationary material equation for a mixing ratio carried by a
+    /// spatially varying positive layer depth.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_steady_layer_mixing_ratio_source(
+        &self,
+        initial: &[f32],
+        layer_amount: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        sink_rate_s_inv: &[f32],
+        source_per_s: &[f32],
+        max_iterations: u16,
+        relative_tolerance: f64,
+    ) -> Result<SteadyTransportSolve, CirculationOperatorError> {
+        let count = self.grid.cell_count();
+        validate_scalar_field("initial", initial, count)?;
+        validate_scalar_field("layer_amount", layer_amount, count)?;
+        for (index, value) in layer_amount.iter().copied().enumerate() {
+            if value <= 0.0 {
+                return Err(CirculationOperatorError::NonPositiveLayerAmount {
+                    index,
+                    found: value,
+                });
+            }
+        }
+        validate_vector_field("velocity", velocity, count)?;
+        validate_permeability(edge_permeability, self.grid.edges().len())?;
+        validate_scalar_field("sink_rate_s_inv", sink_rate_s_inv, count)?;
+        validate_scalar_field("source_per_s", source_per_s, count)?;
+        for (index, rate) in sink_rate_s_inv.iter().copied().enumerate() {
+            if rate < 0.0 {
+                return Err(CirculationOperatorError::NegativeSinkRate { index, found: rate });
+            }
+        }
+        if max_iterations == 0 {
+            return Err(CirculationOperatorError::InvalidIterationBudget {
+                found: max_iterations,
+            });
+        }
+        if !relative_tolerance.is_finite() || relative_tolerance <= 0.0 {
+            return Err(CirculationOperatorError::InvalidLinearTolerance {
+                found: relative_tolerance,
+            });
+        }
+
+        let mut fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
+        for flux in &mut fluxes {
+            flux.magnitude_m2_s *=
+                f64::from(layer_amount[flux.donor]) / f64::from(layer_amount[flux.receiver]);
+        }
+        self.solve_steady_upwind_tracer_source_from_fluxes(
+            initial,
+            &fluxes,
+            sink_rate_s_inv,
+            source_per_s,
+            max_iterations,
+            relative_tolerance,
+        )
+    }
+
+    fn solve_steady_upwind_tracer_source_from_fluxes(
+        &self,
+        initial: &[f32],
+        fluxes: &[UpwindFlux],
+        sink_rate_s_inv: &[f32],
+        source_per_s: &[f32],
+        max_iterations: u16,
+        relative_tolerance: f64,
+    ) -> Result<SteadyTransportSolve, CirculationOperatorError> {
         let inverse_areas = self
             .grid
             .cells()
@@ -467,7 +650,6 @@ impl<'grid> CirculationOperators<'grid> {
             .iter()
             .map(|value| f64::from(*value))
             .collect::<Vec<_>>();
-        let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
         let right_hand_side = source_per_s
             .iter()
             .map(|value| f64::from(*value))
@@ -487,7 +669,7 @@ impl<'grid> CirculationOperators<'grid> {
                     output,
                     &sink_rate_s_inv,
                     &inverse_areas,
-                    &fluxes,
+                    fluxes,
                 );
                 Ok::<(), CirculationOperatorError>(())
             },
@@ -548,6 +730,7 @@ impl ConservativeTransport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpwindTracerTransport {
     values: Vec<f32>,
+    layer_amounts: Vec<f32>,
     relative_mass_error: f64,
 }
 
@@ -558,6 +741,11 @@ impl UpwindTracerTransport {
 
     pub const fn relative_mass_error(&self) -> f64 {
         self.relative_mass_error
+    }
+
+    /// Transported carrier-layer amount in the units supplied by the caller.
+    pub fn layer_amounts(&self) -> &[f32] {
+        &self.layer_amounts
     }
 
     pub fn into_values(self) -> Vec<f32> {
@@ -773,6 +961,25 @@ fn extensive_total(grid: &CubedSphereGrid, values: &[f32], absolute: bool) -> f6
     sum
 }
 
+fn extensive_layer_tracer_total(
+    grid: &CubedSphereGrid,
+    layer_amounts: &[f32],
+    values: &[f32],
+    absolute: bool,
+) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
+    for ((cell, layer), value) in grid.cells().iter().zip(layer_amounts).zip(values) {
+        let value = if absolute { value.abs() } else { *value };
+        let term = cell.area_m2() * f64::from(*layer) * f64::from(value);
+        let adjusted = term - correction;
+        let next = sum + adjusted;
+        correction = (next - sum) - adjusted;
+        sum = next;
+    }
+    sum
+}
+
 fn validate_scalar_field(
     field: &'static str,
     values: &[f32],
@@ -894,6 +1101,10 @@ pub enum CirculationOperatorError {
     InvalidTimeStep { found: f64 },
     #[error("finite-volume update overflowed the dense f32 state")]
     NumericalOverflow,
+    #[error("tracer carrier layer amount {found} at cell {index} must be positive")]
+    NonPositiveLayerAmount { index: usize, found: f32 },
+    #[error("upwind tracer transport exhausted the donor layer at cell {index}")]
+    TransportCflViolation { index: usize },
     #[error("steady transport sink rate {found} at index {index} must be nonnegative")]
     NegativeSinkRate { index: usize, found: f32 },
     #[error("steady transport iteration budget {found} must be nonzero")]

@@ -13,6 +13,30 @@ fn solid_rotation(grid: &CubedSphereGrid, speed_scale: f32) -> Vec<[f32; 3]> {
         .collect()
 }
 
+fn divergent_flow(grid: &CubedSphereGrid, speed_scale: f32) -> Vec<[f32; 3]> {
+    grid.cells()
+        .iter()
+        .map(|cell| {
+            let radial = cell.center_unit();
+            let radial_projection = speed_scale * radial[0] as f32;
+            [
+                speed_scale - radial_projection * radial[0] as f32,
+                -radial_projection * radial[1] as f32,
+                -radial_projection * radial[2] as f32,
+            ]
+        })
+        .collect()
+}
+
+fn total_layer_tracer(grid: &CubedSphereGrid, layer: &[f32], tracer: &[f32]) -> f64 {
+    grid.cells()
+        .iter()
+        .zip(layer)
+        .zip(tracer)
+        .map(|((cell, layer), tracer)| cell.area_m2() * f64::from(*layer) * f64::from(*tracer))
+        .sum()
+}
+
 #[test]
 fn constant_scalar_has_zero_gradient_and_solid_rotation_is_nearly_divergence_free() {
     let grid = CubedSphereGrid::new(12, 6_371_000.0).unwrap();
@@ -85,6 +109,67 @@ fn conservative_upwind_transport_pairs_edge_fluxes_and_respects_closed_edges() {
         .advect_scalar_upwind_tracer(&constant, &velocity, &open, 3_600.0)
         .unwrap();
     assert_eq!(tracer.values(), constant.as_slice());
+}
+
+#[test]
+fn divergent_transport_conserves_layer_weighted_tracer_and_preserves_a_constant() {
+    let grid = CubedSphereGrid::new(12, 6_371_000.0).unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let velocity = divergent_flow(&grid, 20.0);
+    let divergence = operators.divergence(&velocity).unwrap();
+    assert!(area_weighted_rms(&grid, &divergence) > 1.0e-7);
+
+    let layer = grid
+        .cells()
+        .iter()
+        .map(|cell| (8_000.0 + 500.0 * cell.center_unit()[0]) as f32)
+        .collect::<Vec<_>>();
+    let humidity = grid
+        .cells()
+        .iter()
+        .map(|cell| (0.01 + 0.002 * cell.center_unit()[0]) as f32)
+        .collect::<Vec<_>>();
+    let open = vec![1.0; grid.edges().len()];
+    let dt_seconds = 3_600.0;
+    let transported_layer = operators
+        .advect_scalar_conservative(&layer, &velocity, &open, dt_seconds)
+        .unwrap();
+    let transported_humidity = operators
+        .advect_layer_mixing_ratio_conservative(&layer, &humidity, &velocity, &open, dt_seconds)
+        .unwrap();
+    assert!(transported_humidity.relative_mass_error() < 1.0e-6);
+    assert!(transported_humidity
+        .values()
+        .iter()
+        .all(|value| (0.008..=0.012).contains(value)));
+    assert_eq!(
+        transported_humidity.layer_amounts(),
+        transported_layer.values()
+    );
+
+    let before = total_layer_tracer(&grid, &layer, &humidity);
+    let after = total_layer_tracer(
+        &grid,
+        transported_layer.values(),
+        transported_humidity.values(),
+    );
+    assert!(
+        (after - before).abs() / before.abs() < 1.0e-7,
+        "divergent transport changed global column moisture: before={before}, after={after}"
+    );
+
+    let constant = vec![0.0125; grid.cell_count()];
+    let transported_constant = operators
+        .advect_layer_mixing_ratio_conservative(&layer, &constant, &velocity, &open, dt_seconds)
+        .unwrap();
+    assert_eq!(transported_constant.values(), constant.as_slice());
+    let constant_before = total_layer_tracer(&grid, &layer, &constant);
+    let constant_after = total_layer_tracer(
+        &grid,
+        transported_layer.values(),
+        transported_constant.values(),
+    );
+    assert!((constant_after - constant_before).abs() / constant_before.abs() < 1.0e-7);
 }
 
 #[test]

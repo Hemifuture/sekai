@@ -10,7 +10,6 @@ pub(crate) const LAPSE_RATE_C_PER_M: f32 = 0.0065;
 const STANDARD_PRESSURE_PA: f64 = 101_325.0;
 const MAX_SPECIFIC_HUMIDITY: f32 = 0.2;
 const CONDENSATION_TIMESCALE_S: f64 = 21_600.0;
-const AIR_COLUMN_MASS_KG_M2: f64 = STANDARD_PRESSURE_PA / 9.806_65;
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const STEADY_LINEAR_ITERATIONS: u16 = 128;
 const STEADY_LINEAR_TOLERANCE: f64 = 1.0e-6;
@@ -117,6 +116,8 @@ impl CirculationEdgePermeability {
     ) -> Result<Self, ThermodynamicError> {
         validate_grid_forcing(grid, forcing)?;
         let atmosphere = vec![1.0; grid.edges().len()];
+        // Ocean velocity is stored per wet subcell. This symmetric aperture factor is
+        // the sole fractional-area multiplier on intercell ocean volume flux.
         let ocean = grid
             .edges()
             .iter()
@@ -198,6 +199,10 @@ impl ThermodynamicTendencies {
 }
 
 /// Computes shared radiative, surface, moisture, and conservative transport tendencies.
+///
+/// This standalone boundary has no height-anomaly field, so it uses the configured
+/// reference atmosphere depth. The coupled shallow-water solver supplies `H + eta`
+/// through the validated internal path.
 #[allow(clippy::too_many_arguments)]
 pub fn thermodynamic_tendencies(
     operators: &CirculationOperators<'_>,
@@ -215,11 +220,13 @@ pub fn thermodynamic_tendencies(
     validate_grid_forcing(grid, forcing)?;
     state.validate(grid.cell_count())?;
     permeability.validate_against(grid, forcing)?;
+    let atmosphere_layer_depth_m = vec![spec.atmosphere_reference_depth_m; grid.cell_count()];
     thermodynamic_tendencies_validated(
         operators,
         forcing,
         spec,
         state,
+        &atmosphere_layer_depth_m,
         atmosphere_velocity,
         surface_velocity,
         permeability,
@@ -235,6 +242,7 @@ pub(crate) fn thermodynamic_tendencies_validated(
     forcing: &PlanetForcing,
     spec: &CirculationSpec,
     state: &ThermodynamicState,
+    atmosphere_layer_depth_m: &[f32],
     atmosphere_velocity: &[[f32; 3]],
     surface_velocity: &[[f32; 3]],
     permeability: &CirculationEdgePermeability,
@@ -243,6 +251,12 @@ pub(crate) fn thermodynamic_tendencies_validated(
 ) -> Result<ThermodynamicTendencies, ThermodynamicError> {
     let grid = operators.grid();
     debug_assert_eq!(state.cell_count(), grid.cell_count());
+    validate_scalar_field(
+        "atmosphere_layer_depth_m",
+        atmosphere_layer_depth_m,
+        grid.cell_count(),
+        Some((f32::MIN_POSITIVE, f32::MAX)),
+    )?;
     debug_assert_eq!(atmosphere_velocity.len(), grid.cell_count());
     debug_assert_eq!(surface_velocity.len(), grid.cell_count());
     debug_assert_eq!(permeability.atmosphere().len(), grid.edges().len());
@@ -267,7 +281,8 @@ pub(crate) fn thermodynamic_tendencies_validated(
         &surface_fluxes,
         transport_dt_seconds,
     )?;
-    let humidity_transport = operators.advect_scalar_upwind_tracer_from_fluxes_validated(
+    let humidity_transport = operators.advect_layer_mixing_ratio_from_fluxes_validated(
+        atmosphere_layer_depth_m,
         state.specific_humidity(),
         &atmosphere_fluxes,
         transport_dt_seconds,
@@ -297,11 +312,13 @@ pub(crate) fn thermodynamic_tendencies_validated(
             f64::from(humidity_transport.values()[cell] - state.specific_humidity()[cell])
                 / transport_dt_seconds;
         let humidity = state.specific_humidity()[cell];
+        // These are physical budget terms, separate from conservative edge transport:
+        // surface exchange is signed and condensation is a nonnegative moisture sink.
         let surface_moisture_exchange = f64::from(spec.layer_relaxation_s_inv)
             * f64::from(targets.specific_humidity - humidity);
         let saturation = saturation_specific_humidity(state.air_temperature_c()[cell])?;
         let condensation = f64::from((humidity - saturation).max(0.0)) / CONDENSATION_TIMESCALE_S;
-        let precipitation = precipitation_from_condensation_mm_day(condensation);
+        let precipitation = precipitation_from_condensation_mm_day(condensation, spec.gravity_m_s2);
 
         air_temperature_c_per_s.push((transported_air_tendency + air_relaxation) as f32);
         surface_temperature_c_per_s
@@ -330,6 +347,7 @@ pub(crate) fn balance_thermodynamics(
     forcing: &PlanetForcing,
     spec: &CirculationSpec,
     state: &ThermodynamicState,
+    atmosphere_layer_depth_m: &[f32],
     atmosphere_velocity: &[[f32; 3]],
     surface_velocity: &[[f32; 3]],
     permeability: &CirculationEdgePermeability,
@@ -339,6 +357,12 @@ pub(crate) fn balance_thermodynamics(
     let grid = operators.grid();
     validate_grid_forcing(grid, forcing)?;
     state.validate(grid.cell_count())?;
+    validate_scalar_field(
+        "atmosphere_layer_depth_m",
+        atmosphere_layer_depth_m,
+        grid.cell_count(),
+        Some((f32::MIN_POSITIVE, f32::MAX)),
+    )?;
     permeability.validate_against(grid, forcing)?;
     validate_month(month)?;
 
@@ -403,8 +427,9 @@ pub(crate) fn balance_thermodynamics(
         humidity_source.push(surface_exchange_rate * target + condensation_rate * saturation);
     }
     let humidity = operators
-        .solve_steady_upwind_tracer_source(
+        .solve_steady_layer_mixing_ratio_source(
             state.specific_humidity(),
+            atmosphere_layer_depth_m,
             atmosphere_velocity,
             permeability.atmosphere(),
             &humidity_sink,
@@ -419,6 +444,8 @@ pub(crate) fn balance_thermodynamics(
     let humidity_values = humidity
         .values()
         .iter()
+        // The bound projection is an explicit budget adjustment, not an edge-flux
+        // closure residual reported through CirculationSolveStats.
         .map(|value| value.clamp(0.0, MAX_SPECIFIC_HUMIDITY))
         .collect::<Vec<_>>();
     let thermodynamic_state =
@@ -430,9 +457,11 @@ pub(crate) fn balance_thermodynamics(
         let condensation =
             f64::from((thermodynamic_state.specific_humidity()[cell] - saturation).max(0.0))
                 / CONDENSATION_TIMESCALE_S;
-        precipitation.push(precipitation_from_condensation_mm_day(condensation) as f32);
+        precipitation
+            .push(precipitation_from_condensation_mm_day(condensation, spec.gravity_m_s2) as f32);
     }
-    let moisture_transport = operators.advect_scalar_upwind_tracer(
+    let moisture_transport = operators.advect_layer_mixing_ratio_conservative(
+        atmosphere_layer_depth_m,
         thermodynamic_state.specific_humidity(),
         atmosphere_velocity,
         permeability.atmosphere(),
@@ -473,6 +502,8 @@ pub fn advance_thermodynamics(
         );
         let next_humidity = f64::from(state.specific_humidity[cell])
             + dt_seconds * f64::from(tendencies.specific_humidity_per_s[cell]);
+        // Any projection amount is an explicit state-bound budget adjustment; it does
+        // not masquerade as transport non-closure in the public conservation statistic.
         humidity.push(next_humidity.clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32);
     }
     ThermodynamicState::new(air, surface, humidity)
@@ -525,6 +556,7 @@ pub(crate) fn advance_thermodynamics_weighted(
             (f64::from(state.surface_temperature_c[cell]) + dt_seconds * surface_tendency) as f32,
         );
         humidity.push(
+            // RK bound projection is likewise a separately identified budget term.
             (f64::from(state.specific_humidity[cell]) + dt_seconds * humidity_tendency)
                 .clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32,
         );
@@ -574,8 +606,9 @@ fn surface_relaxation_multiplier(land: f32) -> f32 {
     2.0 * land + 0.25 * (1.0 - land)
 }
 
-fn precipitation_from_condensation_mm_day(condensation_kg_kg_s: f64) -> f64 {
-    condensation_kg_kg_s * AIR_COLUMN_MASS_KG_M2 * SECONDS_PER_DAY
+fn precipitation_from_condensation_mm_day(condensation_kg_kg_s: f64, gravity_m_s2: f64) -> f64 {
+    // Hydrostatic column mass at the explicitly assumed standard pressure is p / g.
+    condensation_kg_kg_s * (STANDARD_PRESSURE_PA / gravity_m_s2) * SECONDS_PER_DAY
 }
 
 fn validate_grid_forcing(

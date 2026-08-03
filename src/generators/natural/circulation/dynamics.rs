@@ -97,11 +97,16 @@ pub(crate) fn balanced_iteration(
         "ocean",
     )?;
 
+    let atmosphere_layer_depth_m = layer_depth_from_anomaly(
+        spec.atmosphere_reference_depth_m,
+        &atmosphere_height_anomaly_m,
+    )?;
     let balanced_thermodynamics = balance_thermodynamics(
         operators,
         forcing,
         spec,
         &previous.thermodynamics,
+        &atmosphere_layer_depth_m,
         &wind_m_s,
         &ocean_current_m_s,
         permeability,
@@ -119,12 +124,67 @@ pub(crate) fn balanced_iteration(
     if !residual.is_finite() {
         return Err(DynamicsError::NonFiniteState);
     }
+    let atmosphere_divergence = operators.divergence_validated(&state.wind_m_s);
+    let ocean_divergence = operators
+        .divergence_with_permeability_validated(&state.ocean_current_m_s, permeability.ocean());
+    let relative_mass_error = maximum_relative_mass_closure_error(
+        grid,
+        &atmosphere_divergence,
+        &ocean_divergence,
+        balanced_thermodynamics.relative_moisture_transport_error,
+    );
     Ok(BalancedIteration {
         state,
         precipitation_mm_day: balanced_thermodynamics.precipitation_mm_day,
         residual,
-        relative_mass_error: balanced_thermodynamics.relative_moisture_transport_error,
+        relative_mass_error,
     })
+}
+
+pub(crate) fn layer_depth_from_anomaly(
+    reference_depth_m: f32,
+    anomaly_m: &[f32],
+) -> Result<Vec<f32>, DynamicsError> {
+    anomaly_m
+        .iter()
+        .map(|anomaly| {
+            let depth = f64::from(reference_depth_m) + f64::from(*anomaly);
+            if !depth.is_finite() || depth <= 0.0 || depth > f64::from(f32::MAX) {
+                return Err(DynamicsError::NonFiniteState);
+            }
+            Ok(depth as f32)
+        })
+        .collect()
+}
+
+/// Maximum numerical closure residual of atmosphere volume, ocean volume, and
+/// paired column-moisture edge fluxes. Physical relaxation/exchange sources,
+/// condensation sinks, and explicit humidity-bound projections are budget terms,
+/// not numerical closure errors.
+pub(crate) fn maximum_relative_mass_closure_error(
+    grid: &CubedSphereGrid,
+    atmosphere_divergence: &[f32],
+    ocean_divergence: &[f32],
+    relative_moisture_closure_error: f64,
+) -> f64 {
+    relative_divergence_closure(grid, atmosphere_divergence)
+        .max(relative_divergence_closure(grid, ocean_divergence))
+        .max(relative_moisture_closure_error)
+}
+
+fn relative_divergence_closure(grid: &CubedSphereGrid, divergence: &[f32]) -> f64 {
+    let (signed, absolute) = grid.cells().iter().zip(divergence).fold(
+        (0.0_f64, 0.0_f64),
+        |(signed, absolute), (cell, divergence)| {
+            let extensive = cell.area_m2() * f64::from(*divergence);
+            (signed + extensive, absolute + extensive.abs())
+        },
+    );
+    if absolute == 0.0 {
+        0.0
+    } else {
+        signed.abs() / absolute
+    }
 }
 
 pub(crate) fn dense_state_bytes(cell_count: usize) -> Result<u64, DynamicsError> {
@@ -238,7 +298,6 @@ fn solve_balanced_layer(
         relaxation_s_inv,
         rotation_rate_rad_s,
         edge_permeability,
-        land_fraction,
     );
     let zero_acceleration = vec![[0.0; 3]; grid.cell_count()];
     let external_velocity = balanced_velocity(
@@ -321,12 +380,10 @@ fn layer_inverse_diagonal(
     relaxation_s_inv: f64,
     rotation_rate_rad_s: f64,
     edge_permeability: &[f32],
-    land_fraction: Option<&[f32]>,
 ) -> Vec<f64> {
     grid.cells()
         .iter()
-        .enumerate()
-        .map(|(index, cell)| {
+        .map(|cell| {
             let laplacian_diagonal = cell
                 .edges()
                 .iter()
@@ -339,11 +396,7 @@ fn layer_inverse_diagonal(
             let coriolis = 2.0 * rotation_rate_rad_s * cell.center_unit()[2];
             let divergent_mobility_m_s =
                 reduced_gravity_m_s2 * drag_s_inv / (drag_s_inv * drag_s_inv + coriolis * coriolis);
-            let active_fraction = land_fraction
-                .map(|land| f64::from(1.0 - land[index]))
-                .unwrap_or(1.0);
-            (relaxation_s_inv
-                + reference_depth_m * divergent_mobility_m_s * laplacian_diagonal * active_fraction)
+            (relaxation_s_inv + reference_depth_m * divergent_mobility_m_s * laplacian_diagonal)
                 .recip()
         })
         .collect()
@@ -466,7 +519,11 @@ fn balanced_velocity_f64(
                     (drag_s_inv * forcing[component] - coriolis * rotated[component]) / denominator;
             }
             if let Some(land) = land_fraction {
-                velocity = scale(velocity, f64::from(1.0 - land[index]));
+                // This is velocity per wet subcell; fractional area already scales the
+                // edge permeability and must not also scale the local balanced state.
+                if land[index] >= 1.0 {
+                    velocity = [0.0; 3];
+                }
             }
             project_tangent(velocity, radial)
         })
@@ -555,4 +612,124 @@ pub(crate) enum DynamicsError {
     NonFiniteState,
     #[error("circulation dense-state allocation arithmetic overflowed")]
     AllocationOverflow,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::natural::CLIMATE_MONTH_COUNT;
+
+    fn relative_closure(grid: &CubedSphereGrid, divergence: &[f32]) -> f64 {
+        let (signed, absolute) = grid.cells().iter().zip(divergence).fold(
+            (0.0_f64, 0.0_f64),
+            |(signed, absolute), (cell, divergence)| {
+                let extensive = cell.area_m2() * f64::from(*divergence);
+                (signed + extensive, absolute + extensive.abs())
+            },
+        );
+        if absolute == 0.0 {
+            0.0
+        } else {
+            signed.abs() / absolute
+        }
+    }
+
+    #[test]
+    fn fractional_wet_cells_store_the_same_local_balanced_velocity_as_open_ocean() {
+        let grid = CubedSphereGrid::new(3, 6_371_000.0).unwrap();
+        let acceleration = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                project_tangent([1.0, 0.0, 0.0], radial).map(|value| value as f32)
+            })
+            .collect::<Vec<_>>();
+        let open = balanced_velocity(&grid, &acceleration, None, 1.0, 0.0, None);
+        let binary_open = balanced_velocity(
+            &grid,
+            &acceleration,
+            None,
+            1.0,
+            0.0,
+            Some(&vec![0.0; grid.cell_count()]),
+        );
+        assert_eq!(binary_open, open);
+        let fractional = balanced_velocity(
+            &grid,
+            &acceleration,
+            None,
+            1.0,
+            0.0,
+            Some(&vec![0.5; grid.cell_count()]),
+        );
+        for (open, fractional) in open.iter().zip(&fractional) {
+            for component in 0..3 {
+                assert!((open[component] - fractional[component]).abs() < 1.0e-6);
+            }
+        }
+
+        let dry = balanced_velocity(
+            &grid,
+            &acceleration,
+            None,
+            1.0,
+            0.0,
+            Some(&vec![1.0; grid.cell_count()]),
+        );
+        assert!(dry.iter().all(|velocity| *velocity == [0.0; 3]));
+    }
+
+    #[test]
+    fn steady_conservation_statistic_has_the_same_three_closure_terms_as_transient() {
+        let spec = CirculationSpec {
+            face_resolution: 4,
+            ..CirculationSpec::default()
+        };
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+        let temperature = grid
+            .cells()
+            .iter()
+            .map(|cell| [15.0 + 10.0 * cell.center_unit()[2] as f32; CLIMATE_MONTH_COUNT])
+            .collect::<Vec<_>>();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; grid.cell_count()],
+            vec![0.0; grid.cell_count()],
+            vec![0.3; grid.cell_count()],
+            vec![1.0; grid.cell_count()],
+            temperature.clone(),
+            temperature,
+            vec![[0.005; CLIMATE_MONTH_COUNT]; grid.cell_count()],
+        )
+        .unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+        let previous = initial_state(&grid, &forcing, &spec, 0).unwrap();
+        let iteration =
+            balanced_iteration(&previous, &operators, &forcing, &spec, &permeability, 0).unwrap();
+        let atmosphere_divergence = operators.divergence(&iteration.state.wind_m_s).unwrap();
+        let ocean_divergence = operators
+            .divergence_with_permeability(&iteration.state.ocean_current_m_s, permeability.ocean())
+            .unwrap();
+        let atmosphere_layer_depth_m = layer_depth_from_anomaly(
+            spec.atmosphere_reference_depth_m,
+            &iteration.state.atmosphere_height_anomaly_m,
+        )
+        .unwrap();
+        let moisture = operators
+            .advect_layer_mixing_ratio_conservative(
+                &atmosphere_layer_depth_m,
+                iteration.state.thermodynamics.specific_humidity(),
+                &iteration.state.wind_m_s,
+                permeability.atmosphere(),
+                1.0,
+            )
+            .unwrap()
+            .relative_mass_error();
+        let atmosphere = relative_closure(&grid, &atmosphere_divergence);
+        let ocean = relative_closure(&grid, &ocean_divergence);
+        let expected = atmosphere.max(ocean).max(moisture);
+        assert_eq!(iteration.relative_mass_error.to_bits(), expected.to_bits());
+    }
 }

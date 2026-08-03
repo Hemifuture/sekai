@@ -5,9 +5,9 @@ use crate::world::natural::{
 
 use super::{
     dynamics::{
-        dense_state_bytes, initial_state, inverse_barometer_height, remove_layer_mean,
-        state_residual, thermal_height_target, CirculationState, DynamicsError,
-        WIND_STRESS_RATE_S_INV,
+        dense_state_bytes, initial_state, inverse_barometer_height, layer_depth_from_anomaly,
+        maximum_relative_mass_closure_error, remove_layer_mean, state_residual,
+        thermal_height_target, CirculationState, DynamicsError, WIND_STRESS_RATE_S_INV,
     },
     solver::{validate_solver_inputs, MonthlySnapshotBuilder, SolverInputIdentity},
     thermodynamics::{advance_thermodynamics_weighted, thermodynamic_tendencies_validated},
@@ -421,32 +421,45 @@ fn evaluate_tendencies(
         .zip(&state.wind_m_s)
         .zip(forcing.land_fraction())
         .map(|((((gradient, coriolis), current), wind), land)| {
-            let ocean = f64::from(1.0 - *land);
-            std::array::from_fn(|component| {
-                (ocean
-                    * (-f64::from(spec.ocean_reduced_gravity_m_s2)
-                        * f64::from(gradient[component])
+            // Current is the local wet-subcell velocity. Wet fraction belongs in the
+            // finite-volume edge flux, so it cancels from this local momentum control
+            // volume; only a cell with no wet area has no prognostic current.
+            if *land >= 1.0 {
+                [0.0; 3]
+            } else {
+                std::array::from_fn(|component| {
+                    (-f64::from(spec.ocean_reduced_gravity_m_s2) * f64::from(gradient[component])
                         + f64::from(coriolis[component])
                         - f64::from(spec.ocean_drag_s_inv) * f64::from(current[component])
-                        + WIND_STRESS_RATE_S_INV * f64::from(wind[component] - current[component])))
-                    as f32
-            })
+                        + WIND_STRESS_RATE_S_INV * f64::from(wind[component] - current[component]))
+                        as f32
+                })
+            }
         })
         .collect::<Vec<_>>();
     let ocean_current_m_s2 = operators.tangentize_validated(&ocean_current_m_s2);
+    let atmosphere_layer_depth_m = layer_depth_from_anomaly(
+        spec.atmosphere_reference_depth_m,
+        &state.atmosphere_height_anomaly_m,
+    )?;
     let thermodynamics = thermodynamic_tendencies_validated(
         operators,
         forcing,
         spec,
         &state.thermodynamics,
+        &atmosphere_layer_depth_m,
         &state.wind_m_s,
         &state.ocean_current_m_s,
         permeability,
         month,
         dt_seconds,
     )?;
-    let relative_mass_error = relative_divergence_closure(grid, &atmosphere_divergence)
-        .max(relative_divergence_closure(grid, &ocean_divergence));
+    let relative_mass_error = maximum_relative_mass_closure_error(
+        grid,
+        &atmosphere_divergence,
+        &ocean_divergence,
+        thermodynamics.relative_moisture_transport_error(),
+    );
     Ok(TransientTendencies {
         wind_m_s2,
         ocean_current_m_s2,
@@ -513,9 +526,9 @@ fn advance_state(
     let mut ocean_current_m_s =
         advance_vector_field(&state.ocean_current_m_s, &current_tendencies, dt_seconds)?;
     for (velocity, land) in ocean_current_m_s.iter_mut().zip(forcing.land_fraction()) {
-        let ocean = 1.0 - *land;
-        for component in velocity {
-            *component *= ocean;
+        // Fractional wetness is not a time-independent damping operator.
+        if *land >= 1.0 {
+            *velocity = [0.0; 3];
         }
     }
     let ocean_current_m_s = operators.tangentize_validated(&ocean_current_m_s);
@@ -579,21 +592,6 @@ fn checked_f32(value: f64) -> Result<f32, DynamicsError> {
         return Err(DynamicsError::NonFiniteState);
     }
     Ok(value as f32)
-}
-
-fn relative_divergence_closure(grid: &CubedSphereGrid, divergence: &[f32]) -> f64 {
-    let (signed, absolute) = grid.cells().iter().zip(divergence).fold(
-        (0.0_f64, 0.0_f64),
-        |(signed, absolute), (cell, divergence)| {
-            let extensive = cell.area_m2() * f64::from(*divergence);
-            (signed + extensive, absolute + extensive.abs())
-        },
-    );
-    if absolute == 0.0 {
-        0.0
-    } else {
-        signed.abs() / absolute
-    }
 }
 
 struct MonthlyAccumulator {
@@ -831,4 +829,189 @@ fn maximum_wave_speed(spec: &CirculationSpec) -> f64 {
             (f64::from(spec.ocean_reduced_gravity_m_s2) * f64::from(spec.ocean_reference_depth_m))
                 .sqrt(),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fractional_coast_forcing(grid: &CubedSphereGrid) -> PlanetForcing {
+        let count = grid.cell_count();
+        PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.5; count],
+            vec![0.3; count],
+            vec![1.0; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.005; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap()
+    }
+
+    fn solid_rotation(grid: &CubedSphereGrid, speed: f32) -> Vec<[f32; 3]> {
+        grid.cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                [-radial[1] as f32 * speed, radial[0] as f32 * speed, 0.0]
+            })
+            .collect()
+    }
+
+    fn divergent_flow(grid: &CubedSphereGrid, speed: f32) -> Vec<[f32; 3]> {
+        grid.cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                let radial_projection = speed * radial[0] as f32;
+                [
+                    speed - radial_projection * radial[0] as f32,
+                    -radial_projection * radial[1] as f32,
+                    -radial_projection * radial[2] as f32,
+                ]
+            })
+            .collect()
+    }
+
+    fn fractional_coast_state(grid: &CubedSphereGrid, forcing: &PlanetForcing) -> CirculationState {
+        CirculationState {
+            wind_m_s: vec![[0.0; 3]; grid.cell_count()],
+            ocean_current_m_s: solid_rotation(grid, 0.5),
+            atmosphere_height_anomaly_m: vec![0.0; grid.cell_count()],
+            sea_surface_height_anomaly_m: vec![0.0; grid.cell_count()],
+            thermodynamics: ThermodynamicState::from_forcing(grid, forcing, 0).unwrap(),
+        }
+    }
+
+    fn integrate_steps(
+        mut state: CirculationState,
+        operators: &CirculationOperators<'_>,
+        forcing: &PlanetForcing,
+        spec: &CirculationSpec,
+        permeability: &CirculationEdgePermeability,
+        dt_seconds: f64,
+        steps: usize,
+    ) -> CirculationState {
+        for _ in 0..steps {
+            let tendencies = evaluate_tendencies(
+                &state,
+                operators,
+                forcing,
+                spec,
+                permeability,
+                0,
+                dt_seconds,
+            )
+            .unwrap();
+            state = advance_state(
+                &state,
+                &[(&tendencies, 1.0)],
+                operators,
+                forcing,
+                dt_seconds,
+            )
+            .unwrap();
+        }
+        state
+    }
+
+    #[test]
+    fn fractional_coast_current_has_a_finite_zero_dt_tendency_and_refines_in_time() {
+        let spec = CirculationSpec {
+            face_resolution: 4,
+            ..CirculationSpec::default()
+        };
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+        let forcing = fractional_coast_forcing(&grid);
+        let operators = CirculationOperators::new(&grid);
+        let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+        let initial = fractional_coast_state(&grid, &forcing);
+
+        let tiny = integrate_steps(
+            initial.clone(),
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            1.0e-6,
+            1,
+        );
+        for (before, after) in initial
+            .ocean_current_m_s
+            .iter()
+            .zip(&tiny.ocean_current_m_s)
+        {
+            for component in 0..3 {
+                assert!((after[component] - before[component]).abs() < 1.0e-6);
+            }
+        }
+
+        let coarse = integrate_steps(
+            initial.clone(),
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            60.0,
+            1,
+        );
+        let fine = integrate_steps(initial, &operators, &forcing, &spec, &permeability, 30.0, 2);
+        let maximum_difference = coarse
+            .ocean_current_m_s
+            .iter()
+            .zip(&fine.ocean_current_m_s)
+            .flat_map(|(coarse, fine)| {
+                (0..3).map(|component| (coarse[component] - fine[component]).abs())
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(maximum_difference < 1.0e-4);
+    }
+
+    #[test]
+    fn transient_conservation_statistic_includes_paired_moisture_closure() {
+        let spec = CirculationSpec {
+            face_resolution: 4,
+            ..CirculationSpec::default()
+        };
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+        let forcing = fractional_coast_forcing(&grid);
+        let operators = CirculationOperators::new(&grid);
+        let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+        let mut state = fractional_coast_state(&grid, &forcing);
+        state.wind_m_s = divergent_flow(&grid, 20.0);
+        state.thermodynamics = ThermodynamicState::new(
+            vec![15.0; grid.cell_count()],
+            vec![15.0; grid.cell_count()],
+            grid.cells()
+                .iter()
+                .map(|cell| (0.01 + 0.002 * cell.center_unit()[0]) as f32)
+                .collect(),
+        )
+        .unwrap();
+        let tendencies = evaluate_tendencies(
+            &state,
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            0,
+            3_600.0,
+        )
+        .unwrap();
+        let atmosphere_divergence = operators.divergence(&state.wind_m_s).unwrap();
+        let ocean_divergence = operators
+            .divergence_with_permeability(&state.ocean_current_m_s, permeability.ocean())
+            .unwrap();
+        let expected = maximum_relative_mass_closure_error(
+            &grid,
+            &atmosphere_divergence,
+            &ocean_divergence,
+            tendencies
+                .thermodynamics
+                .relative_moisture_transport_error(),
+        );
+        assert_eq!(tendencies.relative_mass_error.to_bits(), expected.to_bits());
+    }
 }

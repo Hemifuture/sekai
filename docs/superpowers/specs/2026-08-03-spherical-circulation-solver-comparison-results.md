@@ -23,13 +23,15 @@ cargo run --release --bin circulation_compare -- --resolutions 12 --samples 1 --
 
 Cubed-sphere 网格、跨面邻接、面积闭合、常量零梯度、共享边成对通量、Coriolis 切向性、海岸零法向通量和确定性均通过解析或集成测试。三类 `n=8` 瞬态冷/热启动均达到年周期；稳态在 `n=12/24/32 × 3` 全部组合收敛。全目标 Debug 门共 192 个库测试并覆盖所有集成与二进制目标，无新增失败；既有超大 Voronoi 测试仍按原状态忽略。
 
-`n=12` 的最大相对质量误差如下，均远低于 `10⁻⁵`：
+下表保留提交 `9b9369b` 在 `n=12` 记录的旧版相对诊断值。旧实现中稳态只记录水汽输送诊断，瞬态只记录大气/海洋散度闭合，因此这些历史数字不能解释为统一的“质量误差”，也不能在两种求解器之间直接比较：
 
-| Fixture | max relative mass error | steady final residual | transient cold residual | transient warm residual |
+| Fixture | legacy relative diagnostic | steady final residual | transient cold residual | transient warm residual |
 |---|---:|---:|---:|---:|
 | Aqua Planet | 7.55e-9 | 9.79e-5 | 5.11e-6 | 5.82e-6 |
 | Two Basins | 2.14e-8 | 9.74e-5 | 9.31e-5 | 5.26e-6 |
 | Earth-like Harmonics | 1.60e-8 | 9.43e-5 | 8.33e-5 | 9.47e-5 |
+
+物理修正后的 `relative_mass_error` 统一定义为三项数值闭合残差的最大值：大气体积通量、海洋体积通量、以及用同一边质量通量成对推进的层加权水汽。表面交换、凝结和湿度边界投影是显式预算项，不计作通量闭合误差。上表没有按新定义重算，后续引用 `n=12` 数字前必须重新运行比较协议。
 
 实现过程中实际捕获并修复了三个未收敛案例：`n=12 Two Basins`、`n=24 Two Basins` 的大气 GMRES，以及 `n=32 Earth-like` 第 12 月的稳态外层迭代。修复只提高预算和重启空间，未放宽 `10⁻⁶` 线性容差或 `10⁻⁴` 状态容差。
 
