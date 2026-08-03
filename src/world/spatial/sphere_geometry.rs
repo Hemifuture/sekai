@@ -30,6 +30,12 @@ impl UnitVector3 {
         ]))
     }
 
+    /// Stores components already checked as finite unit-vector values without
+    /// renormalizing their semantic floating-point representation.
+    pub(crate) const fn from_verified_unit_components(components: [f64; 3]) -> Self {
+        Self(components)
+    }
+
     /// Returns the canonical vector components by value.
     pub const fn components(self) -> [f64; 3] {
         self.0

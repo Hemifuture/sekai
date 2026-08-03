@@ -90,7 +90,7 @@ where
             "spherical surface vector norm must be 1, got {norm}"
         )));
     }
-    UnitVector3::new(components[0], components[1], components[2]).map_err(D::Error::custom)
+    Ok(UnitVector3::from_verified_unit_components(components))
 }
 
 impl SphericalSurfaceSnapshot {
