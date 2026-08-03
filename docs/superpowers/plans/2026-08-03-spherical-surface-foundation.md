@@ -260,36 +260,35 @@ git commit -m "feat: define authoritative spherical surface snapshot"
 
 **Files:**
 - Create: `src/generators/spatial/geodesic_voronoi.rs`
-- Modify: `src/generators/spatial/mod.rs`
-- Test: `tests/spherical_surface_generation.rs`
+- Test: unit tests in `src/generators/spatial/geodesic_voronoi.rs`
 
 **Interfaces:**
-- Produces `GeodesicVoronoiBuilder` and `SphericalSurfaceBuildError`.
-- Keeps intermediate `SiteKey`, oriented triangle, and incidence records private.
+- Produces private `GeodesicMesh`, `SiteKey`, oriented triangle, and incidence records for Task 4.
+- Does not publish an incomplete builder or snapshot from `generators::spatial`.
 
 - [ ] **Step 1: Write exact-count and deterministic-ID RED tests**
 
 ```rust
 #[test]
 fn geodesic_frequencies_have_exact_euler_counts() {
-    for (target, expected_cells, expected_edges, expected_vertices) in [
-        (42, 42, 120, 80),
-        (92, 92, 270, 180),
-        (162, 162, 480, 320),
+    for (frequency, expected_sites, expected_edges, expected_triangles) in [
+        (2, 42, 120, 80),
+        (3, 92, 270, 180),
+        (4, 162, 480, 320),
     ] {
-        let surface = build(target);
-        assert_eq!(surface.cells().len(), expected_cells);
-        assert_eq!(surface.edges().len(), expected_edges);
-        assert_eq!(surface.vertices().len(), expected_vertices);
+        let mesh = GeodesicMesh::build(frequency).unwrap();
+        assert_eq!(mesh.sites.len(), expected_sites);
+        assert_eq!(mesh.edge_incidence.len(), expected_edges);
+        assert_eq!(mesh.triangles.len(), expected_triangles);
     }
 }
 ```
 
-Also assert that two builds serialize identically and all IDs equal their vector index.
+Also assert that two builds have byte-identical ordered sites/triangles/incidence and all site IDs equal their vector index.
 
 - [ ] **Step 2: Run the generation test and verify RED**
 
-Run: `cargo test --test spherical_surface_generation geodesic_frequencies -- --nocapture`
+Run: `cargo test --lib geodesic_voronoi::tests::geodesic_frequencies -- --nocapture`
 
 Expected: compilation fails because the builder does not exist.
 
@@ -315,14 +314,14 @@ Emit exactly `20f²` triangles, orient each outward, reject repeated vertices/ze
 
 - [ ] **Step 5: Run exact-count tests and commit the mesh core**
 
-Run: `cargo test --test spherical_surface_generation geodesic_frequencies -- --nocapture`
+Run: `cargo test --lib geodesic_voronoi::tests::geodesic_frequencies -- --nocapture`
 
-Expected: exact counts, deterministic IDs, and serialized equality pass; full snapshot science checks may remain pending until Task 4.
+Expected: exact private-mesh counts, deterministic IDs, and ordered-record equality pass. No incomplete public snapshot exists yet.
 
 Commit:
 
 ```powershell
-git add src/generators/spatial/geodesic_voronoi.rs src/generators/spatial/mod.rs tests/spherical_surface_generation.rs
+git add src/generators/spatial/geodesic_voronoi.rs
 git commit -m "feat: build deterministic geodesic mesh"
 ```
 
@@ -332,11 +331,12 @@ git commit -m "feat: build deterministic geodesic mesh"
 
 **Files:**
 - Modify: `src/generators/spatial/geodesic_voronoi.rs`
-- Modify: `tests/spherical_surface_generation.rs`
+- Modify: `src/generators/spatial/mod.rs`
+- Create: `tests/spherical_surface_generation.rs`
 
 **Interfaces:**
 - Consumes the private oriented Delaunay mesh from Task 3.
-- Produces one fully validated `SphericalSurfaceSnapshot`.
+- Produces public `GeodesicVoronoiBuilder`, `SphericalSurfaceBuildError`, and one fully validated `SphericalSurfaceSnapshot`.
 
 - [ ] **Step 1: Write closed-surface science RED tests**
 
