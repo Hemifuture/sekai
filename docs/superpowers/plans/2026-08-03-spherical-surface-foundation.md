@@ -585,6 +585,37 @@ Executed on 2026-08-04 in the linked worktree `.worktrees/spherical-circulation`
 - Measurement machine: Microsoft Windows 11 Pro `10.0.22631`, x86-64, Intel(R) Core(TM) i9-14900KF; Release profile; `rustc 1.97.1 (8bab26f4f 2026-07-14)`, `cargo 1.97.1 (c980f4866 2026-06-30)`.
 - `git diff --check`: exit `0` before documentation capture and rerun as the final pre-commit whitespace gate.
 
+### Final whole-branch review repairs
+
+The whole-branch review of `eb31add..74bdc2a` found seven Important issues. Commits `109ac74..ed61551` repair them without changing the ownership model: `SphericalSurfaceSnapshot` remains the sole serialized source of surface geometry and topology, while the cubed-sphere circulation grid remains a derived solver grid.
+
+- Circulation transport now advances carrier depth and layer-weighted moisture with the same paired edge flux; steady mixing-ratio transport uses the corresponding donor/receiver layer weighting. The public closure statistic has one documented meaning across solvers: the maximum numerical closure residual for atmosphere volume, ocean volume, and paired-column moisture transport.
+- Fractional coastal wetness now appears once, in edge permeability; only fully dry cells suppress local ocean velocity. Precipitation column mass uses the configured planetary gravity.
+- Spherical and circulation wire sequences reject over-budget input while streaming. Maximum-scale spherical validation uses bounded dense/CSR workspaces and performs the cheap Euler rejection before topology allocation.
+- Ultra-small central angles use scale-safe magnitude evaluation. Every cyclic cell boundary has a canonical minimum-vertex start in the authoritative wire representation.
+- CI now executes `cargo test --all-targets --all-features` while preserving the existing Release natural-quality and 20,000-cell performance gates.
+- Focused circulation and spherical regression command: exit `0`; suites reported `12`, `6`, `7`, `4`, `8`, `3`, `9`, `28`, and `6` passed, with only the four explicit Release measurements/evidence gates ignored.
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit `0`.
+- `cargo test --all-targets --all-features`: exit `0`; every executed target reported zero failures.
+- `cargo check --target wasm32-unknown-unknown --lib`: exit `0`.
+- Release circulation gates: the one-case timing/statistics smoke test, three-fixture deterministic comparison, three-fixture transient cold/warm convergence, and `n=12/24/32 x 3` steady convergence all exited `0` (observed test times `18.88 s`, `39.08 s`, `79.54 s`, and `114.59 s`).
+- Fresh production measurement: `20_252` cells, `96.4876 ms` build, `30_188_048` canonical JSON bytes, `1490.620581` bytes per cell, relative total-area residual `0e0`, validation `ok`.
+- Fresh maximum supported measurement: frequency `141`, `198_812` cells, `1.0270443 s` build, `382.7404 ms` validation, `108_152_928` retained snapshot bytes, validation `ok`.
+- The first fix re-review found that moisture transport used stored `H + eta` as its edge carrier while the linear shallow-water height equation transports `H_ref`, and that public spherical construction did not yet share the wire-format V1 budgets. Commits `e6a78aa..d7b1243` put transient and steady moisture on the same `H_ref` edge flux as layer continuity, derive every spherical record/degree budget from the authoritative geodesic-frequency constants, reject nested unknown circulation fields, and reject `f32` layer overflow.
+- The next re-review found one remaining Important: production RK3 combined height and humidity separately, so the conserved column `m = (H + eta) q` could drift across a complete step. Commit `e033bf9` makes `m` the coupled RK prognostic, recovers `q = m / h` after every stage, carries existing mixing ratio through layer relaxation, and includes compensated closure of the actual stored final RK state in the public statistic. The production three-stage regression failed on the old path and passes on the new path.
+- Commit `e34c12a` closes both follow-up Minors: production and regression now share one RK3 step implementation and mass-error aggregation, and deterministic dense working-memory accounting includes all three live `f64` column-tendency arrays. The final independent incremental review reports Ready with `0 Critical`, `0 Important`, and `0 Minor`.
+- The ownership model remains unchanged and explicit: `SphericalSurfaceSnapshot` is the sole serialized source for physical surface geometry/topology; `CubedSphereGrid` is a derived solver grid; within transient circulation, the one coupled moisture prognostic is column moisture `m`, while humidity is a derived stored interface value.
+
+Final post-review verification at `e34c12a`:
+
+- `cargo fmt --all -- --check`, `cargo check --all-features`, and `cargo clippy --all-targets --all-features -- -D warnings`: exit `0`.
+- `cargo test --all-targets --all-features`: exit `0`; every executed target passed, including `213` library tests with one pre-existing ignored stress test and both new RK/memory witnesses.
+- `cargo check --all-features --lib --target wasm32-unknown-unknown`: exit `0`.
+- Existing CI quality gates remained green: reviewed natural goldens/quality matrix (`26.41 s` test time) and the Release 20,000-cell natural-process budget (`2.17 s`; reported pipeline total `1839.474 ms`).
+- Release circulation gates all exited `0`: transient cold/steady-warm convergence across three fixtures (`81.36 s`), steady convergence for `n=12/24/32` across three fixtures (`114.83 s`), deterministic real-solver comparison across three fixtures (`40.73 s`), and the one-case timing/statistics smoke (`19.99 s`).
+- Final production spherical measurement: `20_252` cells, `96.4453 ms` build, `30_188_048` canonical JSON bytes, `1490.620581` bytes per cell, relative total-area residual `0e0`, validation `ok`.
+- Final maximum supported spherical measurement: frequency `141`, `198_812` cells, `1.0287266 s` build, `375.3419 ms` validation, `108_152_928` retained snapshot bytes, validation `ok`.
+
 ---
 
 ## Follow-on S0 Plans
