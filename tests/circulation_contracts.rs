@@ -131,6 +131,29 @@ fn forcing_deserialization_rejects_a_tampered_fingerprint() {
     assert!(serde_json::from_value::<PlanetForcing>(wire).is_err());
 }
 
+#[test]
+fn forcing_deserialization_rejects_unknown_fields() {
+    let mut wire = serde_json::to_value(forcing(1)).unwrap();
+    wire["unexpected"] = serde_json::json!(true);
+
+    assert!(serde_json::from_value::<PlanetForcing>(wire).is_err());
+}
+
+#[test]
+fn forcing_deserialization_rejects_cell_limit_plus_one_while_streaming() {
+    let max_cell_count =
+        6 * MAX_CUBED_SPHERE_FACE_RESOLUTION as usize * MAX_CUBED_SPHERE_FACE_RESOLUTION as usize;
+    let json = json_object_with_repeated_array_element("elevation_m", "0", max_cell_count + 1);
+
+    let error = serde_json::from_str::<PlanetForcing>(&json).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("maximum item count {max_cell_count}")),
+        "unexpected deserialization error: {error}"
+    );
+}
+
 fn snapshot(
     cell_count: usize,
     mut wind: Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
@@ -214,4 +237,55 @@ fn shared_snapshot_rejects_invalid_solve_statistics_on_deserialization() {
     wire["stats"]["final_residual"] = serde_json::json!(-1.0);
 
     assert!(serde_json::from_value::<CirculationSnapshot>(wire).is_err());
+}
+
+#[test]
+fn shared_snapshot_deserialization_rejects_unknown_fields() {
+    let mut wire = serde_json::to_value(snapshot(1, Vec::new()).unwrap()).unwrap();
+    wire["unexpected"] = serde_json::json!(true);
+
+    assert!(serde_json::from_value::<CirculationSnapshot>(wire).is_err());
+}
+
+#[test]
+fn shared_snapshot_deserialization_rejects_monthly_limit_plus_one_while_streaming() {
+    let max_cell_count =
+        6 * MAX_CUBED_SPHERE_FACE_RESOLUTION as usize * MAX_CUBED_SPHERE_FACE_RESOLUTION as usize;
+    let max_monthly_value_count = max_cell_count.checked_mul(CLIMATE_MONTH_COUNT).unwrap();
+    let monthly_cell = format!(
+        "[{}]",
+        std::iter::repeat_n("0", CLIMATE_MONTH_COUNT)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut json = json_object_with_repeated_array_element(
+        "monthly_air_temperature_c",
+        &monthly_cell,
+        max_cell_count,
+    );
+    json.truncate(json.len() - 2);
+    json.push_str(",[0]]}");
+
+    let error = serde_json::from_str::<CirculationSnapshot>(&json).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("maximum item count {max_monthly_value_count}")),
+        "unexpected deserialization error: {error}"
+    );
+}
+
+fn json_object_with_repeated_array_element(field: &str, element: &str, len: usize) -> String {
+    let mut json = String::with_capacity(field.len() + element.len().saturating_mul(len) + len + 8);
+    json.push_str("{\"");
+    json.push_str(field);
+    json.push_str("\":[");
+    for index in 0..len {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(element);
+    }
+    json.push_str("]}");
+    json
 }

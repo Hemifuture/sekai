@@ -3,7 +3,12 @@ use thiserror::Error;
 
 use crate::world::natural::CLIMATE_MONTH_COUNT;
 
-use super::{CIRCULATION_SCHEMA_V1, MAX_CIRCULATION_CELL_COUNT};
+use super::{
+    bounded_vec::BoundedVec, CIRCULATION_SCHEMA_V1, MAX_CIRCULATION_CELL_COUNT,
+    MAX_CIRCULATION_MONTHLY_VALUE_COUNT,
+};
+
+type BoundedMonthlyVec<T> = BoundedVec<T, MAX_CIRCULATION_MONTHLY_VALUE_COUNT, CLIMATE_MONTH_COUNT>;
 
 /// Stable identities for the two solver strategies under comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +23,9 @@ pub struct CirculationSolveStats {
     pub iterations_or_steps: u64,
     pub formation_years: u16,
     pub final_residual: f64,
+    /// Maximum relative numerical closure error across atmosphere volume, ocean volume,
+    /// and paired-column moisture transport. Physical source and sink terms such as
+    /// evaporation, condensation, precipitation, and relaxation are excluded.
     pub relative_mass_error: f64,
     pub dense_state_bytes: u64,
 }
@@ -43,6 +51,7 @@ pub struct CirculationSnapshot {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CirculationSnapshotWire {
     schema_version: u16,
     cell_count: u32,
@@ -51,14 +60,14 @@ struct CirculationSnapshotWire {
     forcing_fingerprint: [u8; 32],
     solver_id: CirculationSolverId,
     stats: CirculationSolveStats,
-    monthly_wind_m_s: Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
-    monthly_ocean_current_m_s: Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
-    monthly_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    monthly_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    monthly_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    monthly_precipitation_mm_day: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    monthly_atmosphere_height_anomaly_m: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    monthly_sea_surface_height_anomaly_m: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_wind_m_s: BoundedMonthlyVec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
+    monthly_ocean_current_m_s: BoundedMonthlyVec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
+    monthly_air_temperature_c: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_surface_temperature_c: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_specific_humidity: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_precipitation_mm_day: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_atmosphere_height_anomaly_m: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
+    monthly_sea_surface_height_anomaly_m: BoundedMonthlyVec<[f32; CLIMATE_MONTH_COUNT]>,
 }
 
 impl CirculationSnapshot {
@@ -274,14 +283,18 @@ impl<'de> Deserialize<'de> for CirculationSnapshot {
             forcing_fingerprint: wire.forcing_fingerprint,
             solver_id: wire.solver_id,
             stats: wire.stats,
-            monthly_wind_m_s: wire.monthly_wind_m_s,
-            monthly_ocean_current_m_s: wire.monthly_ocean_current_m_s,
-            monthly_air_temperature_c: wire.monthly_air_temperature_c,
-            monthly_surface_temperature_c: wire.monthly_surface_temperature_c,
-            monthly_specific_humidity: wire.monthly_specific_humidity,
-            monthly_precipitation_mm_day: wire.monthly_precipitation_mm_day,
-            monthly_atmosphere_height_anomaly_m: wire.monthly_atmosphere_height_anomaly_m,
-            monthly_sea_surface_height_anomaly_m: wire.monthly_sea_surface_height_anomaly_m,
+            monthly_wind_m_s: wire.monthly_wind_m_s.into_vec(),
+            monthly_ocean_current_m_s: wire.monthly_ocean_current_m_s.into_vec(),
+            monthly_air_temperature_c: wire.monthly_air_temperature_c.into_vec(),
+            monthly_surface_temperature_c: wire.monthly_surface_temperature_c.into_vec(),
+            monthly_specific_humidity: wire.monthly_specific_humidity.into_vec(),
+            monthly_precipitation_mm_day: wire.monthly_precipitation_mm_day.into_vec(),
+            monthly_atmosphere_height_anomaly_m: wire
+                .monthly_atmosphere_height_anomaly_m
+                .into_vec(),
+            monthly_sea_surface_height_anomaly_m: wire
+                .monthly_sea_surface_height_anomaly_m
+                .into_vec(),
         };
         snapshot.validate().map_err(serde::de::Error::custom)?;
         Ok(snapshot)

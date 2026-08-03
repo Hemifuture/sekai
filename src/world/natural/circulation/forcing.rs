@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::world::natural::CLIMATE_MONTH_COUNT;
 
-use super::MAX_CIRCULATION_CELL_COUNT;
+use super::{bounded_vec::BoundedVec, MAX_CIRCULATION_CELL_COUNT};
 
 /// Immutable terrain, surface, and monthly thermodynamic forcing for one grid.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -20,16 +20,20 @@ pub struct PlanetForcing {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PlanetForcingWire {
     grid_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
-    elevation_m: Vec<f32>,
-    land_fraction: Vec<f32>,
-    surface_albedo: Vec<f32>,
-    surface_moisture_availability: Vec<f32>,
-    equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
-    equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    elevation_m: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
+    land_fraction: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
+    surface_albedo: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
+    surface_moisture_availability: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
+    equilibrium_air_temperature_c:
+        BoundedVec<[f32; CLIMATE_MONTH_COUNT], MAX_CIRCULATION_CELL_COUNT, 1>,
+    equilibrium_surface_temperature_c:
+        BoundedVec<[f32; CLIMATE_MONTH_COUNT], MAX_CIRCULATION_CELL_COUNT, 1>,
+    equilibrium_specific_humidity:
+        BoundedVec<[f32; CLIMATE_MONTH_COUNT], MAX_CIRCULATION_CELL_COUNT, 1>,
 }
 
 impl PlanetForcing {
@@ -200,13 +204,13 @@ impl<'de> Deserialize<'de> for PlanetForcing {
         let forcing = Self {
             grid_fingerprint: wire.grid_fingerprint,
             fingerprint: wire.fingerprint,
-            elevation_m: wire.elevation_m,
-            land_fraction: wire.land_fraction,
-            surface_albedo: wire.surface_albedo,
-            surface_moisture_availability: wire.surface_moisture_availability,
-            equilibrium_air_temperature_c: wire.equilibrium_air_temperature_c,
-            equilibrium_surface_temperature_c: wire.equilibrium_surface_temperature_c,
-            equilibrium_specific_humidity: wire.equilibrium_specific_humidity,
+            elevation_m: wire.elevation_m.into_vec(),
+            land_fraction: wire.land_fraction.into_vec(),
+            surface_albedo: wire.surface_albedo.into_vec(),
+            surface_moisture_availability: wire.surface_moisture_availability.into_vec(),
+            equilibrium_air_temperature_c: wire.equilibrium_air_temperature_c.into_vec(),
+            equilibrium_surface_temperature_c: wire.equilibrium_surface_temperature_c.into_vec(),
+            equilibrium_specific_humidity: wire.equilibrium_specific_humidity.into_vec(),
         };
         forcing.validate().map_err(serde::de::Error::custom)?;
         Ok(forcing)
