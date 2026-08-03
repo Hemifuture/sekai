@@ -281,8 +281,9 @@ pub(crate) fn thermodynamic_tendencies_validated(
         &surface_fluxes,
         transport_dt_seconds,
     )?;
-    let humidity_transport = operators.advect_layer_mixing_ratio_from_fluxes_validated(
+    let humidity_transport = operators.advect_linearized_layer_mixing_ratio_from_fluxes_validated(
         atmosphere_layer_depth_m,
+        spec.atmosphere_reference_depth_m,
         state.specific_humidity(),
         &atmosphere_fluxes,
         transport_dt_seconds,
@@ -427,9 +428,10 @@ pub(crate) fn balance_thermodynamics(
         humidity_source.push(surface_exchange_rate * target + condensation_rate * saturation);
     }
     let humidity = operators
-        .solve_steady_layer_mixing_ratio_source(
+        .solve_steady_linearized_layer_mixing_ratio_source(
             state.specific_humidity(),
             atmosphere_layer_depth_m,
+            spec.atmosphere_reference_depth_m,
             atmosphere_velocity,
             permeability.atmosphere(),
             &humidity_sink,
@@ -460,8 +462,9 @@ pub(crate) fn balance_thermodynamics(
         precipitation
             .push(precipitation_from_condensation_mm_day(condensation, spec.gravity_m_s2) as f32);
     }
-    let moisture_transport = operators.advect_layer_mixing_ratio_conservative(
+    let moisture_transport = operators.advect_linearized_layer_mixing_ratio_conservative(
         atmosphere_layer_depth_m,
+        spec.atmosphere_reference_depth_m,
         thermodynamic_state.specific_humidity(),
         atmosphere_velocity,
         permeability.atmosphere(),

@@ -718,8 +718,9 @@ mod tests {
         )
         .unwrap();
         let moisture = operators
-            .advect_layer_mixing_ratio_conservative(
+            .advect_linearized_layer_mixing_ratio_conservative(
                 &atmosphere_layer_depth_m,
+                spec.atmosphere_reference_depth_m,
                 iteration.state.thermodynamics.specific_humidity(),
                 &iteration.state.wind_m_s,
                 permeability.atmosphere(),

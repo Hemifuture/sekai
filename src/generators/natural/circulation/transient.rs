@@ -875,6 +875,23 @@ mod tests {
             .collect()
     }
 
+    fn total_column_moisture(
+        grid: &CubedSphereGrid,
+        spec: &CirculationSpec,
+        state: &CirculationState,
+    ) -> f64 {
+        grid.cells()
+            .iter()
+            .zip(&state.atmosphere_height_anomaly_m)
+            .zip(state.thermodynamics.specific_humidity())
+            .map(|((cell, anomaly), humidity)| {
+                cell.area_m2()
+                    * (f64::from(spec.atmosphere_reference_depth_m) + f64::from(*anomaly))
+                    * f64::from(*humidity)
+            })
+            .sum()
+    }
+
     fn fractional_coast_state(grid: &CubedSphereGrid, forcing: &PlanetForcing) -> CirculationState {
         CirculationState {
             wind_m_s: vec![[0.0; 3]; grid.cell_count()],
@@ -1013,5 +1030,86 @@ mod tests {
                 .relative_moisture_transport_error(),
         );
         assert_eq!(tendencies.relative_mass_error.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn actual_linearized_layer_and_moisture_share_one_edge_flux() {
+        let spec = CirculationSpec {
+            face_resolution: 4,
+            ..CirculationSpec::default()
+        };
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+        let temperature = grid
+            .cells()
+            .iter()
+            .map(|cell| (15.0 + 5.0 * cell.center_unit()[0]) as f32)
+            .collect::<Vec<_>>();
+        let humidity = grid
+            .cells()
+            .iter()
+            .map(|cell| (0.004 + 0.0005 * cell.center_unit()[1]) as f32)
+            .collect::<Vec<_>>();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; grid.cell_count()],
+            vec![0.0; grid.cell_count()],
+            vec![0.3; grid.cell_count()],
+            vec![1.0; grid.cell_count()],
+            temperature
+                .iter()
+                .map(|value| [*value; CLIMATE_MONTH_COUNT])
+                .collect(),
+            temperature
+                .iter()
+                .map(|value| [*value; CLIMATE_MONTH_COUNT])
+                .collect(),
+            humidity
+                .iter()
+                .map(|value| [*value; CLIMATE_MONTH_COUNT])
+                .collect(),
+        )
+        .unwrap();
+        let mut atmosphere_height_anomaly_m = thermal_height_target(&grid, &temperature, &spec);
+        remove_layer_mean(&grid, &mut atmosphere_height_anomaly_m, None);
+        let state = CirculationState {
+            wind_m_s: divergent_flow(&grid, 20.0),
+            ocean_current_m_s: vec![[0.0; 3]; grid.cell_count()],
+            sea_surface_height_anomaly_m: inverse_barometer_height(
+                &grid,
+                &forcing,
+                &atmosphere_height_anomaly_m,
+            ),
+            atmosphere_height_anomaly_m,
+            thermodynamics: ThermodynamicState::new(temperature.clone(), temperature, humidity)
+                .unwrap(),
+        };
+        let operators = CirculationOperators::new(&grid);
+        let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+        let dt_seconds = 3_600.0;
+        let tendencies = evaluate_tendencies(
+            &state,
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            0,
+            dt_seconds,
+        )
+        .unwrap();
+        let next = advance_state(
+            &state,
+            &[(&tendencies, 1.0)],
+            &operators,
+            &forcing,
+            dt_seconds,
+        )
+        .unwrap();
+
+        let before = total_column_moisture(&grid, &spec, &state);
+        let after = total_column_moisture(&grid, &spec, &next);
+        assert!(
+            (after - before).abs() / before.abs() < 5.0e-10,
+            "actual coupled state changed column moisture: before={before}, after={after}"
+        );
     }
 }
