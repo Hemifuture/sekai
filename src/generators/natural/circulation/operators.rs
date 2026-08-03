@@ -22,15 +22,38 @@ impl<'grid> CirculationOperators<'grid> {
 
     /// Computes a tangent Green-Gauss gradient with exact constant preservation.
     pub fn gradient(&self, scalar: &[f32]) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
+        self.gradient_impl(scalar, None)
+    }
+
+    /// Computes a tangent gradient while closing selected shared edges.
+    pub fn gradient_with_permeability(
+        &self,
+        scalar: &[f32],
+        edge_permeability: &[f32],
+    ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
+        self.gradient_impl(scalar, Some(edge_permeability))
+    }
+
+    fn gradient_impl(
+        &self,
+        scalar: &[f32],
+        edge_permeability: Option<&[f32]>,
+    ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         validate_scalar_field("scalar", scalar, self.grid.cell_count())?;
+        if let Some(permeability) = edge_permeability {
+            validate_permeability(permeability, self.grid.edges().len())?;
+        }
         let mut accumulated = vec![[0.0_f64; 3]; self.grid.cell_count()];
-        for edge in self.grid.edges() {
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
             let [first, second] = edge.cells();
             let first = *first as usize;
             let second = *second as usize;
             let edge_value = interpolate_scalar(edge, scalar[first], scalar[second]);
             let normal = edge.normal_from_first();
-            let length = edge.length_m();
+            let permeability = edge_permeability
+                .map(|values| f64::from(values[edge_index]))
+                .unwrap_or(1.0);
+            let length = edge.length_m() * permeability;
             accumulate_vector(
                 &mut accumulated[first],
                 normal,
@@ -58,14 +81,38 @@ impl<'grid> CirculationOperators<'grid> {
 
     /// Computes cell divergence from one canonical flux per shared edge.
     pub fn divergence(&self, velocity: &[[f32; 3]]) -> Result<Vec<f32>, CirculationOperatorError> {
+        self.divergence_impl(velocity, None)
+    }
+
+    /// Computes divergence while closing selected shared edges.
+    pub fn divergence_with_permeability(
+        &self,
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+    ) -> Result<Vec<f32>, CirculationOperatorError> {
+        self.divergence_impl(velocity, Some(edge_permeability))
+    }
+
+    fn divergence_impl(
+        &self,
+        velocity: &[[f32; 3]],
+        edge_permeability: Option<&[f32]>,
+    ) -> Result<Vec<f32>, CirculationOperatorError> {
         validate_vector_field("velocity", velocity, self.grid.cell_count())?;
+        if let Some(permeability) = edge_permeability {
+            validate_permeability(permeability, self.grid.edges().len())?;
+        }
         let mut extensive_flux = vec![0.0_f64; self.grid.cell_count()];
-        for edge in self.grid.edges() {
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
             let [first, second] = edge.cells();
             let first = *first as usize;
             let second = *second as usize;
             let edge_velocity = interpolate_vector(edge, velocity[first], velocity[second]);
-            let flux = dot(edge_velocity, edge.normal_from_first()) * edge.length_m();
+            let permeability = edge_permeability
+                .map(|values| f64::from(values[edge_index]))
+                .unwrap_or(1.0);
+            let flux =
+                dot(edge_velocity, edge.normal_from_first()) * edge.length_m() * permeability;
             extensive_flux[first] += flux;
             extensive_flux[second] -= flux;
         }

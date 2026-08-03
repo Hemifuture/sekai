@@ -105,3 +105,25 @@ fn operators_reject_misaligned_nonfinite_and_invalid_permeability_input() {
         .advect_scalar_conservative(&scalar, &velocity, &vec![1.0; grid.edges().len()], -1.0,)
         .is_err());
 }
+
+#[test]
+fn zero_permeability_removes_pressure_gradients_and_volume_fluxes() {
+    let grid = CubedSphereGrid::new(6, 6_371_000.0).unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let scalar = grid
+        .cells()
+        .iter()
+        .map(|cell| cell.center_unit()[0] as f32)
+        .collect::<Vec<_>>();
+    let velocity = solid_rotation(&grid, 10.0);
+    let closed = vec![0.0; grid.edges().len()];
+
+    let gradient = operators
+        .gradient_with_permeability(&scalar, &closed)
+        .unwrap();
+    let divergence = operators
+        .divergence_with_permeability(&velocity, &closed)
+        .unwrap();
+    assert!(gradient.iter().all(|value| magnitude(*value) == 0.0));
+    assert!(divergence.iter().all(|value| *value == 0.0));
+}
