@@ -1,13 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-// Bounded unit-sphere construction vectors keep the historical direct
-// evaluation order; larger or underflowed inputs use scale-safe normalization.
-const DIRECT_NORMALIZATION_MAX_LENGTH: f64 = 2.0;
-// Subtraction-based products avoid cancellation once direct products are tiny.
-const CENTRAL_ANGLE_FALLBACK_SINE: f64 = 1.0e-8;
-const TRIANGLE_AREA_FALLBACK_NUMERATOR: f64 = 1.0e-8;
-
 /// A finite, canonical vector on the unit sphere.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct UnitVector3([f64; 3]);
@@ -145,14 +138,20 @@ pub(crate) fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
         return None;
     }
 
+    let squared_components = vector.map(|component| component * component);
+    let squared_length = dot(vector, vector);
     let length = norm(vector);
-    let direct_square_is_normal = (largest_component * largest_component).is_normal();
-    if direct_square_is_normal
-        && length.is_finite()
-        && length > 0.0
-        && length <= DIRECT_NORMALIZATION_MAX_LENGTH
-    {
-        return Some(scale(vector, length.recip()));
+    let reciprocal_length = length.recip();
+    let direct_normalized = scale(vector, reciprocal_length);
+    // Retain the legacy multiply-by-reciprocal order exactly whenever none of
+    // its nonzero squared, root, reciprocal, or output intermediates is non-normal.
+    let direct_intermediates_are_safe = squared_components.into_iter().all(zero_or_normal)
+        && squared_length.is_normal()
+        && length.is_normal()
+        && reciprocal_length.is_normal()
+        && direct_normalized.into_iter().all(zero_or_normal);
+    if direct_intermediates_are_safe {
+        return Some(direct_normalized);
     }
 
     let scaled = [
@@ -168,6 +167,10 @@ pub(crate) fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
     ])
 }
 
+fn zero_or_normal(value: f64) -> bool {
+    value == 0.0 || value.is_normal()
+}
+
 pub(crate) fn project_tangent_raw(vector: [f64; 3], radial_unit: [f64; 3]) -> [f64; 3] {
     subtract(vector, scale(radial_unit, dot(vector, radial_unit)))
 }
@@ -175,21 +178,90 @@ pub(crate) fn project_tangent_raw(vector: [f64; 3], radial_unit: [f64; 3]) -> [f
 pub(crate) fn central_angle_raw(a: [f64; 3], b: [f64; 3]) -> f64 {
     let direct_sine = norm(cross(a, b));
     let cosine = dot(a, b);
-    if direct_sine > CENTRAL_ANGLE_FALLBACK_SINE {
+    // Below sqrt(epsilon), the cosine cannot resolve the squared angular
+    // complement; form the small same/opposite-direction delta explicitly.
+    if direct_sine > f64::EPSILON.sqrt() {
         return direct_sine.atan2(cosine);
     }
 
-    let robust_sine = norm(cross(a, subtract(b, a)));
+    let stable_delta = if cosine >= 0.0 {
+        subtract(b, a)
+    } else {
+        add(b, a)
+    };
+    let robust_sine = norm(cross(a, stable_delta));
     robust_sine.atan2(cosine.clamp(-1.0, 1.0))
 }
 
 pub(crate) fn spherical_triangle_area_unit_raw(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let direct_numerator = dot(a, cross(b, c)).abs();
-    let denominator = 1.0 + dot(a, b) + dot(b, c) + dot(c, a);
-    if direct_numerator > TRIANGLE_AREA_FALLBACK_NUMERATOR {
-        return 2.0 * direct_numerator.atan2(denominator);
+    let ab = dot(a, b);
+    let bc = dot(b, c);
+    let ca = dot(c, a);
+    let direct_denominator = 1.0 + ab + bc + ca;
+    let relative_error_limit = f64::EPSILON.sqrt();
+    let numerator_scale = determinant_roundoff_scale(a, b, c);
+    let denominator_scale = 1.0 + ab.abs() + bc.abs() + ca.abs();
+    // Keep the established direct order while both sums retain at least half
+    // the available precision. Otherwise use cancellation-resistant identities.
+    let direct_path_is_well_conditioned = direct_numerator > relative_error_limit * numerator_scale
+        && direct_denominator.abs() > relative_error_limit * denominator_scale;
+    if direct_path_is_well_conditioned {
+        return 2.0 * direct_numerator.atan2(direct_denominator);
     }
 
-    let robust_numerator = dot(a, cross(subtract(b, a), subtract(c, a))).abs();
-    2.0 * robust_numerator.atan2(denominator)
+    let robust_numerator = stable_triangle_numerator(a, b, c, ab, bc, ca);
+    let robust_denominator = stable_triangle_denominator(a, b, c, ab, bc, ca);
+    2.0 * robust_numerator.atan2(robust_denominator)
+}
+
+fn determinant_roundoff_scale(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    (a[0] * b[1] * c[2]).abs()
+        + (a[0] * b[2] * c[1]).abs()
+        + (a[1] * b[2] * c[0]).abs()
+        + (a[1] * b[0] * c[2]).abs()
+        + (a[2] * b[0] * c[1]).abs()
+        + (a[2] * b[1] * c[0]).abs()
+}
+
+fn stable_triangle_numerator(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    ab: f64,
+    bc: f64,
+    ca: f64,
+) -> f64 {
+    let (first, second, other, pair_dot) = if ab.abs() >= bc.abs() && ab.abs() >= ca.abs() {
+        (a, b, c, ab)
+    } else if bc.abs() >= ca.abs() {
+        (b, c, a, bc)
+    } else {
+        (c, a, b, ca)
+    };
+    let stable_delta = if pair_dot >= 0.0 {
+        subtract(second, first)
+    } else {
+        add(second, first)
+    };
+    dot(first, cross(stable_delta, other)).abs()
+}
+
+fn stable_triangle_denominator(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    ab: f64,
+    bc: f64,
+    ca: f64,
+) -> f64 {
+    let (first, second, other) = if ab <= bc && ab <= ca {
+        (a, b, c)
+    } else if bc <= ca {
+        (b, c, a)
+    } else {
+        (c, a, b)
+    };
+    let pair_sum = add(first, second);
+    0.5 * dot(pair_sum, pair_sum) + dot(pair_sum, other)
 }

@@ -8,6 +8,7 @@ use crate::world::natural::{
     CirculationSpec, CLIMATE_MONTH_COUNT, MAX_CUBED_SPHERE_FACE_RESOLUTION,
 };
 
+use super::math::dot;
 use super::{
     build_fixture, BalancedSteadySolver, CirculationFixture, CirculationSolveError,
     CirculationSolver, CubedSphereGrid, CubedSphereGridError, FixtureBuildError,
@@ -682,25 +683,25 @@ fn vector_agreement(
         let area = cell.area_m2();
         let candidate = to_f64_vector(candidate[month]);
         let reference = to_f64_vector(reference[month]);
-        let dot = vector_dot(candidate, reference);
-        let candidate_squared = vector_dot(candidate, candidate);
-        let reference_squared = vector_dot(reference, reference);
+        let candidate_reference_dot = dot(candidate, reference);
+        let candidate_squared = dot(candidate, candidate);
+        let reference_squared = dot(reference, reference);
         let delta = [
             candidate[0] - reference[0],
             candidate[1] - reference[1],
             candidate[2] - reference[2],
         ];
         total_area.add(area);
-        dot_product.add(area * dot);
+        dot_product.add(area * candidate_reference_dot);
         candidate_energy.add(area * candidate_squared);
         reference_energy.add(area * reference_squared);
-        squared_error.add(area * vector_dot(delta, delta));
+        squared_error.add(area * dot(delta, delta));
 
         let candidate_speed = candidate_squared.sqrt();
         let reference_speed = reference_squared.sqrt();
         if candidate_speed >= direction_threshold && reference_speed >= direction_threshold {
             sampled_area.add(area);
-            let cosine = dot / (candidate_speed * reference_speed);
+            let cosine = candidate_reference_dot / (candidate_speed * reference_speed);
             if cosine >= COSINE_45_DEGREES {
                 aligned_area.add(area);
             }
@@ -885,10 +886,6 @@ fn to_f64_vector(value: [f32; 3]) -> [f64; 3] {
         f64::from(value[1]),
         f64::from(value[2]),
     ]
-}
-
-fn vector_dot(first: [f64; 3], second: [f64; 3]) -> f64 {
-    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
 }
 
 #[derive(Debug, Clone, Copy, Default)]
