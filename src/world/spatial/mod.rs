@@ -1,4 +1,4 @@
-//! Immutable planar cells, edges, topology queries, and partition validation.
+//! Immutable planar and spherical cells, edges, topology queries, and validation.
 
 mod snapshot;
 mod sphere_geometry;

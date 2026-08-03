@@ -1,12 +1,24 @@
-use serde::de::Error as _;
+use std::fmt;
+use std::marker::PhantomData;
+
+use serde::de::{Error as _, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::sphere_geometry::norm;
 use super::{SphericalSurfaceValidationError, UnitVector3};
-use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
+use crate::world::{
+    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, UnitError, MAX_GEODESIC_FREQUENCY,
+};
 
 /// The supported version of the serialized spherical-surface schema.
 pub const SPHERICAL_SURFACE_SCHEMA_V1: u16 = 1;
+
+const MAX_FREQUENCY_SQUARED: usize =
+    MAX_GEODESIC_FREQUENCY as usize * MAX_GEODESIC_FREQUENCY as usize;
+const MAX_SPHERICAL_VERTICES: usize = 20 * MAX_FREQUENCY_SQUARED;
+const MAX_SPHERICAL_EDGES: usize = 30 * MAX_FREQUENCY_SQUARED;
+const MAX_SPHERICAL_CELLS: usize = 10 * MAX_FREQUENCY_SQUARED + 2;
+const MAX_CELL_BOUNDARY_DEGREE: usize = 6;
 
 /// A canonical vertex stored once by the authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,8 +46,10 @@ pub struct SphericalSurfaceCell {
     /// The polygon area at the snapshot radius.
     pub area: SquareMeters,
     /// Counter-clockwise canonical vertex IDs in cyclic boundary order.
+    #[serde(deserialize_with = "deserialize_cell_boundary_vertices")]
     pub boundary_vertices: Vec<SurfaceVertexId>,
     /// Canonical edge IDs corresponding to the same cyclic sides.
+    #[serde(deserialize_with = "deserialize_cell_boundary_edges")]
     pub boundary_edges: Vec<EdgeId>,
 }
 
@@ -69,10 +83,95 @@ pub struct SphericalSurfaceEdge {
 pub struct SphericalSurfaceSnapshot {
     pub(super) schema_version: u16,
     pub(super) radius: Meters,
+    #[serde(deserialize_with = "deserialize_surface_vertices")]
     pub(super) vertices: Vec<SphericalSurfaceVertex>,
+    #[serde(deserialize_with = "deserialize_surface_cells")]
     pub(super) cells: Vec<SphericalSurfaceCell>,
+    #[serde(deserialize_with = "deserialize_surface_edges")]
     pub(super) edges: Vec<SphericalSurfaceEdge>,
     pub(super) fingerprint: [u8; 32],
+}
+
+fn deserialize_surface_vertices<'de, D>(
+    deserializer: D,
+) -> Result<Vec<SphericalSurfaceVertex>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_VERTICES>(deserializer)
+}
+
+fn deserialize_surface_cells<'de, D>(deserializer: D) -> Result<Vec<SphericalSurfaceCell>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELLS>(deserializer)
+}
+
+fn deserialize_surface_edges<'de, D>(deserializer: D) -> Result<Vec<SphericalSurfaceEdge>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_EDGES>(deserializer)
+}
+
+fn deserialize_cell_boundary_vertices<'de, D>(
+    deserializer: D,
+) -> Result<Vec<SurfaceVertexId>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_CELL_BOUNDARY_DEGREE>(deserializer)
+}
+
+fn deserialize_cell_boundary_edges<'de, D>(deserializer: D) -> Result<Vec<EdgeId>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_CELL_BOUNDARY_DEGREE>(deserializer)
+}
+
+fn deserialize_bounded_vec<'de, D, T, const MAX: usize>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct BoundedVecVisitor<T, const MAX: usize>(PhantomData<T>);
+
+    impl<'de, T, const MAX: usize> Visitor<'de> for BoundedVecVisitor<T, MAX>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "a sequence with at most {MAX} elements")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if let Some(length) = sequence.size_hint() {
+                if length > MAX {
+                    return Err(A::Error::invalid_length(length, &self));
+                }
+            }
+            let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
+            while values.len() < MAX {
+                let Some(value) = sequence.next_element()? else {
+                    return Ok(values);
+                };
+                values.push(value);
+            }
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(A::Error::invalid_length(MAX + 1, &self));
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX>(PhantomData))
 }
 
 fn deserialize_strict_unit_vector<'de, D>(deserializer: D) -> Result<UnitVector3, D::Error>
@@ -106,6 +205,9 @@ impl SphericalSurfaceSnapshot {
         vertices.sort_by_key(|vertex| vertex.id);
         cells.sort_by_key(|cell| cell.id);
         edges.sort_by_key(|edge| edge.id);
+        for cell in &mut cells {
+            canonicalize_cell_boundary(cell);
+        }
 
         let mut snapshot = Self {
             schema_version,
@@ -189,9 +291,21 @@ impl SphericalSurfaceSnapshot {
     }
 
     /// Returns the compensated sum of stored spherical cell areas.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the snapshot has not passed [`Self::validate`] and its stored
+    /// area sum is non-finite. Use [`Self::try_total_cell_area`] for untrusted
+    /// or otherwise unvalidated snapshots.
     pub fn total_cell_area(&self) -> SquareMeters {
+        self.try_total_cell_area()
+            .expect("validated spherical cell areas have a finite sum")
+    }
+
+    /// Tries to return the compensated sum of stored spherical cell areas.
+    pub fn try_total_cell_area(&self) -> Result<SquareMeters, UnitError> {
         let total = compensated_sum(self.cells.iter().map(|cell| cell.area.get()));
-        SquareMeters::new(total).expect("validated spherical cell areas have a finite sum")
+        SquareMeters::new(total)
     }
 
     pub(super) fn canonical_fingerprint(&self) -> [u8; 32] {
@@ -243,6 +357,22 @@ impl SphericalSurfaceSnapshot {
     }
 }
 
+fn canonicalize_cell_boundary(cell: &mut SphericalSurfaceCell) {
+    if cell.boundary_vertices.len() != cell.boundary_edges.len() {
+        return;
+    }
+    let Some((start, _)) = cell
+        .boundary_vertices
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, vertex)| **vertex)
+    else {
+        return;
+    };
+    cell.boundary_vertices.rotate_left(start);
+    cell.boundary_edges.rotate_left(start);
+}
+
 fn hash_u16(hasher: &mut blake3::Hasher, value: u16) {
     hasher.update(&value.to_le_bytes());
 }
@@ -275,4 +405,45 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
         sum = next;
     }
     sum
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::de::value::SeqDeserializer;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn outer_vertex_sequence_rejects_max_plus_one_before_visiting_elements() {
+        let values = std::iter::repeat_with(|| {
+            json!({
+                "id": 0,
+                "position": [1.0, 0.0, 0.0]
+            })
+        })
+        .take(MAX_SPHERICAL_VERTICES + 1);
+        let deserializer = SeqDeserializer::<_, serde_json::Error>::new(values);
+
+        let error = deserialize_surface_vertices(deserializer).unwrap_err();
+        assert!(error.to_string().contains("at most 397620 elements"));
+    }
+
+    #[test]
+    fn outer_edge_sequence_rejects_max_plus_one_before_visiting_elements() {
+        let values = std::iter::repeat_with(|| json!(null)).take(MAX_SPHERICAL_EDGES + 1);
+        let deserializer = SeqDeserializer::<_, serde_json::Error>::new(values);
+
+        let error = deserialize_surface_edges(deserializer).unwrap_err();
+        assert!(error.to_string().contains("at most 596430 elements"));
+    }
+
+    #[test]
+    fn outer_cell_sequence_rejects_max_plus_one_before_visiting_elements() {
+        let values = std::iter::repeat_with(|| json!(null)).take(MAX_SPHERICAL_CELLS + 1);
+        let deserializer = SeqDeserializer::<_, serde_json::Error>::new(values);
+
+        let error = deserialize_surface_cells(deserializer).unwrap_err();
+        assert!(error.to_string().contains("at most 198812 elements"));
+    }
 }

@@ -32,6 +32,31 @@ fn central_angle_preserves_near_coincident_vector_separation() {
 }
 
 #[test]
+fn central_angle_preserves_subnormal_scale_separation() {
+    let east = UnitVector3::new(1.0, 0.0, 0.0).unwrap();
+    let separation = 2.0e-162;
+    let nearly_east = UnitVector3::new(1.0, separation, 0.0).unwrap();
+    let expected = separation.atan();
+    let found = central_angle(east, nearly_east);
+
+    assert!(
+        (found - expected).abs() <= 4.0 * f64::EPSILON * expected,
+        "expected {expected:e}, found {found:e}"
+    );
+}
+
+#[test]
+fn central_angle_does_not_collapse_smaller_subnormal_scale_separation() {
+    let east = UnitVector3::new(1.0, 0.0, 0.0).unwrap();
+    let separation = 1.0e-200;
+    let nearly_east = UnitVector3::new(1.0, separation, 0.0).unwrap();
+    let found = central_angle(east, nearly_east);
+
+    assert!(found > 0.0, "the nonzero separation collapsed to zero");
+    assert_eq!(found, separation.atan());
+}
+
+#[test]
 fn central_angle_preserves_rotated_near_antipodal_separation() {
     let direction = UnitVector3::new(
         -0.701_242_938_149_854_7,

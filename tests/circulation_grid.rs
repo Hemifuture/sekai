@@ -4,10 +4,12 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 fn update_raw_f64(hasher: &mut blake3::Hasher, value: f64) {
     hasher.update(&value.to_bits().to_le_bytes());
 }
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 fn raw_public_geometry_digest(grid: &CubedSphereGrid) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.cubed-sphere-grid.raw-public-geometry.v1\0");
@@ -57,6 +59,18 @@ fn raw_public_geometry_digest(grid: &CubedSphereGrid) -> [u8; 32] {
     }
 
     *hasher.finalize().as_bytes()
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+fn running_reference_rustc() -> bool {
+    const REFERENCE: &str = "rustc 1.97.1 (8bab26f4f 2026-07-14)";
+    std::process::Command::new("rustc")
+        .arg("-V")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|version| version.trim() == REFERENCE)
 }
 
 #[test]
@@ -155,7 +169,12 @@ fn cubed_sphere_small_grid_fingerprints_remain_stable() {
 }
 
 #[test]
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 fn cubed_sphere_public_float_bits_match_the_task6_baseline() {
+    if !running_reference_rustc() {
+        eprintln!("raw-bit oracle is scoped to rustc 1.97.1 (8bab26f4f 2026-07-14), LLVM 22.1.6");
+        return;
+    }
     // Independently recorded from detached commit
     // 79a13500206b3de1f81c57394e497dffec2d4fff before the Task 6 refactor.
     let cases = [

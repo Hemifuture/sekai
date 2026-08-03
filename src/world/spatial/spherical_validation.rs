@@ -5,7 +5,7 @@ use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
 };
-use crate::world::{CellId, EdgeId, SurfaceVertexId};
+use crate::world::{CellId, EdgeId, SurfaceVertexId, UnitError};
 
 const UNIT_TOLERANCE: f64 = 1.0e-12;
 const VECTOR_ANGLE_TOLERANCE: f64 = 1.0e-10;
@@ -71,6 +71,9 @@ pub enum SphericalSurfaceValidationError {
     /// A cell repeats an edge in its local boundary.
     #[error("cell {cell:?} repeats boundary edge {edge:?}")]
     DuplicateCellEdge { cell: CellId, edge: EdgeId },
+    /// A cell's cyclic boundary does not begin at its minimum vertex ID.
+    #[error("cell {cell:?} does not use its canonical boundary start")]
+    NonCanonicalCellBoundaryStart { cell: CellId },
     /// An edge references a vertex that is not present.
     #[error("edge {edge:?} references invalid vertex {vertex:?}")]
     InvalidEdgeVertex {
@@ -189,14 +192,16 @@ impl SphericalSurfaceSnapshot {
         self.validate_ids_and_vectors()?;
         self.validate_cell_shapes()?;
         self.validate_cell_references()?;
+        self.validate_canonical_boundary_starts()?;
         self.validate_edge_references()?;
         self.validate_cyclic_sides()?;
         self.validate_incidence()?;
+        self.validate_euler_characteristic()?;
         self.validate_manifold_topology()?;
         self.validate_edge_metrics()?;
         self.validate_cell_metrics()?;
         self.validate_orientation()?;
-        self.validate_global_topology_and_area()?;
+        self.validate_global_area()?;
         if self.fingerprint != self.canonical_fingerprint() {
             return Err(SphericalSurfaceValidationError::FingerprintMismatch);
         }
@@ -278,30 +283,28 @@ impl SphericalSurfaceSnapshot {
 
     fn validate_cell_references(&self) -> Result<(), SphericalSurfaceValidationError> {
         for cell in &self.cells {
-            let mut seen_vertices = std::collections::BTreeSet::new();
-            for &vertex in &cell.boundary_vertices {
+            for (position, &vertex) in cell.boundary_vertices.iter().enumerate() {
                 if vertex.raw() as usize >= self.vertices.len() {
                     return Err(SphericalSurfaceValidationError::InvalidCellVertex {
                         cell: cell.id,
                         vertex,
                     });
                 }
-                if !seen_vertices.insert(vertex) {
+                if cell.boundary_vertices[..position].contains(&vertex) {
                     return Err(SphericalSurfaceValidationError::DuplicateCellVertex {
                         cell: cell.id,
                         vertex,
                     });
                 }
             }
-            let mut seen_edges = std::collections::BTreeSet::new();
-            for &edge in &cell.boundary_edges {
+            for (position, &edge) in cell.boundary_edges.iter().enumerate() {
                 if edge.raw() as usize >= self.edges.len() {
                     return Err(SphericalSurfaceValidationError::InvalidCellEdge {
                         cell: cell.id,
                         edge,
                     });
                 }
-                if !seen_edges.insert(edge) {
+                if cell.boundary_edges[..position].contains(&edge) {
                     return Err(SphericalSurfaceValidationError::DuplicateCellEdge {
                         cell: cell.id,
                         edge,
@@ -313,7 +316,6 @@ impl SphericalSurfaceSnapshot {
     }
 
     fn validate_edge_references(&self) -> Result<(), SphericalSurfaceValidationError> {
-        let mut canonical_edges = std::collections::BTreeMap::new();
         for edge in &self.edges {
             for &vertex in &edge.vertices {
                 if vertex.raw() as usize >= self.vertices.len() {
@@ -334,12 +336,6 @@ impl SphericalSurfaceSnapshot {
                     edge: edge.id,
                 });
             }
-            if let Some(previous_edge) = canonical_edges.insert(edge.vertices, edge.id) {
-                return Err(SphericalSurfaceValidationError::DuplicateCanonicalEdge {
-                    edge: edge.id,
-                    previous_edge,
-                });
-            }
             for &owner in &edge.cells {
                 if owner.raw() as usize >= self.cells.len() {
                     return Err(SphericalSurfaceValidationError::InvalidEdgeOwner {
@@ -356,6 +352,39 @@ impl SphericalSurfaceSnapshot {
             }
             if edge.cells[0] > edge.cells[1] {
                 return Err(SphericalSurfaceValidationError::UnsortedEdgeOwners { edge: edge.id });
+            }
+        }
+
+        let mut canonical_edges = self
+            .edges
+            .iter()
+            .map(|edge| (edge.vertices, edge.id))
+            .collect::<Vec<_>>();
+        canonical_edges.sort_unstable();
+        for pair in canonical_edges.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(SphericalSurfaceValidationError::DuplicateCanonicalEdge {
+                    edge: pair[1].1,
+                    previous_edge: pair[0].1,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_canonical_boundary_starts(&self) -> Result<(), SphericalSurfaceValidationError> {
+        for cell in &self.cells {
+            let minimum = cell
+                .boundary_vertices
+                .iter()
+                .min()
+                .expect("cell shape validation rejected empty boundaries");
+            if cell.boundary_vertices.first() != Some(minimum) {
+                return Err(
+                    SphericalSurfaceValidationError::NonCanonicalCellBoundaryStart {
+                        cell: cell.id,
+                    },
+                );
             }
         }
         Ok(())
@@ -438,89 +467,141 @@ impl SphericalSurfaceSnapshot {
     }
 
     fn validate_vertex_links(&self) -> Result<(), SphericalSurfaceValidationError> {
-        let mut incident_edges =
-            vec![std::collections::BTreeSet::<EdgeId>::new(); self.vertices.len()];
+        let mut degrees = vec![0_usize; self.vertices.len()];
         for edge in &self.edges {
             for vertex in edge.vertices {
-                incident_edges[vertex.raw() as usize].insert(edge.id);
+                degrees[vertex.raw() as usize] += 1;
             }
         }
-        let mut links =
-            vec![std::collections::BTreeMap::<EdgeId, Vec<EdgeId>>::new(); self.vertices.len()];
+
+        let mut offsets = Vec::with_capacity(self.vertices.len() + 1);
+        offsets.push(0_usize);
+        for &degree in &degrees {
+            offsets.push(offsets.last().copied().unwrap() + degree);
+        }
+        let mut cursors = offsets[..self.vertices.len()].to_vec();
+        let mut edge_slots = vec![[0_u32; 2]; self.edges.len()];
+        for edge in &self.edges {
+            for (endpoint, vertex) in edge.vertices.into_iter().enumerate() {
+                let vertex = vertex.raw() as usize;
+                edge_slots[edge.id.raw() as usize][endpoint] = cursors[vertex] as u32;
+                cursors[vertex] += 1;
+            }
+        }
+
+        let incidence_count = offsets.last().copied().unwrap_or(0);
+        let mut link_neighbors = vec![[0_u32; 2]; incidence_count];
+        let mut link_counts = vec![0_u8; incidence_count];
         for cell in &self.cells {
             for position in 0..cell.boundary_vertices.len() {
                 let vertex = cell.boundary_vertices[position];
                 let previous = cell.boundary_edges
                     [(position + cell.boundary_edges.len() - 1) % cell.boundary_edges.len()];
                 let next = cell.boundary_edges[position];
-                links[vertex.raw() as usize]
-                    .entry(previous)
-                    .or_default()
-                    .push(next);
-                links[vertex.raw() as usize]
-                    .entry(next)
-                    .or_default()
-                    .push(previous);
+                let Some(previous_slot) = self.vertex_edge_slot(vertex, previous, &edge_slots)
+                else {
+                    return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                        vertex,
+                    });
+                };
+                let Some(next_slot) = self.vertex_edge_slot(vertex, next, &edge_slots) else {
+                    return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                        vertex,
+                    });
+                };
+                for (slot, neighbor) in [(previous_slot, next_slot), (next_slot, previous_slot)] {
+                    let count = link_counts[slot] as usize;
+                    if count == 2 {
+                        return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                            vertex,
+                        });
+                    }
+                    link_neighbors[slot][count] = neighbor as u32;
+                    link_counts[slot] += 1;
+                }
             }
         }
 
-        for (position, (incident_edges, link)) in incident_edges.iter().zip(&links).enumerate() {
-            if incident_edges.is_empty() {
+        let mut reached = vec![false; incidence_count];
+        let mut pending = Vec::new();
+        for (vertex, &degree) in degrees.iter().enumerate() {
+            if degree == 0 {
                 return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
-                    vertex: SurfaceVertexId::from_raw(position as u32),
+                    vertex: SurfaceVertexId::from_raw(vertex as u32),
                 });
             }
-            if link.len() != incident_edges.len()
-                || link.keys().any(|edge| !incident_edges.contains(edge))
-                || link.values().any(|neighbors| neighbors.len() != 2)
-            {
+            let range = offsets[vertex]..offsets[vertex + 1];
+            if range.clone().any(|slot| link_counts[slot] != 2) {
                 return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
-                    vertex: SurfaceVertexId::from_raw(position as u32),
+                    vertex: SurfaceVertexId::from_raw(vertex as u32),
                 });
             }
 
-            let start = *incident_edges
-                .first()
-                .expect("nonempty incident edge set has a first member");
-            let mut reached = std::collections::BTreeSet::new();
-            let mut pending = vec![start];
-            while let Some(edge) = pending.pop() {
-                if !reached.insert(edge) {
+            pending.clear();
+            pending.push(offsets[vertex]);
+            let mut reached_count = 0_usize;
+            while let Some(slot) = pending.pop() {
+                if reached[slot] {
                     continue;
                 }
-                pending.extend(link[&edge].iter().copied());
+                reached[slot] = true;
+                reached_count += 1;
+                pending.extend(link_neighbors[slot].map(|neighbor| neighbor as usize));
             }
-            if &reached != incident_edges {
+            if reached_count != degree {
                 return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
-                    vertex: SurfaceVertexId::from_raw(position as u32),
+                    vertex: SurfaceVertexId::from_raw(vertex as u32),
                 });
             }
         }
         Ok(())
     }
 
+    fn vertex_edge_slot(
+        &self,
+        vertex: SurfaceVertexId,
+        edge: EdgeId,
+        edge_slots: &[[u32; 2]],
+    ) -> Option<usize> {
+        let edge_position = edge.raw() as usize;
+        let endpoints = self.edges[edge_position].vertices;
+        let endpoint = if endpoints[0] == vertex {
+            0
+        } else if endpoints[1] == vertex {
+            1
+        } else {
+            return None;
+        };
+        Some(edge_slots[edge_position][endpoint] as usize)
+    }
+
     fn validate_cell_adjacency_connected(&self) -> Result<(), SphericalSurfaceValidationError> {
         if self.cells.is_empty() {
             return Ok(());
         }
-        let mut reached = std::collections::BTreeSet::new();
+        let mut reached = vec![false; self.cells.len()];
+        reached[0] = true;
+        let mut reached_count = 1_usize;
         let mut pending = vec![CellId::from_raw(0)];
         while let Some(cell) = pending.pop() {
-            if !reached.insert(cell) {
-                continue;
-            }
             for &edge_id in &self.cells[cell.raw() as usize].boundary_edges {
                 let owners = self.edges[edge_id.raw() as usize].cells;
-                pending.push(if owners[0] == cell {
+                let neighbor = if owners[0] == cell {
                     owners[1]
                 } else {
                     owners[0]
-                });
+                };
+                let neighbor_position = neighbor.raw() as usize;
+                if !reached[neighbor_position] {
+                    reached[neighbor_position] = true;
+                    reached_count += 1;
+                    pending.push(neighbor);
+                }
             }
         }
-        if reached.len() != self.cells.len() {
+        if reached_count != self.cells.len() {
             return Err(SphericalSurfaceValidationError::DisconnectedCellAdjacency {
-                reached: reached.len(),
+                reached: reached_count,
                 total: self.cells.len(),
             });
         }
@@ -661,7 +742,25 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_global_topology_and_area(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_global_area(&self) -> Result<(), SphericalSurfaceValidationError> {
+        let stored = match self.try_total_cell_area() {
+            Ok(area) => area.get(),
+            Err(UnitError::NonFinite(value) | UnitError::NegativeArea(value)) => value,
+            Err(UnitError::InvalidRectangle) => {
+                unreachable!("area construction cannot fail this way")
+            }
+        };
+        let calculated = 4.0 * std::f64::consts::PI * self.radius.get() * self.radius.get();
+        if !stored.is_finite()
+            || !calculated.is_finite()
+            || !area_close(stored, calculated, self.radius.get() * self.radius.get())
+        {
+            return Err(SphericalSurfaceValidationError::TotalAreaMismatch { stored, calculated });
+        }
+        Ok(())
+    }
+
+    fn validate_euler_characteristic(&self) -> Result<(), SphericalSurfaceValidationError> {
         let characteristic =
             self.vertices.len() as i128 - self.edges.len() as i128 + self.cells.len() as i128;
         if characteristic != 2 {
@@ -672,15 +771,6 @@ impl SphericalSurfaceSnapshot {
                     cells: self.cells.len(),
                 },
             );
-        }
-
-        let stored = compensated_sum(self.cells.iter().map(|cell| cell.area.get()));
-        let calculated = 4.0 * std::f64::consts::PI * self.radius.get() * self.radius.get();
-        if !stored.is_finite()
-            || !calculated.is_finite()
-            || !area_close(stored, calculated, self.radius.get() * self.radius.get())
-        {
-            return Err(SphericalSurfaceValidationError::TotalAreaMismatch { stored, calculated });
         }
         Ok(())
     }
@@ -762,14 +852,6 @@ fn area_close(stored: f64, calculated: f64, radius_squared: f64) -> bool {
         && (stored - calculated).abs()
             <= ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius_squared
                 + AREA_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs())
-}
-
-fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
-    let mut sum = CompensatedSum::default();
-    for value in values {
-        sum.add(value);
-    }
-    sum.total()
 }
 
 #[derive(Debug, Clone, Copy, Default)]

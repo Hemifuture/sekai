@@ -172,16 +172,41 @@ impl NormalizationEvaluation {
     }
 
     fn scale_safe_normalized(self) -> [f64; 3] {
-        let scaled = self
-            .vector
-            .map(|component| component / self.largest_component);
-        let scaled_length = scaled[0].hypot(scaled[1]).hypot(scaled[2]);
+        let magnitude = scale_safe_magnitude(self.vector)
+            .expect("normalization evaluation already rejected the zero vector");
         [
-            scaled[0] / scaled_length,
-            scaled[1] / scaled_length,
-            scaled[2] / scaled_length,
+            (self.vector[0] / self.largest_component) / magnitude.scaled_length,
+            (self.vector[1] / self.largest_component) / magnitude.scaled_length,
+            (self.vector[2] / self.largest_component) / magnitude.scaled_length,
         ]
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScaleSafeMagnitude {
+    scale: f64,
+    scaled_length: f64,
+}
+
+impl ScaleSafeMagnitude {
+    fn value(self) -> f64 {
+        self.scale * self.scaled_length
+    }
+}
+
+fn scale_safe_magnitude(vector: [f64; 3]) -> Option<ScaleSafeMagnitude> {
+    let largest_component = vector
+        .iter()
+        .map(|component| component.abs())
+        .fold(0.0, f64::max);
+    if largest_component == 0.0 {
+        return None;
+    }
+    let scaled = vector.map(|component| component / largest_component);
+    Some(ScaleSafeMagnitude {
+        scale: largest_component,
+        scaled_length: scaled[0].hypot(scaled[1]).hypot(scaled[2]),
+    })
 }
 
 fn normalize_with_policy(vector: [f64; 3], policy: NormalizationPolicy) -> Option<[f64; 3]> {
@@ -232,7 +257,9 @@ pub(crate) fn central_angle_raw(a: [f64; 3], b: [f64; 3]) -> f64 {
     } else {
         add(b, a)
     };
-    let robust_sine = norm(cross(a, stable_delta));
+    let robust_sine = scale_safe_magnitude(cross(a, stable_delta))
+        .map(ScaleSafeMagnitude::value)
+        .unwrap_or(0.0);
     robust_sine.atan2(cosine.clamp(-1.0, 1.0))
 }
 

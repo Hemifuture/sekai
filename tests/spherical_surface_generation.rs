@@ -221,6 +221,39 @@ fn production_scale_measurement() {
     );
 }
 
+#[test]
+#[ignore = "maximum supported f=141 Release build/validate memory and time measurement"]
+fn maximum_supported_surface_measurement() {
+    let spec = spherical_spec(MAX_SPHERICAL_CELL_COUNT);
+    assert_eq!(spec.resolved_frequency(), MAX_GEODESIC_FREQUENCY);
+    assert_eq!(spec.resolved_cell_count(), MAX_SPHERICAL_CELL_COUNT);
+
+    let build_started = Instant::now();
+    let snapshot = GeodesicVoronoiBuilder::build(&spec).unwrap();
+    let build_elapsed = build_started.elapsed();
+    let validation_started = Instant::now();
+    snapshot.validate().unwrap();
+    let validation_elapsed = validation_started.elapsed();
+    let snapshot_heap_bytes = std::mem::size_of_val(snapshot.vertices())
+        + std::mem::size_of_val(snapshot.cells())
+        + std::mem::size_of_val(snapshot.edges())
+        + snapshot
+            .cells()
+            .iter()
+            .map(|cell| {
+                cell.boundary_vertices.capacity()
+                    * std::mem::size_of::<sekai::world::SurfaceVertexId>()
+                    + cell.boundary_edges.capacity() * std::mem::size_of::<sekai::world::EdgeId>()
+            })
+            .sum::<usize>();
+
+    println!(
+        "maximum_supported_surface_measurement frequency={} cells={} build_elapsed={build_elapsed:?} validation_elapsed={validation_elapsed:?} snapshot_heap_bytes={snapshot_heap_bytes} validation=ok",
+        spec.resolved_frequency(),
+        snapshot.cells().len(),
+    );
+}
+
 fn spherical_spec(target_cell_count: u32) -> SphericalSpaceSpec {
     spherical_spec_with_radius(target_cell_count, RADIUS)
 }

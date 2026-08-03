@@ -109,6 +109,71 @@ fn construction_sorts_records_into_contiguous_id_order() {
 }
 
 #[test]
+fn construction_canonicalizes_equivalent_cyclic_boundary_rotations() {
+    let canonical = tetrahedral_snapshot();
+    let canonical_bytes = serde_json::to_vec(&canonical).unwrap();
+    let (vertices, mut cells, edges) = tetrahedral_records();
+    for cell in &mut cells {
+        let rotation = cell.id.raw() as usize % cell.boundary_vertices.len();
+        cell.boundary_vertices.rotate_left(rotation);
+        cell.boundary_edges.rotate_left(rotation);
+    }
+
+    let rotated = SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(RADIUS),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap();
+
+    assert_eq!(rotated.fingerprint(), canonical.fingerprint());
+    assert_eq!(serde_json::to_vec(&rotated).unwrap(), canonical_bytes);
+}
+
+#[test]
+fn construction_reports_mismatched_boundary_lengths_before_canonical_rotation() {
+    let (vertices, mut cells, edges) = tetrahedral_records();
+    cells[0].boundary_vertices = [3, 2, 1].map(SurfaceVertexId::from_raw).to_vec();
+    cells[0].boundary_edges.clear();
+
+    let error = SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(RADIUS),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::CellBoundaryLengthMismatch { cell, .. }
+            if cell == CellId::from_raw(0)
+    ));
+}
+
+#[test]
+fn validation_rejects_a_noncanonical_cyclic_boundary_start() {
+    let mut wire = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    wire["cells"][0]["boundary_vertices"] = json!([3, 2, 1]);
+    wire["cells"][0]["boundary_edges"] = json!([5, 3, 4]);
+    let malformed: SphericalSurfaceSnapshot = serde_json::from_value(wire.clone()).unwrap();
+    // Recompute the malformed wire's semantic hash independently in the test,
+    // proving the canonical-start check does not merely rely on a stale hash.
+    wire["fingerprint"] =
+        serde_json::to_value(independent_surface_fingerprint(&malformed)).unwrap();
+    let snapshot: SphericalSurfaceSnapshot = serde_json::from_value(wire).unwrap();
+
+    let error = snapshot.validate().unwrap_err();
+    assert!(
+        error.to_string().contains("canonical boundary start"),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
 fn canonical_fingerprint_survives_a_json_round_trip() {
     let snapshot = tetrahedral_snapshot();
     let encoded = serde_json::to_vec(&snapshot).unwrap();
@@ -154,6 +219,19 @@ fn deserialization_rejects_scaled_non_unit_surface_vectors() {
             "scaled {records}.{field} vector was accepted"
         );
     }
+}
+
+#[test]
+fn deserialization_rejects_cell_boundary_vectors_over_the_v1_degree_bound() {
+    let mut wire = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    wire["cells"][0]["boundary_vertices"] = json!([0, 1, 2, 3, 0, 1, 2]);
+    wire["cells"][0]["boundary_edges"] = json!([0, 1, 2, 3, 4, 5, 0]);
+
+    let error = serde_json::from_value::<SphericalSurfaceSnapshot>(wire).unwrap_err();
+    assert!(
+        error.to_string().contains("at most 6 elements"),
+        "unexpected serde error: {error}"
+    );
 }
 
 #[test]
@@ -226,6 +304,18 @@ fn validation_rejects_incorrect_cell_area() {
 }
 
 #[test]
+fn fallible_total_cell_area_reports_unvalidated_sum_overflow() {
+    let mut wire = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    for cell in wire["cells"].as_array_mut().unwrap() {
+        cell["area"] = json!(1.0e308);
+    }
+    let snapshot: SphericalSurfaceSnapshot = serde_json::from_value(wire).unwrap();
+
+    let error = snapshot.try_total_cell_area().unwrap_err();
+    assert!(error.to_string().contains("finite"));
+}
+
+#[test]
 fn validation_rejects_incorrect_tangent_normal() {
     let error =
         mutated_snapshot(|json| json["edges"][0]["normal_from_first"] = json!([1.0, 0.0, 0.0]))
@@ -238,7 +328,7 @@ fn validation_rejects_incorrect_tangent_normal() {
 }
 
 #[test]
-fn validation_rejects_an_unused_authoritative_vertex_link() {
+fn validation_rejects_euler_invalid_unused_authoritative_vertex_before_topology() {
     let error = mutated_snapshot(|json| {
         json["vertices"].as_array_mut().unwrap().push(json!({
             "id": 4,
@@ -246,15 +336,14 @@ fn validation_rejects_an_unused_authoritative_vertex_link() {
         }));
     })
     .unwrap_err();
-    let unexpected = format!("{error:?}");
-    assert!(
-        matches!(
-            error,
-            SphericalSurfaceValidationError::VertexLinkNotSingleCycle { vertex }
-                if vertex == SurfaceVertexId::from_raw(4)
-        ),
-        "unexpected error: {unexpected}"
-    );
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::EulerCharacteristicMismatch {
+            vertices: 5,
+            edges: 6,
+            cells: 4,
+        }
+    ));
 }
 
 #[test]
@@ -296,8 +385,23 @@ fn validation_rejects_same_direction_traversal_by_both_edge_owners() {
 }
 
 #[test]
-fn validation_rejects_a_vertex_pinch_with_two_disjoint_link_cycles() {
+fn validation_rejects_euler_invalid_vertex_pinch_before_topology() {
     let error = mutated_snapshot(|json| append_tetrahedral_component(json, true)).unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::EulerCharacteristicMismatch {
+            vertices: 7,
+            edges: 12,
+            cells: 8,
+        }
+    ));
+}
+
+#[test]
+fn validation_still_rejects_an_euler_valid_vertex_link_pinch() {
+    let snapshot = pinched_octahedra_snapshot();
+    let error = snapshot.validate().unwrap_err();
+
     assert!(matches!(
         error,
         SphericalSurfaceValidationError::VertexLinkNotSingleCycle { vertex }
@@ -306,13 +410,14 @@ fn validation_rejects_a_vertex_pinch_with_two_disjoint_link_cycles() {
 }
 
 #[test]
-fn validation_rejects_disconnected_closed_components() {
+fn validation_rejects_euler_invalid_disconnected_components_before_topology() {
     let error = mutated_snapshot(|json| append_tetrahedral_component(json, false)).unwrap_err();
     assert!(matches!(
         error,
-        SphericalSurfaceValidationError::DisconnectedCellAdjacency {
-            reached: 4,
-            total: 8,
+        SphericalSurfaceValidationError::EulerCharacteristicMismatch {
+            vertices: 8,
+            edges: 12,
+            cells: 8,
         }
     ));
 }
@@ -813,6 +918,72 @@ fn mutated_snapshot(
     snapshot.validate()
 }
 
+fn independent_surface_fingerprint(snapshot: &SphericalSurfaceSnapshot) -> [u8; 32] {
+    fn hash_u16(hasher: &mut blake3::Hasher, value: u16) {
+        hasher.update(&value.to_le_bytes());
+    }
+    fn hash_u32(hasher: &mut blake3::Hasher, value: u32) {
+        hasher.update(&value.to_le_bytes());
+    }
+    fn hash_len(hasher: &mut blake3::Hasher, value: usize) {
+        hasher.update(&(value as u64).to_le_bytes());
+    }
+    fn hash_f64(hasher: &mut blake3::Hasher, value: f64) {
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    fn hash_vector(hasher: &mut blake3::Hasher, vector: UnitVector3) {
+        for component in vector.components() {
+            hash_f64(hasher, component);
+        }
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hash_u16(&mut hasher, snapshot.schema_version());
+    hash_f64(&mut hasher, snapshot.radius().get());
+
+    hash_len(&mut hasher, snapshot.vertices().len());
+    for vertex in snapshot.vertices() {
+        hash_u32(&mut hasher, vertex.id.raw());
+        hash_vector(&mut hasher, vertex.position);
+    }
+
+    hash_len(&mut hasher, snapshot.cells().len());
+    for cell in snapshot.cells() {
+        hash_u32(&mut hasher, cell.id.raw());
+        hash_vector(&mut hasher, cell.site);
+        hash_vector(&mut hasher, cell.centroid);
+        hash_f64(&mut hasher, cell.area.get());
+        hash_len(&mut hasher, cell.boundary_vertices.len());
+        for vertex in &cell.boundary_vertices {
+            hash_u32(&mut hasher, vertex.raw());
+        }
+        hash_len(&mut hasher, cell.boundary_edges.len());
+        for edge in &cell.boundary_edges {
+            hash_u32(&mut hasher, edge.raw());
+        }
+    }
+
+    hash_len(&mut hasher, snapshot.edges().len());
+    for edge in snapshot.edges() {
+        hash_u32(&mut hasher, edge.id.raw());
+        for vertex in edge.vertices {
+            hash_u32(&mut hasher, vertex.raw());
+        }
+        for cell in edge.cells {
+            hash_u32(&mut hasher, cell.raw());
+        }
+        hash_vector(&mut hasher, edge.midpoint);
+        hash_f64(&mut hasher, edge.length.get());
+        hash_f64(&mut hasher, edge.center_distance.get());
+        for distance in edge.center_distances_to_midpoint {
+            hash_f64(&mut hasher, distance.get());
+        }
+        hash_vector(&mut hasher, edge.normal_from_first);
+    }
+
+    *hasher.finalize().as_bytes()
+}
+
 fn append_tetrahedral_component(json: &mut Value, identify_first_vertex: bool) {
     let source_vertices = json["vertices"].as_array().unwrap().clone();
     let source_cells = json["cells"].as_array().unwrap().clone();
@@ -850,6 +1021,118 @@ fn append_tetrahedral_component(json: &mut Value, identify_first_vertex: bool) {
         }
         json["edges"].as_array_mut().unwrap().push(edge);
     }
+}
+
+fn pinched_octahedra_snapshot() -> SphericalSurfaceSnapshot {
+    const FACES: [[u32; 3]; 8] = [
+        [0, 2, 3],
+        [0, 3, 4],
+        [0, 4, 5],
+        [0, 5, 2],
+        [1, 3, 2],
+        [1, 4, 3],
+        [1, 5, 4],
+        [1, 2, 5],
+    ];
+    const EDGE_PAIRS: [[u32; 2]; 12] = [
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [1, 5],
+        [2, 3],
+        [2, 5],
+        [3, 4],
+        [4, 5],
+    ];
+
+    let vertices = (0..10_u32)
+        .map(|id| json!({ "id": id, "position": [1.0, 0.0, 0.0] }))
+        .collect::<Vec<_>>();
+    let mut cells = Vec::new();
+    let mut edges = Vec::new();
+
+    for (mapping, cell_offset, edge_offset) in [
+        ([0_u32, 1, 2, 3, 4, 5], 0_u32, 0_u32),
+        ([0_u32, 1, 6, 7, 8, 9], 8_u32, 12_u32),
+    ] {
+        let global_pairs = EDGE_PAIRS.map(|[first, second]| {
+            let mut pair = [mapping[first as usize], mapping[second as usize]];
+            pair.sort_unstable();
+            pair
+        });
+
+        for (local_cell, face) in FACES.into_iter().enumerate() {
+            let mut boundary_vertices = face.map(|vertex| mapping[vertex as usize]);
+            let start = boundary_vertices
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, vertex)| **vertex)
+                .unwrap()
+                .0;
+            boundary_vertices.rotate_left(start);
+            let boundary_edges: [u32; 3] = std::array::from_fn(|side| {
+                let mut pair = [
+                    boundary_vertices[side],
+                    boundary_vertices[(side + 1) % boundary_vertices.len()],
+                ];
+                pair.sort_unstable();
+                edge_offset
+                    + global_pairs
+                        .iter()
+                        .position(|candidate| *candidate == pair)
+                        .unwrap() as u32
+            });
+            cells.push(json!({
+                "id": cell_offset + local_cell as u32,
+                "site": [1.0, 0.0, 0.0],
+                "centroid": [1.0, 0.0, 0.0],
+                "area": 1.0,
+                "boundary_vertices": boundary_vertices,
+                "boundary_edges": boundary_edges,
+            }));
+        }
+
+        for (local_edge, vertices) in global_pairs.into_iter().enumerate() {
+            let owners = FACES
+                .iter()
+                .enumerate()
+                .filter_map(|(local_cell, face)| {
+                    let mapped = face.map(|vertex| mapping[vertex as usize]);
+                    (0..mapped.len())
+                        .any(|side| {
+                            let mut pair = [mapped[side], mapped[(side + 1) % mapped.len()]];
+                            pair.sort_unstable();
+                            pair == vertices
+                        })
+                        .then_some(cell_offset + local_cell as u32)
+                })
+                .collect::<Vec<_>>();
+            edges.push(json!({
+                "id": edge_offset + local_edge as u32,
+                "vertices": vertices,
+                "cells": owners,
+                "midpoint": [1.0, 0.0, 0.0],
+                "length": 1.0,
+                "center_distance": 1.0,
+                "center_distances_to_midpoint": [1.0, 1.0],
+                "normal_from_first": [1.0, 0.0, 0.0],
+            }));
+        }
+    }
+
+    serde_json::from_value(json!({
+        "schema_version": SPHERICAL_SURFACE_SCHEMA_V1,
+        "radius": 1.0,
+        "vertices": vertices,
+        "cells": cells,
+        "edges": edges,
+        "fingerprint": vec![0_u8; 32],
+    }))
+    .unwrap()
 }
 
 fn scale_serialized_vector(vector: &mut Value, factor: f64) {
