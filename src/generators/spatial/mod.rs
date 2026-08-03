@@ -1,5 +1,6 @@
 //! Deterministic planar site and topology generation.
 
+mod geodesic_voronoi;
 mod jittered_grid;
 mod planar_voronoi;
 mod stage;
