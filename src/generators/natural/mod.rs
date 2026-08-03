@@ -23,6 +23,8 @@ mod stage;
 mod tectonics;
 mod topology;
 
+pub mod circulation;
+
 pub use climate::{ClimateGenerationError, ClimateGenerator};
 pub use climate_rule_input::{
     ClimateRuleResolutionArtifact, ClimateSpecArtifact, ResolvedClimateInput,
