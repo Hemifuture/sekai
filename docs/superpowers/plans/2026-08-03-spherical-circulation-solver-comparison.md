@@ -153,7 +153,7 @@ impl Default for CirculationSpec {
             layer_relaxation_s_inv: 7.716_049_5e-7,
             thermal_relaxation_s_inv: 3.858_024_7e-7,
             max_steady_iterations: 96,
-            max_formation_years: 4,
+            max_formation_years: 5,
             convergence_tolerance: 1.0e-4,
             cfl_limit: 0.45,
         }
@@ -543,13 +543,13 @@ Expected: compilation fails because `TransientShallowWaterSolver` does not exist
 
 Compute the maximum wave speed as the maximum of `sqrt(g' H)` for atmosphere and ocean. Choose `floor(cfl_limit * minimum_center_distance / max_wave_speed)` seconds, round down to a whole minute, and reject a result below 60 seconds. One `evaluate_tendencies` function must call shared gradient, divergence, Coriolis, drag, linear wind stress, and thermodynamics without mutating input state.
 
-- [ ] **Step 4: Implement Heun/RK2 annual cycling and convergence**
+- [ ] **Step 4: Implement classic RK3 annual cycling and convergence**
 
-Advance predictor and corrected states with identical tendency evaluation. Use twelve 30-day climatological months, accumulate arithmetic monthly means, and compare same-month state between completed years with the shared area-weighted residual. Stop on tolerance or return `NotConverged` at `max_formation_years`. Warm start must reject a different grid/forcing/spec fingerprint and must not modify the supplied snapshot.
+Advance all three classic RK3 stages with identical tendency evaluation. This replaces the originally proposed Heun/RK2 step because Heun's stability polynomial has no nonzero interval on the imaginary axis and amplified the discretized shallow-water wave modes even below the requested CFL ceiling; classic RK3 keeps those modes stable at `CFL <= 0.45`. Use twelve 30-day climatological months, accumulate time-weighted monthly means, and compare same-month state between completed years with the shared area-weighted residual. Stop on tolerance or return `FormationNotConverged` at `max_formation_years`. Warm start must reject a different grid/forcing/spec fingerprint and must not modify the supplied snapshot.
 
 - [ ] **Step 5: Test cold/warm behavior, run, and commit**
 
-Test all fixtures at `n=8`; require finite tangent fields, closed-coast currents, mass error within `1e-5`, deterministic cold runs, warm-start step count no greater than cold-start step count, and explicit rejection of a mismatched steady snapshot.
+Test all fixtures at `n=8`; require finite tangent fields, closed-coast currents, mass error within `1e-5`, deterministic cold runs, convergence from both cold and validated steady initial states, and explicit rejection of a mismatched steady snapshot. Record cold/warm step counts without assuming in advance that the steady state is closer to the transient periodic attractor.
 
 Run: `cargo test --test circulation_transient -- --nocapture`
 

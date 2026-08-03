@@ -199,6 +199,10 @@ pub enum CirculationSolveError {
     ForcingCellCountMismatch { expected: usize, found: usize },
     #[error("forcing was constructed for a different grid fingerprint")]
     ForcingGridFingerprintMismatch,
+    #[error("warm-start snapshot {field} does not match the requested solve")]
+    WarmStartIdentityMismatch { field: &'static str },
+    #[error("transient circulation time step {found_seconds} seconds is invalid")]
+    InvalidTimeStep { found_seconds: u64 },
     #[error("output climatological month {found} is outside 0..{CLIMATE_MONTH_COUNT}")]
     InvalidOutputMonth { found: usize },
     #[error("solver output field {field} has length {found}; expected {expected}")]
@@ -214,6 +218,16 @@ pub enum CirculationSolveError {
         solver_id: CirculationSolverId,
         month: usize,
         iterations: u64,
+        residual: f64,
+        tolerance: f64,
+    },
+    #[error(
+        "solver {solver_id:?} did not reach an annual cycle after {formation_years} years and {steps} steps: residual {residual} exceeds tolerance {tolerance}"
+    )]
+    FormationNotConverged {
+        solver_id: CirculationSolverId,
+        formation_years: u16,
+        steps: u64,
         residual: f64,
         tolerance: f64,
     },

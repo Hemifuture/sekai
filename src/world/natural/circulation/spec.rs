@@ -46,7 +46,7 @@ impl Default for CirculationSpec {
             layer_relaxation_s_inv: 7.716_049_5e-7,
             thermal_relaxation_s_inv: 3.858_024_7e-7,
             max_steady_iterations: 96,
-            max_formation_years: 4,
+            max_formation_years: 5,
             convergence_tolerance: 1.0e-4,
             cfl_limit: 0.45,
         }

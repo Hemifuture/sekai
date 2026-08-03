@@ -10,7 +10,7 @@ use super::{
     ThermodynamicError, ThermodynamicState,
 };
 
-const WIND_STRESS_RATE_S_INV: f64 = 3.0e-8;
+pub(crate) const WIND_STRESS_RATE_S_INV: f64 = 3.0e-8;
 const AIR_TO_WATER_DENSITY_RATIO: f64 = 1.2 / 1_025.0;
 const LAYER_LINEAR_ITERATIONS: u16 = 512;
 const LAYER_LINEAR_RESTART: u16 = 32;
@@ -135,7 +135,7 @@ pub(crate) fn dense_state_bytes(cell_count: usize) -> Result<u64, DynamicsError>
     u64::try_from(scalar_slots).map_err(|_| DynamicsError::AllocationOverflow)
 }
 
-fn thermal_height_target(
+pub(crate) fn thermal_height_target(
     grid: &CubedSphereGrid,
     air_temperature_c: &[f32],
     spec: &CirculationSpec,
@@ -158,7 +158,7 @@ fn thermal_height_target(
         .collect()
 }
 
-fn inverse_barometer_height(
+pub(crate) fn inverse_barometer_height(
     grid: &CubedSphereGrid,
     forcing: &PlanetForcing,
     atmosphere_height_m: &[f32],
@@ -360,7 +360,11 @@ fn checked_f32_scalars(values: &[f64]) -> Result<Vec<f32>, CirculationOperatorEr
     Ok(converted)
 }
 
-fn remove_layer_mean(grid: &CubedSphereGrid, values: &mut [f32], land_fraction: Option<&[f32]>) {
+pub(crate) fn remove_layer_mean(
+    grid: &CubedSphereGrid,
+    values: &mut [f32],
+    land_fraction: Option<&[f32]>,
+) {
     let (weighted_sum, active_area) =
         grid.cells()
             .iter()
@@ -469,7 +473,7 @@ fn balanced_velocity_f64(
         .collect()
 }
 
-fn state_residual(
+pub(crate) fn state_residual(
     grid: &CubedSphereGrid,
     previous: &CirculationState,
     next: &CirculationState,

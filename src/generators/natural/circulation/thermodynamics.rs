@@ -215,6 +215,38 @@ pub fn thermodynamic_tendencies(
     validate_grid_forcing(grid, forcing)?;
     state.validate(grid.cell_count())?;
     permeability.validate_against(grid, forcing)?;
+    thermodynamic_tendencies_validated(
+        operators,
+        forcing,
+        spec,
+        state,
+        atmosphere_velocity,
+        surface_velocity,
+        permeability,
+        month,
+        transport_dt_seconds,
+    )
+}
+
+/// Hot-path tendency evaluation after solver-boundary identity validation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn thermodynamic_tendencies_validated(
+    operators: &CirculationOperators<'_>,
+    forcing: &PlanetForcing,
+    spec: &CirculationSpec,
+    state: &ThermodynamicState,
+    atmosphere_velocity: &[[f32; 3]],
+    surface_velocity: &[[f32; 3]],
+    permeability: &CirculationEdgePermeability,
+    month: usize,
+    transport_dt_seconds: f64,
+) -> Result<ThermodynamicTendencies, ThermodynamicError> {
+    let grid = operators.grid();
+    debug_assert_eq!(state.cell_count(), grid.cell_count());
+    debug_assert_eq!(atmosphere_velocity.len(), grid.cell_count());
+    debug_assert_eq!(surface_velocity.len(), grid.cell_count());
+    debug_assert_eq!(permeability.atmosphere().len(), grid.edges().len());
+    debug_assert_eq!(permeability.ocean().len(), grid.edges().len());
     validate_month(month)?;
     if !transport_dt_seconds.is_finite() || transport_dt_seconds <= 0.0 {
         return Err(ThermodynamicError::InvalidTimeStep {
@@ -222,22 +254,22 @@ pub fn thermodynamic_tendencies(
         });
     }
 
-    let air_transport = operators.advect_scalar_upwind_tracer(
+    let atmosphere_fluxes =
+        operators.upwind_fluxes_validated(atmosphere_velocity, permeability.atmosphere());
+    let surface_fluxes = operators.upwind_fluxes_validated(surface_velocity, permeability.ocean());
+    let air_transport = operators.advect_scalar_upwind_tracer_from_fluxes_validated(
         state.air_temperature_c(),
-        atmosphere_velocity,
-        permeability.atmosphere(),
+        &atmosphere_fluxes,
         transport_dt_seconds,
     )?;
-    let surface_transport = operators.advect_scalar_upwind_tracer(
+    let surface_transport = operators.advect_scalar_upwind_tracer_from_fluxes_validated(
         state.surface_temperature_c(),
-        surface_velocity,
-        permeability.ocean(),
+        &surface_fluxes,
         transport_dt_seconds,
     )?;
-    let humidity_transport = operators.advect_scalar_upwind_tracer(
+    let humidity_transport = operators.advect_scalar_upwind_tracer_from_fluxes_validated(
         state.specific_humidity(),
-        atmosphere_velocity,
-        permeability.atmosphere(),
+        &atmosphere_fluxes,
         transport_dt_seconds,
     )?;
 
@@ -446,6 +478,60 @@ pub fn advance_thermodynamics(
     ThermodynamicState::new(air, surface, humidity)
 }
 
+pub(crate) fn advance_thermodynamics_weighted(
+    state: &ThermodynamicState,
+    weighted_tendencies: &[(&ThermodynamicTendencies, f64)],
+    dt_seconds: f64,
+) -> Result<ThermodynamicState, ThermodynamicError> {
+    if weighted_tendencies.is_empty()
+        || weighted_tendencies
+            .iter()
+            .any(|(_, weight)| !weight.is_finite())
+    {
+        return Err(ThermodynamicError::InvalidTendencyWeights);
+    }
+    debug_assert!(weighted_tendencies.iter().all(|(tendencies, _)| {
+        tendencies.air_temperature_c_per_s.len() == state.cell_count()
+            && tendencies.surface_temperature_c_per_s.len() == state.cell_count()
+            && tendencies.specific_humidity_per_s.len() == state.cell_count()
+    }));
+    if !dt_seconds.is_finite() || dt_seconds <= 0.0 {
+        return Err(ThermodynamicError::InvalidTimeStep { found: dt_seconds });
+    }
+    let mut air = Vec::with_capacity(state.cell_count());
+    let mut surface = Vec::with_capacity(state.cell_count());
+    let mut humidity = Vec::with_capacity(state.cell_count());
+    for cell in 0..state.cell_count() {
+        let air_tendency = weighted_tendencies
+            .iter()
+            .map(|(tendencies, weight)| {
+                weight * f64::from(tendencies.air_temperature_c_per_s[cell])
+            })
+            .sum::<f64>();
+        let surface_tendency = weighted_tendencies
+            .iter()
+            .map(|(tendencies, weight)| {
+                weight * f64::from(tendencies.surface_temperature_c_per_s[cell])
+            })
+            .sum::<f64>();
+        let humidity_tendency = weighted_tendencies
+            .iter()
+            .map(|(tendencies, weight)| {
+                weight * f64::from(tendencies.specific_humidity_per_s[cell])
+            })
+            .sum::<f64>();
+        air.push((f64::from(state.air_temperature_c[cell]) + dt_seconds * air_tendency) as f32);
+        surface.push(
+            (f64::from(state.surface_temperature_c[cell]) + dt_seconds * surface_tendency) as f32,
+        );
+        humidity.push(
+            (f64::from(state.specific_humidity[cell]) + dt_seconds * humidity_tendency)
+                .clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32,
+        );
+    }
+    ThermodynamicState::new(air, surface, humidity)
+}
+
 /// Tetens saturation specific humidity at standard pressure, in kg/kg.
 pub fn saturation_specific_humidity(temperature_c: f32) -> Result<f32, ThermodynamicError> {
     if !temperature_c.is_finite() {
@@ -618,6 +704,8 @@ pub enum ThermodynamicError {
     NonFiniteTemperature,
     #[error("moisture transport diagnostic is invalid")]
     InvalidTransportDiagnostic,
+    #[error("thermodynamic tendency weights must be nonempty and finite")]
+    InvalidTendencyWeights,
     #[error("stationary solve for {field} failed: {source}")]
     SteadyLinearSolve {
         field: &'static str,

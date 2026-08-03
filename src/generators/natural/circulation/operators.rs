@@ -41,16 +41,64 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: Option<&[f32]>,
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         validate_scalar_field("scalar", scalar, self.grid.cell_count())?;
-        let scalar = scalar
+        if let Some(permeability) = edge_permeability {
+            validate_permeability(permeability, self.grid.edges().len())?;
+        }
+        Ok(self.gradient_f32_validated_impl(scalar, edge_permeability))
+    }
+
+    pub(crate) fn gradient_validated(&self, scalar: &[f32]) -> Vec<[f32; 3]> {
+        self.gradient_f32_validated_impl(scalar, None)
+    }
+
+    pub(crate) fn gradient_with_permeability_validated(
+        &self,
+        scalar: &[f32],
+        edge_permeability: &[f32],
+    ) -> Vec<[f32; 3]> {
+        self.gradient_f32_validated_impl(scalar, Some(edge_permeability))
+    }
+
+    fn gradient_f32_validated_impl(
+        &self,
+        scalar: &[f32],
+        edge_permeability: Option<&[f32]>,
+    ) -> Vec<[f32; 3]> {
+        debug_assert_eq!(scalar.len(), self.grid.cell_count());
+        let mut accumulated = vec![[0.0_f64; 3]; self.grid.cell_count()];
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+            let [first, second] = edge.cells();
+            let first = *first as usize;
+            let second = *second as usize;
+            let first_value = f64::from(scalar[first]);
+            let second_value = f64::from(scalar[second]);
+            let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
+            let normal = edge.normal_from_first();
+            let permeability = edge_permeability
+                .map(|values| f64::from(values[edge_index]))
+                .unwrap_or(1.0);
+            let length = edge.length_m() * permeability;
+            accumulate_vector(
+                &mut accumulated[first],
+                normal,
+                (edge_value - first_value) * length,
+            );
+            accumulate_vector(
+                &mut accumulated[second],
+                normal,
+                -(edge_value - second_value) * length,
+            );
+        }
+        self.grid
+            .cells()
             .iter()
-            .map(|value| f64::from(*value))
-            .collect::<Vec<_>>();
-        Ok(self
-            .gradient_f64_impl(&scalar, edge_permeability)?
-            .into_iter()
-            .zip(self.grid.cells())
-            .map(|(value, cell)| to_quantized_tangent_f32(value, cell.center_unit()))
-            .collect())
+            .zip(accumulated)
+            .map(|(cell, value)| {
+                let gradient =
+                    project_tangent(scale(value, cell.area_m2().recip()), cell.center_unit());
+                to_quantized_tangent_f32(gradient, cell.center_unit())
+            })
+            .collect()
     }
 
     pub(crate) fn gradient_f64_with_permeability(
@@ -124,15 +172,50 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: Option<&[f32]>,
     ) -> Result<Vec<f32>, CirculationOperatorError> {
         validate_vector_field("velocity", velocity, self.grid.cell_count())?;
-        let velocity = velocity
+        if let Some(permeability) = edge_permeability {
+            validate_permeability(permeability, self.grid.edges().len())?;
+        }
+        Ok(self.divergence_f32_validated_impl(velocity, edge_permeability))
+    }
+
+    pub(crate) fn divergence_validated(&self, velocity: &[[f32; 3]]) -> Vec<f32> {
+        self.divergence_f32_validated_impl(velocity, None)
+    }
+
+    pub(crate) fn divergence_with_permeability_validated(
+        &self,
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+    ) -> Vec<f32> {
+        self.divergence_f32_validated_impl(velocity, Some(edge_permeability))
+    }
+
+    fn divergence_f32_validated_impl(
+        &self,
+        velocity: &[[f32; 3]],
+        edge_permeability: Option<&[f32]>,
+    ) -> Vec<f32> {
+        debug_assert_eq!(velocity.len(), self.grid.cell_count());
+        let mut extensive_flux = vec![0.0_f64; self.grid.cell_count()];
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+            let [first, second] = edge.cells();
+            let first = *first as usize;
+            let second = *second as usize;
+            let edge_velocity = interpolate_vector(edge, velocity[first], velocity[second]);
+            let permeability = edge_permeability
+                .map(|values| f64::from(values[edge_index]))
+                .unwrap_or(1.0);
+            let flux =
+                dot(edge_velocity, edge.normal_from_first()) * edge.length_m() * permeability;
+            extensive_flux[first] += flux;
+            extensive_flux[second] -= flux;
+        }
+        self.grid
+            .cells()
             .iter()
-            .map(|value| to_f64_vector(*value))
-            .collect::<Vec<_>>();
-        Ok(self
-            .divergence_f64_impl(&velocity, edge_permeability)?
-            .into_iter()
-            .map(|value| value as f32)
-            .collect())
+            .zip(extensive_flux)
+            .map(|(cell, flux)| (flux / cell.area_m2()) as f32)
+            .collect()
     }
 
     pub(crate) fn divergence_f64_with_permeability(
@@ -187,8 +270,15 @@ impl<'grid> CirculationOperators<'grid> {
                 found: rotation_rate_rad_s,
             });
         }
-        Ok(self
-            .grid
+        Ok(self.coriolis_validated(velocity, rotation_rate_rad_s))
+    }
+
+    pub(crate) fn coriolis_validated(
+        &self,
+        velocity: &[[f32; 3]],
+        rotation_rate_rad_s: f64,
+    ) -> Vec<[f32; 3]> {
+        self.grid
             .cells()
             .iter()
             .zip(velocity)
@@ -199,7 +289,7 @@ impl<'grid> CirculationOperators<'grid> {
                 let acceleration = scale(cross(radial, tangent_velocity), -coriolis_parameter);
                 to_quantized_tangent_f32(acceleration, radial)
             })
-            .collect())
+            .collect()
     }
 
     /// Removes radial components from a dense vector field.
@@ -208,15 +298,18 @@ impl<'grid> CirculationOperators<'grid> {
         vectors: &[[f32; 3]],
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         validate_vector_field("vectors", vectors, self.grid.cell_count())?;
-        Ok(self
-            .grid
+        Ok(self.tangentize_validated(vectors))
+    }
+
+    pub(crate) fn tangentize_validated(&self, vectors: &[[f32; 3]]) -> Vec<[f32; 3]> {
+        self.grid
             .cells()
             .iter()
             .zip(vectors)
             .map(|(cell, value)| {
                 to_quantized_tangent_f32(to_f64_vector(*value), cell.center_unit())
             })
-            .collect())
+            .collect()
     }
 
     /// Advances one cell-mean scalar using conservative first-order upwind fluxes.
@@ -286,8 +379,27 @@ impl<'grid> CirculationOperators<'grid> {
             return Err(CirculationOperatorError::InvalidTimeStep { found: dt_seconds });
         }
 
+        let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
+        self.advect_scalar_upwind_tracer_from_fluxes_validated(scalar, &fluxes, dt_seconds)
+    }
+
+    pub(crate) fn upwind_fluxes_validated(
+        &self,
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+    ) -> Vec<UpwindFlux> {
+        steady_upwind_fluxes(self.grid, velocity, edge_permeability)
+    }
+
+    pub(crate) fn advect_scalar_upwind_tracer_from_fluxes_validated(
+        &self,
+        scalar: &[f32],
+        fluxes: &[UpwindFlux],
+        dt_seconds: f64,
+    ) -> Result<UpwindTracerTransport, CirculationOperatorError> {
+        debug_assert_eq!(scalar.len(), self.grid.cell_count());
         let mut intensive_delta = vec![0.0_f64; self.grid.cell_count()];
-        for flux in steady_upwind_fluxes(self.grid, velocity, edge_permeability) {
+        for flux in fluxes {
             intensive_delta[flux.receiver] += flux.magnitude_m2_s
                 * (f64::from(scalar[flux.donor]) - f64::from(scalar[flux.receiver]))
                 * dt_seconds
@@ -480,7 +592,7 @@ impl SteadyTransportSolve {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct UpwindFlux {
+pub(crate) struct UpwindFlux {
     donor: usize,
     receiver: usize,
     magnitude_m2_s: f64,
