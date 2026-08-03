@@ -375,9 +375,23 @@ pub fn run_comparison_suite(
         };
         for &fixture in fixtures {
             for _ in 0..COMPARISON_WARMUP_RUNS {
-                warm_up_case(&spec, fixture)?;
+                warm_up_case(&spec, fixture).map_err(|source| ComparisonError::CaseFailed {
+                    face_resolution,
+                    fixture,
+                    phase: "warmup",
+                    source: Box::new(source),
+                })?;
             }
-            cases.push(measure_case(&spec, fixture, measured_samples)?);
+            cases.push(
+                measure_case(&spec, fixture, measured_samples).map_err(|source| {
+                    ComparisonError::CaseFailed {
+                        face_resolution,
+                        fixture,
+                        phase: "measurement",
+                        source: Box::new(source),
+                    }
+                })?,
+            );
         }
     }
     Ok(ComparisonSuiteReport {
@@ -941,4 +955,13 @@ pub enum ComparisonError {
     TimingOverflow,
     #[error("dense byte-count arithmetic overflowed")]
     ByteOverflow,
+    #[error(
+        "comparison case n={face_resolution}, fixture={fixture:?}, phase={phase} failed: {source}"
+    )]
+    CaseFailed {
+        face_resolution: u16,
+        fixture: CirculationFixture,
+        phase: &'static str,
+        source: Box<ComparisonError>,
+    },
 }

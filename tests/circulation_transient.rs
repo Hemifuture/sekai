@@ -55,6 +55,10 @@ fn coarse_grid_time_step_respects_the_rk3_coriolis_stability_interval() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "full transient fixture formation is a Release evidence gate"
+)]
 fn transient_cold_and_steady_warm_starts_converge_on_all_fixtures() {
     let spec = CirculationSpec {
         face_resolution: 8,

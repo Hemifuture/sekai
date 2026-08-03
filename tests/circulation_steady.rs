@@ -229,3 +229,49 @@ fn balanced_solver_rejects_mismatched_grid_forcing_and_spec_identity() {
         )
         .is_err());
 }
+
+#[test]
+fn balanced_solver_converges_for_two_basins_at_the_first_report_resolution() {
+    let spec = CirculationSpec {
+        face_resolution: 12,
+        ..CirculationSpec::default()
+    };
+    let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+    let forcing = build_fixture(&grid, CirculationFixture::TwoBasins).unwrap();
+    let snapshot = BalancedSteadySolver.solve(&grid, &forcing, &spec).unwrap();
+    snapshot.validate().unwrap();
+    assert!(snapshot.stats().final_residual <= f64::from(spec.convergence_tolerance));
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "all report resolutions are a Release evidence gate"
+)]
+fn balanced_solver_converges_for_all_fixtures_at_all_report_resolutions() {
+    for face_resolution in [12, 24, 32] {
+        let spec = CirculationSpec {
+            face_resolution,
+            ..CirculationSpec::default()
+        };
+        let grid = CubedSphereGrid::new(spec.face_resolution, spec.planet_radius_m).unwrap();
+        for fixture in [
+            CirculationFixture::AquaPlanet,
+            CirculationFixture::TwoBasins,
+            CirculationFixture::EarthLikeHarmonics,
+        ] {
+            let forcing = build_fixture(&grid, fixture).unwrap();
+            let snapshot = BalancedSteadySolver
+                .solve(&grid, &forcing, &spec)
+                .unwrap_or_else(|error| {
+                    panic!("n={face_resolution}, fixture={fixture:?}: {error:?}")
+                });
+            snapshot.validate().unwrap();
+            assert!(
+                snapshot.stats().final_residual <= f64::from(spec.convergence_tolerance),
+                "n={face_resolution}, fixture={fixture:?}, stats={:?}",
+                snapshot.stats()
+            );
+        }
+    }
+}

@@ -12,8 +12,8 @@ use super::{
 
 pub(crate) const WIND_STRESS_RATE_S_INV: f64 = 3.0e-8;
 const AIR_TO_WATER_DENSITY_RATIO: f64 = 1.2 / 1_025.0;
-const LAYER_LINEAR_ITERATIONS: u16 = 512;
-const LAYER_LINEAR_RESTART: u16 = 32;
+const LAYER_LINEAR_ITERATIONS: u16 = 4_096;
+const LAYER_LINEAR_RESTART: u16 = 128;
 const LAYER_LINEAR_TOLERANCE: f64 = 1.0e-6;
 
 #[derive(Debug, Clone, PartialEq)]
