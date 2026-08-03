@@ -8,7 +8,7 @@ use super::{CirculationOperatorError, CirculationOperators, CubedSphereGrid};
 
 pub(crate) const LAPSE_RATE_C_PER_M: f32 = 0.0065;
 const STANDARD_PRESSURE_PA: f64 = 101_325.0;
-const MAX_SPECIFIC_HUMIDITY: f32 = 0.2;
+pub(crate) const MAX_SPECIFIC_HUMIDITY: f32 = 0.2;
 const CONDENSATION_TIMESCALE_S: f64 = 21_600.0;
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const STEADY_LINEAR_ITERATIONS: u16 = 128;
@@ -166,6 +166,7 @@ pub struct ThermodynamicTendencies {
     air_temperature_c_per_s: Vec<f32>,
     surface_temperature_c_per_s: Vec<f32>,
     specific_humidity_per_s: Vec<f32>,
+    column_moisture_m_per_s: Vec<f64>,
     precipitation_mm_day: Vec<f32>,
     relative_moisture_transport_error: f64,
 }
@@ -187,6 +188,14 @@ impl ThermodynamicTendencies {
 
     pub fn specific_humidity_per_s(&self) -> &[f32] {
         &self.specific_humidity_per_s
+    }
+
+    pub(crate) fn column_moisture_m_per_s(&self) -> &[f64] {
+        &self.column_moisture_m_per_s
+    }
+
+    pub(crate) fn column_moisture_m_per_s_mut(&mut self) -> &mut [f64] {
+        &mut self.column_moisture_m_per_s
     }
 
     pub fn precipitation_mm_day(&self) -> &[f32] {
@@ -293,8 +302,9 @@ pub(crate) fn thermodynamic_tendencies_validated(
     let mut air_temperature_c_per_s = Vec::with_capacity(count);
     let mut surface_temperature_c_per_s = Vec::with_capacity(count);
     let mut specific_humidity_per_s = Vec::with_capacity(count);
+    let mut column_moisture_m_per_s = Vec::with_capacity(count);
     let mut precipitation_mm_day = Vec::with_capacity(count);
-    for cell in 0..count {
+    for (cell, layer_depth_m) in atmosphere_layer_depth_m.iter().copied().enumerate() {
         let targets = thermodynamic_targets(forcing, cell, month);
         let transported_air_tendency =
             f64::from(air_transport.values()[cell] - state.air_temperature_c()[cell])
@@ -320,13 +330,22 @@ pub(crate) fn thermodynamic_tendencies_validated(
         let saturation = saturation_specific_humidity(state.air_temperature_c()[cell])?;
         let condensation = f64::from((humidity - saturation).max(0.0)) / CONDENSATION_TIMESCALE_S;
         let precipitation = precipitation_from_condensation_mm_day(condensation, spec.gravity_m_s2);
+        let layer = f64::from(layer_depth_m);
+        let transported_layer = f64::from(humidity_transport.layer_amounts()[cell]);
+        let transported_column_moisture =
+            transported_layer * f64::from(humidity_transport.values()[cell]);
+        let initial_column_moisture = layer * f64::from(humidity);
+        let transported_column_moisture_tendency =
+            (transported_column_moisture - initial_column_moisture) / transport_dt_seconds;
+        let physical_humidity_tendency = surface_moisture_exchange - condensation;
 
         air_temperature_c_per_s.push((transported_air_tendency + air_relaxation) as f32);
         surface_temperature_c_per_s
             .push((transported_surface_tendency + surface_relaxation) as f32);
-        specific_humidity_per_s.push(
-            (transported_humidity_tendency + surface_moisture_exchange - condensation) as f32,
-        );
+        specific_humidity_per_s
+            .push((transported_humidity_tendency + physical_humidity_tendency) as f32);
+        column_moisture_m_per_s
+            .push(transported_column_moisture_tendency + layer * physical_humidity_tendency);
         precipitation_mm_day.push(precipitation as f32);
     }
 
@@ -334,6 +353,7 @@ pub(crate) fn thermodynamic_tendencies_validated(
         air_temperature_c_per_s,
         surface_temperature_c_per_s,
         specific_humidity_per_s,
+        column_moisture_m_per_s,
         precipitation_mm_day,
         relative_moisture_transport_error: humidity_transport.relative_mass_error(),
     };
@@ -515,6 +535,7 @@ pub fn advance_thermodynamics(
 pub(crate) fn advance_thermodynamics_weighted(
     state: &ThermodynamicState,
     weighted_tendencies: &[(&ThermodynamicTendencies, f64)],
+    specific_humidity: Vec<f32>,
     dt_seconds: f64,
 ) -> Result<ThermodynamicState, ThermodynamicError> {
     if weighted_tendencies.is_empty()
@@ -527,14 +548,12 @@ pub(crate) fn advance_thermodynamics_weighted(
     debug_assert!(weighted_tendencies.iter().all(|(tendencies, _)| {
         tendencies.air_temperature_c_per_s.len() == state.cell_count()
             && tendencies.surface_temperature_c_per_s.len() == state.cell_count()
-            && tendencies.specific_humidity_per_s.len() == state.cell_count()
     }));
     if !dt_seconds.is_finite() || dt_seconds <= 0.0 {
         return Err(ThermodynamicError::InvalidTimeStep { found: dt_seconds });
     }
     let mut air = Vec::with_capacity(state.cell_count());
     let mut surface = Vec::with_capacity(state.cell_count());
-    let mut humidity = Vec::with_capacity(state.cell_count());
     for cell in 0..state.cell_count() {
         let air_tendency = weighted_tendencies
             .iter()
@@ -548,23 +567,12 @@ pub(crate) fn advance_thermodynamics_weighted(
                 weight * f64::from(tendencies.surface_temperature_c_per_s[cell])
             })
             .sum::<f64>();
-        let humidity_tendency = weighted_tendencies
-            .iter()
-            .map(|(tendencies, weight)| {
-                weight * f64::from(tendencies.specific_humidity_per_s[cell])
-            })
-            .sum::<f64>();
         air.push((f64::from(state.air_temperature_c[cell]) + dt_seconds * air_tendency) as f32);
         surface.push(
             (f64::from(state.surface_temperature_c[cell]) + dt_seconds * surface_tendency) as f32,
         );
-        humidity.push(
-            // RK bound projection is likewise a separately identified budget term.
-            (f64::from(state.specific_humidity[cell]) + dt_seconds * humidity_tendency)
-                .clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32,
-        );
     }
-    ThermodynamicState::new(air, surface, humidity)
+    ThermodynamicState::new(air, surface, specific_humidity)
 }
 
 /// Tetens saturation specific humidity at standard pressure, in kg/kg.
@@ -655,6 +663,11 @@ fn validate_tendencies(
         expected,
         None,
     )?;
+    validate_scalar_field_f64(
+        "column_moisture_m_per_s",
+        &tendencies.column_moisture_m_per_s,
+        expected,
+    )?;
     validate_scalar_field(
         "precipitation_mm_day",
         &tendencies.precipitation_mm_day,
@@ -696,6 +709,26 @@ fn validate_scalar_field(
                     max,
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_scalar_field_f64(
+    field: &'static str,
+    values: &[f64],
+    expected: usize,
+) -> Result<(), ThermodynamicError> {
+    if values.len() != expected {
+        return Err(ThermodynamicError::FieldLengthMismatch {
+            field,
+            expected,
+            found: values.len(),
+        });
+    }
+    for (index, value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(ThermodynamicError::NonFiniteFieldValue { field, index });
         }
     }
     Ok(())

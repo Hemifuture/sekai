@@ -25,8 +25,9 @@ pub struct CirculationSolveStats {
     pub formation_years: u16,
     pub final_residual: f64,
     /// Maximum relative numerical closure error across atmosphere volume, ocean volume,
-    /// and paired-column moisture transport. Physical source and sink terms such as
-    /// evaporation, condensation, precipitation, and relaxation are excluded.
+    /// paired-column moisture transport, and the column moisture written by a complete
+    /// transient RK step. Physical source and sink terms such as evaporation, condensation,
+    /// precipitation, relaxation, and explicit humidity-bound projection are excluded.
     pub relative_mass_error: f64,
     pub dense_state_bytes: u64,
 }

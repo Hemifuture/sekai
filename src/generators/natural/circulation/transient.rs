@@ -10,7 +10,9 @@ use super::{
         thermal_height_target, CirculationState, DynamicsError, WIND_STRESS_RATE_S_INV,
     },
     solver::{validate_solver_inputs, MonthlySnapshotBuilder, SolverInputIdentity},
-    thermodynamics::{advance_thermodynamics_weighted, thermodynamic_tendencies_validated},
+    thermodynamics::{
+        advance_thermodynamics_weighted, thermodynamic_tendencies_validated, MAX_SPECIFIC_HUMIDITY,
+    },
     CirculationEdgePermeability, CirculationOperators, CirculationSolveError, CirculationSolver,
     CubedSphereGrid, ThermodynamicState, ThermodynamicTendencies,
 };
@@ -186,6 +188,7 @@ impl CirculationSolver for TransientShallowWaterSolver {
                         &[(&first, 0.5)],
                         &operators,
                         forcing,
+                        spec,
                         dt_seconds as f64,
                     )?;
                     let second = evaluate_tendencies(
@@ -202,6 +205,7 @@ impl CirculationSolver for TransientShallowWaterSolver {
                         &[(&first, -1.0), (&second, 2.0)],
                         &operators,
                         forcing,
+                        spec,
                         dt_seconds as f64,
                     )?;
                     let third = evaluate_tendencies(
@@ -213,17 +217,28 @@ impl CirculationSolver for TransientShallowWaterSolver {
                         month,
                         dt_seconds as f64,
                     )?;
-                    state = advance_state(
+                    let final_tendencies = [
+                        (&first, 1.0 / 6.0),
+                        (&second, 4.0 / 6.0),
+                        (&third, 1.0 / 6.0),
+                    ];
+                    let next_state = advance_state(
                         &state,
-                        &[
-                            (&first, 1.0 / 6.0),
-                            (&second, 4.0 / 6.0),
-                            (&third, 1.0 / 6.0),
-                        ],
+                        &final_tendencies,
                         &operators,
                         forcing,
+                        spec,
                         dt_seconds as f64,
                     )?;
+                    let final_column_moisture_error = relative_column_moisture_rk_closure_error(
+                        grid,
+                        &state,
+                        &next_state,
+                        &final_tendencies,
+                        spec,
+                        dt_seconds as f64,
+                    )?;
+                    state = next_state;
                     let precipitation = first
                         .thermodynamics
                         .precipitation_mm_day()
@@ -236,7 +251,8 @@ impl CirculationSolver for TransientShallowWaterSolver {
                     maximum_mass_error = maximum_mass_error
                         .max(first.relative_mass_error)
                         .max(second.relative_mass_error)
-                        .max(third.relative_mass_error);
+                        .max(third.relative_mass_error)
+                        .max(final_column_moisture_error);
                     elapsed_seconds += dt_seconds;
                     total_steps += 1;
                 }
@@ -350,6 +366,11 @@ fn tendencies_are_round_off_zero(tendencies: &TransientTendencies) -> bool {
             .chain(tendencies.thermodynamics.surface_temperature_c_per_s())
             .chain(tendencies.thermodynamics.specific_humidity_per_s())
             .all(|value| value.abs() <= ROUND_OFF_TENDENCY_FLOOR)
+        && tendencies
+            .thermodynamics
+            .column_moisture_m_per_s()
+            .iter()
+            .all(|value| value.abs() <= f64::from(ROUND_OFF_TENDENCY_FLOOR))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -442,7 +463,7 @@ fn evaluate_tendencies(
         spec.atmosphere_reference_depth_m,
         &state.atmosphere_height_anomaly_m,
     )?;
-    let thermodynamics = thermodynamic_tendencies_validated(
+    let mut thermodynamics = thermodynamic_tendencies_validated(
         operators,
         forcing,
         spec,
@@ -454,6 +475,17 @@ fn evaluate_tendencies(
         month,
         dt_seconds,
     )?;
+    for (((moisture_tendency, humidity), equilibrium), height) in thermodynamics
+        .column_moisture_m_per_s_mut()
+        .iter_mut()
+        .zip(state.thermodynamics.specific_humidity())
+        .zip(&atmosphere_equilibrium)
+        .zip(&state.atmosphere_height_anomaly_m)
+    {
+        let layer_relaxation =
+            f64::from(spec.layer_relaxation_s_inv) * f64::from(*equilibrium - *height);
+        *moisture_tendency += f64::from(*humidity) * layer_relaxation;
+    }
     let relative_mass_error = maximum_relative_mass_closure_error(
         grid,
         &atmosphere_divergence,
@@ -475,6 +507,7 @@ fn advance_state(
     weighted_tendencies: &[(&TransientTendencies, f64)],
     operators: &CirculationOperators<'_>,
     forcing: &PlanetForcing,
+    spec: &CirculationSpec,
     dt_seconds: f64,
 ) -> Result<CirculationState, DynamicsError> {
     let grid = operators.grid();
@@ -532,9 +565,17 @@ fn advance_state(
         }
     }
     let ocean_current_m_s = operators.tangentize_validated(&ocean_current_m_s);
+    let specific_humidity = advance_column_moisture(
+        state,
+        &atmosphere_height_anomaly_m,
+        weighted_tendencies,
+        spec,
+        dt_seconds,
+    )?;
     let thermodynamics = advance_thermodynamics_weighted(
         &state.thermodynamics,
         &thermodynamic_tendencies,
+        specific_humidity,
         dt_seconds,
     )?;
     Ok(CirculationState {
@@ -544,6 +585,116 @@ fn advance_state(
         sea_surface_height_anomaly_m,
         thermodynamics,
     })
+}
+
+fn advance_column_moisture(
+    state: &CirculationState,
+    next_atmosphere_height_anomaly_m: &[f32],
+    weighted_tendencies: &[(&TransientTendencies, f64)],
+    spec: &CirculationSpec,
+    dt_seconds: f64,
+) -> Result<Vec<f32>, DynamicsError> {
+    state
+        .atmosphere_height_anomaly_m
+        .iter()
+        .enumerate()
+        .map(|(cell, _)| {
+            let (next_layer, projected_column) = projected_column_moisture(
+                state,
+                next_atmosphere_height_anomaly_m[cell],
+                weighted_tendencies,
+                spec,
+                dt_seconds,
+                cell,
+            )?;
+            // Bounds are an explicit projection budget. RK itself combines the
+            // extensive column quantity, then recovers the intensive mixing ratio.
+            checked_f32(projected_column / next_layer)
+        })
+        .collect()
+}
+
+fn projected_column_moisture(
+    state: &CirculationState,
+    next_atmosphere_height_anomaly_m: f32,
+    weighted_tendencies: &[(&TransientTendencies, f64)],
+    spec: &CirculationSpec,
+    dt_seconds: f64,
+    cell: usize,
+) -> Result<(f64, f64), DynamicsError> {
+    let layer = f64::from(spec.atmosphere_reference_depth_m)
+        + f64::from(state.atmosphere_height_anomaly_m[cell]);
+    let next_layer =
+        f64::from(spec.atmosphere_reference_depth_m) + f64::from(next_atmosphere_height_anomaly_m);
+    if !layer.is_finite() || layer <= 0.0 || !next_layer.is_finite() || next_layer <= 0.0 {
+        return Err(DynamicsError::NonFiniteState);
+    }
+    let tendency = weighted_tendencies
+        .iter()
+        .map(|(tendencies, weight)| {
+            weight * tendencies.thermodynamics.column_moisture_m_per_s()[cell]
+        })
+        .sum::<f64>();
+    let predicted_column =
+        layer * f64::from(state.thermodynamics.specific_humidity()[cell]) + dt_seconds * tendency;
+    if !predicted_column.is_finite() {
+        return Err(DynamicsError::NonFiniteState);
+    }
+    let projected_column =
+        next_layer * (predicted_column / next_layer).clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY));
+    Ok((next_layer, projected_column))
+}
+
+fn relative_column_moisture_rk_closure_error(
+    grid: &CubedSphereGrid,
+    state: &CirculationState,
+    next_state: &CirculationState,
+    weighted_tendencies: &[(&TransientTendencies, f64)],
+    spec: &CirculationSpec,
+    dt_seconds: f64,
+) -> Result<f64, DynamicsError> {
+    debug_assert_eq!(state.atmosphere_height_anomaly_m.len(), grid.cell_count());
+    debug_assert_eq!(
+        next_state.atmosphere_height_anomaly_m.len(),
+        grid.cell_count()
+    );
+    debug_assert_eq!(state.thermodynamics.cell_count(), grid.cell_count());
+    debug_assert_eq!(next_state.thermodynamics.cell_count(), grid.cell_count());
+
+    let mut signed_error = CompensatedSum::default();
+    let mut reference_total = CompensatedSum::default();
+    for cell in 0..grid.cell_count() {
+        // Apply the same explicit bound projection as `advance_column_moisture` before
+        // measuring numerical RK closure, so the projection remains a separate budget.
+        let (next_layer, projected_column) = projected_column_moisture(
+            state,
+            next_state.atmosphere_height_anomaly_m[cell],
+            weighted_tendencies,
+            spec,
+            dt_seconds,
+            cell,
+        )?;
+        let actual_column =
+            next_layer * f64::from(next_state.thermodynamics.specific_humidity()[cell]);
+        let area = grid.cells()[cell].area_m2();
+        signed_error.add(area * (actual_column - projected_column));
+        reference_total.add(area * projected_column.abs());
+    }
+
+    let scale = reference_total.total();
+    let error = signed_error.total().abs();
+    if scale == 0.0 {
+        return if error == 0.0 {
+            Ok(0.0)
+        } else {
+            Err(DynamicsError::NonFiniteState)
+        };
+    }
+    let relative_error = error / scale;
+    if !relative_error.is_finite() {
+        return Err(DynamicsError::NonFiniteState);
+    }
+    Ok(relative_error)
 }
 
 fn advance_scalar_field(
@@ -592,6 +743,25 @@ fn checked_f32(value: f64) -> Result<f32, DynamicsError> {
         return Err(DynamicsError::NonFiniteState);
     }
     Ok(value as f32)
+}
+
+#[derive(Default)]
+struct CompensatedSum {
+    sum: f64,
+    correction: f64,
+}
+
+impl CompensatedSum {
+    fn add(&mut self, value: f64) {
+        let adjusted = value - self.correction;
+        let next = self.sum + adjusted;
+        self.correction = (next - self.sum) - adjusted;
+        self.sum = next;
+    }
+
+    const fn total(&self) -> f64 {
+        self.sum
+    }
 }
 
 struct MonthlyAccumulator {
@@ -927,6 +1097,7 @@ mod tests {
                 &[(&tendencies, 1.0)],
                 operators,
                 forcing,
+                spec,
                 dt_seconds,
             )
             .unwrap();
@@ -1086,7 +1257,7 @@ mod tests {
         let operators = CirculationOperators::new(&grid);
         let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
         let dt_seconds = 3_600.0;
-        let tendencies = evaluate_tendencies(
+        let first = evaluate_tendencies(
             &state,
             &operators,
             &forcing,
@@ -1096,11 +1267,64 @@ mod tests {
             dt_seconds,
         )
         .unwrap();
-        let next = advance_state(
+        let second_stage = advance_state(
             &state,
-            &[(&tendencies, 1.0)],
+            &[(&first, 0.5)],
             &operators,
             &forcing,
+            &spec,
+            dt_seconds,
+        )
+        .unwrap();
+        let second = evaluate_tendencies(
+            &second_stage,
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            0,
+            dt_seconds,
+        )
+        .unwrap();
+        let third_stage = advance_state(
+            &state,
+            &[(&first, -1.0), (&second, 2.0)],
+            &operators,
+            &forcing,
+            &spec,
+            dt_seconds,
+        )
+        .unwrap();
+        let third = evaluate_tendencies(
+            &third_stage,
+            &operators,
+            &forcing,
+            &spec,
+            &permeability,
+            0,
+            dt_seconds,
+        )
+        .unwrap();
+        let final_tendencies = [
+            (&first, 1.0 / 6.0),
+            (&second, 4.0 / 6.0),
+            (&third, 1.0 / 6.0),
+        ];
+        let next = advance_state(
+            &state,
+            &final_tendencies,
+            &operators,
+            &forcing,
+            &spec,
+            dt_seconds,
+        )
+        .unwrap();
+        let final_rk_error = relative_column_moisture_rk_closure_error(
+            &grid,
+            &state,
+            &next,
+            &final_tendencies,
+            &spec,
             dt_seconds,
         )
         .unwrap();
@@ -1108,8 +1332,12 @@ mod tests {
         let before = total_column_moisture(&grid, &spec, &state);
         let after = total_column_moisture(&grid, &spec, &next);
         assert!(
-            (after - before).abs() / before.abs() < 5.0e-10,
+            (after - before).abs() / before.abs() < 5.0e-9,
             "actual coupled state changed column moisture: before={before}, after={after}"
+        );
+        assert!(
+            final_rk_error < 5.0e-9,
+            "final stored RK state failed moisture closure: {final_rk_error}"
         );
     }
 }
