@@ -5,7 +5,10 @@ use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
 };
-use crate::world::{CellId, EdgeId, SurfaceVertexId, UnitError};
+use crate::world::{
+    CellId, EdgeId, SurfaceVertexId, UnitError, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
+    MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT, MAX_SPHERICAL_VERTEX_COUNT,
+};
 
 const UNIT_TOLERANCE: f64 = 1.0e-12;
 const VECTOR_ANGLE_TOLERANCE: f64 = 1.0e-10;
@@ -24,6 +27,13 @@ pub enum SphericalSurfaceValidationError {
     /// The snapshot radius is not finite and strictly positive.
     #[error("spherical surface radius must be finite and positive, got {found}")]
     InvalidRadius { found: f64 },
+    /// A top-level record vector exceeds the schema V1 allocation budget.
+    #[error("spherical surface {record} count {found} exceeds schema V1 maximum {max}")]
+    RecordCountOutOfRange {
+        record: &'static str,
+        found: usize,
+        max: usize,
+    },
     /// A vertex ID does not equal its canonical vector position.
     #[error("vertex at position {position} has non-contiguous ID {found:?}")]
     NonContiguousVertexId {
@@ -46,6 +56,13 @@ pub enum SphericalSurfaceValidationError {
     /// A cell cannot form a spherical polygon.
     #[error("cell {cell:?} boundary has only {vertices} vertices")]
     CellBoundaryTooSmall { cell: CellId, vertices: usize },
+    /// A cell boundary exceeds the schema V1 geodesic-dual degree budget.
+    #[error("cell {cell:?} boundary degree {found} exceeds schema V1 maximum {max}")]
+    CellBoundaryDegreeOutOfRange {
+        cell: CellId,
+        found: usize,
+        max: usize,
+    },
     /// A cell's cyclic vertex and edge lists have different lengths.
     #[error("cell {cell:?} has {vertices} boundary vertices but {edges} boundary edges")]
     CellBoundaryLengthMismatch {
@@ -215,6 +232,13 @@ impl SphericalSurfaceSnapshot {
                 supported: SPHERICAL_SURFACE_SCHEMA_V1,
             });
         }
+        validate_record_count(
+            "vertex",
+            self.vertices.len(),
+            MAX_SPHERICAL_VERTEX_COUNT as usize,
+        )?;
+        validate_record_count("cell", self.cells.len(), MAX_SPHERICAL_CELL_COUNT as usize)?;
+        validate_record_count("edge", self.edges.len(), MAX_SPHERICAL_EDGE_COUNT as usize)?;
         let radius = self.radius.get();
         if !radius.is_finite() || radius <= 0.0 {
             return Err(SphericalSurfaceValidationError::InvalidRadius { found: radius });
@@ -274,6 +298,15 @@ impl SphericalSurfaceSnapshot {
                         cell: cell.id,
                         vertices: cell.boundary_vertices.len(),
                         edges: cell.boundary_edges.len(),
+                    },
+                );
+            }
+            if cell.boundary_vertices.len() > MAX_SPHERICAL_CELL_BOUNDARY_DEGREE {
+                return Err(
+                    SphericalSurfaceValidationError::CellBoundaryDegreeOutOfRange {
+                        cell: cell.id,
+                        found: cell.boundary_vertices.len(),
+                        max: MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
                     },
                 );
             }
@@ -776,6 +809,17 @@ impl SphericalSurfaceSnapshot {
     }
 }
 
+fn validate_record_count(
+    record: &'static str,
+    found: usize,
+    max: usize,
+) -> Result<(), SphericalSurfaceValidationError> {
+    if found > max {
+        return Err(SphericalSurfaceValidationError::RecordCountOutOfRange { record, found, max });
+    }
+    Ok(())
+}
+
 fn validate_unit(
     vector: UnitVector3,
     record: &'static str,
@@ -876,6 +920,25 @@ impl CompensatedSum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_record_budgets_reject_max_plus_one_without_allocating() {
+        for (record, max) in [
+            ("vertex", MAX_SPHERICAL_VERTEX_COUNT as usize),
+            ("cell", MAX_SPHERICAL_CELL_COUNT as usize),
+            ("edge", MAX_SPHERICAL_EDGE_COUNT as usize),
+        ] {
+            assert!(validate_record_count(record, max, max).is_ok());
+            assert!(matches!(
+                validate_record_count(record, max + 1, max),
+                Err(SphericalSurfaceValidationError::RecordCountOutOfRange {
+                    record: found_record,
+                    found,
+                    max: found_max,
+                }) if found_record == record && found == max + 1 && found_max == max
+            ));
+        }
+    }
 
     #[test]
     fn positive_metric_matching_uses_the_absolute_floor_without_admitting_zero() {

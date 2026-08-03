@@ -7,18 +7,17 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::sphere_geometry::norm;
 use super::{SphericalSurfaceValidationError, UnitVector3};
 use crate::world::{
-    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, UnitError, MAX_GEODESIC_FREQUENCY,
+    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, UnitError,
+    MAX_SPHERICAL_CELL_BOUNDARY_DEGREE, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT,
+    MAX_SPHERICAL_VERTEX_COUNT,
 };
 
 /// The supported version of the serialized spherical-surface schema.
 pub const SPHERICAL_SURFACE_SCHEMA_V1: u16 = 1;
 
-const MAX_FREQUENCY_SQUARED: usize =
-    MAX_GEODESIC_FREQUENCY as usize * MAX_GEODESIC_FREQUENCY as usize;
-const MAX_SPHERICAL_VERTICES: usize = 20 * MAX_FREQUENCY_SQUARED;
-const MAX_SPHERICAL_EDGES: usize = 30 * MAX_FREQUENCY_SQUARED;
-const MAX_SPHERICAL_CELLS: usize = 10 * MAX_FREQUENCY_SQUARED + 2;
-const MAX_CELL_BOUNDARY_DEGREE: usize = 6;
+const MAX_SPHERICAL_VERTICES: usize = MAX_SPHERICAL_VERTEX_COUNT as usize;
+const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;
+const MAX_SPHERICAL_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 
 /// A canonical vertex stored once by the authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,14 +120,14 @@ fn deserialize_cell_boundary_vertices<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec::<_, _, MAX_CELL_BOUNDARY_DEGREE>(deserializer)
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE>(deserializer)
 }
 
 fn deserialize_cell_boundary_edges<'de, D>(deserializer: D) -> Result<Vec<EdgeId>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec::<_, _, MAX_CELL_BOUNDARY_DEGREE>(deserializer)
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE>(deserializer)
 }
 
 fn deserialize_bounded_vec<'de, D, T, const MAX: usize>(deserializer: D) -> Result<Vec<T>, D::Error>

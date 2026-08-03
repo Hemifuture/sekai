@@ -235,6 +235,33 @@ fn deserialization_rejects_cell_boundary_vectors_over_the_v1_degree_bound() {
 }
 
 #[test]
+fn construction_rejects_cell_boundaries_that_cannot_round_trip_through_v1() {
+    let (vertices, mut cells, edges) = tetrahedral_records();
+    cells[0].boundary_vertices = [0, 1, 2, 3, 0, 1, 2]
+        .map(SurfaceVertexId::from_raw)
+        .to_vec();
+    cells[0].boundary_edges = [0, 1, 2, 3, 4, 5, 0].map(EdgeId::from_raw).to_vec();
+
+    let error = SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(RADIUS),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::CellBoundaryDegreeOutOfRange {
+            cell,
+            found: 7,
+            max: 6,
+        } if cell == CellId::from_raw(0)
+    ));
+}
+
+#[test]
 fn validation_rejects_unsupported_schema_first() {
     let error = mutated_snapshot(|json| json["schema_version"] = Value::from(7)).unwrap_err();
     assert!(matches!(

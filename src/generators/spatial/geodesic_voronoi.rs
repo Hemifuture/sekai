@@ -12,10 +12,9 @@ use crate::world::spatial::{
 };
 use crate::world::{
     CellId, EdgeId, Meters, SphericalSpaceSpec, SphericalSpecError, SquareMeters, SurfaceVertexId,
-    MAX_GEODESIC_FREQUENCY,
+    MAX_GEODESIC_FREQUENCY, MIN_GEODESIC_FREQUENCY,
 };
 
-const MIN_GEODESIC_FREQUENCY: u32 = 2;
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
 
 const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [

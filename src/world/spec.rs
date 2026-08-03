@@ -13,16 +13,31 @@ pub const MAX_CELL_COUNT: u32 = 200_000;
 pub const MIN_DIMENSION_METERS: f64 = 1.0;
 /// The largest planar dimension allowed by the V1 numerical-safety budget, in meters.
 pub const MAX_DIMENSION_METERS: f64 = 100_000_000.0;
-/// The smallest supported geodesic cell allocation.
-pub const MIN_SPHERICAL_CELL_COUNT: u32 = 42;
-/// The largest supported geodesic cell allocation.
-pub const MAX_SPHERICAL_CELL_COUNT: u32 = 198_812;
+/// The smallest supported geodesic subdivision frequency.
+pub const MIN_GEODESIC_FREQUENCY: u32 = 2;
 /// The largest supported geodesic subdivision frequency.
 pub const MAX_GEODESIC_FREQUENCY: u32 = 141;
+/// The smallest supported geodesic cell allocation.
+pub const MIN_SPHERICAL_CELL_COUNT: u32 = geodesic_cell_count(MIN_GEODESIC_FREQUENCY);
+/// The largest supported geodesic cell allocation.
+pub const MAX_SPHERICAL_CELL_COUNT: u32 = geodesic_cell_count(MAX_GEODESIC_FREQUENCY);
+/// The largest authoritative spherical-surface vertex allocation in schema V1.
+pub const MAX_SPHERICAL_VERTEX_COUNT: u32 = 20 * frequency_squared(MAX_GEODESIC_FREQUENCY);
+/// The largest authoritative spherical-surface edge allocation in schema V1.
+pub const MAX_SPHERICAL_EDGE_COUNT: u32 = 30 * frequency_squared(MAX_GEODESIC_FREQUENCY);
+/// The largest authoritative spherical-surface cell boundary degree in schema V1.
+pub const MAX_SPHERICAL_CELL_BOUNDARY_DEGREE: usize = 6;
 
 const MIN_SPHERICAL_RADIUS_METERS: f64 = 1.0;
 const MAX_SPHERICAL_RADIUS_METERS: f64 = 100_000_000.0;
-const MIN_GEODESIC_FREQUENCY: u32 = 2;
+
+const fn frequency_squared(frequency: u32) -> u32 {
+    frequency * frequency
+}
+
+const fn geodesic_cell_count(frequency: u32) -> u32 {
+    10 * frequency_squared(frequency) + 2
+}
 
 const MIN_ASPECT_RATIO: f64 = 1.0 / 16.0;
 const MAX_ASPECT_RATIO: f64 = 16.0;
@@ -129,8 +144,8 @@ impl SphericalSpaceSpec {
             .checked_add(1)
             .expect("bounded geodesic frequency")
             .min(MAX_GEODESIC_FREQUENCY);
-        let lower_count = geodesic_cell_count(lower).expect("bounded geodesic frequency");
-        let upper_count = geodesic_cell_count(upper).expect("bounded geodesic frequency");
+        let lower_count = geodesic_cell_count(lower);
+        let upper_count = geodesic_cell_count(upper);
 
         if self.target_cell_count.abs_diff(lower_count)
             <= self.target_cell_count.abs_diff(upper_count)
@@ -143,17 +158,8 @@ impl SphericalSpaceSpec {
 
     /// Returns the exact generated cell count for the resolved geodesic frequency.
     pub fn resolved_cell_count(&self) -> u32 {
-        geodesic_cell_count(self.resolved_frequency()).expect("bounded geodesic frequency")
+        geodesic_cell_count(self.resolved_frequency())
     }
-}
-
-fn geodesic_cell_count(frequency: u32) -> Option<u32> {
-    let frequency = u64::from(frequency);
-    let count = frequency
-        .checked_mul(frequency)?
-        .checked_mul(10)?
-        .checked_add(2)?;
-    u32::try_from(count).ok()
 }
 
 /// A versioned, deterministic description of a world to generate.
