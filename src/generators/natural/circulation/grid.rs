@@ -68,6 +68,7 @@ pub struct SphericalEdge {
     midpoint_unit: [f64; 3],
     length_m: f64,
     center_distance_m: f64,
+    center_distances_to_midpoint_m: [f64; 2],
     normal_from_first: [f64; 3],
 }
 
@@ -94,6 +95,10 @@ impl SphericalEdge {
 
     pub const fn center_distance_m(&self) -> f64 {
         self.center_distance_m
+    }
+
+    pub const fn center_distances_to_midpoint_m(&self) -> &[f64; 2] {
+        &self.center_distances_to_midpoint_m
     }
 
     pub const fn normal_from_first(&self) -> [f64; 3] {
@@ -216,10 +221,17 @@ impl CubedSphereGrid {
             }
             let length_m = central_angle(first_vertex, second_vertex) * radius_m;
             let center_distance_m = central_angle(first_center, second_center) * radius_m;
+            let center_distances_to_midpoint_m = [
+                central_angle(first_center, midpoint_unit) * radius_m,
+                central_angle(second_center, midpoint_unit) * radius_m,
+            ];
             if !length_m.is_finite()
                 || length_m <= 0.0
                 || !center_distance_m.is_finite()
                 || center_distance_m <= 0.0
+                || center_distances_to_midpoint_m
+                    .iter()
+                    .any(|distance| !distance.is_finite() || *distance <= 0.0)
             {
                 return Err(CubedSphereGridError::DegenerateGeometry);
             }
@@ -233,6 +245,7 @@ impl CubedSphereGrid {
                 midpoint_unit,
                 length_m,
                 center_distance_m,
+                center_distances_to_midpoint_m,
                 normal_from_first,
             });
         }
@@ -485,6 +498,9 @@ fn calculate_fingerprint(
         }
         hasher.update(&quantize_unit(edge.length_m / radius_m).to_le_bytes());
         hasher.update(&quantize_unit(edge.center_distance_m / radius_m).to_le_bytes());
+        for distance in edge.center_distances_to_midpoint_m {
+            hasher.update(&quantize_unit(distance / radius_m).to_le_bytes());
+        }
     }
     *hasher.finalize().as_bytes()
 }

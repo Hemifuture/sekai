@@ -48,6 +48,10 @@ fn seam_adjacency_is_reciprocal_and_edge_normals_are_tangent() {
         }
     }
     for edge in grid.edges() {
+        assert!(edge
+            .center_distances_to_midpoint_m()
+            .iter()
+            .all(|distance| *distance > 0.0));
         assert!(dot(edge.midpoint_unit(), edge.normal_from_first()).abs() < 1.0e-12);
         let first = grid.cells()[edge.cells()[0] as usize].center_unit();
         let second = grid.cells()[edge.cells()[1] as usize].center_unit();
