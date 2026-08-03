@@ -5,16 +5,10 @@ use sekai::world::{Meters, SphericalSpaceSpec, SurfaceVertexId};
 fn unit_vectors_are_canonical_and_validated_on_deserialization() {
     let point = UnitVector3::new(3.0, 0.0, 4.0).unwrap();
     assert!((point.norm() - 1.0).abs() <= 1.0e-15);
+    assert_eq!(point.components(), [0.6, 0.0, 0.8]);
     assert!(UnitVector3::new(0.0, 0.0, 0.0).is_err());
     assert!(serde_json::from_str::<UnitVector3>(r#"[0.0,0.0,0.0]"#).is_err());
     assert_eq!(SurfaceVertexId::from_raw(7).raw(), 7);
-}
-
-#[test]
-fn unit_vectors_use_direct_normalization_when_intermediates_are_safe() {
-    let point = UnitVector3::new(3.0, 0.0, 4.0).unwrap();
-
-    assert_eq!(point.components(), [0.600_000_000_000_000_1, 0.0, 0.8]);
 }
 
 #[test]
@@ -67,28 +61,17 @@ fn central_angle_preserves_rotated_near_antipodal_separation() {
 }
 
 #[test]
-fn near_pi_triangle_area_is_stable_under_rotation() {
+fn near_pi_triangle_area_matches_analytic_oracle_under_rotation() {
+    let complement: f64 = 1.0e-4;
     let triangle = [
         UnitVector3::new(1.0, 0.0, 0.0).unwrap(),
-        UnitVector3::new(-1.0, 1.0e-4, 0.0).unwrap(),
+        UnitVector3::new(-1.0, complement, 0.0).unwrap(),
         UnitVector3::new(0.0, 0.0, 1.0).unwrap(),
     ];
     let rotation = [
-        [
-            0.376_360_800_722_535_64,
-            0.519_346_084_346_028_5,
-            -0.767_223_691_210_027_5,
-        ],
-        [
-            0.500_184_662_395_402_3,
-            -0.810_957_159_127_695,
-            -0.303_584_896_798_138,
-        ],
-        [
-            -0.779_851_172_457_853_7,
-            -0.269_496_068_123_426_47,
-            -0.564_981_431_625_964_3,
-        ],
+        [0.655_433_041_099_091_8, 0.755_253_287_735_708, 0.0],
+        [-0.755_253_287_735_708, 0.655_433_041_099_091_8, 0.0],
+        [0.0, 0.0, 1.0],
     ];
     let rotated = triangle.map(|vector| {
         let vector = vector.components();
@@ -101,9 +84,12 @@ fn near_pi_triangle_area_is_stable_under_rotation() {
     });
     let area = spherical_triangle_area_unit(triangle[0], triangle[1], triangle[2]);
     let rotated_area = spherical_triangle_area_unit(rotated[0], rotated[1], rotated[2]);
+    let expected = std::f64::consts::PI - complement.atan();
+    let tolerance = 8.0 * f64::EPSILON;
 
-    assert!(area > std::f64::consts::PI - 1.0e-3);
-    assert!((area - rotated_area).abs() <= 16.0 * f64::EPSILON);
+    assert!((area - expected).abs() <= tolerance);
+    assert!((rotated_area - expected).abs() <= tolerance);
+    assert!((area - rotated_area).abs() <= tolerance);
 }
 
 #[test]

@@ -150,21 +150,30 @@ pub(crate) fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
         && length.is_normal()
         && reciprocal_length.is_normal()
         && direct_normalized.into_iter().all(zero_or_normal);
-    if direct_intermediates_are_safe {
-        return Some(direct_normalized);
-    }
-
     let scaled = [
         vector[0] / largest_component,
         vector[1] / largest_component,
         vector[2] / largest_component,
     ];
     let scaled_length = norm(scaled);
-    Some([
+    let scaled_normalized = [
         scaled[0] / scaled_length,
         scaled[1] / scaled_length,
         scaled[2] / scaled_length,
-    ])
+    ];
+    if direct_intermediates_are_safe {
+        let direct_unit_error = (dot(direct_normalized, direct_normalized) - 1.0).abs();
+        let scaled_unit_error = (dot(scaled_normalized, scaled_normalized) - 1.0).abs();
+        // Prefer the more nearly unit candidate; an exact tie retains the
+        // established direct evaluation order used by ordinary grid inputs.
+        return Some(if direct_unit_error <= scaled_unit_error {
+            direct_normalized
+        } else {
+            scaled_normalized
+        });
+    }
+
+    Some(scaled_normalized)
 }
 
 fn zero_or_normal(value: f64) -> bool {
