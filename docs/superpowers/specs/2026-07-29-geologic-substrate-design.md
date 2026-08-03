@@ -675,7 +675,7 @@ bedrock-province-v1
 只有同时满足以下条件，本切片才完成：
 
 - 规则包通过唯一世界法则能力选择地质模型；
-- 阶段图生成通过验证的 `MantleArtifact`、Relief V2 和 `GeologicArtifact`；
+- 阶段图生成通过验证的 `MantleArtifact`、Relief V3 和 `GeologicArtifact`，同时保持 Relief V2 读取兼容；
 - 热点独立于板块生成并显式影响高程；
 - 基岩、裂隙、抗蚀性、渗透性和三类形成潜势可独立查看；
 - 缓存边界证明地质输入不会污染空间或构造阶段；

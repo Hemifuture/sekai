@@ -1,5 +1,7 @@
 # Causal Island Relief Implementation Plan
 
+**Status:** Completed, release-validated, and merged into `main` at `13b8118` on 2026-08-03.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add deterministic hotspot island groups and oceanic subduction island arcs whose natural-looking relief comes from bounded multiscale noise without allowing global noise to invent land.
