@@ -1,5 +1,6 @@
 //! Contracts for the current-slice natural world.
 
+mod circulation;
 mod climate;
 mod climate_spec;
 mod fields;
@@ -15,6 +16,11 @@ mod spec;
 mod surface_process;
 mod tectonics;
 
+pub use circulation::{
+    CirculationSnapshot, CirculationSnapshotError, CirculationSolveStats, CirculationSolverId,
+    CirculationSpec, CirculationSpecError, ForcingError, PlanetForcing, CIRCULATION_SCHEMA_V1,
+    MAX_CUBED_SPHERE_FACE_RESOLUTION,
+};
 pub use climate::{
     ClimateValidationError, MonthlyScalarField, MonthlyVectorField, PreliminaryClimateSnapshot,
     AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT,
