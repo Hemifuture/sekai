@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::world::spatial::{
-    central_angle, project_tangent, spherical_polygon_metrics, SphericalSurfaceCell,
+    central_angle, oriented_arc_normal, spherical_polygon_metrics, SphericalSurfaceCell,
     SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
     SphericalSurfaceVertex, UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
 };
@@ -428,14 +428,9 @@ fn build_voronoi_edges(
         let cells = incidence.sites;
         let first_site = mesh.sites[cells[0].raw() as usize].direction;
         let second_site = mesh.sites[cells[1].raw() as usize].direction;
-        let site_delta = subtract(second_site.components(), first_site.components());
-        let normal_components = project_tangent(site_delta, midpoint);
-        let normal_from_first = UnitVector3::new(
-            normal_components[0],
-            normal_components[1],
-            normal_components[2],
-        )
-        .map_err(|_| SphericalSurfaceBuildError::DegenerateEdge { edge: edge_id })?;
+        let normal_from_first =
+            oriented_arc_normal(first_vertex, second_vertex, first_site, second_site)
+                .ok_or(SphericalSurfaceBuildError::DegenerateEdge { edge: edge_id })?;
 
         let length = positive_edge_metric(
             radius.get() * central_angle(first_vertex, second_vertex),

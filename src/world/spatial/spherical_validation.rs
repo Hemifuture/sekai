@@ -1,8 +1,8 @@
 use thiserror::Error;
 
-use super::sphere_geometry::{add, cross, scale, subtract};
+use super::sphere_geometry::{add, cross, dot, subtract};
 use super::{
-    central_angle, project_tangent, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
+    central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use crate::world::{CellId, EdgeId, SurfaceVertexId};
@@ -590,8 +590,18 @@ impl SphericalSurfaceSnapshot {
             }
 
             let site_delta = subtract(second_site.components(), first_site.components());
-            let tangent = project_tangent(site_delta, midpoint);
-            let normal = normalized(tangent)
+            let site_separation = vector_norm(site_delta);
+            for endpoint in [first_vertex, second_vertex] {
+                let bisector_residual =
+                    dot(endpoint.components(), site_delta).abs() / site_separation;
+                if !bisector_residual.is_finite() || bisector_residual > VECTOR_ANGLE_TOLERANCE {
+                    return Err(SphericalSurfaceValidationError::EdgeNormalMismatch {
+                        edge: edge.id,
+                    });
+                }
+            }
+
+            let normal = oriented_arc_normal(first_vertex, second_vertex, first_site, second_site)
                 .ok_or(SphericalSurfaceValidationError::EdgeNormalMismatch { edge: edge.id })?;
             if central_angle(edge.normal_from_first, normal) > VECTOR_ANGLE_TOLERANCE {
                 return Err(SphericalSurfaceValidationError::EdgeNormalMismatch { edge: edge.id });
@@ -640,7 +650,7 @@ impl SphericalSurfaceSnapshot {
                 .raw() as usize]
                     .position
                     .components();
-                let edge_normal = normalized(cross(first, second)).ok_or(
+                let edge_normal = normalized(cross(first, subtract(second, first))).ok_or(
                     SphericalSurfaceValidationError::CellOrientationMismatch {
                         cell: cell.id,
                         side,
@@ -706,7 +716,7 @@ pub(crate) fn spherical_polygon_metrics(
     }
 
     let mut area = CompensatedSum::default();
-    let mut vector_area = [CompensatedSum::default(); 3];
+    let mut weighted_centroid = [CompensatedSum::default(); 3];
     for index in 0..polygon.len() {
         let first = polygon[index];
         let second = polygon[(index + 1) % polygon.len()];
@@ -716,16 +726,15 @@ pub(crate) fn spherical_polygon_metrics(
         }
         area.add(triangle_area);
 
-        // Adjacent fan triangles' two site spokes cancel analytically. Accumulating only
-        // the surviving boundary term avoids destructive cancellation for short arcs.
-        let edge_cross = cross(first.components(), second.components());
-        let sine = edge_cross[0].hypot(edge_cross[1]).hypot(edge_cross[2]);
-        if sine == 0.0 || !sine.is_finite() {
-            return None;
-        }
-        let contribution = scale(edge_cross, central_angle(first, second) / sine);
-        for component in 0..3 {
-            vector_area[component].add(contribution[component]);
+        let triangle_centroid = normalized(add(
+            add(site.components(), first.components()),
+            second.components(),
+        ))?;
+        for (sum, component) in weighted_centroid
+            .iter_mut()
+            .zip(triangle_centroid.components())
+        {
+            sum.add(triangle_area * component);
         }
     }
 
@@ -733,12 +742,16 @@ pub(crate) fn spherical_polygon_metrics(
     if area <= 0.0 || !area.is_finite() {
         return None;
     }
-    let centroid = normalized(vector_area.map(CompensatedSum::total))?;
+    let centroid = normalized(weighted_centroid.map(CompensatedSum::total))?;
     Some((area, centroid))
 }
 
 fn normalized(vector: [f64; 3]) -> Option<UnitVector3> {
     UnitVector3::new(vector[0], vector[1], vector[2]).ok()
+}
+
+fn vector_norm(vector: [f64; 3]) -> f64 {
+    vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
 fn metric_close(stored: f64, calculated: f64, radius: f64) -> bool {
@@ -781,5 +794,36 @@ impl CompensatedSum {
 
     fn total(self) -> f64 {
         self.sum
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generic_rotation_near_coincident_polygon_metrics_remain_well_conditioned() {
+        let site = UnitVector3::new(1.0, 1.0, 1.0).unwrap();
+        let tangent_x = UnitVector3::new(1.0, -1.0, 0.0).unwrap();
+        let tangent_y = UnitVector3::new(1.0, 1.0, -2.0).unwrap();
+
+        for offset in [1.0e-6, 1.0e-7] {
+            let polygon = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].map(|(x, y)| {
+                let site = site.components();
+                let tangent_x = tangent_x.components();
+                let tangent_y = tangent_y.components();
+                UnitVector3::new(
+                    site[0] + offset * (x * tangent_x[0] + y * tangent_y[0]),
+                    site[1] + offset * (x * tangent_x[1] + y * tangent_y[1]),
+                    site[2] + offset * (x * tangent_x[2] + y * tangent_y[2]),
+                )
+                .unwrap()
+            });
+
+            let (area, centroid) = spherical_polygon_metrics(site, &polygon).unwrap();
+            let expected_area = 4.0 * offset * offset;
+            assert!((area - expected_area).abs() / expected_area <= 1.0e-9);
+            assert!(central_angle(centroid, site) <= 1.0e-12);
+        }
     }
 }

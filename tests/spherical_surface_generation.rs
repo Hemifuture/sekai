@@ -69,6 +69,31 @@ fn closed_surface_science_holds_from_small_refinements_through_the_production_pr
             let second_site = snapshot.cell(edge.cells[1]).unwrap().site;
             let toward_second = tangent_delta(first_site, second_site, edge.midpoint);
             assert!(dot_components(edge.normal_from_first.components(), toward_second) > 0.0);
+
+            let first_vertex = snapshot.vertex(edge.vertices[0]).unwrap().position;
+            let second_vertex = snapshot.vertex(edge.vertices[1]).unwrap().position;
+            let arc_normal = normalized_components(cross(first_vertex, second_vertex));
+            let arc_tangent =
+                normalized_components(cross_components(arc_normal, edge.midpoint.components()));
+            assert!(
+                dot_components(edge.normal_from_first.components(), arc_tangent).abs() <= 2.0e-12,
+                "edge {:?}",
+                edge.id
+            );
+            assert!(
+                dot_components(edge.normal_from_first.components(), arc_normal).abs()
+                    >= 1.0 - 2.0e-12,
+                "edge {:?}",
+                edge.id
+            );
+
+            let site_delta = subtract_components(second_site.components(), first_site.components());
+            let site_separation = norm(site_delta);
+            for endpoint in [first_vertex, second_vertex] {
+                let bisector_residual =
+                    dot_components(endpoint.components(), site_delta).abs() / site_separation;
+                assert!(bisector_residual <= 2.0e-12, "edge {:?}", edge.id);
+            }
         }
 
         assert_eq!(
@@ -118,7 +143,8 @@ fn closed_surface_output_has_only_authoritative_geometry_fields() {
 
 #[test]
 fn closed_surface_serialization_is_canonical_and_deterministic() {
-    let spec = spherical_spec(642);
+    let spec = spherical_spec(20_000);
+    assert_eq!(spec.resolved_frequency(), 45);
     let first = GeodesicVoronoiBuilder::build(&spec).unwrap();
     let second = GeodesicVoronoiBuilder::build(&spec).unwrap();
 
@@ -180,6 +206,31 @@ fn dot(vector: [f64; 3], direction: UnitVector3) -> f64 {
 
 fn dot_components(first: [f64; 3], second: [f64; 3]) -> f64 {
     first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
+}
+
+fn cross_components(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+    [
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    ]
+}
+
+fn subtract_components(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+    [
+        first[0] - second[0],
+        first[1] - second[1],
+        first[2] - second[2],
+    ]
+}
+
+fn norm(vector: [f64; 3]) -> f64 {
+    vector[0].hypot(vector[1]).hypot(vector[2])
+}
+
+fn normalized_components(vector: [f64; 3]) -> [f64; 3] {
+    let length = norm(vector);
+    [vector[0] / length, vector[1] / length, vector[2] / length]
 }
 
 fn assert_no_forbidden_fields(value: &Value, forbidden: &[&str]) {

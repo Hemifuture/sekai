@@ -69,7 +69,8 @@ pub enum SphereGeometryError {
 
 /// Returns the shortest angular separation between two unit vectors in radians.
 pub fn central_angle(a: UnitVector3, b: UnitVector3) -> f64 {
-    let cross = cross(a.components(), b.components());
+    let a_components = a.components();
+    let cross = cross(a_components, subtract(b.components(), a_components));
     let sine = cross[0].hypot(cross[1]).hypot(cross[2]);
     sine.atan2(a.dot(b).clamp(-1.0, 1.0))
 }
@@ -87,9 +88,32 @@ pub fn spherical_triangle_area_unit(a: UnitVector3, b: UnitVector3, c: UnitVecto
     let a = a.components();
     let b = b.components();
     let c = c.components();
-    let numerator = dot(a, cross(b, c)).abs();
+    let numerator = dot(a, cross(subtract(b, a), subtract(c, a))).abs();
     let denominator = 1.0 + dot(a, b) + dot(b, c) + dot(c, a);
     2.0 * numerator.atan2(denominator)
+}
+
+pub(crate) fn oriented_arc_normal(
+    first_endpoint: UnitVector3,
+    second_endpoint: UnitVector3,
+    first_owner: UnitVector3,
+    second_owner: UnitVector3,
+) -> Option<UnitVector3> {
+    let first_endpoint = first_endpoint.components();
+    let endpoint_delta = subtract(second_endpoint.components(), first_endpoint);
+    let components = cross(first_endpoint, endpoint_delta);
+    let normal = UnitVector3::new(components[0], components[1], components[2]).ok()?;
+    let owner_delta = subtract(second_owner.components(), first_owner.components());
+    let orientation = dot(normal.components(), owner_delta);
+    if !orientation.is_finite() || orientation == 0.0 {
+        return None;
+    }
+    if orientation > 0.0 {
+        Some(normal)
+    } else {
+        let [x, y, z] = normal.components();
+        UnitVector3::new(-x, -y, -z).ok()
+    }
 }
 
 #[allow(dead_code)]

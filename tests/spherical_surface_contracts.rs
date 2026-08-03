@@ -1,6 +1,6 @@
 use sekai::world::spatial::{
-    central_angle, spherical_triangle_area_unit, SphericalSurfaceCell, SphericalSurfaceEdge,
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
+    central_angle, SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
+    SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
     SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use sekai::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
@@ -317,7 +317,7 @@ fn validation_rejects_disconnected_closed_components() {
 
 #[test]
 fn refined_short_edges_use_directional_orientation_not_cross_magnitude() {
-    let (vertices, cells, edges) = refined_tetrahedral_records(RADIUS, 1.0e-14);
+    let (vertices, cells, edges) = refined_tetrahedral_records(RADIUS, 1.0e-5);
 
     SphericalSurfaceSnapshot::new(
         SPHERICAL_SURFACE_SCHEMA_V1,
@@ -330,9 +330,43 @@ fn refined_short_edges_use_directional_orientation_not_cross_magnitude() {
 }
 
 #[test]
+fn validation_rejects_an_owner_derived_normal_oblique_to_the_endpoint_arc() {
+    let (mut vertices, mut cells, mut edges) = tetrahedral_records();
+    let moved = vertices[0].position.components();
+    vertices[0].position = unit(moved[0], moved[1] + 0.05, moved[2]);
+    recompute_tetrahedral_metrics(&vertices, &mut cells, &mut edges);
+
+    let edge = &edges[0];
+    let first = vertices[edge.vertices[0].raw() as usize]
+        .position
+        .components();
+    let second = vertices[edge.vertices[1].raw() as usize]
+        .position
+        .components();
+    let arc_normal = normalized_cross(first, second);
+    let arc_tangent = normalized_cross(arc_normal.components(), edge.midpoint.components());
+    assert!(edge.normal_from_first.dot(edge.midpoint).abs() <= 2.0e-15);
+    assert!(edge.normal_from_first.dot(arc_tangent).abs() >= 1.0e-3);
+
+    let error = SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(RADIUS),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::EdgeNormalMismatch { edge }
+            if edge == EdgeId::from_raw(0)
+    ));
+}
+
+#[test]
 fn refined_metric_and_area_roundoff_floors_scale_with_radius() {
     for radius in [1.0, 6_371_000.0, 100_000_000.0] {
-        let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-14);
+        let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-5);
         edges[0].length = meters(edges[0].length.get() + 4.0 * f64::EPSILON * radius);
         cells[2].area = square_meters(cells[2].area.get() + 4.0 * f64::EPSILON * radius * radius);
 
@@ -510,11 +544,17 @@ fn refined_tetrahedral_records(
     Vec<SphericalSurfaceCell>,
     Vec<SphericalSurfaceEdge>,
 ) {
-    let directions = [
+    let sites = [
         unit(1.0, epsilon, epsilon),
         unit(1.0, -epsilon, -epsilon),
         unit(-1.0, 1.0, -1.0),
         unit(-1.0, -1.0, 1.0),
+    ];
+    let directions = [
+        spherical_circumcenter(sites[1], sites[3], sites[2]),
+        spherical_circumcenter(sites[0], sites[2], sites[3]),
+        spherical_circumcenter(sites[0], sites[3], sites[1]),
+        spherical_circumcenter(sites[0], sites[1], sites[2]),
     ];
     let vertices = directions
         .iter()
@@ -524,21 +564,18 @@ fn refined_tetrahedral_records(
             position,
         })
         .collect::<Vec<_>>();
-    let boundary_vertices = [[1, 3, 2], [0, 2, 3], [0, 3, 1], [0, 1, 2]];
-    let boundary_edges = [[4, 5, 3], [1, 5, 2], [2, 4, 0], [0, 3, 1]];
+    let boundary_vertices = [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]];
+    let boundary_edges = [[3, 5, 4], [2, 5, 1], [0, 4, 2], [1, 3, 0]];
     let cells = (0..4)
         .map(|id| {
             let polygon = boundary_vertices[id].map(|vertex| directions[vertex as usize]);
-            let centroid = polygon_centroid(&polygon);
+            let site = sites[id];
+            let (unit_area, centroid) = robust_fan_metrics(site, &polygon);
             SphericalSurfaceCell {
                 id: CellId::from_raw(id as u32),
-                site: centroid,
+                site,
                 centroid,
-                area: square_meters(
-                    spherical_triangle_area_unit(polygon[0], polygon[1], polygon[2])
-                        * radius
-                        * radius,
-                ),
+                area: square_meters(unit_area * radius * radius),
                 boundary_vertices: boundary_vertices[id]
                     .map(SurfaceVertexId::from_raw)
                     .to_vec(),
@@ -585,7 +622,12 @@ fn refined_tetrahedral_records(
                         meters(radius * central_angle(first_site, midpoint)),
                         meters(radius * central_angle(second_site, midpoint)),
                     ],
-                    normal_from_first: direction_between(first_site, second_site, midpoint),
+                    normal_from_first: endpoint_normal_from_first(
+                        directions[first_vertex as usize],
+                        directions[second_vertex as usize],
+                        first_site,
+                        second_site,
+                    ),
                 }
             },
         )
@@ -595,27 +637,7 @@ fn refined_tetrahedral_records(
 
 fn close_site_short_edge_snapshot() -> SphericalSurfaceSnapshot {
     let radius = 1.0;
-    let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-16);
-    let midpoint = edges[0].midpoint.components();
-    let offset = 1.0e-16;
-    for (cell, toward_vertex) in [(2_usize, 3_usize), (3_usize, 2_usize)] {
-        let toward = vertices[toward_vertex].position.components();
-        cells[cell].site = unit(
-            midpoint[0] + offset * toward[0],
-            midpoint[1] + offset * toward[1],
-            midpoint[2] + offset * toward[2],
-        );
-    }
-    for edge in &mut edges {
-        let first_site = cells[edge.cells[0].raw() as usize].site;
-        let second_site = cells[edge.cells[1].raw() as usize].site;
-        edge.center_distance = meters(radius * central_angle(first_site, second_site));
-        edge.center_distances_to_midpoint = [
-            meters(radius * central_angle(first_site, edge.midpoint)),
-            meters(radius * central_angle(second_site, edge.midpoint)),
-        ];
-        edge.normal_from_first = direction_between(first_site, second_site, edge.midpoint);
-    }
+    let (vertices, cells, edges) = refined_tetrahedral_records(radius, 1.0e-5);
     SphericalSurfaceSnapshot::new(
         SPHERICAL_SURFACE_SCHEMA_V1,
         meters(radius),
@@ -626,21 +648,133 @@ fn close_site_short_edge_snapshot() -> SphericalSurfaceSnapshot {
     .unwrap()
 }
 
-fn polygon_centroid(polygon: &[UnitVector3]) -> UnitVector3 {
-    let mut vector_area = [0.0; 3];
-    for index in 0..polygon.len() {
-        let first = polygon[index];
-        let second = polygon[(index + 1) % polygon.len()];
-        let first_components = first.components();
-        let second_components = second.components();
-        let edge_cross = cross(first_components, second_components);
-        let sine = edge_cross[0].hypot(edge_cross[1]).hypot(edge_cross[2]);
-        let weight = central_angle(first, second) / sine;
-        for component in 0..3 {
-            vector_area[component] += edge_cross[component] * weight;
+fn recompute_tetrahedral_metrics(
+    vertices: &[SphericalSurfaceVertex],
+    cells: &mut [SphericalSurfaceCell],
+    edges: &mut [SphericalSurfaceEdge],
+) {
+    for cell in cells.iter_mut() {
+        let polygon = cell
+            .boundary_vertices
+            .iter()
+            .map(|id| vertices[id.raw() as usize].position)
+            .collect::<Vec<_>>();
+        let (unit_area, centroid) = robust_fan_metrics(cell.site, &polygon);
+        cell.area = square_meters(unit_area * RADIUS * RADIUS);
+        cell.centroid = centroid;
+    }
+    for edge in edges {
+        let first_vertex = vertices[edge.vertices[0].raw() as usize].position;
+        let second_vertex = vertices[edge.vertices[1].raw() as usize].position;
+        edge.midpoint = normalized_sum(first_vertex, second_vertex);
+        edge.length = meters(RADIUS * central_angle(first_vertex, second_vertex));
+        let first_site = cells[edge.cells[0].raw() as usize].site;
+        let second_site = cells[edge.cells[1].raw() as usize].site;
+        edge.center_distance = meters(RADIUS * central_angle(first_site, second_site));
+        edge.center_distances_to_midpoint = [
+            meters(RADIUS * central_angle(first_site, edge.midpoint)),
+            meters(RADIUS * central_angle(second_site, edge.midpoint)),
+        ];
+        edge.normal_from_first = direction_between(first_site, second_site, edge.midpoint);
+    }
+}
+
+fn normalized_cross(first: [f64; 3], second: [f64; 3]) -> UnitVector3 {
+    let cross = cross(first, second);
+    unit(cross[0], cross[1], cross[2])
+}
+
+fn spherical_circumcenter(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> UnitVector3 {
+    let a = a.components();
+    let b = b.components();
+    let c = c.components();
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let mut normal = cross(ab, ac);
+    let sum = [a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]];
+    if dot_components(normal, sum) < 0.0 {
+        normal = [-normal[0], -normal[1], -normal[2]];
+    }
+    unit(normal[0], normal[1], normal[2])
+}
+
+fn endpoint_normal_from_first(
+    first_endpoint: UnitVector3,
+    second_endpoint: UnitVector3,
+    first_owner: UnitVector3,
+    second_owner: UnitVector3,
+) -> UnitVector3 {
+    let first = first_endpoint.components();
+    let second = second_endpoint.components();
+    let endpoint_delta = [
+        second[0] - first[0],
+        second[1] - first[1],
+        second[2] - first[2],
+    ];
+    let mut normal = normalized_cross(first, endpoint_delta);
+    let first_owner = first_owner.components();
+    let second_owner = second_owner.components();
+    let owner_delta = [
+        second_owner[0] - first_owner[0],
+        second_owner[1] - first_owner[1],
+        second_owner[2] - first_owner[2],
+    ];
+    if dot_components(normal.components(), owner_delta) < 0.0 {
+        let components = normal.components();
+        normal = unit(-components[0], -components[1], -components[2]);
+    }
+    normal
+}
+
+fn robust_fan_metrics(site: UnitVector3, polygon: &[UnitVector3]) -> (f64, UnitVector3) {
+    let mut area = 0.0;
+    let mut weighted_centroid = [0.0; 3];
+    for side in 0..polygon.len() {
+        let first = polygon[side];
+        let second = polygon[(side + 1) % polygon.len()];
+        let triangle_area = robust_triangle_area(site, first, second);
+        let site = site.components();
+        let first = first.components();
+        let second = second.components();
+        let triangle_centroid = unit(
+            site[0] + first[0] + second[0],
+            site[1] + first[1] + second[1],
+            site[2] + first[2] + second[2],
+        );
+        area += triangle_area;
+        for (sum, component) in weighted_centroid
+            .iter_mut()
+            .zip(triangle_centroid.components())
+        {
+            *sum += triangle_area * component;
         }
     }
-    unit(vector_area[0], vector_area[1], vector_area[2])
+    (
+        area,
+        unit(
+            weighted_centroid[0],
+            weighted_centroid[1],
+            weighted_centroid[2],
+        ),
+    )
+}
+
+fn robust_triangle_area(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> f64 {
+    let a = a.components();
+    let b = b.components();
+    let c = c.components();
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let numerator = (a[0] * (ab[1] * ac[2] - ab[2] * ac[1])
+        + a[1] * (ab[2] * ac[0] - ab[0] * ac[2])
+        + a[2] * (ab[0] * ac[1] - ab[1] * ac[0]))
+        .abs();
+    let denominator = 1.0 + dot_components(a, b) + dot_components(b, c) + dot_components(c, a);
+    2.0 * numerator.atan2(denominator)
+}
+
+fn dot_components(first: [f64; 3], second: [f64; 3]) -> f64 {
+    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
 }
 
 fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {

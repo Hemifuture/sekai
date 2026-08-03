@@ -8,6 +8,7 @@ mod topology;
 mod validation;
 
 pub use snapshot::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
+pub(crate) use sphere_geometry::oriented_arc_normal;
 pub use sphere_geometry::{
     central_angle, project_tangent, spherical_triangle_area_unit, SphereGeometryError, UnitVector3,
 };
