@@ -12,7 +12,7 @@ impl UnitVector3 {
             return Err(SphereGeometryError::NonFiniteComponent);
         }
 
-        normalize([x, y, z])
+        normalize_canonical([x, y, z])
             .map(Self)
             .ok_or(SphereGeometryError::ZeroLengthVector)
     }
@@ -126,54 +126,88 @@ pub(crate) fn norm(vector: [f64; 3]) -> f64 {
     dot(vector, vector).sqrt()
 }
 
-pub(crate) fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
-    if vector.iter().any(|component| !component.is_finite()) {
-        return None;
-    }
-    let largest_component = vector
-        .iter()
-        .map(|component| component.abs())
-        .fold(0.0, f64::max);
-    if largest_component == 0.0 {
-        return None;
+#[derive(Debug, Clone, Copy)]
+enum NormalizationPolicy {
+    Canonical,
+    DerivedLegacyCompatible,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizationEvaluation {
+    vector: [f64; 3],
+    largest_component: f64,
+    direct_normalized: [f64; 3],
+    direct_intermediates_are_safe: bool,
+}
+
+impl NormalizationEvaluation {
+    fn new(vector: [f64; 3]) -> Option<Self> {
+        if vector.iter().any(|component| !component.is_finite()) {
+            return None;
+        }
+        let largest_component = vector
+            .iter()
+            .map(|component| component.abs())
+            .fold(0.0, f64::max);
+        if largest_component == 0.0 {
+            return None;
+        }
+
+        let squared_components = vector.map(|component| component * component);
+        let squared_length = dot(vector, vector);
+        let length = norm(vector);
+        let reciprocal_length = length.recip();
+        let direct_normalized = scale(vector, reciprocal_length);
+        let direct_intermediates_are_safe = squared_components.into_iter().all(zero_or_normal)
+            && squared_length.is_normal()
+            && length.is_normal()
+            && reciprocal_length.is_normal()
+            && direct_normalized.into_iter().all(zero_or_normal);
+        Some(Self {
+            vector,
+            largest_component,
+            direct_normalized,
+            direct_intermediates_are_safe,
+        })
     }
 
-    let squared_components = vector.map(|component| component * component);
-    let squared_length = dot(vector, vector);
-    let length = norm(vector);
-    let reciprocal_length = length.recip();
-    let direct_normalized = scale(vector, reciprocal_length);
-    // Retain the legacy multiply-by-reciprocal order exactly whenever none of
-    // its nonzero squared, root, reciprocal, or output intermediates is non-normal.
-    let direct_intermediates_are_safe = squared_components.into_iter().all(zero_or_normal)
-        && squared_length.is_normal()
-        && length.is_normal()
-        && reciprocal_length.is_normal()
-        && direct_normalized.into_iter().all(zero_or_normal);
-    let scaled = [
-        vector[0] / largest_component,
-        vector[1] / largest_component,
-        vector[2] / largest_component,
-    ];
-    let scaled_length = norm(scaled);
-    let scaled_normalized = [
-        scaled[0] / scaled_length,
-        scaled[1] / scaled_length,
-        scaled[2] / scaled_length,
-    ];
-    if direct_intermediates_are_safe {
-        let direct_unit_error = (dot(direct_normalized, direct_normalized) - 1.0).abs();
-        let scaled_unit_error = (dot(scaled_normalized, scaled_normalized) - 1.0).abs();
-        // Prefer the more nearly unit candidate; an exact tie retains the
-        // established direct evaluation order used by ordinary grid inputs.
-        return Some(if direct_unit_error <= scaled_unit_error {
-            direct_normalized
-        } else {
-            scaled_normalized
-        });
+    fn scale_safe_normalized(self) -> [f64; 3] {
+        let scaled = self
+            .vector
+            .map(|component| component / self.largest_component);
+        let scaled_length = scaled[0].hypot(scaled[1]).hypot(scaled[2]);
+        [
+            scaled[0] / scaled_length,
+            scaled[1] / scaled_length,
+            scaled[2] / scaled_length,
+        ]
     }
+}
 
-    Some(scaled_normalized)
+fn normalize_with_policy(vector: [f64; 3], policy: NormalizationPolicy) -> Option<[f64; 3]> {
+    let evaluation = NormalizationEvaluation::new(vector)?;
+    Some(match policy {
+        NormalizationPolicy::Canonical => evaluation.scale_safe_normalized(),
+        NormalizationPolicy::DerivedLegacyCompatible
+            if evaluation.direct_intermediates_are_safe =>
+        {
+            evaluation.direct_normalized
+        }
+        NormalizationPolicy::DerivedLegacyCompatible => evaluation.scale_safe_normalized(),
+    })
+}
+
+/// Applies the canonical public unit-vector contract: scale first, then use
+/// chained hypot so finite magnitudes share one overflow-safe representation.
+pub(crate) fn normalize_canonical(vector: [f64; 3]) -> Option<[f64; 3]> {
+    normalize_with_policy(vector, NormalizationPolicy::Canonical)
+}
+
+/// Preserves derived cubed-sphere bit compatibility by using the historical
+/// dot/sqrt/reciprocal/multiply order whenever every intermediate is normal or
+/// exact zero. Unsafe direct arithmetic uses the same canonical scaled fallback.
+pub(crate) fn normalize_legacy_compatible(vector: [f64; 3]) -> Option<[f64; 3]> {
+    normalize_with_policy(vector, NormalizationPolicy::DerivedLegacyCompatible)
 }
 
 fn zero_or_normal(value: f64) -> bool {

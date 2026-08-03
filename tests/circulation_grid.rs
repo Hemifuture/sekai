@@ -4,6 +4,61 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+fn update_raw_f64(hasher: &mut blake3::Hasher, value: f64) {
+    hasher.update(&value.to_bits().to_le_bytes());
+}
+
+fn raw_public_geometry_digest(grid: &CubedSphereGrid) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.cubed-sphere-grid.raw-public-geometry.v1\0");
+    hasher.update(&grid.face_resolution().to_le_bytes());
+    update_raw_f64(&mut hasher, grid.radius_m());
+    hasher.update(&(grid.vertex_count() as u64).to_le_bytes());
+    hasher.update(&(grid.cell_count() as u64).to_le_bytes());
+    hasher.update(&(grid.edges().len() as u64).to_le_bytes());
+    update_raw_f64(&mut hasher, grid.minimum_center_distance_m());
+
+    for cell in grid.cells() {
+        hasher.update(&cell.id().to_le_bytes());
+        hasher.update(&[cell.face()]);
+        hasher.update(&cell.row().to_le_bytes());
+        hasher.update(&cell.column().to_le_bytes());
+        for component in cell.center_unit() {
+            update_raw_f64(&mut hasher, component);
+        }
+        update_raw_f64(&mut hasher, cell.area_m2());
+        for edge in cell.edges() {
+            hasher.update(&edge.to_le_bytes());
+        }
+        for neighbor in cell.neighbors() {
+            hasher.update(&neighbor.to_le_bytes());
+        }
+    }
+
+    for edge in grid.edges() {
+        hasher.update(&edge.id().to_le_bytes());
+        for vertex in edge.vertices() {
+            hasher.update(&vertex.to_le_bytes());
+        }
+        for cell in edge.cells() {
+            hasher.update(&cell.to_le_bytes());
+        }
+        for component in edge.midpoint_unit() {
+            update_raw_f64(&mut hasher, component);
+        }
+        for component in edge.normal_from_first() {
+            update_raw_f64(&mut hasher, component);
+        }
+        update_raw_f64(&mut hasher, edge.length_m());
+        update_raw_f64(&mut hasher, edge.center_distance_m());
+        for distance in edge.center_distances_to_midpoint_m() {
+            update_raw_f64(&mut hasher, *distance);
+        }
+    }
+
+    *hasher.finalize().as_bytes()
+}
+
 #[test]
 fn cubed_sphere_is_closed_and_satisfies_euler_counts() {
     let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
@@ -96,6 +151,47 @@ fn cubed_sphere_small_grid_fingerprints_remain_stable() {
     for (resolution, expected) in cases {
         let grid = CubedSphereGrid::new(resolution, 6_371_000.0).unwrap();
         assert_eq!(grid.fingerprint(), &expected, "resolution {resolution}");
+    }
+}
+
+#[test]
+fn cubed_sphere_public_float_bits_match_the_task6_baseline() {
+    // Independently recorded from detached commit
+    // 79a13500206b3de1f81c57394e497dffec2d4fff before the Task 6 refactor.
+    let cases = [
+        (
+            2,
+            [
+                0x46, 0x4e, 0x02, 0x82, 0x1b, 0xf8, 0xa5, 0xee, 0xce, 0xd7, 0x3d, 0x78, 0x3e, 0xce,
+                0x68, 0x99, 0x7c, 0xc2, 0x31, 0x7e, 0x46, 0x2d, 0xad, 0x12, 0xfb, 0xb2, 0x98, 0xe9,
+                0xb2, 0x90, 0xea, 0x55,
+            ],
+        ),
+        (
+            6,
+            [
+                0x67, 0x89, 0x52, 0x0b, 0x2b, 0x40, 0x1e, 0xa3, 0xcc, 0xf5, 0xd2, 0x44, 0x3a, 0x4c,
+                0x01, 0x1a, 0x47, 0xbb, 0x36, 0x60, 0xc1, 0x63, 0xba, 0x1f, 0xd9, 0xb9, 0xb9, 0x83,
+                0xc3, 0xe0, 0x4e, 0xea,
+            ],
+        ),
+        (
+            12,
+            [
+                0x96, 0x98, 0x03, 0xeb, 0xc7, 0x74, 0xb7, 0xd6, 0x74, 0x1d, 0x31, 0x82, 0xcb, 0xb4,
+                0x79, 0x42, 0xb1, 0xea, 0x87, 0x35, 0x33, 0x05, 0x5d, 0x4f, 0x95, 0x16, 0x96, 0x74,
+                0xec, 0x95, 0xa8, 0x28,
+            ],
+        ),
+    ];
+
+    for (resolution, expected) in cases {
+        let grid = CubedSphereGrid::new(resolution, 6_371_000.0).unwrap();
+        assert_eq!(
+            raw_public_geometry_digest(&grid),
+            expected,
+            "resolution {resolution}"
+        );
     }
 }
 
