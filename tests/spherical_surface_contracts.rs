@@ -1,6 +1,6 @@
 use sekai::world::spatial::{
-    central_angle, SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
+    central_angle, spherical_triangle_area_unit, SphericalSurfaceCell, SphericalSurfaceEdge,
+    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
     SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use sekai::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
@@ -118,6 +118,43 @@ fn canonical_fingerprint_survives_a_json_round_trip() {
 }
 
 #[test]
+fn deserialization_rejects_unknown_fields_at_every_surface_record_boundary() {
+    let mut with_neighbors = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    with_neighbors["cells"][0]["neighbors"] = json!([1, 2, 3]);
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(with_neighbors).is_err());
+
+    let mut with_projection = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    with_projection["vertices"][0]["projection"] = json!([0.25, 0.75]);
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(with_projection).is_err());
+
+    let mut with_render_cache = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    with_render_cache["edges"][0]["render_cache"] = json!({"visible": true});
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(with_render_cache).is_err());
+
+    let mut with_stage_timing = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+    with_stage_timing["stage_timing_ms"] = json!(4.5);
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(with_stage_timing).is_err());
+}
+
+#[test]
+fn deserialization_rejects_scaled_non_unit_surface_vectors() {
+    for (records, field) in [
+        ("vertices", "position"),
+        ("cells", "site"),
+        ("cells", "centroid"),
+        ("edges", "midpoint"),
+        ("edges", "normal_from_first"),
+    ] {
+        let mut json = serde_json::to_value(tetrahedral_snapshot()).unwrap();
+        scale_serialized_vector(&mut json[records][0][field], 2.0);
+        assert!(
+            serde_json::from_value::<SphericalSurfaceSnapshot>(json).is_err(),
+            "scaled {records}.{field} vector was accepted"
+        );
+    }
+}
+
+#[test]
 fn validation_rejects_unsupported_schema_first() {
     let error = mutated_snapshot(|json| json["schema_version"] = Value::from(7)).unwrap_err();
     assert!(matches!(
@@ -226,6 +263,89 @@ fn validation_rejects_an_altered_fingerprint() {
     ));
 }
 
+#[test]
+fn validation_rejects_duplicate_canonical_endpoint_pairs() {
+    let error = mutated_snapshot(|json| {
+        json["edges"][1]["vertices"] = json["edges"][0]["vertices"].clone();
+    })
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::DuplicateCanonicalEdge {
+            edge,
+            previous_edge,
+        } if edge == EdgeId::from_raw(1) && previous_edge == EdgeId::from_raw(0)
+    ));
+}
+
+#[test]
+fn validation_rejects_same_direction_traversal_by_both_edge_owners() {
+    let error = mutated_snapshot(|json| {
+        json["cells"][0]["boundary_vertices"] = json!([1, 2, 3]);
+        json["cells"][0]["boundary_edges"] = json!([3, 5, 4]);
+    })
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::EdgeTraversalMismatch { edge }
+            if edge == EdgeId::from_raw(3)
+    ));
+}
+
+#[test]
+fn validation_rejects_a_vertex_pinch_with_two_disjoint_link_cycles() {
+    let error = mutated_snapshot(|json| append_tetrahedral_component(json, true)).unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::VertexLinkNotSingleCycle { vertex }
+            if vertex == SurfaceVertexId::from_raw(0)
+    ));
+}
+
+#[test]
+fn validation_rejects_disconnected_closed_components() {
+    let error = mutated_snapshot(|json| append_tetrahedral_component(json, false)).unwrap_err();
+    assert!(matches!(
+        error,
+        SphericalSurfaceValidationError::DisconnectedCellAdjacency {
+            reached: 4,
+            total: 8,
+        }
+    ));
+}
+
+#[test]
+fn refined_short_edges_use_directional_orientation_not_cross_magnitude() {
+    let (vertices, cells, edges) = refined_tetrahedral_records(RADIUS, 1.0e-14);
+
+    SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        meters(RADIUS),
+        vertices,
+        cells,
+        edges,
+    )
+    .unwrap();
+}
+
+#[test]
+fn refined_metric_and_area_roundoff_floors_scale_with_radius() {
+    for radius in [1.0, 6_371_000.0, 100_000_000.0] {
+        let (vertices, mut cells, mut edges) = refined_tetrahedral_records(radius, 1.0e-14);
+        edges[0].length = meters(edges[0].length.get() + 4.0 * f64::EPSILON * radius);
+        cells[2].area = square_meters(cells[2].area.get() + 4.0 * f64::EPSILON * radius * radius);
+
+        SphericalSurfaceSnapshot::new(
+            SPHERICAL_SURFACE_SCHEMA_V1,
+            meters(radius),
+            vertices,
+            cells,
+            edges,
+        )
+        .unwrap();
+    }
+}
+
 fn tetrahedral_snapshot() -> SphericalSurfaceSnapshot {
     let (vertices, cells, edges) = tetrahedral_records();
     SphericalSurfaceSnapshot::new(
@@ -320,6 +440,122 @@ fn tetrahedral_records() -> (
     (vertices, cells, edges)
 }
 
+fn refined_tetrahedral_records(
+    radius: f64,
+    epsilon: f64,
+) -> (
+    Vec<SphericalSurfaceVertex>,
+    Vec<SphericalSurfaceCell>,
+    Vec<SphericalSurfaceEdge>,
+) {
+    let directions = [
+        unit(1.0, epsilon, epsilon),
+        unit(1.0, -epsilon, -epsilon),
+        unit(-1.0, 1.0, -1.0),
+        unit(-1.0, -1.0, 1.0),
+    ];
+    let vertices = directions
+        .iter()
+        .enumerate()
+        .map(|(id, &position)| SphericalSurfaceVertex {
+            id: SurfaceVertexId::from_raw(id as u32),
+            position,
+        })
+        .collect::<Vec<_>>();
+    let boundary_vertices = [[1, 3, 2], [0, 2, 3], [0, 3, 1], [0, 1, 2]];
+    let boundary_edges = [[4, 5, 3], [1, 5, 2], [2, 4, 0], [0, 3, 1]];
+    let cells = (0..4)
+        .map(|id| {
+            let polygon = boundary_vertices[id].map(|vertex| directions[vertex as usize]);
+            let centroid = polygon_centroid(&polygon);
+            SphericalSurfaceCell {
+                id: CellId::from_raw(id as u32),
+                site: centroid,
+                centroid,
+                area: square_meters(
+                    spherical_triangle_area_unit(polygon[0], polygon[1], polygon[2])
+                        * radius
+                        * radius,
+                ),
+                boundary_vertices: boundary_vertices[id]
+                    .map(SurfaceVertexId::from_raw)
+                    .to_vec(),
+                boundary_edges: boundary_edges[id].map(EdgeId::from_raw).to_vec(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let definitions = [
+        (0, 1, 2, 3),
+        (0, 2, 1, 3),
+        (0, 3, 1, 2),
+        (1, 2, 0, 3),
+        (1, 3, 0, 2),
+        (2, 3, 0, 1),
+    ];
+    let edges = definitions
+        .iter()
+        .enumerate()
+        .map(
+            |(id, &(first_vertex, second_vertex, first_cell, second_cell))| {
+                let midpoint = normalized_sum(
+                    directions[first_vertex as usize],
+                    directions[second_vertex as usize],
+                );
+                let first_site = cells[first_cell as usize].site;
+                let second_site = cells[second_cell as usize].site;
+                SphericalSurfaceEdge {
+                    id: EdgeId::from_raw(id as u32),
+                    vertices: [
+                        SurfaceVertexId::from_raw(first_vertex),
+                        SurfaceVertexId::from_raw(second_vertex),
+                    ],
+                    cells: [CellId::from_raw(first_cell), CellId::from_raw(second_cell)],
+                    midpoint,
+                    length: meters(
+                        radius
+                            * central_angle(
+                                directions[first_vertex as usize],
+                                directions[second_vertex as usize],
+                            ),
+                    ),
+                    center_distance: meters(radius * central_angle(first_site, second_site)),
+                    center_distances_to_midpoint: [
+                        meters(radius * central_angle(first_site, midpoint)),
+                        meters(radius * central_angle(second_site, midpoint)),
+                    ],
+                    normal_from_first: direction_between(first_site, second_site, midpoint),
+                }
+            },
+        )
+        .collect();
+    (vertices, cells, edges)
+}
+
+fn polygon_centroid(polygon: &[UnitVector3]) -> UnitVector3 {
+    let mut vector_area = [0.0; 3];
+    for index in 0..polygon.len() {
+        let first = polygon[index];
+        let second = polygon[(index + 1) % polygon.len()];
+        let first_components = first.components();
+        let second_components = second.components();
+        let edge_cross = cross(first_components, second_components);
+        let sine = edge_cross[0].hypot(edge_cross[1]).hypot(edge_cross[2]);
+        let weight = central_angle(first, second) / sine;
+        for component in 0..3 {
+            vector_area[component] += edge_cross[component] * weight;
+        }
+    }
+    unit(vector_area[0], vector_area[1], vector_area[2])
+}
+
+fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+    [
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    ]
+}
+
 fn mutated_snapshot(
     mutate: impl FnOnce(&mut Value),
 ) -> Result<(), SphericalSurfaceValidationError> {
@@ -327,6 +563,51 @@ fn mutated_snapshot(
     mutate(&mut json);
     let snapshot: SphericalSurfaceSnapshot = serde_json::from_value(json).unwrap();
     snapshot.validate()
+}
+
+fn append_tetrahedral_component(json: &mut Value, identify_first_vertex: bool) {
+    let source_vertices = json["vertices"].as_array().unwrap().clone();
+    let source_cells = json["cells"].as_array().unwrap().clone();
+    let source_edges = json["edges"].as_array().unwrap().clone();
+    let vertex_map = if identify_first_vertex {
+        [0_u64, 4, 5, 6]
+    } else {
+        [4_u64, 5, 6, 7]
+    };
+
+    for (source_id, mut vertex) in source_vertices.into_iter().enumerate() {
+        if identify_first_vertex && source_id == 0 {
+            continue;
+        }
+        vertex["id"] = Value::from(vertex_map[source_id]);
+        json["vertices"].as_array_mut().unwrap().push(vertex);
+    }
+    for mut cell in source_cells {
+        cell["id"] = Value::from(cell["id"].as_u64().unwrap() + 4);
+        for vertex in cell["boundary_vertices"].as_array_mut().unwrap() {
+            *vertex = Value::from(vertex_map[vertex.as_u64().unwrap() as usize]);
+        }
+        for edge in cell["boundary_edges"].as_array_mut().unwrap() {
+            *edge = Value::from(edge.as_u64().unwrap() + 6);
+        }
+        json["cells"].as_array_mut().unwrap().push(cell);
+    }
+    for mut edge in source_edges {
+        edge["id"] = Value::from(edge["id"].as_u64().unwrap() + 6);
+        for vertex in edge["vertices"].as_array_mut().unwrap() {
+            *vertex = Value::from(vertex_map[vertex.as_u64().unwrap() as usize]);
+        }
+        for cell in edge["cells"].as_array_mut().unwrap() {
+            *cell = Value::from(cell.as_u64().unwrap() + 4);
+        }
+        json["edges"].as_array_mut().unwrap().push(edge);
+    }
+}
+
+fn scale_serialized_vector(vector: &mut Value, factor: f64) {
+    for component in vector.as_array_mut().unwrap() {
+        *component = Value::from(component.as_f64().unwrap() * factor);
+    }
 }
 
 fn direction_between(

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::sphere_geometry::{add, cross, dot, scale, subtract};
+use super::sphere_geometry::{add, cross, scale, subtract};
 use super::{
     central_angle, project_tangent, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
@@ -11,7 +11,7 @@ const UNIT_TOLERANCE: f64 = 1.0e-12;
 const VECTOR_ANGLE_TOLERANCE: f64 = 1.0e-10;
 const METRIC_RELATIVE_TOLERANCE: f64 = 1.0e-10;
 const AREA_RELATIVE_TOLERANCE: f64 = 1.0e-10;
-const ORIENTATION_TOLERANCE: f64 = 1.0e-12;
+const ABSOLUTE_SCALE_ULPS: f64 = 16.0;
 
 /// Stable failures for malformed or scientifically inconsistent spherical snapshots.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -86,6 +86,9 @@ pub enum SphericalSurfaceValidationError {
     /// An edge's endpoint IDs are not in canonical ascending order.
     #[error("edge {edge:?} endpoint IDs are not sorted")]
     UnsortedEdgeVertices { edge: EdgeId },
+    /// Two edge records claim the same canonical endpoint pair.
+    #[error("edge {edge:?} duplicates canonical endpoints already owned by {previous_edge:?}")]
+    DuplicateCanonicalEdge { edge: EdgeId, previous_edge: EdgeId },
     /// An edge references a cell that is not present.
     #[error("edge {edge:?} references invalid owner {owner:?}")]
     InvalidEdgeOwner { edge: EdgeId, owner: CellId },
@@ -112,6 +115,15 @@ pub enum SphericalSurfaceValidationError {
         second_owner_count: usize,
         other_count: usize,
     },
+    /// Both owners traverse a shared edge in the same direction.
+    #[error("edge {edge:?} is traversed in the same direction by both owners")]
+    EdgeTraversalMismatch { edge: EdgeId },
+    /// The incident cells and edges around a vertex do not form one cyclic link.
+    #[error("vertex {vertex:?} link is not one cycle")]
+    VertexLinkNotSingleCycle { vertex: SurfaceVertexId },
+    /// The cell graph induced by shared edges is not connected.
+    #[error("cell adjacency reaches {reached} of {total} cells")]
+    DisconnectedCellAdjacency { reached: usize, total: usize },
     /// A stored edge midpoint differs from its endpoint-arc midpoint.
     #[error("edge {edge:?} stores an incorrect midpoint")]
     EdgeMidpointMismatch { edge: EdgeId },
@@ -180,6 +192,7 @@ impl SphericalSurfaceSnapshot {
         self.validate_edge_references()?;
         self.validate_cyclic_sides()?;
         self.validate_incidence()?;
+        self.validate_manifold_topology()?;
         self.validate_edge_metrics()?;
         self.validate_cell_metrics()?;
         self.validate_orientation()?;
@@ -300,6 +313,7 @@ impl SphericalSurfaceSnapshot {
     }
 
     fn validate_edge_references(&self) -> Result<(), SphericalSurfaceValidationError> {
+        let mut canonical_edges = std::collections::BTreeMap::new();
         for edge in &self.edges {
             for &vertex in &edge.vertices {
                 if vertex.raw() as usize >= self.vertices.len() {
@@ -318,6 +332,12 @@ impl SphericalSurfaceSnapshot {
             if edge.vertices[0] > edge.vertices[1] {
                 return Err(SphericalSurfaceValidationError::UnsortedEdgeVertices {
                     edge: edge.id,
+                });
+            }
+            if let Some(previous_edge) = canonical_edges.insert(edge.vertices, edge.id) {
+                return Err(SphericalSurfaceValidationError::DuplicateCanonicalEdge {
+                    edge: edge.id,
+                    previous_edge,
                 });
             }
             for &owner in &edge.cells {
@@ -386,6 +406,121 @@ impl SphericalSurfaceSnapshot {
                     other_count: counts[2],
                 });
             }
+        }
+        Ok(())
+    }
+
+    fn validate_manifold_topology(&self) -> Result<(), SphericalSurfaceValidationError> {
+        self.validate_opposite_edge_traversal()?;
+        self.validate_vertex_links()?;
+        self.validate_cell_adjacency_connected()
+    }
+
+    fn validate_opposite_edge_traversal(&self) -> Result<(), SphericalSurfaceValidationError> {
+        let mut directions = vec![[None; 2]; self.edges.len()];
+        for cell in &self.cells {
+            for side in 0..cell.boundary_vertices.len() {
+                let edge_id = cell.boundary_edges[side];
+                let edge = &self.edges[edge_id.raw() as usize];
+                let owner = usize::from(cell.id == edge.cells[1]);
+                directions[edge_id.raw() as usize][owner] =
+                    Some(cell.boundary_vertices[side] == edge.vertices[0]);
+            }
+        }
+        for (edge, owners) in self.edges.iter().zip(directions) {
+            if owners[0] == owners[1] {
+                return Err(SphericalSurfaceValidationError::EdgeTraversalMismatch {
+                    edge: edge.id,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_vertex_links(&self) -> Result<(), SphericalSurfaceValidationError> {
+        let mut incident_edges =
+            vec![std::collections::BTreeSet::<EdgeId>::new(); self.vertices.len()];
+        for edge in &self.edges {
+            for vertex in edge.vertices {
+                incident_edges[vertex.raw() as usize].insert(edge.id);
+            }
+        }
+        let mut links =
+            vec![std::collections::BTreeMap::<EdgeId, Vec<EdgeId>>::new(); self.vertices.len()];
+        for cell in &self.cells {
+            for position in 0..cell.boundary_vertices.len() {
+                let vertex = cell.boundary_vertices[position];
+                let previous = cell.boundary_edges
+                    [(position + cell.boundary_edges.len() - 1) % cell.boundary_edges.len()];
+                let next = cell.boundary_edges[position];
+                links[vertex.raw() as usize]
+                    .entry(previous)
+                    .or_default()
+                    .push(next);
+                links[vertex.raw() as usize]
+                    .entry(next)
+                    .or_default()
+                    .push(previous);
+            }
+        }
+
+        for (position, (incident_edges, link)) in incident_edges.iter().zip(&links).enumerate() {
+            if incident_edges.is_empty() {
+                continue;
+            }
+            if link.len() != incident_edges.len()
+                || link.keys().any(|edge| !incident_edges.contains(edge))
+                || link.values().any(|neighbors| neighbors.len() != 2)
+            {
+                return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                    vertex: SurfaceVertexId::from_raw(position as u32),
+                });
+            }
+
+            let start = *incident_edges
+                .first()
+                .expect("nonempty incident edge set has a first member");
+            let mut reached = std::collections::BTreeSet::new();
+            let mut pending = vec![start];
+            while let Some(edge) = pending.pop() {
+                if !reached.insert(edge) {
+                    continue;
+                }
+                pending.extend(link[&edge].iter().copied());
+            }
+            if &reached != incident_edges {
+                return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
+                    vertex: SurfaceVertexId::from_raw(position as u32),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_cell_adjacency_connected(&self) -> Result<(), SphericalSurfaceValidationError> {
+        if self.cells.is_empty() {
+            return Ok(());
+        }
+        let mut reached = std::collections::BTreeSet::new();
+        let mut pending = vec![CellId::from_raw(0)];
+        while let Some(cell) = pending.pop() {
+            if !reached.insert(cell) {
+                continue;
+            }
+            for &edge_id in &self.cells[cell.raw() as usize].boundary_edges {
+                let owners = self.edges[edge_id.raw() as usize].cells;
+                pending.push(if owners[0] == cell {
+                    owners[1]
+                } else {
+                    owners[0]
+                });
+            }
+        }
+        if reached.len() != self.cells.len() {
+            return Err(SphericalSurfaceValidationError::DisconnectedCellAdjacency {
+                reached: reached.len(),
+                total: self.cells.len(),
+            });
         }
         Ok(())
     }
@@ -502,7 +637,13 @@ impl SphericalSurfaceSnapshot {
                 .raw() as usize]
                     .position
                     .components();
-                if dot(cross(first, second), cell.site.components()) <= ORIENTATION_TOLERANCE {
+                let edge_normal = normalized(cross(first, second)).ok_or(
+                    SphericalSurfaceValidationError::CellOrientationMismatch {
+                        cell: cell.id,
+                        side,
+                    },
+                )?;
+                if edge_normal.dot(cell.site) <= 0.0 {
                     return Err(SphericalSurfaceValidationError::CellOrientationMismatch {
                         cell: cell.id,
                         side,
@@ -585,22 +726,16 @@ fn metric_close(stored: f64, calculated: f64, radius: f64) -> bool {
     stored.is_finite()
         && calculated.is_finite()
         && (stored - calculated).abs()
-            <= METRIC_RELATIVE_TOLERANCE
-                * stored
-                    .abs()
-                    .max(calculated.abs())
-                    .max(radius * f64::EPSILON)
+            <= ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius
+                + METRIC_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs())
 }
 
 fn area_close(stored: f64, calculated: f64, radius_squared: f64) -> bool {
     stored.is_finite()
         && calculated.is_finite()
         && (stored - calculated).abs()
-            <= AREA_RELATIVE_TOLERANCE
-                * stored
-                    .abs()
-                    .max(calculated.abs())
-                    .max(radius_squared * f64::EPSILON)
+            <= ABSOLUTE_SCALE_ULPS * f64::EPSILON * radius_squared
+                + AREA_RELATIVE_TOLERANCE * stored.abs().max(calculated.abs())
 }
 
 fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {

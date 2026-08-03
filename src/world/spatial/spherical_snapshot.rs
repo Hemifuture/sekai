@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{SphericalSurfaceValidationError, UnitVector3};
 use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
@@ -8,21 +9,26 @@ pub const SPHERICAL_SURFACE_SCHEMA_V1: u16 = 1;
 
 /// A canonical vertex stored once by the authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SphericalSurfaceVertex {
     /// The contiguous stable identifier of this vertex.
     pub id: SurfaceVertexId,
     /// The vertex direction on the unit sphere.
+    #[serde(deserialize_with = "deserialize_strict_unit_vector")]
     pub position: UnitVector3,
 }
 
 /// A validated spherical polygon whose boundary references canonical records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SphericalSurfaceCell {
     /// The contiguous stable identifier of this cell.
     pub id: CellId,
     /// The generating site on the unit sphere.
+    #[serde(deserialize_with = "deserialize_strict_unit_vector")]
     pub site: UnitVector3,
     /// The spherical polygon centroid direction.
+    #[serde(deserialize_with = "deserialize_strict_unit_vector")]
     pub centroid: UnitVector3,
     /// The polygon area at the snapshot radius.
     pub area: SquareMeters,
@@ -34,6 +40,7 @@ pub struct SphericalSurfaceCell {
 
 /// A canonical geodesic edge shared by exactly two spherical cells.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SphericalSurfaceEdge {
     /// The contiguous stable identifier of this edge.
     pub id: EdgeId,
@@ -42,6 +49,7 @@ pub struct SphericalSurfaceEdge {
     /// The two distinct owning cell IDs, in ascending order.
     pub cells: [CellId; 2],
     /// The midpoint direction along the minor great-circle arc.
+    #[serde(deserialize_with = "deserialize_strict_unit_vector")]
     pub midpoint: UnitVector3,
     /// The endpoint arc length at the snapshot radius.
     pub length: Meters,
@@ -50,11 +58,13 @@ pub struct SphericalSurfaceEdge {
     /// The site-to-midpoint distances in the same order as `cells`.
     pub center_distances_to_midpoint: [Meters; 2],
     /// The unit tangent at `midpoint` pointing from `cells[0]` to `cells[1]`.
+    #[serde(deserialize_with = "deserialize_strict_unit_vector")]
     pub normal_from_first: UnitVector3,
 }
 
 /// The immutable, versioned, authoritative geometry of a closed spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SphericalSurfaceSnapshot {
     pub(super) schema_version: u16,
     pub(super) radius: Meters,
@@ -62,6 +72,25 @@ pub struct SphericalSurfaceSnapshot {
     pub(super) cells: Vec<SphericalSurfaceCell>,
     pub(super) edges: Vec<SphericalSurfaceEdge>,
     pub(super) fingerprint: [u8; 32],
+}
+
+fn deserialize_strict_unit_vector<'de, D>(deserializer: D) -> Result<UnitVector3, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let components = <[f64; 3]>::deserialize(deserializer)?;
+    if components.iter().any(|component| !component.is_finite()) {
+        return Err(D::Error::custom(
+            "spherical surface unit-vector components must be finite",
+        ));
+    }
+    let norm = components[0].hypot(components[1]).hypot(components[2]);
+    if (norm - 1.0).abs() > 16.0 * f64::EPSILON {
+        return Err(D::Error::custom(format_args!(
+            "spherical surface vector norm must be 1, got {norm}"
+        )));
+    }
+    UnitVector3::new(components[0], components[1], components[2]).map_err(D::Error::custom)
 }
 
 impl SphericalSurfaceSnapshot {
