@@ -1,5 +1,6 @@
 //! Experimental closed-sphere circulation geometry and solvers.
 
+mod comparison;
 mod dynamics;
 mod fixtures;
 mod grid;
@@ -11,6 +12,10 @@ mod steady;
 mod thermodynamics;
 mod transient;
 
+pub use comparison::{
+    compare_snapshots, ComparisonError, ComparisonReport, EligibilityFailure, EligibilityRule,
+    FixtureComparison, MonthlyAgreement, ScalarAgreement, VectorAgreement, WysiwygEligibility,
+};
 pub use fixtures::{build_fixture, CirculationFixture, FixtureBuildError};
 pub use grid::{CubedSphereGrid, CubedSphereGridError, SphericalCell, SphericalEdge};
 pub use operators::{
