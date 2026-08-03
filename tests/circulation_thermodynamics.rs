@@ -195,6 +195,43 @@ fn ocean_evaporation_source_exceeds_dry_land_source() {
 }
 
 #[test]
+fn unsaturated_excess_humidity_relaxes_toward_the_surface_target() {
+    let (grid, forcing, spec) = uniform_fixture(8);
+    let equilibrium = ThermodynamicState::from_forcing(&grid, &forcing, 0).unwrap();
+    let state = ThermodynamicState::new(
+        equilibrium.air_temperature_c().to_vec(),
+        equilibrium.surface_temperature_c().to_vec(),
+        vec![0.006; grid.cell_count()],
+    )
+    .unwrap();
+    assert!(0.006 < saturation_specific_humidity(15.0).unwrap());
+    let operators = CirculationOperators::new(&grid);
+    let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
+    let zero = zero_velocity(&grid);
+    let tendencies = thermodynamic_tendencies(
+        &operators,
+        &forcing,
+        &spec,
+        &state,
+        &zero,
+        &zero,
+        &permeability,
+        0,
+        3_600.0,
+    )
+    .unwrap();
+
+    assert!(tendencies
+        .specific_humidity_per_s()
+        .iter()
+        .all(|value| *value < 0.0));
+    assert!(tendencies
+        .precipitation_mm_day()
+        .iter()
+        .all(|value| *value == 0.0));
+}
+
+#[test]
 fn noncondensing_transport_preserves_global_moisture() {
     let spec = sekai::world::natural::CirculationSpec {
         face_resolution: 10,

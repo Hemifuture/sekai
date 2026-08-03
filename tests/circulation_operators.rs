@@ -79,6 +79,12 @@ fn conservative_upwind_transport_pairs_edge_fluxes_and_respects_closed_edges() {
         .unwrap();
     assert_eq!(unchanged.values(), scalar.as_slice());
     assert_eq!(unchanged.relative_mass_error(), 0.0);
+
+    let constant = vec![3.5; grid.cell_count()];
+    let tracer = operators
+        .advect_scalar_upwind_tracer(&constant, &velocity, &open, 3_600.0)
+        .unwrap();
+    assert_eq!(tracer.values(), constant.as_slice());
 }
 
 #[test]
@@ -126,4 +132,50 @@ fn zero_permeability_removes_pressure_gradients_and_volume_fluxes() {
         .unwrap();
     assert!(gradient.iter().all(|value| magnitude(*value) == 0.0));
     assert!(divergence.iter().all(|value| *value == 0.0));
+}
+
+#[test]
+fn steady_upwind_source_solver_reaches_the_discrete_stationary_equation() {
+    let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let velocity = solid_rotation(&grid, 15.0);
+    let initial = vec![0.0; grid.cell_count()];
+    let target = grid
+        .cells()
+        .iter()
+        .map(|cell| (2.0 + 0.25 * cell.center_unit()[2]) as f32)
+        .collect::<Vec<_>>();
+    let sink_rate = vec![2.0e-6; grid.cell_count()];
+    let source = target
+        .iter()
+        .zip(&sink_rate)
+        .map(|(target, rate)| target * rate)
+        .collect::<Vec<_>>();
+    let open = vec![1.0; grid.edges().len()];
+
+    let solved = operators
+        .solve_steady_upwind_tracer_source(
+            &initial, &velocity, &open, &sink_rate, &source, 128, 1.0e-8,
+        )
+        .unwrap();
+
+    assert!(solved.relative_residual() <= 1.0e-8);
+    assert!((1..=128).contains(&solved.iterations()));
+    assert!(solved.values().iter().all(|value| value.is_finite()));
+
+    let zero_velocity = vec![[0.0; 3]; grid.cell_count()];
+    let local_equilibrium = operators
+        .solve_steady_upwind_tracer_source(
+            &initial,
+            &zero_velocity,
+            &open,
+            &sink_rate,
+            &source,
+            8,
+            1.0e-10,
+        )
+        .unwrap();
+    for (found, expected) in local_equilibrium.values().iter().zip(target) {
+        assert!((found - expected).abs() < 1.0e-6);
+    }
 }

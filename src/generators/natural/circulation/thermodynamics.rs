@@ -12,6 +12,8 @@ const MAX_SPECIFIC_HUMIDITY: f32 = 0.2;
 const CONDENSATION_TIMESCALE_S: f64 = 21_600.0;
 const AIR_COLUMN_MASS_KG_M2: f64 = STANDARD_PRESSURE_PA / 9.806_65;
 const SECONDS_PER_DAY: f64 = 86_400.0;
+const STEADY_LINEAR_ITERATIONS: u16 = 128;
+const STEADY_LINEAR_TOLERANCE: f64 = 1.0e-6;
 
 /// Prognostic scalar state shared by both circulation strategies.
 #[derive(Debug, Clone, PartialEq)]
@@ -167,6 +169,12 @@ pub struct ThermodynamicTendencies {
     relative_moisture_transport_error: f64,
 }
 
+pub(crate) struct BalancedThermodynamics {
+    pub(crate) state: ThermodynamicState,
+    pub(crate) precipitation_mm_day: Vec<f32>,
+    pub(crate) relative_moisture_transport_error: f64,
+}
+
 impl ThermodynamicTendencies {
     pub fn air_temperature_c_per_s(&self) -> &[f32] {
         &self.air_temperature_c_per_s
@@ -214,19 +222,19 @@ pub fn thermodynamic_tendencies(
         });
     }
 
-    let air_transport = operators.advect_scalar_conservative(
+    let air_transport = operators.advect_scalar_upwind_tracer(
         state.air_temperature_c(),
         atmosphere_velocity,
         permeability.atmosphere(),
         transport_dt_seconds,
     )?;
-    let surface_transport = operators.advect_scalar_conservative(
+    let surface_transport = operators.advect_scalar_upwind_tracer(
         state.surface_temperature_c(),
         surface_velocity,
         permeability.ocean(),
         transport_dt_seconds,
     )?;
-    let humidity_transport = operators.advect_scalar_conservative(
+    let humidity_transport = operators.advect_scalar_upwind_tracer(
         state.specific_humidity(),
         atmosphere_velocity,
         permeability.atmosphere(),
@@ -239,12 +247,7 @@ pub fn thermodynamic_tendencies(
     let mut specific_humidity_per_s = Vec::with_capacity(count);
     let mut precipitation_mm_day = Vec::with_capacity(count);
     for cell in 0..count {
-        let elevation = forcing.elevation_m()[cell].max(0.0);
-        let land = forcing.land_fraction()[cell];
-        let target_air =
-            forcing.equilibrium_air_temperature_c()[cell][month] - LAPSE_RATE_C_PER_M * elevation;
-        let target_surface = forcing.equilibrium_surface_temperature_c()[cell][month]
-            - land * LAPSE_RATE_C_PER_M * elevation;
+        let targets = thermodynamic_targets(forcing, cell, month);
         let transported_air_tendency =
             f64::from(air_transport.values()[cell] - state.air_temperature_c()[cell])
                 / transport_dt_seconds;
@@ -252,28 +255,28 @@ pub fn thermodynamic_tendencies(
             f64::from(surface_transport.values()[cell] - state.surface_temperature_c()[cell])
                 / transport_dt_seconds;
         let air_relaxation = f64::from(spec.thermal_relaxation_s_inv)
-            * f64::from(target_air - state.air_temperature_c()[cell]);
-        let surface_rate_multiplier = f64::from(2.0 * land + 0.25 * (1.0 - land));
+            * f64::from(targets.air_temperature_c - state.air_temperature_c()[cell]);
+        let surface_rate_multiplier = f64::from(surface_relaxation_multiplier(targets.land));
         let surface_relaxation = f64::from(spec.thermal_relaxation_s_inv)
             * surface_rate_multiplier
-            * f64::from(target_surface - state.surface_temperature_c()[cell]);
+            * f64::from(targets.surface_temperature_c - state.surface_temperature_c()[cell]);
 
         let transported_humidity_tendency =
             f64::from(humidity_transport.values()[cell] - state.specific_humidity()[cell])
                 / transport_dt_seconds;
         let humidity = state.specific_humidity()[cell];
-        let humidity_target = forcing.equilibrium_specific_humidity()[cell][month];
-        let evaporation = f64::from(spec.layer_relaxation_s_inv)
-            * f64::from((humidity_target - humidity).max(0.0));
+        let surface_moisture_exchange = f64::from(spec.layer_relaxation_s_inv)
+            * f64::from(targets.specific_humidity - humidity);
         let saturation = saturation_specific_humidity(state.air_temperature_c()[cell])?;
         let condensation = f64::from((humidity - saturation).max(0.0)) / CONDENSATION_TIMESCALE_S;
-        let precipitation = condensation * AIR_COLUMN_MASS_KG_M2 * SECONDS_PER_DAY;
+        let precipitation = precipitation_from_condensation_mm_day(condensation);
 
         air_temperature_c_per_s.push((transported_air_tendency + air_relaxation) as f32);
         surface_temperature_c_per_s
             .push((transported_surface_tendency + surface_relaxation) as f32);
-        specific_humidity_per_s
-            .push((transported_humidity_tendency + evaporation - condensation) as f32);
+        specific_humidity_per_s.push(
+            (transported_humidity_tendency + surface_moisture_exchange - condensation) as f32,
+        );
         precipitation_mm_day.push(precipitation as f32);
     }
 
@@ -286,6 +289,129 @@ pub fn thermodynamic_tendencies(
     };
     validate_tendencies(&tendencies, count)?;
     Ok(tendencies)
+}
+
+/// Solves the same discrete transport-and-source equations at stationary balance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn balance_thermodynamics(
+    operators: &CirculationOperators<'_>,
+    forcing: &PlanetForcing,
+    spec: &CirculationSpec,
+    state: &ThermodynamicState,
+    atmosphere_velocity: &[[f32; 3]],
+    surface_velocity: &[[f32; 3]],
+    permeability: &CirculationEdgePermeability,
+    month: usize,
+) -> Result<BalancedThermodynamics, ThermodynamicError> {
+    spec.validate()?;
+    let grid = operators.grid();
+    validate_grid_forcing(grid, forcing)?;
+    state.validate(grid.cell_count())?;
+    permeability.validate_against(grid, forcing)?;
+    validate_month(month)?;
+
+    let count = grid.cell_count();
+    let mut air_sink = Vec::with_capacity(count);
+    let mut air_source = Vec::with_capacity(count);
+    let mut surface_sink = Vec::with_capacity(count);
+    let mut surface_source = Vec::with_capacity(count);
+    for cell in 0..count {
+        let targets = thermodynamic_targets(forcing, cell, month);
+        let air_rate = spec.thermal_relaxation_s_inv;
+        let surface_rate = air_rate * surface_relaxation_multiplier(targets.land);
+        air_sink.push(air_rate);
+        air_source.push(air_rate * targets.air_temperature_c);
+        surface_sink.push(surface_rate);
+        surface_source.push(surface_rate * targets.surface_temperature_c);
+    }
+
+    let air = operators
+        .solve_steady_upwind_tracer_source(
+            state.air_temperature_c(),
+            atmosphere_velocity,
+            permeability.atmosphere(),
+            &air_sink,
+            &air_source,
+            STEADY_LINEAR_ITERATIONS,
+            STEADY_LINEAR_TOLERANCE,
+        )
+        .map_err(|source| ThermodynamicError::SteadyLinearSolve {
+            field: "air_temperature_c",
+            source,
+        })?;
+    let surface = operators
+        .solve_steady_upwind_tracer_source(
+            state.surface_temperature_c(),
+            surface_velocity,
+            permeability.ocean(),
+            &surface_sink,
+            &surface_source,
+            STEADY_LINEAR_ITERATIONS,
+            STEADY_LINEAR_TOLERANCE,
+        )
+        .map_err(|source| ThermodynamicError::SteadyLinearSolve {
+            field: "surface_temperature_c",
+            source,
+        })?;
+
+    let mut humidity_sink = Vec::with_capacity(count);
+    let mut humidity_source = Vec::with_capacity(count);
+    for cell in 0..count {
+        let humidity = state.specific_humidity()[cell];
+        let target = thermodynamic_targets(forcing, cell, month).specific_humidity;
+        let saturation = saturation_specific_humidity(air.values()[cell])?;
+        let condensation_active = humidity >= saturation;
+        let surface_exchange_rate = spec.layer_relaxation_s_inv;
+        let condensation_rate = if condensation_active {
+            (1.0 / CONDENSATION_TIMESCALE_S) as f32
+        } else {
+            0.0
+        };
+        humidity_sink.push(surface_exchange_rate + condensation_rate);
+        humidity_source.push(surface_exchange_rate * target + condensation_rate * saturation);
+    }
+    let humidity = operators
+        .solve_steady_upwind_tracer_source(
+            state.specific_humidity(),
+            atmosphere_velocity,
+            permeability.atmosphere(),
+            &humidity_sink,
+            &humidity_source,
+            STEADY_LINEAR_ITERATIONS,
+            STEADY_LINEAR_TOLERANCE,
+        )
+        .map_err(|source| ThermodynamicError::SteadyLinearSolve {
+            field: "specific_humidity",
+            source,
+        })?;
+    let humidity_values = humidity
+        .values()
+        .iter()
+        .map(|value| value.clamp(0.0, MAX_SPECIFIC_HUMIDITY))
+        .collect::<Vec<_>>();
+    let thermodynamic_state =
+        ThermodynamicState::new(air.into_values(), surface.into_values(), humidity_values)?;
+    let mut precipitation = Vec::with_capacity(count);
+    for cell in 0..count {
+        let saturation =
+            saturation_specific_humidity(thermodynamic_state.air_temperature_c()[cell])?;
+        let condensation =
+            f64::from((thermodynamic_state.specific_humidity()[cell] - saturation).max(0.0))
+                / CONDENSATION_TIMESCALE_S;
+        precipitation.push(precipitation_from_condensation_mm_day(condensation) as f32);
+    }
+    let moisture_transport = operators.advect_scalar_upwind_tracer(
+        thermodynamic_state.specific_humidity(),
+        atmosphere_velocity,
+        permeability.atmosphere(),
+        1.0,
+    )?;
+
+    Ok(BalancedThermodynamics {
+        state: thermodynamic_state,
+        precipitation_mm_day: precipitation,
+        relative_moisture_transport_error: moisture_transport.relative_mass_error(),
+    })
 }
 
 /// Advances only the prognostic thermodynamic state using precomputed tendencies.
@@ -331,6 +457,39 @@ pub fn saturation_specific_humidity(temperature_c: f32) -> Result<f32, Thermodyn
     let humidity = 0.622 * saturation_vapor_pressure_pa
         / (STANDARD_PRESSURE_PA - 0.378 * saturation_vapor_pressure_pa);
     Ok(humidity.clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CellThermodynamicTargets {
+    air_temperature_c: f32,
+    surface_temperature_c: f32,
+    specific_humidity: f32,
+    land: f32,
+}
+
+fn thermodynamic_targets(
+    forcing: &PlanetForcing,
+    cell: usize,
+    month: usize,
+) -> CellThermodynamicTargets {
+    let elevation = forcing.elevation_m()[cell].max(0.0);
+    let land = forcing.land_fraction()[cell];
+    CellThermodynamicTargets {
+        air_temperature_c: forcing.equilibrium_air_temperature_c()[cell][month]
+            - LAPSE_RATE_C_PER_M * elevation,
+        surface_temperature_c: forcing.equilibrium_surface_temperature_c()[cell][month]
+            - land * LAPSE_RATE_C_PER_M * elevation,
+        specific_humidity: forcing.equilibrium_specific_humidity()[cell][month],
+        land,
+    }
+}
+
+fn surface_relaxation_multiplier(land: f32) -> f32 {
+    2.0 * land + 0.25 * (1.0 - land)
+}
+
+fn precipitation_from_condensation_mm_day(condensation_kg_kg_s: f64) -> f64 {
+    condensation_kg_kg_s * AIR_COLUMN_MASS_KG_M2 * SECONDS_PER_DAY
 }
 
 fn validate_grid_forcing(
@@ -459,4 +618,9 @@ pub enum ThermodynamicError {
     NonFiniteTemperature,
     #[error("moisture transport diagnostic is invalid")]
     InvalidTransportDiagnostic,
+    #[error("stationary solve for {field} failed: {source}")]
+    SteadyLinearSolve {
+        field: &'static str,
+        source: CirculationOperatorError,
+    },
 }
