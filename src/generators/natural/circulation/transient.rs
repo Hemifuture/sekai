@@ -21,6 +21,7 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const DAYS_PER_CLIMATOLOGICAL_MONTH: u64 = 30;
 const SECONDS_PER_CLIMATOLOGICAL_MONTH: u64 = SECONDS_PER_DAY * DAYS_PER_CLIMATOLOGICAL_MONTH;
 const TRANSIENT_DENSE_STATE_MULTIPLIER: u64 = 6;
+const RK3_TENDENCY_COUNT: u64 = 3;
 const ROUND_OFF_TENDENCY_FLOOR: f32 = 1.0e-30;
 const CLASSIC_RK3_IMAGINARY_STABILITY_RADIUS: f64 = 1.732_050_807_568_877_2;
 const TEMPORAL_STABILITY_SAFETY_FACTOR: f64 = 0.9;
@@ -174,7 +175,7 @@ impl CirculationSolver for TransientShallowWaterSolver {
                 while elapsed_seconds < SECONDS_PER_CLIMATOLOGICAL_MONTH {
                     let dt_seconds =
                         base_dt_seconds.min(SECONDS_PER_CLIMATOLOGICAL_MONTH - elapsed_seconds);
-                    let first = evaluate_tendencies(
+                    let step = advance_rk3_step(
                         &state,
                         &operators,
                         forcing,
@@ -183,76 +184,13 @@ impl CirculationSolver for TransientShallowWaterSolver {
                         month,
                         dt_seconds as f64,
                     )?;
-                    let second_stage = advance_state(
-                        &state,
-                        &[(&first, 0.5)],
-                        &operators,
-                        forcing,
-                        spec,
+                    accumulator.record(
+                        &step.state,
+                        &step.precipitation_mm_day,
                         dt_seconds as f64,
                     )?;
-                    let second = evaluate_tendencies(
-                        &second_stage,
-                        &operators,
-                        forcing,
-                        spec,
-                        &permeability,
-                        month,
-                        dt_seconds as f64,
-                    )?;
-                    let third_stage = advance_state(
-                        &state,
-                        &[(&first, -1.0), (&second, 2.0)],
-                        &operators,
-                        forcing,
-                        spec,
-                        dt_seconds as f64,
-                    )?;
-                    let third = evaluate_tendencies(
-                        &third_stage,
-                        &operators,
-                        forcing,
-                        spec,
-                        &permeability,
-                        month,
-                        dt_seconds as f64,
-                    )?;
-                    let final_tendencies = [
-                        (&first, 1.0 / 6.0),
-                        (&second, 4.0 / 6.0),
-                        (&third, 1.0 / 6.0),
-                    ];
-                    let next_state = advance_state(
-                        &state,
-                        &final_tendencies,
-                        &operators,
-                        forcing,
-                        spec,
-                        dt_seconds as f64,
-                    )?;
-                    let final_column_moisture_error = relative_column_moisture_rk_closure_error(
-                        grid,
-                        &state,
-                        &next_state,
-                        &final_tendencies,
-                        spec,
-                        dt_seconds as f64,
-                    )?;
-                    state = next_state;
-                    let precipitation = first
-                        .thermodynamics
-                        .precipitation_mm_day()
-                        .iter()
-                        .zip(second.thermodynamics.precipitation_mm_day())
-                        .zip(third.thermodynamics.precipitation_mm_day())
-                        .map(|((first, second), third)| (*first + 4.0 * *second + *third) / 6.0)
-                        .collect::<Vec<_>>();
-                    accumulator.record(&state, &precipitation, dt_seconds as f64)?;
-                    maximum_mass_error = maximum_mass_error
-                        .max(first.relative_mass_error)
-                        .max(second.relative_mass_error)
-                        .max(third.relative_mass_error)
-                        .max(final_column_moisture_error);
+                    maximum_mass_error = maximum_mass_error.max(step.mass_errors.maximum());
+                    state = step.state;
                     elapsed_seconds += dt_seconds;
                     total_steps += 1;
                 }
@@ -301,6 +239,125 @@ struct TransientTendencies {
     sea_surface_height_m_s: Vec<f32>,
     thermodynamics: ThermodynamicTendencies,
     relative_mass_error: f64,
+}
+
+struct Rk3Step {
+    state: CirculationState,
+    precipitation_mm_day: Vec<f32>,
+    mass_errors: Rk3MassErrors,
+}
+
+struct Rk3MassErrors {
+    stages: [f64; 3],
+    final_stored_state: f64,
+}
+
+impl Rk3MassErrors {
+    fn maximum(&self) -> f64 {
+        maximum_rk3_mass_error(self.stages, self.final_stored_state)
+    }
+}
+
+fn maximum_rk3_mass_error(stage_errors: [f64; 3], final_stored_state: f64) -> f64 {
+    stage_errors
+        .into_iter()
+        .chain(std::iter::once(final_stored_state))
+        .fold(0.0_f64, f64::max)
+}
+
+fn advance_rk3_step(
+    state: &CirculationState,
+    operators: &CirculationOperators<'_>,
+    forcing: &PlanetForcing,
+    spec: &CirculationSpec,
+    permeability: &CirculationEdgePermeability,
+    month: usize,
+    dt_seconds: f64,
+) -> Result<Rk3Step, DynamicsError> {
+    let first = evaluate_tendencies(
+        state,
+        operators,
+        forcing,
+        spec,
+        permeability,
+        month,
+        dt_seconds,
+    )?;
+    let second_stage = advance_state(
+        state,
+        &[(&first, 0.5)],
+        operators,
+        forcing,
+        spec,
+        dt_seconds,
+    )?;
+    let second = evaluate_tendencies(
+        &second_stage,
+        operators,
+        forcing,
+        spec,
+        permeability,
+        month,
+        dt_seconds,
+    )?;
+    let third_stage = advance_state(
+        state,
+        &[(&first, -1.0), (&second, 2.0)],
+        operators,
+        forcing,
+        spec,
+        dt_seconds,
+    )?;
+    let third = evaluate_tendencies(
+        &third_stage,
+        operators,
+        forcing,
+        spec,
+        permeability,
+        month,
+        dt_seconds,
+    )?;
+    let final_tendencies = [
+        (&first, 1.0 / 6.0),
+        (&second, 4.0 / 6.0),
+        (&third, 1.0 / 6.0),
+    ];
+    let next_state = advance_state(
+        state,
+        &final_tendencies,
+        operators,
+        forcing,
+        spec,
+        dt_seconds,
+    )?;
+    let final_stored_state = relative_column_moisture_rk_closure_error(
+        operators.grid(),
+        state,
+        &next_state,
+        &final_tendencies,
+        spec,
+        dt_seconds,
+    )?;
+    let precipitation_mm_day = first
+        .thermodynamics
+        .precipitation_mm_day()
+        .iter()
+        .zip(second.thermodynamics.precipitation_mm_day())
+        .zip(third.thermodynamics.precipitation_mm_day())
+        .map(|((first, second), third)| (*first + 4.0 * *second + *third) / 6.0)
+        .collect();
+    Ok(Rk3Step {
+        state: next_state,
+        precipitation_mm_day,
+        mass_errors: Rk3MassErrors {
+            stages: [
+                first.relative_mass_error,
+                second.relative_mass_error,
+                third.relative_mass_error,
+            ],
+            final_stored_state,
+        },
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -956,9 +1013,7 @@ fn transient_snapshot(
     for month in 0..CLIMATE_MONTH_COUNT {
         builder.record(month, &monthly_states[month], &monthly_precipitation[month])?;
     }
-    let working_bytes = dense_state_bytes(grid.cell_count())?
-        .checked_mul(TRANSIENT_DENSE_STATE_MULTIPLIER)
-        .ok_or(CirculationSolveError::AllocationOverflow)?;
+    let working_bytes = transient_dense_working_bytes(grid.cell_count())?;
     builder.finish(
         identity,
         solver_id,
@@ -970,6 +1025,20 @@ fn transient_snapshot(
             dense_state_bytes: working_bytes,
         },
     )
+}
+
+fn transient_dense_working_bytes(cell_count: usize) -> Result<u64, DynamicsError> {
+    let original_estimate = dense_state_bytes(cell_count)?
+        .checked_mul(TRANSIENT_DENSE_STATE_MULTIPLIER)
+        .ok_or(DynamicsError::AllocationOverflow)?;
+    let column_tendency_bytes = u64::try_from(cell_count)
+        .map_err(|_| DynamicsError::AllocationOverflow)?
+        .checked_mul(std::mem::size_of::<f64>() as u64)
+        .and_then(|bytes| bytes.checked_mul(RK3_TENDENCY_COUNT))
+        .ok_or(DynamicsError::AllocationOverflow)?;
+    original_estimate
+        .checked_add(column_tendency_bytes)
+        .ok_or(DynamicsError::AllocationOverflow)
 }
 
 fn validate_grid_spec(
@@ -1004,6 +1073,24 @@ fn maximum_wave_speed(spec: &CirculationSpec) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_working_bytes_include_three_f64_column_tendency_arrays() {
+        let cell_count = 24_576;
+        let original_estimate =
+            dense_state_bytes(cell_count).unwrap() * TRANSIENT_DENSE_STATE_MULTIPLIER;
+        let column_tendencies =
+            u64::try_from(cell_count).unwrap() * std::mem::size_of::<f64>() as u64 * 3;
+        assert_eq!(
+            transient_dense_working_bytes(cell_count).unwrap(),
+            original_estimate + column_tendencies
+        );
+    }
+
+    #[test]
+    fn rk3_mass_statistic_includes_the_final_stored_state_closure() {
+        assert_eq!(maximum_rk3_mass_error([0.1, 0.2, 0.3], 0.4), 0.4);
+    }
 
     fn fractional_coast_forcing(grid: &CubedSphereGrid) -> PlanetForcing {
         let count = grid.cell_count();
@@ -1257,87 +1344,27 @@ mod tests {
         let operators = CirculationOperators::new(&grid);
         let permeability = CirculationEdgePermeability::from_forcing(&grid, &forcing).unwrap();
         let dt_seconds = 3_600.0;
-        let first = evaluate_tendencies(
+        let step = advance_rk3_step(
             &state,
             &operators,
             &forcing,
             &spec,
             &permeability,
             0,
-            dt_seconds,
-        )
-        .unwrap();
-        let second_stage = advance_state(
-            &state,
-            &[(&first, 0.5)],
-            &operators,
-            &forcing,
-            &spec,
-            dt_seconds,
-        )
-        .unwrap();
-        let second = evaluate_tendencies(
-            &second_stage,
-            &operators,
-            &forcing,
-            &spec,
-            &permeability,
-            0,
-            dt_seconds,
-        )
-        .unwrap();
-        let third_stage = advance_state(
-            &state,
-            &[(&first, -1.0), (&second, 2.0)],
-            &operators,
-            &forcing,
-            &spec,
-            dt_seconds,
-        )
-        .unwrap();
-        let third = evaluate_tendencies(
-            &third_stage,
-            &operators,
-            &forcing,
-            &spec,
-            &permeability,
-            0,
-            dt_seconds,
-        )
-        .unwrap();
-        let final_tendencies = [
-            (&first, 1.0 / 6.0),
-            (&second, 4.0 / 6.0),
-            (&third, 1.0 / 6.0),
-        ];
-        let next = advance_state(
-            &state,
-            &final_tendencies,
-            &operators,
-            &forcing,
-            &spec,
-            dt_seconds,
-        )
-        .unwrap();
-        let final_rk_error = relative_column_moisture_rk_closure_error(
-            &grid,
-            &state,
-            &next,
-            &final_tendencies,
-            &spec,
             dt_seconds,
         )
         .unwrap();
 
         let before = total_column_moisture(&grid, &spec, &state);
-        let after = total_column_moisture(&grid, &spec, &next);
+        let after = total_column_moisture(&grid, &spec, &step.state);
         assert!(
             (after - before).abs() / before.abs() < 5.0e-9,
             "actual coupled state changed column moisture: before={before}, after={after}"
         );
         assert!(
-            final_rk_error < 5.0e-9,
-            "final stored RK state failed moisture closure: {final_rk_error}"
+            step.mass_errors.final_stored_state < 5.0e-9,
+            "final stored RK state failed moisture closure: {}",
+            step.mass_errors.final_stored_state
         );
     }
 }

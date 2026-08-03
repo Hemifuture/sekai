@@ -25,10 +25,13 @@ pub struct CirculationSolveStats {
     pub formation_years: u16,
     pub final_residual: f64,
     /// Maximum relative numerical closure error across atmosphere volume, ocean volume,
-    /// paired-column moisture transport, and the column moisture written by a complete
-    /// transient RK step. Physical source and sink terms such as evaporation, condensation,
-    /// precipitation, relaxation, and explicit humidity-bound projection are excluded.
+    /// and paired-column moisture transport. Transient solves additionally include the
+    /// column moisture written by a complete RK step. Physical source and sink terms such
+    /// as evaporation, condensation, precipitation, relaxation, and explicit humidity-bound
+    /// projection are excluded.
     pub relative_mass_error: f64,
+    /// Deterministic estimate of solver-owned dense working memory. Immutable inputs,
+    /// serialized output, allocator overhead, and sparse operator storage are excluded.
     pub dense_state_bytes: u64,
 }
 
