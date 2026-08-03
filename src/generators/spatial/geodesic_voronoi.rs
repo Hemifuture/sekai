@@ -2,8 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::world::spatial::UnitVector3;
-use crate::world::{CellId, MAX_GEODESIC_FREQUENCY};
+use thiserror::Error;
+
+use crate::world::spatial::{
+    central_angle, project_tangent, spherical_polygon_metrics, SphericalSurfaceCell,
+    SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
+    SphericalSurfaceVertex, UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
+};
+use crate::world::{
+    CellId, EdgeId, Meters, SphericalSpaceSpec, SphericalSpecError, SquareMeters, SurfaceVertexId,
+    MAX_GEODESIC_FREQUENCY,
+};
 
 const MIN_GEODESIC_FREQUENCY: u32 = 2;
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
@@ -45,6 +54,63 @@ const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
     [8, 6, 7],
     [9, 8, 1],
 ];
+
+/// Stable failures returned while constructing an authoritative spherical surface.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum SphericalSurfaceBuildError {
+    /// The requested spherical space violates its numerical or allocation budget.
+    #[error("invalid spherical space: {0}")]
+    InvalidSpec(#[from] SphericalSpecError),
+    /// The private integer-key Delaunay mesh could not be constructed.
+    #[error("geodesic Delaunay mesh construction failed")]
+    MeshConstruction,
+    /// A triangle could not produce a finite spherical circumcenter.
+    #[error("Delaunay triangle {triangle} has a degenerate spherical circumcenter")]
+    DegenerateTriangle {
+        /// The deterministic triangle position.
+        triangle: usize,
+    },
+    /// A Voronoi edge could not produce finite positive spherical metrics.
+    #[error("Voronoi edge {edge:?} has degenerate spherical geometry")]
+    DegenerateEdge {
+        /// The deterministic edge identifier.
+        edge: EdgeId,
+    },
+    /// A site could not produce an outward finite Voronoi polygon.
+    #[error("Voronoi cell {cell:?} has degenerate spherical geometry")]
+    DegenerateCell {
+        /// The deterministic generating site identifier.
+        cell: CellId,
+    },
+    /// Consecutive cell vertices did not resolve to their canonical edge.
+    #[error("Voronoi cell {cell:?} side has no canonical Delaunay-dual edge")]
+    MissingBoundaryEdge {
+        /// The deterministic generating site identifier.
+        cell: CellId,
+    },
+    /// A record count exceeded the stable identifier representation.
+    #[error("geodesic surface record count exceeds stable identifier capacity")]
+    IdentifierOverflow,
+    /// The completed records did not satisfy the authoritative snapshot contract.
+    #[error("constructed spherical surface failed validation: {0}")]
+    InvalidSnapshot(#[from] SphericalSurfaceValidationError),
+}
+
+/// Builds deterministic closed spherical Voronoi topology without randomness or projection seams.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeodesicVoronoiBuilder;
+
+impl GeodesicVoronoiBuilder {
+    /// Resolves the requested cell budget and constructs one fully validated snapshot.
+    pub fn build(
+        space: &SphericalSpaceSpec,
+    ) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+        space.validate()?;
+        let mesh = GeodesicMesh::build(space.resolved_frequency())
+            .map_err(|_| SphericalSurfaceBuildError::MeshConstruction)?;
+        build_surface(space.radius, &mesh)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SiteKey {
@@ -207,6 +273,259 @@ impl GeodesicMesh {
             edge_incidence,
         })
     }
+}
+
+fn build_surface(
+    radius: Meters,
+    mesh: &GeodesicMesh,
+) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+    let vertices = build_voronoi_vertices(mesh)?;
+    let boundaries = order_cell_boundaries(mesh, &vertices)?;
+    let edges = build_voronoi_edges(radius, mesh, &vertices)?;
+    let cells = build_voronoi_cells(radius, mesh, &vertices, boundaries, &edges.ids)?;
+    SphericalSurfaceSnapshot::new(
+        SPHERICAL_SURFACE_SCHEMA_V1,
+        radius,
+        vertices,
+        cells,
+        edges.records,
+    )
+    .map_err(SphericalSurfaceBuildError::from)
+}
+
+fn build_voronoi_vertices(
+    mesh: &GeodesicMesh,
+) -> Result<Vec<SphericalSurfaceVertex>, SphericalSurfaceBuildError> {
+    mesh.triangles
+        .iter()
+        .enumerate()
+        .map(|(triangle_index, triangle)| {
+            let [a, b, c] = triangle
+                .sites
+                .map(|id| mesh.sites[id.raw() as usize].direction.components());
+            let mut normal = cross(subtract(b, a), subtract(c, a));
+            if dot(normal, add(add(a, b), c)) < 0.0 {
+                normal = scale(normal, -1.0);
+            }
+            let position = UnitVector3::new(normal[0], normal[1], normal[2]).map_err(|_| {
+                SphericalSurfaceBuildError::DegenerateTriangle {
+                    triangle: triangle_index,
+                }
+            })?;
+            let raw_id = u32::try_from(triangle_index)
+                .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
+            Ok(SphericalSurfaceVertex {
+                id: SurfaceVertexId::from_raw(raw_id),
+                position,
+            })
+        })
+        .collect()
+}
+
+fn order_cell_boundaries(
+    mesh: &GeodesicMesh,
+    vertices: &[SphericalSurfaceVertex],
+) -> Result<Vec<Vec<SurfaceVertexId>>, SphericalSurfaceBuildError> {
+    let mut incident_triangles = vec![Vec::<SurfaceVertexId>::new(); mesh.sites.len()];
+    for (triangle_index, triangle) in mesh.triangles.iter().enumerate() {
+        let raw_id = u32::try_from(triangle_index)
+            .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
+        let vertex_id = SurfaceVertexId::from_raw(raw_id);
+        for site in triangle.sites {
+            incident_triangles[site.raw() as usize].push(vertex_id);
+        }
+    }
+
+    for (site, boundary) in mesh.sites.iter().zip(&mut incident_triangles) {
+        let (basis_x, basis_y) = deterministic_tangent_basis(site.direction)
+            .ok_or(SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
+        boundary.sort_by(|first_id, second_id| {
+            let first = vertices[first_id.raw() as usize].position;
+            let second = vertices[second_id.raw() as usize].position;
+            tangent_angle(first, basis_x, basis_y)
+                .total_cmp(&tangent_angle(second, basis_x, basis_y))
+                .then_with(|| first_id.cmp(second_id))
+        });
+
+        if boundary.len() < 3 {
+            return Err(SphericalSurfaceBuildError::DegenerateCell { cell: site.id });
+        }
+        let signed_orientation = boundary
+            .iter()
+            .copied()
+            .zip(boundary.iter().copied().cycle().skip(1))
+            .take(boundary.len())
+            .map(|(first, second)| {
+                dot(
+                    cross(
+                        vertices[first.raw() as usize].position.components(),
+                        vertices[second.raw() as usize].position.components(),
+                    ),
+                    site.direction.components(),
+                )
+            })
+            .sum::<f64>();
+        if !signed_orientation.is_finite() || signed_orientation == 0.0 {
+            return Err(SphericalSurfaceBuildError::DegenerateCell { cell: site.id });
+        }
+        if signed_orientation < 0.0 {
+            boundary.reverse();
+            let final_position = boundary.len() - 1;
+            boundary.rotate_left(final_position);
+        }
+    }
+    Ok(incident_triangles)
+}
+
+fn deterministic_tangent_basis(site: UnitVector3) -> Option<(UnitVector3, UnitVector3)> {
+    let components = site.components();
+    let axis_index = (0..3).min_by(|&first, &second| {
+        components[first]
+            .abs()
+            .total_cmp(&components[second].abs())
+            .then_with(|| first.cmp(&second))
+    })?;
+    let mut axis = [0.0; 3];
+    axis[axis_index] = 1.0;
+    let first = cross(axis, components);
+    let basis_x = UnitVector3::new(first[0], first[1], first[2]).ok()?;
+    let second = cross(components, basis_x.components());
+    let basis_y = UnitVector3::new(second[0], second[1], second[2]).ok()?;
+    Some((basis_x, basis_y))
+}
+
+fn tangent_angle(point: UnitVector3, basis_x: UnitVector3, basis_y: UnitVector3) -> f64 {
+    point.dot(basis_y).atan2(point.dot(basis_x))
+}
+
+struct BuiltVoronoiEdges {
+    records: Vec<SphericalSurfaceEdge>,
+    ids: BTreeMap<[SurfaceVertexId; 2], EdgeId>,
+}
+
+fn build_voronoi_edges(
+    radius: Meters,
+    mesh: &GeodesicMesh,
+    vertices: &[SphericalSurfaceVertex],
+) -> Result<BuiltVoronoiEdges, SphericalSurfaceBuildError> {
+    let mut edges = Vec::with_capacity(mesh.edge_incidence.len());
+    let mut edge_ids = BTreeMap::new();
+    for (edge_index, incidence) in mesh.edge_incidence.iter().enumerate() {
+        let raw_id = u32::try_from(edge_index)
+            .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
+        let edge_id = EdgeId::from_raw(raw_id);
+        let vertex_ids = incidence.triangles.map(SurfaceVertexId::from_raw);
+        let first_vertex = vertices[vertex_ids[0].raw() as usize].position;
+        let second_vertex = vertices[vertex_ids[1].raw() as usize].position;
+        let midpoint_components = add(first_vertex.components(), second_vertex.components());
+        let midpoint = UnitVector3::new(
+            midpoint_components[0],
+            midpoint_components[1],
+            midpoint_components[2],
+        )
+        .map_err(|_| SphericalSurfaceBuildError::DegenerateEdge { edge: edge_id })?;
+
+        let cells = incidence.sites;
+        let first_site = mesh.sites[cells[0].raw() as usize].direction;
+        let second_site = mesh.sites[cells[1].raw() as usize].direction;
+        let site_delta = subtract(second_site.components(), first_site.components());
+        let normal_components = project_tangent(site_delta, midpoint);
+        let normal_from_first = UnitVector3::new(
+            normal_components[0],
+            normal_components[1],
+            normal_components[2],
+        )
+        .map_err(|_| SphericalSurfaceBuildError::DegenerateEdge { edge: edge_id })?;
+
+        let length = positive_edge_metric(
+            radius.get() * central_angle(first_vertex, second_vertex),
+            edge_id,
+        )?;
+        let center_distance = positive_edge_metric(
+            radius.get() * central_angle(first_site, second_site),
+            edge_id,
+        )?;
+        let center_distances_to_midpoint = [first_site, second_site].map(|site| {
+            positive_edge_metric(radius.get() * central_angle(site, midpoint), edge_id)
+        });
+        let [first_midpoint_distance, second_midpoint_distance] = center_distances_to_midpoint;
+
+        if edge_ids.insert(vertex_ids, edge_id).is_some() {
+            return Err(SphericalSurfaceBuildError::DegenerateEdge { edge: edge_id });
+        }
+        edges.push(SphericalSurfaceEdge {
+            id: edge_id,
+            vertices: vertex_ids,
+            cells,
+            midpoint,
+            length,
+            center_distance,
+            center_distances_to_midpoint: [first_midpoint_distance?, second_midpoint_distance?],
+            normal_from_first,
+        });
+    }
+    Ok(BuiltVoronoiEdges {
+        records: edges,
+        ids: edge_ids,
+    })
+}
+
+fn positive_edge_metric(value: f64, edge: EdgeId) -> Result<Meters, SphericalSurfaceBuildError> {
+    if value <= 0.0 || !value.is_finite() {
+        return Err(SphericalSurfaceBuildError::DegenerateEdge { edge });
+    }
+    Meters::new(value).map_err(|_| SphericalSurfaceBuildError::DegenerateEdge { edge })
+}
+
+fn build_voronoi_cells(
+    radius: Meters,
+    mesh: &GeodesicMesh,
+    vertices: &[SphericalSurfaceVertex],
+    boundaries: Vec<Vec<SurfaceVertexId>>,
+    edge_ids: &BTreeMap<[SurfaceVertexId; 2], EdgeId>,
+) -> Result<Vec<SphericalSurfaceCell>, SphericalSurfaceBuildError> {
+    mesh.sites
+        .iter()
+        .zip(boundaries)
+        .map(|(site, boundary_vertices)| {
+            let polygon = boundary_vertices
+                .iter()
+                .map(|id| vertices[id.raw() as usize].position)
+                .collect::<Vec<_>>();
+            let (unit_area, centroid) = spherical_polygon_metrics(site.direction, &polygon)
+                .ok_or(SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
+            let area = SquareMeters::new(unit_area * radius.get() * radius.get())
+                .map_err(|_| SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
+            if area.get() <= 0.0 {
+                return Err(SphericalSurfaceBuildError::DegenerateCell { cell: site.id });
+            }
+
+            let mut boundary_edges = Vec::with_capacity(boundary_vertices.len());
+            for side in 0..boundary_vertices.len() {
+                let first = boundary_vertices[side];
+                let second = boundary_vertices[(side + 1) % boundary_vertices.len()];
+                let endpoints = if first < second {
+                    [first, second]
+                } else {
+                    [second, first]
+                };
+                boundary_edges.push(
+                    *edge_ids
+                        .get(&endpoints)
+                        .ok_or(SphericalSurfaceBuildError::MissingBoundaryEdge { cell: site.id })?,
+                );
+            }
+
+            Ok(SphericalSurfaceCell {
+                id: site.id,
+                site: site.direction,
+                centroid,
+                area,
+                boundary_vertices,
+                boundary_edges,
+            })
+        })
+        .collect()
 }
 
 fn expected_counts(frequency: u32) -> Result<(usize, usize, usize), GeodesicMeshError> {
@@ -411,6 +730,10 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
+    [vector[0] * factor, vector[1] * factor, vector[2] * factor]
 }
 
 #[cfg(test)]

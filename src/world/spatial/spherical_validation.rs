@@ -608,7 +608,8 @@ impl SphericalSurfaceSnapshot {
                 .iter()
                 .map(|id| self.vertices[id.raw() as usize].position)
                 .collect::<Vec<_>>();
-            let unit_area = spherical_polygon_area(&polygon);
+            let (unit_area, centroid) = spherical_polygon_metrics(cell.site, &polygon)
+                .ok_or(SphericalSurfaceValidationError::CellCentroidMismatch { cell: cell.id })?;
             let calculated_area = unit_area * radius * radius;
             if calculated_area <= 0.0
                 || !area_close(cell.area.get(), calculated_area, radius * radius)
@@ -619,8 +620,6 @@ impl SphericalSurfaceSnapshot {
                     calculated: calculated_area,
                 });
             }
-            let centroid = spherical_polygon_centroid(&polygon)
-                .ok_or(SphericalSurfaceValidationError::CellCentroidMismatch { cell: cell.id })?;
             if central_angle(cell.centroid, centroid) > VECTOR_ANGLE_TOLERANCE {
                 return Err(SphericalSurfaceValidationError::CellCentroidMismatch {
                     cell: cell.id,
@@ -698,28 +697,44 @@ fn validate_unit(
     Ok(())
 }
 
-fn spherical_polygon_area(polygon: &[UnitVector3]) -> f64 {
-    (1..polygon.len() - 1)
-        .map(|index| spherical_triangle_area_unit(polygon[0], polygon[index], polygon[index + 1]))
-        .sum()
-}
+pub(crate) fn spherical_polygon_metrics(
+    site: UnitVector3,
+    polygon: &[UnitVector3],
+) -> Option<(f64, UnitVector3)> {
+    if polygon.len() < 3 {
+        return None;
+    }
 
-fn spherical_polygon_centroid(polygon: &[UnitVector3]) -> Option<UnitVector3> {
-    let mut vector_area = [0.0; 3];
+    let mut area = CompensatedSum::default();
+    let mut vector_area = [CompensatedSum::default(); 3];
     for index in 0..polygon.len() {
         let first = polygon[index];
         let second = polygon[(index + 1) % polygon.len()];
+        let triangle_area = spherical_triangle_area_unit(site, first, second);
+        if triangle_area <= 0.0 || !triangle_area.is_finite() {
+            return None;
+        }
+        area.add(triangle_area);
+
+        // Adjacent fan triangles' two site spokes cancel analytically. Accumulating only
+        // the surviving boundary term avoids destructive cancellation for short arcs.
         let edge_cross = cross(first.components(), second.components());
         let sine = edge_cross[0].hypot(edge_cross[1]).hypot(edge_cross[2]);
         if sine == 0.0 || !sine.is_finite() {
             return None;
         }
-        vector_area = add(
-            vector_area,
-            scale(edge_cross, central_angle(first, second) / sine),
-        );
+        let contribution = scale(edge_cross, central_angle(first, second) / sine);
+        for component in 0..3 {
+            vector_area[component].add(contribution[component]);
+        }
     }
-    normalized(vector_area)
+
+    let area = area.total();
+    if area <= 0.0 || !area.is_finite() {
+        return None;
+    }
+    let centroid = normalized(vector_area.map(CompensatedSum::total))?;
+    Some((area, centroid))
 }
 
 fn normalized(vector: [f64; 3]) -> Option<UnitVector3> {
@@ -743,13 +758,28 @@ fn area_close(stored: f64, calculated: f64, radius_squared: f64) -> bool {
 }
 
 fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
-    let mut sum = 0.0;
-    let mut compensation = 0.0;
+    let mut sum = CompensatedSum::default();
     for value in values {
-        let adjusted = value - compensation;
-        let next = sum + adjusted;
-        compensation = (next - sum) - adjusted;
-        sum = next;
+        sum.add(value);
     }
-    sum
+    sum.total()
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CompensatedSum {
+    sum: f64,
+    compensation: f64,
+}
+
+impl CompensatedSum {
+    fn add(&mut self, value: f64) {
+        let adjusted = value - self.compensation;
+        let next = self.sum + adjusted;
+        self.compensation = (next - self.sum) - adjusted;
+        self.sum = next;
+    }
+
+    fn total(self) -> f64 {
+        self.sum
+    }
 }

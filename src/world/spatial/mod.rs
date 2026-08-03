@@ -15,6 +15,7 @@ pub use spherical_snapshot::{
     SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceVertex,
     SPHERICAL_SURFACE_SCHEMA_V1,
 };
+pub(crate) use spherical_validation::spherical_polygon_metrics;
 pub use spherical_validation::SphericalSurfaceValidationError;
 pub use topology::Topology;
 pub use validation::SpatialValidationError;
