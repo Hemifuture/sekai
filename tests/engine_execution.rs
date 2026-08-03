@@ -1063,6 +1063,7 @@ fn warning_diagnostic_succeeds_and_is_cached() {
     assert_eq!(first.report.diagnostics().len(), 1);
     assert_eq!(first.report.cache_misses(), 1);
     assert_eq!(second.report.cache_hits(), 1);
+    assert_eq!(second.report.diagnostics(), first.report.diagnostics());
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
@@ -1071,17 +1072,24 @@ fn info_diagnostic_succeeds() {
     let runs = Arc::new(AtomicUsize::new(0));
     let engine = single_stage_engine(DiagnosticStage {
         severity: DiagnosticSeverity::Info,
-        runs,
+        runs: Arc::clone(&runs),
     });
     let mut cache = MemoryStageCache::new();
 
-    let outcome = engine
+    let first = engine
+        .build(RootSeed::new(42), spec(1), &mut cache)
+        .unwrap();
+    let second = engine
         .build(RootSeed::new(42), spec(1), &mut cache)
         .unwrap();
 
-    assert!(!outcome.report.has_errors());
-    assert_eq!(outcome.report.diagnostics().len(), 1);
-    assert!(outcome.report.result_hash().is_some());
+    assert!(!first.report.has_errors());
+    assert_eq!(first.report.diagnostics().len(), 1);
+    assert_eq!(second.report.diagnostics(), first.report.diagnostics());
+    assert_eq!(second.report.cache_hits(), 1);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert!(first.report.result_hash().is_some());
+    assert_eq!(second.report.result_hash(), first.report.result_hash());
 }
 
 #[test]

@@ -131,7 +131,7 @@ impl BuildEngine {
                 }
             };
 
-            if let Some(stored) = cache.get(&cache_key) {
+            if let Some((stored, cached_diagnostics)) = cache.get(&cache_key) {
                 if let Err(error) = stage.restore_cached_output(stored, &mut artifacts) {
                     push_engine_error(
                         &mut report,
@@ -140,6 +140,9 @@ impl BuildEngine {
                         Some(descriptor),
                     );
                     return Err(BuildFailure { report });
+                }
+                for diagnostic in cached_diagnostics {
+                    report.push_diagnostic(diagnostic);
                 }
                 report.record_stage(StageReport::new(
                     descriptor.id().as_str(),
@@ -158,8 +161,8 @@ impl BuildEngine {
             let emitted_error = emitted
                 .iter()
                 .any(|diagnostic| diagnostic.severity() == DiagnosticSeverity::Error);
-            for diagnostic in emitted {
-                report.push_diagnostic(diagnostic);
+            for diagnostic in &emitted {
+                report.push_diagnostic(diagnostic.clone());
             }
             report.record_stage(StageReport::new(
                 descriptor.id().as_str(),
@@ -178,7 +181,7 @@ impl BuildEngine {
             if emitted_error {
                 return Err(BuildFailure { report });
             }
-            cache.insert(cache_key, stored);
+            cache.insert(cache_key, stored, emitted);
         }
 
         let output_hashes = match self.graph.output_hashes(&artifacts) {
@@ -289,7 +292,7 @@ mod tests {
         StoredArtifact,
     };
     use crate::engine::cache::{MemoryStageCache, StageCacheKey};
-    use crate::engine::diagnostics::Diagnostic;
+    use crate::engine::diagnostics::{Diagnostic, DiagnosticSeverity};
     use crate::engine::graph::StageGraphBuilder;
     use crate::engine::random::{derive_stage_seed, StageIdentity, StageRng};
     use crate::engine::stage::{Stage, StageError, StageId, StageInputs};
@@ -383,7 +386,16 @@ mod tests {
         )
         .unwrap();
         let mut cache = MemoryStageCache::new();
-        cache.insert(key, StoredArtifact::new(PoisonedOutput(9)).unwrap());
+        cache.insert(
+            key,
+            StoredArtifact::new(PoisonedOutput(9)).unwrap(),
+            vec![Diagnostic::new(
+                DiagnosticSeverity::Warning,
+                "test.stale-cache-diagnostic",
+                "must not replay after restore failure",
+            )
+            .unwrap()],
+        );
         let engine = BuildEngine::new(
             StageGraphBuilder::new()
                 .external::<External>()
@@ -402,6 +414,7 @@ mod tests {
             diagnostic.context().stage_id.as_deref(),
             Some("test.output-stage")
         );
+        assert_eq!(failure.report.diagnostics().len(), 1);
         assert_eq!(cache.len(), 1);
     }
 

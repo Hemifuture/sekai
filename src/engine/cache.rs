@@ -4,6 +4,7 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::engine::artifact::{ArtifactKey, ContentHash, StoredArtifact};
+use crate::engine::diagnostics::Diagnostic;
 use crate::engine::random::{StageIdentity, StageSeed};
 
 const DEFAULT_MAX_ENTRIES: usize = 32;
@@ -71,7 +72,7 @@ pub enum StageCacheError {
 
 /// A deterministic, process-local, bounded FIFO cache of validated stage outputs.
 pub struct MemoryStageCache {
-    entries: BTreeMap<StageCacheKey, StoredArtifact>,
+    entries: BTreeMap<StageCacheKey, CachedSuccessfulStage>,
     insertion_order: VecDeque<StageCacheKey>,
     max_entries: usize,
 }
@@ -134,13 +135,24 @@ impl MemoryStageCache {
         self.entries.contains_key(key)
     }
 
-    pub(crate) fn get(&self, key: &StageCacheKey) -> Option<StoredArtifact> {
-        self.entries.get(key).cloned()
+    pub(crate) fn get(&self, key: &StageCacheKey) -> Option<(StoredArtifact, Vec<Diagnostic>)> {
+        self.entries
+            .get(key)
+            .map(|entry| (entry.output.clone(), entry.diagnostics.clone()))
     }
 
-    pub(crate) fn insert(&mut self, key: StageCacheKey, stored: StoredArtifact) {
+    pub(crate) fn insert(
+        &mut self,
+        key: StageCacheKey,
+        output: StoredArtifact,
+        diagnostics: Vec<Diagnostic>,
+    ) {
+        let entry = CachedSuccessfulStage {
+            output,
+            diagnostics,
+        };
         if let Some(existing) = self.entries.get_mut(&key) {
-            *existing = stored;
+            *existing = entry;
             return;
         }
 
@@ -151,9 +163,19 @@ impl MemoryStageCache {
                 .expect("every cache entry must have one FIFO queue key");
             self.entries.remove(&oldest);
         }
-        self.entries.insert(key, stored);
+        self.entries.insert(key, entry);
         self.insertion_order.push_back(key);
     }
+}
+
+/// Internal cache payload for one successful stage invocation.
+///
+/// Diagnostics are operational reporting data; they do not participate in the
+/// cache key or any semantic artifact/result hash.
+#[derive(Clone)]
+struct CachedSuccessfulStage {
+    output: StoredArtifact,
+    diagnostics: Vec<Diagnostic>,
 }
 
 fn update_length_prefixed(hasher: &mut blake3::Hasher, value: &str) -> Result<(), StageCacheError> {
@@ -191,8 +213,16 @@ mod tests {
     #[test]
     fn duplicate_insertion_replaces_in_place_without_duplicating_fifo_keys() {
         let mut cache = MemoryStageCache::with_max_entries(2).unwrap();
-        cache.insert(key(1), StoredArtifact::new(CachedArtifact(1)).unwrap());
-        cache.insert(key(1), StoredArtifact::new(CachedArtifact(2)).unwrap());
+        cache.insert(
+            key(1),
+            StoredArtifact::new(CachedArtifact(1)).unwrap(),
+            Vec::new(),
+        );
+        cache.insert(
+            key(1),
+            StoredArtifact::new(CachedArtifact(2)).unwrap(),
+            Vec::new(),
+        );
 
         assert_eq!(cache.len(), 1);
         assert_eq!(
@@ -200,8 +230,16 @@ mod tests {
             vec![key(1)]
         );
 
-        cache.insert(key(2), StoredArtifact::new(CachedArtifact(2)).unwrap());
-        cache.insert(key(3), StoredArtifact::new(CachedArtifact(3)).unwrap());
+        cache.insert(
+            key(2),
+            StoredArtifact::new(CachedArtifact(2)).unwrap(),
+            Vec::new(),
+        );
+        cache.insert(
+            key(3),
+            StoredArtifact::new(CachedArtifact(3)).unwrap(),
+            Vec::new(),
+        );
 
         assert!(!cache.contains(&key(1)));
         assert!(cache.contains(&key(2)));

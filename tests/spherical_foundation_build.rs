@@ -76,6 +76,9 @@ fn spherical_artifact_wrappers_round_trip_with_strict_validation() {
     let mut unknown_input_field = serde_json::to_value(&input).unwrap();
     unknown_input_field["hidden_seed"] = serde_json::json!(42);
     assert!(serde_json::from_value::<SphericalSpaceArtifact>(unknown_input_field).is_err());
+    let mut unknown_nested_spec_field = serde_json::to_value(&input).unwrap();
+    unknown_nested_spec_field["space"]["hidden_seed"] = serde_json::json!(42);
+    assert!(serde_json::from_value::<SphericalSpaceArtifact>(unknown_nested_spec_field).is_err());
 
     let outcome = build_surface(42, 42);
     let surface = outcome.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
@@ -148,7 +151,11 @@ fn root_seed_changes_do_not_change_spherical_surface_semantic_bytes() {
 
 #[test]
 fn resolution_emits_one_stable_info_diagnostic_without_semantic_contamination() {
-    let outcome = build_surface(42, 43);
+    let engine = BuildEngine::new(spherical_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    let outcome = engine
+        .build(RootSeed::new(42), external(space(43)), &mut cache)
+        .unwrap();
 
     let diagnostics = outcome.report.diagnostics();
     assert_eq!(diagnostics.len(), 1);
@@ -167,6 +174,13 @@ fn resolution_emits_one_stable_info_diagnostic_without_semantic_contamination() 
     assert!(diagnostic.context().cell_id.is_none());
     assert!(diagnostic.context().author_object_id.is_none());
     assert!(outcome.report.result_hash().is_some());
+
+    let cached = engine
+        .build(RootSeed::new(42), external(space(43)), &mut cache)
+        .unwrap();
+    assert_eq!(cached.report.cache_hits(), 1);
+    assert_eq!(cached.report.diagnostics(), diagnostics);
+    assert_eq!(cached.report.result_hash(), outcome.report.result_hash());
 }
 
 #[test]

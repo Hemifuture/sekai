@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
 use crate::engine::{
@@ -11,7 +12,7 @@ use crate::engine::{
     StageGraphBuilder, StageId, StageInputs, StageRng,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
-use crate::world::{SphericalSpaceSpec, SphericalSpecError};
+use crate::world::{Meters, SphericalSpaceSpec, SphericalSpecError};
 
 const INVALID_SPEC_CODE: &str = "spherical-spatial.invalid-spec";
 const BUILD_FAILED_CODE: &str = "spherical-spatial.build-failed";
@@ -19,10 +20,38 @@ const INVALID_SNAPSHOT_CODE: &str = "spherical-spatial.invalid-snapshot";
 const RESOLVED_CELL_COUNT_CODE: &str = "spherical-spatial.resolved-cell-count";
 
 /// Engine transport wrapper for an externally supplied spherical-space specification.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SphericalSpaceArtifact {
     space: SphericalSpaceSpec,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SphericalSpaceArtifactWire {
+    space: SphericalSpaceSpecWire,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SphericalSpaceSpecWire {
+    radius: Meters,
+    target_cell_count: u32,
+}
+
+impl<'de> Deserialize<'de> for SphericalSpaceArtifact {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SphericalSpaceArtifactWire::deserialize(deserializer)?;
+        let space = SphericalSpaceSpec {
+            radius: wire.space.radius,
+            target_cell_count: wire.space.target_cell_count,
+        };
+        space.validate().map_err(D::Error::custom)?;
+        Ok(Self::new(space))
+    }
 }
 
 impl SphericalSpaceArtifact {
