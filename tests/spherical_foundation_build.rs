@@ -5,7 +5,9 @@ use sekai::engine::{
 use sekai::generators::spatial::{
     spherical_foundation_graph, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
-use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
+use sekai::world::{
+    Meters, RootSeed, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
+};
 
 const RADIUS: f64 = 6_371_000.0;
 
@@ -184,21 +186,28 @@ fn resolution_emits_one_stable_info_diagnostic_without_semantic_contamination() 
 }
 
 #[test]
-fn invalid_external_spherical_spec_is_rejected_before_stage_execution() {
-    let mut inputs = ExternalArtifacts::new();
-    let error = inputs
-        .insert(SphericalSpaceArtifact::new(space(42 - 1)))
-        .unwrap_err();
+fn external_spherical_specs_outside_both_budget_edges_are_rejected_before_stage_execution() {
+    for target_cell_count in [MIN_SPHERICAL_CELL_COUNT - 1, MAX_SPHERICAL_CELL_COUNT + 1] {
+        let mut inputs = ExternalArtifacts::new();
+        let error = inputs
+            .insert(SphericalSpaceArtifact::new(space(target_cell_count)))
+            .unwrap_err();
 
-    match error {
-        ArtifactError::Validation {
-            artifact_key,
-            source,
-        } => {
-            assert_eq!(artifact_key, SphericalSpaceArtifact::KEY);
-            assert_eq!(source.code(), "spherical-spatial.invalid-spec");
-            assert_eq!(source.message(), "cell count 41 is outside 42..=198812");
+        match error {
+            ArtifactError::Validation {
+                artifact_key,
+                source,
+            } => {
+                assert_eq!(artifact_key, SphericalSpaceArtifact::KEY);
+                assert_eq!(source.code(), "spherical-spatial.invalid-spec");
+                assert_eq!(
+                    source.message(),
+                    format!(
+                        "cell count {target_cell_count} is outside {MIN_SPHERICAL_CELL_COUNT}..={MAX_SPHERICAL_CELL_COUNT}"
+                    )
+                );
+            }
+            other => panic!("expected validation failure, got {other:?}"),
         }
-        other => panic!("expected validation failure, got {other:?}"),
     }
 }

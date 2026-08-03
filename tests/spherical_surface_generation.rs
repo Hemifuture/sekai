@@ -2,8 +2,11 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
-use sekai::world::spatial::UnitVector3;
-use sekai::world::{Meters, SphericalSpaceSpec};
+use sekai::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
+use sekai::world::{
+    Meters, SphericalSpaceSpec, SphericalSpecError, MAX_GEODESIC_FREQUENCY,
+    MAX_SPHERICAL_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
+};
 use serde_json::Value;
 
 const RADIUS: f64 = 6_371_000.0;
@@ -142,35 +145,119 @@ fn closed_surface_output_has_only_authoritative_geometry_fields() {
 }
 
 #[test]
-fn closed_surface_serialization_is_canonical_and_deterministic() {
-    let spec = spherical_spec(20_000);
-    assert_eq!(spec.resolved_frequency(), 45);
-    let first = GeodesicVoronoiBuilder::build(&spec).unwrap();
-    let second = GeodesicVoronoiBuilder::build(&spec).unwrap();
-
-    assert_eq!(first.fingerprint(), second.fingerprint());
-    assert_eq!(
-        serde_json::to_vec(&first).unwrap(),
-        serde_json::to_vec(&second).unwrap()
-    );
+fn canonical_serialization_is_stable_across_frequency_and_radius_budgets() {
+    for frequency in [2_u32, 8, 45] {
+        for radius in [1.0, RADIUS, 100_000_000.0] {
+            assert_canonical_serialization_case(frequency, radius);
+        }
+    }
 }
 
 #[test]
-fn closed_surface_builder_rejects_invalid_spherical_specs() {
+fn supported_cell_budget_endpoints_resolve_without_building_the_maximum_surface() {
+    let minimum = spherical_spec_with_radius(MIN_SPHERICAL_CELL_COUNT, RADIUS);
+    minimum.validate().unwrap();
+    assert_eq!(minimum.resolved_frequency(), 2);
+    assert_eq!(minimum.resolved_cell_count(), 42);
+    let minimum_snapshot = GeodesicVoronoiBuilder::build(&minimum).unwrap();
+    assert_eq!(minimum_snapshot.cells().len(), 42);
+    minimum_snapshot.validate().unwrap();
+
+    let maximum = spherical_spec_with_radius(MAX_SPHERICAL_CELL_COUNT, RADIUS);
+    maximum.validate().unwrap();
+    assert_eq!(maximum.resolved_frequency(), MAX_GEODESIC_FREQUENCY);
+    assert_eq!(maximum.resolved_cell_count(), MAX_SPHERICAL_CELL_COUNT);
+}
+
+#[test]
+fn builder_rejects_cell_counts_immediately_outside_the_allocation_budget() {
+    for target_cell_count in [MIN_SPHERICAL_CELL_COUNT - 1, MAX_SPHERICAL_CELL_COUNT + 1] {
+        let error = GeodesicVoronoiBuilder::build(&spherical_spec(target_cell_count)).unwrap_err();
+
+        assert_eq!(
+            error,
+            SphericalSurfaceBuildError::InvalidSpec(SphericalSpecError::CellCountOutOfRange {
+                found: target_cell_count,
+                min: MIN_SPHERICAL_CELL_COUNT,
+                max: MAX_SPHERICAL_CELL_COUNT,
+            })
+        );
+    }
+}
+
+#[test]
+fn closed_surface_builder_rejects_invalid_radius() {
     let error = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
         radius: Meters::new(0.0).unwrap(),
-        target_cell_count: 42,
+        target_cell_count: MIN_SPHERICAL_CELL_COUNT,
     })
     .unwrap_err();
 
     assert!(matches!(error, SphericalSurfaceBuildError::InvalidSpec(_)));
 }
 
+#[test]
+#[ignore = "production-scale Release measurement"]
+fn production_scale_measurement() {
+    let spec = spherical_spec(20_000);
+    assert_eq!(spec.resolved_frequency(), 45);
+    assert_eq!(spec.resolved_cell_count(), 20_252);
+
+    let started = Instant::now();
+    let snapshot = GeodesicVoronoiBuilder::build(&spec).unwrap();
+    let elapsed = started.elapsed();
+    let validation_result = snapshot.validate();
+    validation_result.as_ref().unwrap();
+    let json = serde_json::to_vec(&snapshot).unwrap();
+    let resolved_count = snapshot.cells().len();
+    let bytes_per_cell = json.len() as f64 / resolved_count as f64;
+    let sphere_area = 4.0 * std::f64::consts::PI * spec.radius.get() * spec.radius.get();
+    let relative_area_residual =
+        (snapshot.total_cell_area().get() - sphere_area).abs() / sphere_area;
+
+    println!(
+        "production_scale_measurement resolved_count={resolved_count} elapsed={elapsed:?} json_bytes={} bytes_per_cell={bytes_per_cell:.6} relative_area_residual={relative_area_residual:e} validation=ok",
+        json.len()
+    );
+}
+
 fn spherical_spec(target_cell_count: u32) -> SphericalSpaceSpec {
+    spherical_spec_with_radius(target_cell_count, RADIUS)
+}
+
+fn spherical_spec_with_radius(target_cell_count: u32, radius: f64) -> SphericalSpaceSpec {
     SphericalSpaceSpec {
-        radius: Meters::new(RADIUS).unwrap(),
+        radius: Meters::new(radius).unwrap(),
         target_cell_count,
     }
+}
+
+fn assert_canonical_serialization_case(frequency: u32, radius: f64) {
+    let target_cell_count = 10 * frequency * frequency + 2;
+    let spec = spherical_spec_with_radius(target_cell_count, radius);
+    assert_eq!(spec.resolved_frequency(), frequency);
+
+    let first = GeodesicVoronoiBuilder::build(&spec).unwrap();
+    let first_fingerprint = first.fingerprint();
+    let first_json = serde_json::to_vec(&first).unwrap();
+    drop(first);
+
+    let decoded: SphericalSurfaceSnapshot = serde_json::from_slice(&first_json).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded.fingerprint(), first_fingerprint);
+    let reserialized_json = serde_json::to_vec(&decoded).unwrap();
+    drop(decoded);
+    assert_eq!(reserialized_json, first_json);
+    drop(reserialized_json);
+
+    let second = GeodesicVoronoiBuilder::build(&spec).unwrap();
+    assert_eq!(second.fingerprint(), first_fingerprint);
+    let second_json = serde_json::to_vec(&second).unwrap();
+    drop(second);
+    assert_eq!(
+        second_json, first_json,
+        "frequency={frequency} radius={radius}"
+    );
 }
 
 fn tangent_delta(first: UnitVector3, second: UnitVector3, midpoint: UnitVector3) -> [f64; 3] {

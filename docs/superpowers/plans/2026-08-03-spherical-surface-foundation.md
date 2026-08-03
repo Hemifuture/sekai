@@ -64,7 +64,7 @@ tests/
 - Produces `UnitVector3`, `SphereGeometryError`, `central_angle`, `project_tangent`, and `spherical_triangle_area_unit`.
 - Produces `SphericalSpaceSpec`, `SphericalSpecError`, `MIN_SPHERICAL_CELL_COUNT`, `MAX_SPHERICAL_CELL_COUNT`, and `MAX_GEODESIC_FREQUENCY`.
 
-- [ ] **Step 1: Write the primitive RED tests**
+- [x] **Step 1: Write the primitive RED tests**
 
 ```rust
 use sekai::world::spatial::UnitVector3;
@@ -92,13 +92,13 @@ fn spherical_request_resolves_to_an_exact_geodesic_budget() {
 }
 ```
 
-- [ ] **Step 2: Run the primitive test and verify RED**
+- [x] **Step 2: Run the primitive test and verify RED**
 
 Run: `cargo test --test spherical_primitives -- --nocapture`
 
 Expected: compilation fails because the spherical IDs, vectors, and spec do not exist.
 
-- [ ] **Step 3: Implement the typed ID and canonical unit vector**
+- [x] **Step 3: Implement the typed ID and canonical unit vector**
 
 Add `SurfaceVertexId` through the existing `define_id!` macro. `UnitVector3` stores a private `[f64; 3]`, normalizes finite nonzero inputs in `new`, exposes value-returning accessors, and deserializes through its constructor. Implement shared pure operations on `UnitVector3` rather than exposing mutable component references:
 
@@ -124,11 +124,11 @@ pub fn spherical_triangle_area_unit(
 
 Keep raw add/subtract/scale/cross helpers `pub(crate)` so both spatial generators can reuse them without making an accidental public math framework.
 
-- [ ] **Step 4: Implement deterministic spherical allocation resolution**
+- [x] **Step 4: Implement deterministic spherical allocation resolution**
 
 `SphericalSpaceSpec::validate` rejects radius outside `1..=100_000_000` meters and requested cells outside `42..=198_812`. `resolved_frequency` compares the exact integer counts immediately below and above the real-valued estimate and selects the smaller absolute count error; ties choose the lower frequency. All count arithmetic uses checked integer operations.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run:
 
@@ -161,7 +161,7 @@ git commit -m "feat: define spherical space primitives"
 - Produces `SphericalSurfaceVertex`, `SphericalSurfaceCell`, `SphericalSurfaceEdge`, and `SphericalSurfaceSnapshot`.
 - Produces `SphericalSurfaceValidationError` with stable variants for schema, IDs, references, manifold, metric, area, orientation, and fingerprint failures.
 
-- [ ] **Step 1: Write snapshot construction and SSOT RED tests**
+- [x] **Step 1: Write snapshot construction and SSOT RED tests**
 
 Create a small test-only tetrahedral surface fixture and assert these public shapes:
 
@@ -194,13 +194,13 @@ pub struct SphericalSurfaceEdge {
 
 Assert that `cell()`, `edge()`, `vertex()`, and `opposite_cell()` use contiguous IDs; `cell_edges()` returns the stored cyclic edge IDs; there is no serialized `neighbors` array; and `total_cell_area()` is available.
 
-- [ ] **Step 2: Run the contract test and verify RED**
+- [x] **Step 2: Run the contract test and verify RED**
 
 Run: `cargo test --test spherical_surface_contracts -- --nocapture`
 
 Expected: compilation fails because the snapshot records do not exist.
 
-- [ ] **Step 3: Implement immutable records, accessors, and fingerprint ownership**
+- [x] **Step 3: Implement immutable records, accessors, and fingerprint ownership**
 
 `SphericalSurfaceSnapshot` keeps its record vectors and fingerprint private:
 
@@ -218,7 +218,7 @@ pub struct SphericalSurfaceSnapshot {
 
 `new` sorts records by ID, computes the fingerprint from canonical little-endian semantic bytes, validates, and returns the snapshot. The fingerprint hashes schema, radius, every vertex position, every cell field and cyclic ID list, and every edge field exactly once. It never includes serialization bytes, rendering data, projection coordinates, cache state, or stage timing.
 
-- [ ] **Step 4: Implement strict closed-manifold validation**
+- [x] **Step 4: Implement strict closed-manifold validation**
 
 Validation must check, in deterministic order:
 
@@ -237,11 +237,11 @@ Validation must check, in deterministic order:
 
 Adjacency is always derived with `opposite_cell(cell_id, edge_id)`. Do not add a second neighbors vector to the cell or snapshot.
 
-- [ ] **Step 5: Test malformed deserialized snapshots**
+- [x] **Step 5: Test malformed deserialized snapshots**
 
 Use `serde_json::Value` mutations to prove that validation rejects an unsupported schema, non-contiguous ID, one-owner/duplicate-owner edge, invalid vertex reference, edge missing from one owner, incorrect area, incorrect tangent normal, broken Euler topology, and altered fingerprint. Deserialize first, then call `validate`, matching the existing artifact-boundary convention.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 Run: `cargo test --test spherical_surface_contracts -- --nocapture`
 
@@ -267,7 +267,7 @@ git commit -m "feat: define authoritative spherical surface snapshot"
 - Produces private `GeodesicMesh`, `SiteKey`, oriented triangle, and incidence records for Task 4.
 - Does not publish an incomplete builder or snapshot from `generators::spatial`.
 
-- [ ] **Step 1: Write exact-count and deterministic-ID RED tests**
+- [x] **Step 1: Write exact-count and deterministic-ID RED tests**
 
 ```rust
 #[test]
@@ -287,13 +287,13 @@ fn geodesic_frequencies_have_exact_euler_counts() {
 
 Also assert that two builds have byte-identical ordered sites/triangles/incidence and all site IDs equal their vector index.
 
-- [ ] **Step 2: Run the generation test and verify RED**
+- [x] **Step 2: Run the generation test and verify RED**
 
 Run: `cargo test --lib geodesic_voronoi::tests::geodesic_frequencies -- --nocapture`
 
 Expected: compilation fails because the builder does not exist.
 
-- [ ] **Step 3: Implement canonical icosahedron data and integer lattice keys**
+- [x] **Step 3: Implement canonical icosahedron data and integer lattice keys**
 
 Define 12 normalized base vertices and 20 face triples. At startup, orient each face outward by testing `dot(cross(b-a, c-a), a+b+c)`. Subdivide each face using barycentric integer triples whose sum equals frequency.
 
@@ -309,11 +309,11 @@ enum SiteKey {
 
 Shared base vertices and edge points therefore weld by exact integer identity. Assign `CellId` in sorted `SiteKey` order. Do not weld by epsilon, quantized floats, randomized insertion order, or a platform-dependent hash map.
 
-- [ ] **Step 4: Build oriented triangular faces and incidence maps**
+- [x] **Step 4: Build oriented triangular faces and incidence maps**
 
 Emit exactly `20f²` triangles, orient each outward, reject repeated vertices/zero area, and collect canonical Delaunay edge keys in a `BTreeMap<[CellId; 2], [triangle; 2]>`. Every Delaunay edge must have exactly two incident triangles before dual construction proceeds.
 
-- [ ] **Step 5: Run exact-count tests and commit the mesh core**
+- [x] **Step 5: Run exact-count tests and commit the mesh core**
 
 Run: `cargo test --lib geodesic_voronoi::tests::geodesic_frequencies -- --nocapture`
 
@@ -339,7 +339,7 @@ git commit -m "feat: build deterministic geodesic mesh"
 - Consumes the private oriented Delaunay mesh from Task 3.
 - Produces public `GeodesicVoronoiBuilder`, `SphericalSurfaceBuildError`, and one fully validated `SphericalSurfaceSnapshot`.
 
-- [ ] **Step 1: Write closed-surface science RED tests**
+- [x] **Step 1: Write closed-surface science RED tests**
 
 Test frequencies `2`, `3`, `8`, and the resolved production preview near 20,000 cells. Assert:
 
@@ -353,29 +353,29 @@ Test frequencies `2`, `3`, `8`, and the resolved production preview near 20,000 
 - all arc lengths, center distances, and areas are finite and positive;
 - no field contains a cubed-sphere face, row, column, projection coordinate, or boundary marker.
 
-- [ ] **Step 2: Run the science tests and verify RED**
+- [x] **Step 2: Run the science tests and verify RED**
 
 Run: `cargo test --test spherical_surface_generation closed_surface -- --nocapture`
 
 Expected: tests fail because the dual geometry is incomplete or does not yet validate.
 
-- [ ] **Step 3: Create one Voronoi vertex per Delaunay triangle**
+- [x] **Step 3: Create one Voronoi vertex per Delaunay triangle**
 
 Compute the unit normal of the plane through each triangle's three sites, select the hemisphere whose dot product with the triangle site sum is positive, and store it as the triangle's spherical circumcenter. Triangle ID becomes `SurfaceVertexId`; no duplicate coordinate table is stored in cells.
 
-- [ ] **Step 4: Order each cell boundary in its tangent plane**
+- [x] **Step 4: Order each cell boundary in its tangent plane**
 
 For each Delaunay site, collect incident triangle IDs. Construct a deterministic tangent basis by selecting the Cartesian axis least aligned with the site, then sort circumcenters with `f64::total_cmp(atan2(y, x))`, using triangle ID as the tie-breaker. Reverse only when the signed outward orientation check is negative.
 
-- [ ] **Step 5: Create one canonical Voronoi edge per Delaunay edge**
+- [x] **Step 5: Create one canonical Voronoi edge per Delaunay edge**
 
 The two incident triangle IDs are the Voronoi endpoints and the two Delaunay site IDs are its owners. Sort owner IDs, calculate midpoint and arc length, calculate owner-center distances, then calculate one unit tangent-plane normal oriented from `cells[0]` toward `cells[1]`. Assign `EdgeId` in sorted Delaunay-edge order and populate each cell's cyclic boundary edge IDs from consecutive circumcenters.
 
-- [ ] **Step 6: Calculate spherical cell metrics**
+- [x] **Step 6: Calculate spherical cell metrics**
 
 Triangulate each convex Voronoi polygon from its generating site. Sum robust unit-sphere triangle excesses with compensated summation, scale by `radius²`, and compute a normalized area-weighted centroid direction from the same triangles. The snapshot validator must call the same pure geometry functions; do not create a second formula in the generator.
 
-- [ ] **Step 7: Run generation and regression tests**
+- [x] **Step 7: Run generation and regression tests**
 
 Run:
 
@@ -386,7 +386,7 @@ cargo test --test circulation_grid -- --nocapture
 
 Expected: all spherical surface and pre-existing cubed-sphere grid tests pass.
 
-- [ ] **Step 8: Commit the closed Voronoi surface**
+- [x] **Step 8: Commit the closed Voronoi surface**
 
 ```powershell
 git add src/generators/spatial/geodesic_voronoi.rs tests/spherical_surface_generation.rs
@@ -408,19 +408,19 @@ git commit -m "feat: construct closed spherical Voronoi surface"
 - Produces `SphericalSurfaceStage` with ID `spatial.spherical-voronoi`, namespace `sekai.core`, version `1`.
 - Produces `spherical_foundation_graph()` without changing existing `foundation_graph()`.
 
-- [ ] **Step 1: Write stage/artifact RED tests**
+- [x] **Step 1: Write stage/artifact RED tests**
 
 Mirror the existing planar `foundation_build` coverage. Assert exact artifact keys and dependency metadata, successful validation, serde round-trip, stable content hash, cache hit on an identical rebuild, and an external invalid-spec error before stage execution.
 
 Also prove that root-seed changes do not alter the surface artifact's semantic bytes: the mesh is a discretization chosen by the spherical spec, not hidden geological randomness. Document that the generic engine may still miss cache because its cache key conservatively includes the root seed.
 
-- [ ] **Step 2: Run the engine test and verify RED**
+- [x] **Step 2: Run the engine test and verify RED**
 
 Run: `cargo test --test spherical_foundation_build -- --nocapture`
 
 Expected: compilation fails because the artifacts and stage do not exist.
 
-- [ ] **Step 3: Implement typed artifacts and stage errors**
+- [x] **Step 3: Implement typed artifacts and stage errors**
 
 Use stable diagnostic codes:
 
@@ -430,7 +430,7 @@ Use stable diagnostic codes:
 
 The stage validates input, calls `GeodesicVoronoiBuilder`, validates the result again, and atomically returns a `SphericalSurfaceArtifact`. It consumes no random draws and emits one informational diagnostic when the resolved cell count differs from the author-requested target.
 
-- [ ] **Step 4: Add the separate foundation graph**
+- [x] **Step 4: Add the separate foundation graph**
 
 ```rust
 pub fn spherical_foundation_graph() -> Result<StageGraph, GraphError> {
@@ -443,7 +443,7 @@ pub fn spherical_foundation_graph() -> Result<StageGraph, GraphError> {
 
 Do not add both planar and spherical outputs under the same artifact key and do not alter the current app graph in this task.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run:
 
@@ -478,11 +478,11 @@ git commit -m "feat: publish spherical surface stage"
 - Consumes `world::spatial` sphere geometry primitives.
 - Preserves all current public `CubedSphereGrid`, solver, fixture, and snapshot interfaces and numerical outputs.
 
-- [ ] **Step 1: Add a no-drift regression witness**
+- [x] **Step 1: Add a no-drift regression witness**
 
 Record current deterministic grid fingerprints for small resolutions already covered by the circulation tests, and retain existing operator/conservation assertions. This is a refactor witness, not a new scientific tolerance.
 
-- [ ] **Step 2: Run the witness before refactoring**
+- [x] **Step 2: Run the witness before refactoring**
 
 Run:
 
@@ -492,11 +492,11 @@ cargo test --test circulation_grid --test circulation_operators --test circulati
 
 Expected: tests pass and establish the pre-refactor baseline.
 
-- [ ] **Step 3: Replace duplicate sphere formulas with shared functions**
+- [x] **Step 3: Replace duplicate sphere formulas with shared functions**
 
 Make circulation `math.rs` either import and narrowly adapt the shared functions or delete functions that have direct shared equivalents. Preserve raw `[f64; 3]` solver storage where changing it would add conversions in hot loops. There must be one formula each for normalization, central angle, tangent projection, and spherical triangle area.
 
-- [ ] **Step 4: Run the no-drift suite and commit**
+- [x] **Step 4: Run the no-drift suite and commit**
 
 Run:
 
@@ -522,15 +522,15 @@ git commit -m "refactor: share spherical geometry math"
 - Modify: `tests/spherical_foundation_build.rs`
 - Modify: `docs/superpowers/plans/2026-08-03-spherical-surface-foundation.md`
 
-- [ ] **Step 1: Add boundary-budget and production-scale tests**
+- [x] **Step 1: Add boundary-budget and production-scale tests**
 
 Test minimum and maximum supported requested counts without performing oversized invalid allocations. Add an ignored Release measurement that builds the resolved `20_252`-cell surface, prints elapsed time plus serialized byte size, validates it, and reports per-cell bytes. Do not assert wall-clock timing in CI.
 
-- [ ] **Step 2: Verify deterministic serialization across repeated builds**
+- [x] **Step 2: Verify deterministic serialization across repeated builds**
 
 At frequencies `2`, `8`, and `45`, build twice, compare fingerprints and JSON bytes, deserialize, validate, and compare reserialized bytes. Include radii `1`, `6_371_000`, and `100_000_000` meters to exercise scale-aware tolerances.
 
-- [ ] **Step 3: Run formatting, lint, focused, and full native tests**
+- [x] **Step 3: Run formatting, lint, focused, and full native tests**
 
 Run:
 
@@ -543,13 +543,13 @@ cargo test --all-targets --all-features
 
 Expected: every command exits `0`.
 
-- [ ] **Step 4: Verify the WebAssembly compilation boundary**
+- [x] **Step 4: Verify the WebAssembly compilation boundary**
 
 Run: `cargo check --target wasm32-unknown-unknown --lib`
 
 Expected: exits `0`, or, if the target is not installed, record that exact environmental limitation and do not claim the check passed.
 
-- [ ] **Step 5: Run and record the Release measurement**
+- [x] **Step 5: Run and record the Release measurement**
 
 Run:
 
@@ -559,7 +559,7 @@ cargo test --release --test spherical_surface_generation production_scale_measur
 
 Record the observed machine, resolved count, elapsed time, JSON size, and any scientific residuals in this plan's execution notes. Timing is evidence only and never enters snapshot data or fingerprints.
 
-- [ ] **Step 6: Mark checklist state and commit verification evidence**
+- [x] **Step 6: Mark checklist state and commit verification evidence**
 
 Update only completed checkboxes and append an `Execution Evidence` section with exact command outcomes. Then commit:
 
@@ -567,6 +567,23 @@ Update only completed checkboxes and append an `Execution Evidence` section with
 git add docs/superpowers/plans/2026-08-03-spherical-surface-foundation.md tests/spherical_surface_generation.rs tests/spherical_foundation_build.rs
 git commit -m "test: verify spherical surface foundation"
 ```
+
+## Execution Evidence
+
+Executed on 2026-08-04 in the linked worktree `.worktrees/spherical-circulation`, starting from `dcf5fecf79cb8af1b4ddc2c50f07d90788457ede`.
+
+- Task 1 through Task 6 checklist completion is supported by the task reports, the SDD ledger, and the reviewed commit chain `586ad8d` through `dcf5fec`; the final native suite below revalidated their current repository compatibility.
+- Boundary-contract mutation witness: after temporarily removing the builder's leading `space.validate()?`, `cargo test --test spherical_surface_generation builder_rejects_cell_counts_immediately_outside_the_allocation_budget -- --nocapture` exited `1` because target `41` incorrectly produced an `Ok` snapshot. Restoring the validation produced exit `0` (`1 passed`). The same GREEN run covered `198_813` without allocating the maximum supported mesh.
+- Serialization-contract mutation witness: after temporarily omitting the authoritative fingerprint from JSON, `cargo test --test spherical_surface_generation canonical_serialization_is_stable_across_frequency_and_radius_budgets -- --nocapture` exited `1` at the real deserialization boundary with `missing field fingerprint`. Restoring the schema produced exit `0` (`1 passed`) across all nine frequency/radius cases.
+- `cargo fmt -- --check`: exit `0`.
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit `0`.
+- `cargo test --test spherical_primitives --test spherical_surface_contracts --test spherical_surface_generation --test spherical_foundation_build -- --nocapture`: exit `0`; suites reported `7`, `22`, `6`, and `6` passed respectively, with only the explicit production measurement ignored.
+- `cargo test --all-targets --all-features`: exit `0`; every executed suite reported zero failures, and ignored measurement/evidence gates remained ignored.
+- `cargo check --target wasm32-unknown-unknown --lib`: exit `0`; the installed `wasm32-unknown-unknown` target compiled the library boundary successfully.
+- `cargo test --release --test spherical_surface_generation production_scale_measurement -- --ignored --nocapture`: exit `0`; validation returned `ok`.
+- Release observation: resolved count `20_252`; build elapsed `136.1077 ms`; canonical JSON `30_188_052` bytes; `1490.620778` bytes per cell; relative total-area residual `0e0`.
+- Measurement machine: Microsoft Windows 11 Pro `10.0.22631`, x86-64, Intel(R) Core(TM) i9-14900KF; Release profile; `rustc 1.97.1 (8bab26f4f 2026-07-14)`, `cargo 1.97.1 (c980f4866 2026-06-30)`.
+- `git diff --check`: exit `0` before documentation capture and rerun as the final pre-commit whitespace gate.
 
 ---
 
