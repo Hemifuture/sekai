@@ -161,6 +161,7 @@ impl CirculationSpec {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CirculationSpecWire {
     face_resolution: u16,
     planet_radius_m: f64,

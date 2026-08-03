@@ -19,6 +19,7 @@ pub enum CirculationSolverId {
 
 /// Solver work, convergence, conservation, and dense-state diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CirculationSolveStats {
     pub iterations_or_steps: u64,
     pub formation_years: u16,

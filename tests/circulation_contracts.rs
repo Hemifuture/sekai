@@ -61,6 +61,10 @@ fn circulation_spec_deserialization_revalidates_and_fingerprint_tracks_parameter
     let mut invalid = serde_json::to_value(spec).unwrap();
     invalid["cfl_limit"] = serde_json::json!(0.0);
     assert!(serde_json::from_value::<CirculationSpec>(invalid).is_err());
+
+    let mut unknown = serde_json::to_value(CirculationSpec::default()).unwrap();
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<CirculationSpec>(unknown).is_err());
 }
 
 #[test]
@@ -245,6 +249,10 @@ fn shared_snapshot_deserialization_rejects_unknown_fields() {
     wire["unexpected"] = serde_json::json!(true);
 
     assert!(serde_json::from_value::<CirculationSnapshot>(wire).is_err());
+
+    let mut nested = serde_json::to_value(snapshot(1, Vec::new()).unwrap()).unwrap();
+    nested["stats"]["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<CirculationSnapshot>(nested).is_err());
 }
 
 #[test]
