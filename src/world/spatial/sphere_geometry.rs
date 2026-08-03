@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+// Bounded unit-sphere construction vectors keep the historical direct
+// evaluation order; larger or underflowed inputs use scale-safe normalization.
+const DIRECT_NORMALIZATION_MAX_LENGTH: f64 = 2.0;
+// Subtraction-based products avoid cancellation once direct products are tiny.
+const CENTRAL_ANGLE_FALLBACK_SINE: f64 = 1.0e-8;
+const TRIANGLE_AREA_FALLBACK_NUMERATOR: f64 = 1.0e-8;
+
 /// A finite, canonical vector on the unit sphere.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct UnitVector3([f64; 3]);
@@ -12,22 +19,9 @@ impl UnitVector3 {
             return Err(SphereGeometryError::NonFiniteComponent);
         }
 
-        let largest_component = x.abs().max(y.abs()).max(z.abs());
-        if largest_component == 0.0 {
-            return Err(SphereGeometryError::ZeroLengthVector);
-        }
-
-        let scaled = [
-            x / largest_component,
-            y / largest_component,
-            z / largest_component,
-        ];
-        let length = scaled[0].hypot(scaled[1]).hypot(scaled[2]);
-        Ok(Self([
-            scaled[0] / length,
-            scaled[1] / length,
-            scaled[2] / length,
-        ]))
+        normalize([x, y, z])
+            .map(Self)
+            .ok_or(SphereGeometryError::ZeroLengthVector)
     }
 
     /// Stores components already checked as finite unit-vector values without
@@ -48,7 +42,7 @@ impl UnitVector3 {
 
     /// Returns the Euclidean norm of this vector.
     pub fn norm(self) -> f64 {
-        self.0[0].hypot(self.0[1]).hypot(self.0[2])
+        norm(self.0)
     }
 }
 
@@ -75,28 +69,17 @@ pub enum SphereGeometryError {
 
 /// Returns the shortest angular separation between two unit vectors in radians.
 pub fn central_angle(a: UnitVector3, b: UnitVector3) -> f64 {
-    let a_components = a.components();
-    let cross = cross(a_components, subtract(b.components(), a_components));
-    let sine = cross[0].hypot(cross[1]).hypot(cross[2]);
-    sine.atan2(a.dot(b).clamp(-1.0, 1.0))
+    central_angle_raw(a.components(), b.components())
 }
 
 /// Orthogonally projects a vector onto the tangent plane at a radial direction.
 pub fn project_tangent(vector: [f64; 3], radial: UnitVector3) -> [f64; 3] {
-    subtract(
-        vector,
-        scale(radial.components(), dot(vector, radial.components())),
-    )
+    project_tangent_raw(vector, radial.components())
 }
 
 /// Returns the area of a spherical triangle on the unit sphere in steradians.
 pub fn spherical_triangle_area_unit(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> f64 {
-    let a = a.components();
-    let b = b.components();
-    let c = c.components();
-    let numerator = dot(a, cross(subtract(b, a), subtract(c, a))).abs();
-    let denominator = 1.0 + dot(a, b) + dot(b, c) + dot(c, a);
-    2.0 * numerator.atan2(denominator)
+    spherical_triangle_area_unit_raw(a.components(), b.components(), c.components())
 }
 
 pub(crate) fn oriented_arc_normal(
@@ -122,7 +105,6 @@ pub(crate) fn oriented_arc_normal(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -145,4 +127,69 @@ pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+pub(crate) fn norm(vector: [f64; 3]) -> f64 {
+    dot(vector, vector).sqrt()
+}
+
+pub(crate) fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
+    if vector.iter().any(|component| !component.is_finite()) {
+        return None;
+    }
+    let largest_component = vector
+        .iter()
+        .map(|component| component.abs())
+        .fold(0.0, f64::max);
+    if largest_component == 0.0 {
+        return None;
+    }
+
+    let length = norm(vector);
+    let direct_square_is_normal = (largest_component * largest_component).is_normal();
+    if direct_square_is_normal
+        && length.is_finite()
+        && length > 0.0
+        && length <= DIRECT_NORMALIZATION_MAX_LENGTH
+    {
+        return Some(scale(vector, length.recip()));
+    }
+
+    let scaled = [
+        vector[0] / largest_component,
+        vector[1] / largest_component,
+        vector[2] / largest_component,
+    ];
+    let scaled_length = norm(scaled);
+    Some([
+        scaled[0] / scaled_length,
+        scaled[1] / scaled_length,
+        scaled[2] / scaled_length,
+    ])
+}
+
+pub(crate) fn project_tangent_raw(vector: [f64; 3], radial_unit: [f64; 3]) -> [f64; 3] {
+    subtract(vector, scale(radial_unit, dot(vector, radial_unit)))
+}
+
+pub(crate) fn central_angle_raw(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let direct_sine = norm(cross(a, b));
+    let cosine = dot(a, b);
+    if direct_sine > CENTRAL_ANGLE_FALLBACK_SINE {
+        return direct_sine.atan2(cosine);
+    }
+
+    let robust_sine = norm(cross(a, subtract(b, a)));
+    robust_sine.atan2(cosine.clamp(-1.0, 1.0))
+}
+
+pub(crate) fn spherical_triangle_area_unit_raw(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let direct_numerator = dot(a, cross(b, c)).abs();
+    let denominator = 1.0 + dot(a, b) + dot(b, c) + dot(c, a);
+    if direct_numerator > TRIANGLE_AREA_FALLBACK_NUMERATOR {
+        return 2.0 * direct_numerator.atan2(denominator);
+    }
+
+    let robust_numerator = dot(a, cross(subtract(b, a), subtract(c, a))).abs();
+    2.0 * robust_numerator.atan2(denominator)
 }

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::sphere_geometry::{add, cross, dot, subtract};
+use super::sphere_geometry::{add, cross, dot, norm, subtract};
 use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
@@ -584,7 +584,7 @@ impl SphericalSurfaceSnapshot {
             }
 
             let site_delta = subtract(second_site.components(), first_site.components());
-            let site_separation = vector_norm(site_delta);
+            let site_separation = norm(site_delta);
             for endpoint in [first_vertex, second_vertex] {
                 let bisector_residual =
                     dot(endpoint.components(), site_delta).abs() / site_separation;
@@ -742,10 +742,6 @@ pub(crate) fn spherical_polygon_metrics(
 
 fn normalized(vector: [f64; 3]) -> Option<UnitVector3> {
     UnitVector3::new(vector[0], vector[1], vector[2]).ok()
-}
-
-fn vector_norm(vector: [f64; 3]) -> f64 {
-    vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
 fn metric_close(stored: f64, calculated: f64, radius: f64) -> bool {

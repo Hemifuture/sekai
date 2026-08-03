@@ -18,6 +18,12 @@ fn unit_vectors_normalize_large_finite_components() {
 }
 
 #[test]
+fn unit_vectors_normalize_tiny_finite_components() {
+    let point = UnitVector3::new(2.0e-162, 2.0e-162, 2.0e-162).unwrap();
+    assert!((point.norm() - 1.0).abs() <= 1.0e-15);
+}
+
+#[test]
 fn central_angle_preserves_near_coincident_vector_separation() {
     let east = UnitVector3::new(1.0, 0.0, 0.0).unwrap();
     let nearly_east = UnitVector3::new(1.0, 1.0e-10, 0.0).unwrap();

@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::world::spatial::{
-    central_angle, oriented_arc_normal, spherical_polygon_metrics, SphericalSurfaceCell,
-    SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
-    SphericalSurfaceVertex, UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
+    add, central_angle, cross, dot, oriented_arc_normal, scale, spherical_polygon_metrics,
+    subtract, SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
+    SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
+    SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use crate::world::{
     CellId, EdgeId, Meters, SphericalSpaceSpec, SphericalSpecError, SquareMeters, SurfaceVertexId,
@@ -705,30 +706,6 @@ fn build_edge_incidence(
         incidence.push(EdgeIncidence { sites, triangles });
     }
     Ok(incidence)
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn subtract(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
-    [vector[0] * factor, vector[1] * factor, vector[2] * factor]
 }
 
 #[cfg(test)]

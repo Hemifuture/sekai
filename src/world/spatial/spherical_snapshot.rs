@@ -1,6 +1,7 @@
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use super::sphere_geometry::norm;
 use super::{SphericalSurfaceValidationError, UnitVector3};
 use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
 
@@ -84,10 +85,10 @@ where
             "spherical surface unit-vector components must be finite",
         ));
     }
-    let norm = components[0].hypot(components[1]).hypot(components[2]);
-    if (norm - 1.0).abs() > 16.0 * f64::EPSILON {
+    let vector_norm = norm(components);
+    if (vector_norm - 1.0).abs() > 16.0 * f64::EPSILON {
         return Err(D::Error::custom(format_args!(
-            "spherical surface vector norm must be 1, got {norm}"
+            "spherical surface vector norm must be 1, got {vector_norm}"
         )));
     }
     Ok(UnitVector3::from_verified_unit_components(components))
