@@ -71,10 +71,10 @@ tests/
 - Modify: `src/world/natural/surface_process.rs`
 - Test: existing planar hydrology/erosion contracts and generation tests
 
-- [ ] Add representative planar V1 byte/hash regressions before refactoring.
-- [ ] Extract narrow package-visible validation/data views for hydrology fields, topology-dependent metric identities, and surface-process component/mass identities. Preserve V1 struct layout, serialized field order, permissive decoding, error behavior, and formulas.
-- [ ] Generalize only metric reads to `NaturalSurface`; retain exact planar values through `PlanarNaturalSurface` adapter equivalence.
-- [ ] Run planar contracts, generation, stages, fields, displays, and goldens; commit `refactor: share hydro erosion semantics`.
+- [x] Add representative planar V1 byte/hash regressions before refactoring.
+- [x] Extract narrow package-visible validation/data views for hydrology fields, topology-dependent metric identities, and surface-process component/mass identities. Preserve V1 struct layout, serialized field order, permissive decoding, error behavior, and formulas.
+- [x] Generalize only metric reads to `NaturalSurface`; retain exact planar values through `PlanarNaturalSurface` adapter equivalence.
+- [x] Run planar contracts, generation, stages, fields, displays, and goldens; commit `refactor: share hydro erosion semantics`.
 
 ### Task 2: Define the strict surface-bound V2 hydrology contract
 
@@ -83,11 +83,11 @@ tests/
 - Modify: `src/world/natural/mod.rs`
 - Test: `tests/spherical_hydrology_contracts.rs`
 
-- [ ] Write RED tests for schema/kind, exact `SurfaceRef`, all dense lengths/ranges/summaries, canonical receivers/basins/lakes/rivers, strict unknown fields at every nesting level, exact round trip, and equal-count different-surface rejection.
-- [ ] Stream-bound every dense and record sequence. Bound the aggregate count of all nested lake member cells, not merely each lake independently.
-- [ ] Reuse shared semantic records through strict private V2 wires; add an aligned `river_segment_length_m: Vec<f64>` derived from authoritative center distance.
-- [ ] Cross-validate receiver adjacency, discharge/area accumulation, lake area/volume, basin roots/outlet kinds, river receiver identity, and exact river length against the referenced sphere.
-- [ ] Keep all persistent data semantic and geometry-free; commit `feat: add spherical hydrology contracts`.
+- [x] Write RED tests for schema/kind, exact `SurfaceRef`, all dense lengths/ranges/summaries, canonical receivers/basins/lakes/rivers, strict unknown fields at every nesting level, exact round trip, and equal-count different-surface rejection.
+- [x] Stream-bound every dense and record sequence. Bound the aggregate count of all nested lake member cells, not merely each lake independently.
+- [x] Reuse shared semantic records through strict private V2 wires; add an aligned `river_segment_length_m: Vec<f64>` derived from authoritative center distance.
+- [x] Cross-validate receiver adjacency, discharge/area accumulation, lake area/volume, basin roots/outlet kinds, river receiver identity, and exact river length against the referenced sphere.
+- [x] Keep all persistent data semantic and geometry-free; commit `feat: add spherical hydrology contracts`.
 
 ### Task 3: Refactor one hydrology core and implement closed-sphere outlets
 
@@ -97,11 +97,11 @@ tests/
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/spherical_hydrology_generation.rs`
 
-- [ ] Write RED fixtures for ocean outlets, a topographic bowl and spill outlet, all-ocean safety, all-land multiple minima, a connected flat minimum plateau, receiver adjacency/DAG, and deterministic bytes.
-- [ ] Refactor Priority-Flood, receiver selection, lake routing, runoff, accumulation, basin labeling, and Strahler construction into one core over `NaturalSurface`, `NaturalTopologyIndex`, precipitation values, and an explicit outlet policy.
-- [ ] Preserve the planar no-ocean single-sink policy only inside the frozen planar adapter. Implement spherical all-land terminal detection by connected quantized local-minimum plateaus with stable representative IDs.
-- [ ] Build spherical lake/basin aggregates from true areas and river lengths/slopes from great-circle center distance. Validate the completed V2 snapshot against the exact surface.
-- [ ] Confirm no code path observes `boundary_cells` or creates an external outlet for the sphere; commit `feat: generate closed-sphere hydrology`.
+- [x] Write RED fixtures for ocean outlets, a topographic bowl and spill outlet, all-ocean safety, all-land multiple minima, a connected flat minimum plateau, receiver adjacency/DAG, and deterministic bytes.
+- [x] Refactor Priority-Flood, receiver selection, lake routing, runoff, accumulation, basin labeling, and Strahler construction into one core over `NaturalSurface`, `NaturalTopologyIndex`, precipitation values, and an explicit outlet policy.
+- [x] Preserve the planar no-ocean single-sink policy only inside the frozen planar adapter. Implement spherical all-land terminal detection by connected quantized local-minimum plateaus with stable representative IDs.
+- [x] Build spherical lake/basin aggregates from true areas and river lengths/slopes from great-circle center distance. Validate the completed V2 snapshot against the exact surface.
+- [x] Confirm no code path observes `boundary_cells` or creates an external outlet for the sphere; commit `feat: generate closed-sphere hydrology`.
 
 ### Task 4: Define the strict V2 surface-process and sediment-terminal ledger
 
@@ -110,10 +110,10 @@ tests/
 - Modify: `src/world/natural/mod.rs`
 - Test: `tests/spherical_hydro_erosion_contracts.rs`
 
-- [ ] Write RED tests for V2 schema/identity, bounded fields, surface component identity, ocean immutability, finite nonnegative sediment volumes, strict/bounded decode, and wrong-surface rejection.
-- [ ] Store erosion depth, deposition thickness, current surface elevation, and per-cell sediment throughput once. Store terminal transfer as two orthogonal totals: `sediment_ocean_delivery_m3` and `sediment_endorheic_storage_m3`.
-- [ ] Enforce `eroded volume = deposited volume + ocean delivery + endorheic storage` using authoritative spherical areas and compensated sums.
-- [ ] Do not reuse V1's “leaves the modeled world” wording for a closed planet; commit `feat: add spherical surface process contracts`.
+- [x] Write RED tests for V2 schema/identity, bounded fields, surface component identity, ocean immutability, finite nonnegative sediment volumes, strict/bounded decode, and wrong-surface rejection.
+- [x] Store erosion depth, deposition thickness, current surface elevation, and per-cell sediment throughput once. Store terminal transfer as two orthogonal totals: `sediment_ocean_delivery_m3` and `sediment_endorheic_storage_m3`.
+- [x] Enforce `eroded volume = deposited volume + ocean delivery + endorheic storage` using authoritative spherical areas and compensated sums.
+- [x] Do not reuse V1's “leaves the modeled world” wording for a closed planet; commit `feat: add spherical surface process contracts`.
 
 ### Task 5: Refactor one erosion core and route sediment on spherical metrics
 
@@ -123,11 +123,11 @@ tests/
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/spherical_hydro_erosion_generation.rs`
 
-- [ ] Write RED tests that incision increases with discharge/slope and decreases with resistance, zero strength/flat flow produces zero incision, ocean cells remain unchanged, and low-energy/lake/terminal cells retain more sediment.
-- [ ] Refactor stream energy, bounded incision, topological routing, and deposition into one core over semantic relief/hydrology views and `NaturalSurface` metrics.
-- [ ] Use authoritative center distance for slope and true area for eroded/deposited volumes. Classify residual terminal sediment by first-pass basin terminal: ocean delivery versus endorheic storage.
-- [ ] Preserve the planar total `sediment_export_m3` byte-for-byte as the sum of terminal transfers in the V1 adapter.
-- [ ] Validate the spherical surface-process V2 snapshot after every generated current-state update; commit `feat: generate spherical fluvial erosion`.
+- [x] Write RED tests that incision increases with discharge/slope and decreases with resistance, zero strength/flat flow produces zero incision, ocean cells remain unchanged, and low-energy/lake/terminal cells retain more sediment.
+- [x] Refactor stream energy, bounded incision, topological routing, and deposition into one core over semantic relief/hydrology views and `NaturalSurface` metrics.
+- [x] Use authoritative center distance for slope and true area for eroded/deposited volumes. Classify residual terminal sediment by first-pass basin terminal: ocean delivery versus endorheic storage.
+- [x] Preserve the planar total `sediment_export_m3` byte-for-byte as the sum of terminal transfers in the V1 adapter.
+- [x] Validate the spherical surface-process V2 snapshot after every generated current-state update; commit `feat: generate spherical fluvial erosion`.
 
 ### Task 6: Orchestrate one-index atomic spherical two-pass generation
 
@@ -137,10 +137,10 @@ tests/
 - Modify: both natural module exports
 - Test: both spherical composite test files
 
-- [ ] Write RED composite tests for exact shared surface identity, upstream relief/geology/climate identity, runoff forcing identity, ocean/current-surface agreement, lake-depth identity, and rejection of mixed same-count surfaces.
-- [ ] Implement `HydroErosionGenerator::generate_spherical(surface, relief, geology, climate, spec)`: validate public inputs once, build one surface view/topology, run initial hydrology, erosion/deposition, final hydrology, and construct one atomic V2 output.
-- [ ] Ensure only final hydrology is stored; verify rerunning hydrology independently on the stored current surface reproduces it exactly.
-- [ ] Verify deterministic bytes, no upstream mutation, no projection dependency, and planar no drift; commit `feat: generate atomic spherical hydro erosion`.
+- [x] Write RED composite tests for exact shared surface identity, upstream relief/geology/climate identity, runoff forcing identity, ocean/current-surface agreement, lake-depth identity, and rejection of mixed same-count surfaces.
+- [x] Implement `HydroErosionGenerator::generate_spherical(surface, relief, geology, climate, spec)`: validate public inputs once, build one surface view/topology, run initial hydrology, erosion/deposition, final hydrology, and construct one atomic V2 output.
+- [x] Ensure only final hydrology is stored; verify rerunning hydrology independently on the stored current surface reproduces it exactly.
+- [x] Verify deterministic bytes, no upstream mutation, no projection dependency, and planar no drift; commit `feat: generate atomic spherical hydro erosion`.
 
 ### Task 7: Whole-slice scientific, compatibility, and performance gates
 
@@ -149,13 +149,52 @@ tests/
 - Create: `tests/spherical_hydro_erosion_performance.rs`
 - Modify: this plan with exact evidence
 
-- [ ] Run a deterministic matrix spanning minimum/Earth/maximum radii, coarse/medium meshes, all-land/all-ocean/mixed relief, wet/dry climate, hard/soft substrate, and hydro-erosion spec extremes. Freeze representative V2 hashes after review.
-- [ ] Confirm ocean outlet semantics, explicit multiple endorheic basins, flat-plateau determinism, receiver adjacency/DAG, true-area accumulation, exact geodesic river lengths, stream-power causal signs, sediment ledger closure, and final two-pass consistency.
-- [ ] Measure Release generation near 20,000 cells: total two-pass time, persistent V2 bytes, working-set delta, and diagnostics. Confirm `O(cells log cells + edges)` per hydrology pass and `O(cells + edges)` work memory with one topology index.
-- [ ] Audit ownership: no geometry duplication, external boundary, stage/artifact/UI publication, hidden first-pass truth, fake elapsed time, or history storage.
-- [ ] Run focused planar hydrology/erosion/stage/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
-- [ ] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical hydro erosion evidence`.
+- [x] Run a deterministic matrix spanning minimum/Earth/maximum radii, coarse/medium meshes, all-land/all-ocean/mixed relief, wet/dry climate, hard/soft substrate, and hydro-erosion spec extremes. Freeze representative V2 hashes after review.
+- [x] Confirm ocean outlet semantics, explicit multiple endorheic basins, flat-plateau determinism, receiver adjacency/DAG, true-area accumulation, exact geodesic river lengths, stream-power causal signs, sediment ledger closure, and final two-pass consistency.
+- [x] Measure Release generation near 20,000 cells: total two-pass time, persistent V2 bytes, working-set delta, and diagnostics. Confirm `O(cells log cells + edges)` per hydrology pass and `O(cells + edges)` work memory with one topology index.
+- [x] Audit ownership: no geometry duplication, external boundary, stage/artifact/UI publication, hidden first-pass truth, fake elapsed time, or history storage.
+- [x] Run focused planar hydrology/erosion/stage/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
+- [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical hydro erosion evidence`.
 - [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.5 worktree/branch, then continue to S0B.6.
+
+## Verification evidence (2026-08-04)
+
+### Compatibility and deterministic identity
+
+- Frozen planar Hydrology V1 BLAKE3: `5530d416b1c84d865610e463c4393e63cc41dfa01cdf1da869f25f5f489b0b6c`.
+- Frozen planar Hydro-Erosion V1 BLAKE3: `59f982f1902fcaa81e601d91d270909526e0d9a5986a043c675f2924710b6b8f`.
+- Frozen spherical V2 matrix hashes:
+  - minimum radius, dry/hard, all land, 42 cells: `e43ff5de8494499e18e06246c6e00ef56cfa6ed39693404feff093a9cb00fd0b`;
+  - Earth radius, wet/soft, all ocean, 42 cells: `291855a73f860fb82b7096fc2c3211bae8dcd772153312b8d11c690533e4b300`;
+  - Earth radius, moderate mixed relief, 162 cells: `d23c5afaf6228c7e0745b49909a9723212f6e38d59bf57b8d1ac1c2db54b8eec`;
+  - Earth radius, wet/soft mixed relief, 642 cells: `04560c868114798c95574583c2dea8c232130ea4d9c3db3169899e1c394ff930`;
+  - maximum radius, wet/hard, all land, 162 cells: `2e1758ef9cd99f2f2c8bbac2017e607af7393ea7676021491fc3f2e8ebf486f0`.
+- Focused planar contracts/generation/stages/rule stages and `natural_display_golden` passed; the reviewed PNGs did not change.
+
+### Release performance
+
+Command: `cargo test --release --test spherical_hydro_erosion_performance -- --ignored --nocapture`.
+
+- authoritative sphere: 20,252 cells / 60,750 edges;
+- fixed two-hydrology-pass plus erosion solve: `69.150 ms`;
+- persistent V2 in-memory estimate: `3,508,248 bytes`;
+- strict JSON V2 bytes: `5,515,076 bytes`;
+- observed working-set delta: `3,739,648 bytes`;
+- output diagnostics: 240 basins, 0 lakes, 9,342 published river reaches;
+- budgets passed: 5,000 ms, 128 MiB persistent, 64 MiB serialized.
+
+The implementation performs two `O(cells log cells + edges)` Priority-Flood passes and one `O(cells + edges)` erosion/routing pass. One `NaturalTopologyIndex` is shared by all three; work arrays remain linear in cells/edges.
+
+### Full gates and ownership review
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo check --workspace --all-targets --all-features`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --workspace --all-targets --all-features`: passed; 226 library tests passed, one pre-existing large Voronoi stress test remained ignored, and every integration/binary/benchmark target passed.
+- `cargo test --workspace --doc`: passed; eight pre-existing documentation examples remained ignored.
+- `cargo check --workspace --all-features --lib --target wasm32-unknown-unknown`: passed.
+- Ownership search and changed-file audit found no S0B.5 artifact, stage, cache, projection, field, app, UI, renderer, fake elapsed-time, or history publication. Only the final hydrology is serialized in the atomic output.
+- Fresh scientific/code review found zero unresolved Critical or Important issues. The review explicitly checked centimeter-quantized sea-level classification against the shared `LandOceanKind` fact source; a spherical-only floating-point exception was rejected because it would create conflicting land/ocean semantics.
 
 ## Explicitly deferred
 
