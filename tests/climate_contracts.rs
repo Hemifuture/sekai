@@ -8,8 +8,9 @@ use sekai::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     ClimateSpec, ClimateValidationError, GeologicSpec, HydroErosionSpec, MonthlyScalarField,
-    MonthlyVectorField, PreliminaryClimateSnapshot, TectonicSpec, WorldFormationSpec,
-    CLIMATE_MONTH_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, PRELIMINARY_CLIMATE_SCHEMA_V1,
+    MonthlyVector3Field, MonthlyVectorField, PreliminaryClimateSnapshot, TectonicSpec,
+    WorldFormationSpec, CLIMATE_MONTH_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
+    PRELIMINARY_CLIMATE_SCHEMA_V1,
 };
 use sekai::world::spatial::Topology;
 use sekai::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
@@ -151,6 +152,11 @@ fn natural_artifacts(
 fn monthly_fields_are_dense_finite_and_month_bounded() {
     let scalars = monthly_scalar(2, |cell, month| (cell * CLIMATE_MONTH_COUNT + month) as f32);
     let vectors = monthly_vector(2, |cell, month| [cell as f32, month as f32]);
+    let vectors3 = MonthlyVector3Field::from_values(vec![
+        [[0.0, 1.0, 2.0]; CLIMATE_MONTH_COUNT],
+        [[3.0, 4.0, 5.0]; CLIMATE_MONTH_COUNT],
+    ])
+    .unwrap();
 
     assert_eq!(scalars.len(), 2);
     assert!(!scalars.is_empty());
@@ -158,6 +164,8 @@ fn monthly_fields_are_dense_finite_and_month_bounded() {
     assert_eq!(scalars.value(1, CLIMATE_MONTH_COUNT), None);
     assert_eq!(vectors.value(1, 11), Some([1.0, 11.0]));
     assert_eq!(vectors.value(1, CLIMATE_MONTH_COUNT), None);
+    assert_eq!(vectors3.value(1, 11), Some([3.0, 4.0, 5.0]));
+    assert_eq!(vectors3.value(1, CLIMATE_MONTH_COUNT), None);
 
     let mut invalid_scalars = vec![[0.0; CLIMATE_MONTH_COUNT]];
     invalid_scalars[0][4] = f32::NAN;
@@ -170,6 +178,13 @@ fn monthly_fields_are_dense_finite_and_month_bounded() {
     invalid_vectors[0][7][1] = f32::INFINITY;
     assert!(matches!(
         MonthlyVectorField::from_values(invalid_vectors),
+        Err(ClimateValidationError::NonFiniteVectorValue { .. })
+    ));
+
+    let mut invalid_vectors3 = vec![[[0.0; 3]; CLIMATE_MONTH_COUNT]];
+    invalid_vectors3[0][7][2] = f32::NEG_INFINITY;
+    assert!(matches!(
+        MonthlyVector3Field::from_values(invalid_vectors3),
         Err(ClimateValidationError::NonFiniteVectorValue { .. })
     ));
 }
@@ -251,6 +266,19 @@ fn snapshot_round_trip_revalidates_and_preserves_exact_bytes() {
 
     assert_eq!(decoded, snapshot);
     assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+}
+
+#[test]
+fn planar_climate_v1_representative_hash_is_frozen() {
+    let snapshot = valid_snapshot(4);
+    let hash = blake3::hash(&serde_json::to_vec(&snapshot).unwrap())
+        .to_hex()
+        .to_string();
+
+    assert_eq!(
+        hash, "a6f42228c9e520fdaa83cf9d2757178b2a8d103578127a46757131d812d88862",
+        "review and freeze this value before sharing climate semantics"
+    );
 }
 
 #[test]

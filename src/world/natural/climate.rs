@@ -2,11 +2,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::ReliefSnapshot;
+use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SpatialSnapshot, Topology};
-use crate::world::CellId;
+use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
 
 /// The supported serialized schema for preliminary monthly climate.
 pub const PRELIMINARY_CLIMATE_SCHEMA_V1: u16 = 1;
+/// The surface-bound schema used by authoritative spherical worlds.
+pub const PRELIMINARY_CLIMATE_SCHEMA_V2: u16 = 2;
 /// The fixed number of climatological months in one current-slice year.
 pub const CLIMATE_MONTH_COUNT: usize = 12;
 /// The coldest supported monthly or annual-mean air temperature, in degrees Celsius.
@@ -23,6 +26,8 @@ pub const TEMPERATURE_SEASONALITY_MAX_C: f32 = 120.0;
 pub const WIND_COMPONENT_MAX_M_S: f32 = 80.0;
 /// The tolerance used when rechecking stored annual summaries.
 pub const CLIMATE_SUMMARY_IDENTITY_TOLERANCE: f32 = 0.05;
+
+const MAX_SPHERICAL_CLIMATE_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 
 /// A dense per-cell field containing one finite scalar value for each month.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,6 +131,62 @@ impl<'de> Deserialize<'de> for MonthlyVectorField {
         D: Deserializer<'de>,
     {
         let values = Vec::<[[f32; 2]; CLIMATE_MONTH_COUNT]>::deserialize(deserializer)?;
+        Self::from_values(values).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A dense per-cell field containing one finite global three-dimensional vector for each month.
+///
+/// Spherical climate uses global vectors so no longitude-dependent local basis becomes serialized
+/// state. Cross-validation against the authoritative surface enforces tangency separately.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct MonthlyVector3Field(Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>);
+
+impl MonthlyVector3Field {
+    /// Constructs a monthly field only when every vector component is finite.
+    pub fn from_values(
+        values: Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
+    ) -> Result<Self, ClimateValidationError> {
+        validate_monthly_vectors(
+            "monthly_vector3_field",
+            &values,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+        )?;
+        Ok(Self(values))
+    }
+
+    /// Returns all per-cell month arrays without copying.
+    pub fn values(&self) -> &[[[f32; 3]; CLIMATE_MONTH_COUNT]] {
+        &self.0
+    }
+
+    /// Returns one vector for a dense cell index and zero-based month.
+    pub fn value(&self, cell: usize, month: usize) -> Option<[f32; 3]> {
+        self.0
+            .get(cell)
+            .and_then(|months| months.get(month))
+            .copied()
+    }
+
+    /// Returns the dense cell cardinality.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the field has no cells.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for MonthlyVector3Field {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let values = deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CLIMATE_CELLS>(deserializer)?;
         Self::from_values(values).map_err(serde::de::Error::custom)
     }
 }
@@ -450,7 +511,7 @@ impl<'de> Deserialize<'de> for PreliminaryClimateSnapshot {
     }
 }
 
-fn validate_length(
+pub(crate) fn validate_length(
     field: &'static str,
     found: usize,
     cell_count: u32,
@@ -466,7 +527,7 @@ fn validate_length(
     Ok(())
 }
 
-fn validate_scalars(
+pub(crate) fn validate_scalars(
     field: &'static str,
     values: &[f32],
     min: f32,
@@ -495,9 +556,9 @@ fn validate_scalars(
     Ok(())
 }
 
-fn validate_vectors(
+pub(crate) fn validate_vectors<const COMPONENTS: usize>(
     field: &'static str,
-    values: &[[f32; 2]],
+    values: &[[f32; COMPONENTS]],
     min: f32,
     max: f32,
 ) -> Result<(), ClimateValidationError> {
@@ -528,7 +589,7 @@ fn validate_vectors(
     Ok(())
 }
 
-fn validate_monthly_scalars(
+pub(crate) fn validate_monthly_scalars(
     field: &'static str,
     values: &[[f32; CLIMATE_MONTH_COUNT]],
     min: f32,
@@ -559,9 +620,9 @@ fn validate_monthly_scalars(
     Ok(())
 }
 
-fn validate_monthly_vectors(
+pub(crate) fn validate_monthly_vectors<const COMPONENTS: usize>(
     field: &'static str,
-    values: &[[[f32; 2]; CLIMATE_MONTH_COUNT]],
+    values: &[[[f32; COMPONENTS]; CLIMATE_MONTH_COUNT]],
     min: f32,
     max: f32,
 ) -> Result<(), ClimateValidationError> {
@@ -594,7 +655,7 @@ fn validate_monthly_vectors(
     Ok(())
 }
 
-fn validate_summary_identity(
+pub(crate) fn validate_summary_identity(
     field: &'static str,
     index: usize,
     stored: f32,
