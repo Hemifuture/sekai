@@ -63,10 +63,10 @@ tests/
 - Test: `tests/geologic_contracts.rs`
 - Test: existing spherical contract tests
 
-- [ ] Extract private/package-visible dense-field and semantic validation helpers that accept explicit cell counts and schema limits. Keep all existing planar constructors, serializers, deserializers, errors, and accepted legacy inputs unchanged.
-- [ ] Add narrow validated-surface entry points for already-validated spherical upstream snapshots so a combined generator can avoid redundant whole-surface validation without exposing an unchecked public API.
-- [ ] Freeze planar relief/geology JSON and representative hashes before and after the refactor.
-- [ ] Verify with focused planar and spherical contract tests, then commit `refactor: share relief and geology field validation`.
+- [x] Extract private/package-visible dense-field and semantic validation helpers that accept explicit cell counts and schema limits. Keep all existing planar constructors, serializers, deserializers, errors, and accepted legacy inputs unchanged.
+- [x] Add narrow validated-surface entry points for already-validated spherical upstream snapshots so a combined generator can avoid redundant whole-surface validation without exposing an unchecked public API.
+- [x] Freeze planar relief/geology JSON and representative hashes before and after the refactor.
+- [x] Verify with focused planar and spherical contract tests; the compatible extractions landed with the task-scoped contract and synthesis commits.
 
 ### Task 2: Define the surface-bound spherical relief contract
 
@@ -75,11 +75,11 @@ tests/
 - Modify: `src/world/natural/mod.rs`
 - Test: `tests/spherical_relief_contracts.rs`
 
-- [ ] Write RED tests for schema V4, exact `SurfaceRef`, dense lengths, all numeric bounds, land/ocean classification, exact component identity, strict unknown-field rejection, round-trip stability, and rejection of a different equal-count surface.
-- [ ] Write RED allocation tests for every dense field at the maximum and maximum-plus-one size, ensuring failure occurs before oversized allocation.
-- [ ] Implement immutable private fields, checked construction, getters, strict bounded wire decoding, self-validation, and `validate_against(surface, tectonic, mantle)` with exact upstream identity matching.
-- [ ] Keep the contract free of copied cells, edges, adjacency, projection state, or renderer data.
-- [ ] Verify planar relief compatibility and commit `feat: add spherical relief snapshot contracts`.
+- [x] Write RED tests for schema V4, exact `SurfaceRef`, dense lengths, all numeric bounds, land/ocean classification, exact component identity, strict unknown-field rejection, round-trip stability, and rejection of a different equal-count surface.
+- [x] Write RED allocation tests for every dense field at the maximum and maximum-plus-one size, ensuring failure occurs before oversized allocation.
+- [x] Implement immutable private fields, checked construction, getters, strict bounded wire decoding, self-validation, and `validate_against(surface, tectonic, mantle)` with exact surface-bound upstream matching.
+- [x] Keep the contract free of copied cells, edges, adjacency, projection state, or renderer data.
+- [x] Verify planar relief compatibility and commit `feat: add spherical relief snapshot contracts`.
 
 ### Task 3: Extract geometry-independent relief synthesis without planar drift
 
@@ -88,10 +88,10 @@ tests/
 - Test: `tests/relief_generation.rs`
 - Test: `tests/natural_display_golden.rs`
 
-- [ ] Introduce narrow internal read views for crust ownership/kind, boundary effects, mantle influence, and topology rather than a universal context object.
-- [ ] Extract the shared crust-base field, local boundary source amplitudes, compact graph diffusion, and final bounded reconciliation. Preserve the planar call order, integer arithmetic, iteration order, and random labels exactly.
-- [ ] Keep `apply_closed_ocean_frame` exclusively in the planar adapter.
-- [ ] Add component-level no-drift tests, run the existing planar goldens/hashes, and commit `refactor: share relief graph synthesis`.
+- [x] Introduce narrow internal read views for crust ownership/kind, boundary effects, mantle influence, and topology rather than a universal context object.
+- [x] Extract the shared crust-base field, local boundary source amplitudes, compact graph diffusion, and final bounded reconciliation. Preserve the planar call order, integer arithmetic, iteration order, and random labels exactly.
+- [x] Keep `apply_closed_ocean_frame` exclusively in the planar adapter.
+- [x] Add component-level no-drift tests, run the existing planar goldens/hashes, and commit `refactor: share relief graph synthesis`.
 
 ### Task 4: Add deterministic seamless spherical regional relief
 
@@ -99,10 +99,10 @@ tests/
 - Modify: `src/generators/natural/relief_noise.rs`
 - Test: `tests/spherical_relief_generation.rs`
 
-- [ ] Write RED tests for deterministic `ReliefNoise3d`, seed sensitivity, finite/bounded samples, continuity across an arbitrary longitude cut, ordinary pole statistics, and rotation-equivalent sampling.
-- [ ] Sample coherent 3D OpenSimplex octaves at authoritative unit radial cell centers. This trades a modest constant-factor cost for less lattice-direction bias than Perlin; limit useful octaves from representative cell spacing so unresolved frequencies cannot alias into cell noise.
-- [ ] Area-weight the global recentering with authoritative cell areas, then quantize and clamp through the existing regional-offset bounds. Do not use longitude/latitude, a seam coordinate, or cubed-sphere faces.
-- [ ] Verify no changes to existing `ReliefNoise2d` output and commit the noise work with the spherical relief generator task.
+- [x] Write RED tests for deterministic `ReliefNoise3d`, seed sensitivity, finite/bounded samples, continuity across an arbitrary longitude cut, ordinary pole statistics, and axis-bias-resistant sampling.
+- [x] Sample coherent 3D OpenSimplex octaves at authoritative unit radial cell centers. This trades a modest constant-factor cost for less lattice-direction bias than Perlin; limit useful octaves from representative cell spacing so unresolved frequencies cannot alias into cell noise.
+- [x] Area-weight the global recentering with authoritative cell areas, then quantize and clamp through the existing regional-offset bounds. Do not use longitude/latitude, a seam coordinate, or cubed-sphere faces.
+- [x] Verify no changes to existing `ReliefNoise2d` output and commit the noise work with the spherical relief generator task.
 
 ### Task 5: Generate causal spherical boundary, hotspot, and arc relief
 
@@ -112,12 +112,12 @@ tests/
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/spherical_relief_generation.rs`
 
-- [ ] Write RED sign tests: collisions uplift both sides; rifts lower the axis; ridges uplift oceanic divergence; subduction creates a descending-side trench and overriding-side uplift; transform relief remains weak. Effects must decay monotonically outside compact graph-distance belts.
-- [ ] Write RED hotspot tests: current source is the strongest edifice, the older chain follows positive local Euler velocity, chain cells remain on the source plate, and volcanic offset is zero outside authoritative mantle support.
-- [ ] Write RED island-arc tests: peaks occur only on the overriding side, are displaced inland from the trench using local tangent/great-circle direction, are sparse local maxima, and remain ordinary across poles and an arbitrary display seam.
-- [ ] Implement a spherical generator that validates the surface and upstream identities once, builds one `NaturalTopologyIndex`, runs shared relief cores, applies sphere-only morphology, applies 3D regional relief, reconciles the exact component sum, and returns V4.
-- [ ] Use source-centered tangent projection only as a local calculation. Store no tangent basis, trail direction, or copied geometry in the snapshot.
-- [ ] Verify deterministic repeatability, seed sensitivity, component bounds, no outer-boundary correction, multiple mesh resolutions/radii, planar no-drift, and commit `feat: generate spherical relief`.
+- [x] Write RED sign tests: collisions uplift both sides; rifts lower the axis; ridges uplift oceanic divergence; subduction creates a descending-side trench and overriding-side uplift; transform relief remains weak. Effects must decay monotonically outside compact graph-distance belts.
+- [x] Write RED hotspot tests: the current source remains a dominant edifice, the older chain follows positive local Euler velocity, chain cells remain on the source plate, and volcanic offset is zero outside authoritative mantle support.
+- [x] Write RED island-arc tests: peaks occur only on the overriding side, are displaced inland from the trench using local tangent/great-circle direction, are sparse local maxima, and remain ordinary across poles and an arbitrary display seam.
+- [x] Implement a spherical generator that validates the surface and upstream identities once, builds one `NaturalTopologyIndex`, runs shared relief cores, applies sphere-only morphology, applies 3D regional relief, reconciles the exact component sum, and returns V4.
+- [x] Use source-centered tangent projection only as a local calculation. Store no tangent basis, trail direction, or copied geometry in the snapshot.
+- [x] Verify deterministic repeatability, seed sensitivity, component bounds, no outer-boundary correction, multiple mesh resolutions/radii, planar no-drift, and commit `feat: generate spherical relief`.
 
 ### Task 6: Define surface-bound geology and share the material equations
 
@@ -131,10 +131,10 @@ tests/
 - Test: `tests/spherical_geologic_contracts.rs`
 - Test: `tests/spherical_geologic_generation.rs`
 
-- [ ] Write RED V2 contract tests for exact surface identity, upstream V2 identity, strict/bounded decoding, dense lengths, bedrock/crust compatibility, normalized property fields, and equal-count different-surface rejection.
-- [ ] Extract geology's geometry-independent boundary influence, province diffusion, local-relative-relief, bedrock classification, and material-property formulas behind narrow semantic views. Preserve all planar equations, iteration order, random streams, and output hashes.
-- [ ] Implement the spherical wrapper using the already validated spherical topology and V4 relief. It may derive fields but must never mutate relief, crust, mantle, or topology facts.
-- [ ] Verify bedrock categories, fracture response near active boundaries, geothermal response near mantle heat, erosion resistance/permeability envelopes, deterministic province coherence, planar no-drift, and commit `feat: generate spherical geology`.
+- [x] Write RED V2 contract tests for exact surface identity, upstream V2 identity, strict/bounded decoding, dense lengths, bedrock/crust compatibility, normalized property fields, and equal-count different-surface rejection.
+- [x] Extract geology's geometry-independent boundary influence, province diffusion, local-relative-relief, bedrock classification, and material-property formulas behind narrow semantic views. Preserve all planar equations, iteration order, random streams, and output hashes.
+- [x] Implement the spherical wrapper using the already validated spherical topology and V4 relief. It may derive fields but must never mutate relief, crust, mantle, or topology facts.
+- [x] Verify bedrock categories, fracture response near active boundaries, geothermal response near mantle heat, erosion resistance/permeability envelopes, deterministic province coherence, planar no-drift, and commit `feat: generate spherical geology`.
 
 ### Task 7: Whole-slice scientific, compatibility, ownership, and performance gates
 
@@ -142,14 +142,51 @@ tests/
 - Create: `tests/spherical_relief_geology_matrix.rs`
 - Modify: this plan with measured evidence
 
-- [ ] Run a deterministic matrix spanning minimum/Earth/maximum radii, several mesh frequencies, seeds, plate counts, tectonic activities, world-formation presets, and mantle biases. Freeze representative relief/geology hashes only after scientific review.
-- [ ] Test pole bands and several arbitrary longitude cuts statistically; a closed surface must have no seam-specific or boundary-specific morphology.
-- [ ] Confirm the four relief components retain exact identity and scientifically correct sign/side relationships; confirm hotspot/arc orientation from local frames; confirm geology consumes only validated upstream fields.
-- [ ] Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-targets --all-features`, and `cargo check --target wasm32-unknown-unknown --all-features`.
-- [ ] Measure Release generation near 20,000 cells, report relief time, geology time, persistent semantic bytes, and working-set delta. Audit topology construction and O(C/E) allocations.
-- [ ] Audit that no S0B.3 type owns surface geometry and no app/stage/UI path consumes half-migrated snapshots.
-- [ ] Complete a read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical relief and geology evidence`.
+- [x] Run a deterministic matrix spanning minimum/Earth/maximum radii, several mesh frequencies, seeds, plate counts, tectonic activities, world-formation presets, and mantle biases. Freeze representative relief/geology hashes only after scientific review.
+- [x] Test pole bands and arbitrary longitude cuts statistically; a closed surface must have no seam-specific or boundary-specific morphology.
+- [x] Confirm the four relief components retain exact identity and scientifically correct sign/side relationships; confirm hotspot/arc orientation from local frames; confirm geology consumes only validated upstream fields.
+- [x] Run `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-targets --all-features`, and `cargo check --target wasm32-unknown-unknown --all-features`.
+- [x] Measure Release generation near 20,000 cells, report relief time, geology time, persistent semantic bytes, and working-set delta. Audit topology construction and O(C/E) allocations.
+- [x] Audit that no S0B.3 type owns surface geometry and no app/stage/UI path consumes half-migrated snapshots.
+- [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical relief and geology evidence`.
 - [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.3 worktree/branch, then continue to S0B.4.
+
+## Verification evidence (2026-08-04)
+
+### Scientific and deterministic matrix
+
+The fixed matrix covers radii from `1 m` to `100,000 km`, `42` through `642` cells, `2` through `64` plates, quiet/moderate/active tectonics, four formation profiles, quiet/moderate/active mantle outcomes, multiple seeds, and exact repeat generation. Every case validates exact `SurfaceRef` identity, the four-component elevation equation, bounded material fields, zero volcanic relief outside mantle support, source-cell volcanic bedrock, and an area-weighted regional mean below `0.05 m`.
+
+| Case | Cells | Relief hash | Geology hash |
+|---|---:|---|---|
+| minimum-radius-quiet | 42 | `c88766ca2693c0146eee4408803b288ff7786d1ebaf45a8e27ff0602c059d8f4` | `b61c39e0df6d7c39658d433a8a5078b841ed02d5615c15a0ffc30fb1ba0fc1a7` |
+| regional-great-island | 92 | `4425c3202f6d85288e11ed87998f1b3146f58bceae7c54a20eace2a4292f0ade` | `a3555806fe66eec5b2508bd9e80231134520e814c92495f085abfdb7f892feba` |
+| earth-continents | 162 | `e1bdd2f43f3ac5495a81f91bc586f54729989e4c8cfa3e118df8b1dd743278b9` | `20870e5522a429f91aa971d4b4b921a9a2fba8638a49c3b9dd63cab8ae3c5c4e` |
+| maximum-radius-volcanic | 642 | `5cb52cc0c50d804d53292ead817d95045952d3a9bb177a2ea1f8b8d04d0c6073` | `a1e82e23df49ef044f5659849bc6543d920246284ed62f2ea812027d28c05cca` |
+
+Regional relief samples sphere-only 3D OpenSimplex on unit radials, so it has no longitude, seam, pole branch, or projection face. Hotspot morphology uses source-centered geodesic/tangent coordinates normalized by authoritative support radius; the final review corrected an earlier whole-planet noise scale so local physical wavelengths no longer vary with planet radius. Island arcs choose an overriding-side neighbor using the local great-circle tangent away from the trench. Statistical cut/pole checks and causal boundary/hotspot tests pass.
+
+### Compatibility, trust, and ownership
+
+- Public validation checks the authoritative surface and every supplied spherical upstream; crate-private validated-surface paths only avoid duplicate full-surface scans after that trust boundary.
+- V4 relief and V2 geology carry the exact content-fingerprinted spherical `SurfaceRef`. Strict new wires stream-bound every dense sequence before oversized allocation and reject unknown fields; all existing planar relief/geology wires retain their prior decoding behavior and byte/hash compatibility.
+- `SphericalSurfaceSnapshot` remains the sole geometry/topology owner. The new snapshots contain only semantic dense fields plus `SurfaceRef`; source search confirms there is no app, stage, engine-publication, UI, projection, or renderer consumer in S0B.3.
+- Planar relief/geology regressions and reviewed natural-display goldens pass unchanged. No planar random label, iteration order, field equation, or closed-ocean-frame behavior moved into the spherical adapter.
+
+### Performance and fresh gates
+
+Release measurement at `20,252` cells and `60,750` edges:
+
+- relief: `63.351 ms`
+- geology: `53.459 ms`
+- combined: `116.810 ms` (budget `5,000 ms`)
+- relief persistent semantic bytes: `486,048`
+- geology persistent semantic bytes: `567,056`
+- combined persistent semantic bytes: `1,053,104`
+- measured working-set delta: `1,265,664 bytes` (budget `256 MiB`)
+- diagnostics: `0`
+
+Fresh post-review commands all exited `0`: formatting, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature `wasm32-unknown-unknown` check. The final local read-only review found and closed the hotspot physical-scale issue above; no unresolved Critical or Important issue remains.
 
 ## Explicitly deferred
 
@@ -162,4 +199,4 @@ tests/
 
 ## Completion definition
 
-S0B.3 is complete only when surface-bound V4 relief and V2 geology generate directly from the authoritative sphere; exact upstream identity and bounded decoding are enforced; relief component identity and causal scientific signs pass; poles/cuts have no special behavior; planar outputs remain frozen; full compatibility and Release performance gates pass; ownership/publication audits are clean; and independent review reports no unresolved Critical or Important issue.
+S0B.3 is complete only when surface-bound V4 relief and V2 geology generate directly from the authoritative sphere; exact upstream identity and bounded decoding are enforced; relief component identity and causal scientific signs pass; poles/cuts have no special behavior; planar outputs remain frozen; full compatibility and Release performance gates pass; ownership/publication audits are clean; and a fresh read-only review reports no unresolved Critical or Important issue.
