@@ -19,6 +19,7 @@ mod random;
 mod relief;
 mod relief_noise;
 mod rule_input;
+mod spherical_geology;
 mod spherical_island_relief;
 mod spherical_mantle;
 mod spherical_relief;
@@ -70,6 +71,7 @@ pub use rule_input::{
     ResolvedTectonicInputStage, ResolvedTectonicInputStageInputs, RulePackSetArtifact,
     RuleTectonicResolutionStage, RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
 };
+pub use spherical_geology::SphericalGeologicGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_tectonics::SphericalTectonicGenerationError;

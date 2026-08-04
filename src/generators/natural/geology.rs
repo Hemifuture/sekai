@@ -7,10 +7,10 @@ use super::random::{LabeledSubstreams, BEDROCK_PROVINCE_LABEL};
 use super::topology::{multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::StageRng;
 use crate::world::natural::{
-    BedrockKind, BedrockKindField, BoundaryKind, CrustKind, GeologicSnapshot, GeologicSpec,
-    GeologicSpecError, GeologicValidationError, MantleSnapshot, MantleValidationError,
-    ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicValidationError,
-    GEOLOGIC_SNAPSHOT_SCHEMA_V1, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    BedrockKind, BedrockKindField, BoundaryKind, BoundaryRecord, CrustKind, CrustKindField,
+    GeologicSnapshot, GeologicSpec, GeologicSpecError, GeologicValidationError, MantleSnapshot,
+    MantleValidationError, PlateIdField, ReliefSnapshot, ReliefValidationError, TectonicSnapshot,
+    TectonicValidationError, GEOLOGIC_SNAPSHOT_SCHEMA_V1, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::CellId;
@@ -41,93 +41,30 @@ impl GeologicGenerator {
         relief.validate_against(spatial)?;
 
         let topology = NaturalTopologyIndex::new(spatial);
-        let boundary = boundary_influences(spatial, tectonic, &topology);
+        let boundary =
+            boundary_influences(&topology, tectonic.cell_plates(), tectonic.boundaries());
         let streams = LabeledSubstreams::capture(rng);
-        let province = province_field(&topology, &streams);
-        let local_low = local_relative_low(&topology, relief);
-
-        let mut bedrock = Vec::with_capacity(spatial.cell_count());
-        let mut fracture = Vec::with_capacity(spatial.cell_count());
-        let mut resistance = Vec::with_capacity(spatial.cell_count());
-        let mut permeability = Vec::with_capacity(spatial.cell_count());
-        let mut metallic = Vec::with_capacity(spatial.cell_count());
-        let mut geothermal = Vec::with_capacity(spatial.cell_count());
-        let mut sedimentary = Vec::with_capacity(spatial.cell_count());
-
-        for index in 0..spatial.cell_count() {
-            let cell = CellId::from_raw(index as u32);
-            let volcanic =
-                quantize_unit(mantle.volcanic_influence()[index].max(boundary.magmatic[index]));
-            let metamorphic = quantize_unit(boundary.collision[index]);
-            let active = boundary.active[index];
-            let subsidence =
-                (-relief.tectonic_offset_m().values()[index] / 1_500.0).clamp(0.0, 1.0);
-            let province_tendency = (0.5 + 0.5 * province[index]).clamp(0.0, 1.0);
-            let basin = quantize_unit(
-                (0.55 * subsidence + 0.25 * local_low[index] + 0.20 * province_tendency)
-                    * (1.0 - 0.55 * active),
-            );
-            let crust = tectonic
-                .crust_kind(cell)
-                .expect("validated tectonic fields are spatially aligned");
-            let kind = if volcanic >= VOLCANIC_THRESHOLD {
-                BedrockKind::Volcanic
-            } else if crust == CrustKind::Continental && metamorphic >= METAMORPHIC_THRESHOLD {
-                BedrockKind::Metamorphic
-            } else if basin >= SEDIMENTARY_THRESHOLD {
-                BedrockKind::Sedimentary
-            } else {
-                match crust {
-                    CrustKind::Oceanic => BedrockKind::OceanicMafic,
-                    CrustKind::Continental => BedrockKind::ContinentalCrystalline,
-                }
-            };
-
-            let fractured = quantize_unit(
-                1.0 - (1.0 - active) * (1.0 - 0.45 * mantle.volcanic_influence()[index]),
-            );
-            let (base_resistance, base_permeability) = category_properties(kind);
-            let erosion = quantize_unit((base_resistance - 0.30 * fractured).clamp(0.0, 1.0));
-            let permeable = quantize_unit(
-                (base_permeability + 0.55 * fractured * (1.0 - base_permeability)).clamp(0.0, 1.0),
-            );
-            let normalized_heat = ((mantle.heat_flow_mw_m2()[index] - HEAT_FLOW_MIN_MW_M2)
-                / (HEAT_FLOW_MAX_MW_M2 - HEAT_FLOW_MIN_MW_M2))
-                .clamp(0.0, 1.0);
-            let geothermal_value = quantize_unit(normalized_heat * (0.45 + 0.55 * fractured));
-            let magmatic = volcanic;
-            let metallic_value = quantize_unit(
-                1.0 - (1.0 - 0.92 * magmatic)
-                    * (1.0 - 0.78 * metamorphic)
-                    * (1.0 - 0.40 * fractured),
-            );
-            let sedimentary_class = if kind == BedrockKind::Sedimentary {
-                1.0
-            } else {
-                0.0
-            };
-            let sedimentary_value =
-                quantize_unit(0.55 * basin + 0.35 * sedimentary_class + 0.10 * (1.0 - active));
-
-            bedrock.push(kind);
-            fracture.push(fractured);
-            resistance.push(erosion);
-            permeability.push(permeable);
-            metallic.push(metallic_value);
-            geothermal.push(geothermal_value);
-            sedimentary.push(sedimentary_value);
-        }
+        let fields = synthesize_geologic_fields(
+            &topology,
+            &boundary,
+            tectonic.crust_kinds(),
+            mantle.volcanic_influence(),
+            mantle.heat_flow_mw_m2(),
+            relief.tectonic_offset_m().values(),
+            relief.elevation_m().values(),
+            &streams,
+        );
 
         let snapshot = GeologicSnapshot::new(
             GEOLOGIC_SNAPSHOT_SCHEMA_V1,
             spatial.cell_count() as u32,
-            BedrockKindField::from_kinds(bedrock),
-            fracture,
-            resistance,
-            permeability,
-            metallic,
-            geothermal,
-            sedimentary,
+            BedrockKindField::from_kinds(fields.bedrock),
+            fields.fracture,
+            fields.resistance,
+            fields.permeability,
+            fields.metallic,
+            fields.geothermal,
+            fields.sedimentary,
         )?;
         snapshot.validate_against(spatial, tectonic, mantle, relief)?;
         Ok(snapshot)
@@ -135,26 +72,26 @@ impl GeologicGenerator {
 }
 
 #[derive(Debug)]
-struct BoundaryInfluences {
+pub(super) struct BoundaryInfluences {
     active: Vec<f32>,
     collision: Vec<f32>,
     magmatic: Vec<f32>,
 }
 
-fn boundary_influences(
-    spatial: &SpatialSnapshot,
-    tectonic: &TectonicSnapshot,
+pub(super) fn boundary_influences(
     topology: &NaturalTopologyIndex,
+    cell_plates: &PlateIdField,
+    boundaries: &[BoundaryRecord],
 ) -> BoundaryInfluences {
     let mut active = BTreeMap::new();
     let mut collision = BTreeMap::new();
     let mut magmatic = BTreeMap::new();
 
-    for edge in spatial.edges() {
-        let record = tectonic
-            .boundary_for_edge(edge.id)
+    for (edge_index, &owners) in topology.edge_owners().iter().enumerate() {
+        let record = boundaries
+            .get(edge_index)
             .expect("validated tectonic boundaries are edge aligned");
-        let [Some(first), Some(second)] = edge.cells else {
+        let [Some(first), Some(second)] = owners else {
             continue;
         };
         match record.kind {
@@ -175,7 +112,7 @@ fn boundary_influences(
                 let descending = record
                     .subducting_plate
                     .expect("validated subduction identifies the descending plate");
-                let overriding = if tectonic.plate_for_cell(first) == Some(descending) {
+                let overriding = if cell_plates.get(first.raw() as usize) == Some(descending) {
                     second
                 } else {
                     first
@@ -199,6 +136,106 @@ fn boundary_influences(
         active: spread_sources(topology, &active, 2),
         collision: spread_sources(topology, &collision, 3),
         magmatic: spread_sources(topology, &magmatic, 2),
+    }
+}
+
+pub(super) struct GeneratedGeologicFields {
+    pub(super) bedrock: Vec<BedrockKind>,
+    pub(super) fracture: Vec<f32>,
+    pub(super) resistance: Vec<f32>,
+    pub(super) permeability: Vec<f32>,
+    pub(super) metallic: Vec<f32>,
+    pub(super) geothermal: Vec<f32>,
+    pub(super) sedimentary: Vec<f32>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn synthesize_geologic_fields(
+    topology: &NaturalTopologyIndex,
+    boundary: &BoundaryInfluences,
+    crust_kinds: &CrustKindField,
+    volcanic_influence: &[f32],
+    heat_flow_mw_m2: &[f32],
+    tectonic_offset_m: &[f32],
+    elevation_m: &[f32],
+    streams: &LabeledSubstreams,
+) -> GeneratedGeologicFields {
+    let province = province_field(topology, streams);
+    let local_low = local_relative_low(topology, elevation_m);
+    let cell_count = topology.arcs().len();
+    let mut bedrock = Vec::with_capacity(cell_count);
+    let mut fracture = Vec::with_capacity(cell_count);
+    let mut resistance = Vec::with_capacity(cell_count);
+    let mut permeability = Vec::with_capacity(cell_count);
+    let mut metallic = Vec::with_capacity(cell_count);
+    let mut geothermal = Vec::with_capacity(cell_count);
+    let mut sedimentary = Vec::with_capacity(cell_count);
+
+    for index in 0..cell_count {
+        let volcanic = quantize_unit(volcanic_influence[index].max(boundary.magmatic[index]));
+        let metamorphic = quantize_unit(boundary.collision[index]);
+        let active = boundary.active[index];
+        let subsidence = (-tectonic_offset_m[index] / 1_500.0).clamp(0.0, 1.0);
+        let province_tendency = (0.5 + 0.5 * province[index]).clamp(0.0, 1.0);
+        let basin = quantize_unit(
+            (0.55 * subsidence + 0.25 * local_low[index] + 0.20 * province_tendency)
+                * (1.0 - 0.55 * active),
+        );
+        let crust = crust_kinds
+            .get(index)
+            .expect("validated tectonic fields are spatially aligned");
+        let kind = if volcanic >= VOLCANIC_THRESHOLD {
+            BedrockKind::Volcanic
+        } else if crust == CrustKind::Continental && metamorphic >= METAMORPHIC_THRESHOLD {
+            BedrockKind::Metamorphic
+        } else if basin >= SEDIMENTARY_THRESHOLD {
+            BedrockKind::Sedimentary
+        } else {
+            match crust {
+                CrustKind::Oceanic => BedrockKind::OceanicMafic,
+                CrustKind::Continental => BedrockKind::ContinentalCrystalline,
+            }
+        };
+
+        let fractured =
+            quantize_unit(1.0 - (1.0 - active) * (1.0 - 0.45 * volcanic_influence[index]));
+        let (base_resistance, base_permeability) = category_properties(kind);
+        let erosion = quantize_unit((base_resistance - 0.30 * fractured).clamp(0.0, 1.0));
+        let permeable = quantize_unit(
+            (base_permeability + 0.55 * fractured * (1.0 - base_permeability)).clamp(0.0, 1.0),
+        );
+        let normalized_heat = ((heat_flow_mw_m2[index] - HEAT_FLOW_MIN_MW_M2)
+            / (HEAT_FLOW_MAX_MW_M2 - HEAT_FLOW_MIN_MW_M2))
+            .clamp(0.0, 1.0);
+        let geothermal_value = quantize_unit(normalized_heat * (0.45 + 0.55 * fractured));
+        let metallic_value = quantize_unit(
+            1.0 - (1.0 - 0.92 * volcanic) * (1.0 - 0.78 * metamorphic) * (1.0 - 0.40 * fractured),
+        );
+        let sedimentary_class = if kind == BedrockKind::Sedimentary {
+            1.0
+        } else {
+            0.0
+        };
+        let sedimentary_value =
+            quantize_unit(0.55 * basin + 0.35 * sedimentary_class + 0.10 * (1.0 - active));
+
+        bedrock.push(kind);
+        fracture.push(fractured);
+        resistance.push(erosion);
+        permeability.push(permeable);
+        metallic.push(metallic_value);
+        geothermal.push(geothermal_value);
+        sedimentary.push(sedimentary_value);
+    }
+
+    GeneratedGeologicFields {
+        bedrock,
+        fracture,
+        resistance,
+        permeability,
+        metallic,
+        geothermal,
+        sedimentary,
     }
 }
 
@@ -268,8 +305,7 @@ fn province_field(topology: &NaturalTopologyIndex, streams: &LabeledSubstreams) 
         .collect()
 }
 
-fn local_relative_low(topology: &NaturalTopologyIndex, relief: &ReliefSnapshot) -> Vec<f32> {
-    let elevation = relief.elevation_m().values();
+fn local_relative_low(topology: &NaturalTopologyIndex, elevation: &[f32]) -> Vec<f32> {
     topology
         .arcs()
         .iter()
