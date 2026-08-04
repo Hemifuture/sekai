@@ -2,12 +2,14 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use super::{CrustKind, MantleSnapshot, ReliefSnapshot, TectonicSnapshot};
+use super::{CrustKind, CrustKindField, MantleSnapshot, ReliefSnapshot, TectonicSnapshot};
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::CellId;
 
 /// The supported version of the serialized geologic substrate schema.
 pub const GEOLOGIC_SNAPSHOT_SCHEMA_V1: u16 = 1;
+/// The surface-bound geologic substrate schema used by authoritative spherical worlds.
+pub const GEOLOGIC_SNAPSHOT_SCHEMA_V2: u16 = 2;
 
 /// A broad present-day surface bedrock class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -170,36 +172,18 @@ impl GeologicSnapshot {
             });
         }
 
-        validate_length("bedrock_kinds", self.bedrock_kinds.len(), self.cell_count)?;
-        for (index, &raw) in self.bedrock_kinds.raw_values().iter().enumerate() {
-            BedrockKind::try_from_raw(raw).map_err(|_| {
-                GeologicValidationError::InvalidBedrockKind {
-                    cell: Some(CellId::from_raw(index as u32)),
-                    found: raw,
-                }
-            })?;
-        }
-        for (name, values) in [
-            ("fracture_intensity", self.fracture_intensity.as_slice()),
-            ("erosion_resistance", self.erosion_resistance.as_slice()),
-            (
-                "relative_permeability",
-                self.relative_permeability.as_slice(),
-            ),
-            (
-                "metallic_mineral_potential",
-                self.metallic_mineral_potential.as_slice(),
-            ),
-            ("geothermal_potential", self.geothermal_potential.as_slice()),
-            (
-                "sedimentary_basin_potential",
-                self.sedimentary_basin_potential.as_slice(),
-            ),
-        ] {
-            validate_length(name, values.len(), self.cell_count)?;
-            validate_unit_interval(name, values)?;
-        }
-        Ok(())
+        validate_geologic_fields(
+            self.cell_count,
+            GeologicFields {
+                bedrock_kinds: &self.bedrock_kinds,
+                fracture_intensity: &self.fracture_intensity,
+                erosion_resistance: &self.erosion_resistance,
+                relative_permeability: &self.relative_permeability,
+                metallic_mineral_potential: &self.metallic_mineral_potential,
+                geothermal_potential: &self.geothermal_potential,
+                sedimentary_basin_potential: &self.sedimentary_basin_potential,
+            },
+        )
     }
 
     /// Validates alignment and bedrock/crust compatibility against all upstream snapshots.
@@ -236,31 +220,11 @@ impl GeologicSnapshot {
             });
         }
 
-        for index in 0..self.cell_count as usize {
-            let cell = CellId::from_raw(index as u32);
-            let bedrock = self
-                .bedrock_kinds
-                .get(index)
-                .expect("dense bedrock field was validated");
-            let crust = tectonic
-                .crust_kind(cell)
-                .expect("tectonic cell count and local field were validated");
-            let compatible = match bedrock {
-                BedrockKind::OceanicMafic => crust == CrustKind::Oceanic,
-                BedrockKind::ContinentalCrystalline | BedrockKind::Metamorphic => {
-                    crust == CrustKind::Continental
-                }
-                BedrockKind::Sedimentary | BedrockKind::Volcanic => true,
-            };
-            if !compatible {
-                return Err(GeologicValidationError::BedrockCrustMismatch {
-                    cell,
-                    bedrock,
-                    crust,
-                });
-            }
-        }
-        Ok(())
+        validate_bedrock_crust_compatibility(
+            self.cell_count,
+            &self.bedrock_kinds,
+            tectonic.crust_kinds(),
+        )
     }
 
     /// Returns the serialized schema version.
@@ -312,6 +276,80 @@ impl GeologicSnapshot {
     pub fn bedrock_kind(&self, cell: CellId) -> Option<BedrockKind> {
         self.bedrock_kinds.get(cell.raw() as usize)
     }
+}
+
+pub(crate) struct GeologicFields<'a> {
+    pub(crate) bedrock_kinds: &'a BedrockKindField,
+    pub(crate) fracture_intensity: &'a [f32],
+    pub(crate) erosion_resistance: &'a [f32],
+    pub(crate) relative_permeability: &'a [f32],
+    pub(crate) metallic_mineral_potential: &'a [f32],
+    pub(crate) geothermal_potential: &'a [f32],
+    pub(crate) sedimentary_basin_potential: &'a [f32],
+}
+
+pub(crate) fn validate_geologic_fields(
+    cell_count: u32,
+    fields: GeologicFields<'_>,
+) -> Result<(), GeologicValidationError> {
+    validate_length("bedrock_kinds", fields.bedrock_kinds.len(), cell_count)?;
+    for (index, &raw) in fields.bedrock_kinds.raw_values().iter().enumerate() {
+        BedrockKind::try_from_raw(raw).map_err(|_| {
+            GeologicValidationError::InvalidBedrockKind {
+                cell: Some(CellId::from_raw(index as u32)),
+                found: raw,
+            }
+        })?;
+    }
+    for (name, values) in [
+        ("fracture_intensity", fields.fracture_intensity),
+        ("erosion_resistance", fields.erosion_resistance),
+        ("relative_permeability", fields.relative_permeability),
+        (
+            "metallic_mineral_potential",
+            fields.metallic_mineral_potential,
+        ),
+        ("geothermal_potential", fields.geothermal_potential),
+        (
+            "sedimentary_basin_potential",
+            fields.sedimentary_basin_potential,
+        ),
+    ] {
+        validate_length(name, values.len(), cell_count)?;
+        validate_unit_interval(name, values)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_bedrock_crust_compatibility(
+    cell_count: u32,
+    bedrock_kinds: &BedrockKindField,
+    crust_kinds: &CrustKindField,
+) -> Result<(), GeologicValidationError> {
+    for index in 0..cell_count as usize {
+        let cell = CellId::from_raw(index as u32);
+        let bedrock = bedrock_kinds
+            .get(index)
+            .expect("dense bedrock field was validated");
+        let crust = crust_kinds
+            .get(index)
+            .expect("tectonic cell count and local field were validated");
+        let compatible = match bedrock {
+            BedrockKind::OceanicMafic => crust == CrustKind::Oceanic,
+            BedrockKind::ContinentalCrystalline | BedrockKind::Metamorphic => {
+                crust == CrustKind::Continental
+            }
+            BedrockKind::Sedimentary | BedrockKind::Volcanic => true,
+        };
+        if !compatible {
+            return Err(GeologicValidationError::BedrockCrustMismatch {
+                cell,
+                bedrock,
+                crust,
+            });
+        }
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for GeologicSnapshot {

@@ -13,6 +13,7 @@ mod hydrology;
 mod mantle;
 mod relief;
 mod spec;
+mod spherical_geology;
 mod spherical_mantle;
 mod spherical_relief;
 mod spherical_tectonics;
@@ -63,7 +64,7 @@ pub use geologic_spec::{
 };
 pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
-    GEOLOGIC_SNAPSHOT_SCHEMA_V1,
+    GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,
@@ -97,6 +98,7 @@ pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
     MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
 };
+pub use spherical_geology::{SphericalGeologicSnapshot, SphericalGeologicValidationError};
 pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
