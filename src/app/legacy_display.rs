@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::field_document::AppFieldDocument;
+use super::field_document::{FieldDocument, PresentedFieldDocument};
 use crate::delaunay::voronoi::IndexedVoronoiDiagram;
 use crate::view::{
     CellGeometrySource, DisplayPrepareError, DisplayRangeMode, FieldCatalog, FieldViewError,
@@ -26,11 +26,7 @@ pub(super) struct LegacyTerrainDisplay {
     pub(super) diagnostics: Vec<OwnedViewDiagnostic>,
 }
 
-impl AppFieldDocument for LegacyTerrainDisplay {
-    fn mesh(&self) -> &Arc<PreparedCellMesh> {
-        &self.mesh
-    }
-
+impl FieldDocument for LegacyTerrainDisplay {
     fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
         FieldCatalog::from_extension_fields(&self.registry, &self.fields)
     }
@@ -45,6 +41,12 @@ impl AppFieldDocument for LegacyTerrainDisplay {
 
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
         (field == &legacy_elevation_id()).then_some(DisplayRangeMode::Schema)
+    }
+}
+
+impl PresentedFieldDocument for LegacyTerrainDisplay {
+    fn mesh(&self) -> &Arc<PreparedCellMesh> {
+        &self.mesh
     }
 }
 

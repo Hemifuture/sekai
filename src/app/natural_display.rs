@@ -2,36 +2,24 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::field_document::AppFieldDocument;
-use crate::engine::{BuildReport, DiagnosticSeverity};
+use super::field_document::{owned_view_diagnostics, FieldDocument, PresentedFieldDocument};
+use super::natural_field_payloads::{natural_preferred_range, NaturalFieldPayloadBundle};
+use crate::engine::BuildReport;
 use crate::generators::natural::{
     GeologicArtifact, HydroErosionArtifact, MantleArtifact, PreliminaryClimateArtifact,
     ReliefArtifact, ResolvedWorldFormationArtifact, TectonicArtifact,
 };
 use crate::generators::spatial::SpatialArtifact;
 use crate::view::{
-    DisplayPrepareError, DisplayRangeMode, FieldCatalog, FieldPayloadRef, FieldViewError,
-    MeshCompleteness, OwnedViewDiagnostic, PreparedCellMesh, ViewDiagnosticSeverity,
+    DisplayPrepareError, DisplayRangeMode, FieldCatalog, FieldViewError, MeshCompleteness,
+    OwnedViewDiagnostic, PreparedCellMesh,
 };
-use crate::world::fields::{FieldId, FieldRegistry, ValueRange};
+use crate::world::fields::{FieldId, FieldRegistry};
 use crate::world::natural::{
-    annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,
-    boundary_strength_field_id, crust_base_elevation_field_id, crust_kind_field_id,
-    crust_thickness_field_id, drainage_area_km2_field_id, elevation_field_id,
-    erosion_resistance_field_id, fluvial_erosion_depth_m_field_id, fracture_intensity_field_id,
-    geothermal_potential_field_id, lake_depth_m_field_id, land_ocean_field_id,
-    latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
-    mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
-    natural_field_registry, plate_id_field_id, plate_velocity_field_id,
-    preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
-    preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
-    regional_offset_field_id, relative_permeability_field_id,
-    sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
-    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
-    ClimateValidationError, GeologicValidationError, HydroErosionValidationError,
-    MantleValidationError, NaturalFieldDisplayCache, NaturalFieldRegistryError,
-    ReliefValidationError, TectonicValidationError, WorldFormationSpecError,
+    natural_field_registry, surface_elevation_m_field_id, ClimateValidationError,
+    GeologicValidationError, HydroErosionValidationError, MantleValidationError,
+    NaturalFieldDisplayCache, NaturalFieldRegistryError, ReliefValidationError,
+    TectonicValidationError, WorldFormationSpecError,
 };
 use crate::world::spatial::SpatialValidationError;
 
@@ -92,21 +80,7 @@ impl LegacyPlanarNaturalFieldDocument {
             spatial.snapshot(),
             MeshCompleteness::RequireAll,
         )?);
-        let diagnostics = report
-            .diagnostics()
-            .iter()
-            .map(|diagnostic| OwnedViewDiagnostic {
-                severity: match diagnostic.severity() {
-                    DiagnosticSeverity::Info => ViewDiagnosticSeverity::Info,
-                    DiagnosticSeverity::Warning => ViewDiagnosticSeverity::Warning,
-                    DiagnosticSeverity::Error => ViewDiagnosticSeverity::Error,
-                },
-                code: diagnostic.code().to_owned(),
-                field_id: diagnostic.context().field_id.clone(),
-                cell_id: diagnostic.context().cell_id,
-                message: diagnostic.message().to_owned(),
-            })
-            .collect();
+        let diagnostics = owned_view_diagnostics(report);
         let display_cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
         let document = Self {
             spatial,
@@ -125,200 +99,6 @@ impl LegacyPlanarNaturalFieldDocument {
         document.catalog()?;
         Ok(document)
     }
-
-    fn payloads(&self) -> Vec<(FieldId, FieldPayloadRef<'_>)> {
-        vec![
-            (
-                plate_id_field_id(),
-                FieldPayloadRef::CategoryU32(self.tectonic.snapshot().cell_plates().raw_values()),
-            ),
-            (
-                crust_kind_field_id(),
-                FieldPayloadRef::CategoryU32(self.tectonic.snapshot().crust_kinds().raw_values()),
-            ),
-            (
-                crust_thickness_field_id(),
-                FieldPayloadRef::ScalarF32(self.tectonic.snapshot().crust_thickness_km()),
-            ),
-            (
-                plate_velocity_field_id(),
-                FieldPayloadRef::Vector2F32(self.display_cache.plate_velocity_cm_per_year()),
-            ),
-            (
-                boundary_kind_field_id(),
-                FieldPayloadRef::CategoryU32(self.display_cache.boundary_kind()),
-            ),
-            (
-                boundary_strength_field_id(),
-                FieldPayloadRef::ScalarF32(self.display_cache.boundary_strength()),
-            ),
-            (
-                crust_base_elevation_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.relief.snapshot().crust_base_elevation_m().values(),
-                ),
-            ),
-            (
-                tectonic_offset_field_id(),
-                FieldPayloadRef::ScalarF32(self.relief.snapshot().tectonic_offset_m().values()),
-            ),
-            (
-                regional_offset_field_id(),
-                FieldPayloadRef::ScalarF32(self.relief.snapshot().regional_offset_m().values()),
-            ),
-            (
-                elevation_field_id(),
-                FieldPayloadRef::ScalarF32(self.relief.snapshot().elevation_m().values()),
-            ),
-            (
-                land_ocean_field_id(),
-                FieldPayloadRef::CategoryU32(self.relief.snapshot().land_ocean().raw_values()),
-            ),
-            (
-                mantle_heat_flow_field_id(),
-                FieldPayloadRef::ScalarF32(self.mantle.snapshot().heat_flow_mw_m2()),
-            ),
-            (
-                volcanic_influence_field_id(),
-                FieldPayloadRef::ScalarF32(self.mantle.snapshot().volcanic_influence()),
-            ),
-            (
-                volcanic_offset_field_id(),
-                FieldPayloadRef::ScalarF32(self.relief.snapshot().volcanic_offset_m().values()),
-            ),
-            (
-                bedrock_kind_field_id(),
-                FieldPayloadRef::CategoryU32(self.geology.snapshot().bedrock_kinds().raw_values()),
-            ),
-            (
-                fracture_intensity_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().fracture_intensity()),
-            ),
-            (
-                erosion_resistance_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().erosion_resistance()),
-            ),
-            (
-                relative_permeability_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().relative_permeability()),
-            ),
-            (
-                metallic_mineral_potential_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().metallic_mineral_potential()),
-            ),
-            (
-                geothermal_potential_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().geothermal_potential()),
-            ),
-            (
-                sedimentary_basin_potential_field_id(),
-                FieldPayloadRef::ScalarF32(self.geology.snapshot().sedimentary_basin_potential()),
-            ),
-            (
-                latitude_degrees_field_id(),
-                FieldPayloadRef::ScalarF32(self.climate.snapshot().latitude_degrees()),
-            ),
-            (
-                maritime_influence_field_id(),
-                FieldPayloadRef::ScalarF32(self.climate.snapshot().maritime_influence()),
-            ),
-            (
-                preliminary_prevailing_wind_m_s_field_id(),
-                FieldPayloadRef::Vector2F32(self.climate.snapshot().prevailing_wind_m_s()),
-            ),
-            (
-                preliminary_mean_air_temperature_c_field_id(),
-                FieldPayloadRef::ScalarF32(self.climate.snapshot().mean_annual_air_temperature_c()),
-            ),
-            (
-                preliminary_temperature_seasonality_c_field_id(),
-                FieldPayloadRef::ScalarF32(self.climate.snapshot().temperature_seasonality_c()),
-            ),
-            (
-                preliminary_annual_precipitation_mm_field_id(),
-                FieldPayloadRef::ScalarF32(self.climate.snapshot().annual_precipitation_mm()),
-            ),
-            (
-                surface_elevation_m_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .surface()
-                        .surface_elevation_m()
-                        .values(),
-                ),
-            ),
-            (
-                fluvial_erosion_depth_m_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion.snapshot().surface().erosion_depth_m(),
-                ),
-            ),
-            (
-                sediment_deposition_thickness_m_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .surface()
-                        .deposition_thickness_m(),
-                ),
-            ),
-            (
-                surface_water_kind_field_id(),
-                FieldPayloadRef::CategoryU32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .hydrology()
-                        .surface_water()
-                        .raw_values(),
-                ),
-            ),
-            (
-                lake_depth_m_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion.snapshot().hydrology().lake_depth_m(),
-                ),
-            ),
-            (
-                annual_local_runoff_mm_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .hydrology()
-                        .annual_local_runoff_mm(),
-                ),
-            ),
-            (
-                mean_annual_discharge_m3_s_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .hydrology()
-                        .mean_annual_discharge_m3_s(),
-                ),
-            ),
-            (
-                drainage_area_km2_field_id(),
-                FieldPayloadRef::ScalarF32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .hydrology()
-                        .drainage_area_km2(),
-                ),
-            ),
-            (
-                strahler_stream_order_field_id(),
-                FieldPayloadRef::CategoryU32(
-                    self.hydro_erosion
-                        .snapshot()
-                        .hydrology()
-                        .strahler_order()
-                        .raw_values(),
-                ),
-            ),
-        ]
-    }
-
     #[cfg(test)]
     pub(super) fn test_fixture() -> Self {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
@@ -390,13 +170,20 @@ impl LegacyPlanarNaturalFieldDocument {
     }
 }
 
-impl AppFieldDocument for LegacyPlanarNaturalFieldDocument {
-    fn mesh(&self) -> &Arc<PreparedCellMesh> {
-        &self.mesh
-    }
-
+impl FieldDocument for LegacyPlanarNaturalFieldDocument {
     fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
-        FieldCatalog::from_payloads(&self.registry, self.payloads())
+        let payloads = NaturalFieldPayloadBundle::from_legacy_planar(
+            self.tectonic.snapshot(),
+            self.mantle.snapshot(),
+            self.relief.snapshot(),
+            self.geology.snapshot(),
+            self.climate.snapshot(),
+            self.hydro_erosion.snapshot(),
+            self.display_cache.plate_velocity_cm_per_year(),
+            self.display_cache.boundary_kind(),
+            self.display_cache.boundary_strength(),
+        );
+        FieldCatalog::from_payloads(&self.registry, payloads.payloads())
     }
 
     fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
@@ -408,33 +195,22 @@ impl AppFieldDocument for LegacyPlanarNaturalFieldDocument {
     }
 
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
-        if [
-            annual_local_runoff_mm_field_id(),
-            drainage_area_km2_field_id(),
-            fluvial_erosion_depth_m_field_id(),
-            lake_depth_m_field_id(),
-            mean_annual_discharge_m3_s_field_id(),
-            sediment_deposition_thickness_m_field_id(),
-        ]
-        .contains(field)
-        {
-            return Some(DisplayRangeMode::Data);
-        }
-        (field == &surface_elevation_m_field_id()).then_some(())?;
-        self.registry.get(field)?;
-        let sea_level = self.relief.snapshot().sea_level_m();
-        let radius = self
-            .hydro_erosion
-            .snapshot()
-            .surface()
-            .surface_elevation_m()
-            .values()
-            .iter()
-            .map(|value| (value - sea_level).abs())
-            .fold(0.0_f32, f32::max);
-        ValueRange::new(sea_level - radius, sea_level + radius)
-            .ok()
-            .map(DisplayRangeMode::Manual)
+        natural_preferred_range(
+            &self.registry,
+            self.relief.snapshot().sea_level_m(),
+            self.hydro_erosion
+                .snapshot()
+                .surface()
+                .surface_elevation_m()
+                .values(),
+            field,
+        )
+    }
+}
+
+impl PresentedFieldDocument for LegacyPlanarNaturalFieldDocument {
+    fn mesh(&self) -> &Arc<PreparedCellMesh> {
+        &self.mesh
     }
 }
 
@@ -468,9 +244,11 @@ pub(super) enum NaturalDisplayError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use crate::app::field_document::AppFieldDocument;
+    use crate::app::field_document::{FieldDocument, PresentedFieldDocument};
+    use crate::app::natural_field_payloads::NaturalFieldPayloadBundle;
     use crate::engine::{
         BuildEngine, BuildReport, Diagnostic, DiagnosticContext, DiagnosticSeverity,
         ExternalArtifacts, MemoryStageCache,
@@ -483,7 +261,8 @@ mod tests {
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
-    use crate::view::{DisplayRangeMode, ViewDiagnosticSeverity};
+    use crate::view::{DisplayRangeMode, FieldPayloadRef, ViewDiagnosticSeverity};
+    use crate::world::fields::FieldDomain;
     use crate::world::natural::{
         bedrock_kind_field_id, elevation_field_id, geothermal_potential_field_id,
         mantle_heat_flow_field_id, plate_id_field_id, plate_velocity_field_id,
@@ -764,6 +543,69 @@ mod tests {
                 [f32::from(expected[0]) / 10.0, f32::from(expected[1]) / 10.0]
             );
         }
+    }
+
+    #[test]
+    fn shared_payload_bundle_maps_every_planar_field_once_without_copying() {
+        let document = build_document_with_diagnostic();
+        let bundle = NaturalFieldPayloadBundle::from_legacy_planar(
+            document.tectonic.snapshot(),
+            document.mantle.snapshot(),
+            document.relief.snapshot(),
+            document.geology.snapshot(),
+            document.climate.snapshot(),
+            document.hydro_erosion.snapshot(),
+            document.display_cache.plate_velocity_cm_per_year(),
+            document.display_cache.boundary_kind(),
+            document.display_cache.boundary_strength(),
+        );
+        let payloads = bundle.payloads();
+        let payload_ids = payloads
+            .iter()
+            .map(|(field, _)| field.clone())
+            .collect::<BTreeSet<_>>();
+        let registry_ids = document
+            .registry
+            .iter()
+            .map(|(field, _)| field.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(payloads.len(), 36);
+        assert_eq!(payload_ids.len(), payloads.len());
+        assert_eq!(payload_ids, registry_ids);
+
+        let cell_count = document.spatial.snapshot().cell_count();
+        let edge_count = document.spatial.snapshot().edges().len();
+        for (field, payload) in &payloads {
+            let actual_len = match *payload {
+                FieldPayloadRef::ScalarF32(values) => values.len(),
+                FieldPayloadRef::CategoryU32(values) => values.len(),
+                FieldPayloadRef::Boolean(values) => values.len(),
+                FieldPayloadRef::Vector2F32(values) => values.len(),
+                FieldPayloadRef::StableIdU32 { values, .. } => values.len(),
+            };
+            let expected_len = match document.registry.get(field).unwrap().domain {
+                FieldDomain::Cells => cell_count,
+                FieldDomain::Edges => edge_count,
+                domain => panic!("unexpected natural field domain {domain:?}"),
+            };
+            assert_eq!(
+                actual_len, expected_len,
+                "wrong payload length for {field:?}"
+            );
+        }
+
+        let (_, elevation) = payloads
+            .iter()
+            .find(|(field, _)| field == &elevation_field_id())
+            .unwrap();
+        let FieldPayloadRef::ScalarF32(elevation) = *elevation else {
+            panic!("elevation must remain a scalar payload");
+        };
+        assert_eq!(
+            elevation.as_ptr(),
+            document.relief.snapshot().elevation_m().values().as_ptr()
+        );
     }
 
     #[test]

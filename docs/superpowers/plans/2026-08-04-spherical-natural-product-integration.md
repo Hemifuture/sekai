@@ -637,17 +637,17 @@ git commit -m "feat: bound natural fields by spherical area"
 - Consumes: current `AppFieldDocument`, planar natural snapshots, and the stable registry.
 - Produces: `FieldDocument`, `PresentedFieldDocument: FieldDocument`, and `NaturalFieldPayloadBundle<'a>` with a single `payloads()` ID mapping.
 
-- [ ] **Step 1: Write RED compile/behavior tests for the split traits**
+- [x] **Step 1: Write RED compile/behavior tests for the split traits**
 
 Add a `DataOnlyDocument` fixture that implements `FieldDocument` but has no mesh. Assert its catalog, diagnostics, preferred field, and preferred range are usable. Keep `prepare_new_document_display` constrained to `PresentedFieldDocument` so attempting to pass `DataOnlyDocument` is impossible at the type boundary; use the unit test module's real presented fixture to prove existing preparation still works.
 
-- [ ] **Step 2: Run and observe RED**
+- [x] **Step 2: Run and observe RED**
 
 Run: `cargo test --lib app::field_document::tests -- --nocapture`
 
 Expected: compilation fails because the two traits do not exist.
 
-- [ ] **Step 3: Split the trait without relying on trait-object upcasting**
+- [x] **Step 3: Split the trait without relying on trait-object upcasting**
 
 Use generic functions compatible with Rust 1.85:
 
@@ -726,17 +726,17 @@ fn prepare_diagnostics<D: PresentedFieldDocument + ?Sized>(
 ) -> Result<Arc<PreparedDiagnosticMask>, DisplayPrepareError>;
 ```
 
-- [ ] **Step 4: Write a failing single-mapping test for natural payloads**
+- [x] **Step 4: Write a failing single-mapping test for natural payloads**
 
 The planar document test must construct `NaturalFieldPayloadBundle::from_legacy_planar(...)`, call `payloads()`, and assert every registry ID appears exactly once, every cell payload has the planar cell count, every edge payload has the edge count, and the borrowed elevation pointer still equals the authoritative snapshot slice pointer.
 
-- [ ] **Step 5: Implement the common borrowed bundle and refactor planar document**
+- [x] **Step 5: Implement the common borrowed bundle and refactor planar document**
 
 `NaturalFieldPayloadBundle<'a>` stores only borrowed slices for the existing 36 natural fields. The one mapping covers these exact IDs, in registry order: `plate_id`, `crust_kind`, `crust_thickness_km`, `plate_velocity`, `boundary_kind`, `boundary_strength`, `crust_base_elevation_m`, `tectonic_offset_m`, `regional_offset_m`, `elevation_m`, `land_ocean`, `mantle_heat_flow_mw_m2`, `volcanic_influence`, `volcanic_offset_m`, `bedrock_kind`, `fracture_intensity`, `erosion_resistance`, `relative_permeability`, `metallic_mineral_potential`, `geothermal_potential`, `sedimentary_basin_potential`, `latitude_degrees`, `maritime_influence`, `preliminary_prevailing_wind_m_s`, `preliminary_mean_air_temperature_c`, `preliminary_temperature_seasonality_c`, `preliminary_annual_precipitation_mm`, `surface_elevation_m`, `fluvial_erosion_depth_m`, `sediment_deposition_thickness_m`, `surface_water_kind`, `lake_depth_m`, `annual_local_runoff_mm`, `mean_annual_discharge_m3_s`, `drainage_area_km2`, and `strahler_stream_order`. It has two constructors—`from_legacy_planar` now and `from_spherical` in Task 8—but exactly one `payloads()` method owns this Field ID mapping. Move the current `NaturalFieldDocument::payloads` mapping into this file and have `LegacyPlanarNaturalFieldDocument` delegate to it.
 
 Also extract exactly two shared helpers: `owned_view_diagnostics(&BuildReport) -> Vec<OwnedViewDiagnostic>` in `field_document.rs`, and `natural_preferred_range(&FieldRegistry, sea_level_m: f32, surface_elevation_m: &[f32], &FieldId) -> Option<DisplayRangeMode>` in `natural_field_payloads.rs`. Both planar and spherical documents use them. Keep `PreparedCellMesh` and the existing `NaturalFieldDisplayCache` solely in the legacy document.
 
-- [ ] **Step 6: Run all field/display regressions**
+- [x] **Step 6: Run all field/display regressions**
 
 Run:
 
@@ -748,7 +748,7 @@ cargo test --test natural_field_views --test natural_display_golden --test field
 
 Expected: all pass with identical planar field pointers, ranges, and images.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add src/app/field_document.rs src/app/natural_field_payloads.rs src/app/natural_display.rs src/app.rs

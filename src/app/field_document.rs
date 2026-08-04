@@ -1,21 +1,45 @@
 use std::sync::Arc;
 
+use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::ui::field::FieldControlAction;
 use crate::view::{
     built_in_palette, prepare_cell_field, resolve_display_range, DisplayPrepareError,
     DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog, FieldDisplayState,
     FieldView, FieldViewError, LinearRgba, OwnedViewDiagnostic, PaletteId, PreparedCellField,
-    PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay,
+    PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay, ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldId, FieldPaletteHint};
 
-/// Private application boundary shared by legacy and formal world documents.
-pub(super) trait AppFieldDocument {
-    fn mesh(&self) -> &Arc<PreparedCellMesh>;
+/// Renderer-independent field-data boundary shared by formal world documents.
+pub(super) trait FieldDocument {
     fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError>;
     fn diagnostics(&self) -> &[OwnedViewDiagnostic];
     fn preferred_field(&self) -> Option<FieldId>;
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode>;
+}
+
+/// Field document that also owns a mesh suitable for the current presenter.
+pub(super) trait PresentedFieldDocument: FieldDocument {
+    fn mesh(&self) -> &Arc<PreparedCellMesh>;
+}
+
+/// Copies engine diagnostics into renderer-independent, document-owned values.
+pub(super) fn owned_view_diagnostics(report: &BuildReport) -> Vec<OwnedViewDiagnostic> {
+    report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| OwnedViewDiagnostic {
+            severity: match diagnostic.severity() {
+                DiagnosticSeverity::Info => ViewDiagnosticSeverity::Info,
+                DiagnosticSeverity::Warning => ViewDiagnosticSeverity::Warning,
+                DiagnosticSeverity::Error => ViewDiagnosticSeverity::Error,
+            },
+            code: diagnostic.code().to_owned(),
+            field_id: diagnostic.context().field_id.clone(),
+            cell_id: diagnostic.context().cell_id,
+            message: diagnostic.message().to_owned(),
+        })
+        .collect()
 }
 
 struct PreparedDisplayParts {
@@ -25,8 +49,8 @@ struct PreparedDisplayParts {
 }
 
 /// Prepares one complete candidate without mutating the currently published document.
-pub(super) fn prepare_new_document_display(
-    document: &dyn AppFieldDocument,
+pub(super) fn prepare_new_document_display<D: PresentedFieldDocument + ?Sized>(
+    document: &D,
     current_state: &FieldDisplayState,
     clock: &mut DisplayRevisionClock,
 ) -> Result<(FieldDisplayState, Arc<PreparedFieldDisplay>), DisplayPrepareError> {
@@ -65,8 +89,8 @@ pub(super) fn prepare_new_document_display(
     Ok((state, packet))
 }
 
-pub(super) fn prepare_control_action(
-    document: &dyn AppFieldDocument,
+pub(super) fn prepare_control_action<D: PresentedFieldDocument + ?Sized>(
+    document: &D,
     current: &PreparedFieldDisplay,
     state: &mut FieldDisplayState,
     clock: &mut DisplayRevisionClock,
@@ -146,8 +170,8 @@ pub(super) fn prepare_control_action(
     }
 }
 
-fn prepare_display_parts(
-    document: &dyn AppFieldDocument,
+fn prepare_display_parts<D: PresentedFieldDocument + ?Sized>(
+    document: &D,
     catalog: &FieldCatalog<'_>,
     state: &FieldDisplayState,
 ) -> Result<PreparedDisplayParts, DisplayPrepareError> {
@@ -177,8 +201,8 @@ fn selected_field_view<'catalog, 'data>(
         .filter(|view| view.cell_fill_kind().is_ok())
 }
 
-fn prepare_diagnostics(
-    document: &dyn AppFieldDocument,
+fn prepare_diagnostics<D: PresentedFieldDocument + ?Sized>(
+    document: &D,
     state: &FieldDisplayState,
 ) -> Result<Arc<PreparedDiagnosticMask>, DisplayPrepareError> {
     Ok(Arc::new(PreparedDiagnosticMask::build(
@@ -265,25 +289,64 @@ fn issue_all_revisions(
 mod tests {
     use std::sync::Arc;
 
-    use super::{prepare_control_action, prepare_new_document_display, AppFieldDocument};
+    use super::{
+        prepare_control_action, prepare_new_document_display, FieldDocument, PresentedFieldDocument,
+    };
     use crate::app::natural_display::LegacyPlanarNaturalFieldDocument;
     use crate::ui::field::FieldControlAction;
     use crate::view::{
-        DisplayRangeMode, DisplayRevisionClock, FieldCatalog, FieldDisplayState, FieldViewError,
-        OwnedViewDiagnostic, PreparedCellMesh,
+        DisplayRangeMode, DisplayRevisionClock, FieldCatalog, FieldDisplayState, FieldPayloadRef,
+        FieldViewError, OwnedViewDiagnostic, PreparedCellMesh,
     };
-    use crate::world::fields::FieldId;
-    use crate::world::natural::{fluvial_erosion_depth_m_field_id, plate_id_field_id};
+    use crate::world::fields::{FieldId, FieldRegistry};
+    use crate::world::natural::{
+        fluvial_erosion_depth_m_field_id, natural_field_registry, plate_id_field_id,
+        surface_elevation_m_field_id,
+    };
+
+    struct DataOnlyDocument {
+        registry: FieldRegistry,
+        surface_elevation_m: Vec<f32>,
+    }
+
+    impl DataOnlyDocument {
+        fn new() -> Self {
+            Self {
+                registry: natural_field_registry(12).unwrap(),
+                surface_elevation_m: vec![-100.0, 250.0],
+            }
+        }
+    }
+
+    impl FieldDocument for DataOnlyDocument {
+        fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
+            FieldCatalog::from_payloads(
+                &self.registry,
+                [(
+                    surface_elevation_m_field_id(),
+                    FieldPayloadRef::ScalarF32(&self.surface_elevation_m),
+                )],
+            )
+        }
+
+        fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
+            &[]
+        }
+
+        fn preferred_field(&self) -> Option<FieldId> {
+            Some(surface_elevation_m_field_id())
+        }
+
+        fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
+            (field == &surface_elevation_m_field_id()).then_some(DisplayRangeMode::Data)
+        }
+    }
 
     struct InvalidDocument {
         mesh: Arc<PreparedCellMesh>,
     }
 
-    impl AppFieldDocument for InvalidDocument {
-        fn mesh(&self) -> &Arc<PreparedCellMesh> {
-            &self.mesh
-        }
-
+    impl FieldDocument for InvalidDocument {
         fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
             Err(FieldViewError::UnknownPayload {
                 field: FieldId::new("test.app", "invalid", 1).unwrap(),
@@ -301,6 +364,36 @@ mod tests {
         fn preferred_range(&self, _field: &FieldId) -> Option<crate::view::DisplayRangeMode> {
             None
         }
+    }
+
+    impl PresentedFieldDocument for InvalidDocument {
+        fn mesh(&self) -> &Arc<PreparedCellMesh> {
+            &self.mesh
+        }
+    }
+
+    #[test]
+    fn data_only_documents_expose_fields_without_a_presentation_mesh() {
+        let document = DataOnlyDocument::new();
+        let catalog = document.catalog().unwrap();
+        let elevation = catalog
+            .get(&surface_elevation_m_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .scalar_values()
+            .unwrap();
+
+        assert_eq!(elevation, [-100.0, 250.0]);
+        assert!(document.diagnostics().is_empty());
+        assert_eq!(
+            document.preferred_field(),
+            Some(surface_elevation_m_field_id())
+        );
+        assert_eq!(
+            document.preferred_range(&surface_elevation_m_field_id()),
+            Some(DisplayRangeMode::Data)
+        );
     }
 
     #[test]
