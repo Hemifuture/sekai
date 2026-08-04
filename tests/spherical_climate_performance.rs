@@ -87,7 +87,8 @@ fn release_spherical_preliminary_climate_budget() {
     let final_working_set = process_working_set_bytes();
     climate.validate_against(&surface, &relief).unwrap();
 
-    let persistent_bytes = size_of_val(climate.latitude_degrees())
+    let persistent_bytes = size_of_val(&climate)
+        + size_of_val(climate.latitude_degrees())
         + size_of_val(climate.maritime_influence())
         + size_of_val(climate.monthly_air_temperature_c().values())
         + size_of_val(climate.monthly_precipitation_mm().values())
