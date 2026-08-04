@@ -103,6 +103,11 @@ fn graph_distances(surface: &SphericalSurfaceSnapshot, source: CellId) -> Vec<f6
     distances
 }
 
+fn mean(values: impl Iterator<Item = f32>) -> f64 {
+    let values = values.map(f64::from).collect::<Vec<_>>();
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
 #[test]
 fn spherical_forcing_is_deterministic_surface_native_seasonal_and_tangent() {
     let sphere = surface(642);
@@ -184,6 +189,11 @@ fn spherical_maritime_influence_has_closed_surface_extremes_and_distance_decay()
         .maritime_influence()
         .iter()
         .all(|&value| value == 0.0));
+    let midlatitude = nearest_latitude(&sphere, 45.0);
+    assert!(
+        ocean_climate.temperature_seasonality_c()[midlatitude]
+            < land_climate.temperature_seasonality_c()[midlatitude]
+    );
 
     let one_ocean = relief(&sphere, |cell| if cell == source { -100.0 } else { 100.0 });
     let climate = ClimateGenerator::generate_spherical(&sphere, &one_ocean, &spec).unwrap();
@@ -221,4 +231,69 @@ fn spherical_generation_rejects_wrong_surface_relief_before_work() {
         ClimateGenerator::generate_spherical(&sphere, &wrong_relief, &ClimateSpec::default()),
         Err(SphericalClimateGenerationError::InvalidRelief(_))
     ));
+}
+
+#[test]
+fn explicit_ocean_supply_and_moisture_scale_control_spherical_precipitation() {
+    let sphere = surface(162);
+    let ocean = relief(&sphere, |_| -100.0);
+    let land = relief(&sphere, |_| 100.0);
+    let dry_spec = ClimateSpec {
+        moisture_scale_permille: 250,
+        ..ClimateSpec::default()
+    };
+    let wet_spec = ClimateSpec {
+        moisture_scale_permille: 2_500,
+        ..ClimateSpec::default()
+    };
+
+    let dry_ocean = ClimateGenerator::generate_spherical(&sphere, &ocean, &dry_spec).unwrap();
+    let wet_ocean = ClimateGenerator::generate_spherical(&sphere, &ocean, &wet_spec).unwrap();
+    let wet_land = ClimateGenerator::generate_spherical(&sphere, &land, &wet_spec).unwrap();
+    let dry_mean = mean(dry_ocean.annual_precipitation_mm().iter().copied());
+    let wet_mean = mean(wet_ocean.annual_precipitation_mm().iter().copied());
+    let land_mean = mean(wet_land.annual_precipitation_mm().iter().copied());
+
+    assert!(dry_mean > 0.0, "dry ocean precipitation={dry_mean}");
+    assert!(wet_mean > dry_mean * 5.0, "dry={dry_mean}, wet={wet_mean}");
+    assert!(wet_mean > land_mean, "ocean={wet_mean}, land={land_mean}");
+}
+
+#[test]
+fn spherical_westerlies_create_windward_rain_and_a_downstream_shadow() {
+    let sphere = surface(642);
+    let terrain = relief(&sphere, |cell| {
+        let radial = sphere.cell(cell).unwrap().centroid.components();
+        let latitude = radial[2].asin().to_degrees();
+        let longitude = radial[1].atan2(radial[0]).to_degrees();
+        if (20.0..=60.0).contains(&latitude) && (-80.0..=-20.0).contains(&longitude) {
+            -100.0
+        } else if (25.0..=55.0).contains(&latitude) && (-8.0..=8.0).contains(&longitude) {
+            3_000.0
+        } else {
+            200.0
+        }
+    });
+    let climate =
+        ClimateGenerator::generate_spherical(&sphere, &terrain, &ClimateSpec::default()).unwrap();
+    let annual = climate.annual_precipitation_mm();
+    let mut ridge = Vec::new();
+    let mut leeward = Vec::new();
+    for cell in sphere.cells() {
+        let radial = cell.centroid.components();
+        let latitude = radial[2].asin().to_degrees();
+        let longitude = radial[1].atan2(radial[0]).to_degrees();
+        if (30.0..=50.0).contains(&latitude) && (-8.0..=8.0).contains(&longitude) {
+            ridge.push(annual[cell.id.raw() as usize]);
+        } else if (30.0..=50.0).contains(&latitude) && (8.0..=30.0).contains(&longitude) {
+            leeward.push(annual[cell.id.raw() as usize]);
+        }
+    }
+    assert!(!ridge.is_empty() && !leeward.is_empty());
+    let ridge_mean = mean(ridge.into_iter());
+    let leeward_mean = mean(leeward.into_iter());
+    assert!(
+        ridge_mean > leeward_mean * 1.2,
+        "ridge={ridge_mean}, leeward={leeward_mean}"
+    );
 }

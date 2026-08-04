@@ -4,12 +4,13 @@ use super::climate::{
     annual_sea_level_temperature, circulation_wind, daily_mean_insolation,
     monthly_declination_degrees, ClimateGenerator, ENVIRONMENTAL_LAPSE_RATE_C_PER_M,
 };
+use super::spherical_moisture::solve_monthly_precipitation;
 use super::topology::{multi_source_distance, NaturalTopologyIndex};
 use crate::world::natural::{
     ClimateSpec, ClimateSpecError, LandOceanKind, MonthlyScalarField, MonthlyVector3Field,
     SphericalClimateValidationError, SphericalPreliminaryClimateSnapshot, SphericalReliefSnapshot,
     SphericalReliefValidationError, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C,
-    CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V2,
+    ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V2,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -42,7 +43,14 @@ impl ClimateGenerator {
         let view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&view);
         let fields = generate_thermal_wind_fields(&view, &topology, relief, spec);
-        let precipitation = vec![[0.0; CLIMATE_MONTH_COUNT]; view.cell_count()];
+        let mut precipitation = solve_monthly_precipitation(
+            &view,
+            relief,
+            spec,
+            &fields.maritime_influence,
+            &fields.monthly_air_temperature_c,
+        );
+        limit_annual_precipitation(&mut precipitation);
 
         let mean_temperature = fields
             .monthly_air_temperature_c
@@ -96,6 +104,18 @@ impl ClimateGenerator {
     }
 }
 
+fn limit_annual_precipitation(precipitation: &mut [[f32; CLIMATE_MONTH_COUNT]]) {
+    for months in precipitation {
+        let annual = months.iter().sum::<f32>();
+        if annual > ANNUAL_PRECIPITATION_MAX_MM {
+            let scale = ANNUAL_PRECIPITATION_MAX_MM / annual;
+            for value in months {
+                *value *= scale;
+            }
+        }
+    }
+}
+
 fn generate_thermal_wind_fields(
     surface: &SphericalNaturalSurface<'_>,
     topology: &NaturalTopologyIndex,
@@ -111,7 +131,7 @@ fn generate_thermal_wind_fields(
     let mut monthly_air_temperature_c = Vec::with_capacity(count);
     let mut monthly_wind_m_s = Vec::with_capacity(count);
 
-    for index in 0..count {
+    for (index, &maritime) in maritime_influence.iter().enumerate() {
         let cell = CellId::from_raw(index as u32);
         let radial = surface
             .cell_frame(cell)
@@ -124,7 +144,7 @@ fn generate_thermal_wind_fields(
         let annual_insolation = monthly_insolation.iter().sum::<f32>() / CLIMATE_MONTH_COUNT as f32;
         let elevation_m = relief.elevation_m().values()[index].max(0.0);
         let sea_level_annual = annual_sea_level_temperature(latitude) + spec.temperature_offset_c();
-        let seasonal_response = 18.0 * (0.30 + 0.70 * (1.0 - maritime_influence[index]));
+        let seasonal_response = 18.0 * (0.30 + 0.70 * (1.0 - maritime));
         let lapse_c = elevation_m * ENVIRONMENTAL_LAPSE_RATE_C_PER_M;
         let temperature = std::array::from_fn(|month| {
             let anomaly = if annual_insolation > 1.0e-6 {
@@ -136,13 +156,8 @@ fn generate_thermal_wind_fields(
                 .clamp(AIR_TEMPERATURE_MIN_C, AIR_TEMPERATURE_MAX_C)
         });
         let wind = std::array::from_fn(|month| {
-            tangent_wind(
-                radial,
-                latitude,
-                declinations[month],
-                maritime_influence[index],
-            )
-            .map(|component| component as f32)
+            tangent_wind(radial, latitude, declinations[month], maritime)
+                .map(|component| component as f32)
         });
 
         latitude_degrees.push(latitude);

@@ -23,6 +23,7 @@ mod spherical_climate;
 mod spherical_geology;
 mod spherical_island_relief;
 mod spherical_mantle;
+mod spherical_moisture;
 mod spherical_relief;
 mod spherical_tectonics;
 mod stage;
