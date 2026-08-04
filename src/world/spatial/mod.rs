@@ -4,6 +4,7 @@ mod snapshot;
 mod sphere_geometry;
 mod spherical_snapshot;
 mod spherical_validation;
+mod surface_ref;
 mod topology;
 mod validation;
 
@@ -21,5 +22,6 @@ pub use spherical_snapshot::{
 };
 pub(crate) use spherical_validation::spherical_polygon_metrics;
 pub use spherical_validation::SphericalSurfaceValidationError;
+pub use surface_ref::{SurfaceGeometryKind, SurfaceRef, SurfaceRefError};
 pub use topology::Topology;
 pub use validation::SpatialValidationError;

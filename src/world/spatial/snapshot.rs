@@ -96,4 +96,80 @@ impl SpatialSnapshot {
         }
         SquareMeters::new(sum).expect("validated spatial cell areas have a finite sum")
     }
+
+    /// Returns a deterministic semantic fingerprint without changing the V1 wire format.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai.planar-surface.v1\0");
+        hash_u16(&mut hasher, self.schema_version);
+        hash_point(&mut hasher, self.bounds.min());
+        hash_point(&mut hasher, self.bounds.max());
+        hash_u8(
+            &mut hasher,
+            match self.boundary {
+                BoundaryCondition::Closed => 0,
+            },
+        );
+
+        hash_len(&mut hasher, self.cells.len());
+        for cell in &self.cells {
+            hash_u32(&mut hasher, cell.id.raw());
+            hash_point(&mut hasher, cell.site);
+            hash_point(&mut hasher, cell.centroid);
+            hash_f64(&mut hasher, cell.area.get());
+            hash_len(&mut hasher, cell.polygon.len());
+            for &vertex in &cell.polygon {
+                hash_point(&mut hasher, vertex);
+            }
+            hash_len(&mut hasher, cell.neighbors.len());
+            for &neighbor in &cell.neighbors {
+                hash_u32(&mut hasher, neighbor.raw());
+            }
+        }
+
+        hash_len(&mut hasher, self.edges.len());
+        for edge in &self.edges {
+            hash_u32(&mut hasher, edge.id.raw());
+            hash_point(&mut hasher, edge.start);
+            hash_point(&mut hasher, edge.end);
+            hash_f64(&mut hasher, edge.length.get());
+            for owner in edge.cells {
+                match owner {
+                    Some(cell) => {
+                        hash_u8(&mut hasher, 1);
+                        hash_u32(&mut hasher, cell.raw());
+                    }
+                    None => hash_u8(&mut hasher, 0),
+                }
+            }
+        }
+
+        *hasher.finalize().as_bytes()
+    }
+}
+
+fn hash_point(hasher: &mut blake3::Hasher, point: WorldPoint) {
+    hash_f64(hasher, point.x().get());
+    hash_f64(hasher, point.y().get());
+}
+
+fn hash_len(hasher: &mut blake3::Hasher, value: usize) {
+    let value = u64::try_from(value).expect("supported planar allocations fit in u64");
+    hasher.update(&value.to_le_bytes());
+}
+
+fn hash_f64(hasher: &mut blake3::Hasher, value: f64) {
+    hasher.update(&value.to_bits().to_le_bytes());
+}
+
+fn hash_u32(hasher: &mut blake3::Hasher, value: u32) {
+    hasher.update(&value.to_le_bytes());
+}
+
+fn hash_u16(hasher: &mut blake3::Hasher, value: u16) {
+    hasher.update(&value.to_le_bytes());
+}
+
+fn hash_u8(hasher: &mut blake3::Hasher, value: u8) {
+    hasher.update(&[value]);
 }

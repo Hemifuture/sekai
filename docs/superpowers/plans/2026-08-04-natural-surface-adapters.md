@@ -53,7 +53,7 @@ tests/
 - Adds `SpatialSnapshot::fingerprint() -> [u8; 32]` without changing serialized fields.
 - Adds `SurfaceRef::for_planar(&SpatialSnapshot)` and `SurfaceRef::for_spherical(&SphericalSurfaceSnapshot)`.
 
-- [ ] **Step 1: Write RED identity tests**
+- [x] **Step 1: Write RED identity tests**
 
 Cover:
 
@@ -72,13 +72,13 @@ cargo test --test surface_ref_contracts
 
 Expected: FAIL because the identity types and planar fingerprint do not exist.
 
-- [ ] **Step 2: Implement the minimal identity contract**
+- [x] **Step 2: Implement the minimal identity contract**
 
 Implement a validated immutable value with private fields and getters. Use manual `Deserialize` or a validating wire type so malformed counts, unsupported geometry schema, and a zero/invalid fingerprint cannot bypass construction. Hash planar semantic fields manually in stable ID order with explicit integer and IEEE-754 byte encoding; include schema, bounds, boundary condition, all cell fields, polygon order, neighbors, and all edge fields.
 
 Do not add a fingerprint field to `SpatialSnapshot` and do not use `Debug` output or map iteration as hash input.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run:
 
