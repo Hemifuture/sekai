@@ -155,7 +155,7 @@ tests/
 - [x] Audit ownership: no geometry duplication, external boundary, stage/artifact/UI publication, hidden first-pass truth, fake elapsed time, or history storage.
 - [x] Run focused planar hydrology/erosion/stage/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
 - [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical hydro erosion evidence`.
-- [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.5 worktree/branch, then continue to S0B.6.
+- [x] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.5 worktree/branch, then continue to S0B.6.
 
 ## Verification evidence (2026-08-04)
 
