@@ -575,21 +575,21 @@ git commit -m "feat: compose spherical natural stage graph"
 - Consumes: existing `natural_field_registry(plate_count)` and natural field schema builder.
 - Produces: `spherical_natural_field_registry(plate_count: u16, total_surface_area_m2: f64) -> Result<FieldRegistry, NaturalFieldRegistryError>` using the same Field IDs and schema builder.
 
-- [ ] **Step 1: Capture and freeze current planar registry bytes with a deliberate RED assertion**
+- [x] **Step 1: Capture and freeze current planar registry bytes with a deliberate RED assertion**
 
 Create a test that serializes `natural_field_registry(12)` and compares its BLAKE3 hash to a deliberately invalid 64-zero string. Run it once; the expected assertion failure prints the actual hash. Replace only the expected string with that observed value and rerun to GREEN before modifying production code. This establishes a pre-refactor planar compatibility constant.
 
-- [ ] **Step 2: Write failing sphere-area range tests**
+- [x] **Step 2: Write failing sphere-area range tests**
 
 For radius `100_000_000 m`, compute `4πR²`, build the proposed spherical registry, and assert that the valid maxima for `drainage_area_km2` and `mean_annual_discharge_m3_s` cover the full-surface physical maxima. Also assert zero, negative, non-finite, and f32-overflowing areas return explicit registry errors.
 
-- [ ] **Step 3: Run and observe RED**
+- [x] **Step 3: Run and observe RED**
 
 Run: `cargo test --test natural_field_registry_spherical -- --nocapture`
 
 Expected: compilation fails because `spherical_natural_field_registry` does not exist.
 
-- [ ] **Step 4: Parameterize the single schema builder**
+- [x] **Step 4: Parameterize the single schema builder**
 
 Introduce a private limits record:
 
@@ -603,7 +603,7 @@ struct NaturalFieldRegistryLimits {
 
 Keep `natural_field_registry` passing the exact existing constants. The spherical wrapper validates `total_surface_area_m2`, converts area to km², derives maximum discharge from `ANNUAL_PRECIPITATION_MAX_MM / CLIMATOLOGICAL_YEAR_SECONDS`, and calls the same `schemas(plate_count, limits)` function. Add named error variants for invalid area and representational overflow.
 
-- [ ] **Step 5: Run focused, field, and planar golden tests**
+- [x] **Step 5: Run focused, field, and planar golden tests**
 
 Run:
 
@@ -614,7 +614,7 @@ cargo test --test field_contracts --test natural_field_views --test natural_disp
 
 Expected: sphere ranges pass and the frozen planar registry hash remains exact.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/world/natural/fields.rs src/world/natural/mod.rs tests/natural_field_registry_spherical.rs

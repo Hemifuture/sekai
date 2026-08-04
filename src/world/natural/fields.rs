@@ -27,6 +27,12 @@ const MAX_MEAN_ANNUAL_DISCHARGE_M3_S: f32 =
     (MAX_DIMENSION_METERS * MAX_DIMENSION_METERS * (ANNUAL_PRECIPITATION_MAX_MM as f64 / 1_000.0)
         / CLIMATOLOGICAL_YEAR_SECONDS) as f32;
 
+#[derive(Debug, Clone, Copy)]
+struct NaturalFieldRegistryLimits {
+    max_drainage_area_km2: f32,
+    max_mean_annual_discharge_m3_s: f32,
+}
+
 /// Returns the stable plate-identifier field ID.
 pub fn plate_id_field_id() -> FieldId {
     field_id("plate_id")
@@ -211,6 +217,63 @@ pub fn strahler_stream_order_field_id() -> FieldId {
 pub fn natural_field_registry(
     plate_count: u16,
 ) -> Result<FieldRegistry, NaturalFieldRegistryError> {
+    validate_plate_count(plate_count)?;
+    build_natural_field_registry(
+        plate_count,
+        NaturalFieldRegistryLimits {
+            max_drainage_area_km2: MAX_DRAINAGE_AREA_KM2,
+            max_mean_annual_discharge_m3_s: MAX_MEAN_ANNUAL_DISCHARGE_M3_S,
+        },
+    )
+}
+
+/// Builds the complete V1 natural-field registry with sphere-area-safe limits.
+pub fn spherical_natural_field_registry(
+    plate_count: u16,
+    total_surface_area_m2: f64,
+) -> Result<FieldRegistry, NaturalFieldRegistryError> {
+    validate_plate_count(plate_count)?;
+    if !total_surface_area_m2.is_finite() || total_surface_area_m2 <= 0.0 {
+        return Err(NaturalFieldRegistryError::InvalidTotalSurfaceArea {
+            found: total_surface_area_m2,
+        });
+    }
+
+    let max_drainage_area_km2 = total_surface_area_m2 / 1_000_000.0;
+    let max_mean_annual_discharge_m3_s = total_surface_area_m2
+        * (f64::from(ANNUAL_PRECIPITATION_MAX_MM) / 1_000.0)
+        / CLIMATOLOGICAL_YEAR_SECONDS;
+    if !max_drainage_area_km2.is_finite()
+        || max_drainage_area_km2 > f64::from(f32::MAX)
+        || !max_mean_annual_discharge_m3_s.is_finite()
+        || max_mean_annual_discharge_m3_s > f64::from(f32::MAX)
+    {
+        return Err(NaturalFieldRegistryError::SphericalFieldRangeOverflow {
+            total_surface_area_m2,
+        });
+    }
+
+    build_natural_field_registry(
+        plate_count,
+        NaturalFieldRegistryLimits {
+            max_drainage_area_km2: max_drainage_area_km2 as f32,
+            max_mean_annual_discharge_m3_s: max_mean_annual_discharge_m3_s as f32,
+        },
+    )
+}
+
+fn build_natural_field_registry(
+    plate_count: u16,
+    limits: NaturalFieldRegistryLimits,
+) -> Result<FieldRegistry, NaturalFieldRegistryError> {
+    let mut builder = FieldRegistryBuilder::new();
+    for schema in schemas(plate_count, limits)? {
+        builder.register(schema)?;
+    }
+    Ok(builder.build()?)
+}
+
+fn validate_plate_count(plate_count: u16) -> Result<(), NaturalFieldRegistryError> {
     if !(MIN_PLATE_COUNT..=MAX_PLATE_COUNT).contains(&plate_count) {
         return Err(NaturalFieldRegistryError::PlateCountOutOfRange {
             found: plate_count,
@@ -218,15 +281,13 @@ pub fn natural_field_registry(
             max: MAX_PLATE_COUNT,
         });
     }
-
-    let mut builder = FieldRegistryBuilder::new();
-    for schema in schemas(plate_count)? {
-        builder.register(schema)?;
-    }
-    Ok(builder.build()?)
+    Ok(())
 }
 
-fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
+fn schemas(
+    plate_count: u16,
+    limits: NaturalFieldRegistryLimits,
+) -> Result<Vec<FieldSchema>, FieldSchemaError> {
     let plate_id = plate_id_field_id();
     let crust_kind = crust_kind_field_id();
     let crust_thickness = crust_thickness_field_id();
@@ -668,7 +729,7 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             FieldDomain::Cells,
             custom_unit("cubic-meter-per-second", "m³/s"),
             0.0,
-            MAX_MEAN_ANNUAL_DISCHARGE_M3_S,
+            limits.max_mean_annual_discharge_m3_s,
             FieldPaletteHint::Sequential,
             2,
             vec![annual_local_runoff],
@@ -678,7 +739,7 @@ fn schemas(plate_count: u16) -> Result<Vec<FieldSchema>, FieldSchemaError> {
             FieldDomain::Cells,
             custom_unit("square-kilometer", "km²"),
             0.0,
-            MAX_DRAINAGE_AREA_KM2,
+            limits.max_drainage_area_km2,
             FieldPaletteHint::Sequential,
             1,
             Vec::new(),
@@ -861,6 +922,20 @@ pub enum NaturalFieldRegistryError {
         min: u16,
         /// The inclusive upper bound.
         max: u16,
+    },
+    /// A spherical registry was requested with a non-physical surface area.
+    #[error("total surface area must be finite and positive, got {found} m²")]
+    InvalidTotalSurfaceArea {
+        /// The rejected total surface area in square meters.
+        found: f64,
+    },
+    /// A sphere-derived field maximum cannot be represented by the V1 f32 schema.
+    #[error(
+        "sphere-derived natural field range exceeds f32 for surface area {total_surface_area_m2} m²"
+    )]
+    SphericalFieldRangeOverflow {
+        /// The positive finite surface area whose derived range overflowed.
+        total_surface_area_m2: f64,
     },
     /// One engine-owned field schema violated the generic schema contract.
     #[error("invalid natural field schema: {0}")]

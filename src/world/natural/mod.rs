@@ -55,9 +55,9 @@ pub use fields::{
     preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
     regional_offset_field_id, relative_permeability_field_id,
     sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
-    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    tectonic_offset_field_id, volcanic_influence_field_id, volcanic_offset_field_id,
-    NaturalFieldDisplayCache, NaturalFieldRegistryError,
+    spherical_natural_field_registry, strahler_stream_order_field_id, surface_elevation_m_field_id,
+    surface_water_kind_field_id, tectonic_offset_field_id, volcanic_influence_field_id,
+    volcanic_offset_field_id, NaturalFieldDisplayCache, NaturalFieldRegistryError,
 };
 pub use formation::{
     MantleFormationBias, ResolvedWorldFormation, ResolvedWorldFormationPreset,
