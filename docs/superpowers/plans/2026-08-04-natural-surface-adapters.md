@@ -301,6 +301,16 @@ Ownership and dependency audit:
 - Every current production natural stage still depends on `SpatialArtifact`; no half-migrated spherical natural result can reach the UI before S0B.2–S0B.6 supply their scientific models and atomic graph.
 - The planar adapter's third shape coordinate is constant and its first two quantized coordinates, traversal costs, area weights, tie order, output fields, and reviewed images are frozen by tests.
 
+Independent review and remediation:
+
+- Initial read-only review of `7985ffe2..9b26b563` found no critical issue and two important foundation issues: the public identity factories trusted unvalidated deserialized snapshots, and the spherical adapter lacked a trusted no-repeat-validation construction path. It also recommended freezing the planar fingerprint bytes.
+- RED evidence reproduced both trust-boundary failures: malformed planar adjacency and a stale stored spherical fingerprint each passed the old public identity factory. The spherical topology test separately failed to compile until the trusted constructor existed.
+- Commit `4505043` makes the public factories run authoritative snapshot validation and preserve the exact source-validation error, while crate-private validated paths skip the O(V+E+C) geometry pass. The canonical planar fixture now freezes all 32 fingerprint bytes.
+- Focused GREEN evidence: `surface_ref_contracts` passed 7/7, `natural_surface_adapters` passed 4/4, and natural topology unit tests passed 9/9.
+- Incremental read-only re-review of `9b26b563..4505043` reported zero critical, important, or minor issues and a ready-to-merge verdict.
+- All repository gates were rerun after remediation: formatting, strict Clippy, 215 library tests (214 passed, 1 ignored), all integration/binary/bench targets, and the WASM build passed.
+- Final Release natural performance smoke: 20,000 cells and 60,001 edges completed in `2047.898 ms`, with the exact frozen semantic counts, dense-byte totals, continental fraction, and land fraction. This remains about `1.068×` the unmodified-main single-run baseline and well below the `2.5×` S0B budget; the timing variation was concentrated in the unchanged planar Voronoi stage.
+
 ## Follow-on Plans
 
 After S0B.1 is independently reviewed and merged, continue in the approved order:
