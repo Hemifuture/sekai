@@ -70,6 +70,28 @@ pub fn project_tangent(vector: [f64; 3], radial: UnitVector3) -> [f64; 3] {
     project_tangent_raw(vector, radial.components())
 }
 
+/// Returns a deterministic right-handed east/north tangent basis.
+///
+/// The +Z axis defines planetary north away from the poles. At either pole,
+/// where longitude is undefined, +Y is the fixed canonical east direction.
+pub fn canonical_east_north_basis(radial: UnitVector3) -> ([f64; 3], [f64; 3]) {
+    let [x, y, z] = radial.components();
+    let horizontal = x.hypot(y);
+    if horizontal > f64::EPSILON {
+        let east = [-y / horizontal, x / horizontal, 0.0];
+        let north = [-z * east[1], z * east[0], horizontal];
+        (east, north)
+    } else {
+        let east = [0.0, 1.0, 0.0];
+        let north = if z >= 0.0 {
+            [-1.0, 0.0, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        (east, north)
+    }
+}
+
 /// Returns the area of a spherical triangle on the unit sphere in steradians.
 pub fn spherical_triangle_area_unit(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> f64 {
     spherical_triangle_area_unit_raw(a.components(), b.components(), c.components())
@@ -334,4 +356,50 @@ fn stable_triangle_denominator(
     };
     let pair_sum = add(first, second);
     0.5 * dot(pair_sum, pair_sum) + dot(pair_sum, other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_east_north_basis, cross, dot, norm, UnitVector3};
+
+    fn assert_basis(radial: UnitVector3) {
+        let (east, north) = canonical_east_north_basis(radial);
+        let repeated = canonical_east_north_basis(radial);
+
+        assert!(east.into_iter().all(f64::is_finite));
+        assert!(north.into_iter().all(f64::is_finite));
+        assert!((norm(east) - 1.0).abs() < 1.0e-14);
+        assert!((norm(north) - 1.0).abs() < 1.0e-14);
+        assert!(dot(east, north).abs() < 1.0e-14);
+        assert!(dot(east, radial.components()).abs() < 1.0e-14);
+        assert!(dot(north, radial.components()).abs() < 1.0e-14);
+        assert!(cross(east, north)
+            .into_iter()
+            .zip(radial.components())
+            .all(|(actual, expected)| (actual - expected).abs() < 1.0e-14));
+        assert_eq!(east.map(f64::to_bits), repeated.0.map(f64::to_bits));
+        assert_eq!(north.map(f64::to_bits), repeated.1.map(f64::to_bits));
+    }
+
+    #[test]
+    fn canonical_basis_is_orthonormal_tangent_right_handed_and_deterministic() {
+        assert_basis(UnitVector3::new(2.0, -3.0, 4.0).unwrap());
+    }
+
+    #[test]
+    fn canonical_basis_uses_fixed_axes_at_both_poles() {
+        let north_pole = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+        let south_pole = UnitVector3::new(0.0, 0.0, -1.0).unwrap();
+
+        assert_eq!(
+            canonical_east_north_basis(north_pole),
+            ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            canonical_east_north_basis(south_pole),
+            ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
+        );
+        assert_basis(north_pole);
+        assert_basis(south_pole);
+    }
 }

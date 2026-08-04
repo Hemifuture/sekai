@@ -772,17 +772,17 @@ git commit -m "refactor: separate natural data presentation"
 - Consumes: a successful spherical `BuildOutcome`, root seed, all sphere Artifacts, the Task 6 registry, and Task 7 data-only trait/bundle.
 - Produces: `canonical_east_north_basis(UnitVector3) -> ([f64; 3], [f64; 3])`, `SphericalNaturalBuildIdentity`, `SphericalNaturalDisplayCache`, and `SphericalNaturalFieldDocument: FieldDocument`.
 
-- [ ] **Step 1: Write RED geometry tests for the canonical tangent basis**
+- [x] **Step 1: Write RED geometry tests for the canonical tangent basis**
 
 Test a generic radial vector and both poles. Assert east/north are finite, unit length, mutually orthogonal, tangent to radial, right-handed under the documented convention, and byte-deterministic on repeat. At the poles assert the exact canonical axes rather than accepting any basis.
 
-- [ ] **Step 2: Run basis tests and observe RED**
+- [x] **Step 2: Run basis tests and observe RED**
 
 Run: `cargo test --lib world::spatial::sphere_geometry::tests -- --nocapture`
 
 Expected: compilation fails because `canonical_east_north_basis` is missing.
 
-- [ ] **Step 3: Implement the projection-independent basis**
+- [x] **Step 3: Implement the projection-independent basis**
 
 Use the +Z spin axis away from the poles and a fixed +Y east axis at both poles:
 
@@ -806,7 +806,7 @@ pub fn canonical_east_north_basis(radial: UnitVector3) -> ([f64; 3], [f64; 3]) {
 }
 ```
 
-- [ ] **Step 4: Write RED spherical-document tests**
+- [x] **Step 4: Write RED spherical-document tests**
 
 Build the 162-cell whole graph and demand this exact API:
 
@@ -837,13 +837,13 @@ Also test:
 - a failed document candidate leaves a previously published `Arc<SphericalNaturalFieldDocument>` pointer unchanged in the composition-boundary test;
 - the type owns no `PreparedCellMesh` and implements only `FieldDocument`.
 
-- [ ] **Step 5: Run and observe RED**
+- [x] **Step 5: Run and observe RED**
 
 Run: `cargo test --lib app::spherical_natural_display::tests -- --nocapture`
 
 Expected: compilation fails because the spherical document module is missing.
 
-- [ ] **Step 6: Implement build identity, display cache, and complete validation**
+- [x] **Step 6: Implement build identity, display cache, and complete validation**
 
 The document stores `Arc` handles to surface, formation, tectonic, mantle, relief, geology, climate, and hydro-erosion Artifacts plus registry, diagnostics, vector cache, and identity. `from_build_outcome` extracts typed handles without cloning snapshots, obtains the report hash, then calls a narrow `build` constructor.
 
@@ -866,7 +866,7 @@ hydro_erosion.snapshot().validate_against(
 
 Build the sphere registry from the authoritative sum of cell areas. Derive plate velocity in cm/year and wind in m/s by dotting each source 3D vector against the canonical basis. Boundary kind/strength arrays remain disposable derivations from the authoritative edge records.
 
-- [ ] **Step 7: Complete the shared spherical payload constructor and run GREEN**
+- [x] **Step 7: Complete the shared spherical payload constructor and run GREEN**
 
 Implement `NaturalFieldPayloadBundle::from_spherical` using the sphere snapshots and display cache, then run:
 
@@ -879,7 +879,7 @@ cargo test --lib app::natural_display::tests -- --nocapture
 
 Expected: all pass and the sphere document has no presentation mesh.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add src/world/spatial/sphere_geometry.rs src/world/spatial/mod.rs src/app/natural_field_payloads.rs src/app/spherical_natural_display.rs src/app.rs

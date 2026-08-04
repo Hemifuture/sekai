@@ -548,8 +548,10 @@ fn cache_isolates_same_count_surfaces_with_different_radii() {
         .unwrap();
     exact_misses(&repeated.report, &[]);
 
-    let mut changed = Inputs::default();
-    changed.radius_m = 7_000_000.0;
+    let changed = Inputs {
+        radius_m: 7_000_000.0,
+        ..Inputs::default()
+    };
     let different = engine
         .build(RootSeed::new(42), external(&changed, None), &mut cache)
         .unwrap();
