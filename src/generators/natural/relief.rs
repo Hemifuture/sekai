@@ -22,7 +22,7 @@ use crate::world::natural::{
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{CellId, PlateId};
 
-const SEA_LEVEL_M: f32 = 0.0;
+pub(super) const SEA_LEVEL_M: f32 = 0.0;
 const CLOSED_OCEAN_FRAME_SHORT_SIDE_FRACTION: f64 = 0.08;
 const OCEAN_FRAME_BASE_M: f32 = -5_200.0;
 const OCEANIC_MARGIN_BASE_M: f32 = -2_400.0;

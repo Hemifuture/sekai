@@ -7,6 +7,7 @@ const MIN_SAMPLES_PER_WAVELENGTH: f64 = 2.0;
 const OCTAVE_ROTATION_COS: f64 = 0.819_152_044_288_991_8;
 const OCTAVE_ROTATION_SIN: f64 = 0.573_576_436_351_046;
 const OCTAVE_SEED_STEP: u32 = 0x9E37_79B9;
+const OCTAVE_ROTATION_3D: [[f64; 3]; 3] = [[0.36, 0.48, -0.8], [-0.8, 0.6, 0.0], [0.48, 0.64, 0.6]];
 
 /// Compile-time-owned parameters for one bounded fractal noise signal.
 #[derive(Debug, Clone, Copy)]
@@ -127,9 +128,64 @@ impl ReliefNoise2d {
     }
 }
 
+/// Deterministic coherent noise sampled directly in three-dimensional space.
+///
+/// Unit radial vectors can be sampled without choosing longitude, a map seam,
+/// or a privileged pole. The type is deliberately separate from the frozen 2D
+/// implementation so spherical work cannot perturb planar morphology.
+pub(super) struct ReliefNoise3d {
+    octaves: [Perlin; MAX_OCTAVES],
+}
+
+impl ReliefNoise3d {
+    pub(super) fn new(seed: u32) -> Self {
+        Self {
+            octaves: array::from_fn(|index| {
+                Perlin::new(seed.wrapping_add(OCTAVE_SEED_STEP.wrapping_mul(index as u32 + 1)))
+            }),
+        }
+    }
+
+    pub(super) fn fbm(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
+        self.fractal_sum(point, profile, |signal| signal)
+            .clamp(-1.0, 1.0)
+    }
+
+    pub(super) fn ridged(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
+        self.fractal_sum(point, profile, |signal| {
+            let ridge = 1.0 - signal.abs().clamp(0.0, 1.0);
+            ridge * ridge
+        })
+        .clamp(0.0, 1.0)
+    }
+
+    fn fractal_sum(
+        &self,
+        point: [f64; 3],
+        profile: FractalProfile,
+        shape: impl Fn(f64) -> f64,
+    ) -> f64 {
+        profile.assert_valid();
+        let mut coordinate = point.map(|component| component * profile.frequency);
+        let mut amplitude = 1.0;
+        let mut amplitude_sum = 0.0;
+        let mut result = 0.0;
+        for source in self.octaves.iter().take(profile.octaves) {
+            result += shape(source.get(coordinate)) * amplitude;
+            amplitude_sum += amplitude;
+            amplitude *= profile.persistence;
+            let rotated = OCTAVE_ROTATION_3D.map(|row| {
+                row[0] * coordinate[0] + row[1] * coordinate[1] + row[2] * coordinate[2]
+            });
+            coordinate = rotated.map(|component| component * profile.lacunarity);
+        }
+        result / amplitude_sum
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FractalProfile, ReliefNoise2d};
+    use super::{FractalProfile, ReliefNoise2d, ReliefNoise3d};
 
     const PROFILE: FractalProfile = FractalProfile {
         octaves: 5,
@@ -177,5 +233,31 @@ mod tests {
     #[test]
     fn octave_limit_preserves_the_profile_when_all_scales_are_resolvable() {
         assert_eq!(PROFILE.limited_to_resolution(100.0, 1.0).octaves, 5);
+    }
+
+    #[test]
+    fn spherical_noise_is_seeded_finite_bounded_and_coordinate_seam_free() {
+        let first = ReliefNoise3d::new(71);
+        let repeated = ReliefNoise3d::new(71);
+        let changed = ReliefNoise3d::new(72);
+        let points = [
+            [1.0, 0.0, 0.0],
+            [-1.0, 1.0e-12, 0.0],
+            [-1.0, -1.0e-12, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        let actual = points.map(|point| first.fbm(point, PROFILE));
+
+        assert_eq!(actual, points.map(|point| repeated.fbm(point, PROFILE)));
+        assert_ne!(actual, points.map(|point| changed.fbm(point, PROFILE)));
+        assert!(actual
+            .iter()
+            .all(|value| value.is_finite() && (-1.0..=1.0).contains(value)));
+        assert!((actual[1] - actual[2]).abs() < 1.0e-9);
+        assert!(points
+            .map(|point| first.ridged(point, PROFILE))
+            .iter()
+            .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
     }
 }
