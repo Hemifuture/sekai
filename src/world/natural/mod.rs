@@ -13,6 +13,7 @@ mod hydrology;
 mod mantle;
 mod relief;
 mod spec;
+mod spherical_climate;
 mod spherical_geology;
 mod spherical_mantle;
 mod spherical_relief;
@@ -98,6 +99,10 @@ pub use relief::{
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
     MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
+};
+pub use spherical_climate::{
+    SphericalClimateValidationError, SphericalPreliminaryClimateSnapshot,
+    SPHERICAL_LATITUDE_IDENTITY_TOLERANCE_DEGREES, SPHERICAL_WIND_TANGENCY_TOLERANCE_M_S,
 };
 pub use spherical_geology::{SphericalGeologicSnapshot, SphericalGeologicValidationError};
 pub use spherical_mantle::{
