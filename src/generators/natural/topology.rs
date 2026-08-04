@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::world::spatial::{SpatialSnapshot, Topology};
+use crate::world::spatial::{NaturalSurface, PlanarNaturalSurface, SpatialSnapshot};
 use crate::world::{CellId, EdgeId};
 
 const LENGTH_QUANTIZATION: f64 = 1_000_000.0;
@@ -21,7 +21,7 @@ pub(super) struct NeighborArc {
 pub(super) struct NaturalTopologyIndex {
     arcs: Vec<Vec<NeighborArc>>,
     edge_owners: Vec<[Option<CellId>; 2]>,
-    quantized_centers: Vec<[i64; 2]>,
+    quantized_shape_positions: Vec<[i64; 3]>,
     area_weights: Vec<u64>,
     boundary_cells: Vec<bool>,
     minimum_dimension_m: f64,
@@ -30,29 +30,37 @@ pub(super) struct NaturalTopologyIndex {
 
 impl NaturalTopologyIndex {
     pub(super) fn new(spatial: &SpatialSnapshot) -> Self {
-        let cell_count = spatial.cell_count();
-        let mut arcs = vec![Vec::new(); cell_count];
-        let mut edge_owners = vec![[None, None]; spatial.edges().len()];
-        let mut boundary_cells = vec![false; cell_count];
-        let bounds = spatial.bounds();
-        let coordinate_scale = bounds.width().get().max(bounds.height().get());
+        Self::from_surface(&PlanarNaturalSurface::from_validated(spatial))
+    }
 
-        for edge in spatial.edges() {
-            let edge_index = edge.id.raw() as usize;
-            let traversal_cost =
-                quantize_positive(edge.length.get() / coordinate_scale, LENGTH_QUANTIZATION);
-            match edge.cells {
+    pub(super) fn from_surface(surface: &impl NaturalSurface) -> Self {
+        let cell_count = surface.cell_count();
+        let mut arcs = vec![Vec::new(); cell_count];
+        let mut edge_owners = vec![[None, None]; surface.edge_count()];
+        let mut boundary_cells = vec![false; cell_count];
+        let coordinate_scale = surface.long_length_scale().get();
+
+        for edge_index in 0..surface.edge_count() {
+            let edge = surface
+                .edge(EdgeId::from_raw(edge_index as u32))
+                .expect("validated natural-surface edge IDs are contiguous");
+            let edge_index = edge.id().raw() as usize;
+            let traversal_cost = quantize_positive(
+                edge.traversal_length().get() / coordinate_scale,
+                LENGTH_QUANTIZATION,
+            );
+            match edge.owners() {
                 [Some(first), Some(second)] => {
                     let owners = normalized_owner_pair(first, second);
                     edge_owners[edge_index] = [Some(owners[0]), Some(owners[1])];
                     arcs[first.raw() as usize].push(NeighborArc {
                         neighbor: second,
-                        edge: edge.id,
+                        edge: edge.id(),
                         traversal_cost,
                     });
                     arcs[second.raw() as usize].push(NeighborArc {
                         neighbor: first,
-                        edge: edge.id,
+                        edge: edge.id(),
                         traversal_cost,
                     });
                 }
@@ -61,7 +69,10 @@ impl NaturalTopologyIndex {
                     boundary_cells[owner.raw() as usize] = true;
                 }
                 [None, None] => {
-                    debug_assert!(false, "validated spatial edges always have an owner");
+                    debug_assert!(
+                        false,
+                        "validated natural-surface edges always have an owner"
+                    );
                 }
             }
         }
@@ -69,38 +80,31 @@ impl NaturalTopologyIndex {
             neighbors.sort_by_key(|arc| (arc.neighbor, arc.edge));
         }
 
-        let quantized_centers = (0..cell_count)
+        let quantized_shape_positions = (0..cell_count)
             .map(|index| {
-                let cell = spatial
+                let cell = surface
                     .cell(CellId::from_raw(index as u32))
-                    .expect("validated spatial IDs are contiguous");
-                [
-                    quantize_coordinate(
-                        (cell.centroid.x().get() - bounds.min().x().get()) / coordinate_scale,
-                    ),
-                    quantize_coordinate(
-                        (cell.centroid.y().get() - bounds.min().y().get()) / coordinate_scale,
-                    ),
-                ]
+                    .expect("validated natural-surface cell IDs are contiguous");
+                cell.shape_position().map(quantize_coordinate)
             })
             .collect();
-        let total_area = bounds.width().get() * bounds.height().get();
+        let total_area = surface.total_area().get();
         let area_weights = (0..cell_count)
             .map(|index| {
-                let cell = spatial
+                let cell = surface
                     .cell(CellId::from_raw(index as u32))
-                    .expect("validated spatial IDs are contiguous");
-                quantize_positive(cell.area.get() / total_area, AREA_QUANTIZATION)
+                    .expect("validated natural-surface cell IDs are contiguous");
+                quantize_positive(cell.area().get() / total_area, AREA_QUANTIZATION)
             })
             .collect();
 
         Self {
             arcs,
             edge_owners,
-            quantized_centers,
+            quantized_shape_positions,
             area_weights,
             boundary_cells,
-            minimum_dimension_m: bounds.width().get().min(bounds.height().get()),
+            minimum_dimension_m: surface.short_length_scale().get(),
             maximum_dimension_m: coordinate_scale,
         }
     }
@@ -113,8 +117,8 @@ impl NaturalTopologyIndex {
         &self.edge_owners
     }
 
-    pub(super) fn quantized_centers(&self) -> &[[i64; 2]] {
-        &self.quantized_centers
+    pub(super) fn quantized_shape_positions(&self) -> &[[i64; 3]] {
+        &self.quantized_shape_positions
     }
 
     pub(super) fn area_weights(&self) -> &[u64] {
@@ -364,13 +368,20 @@ fn normalized_owner_pair(first: CellId, second: CellId) -> [CellId; 2] {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         farthest_point_seeds, farthest_point_seeds_from_candidates, multi_source_distance,
         multi_source_ownership, stable_rotation_index, NaturalTopologyIndex,
     };
-    use crate::world::spatial::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::world::spatial::{
+        PlanarNaturalSurface, SpatialCell, SpatialEdge, SpatialSnapshot, SphericalNaturalSurface,
+        SPATIAL_SCHEMA_V1,
+    };
     use crate::world::{
-        BoundaryCondition, CellId, EdgeId, Meters, SquareMeters, WorldPoint, WorldRect,
+        BoundaryCondition, CellId, EdgeId, Meters, SphericalSpaceSpec, SquareMeters, WorldPoint,
+        WorldRect,
     };
 
     fn meters(value: f64) -> Meters {
@@ -524,7 +535,7 @@ mod tests {
             .flatten()
             .all(|arc| arc.traversal_cost > 0));
         assert!(index
-            .quantized_centers()
+            .quantized_shape_positions()
             .iter()
             .flatten()
             .all(|coordinate| *coordinate > 0));
@@ -535,6 +546,78 @@ mod tests {
             index.arcs()[0][0].traversal_cost
         );
         assert_eq!(index.quantized_distance_for_meters(f64::EPSILON), 1);
+    }
+
+    #[test]
+    fn generic_planar_index_matches_the_frozen_v1_quantization() {
+        let snapshot = fixture(false);
+        let surface = PlanarNaturalSurface::new(&snapshot).unwrap();
+        let generic = NaturalTopologyIndex::from_surface(&surface);
+
+        assert_eq!(generic, NaturalTopologyIndex::new(&snapshot));
+        assert_eq!(
+            generic.quantized_shape_positions(),
+            &[
+                [250_001, 250_001, 1],
+                [750_001, 250_001, 1],
+                [250_001, 750_001, 1],
+                [750_001, 750_001, 1],
+            ]
+        );
+        assert_eq!(generic.area_weights(), &[250_000_000; 4]);
+        assert!(generic
+            .arcs()
+            .iter()
+            .flatten()
+            .all(|arc| arc.traversal_cost == 500_000));
+        assert_eq!(generic.minimum_dimension_m, 2.0);
+        assert_eq!(generic.maximum_dimension_m, 2.0);
+    }
+
+    #[test]
+    fn closed_spherical_index_has_symmetric_arcs_and_no_boundary_cells() {
+        let snapshot = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: meters(1_000.0),
+            target_cell_count: 42,
+        })
+        .unwrap();
+        let surface = SphericalNaturalSurface::new(&snapshot).unwrap();
+        let first = NaturalTopologyIndex::from_surface(&surface);
+        let second = NaturalTopologyIndex::from_surface(&surface);
+
+        assert_eq!(first, second);
+        assert_eq!(first.arcs().len(), 42);
+        assert_eq!(first.edge_owners().len(), 120);
+        assert!(first
+            .edge_owners()
+            .iter()
+            .all(|owners| owners[0].is_some() && owners[1].is_some()));
+        assert!(first.boundary_cells().iter().all(|&boundary| !boundary));
+        assert_eq!(
+            first.arcs().iter().map(Vec::len).sum::<usize>(),
+            snapshot.edges().len() * 2
+        );
+        for (cell_index, arcs) in first.arcs().iter().enumerate() {
+            let cell = CellId::from_raw(cell_index as u32);
+            for arc in arcs {
+                assert!(arc.traversal_cost > 0);
+                assert!(first.arcs()[arc.neighbor.raw() as usize]
+                    .iter()
+                    .any(|reverse| reverse.neighbor == cell
+                        && reverse.edge == arc.edge
+                        && reverse.traversal_cost == arc.traversal_cost));
+            }
+        }
+        assert!(first
+            .quantized_shape_positions()
+            .iter()
+            .flatten()
+            .all(|&coordinate| (1..=1_000_001).contains(&coordinate)));
+        assert!(first.area_weights().iter().all(|&weight| weight > 0));
+
+        let seeds = farthest_point_seeds(&first, 8, u64::MAX);
+        assert_eq!(seeds, farthest_point_seeds(&second, 8, u64::MAX));
+        assert_eq!(seeds.iter().copied().collect::<BTreeSet<_>>().len(), 8);
     }
 
     #[test]

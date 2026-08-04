@@ -108,7 +108,7 @@ pub trait NaturalSurface {
 #[derive(Debug, Clone, Copy)]
 pub struct PlanarNaturalSurface<'a> {
     snapshot: &'a SpatialSnapshot,
-    surface_ref: SurfaceRef,
+    surface_ref: Option<SurfaceRef>,
 }
 
 impl<'a> PlanarNaturalSurface<'a> {
@@ -117,14 +117,22 @@ impl<'a> PlanarNaturalSurface<'a> {
         snapshot.validate()?;
         Ok(Self {
             snapshot,
-            surface_ref: SurfaceRef::try_for_planar(snapshot)?,
+            surface_ref: Some(SurfaceRef::try_for_planar(snapshot)?),
         })
+    }
+
+    pub(crate) const fn from_validated(snapshot: &'a SpatialSnapshot) -> Self {
+        Self {
+            snapshot,
+            surface_ref: None,
+        }
     }
 }
 
 impl NaturalSurface for PlanarNaturalSurface<'_> {
     fn surface_ref(&self) -> SurfaceRef {
         self.surface_ref
+            .unwrap_or_else(|| SurfaceRef::for_planar(self.snapshot))
     }
 
     fn is_closed(&self) -> bool {
@@ -140,7 +148,9 @@ impl NaturalSurface for PlanarNaturalSurface<'_> {
     }
 
     fn total_area(&self) -> SquareMeters {
-        self.snapshot.total_cell_area()
+        let bounds = self.snapshot.bounds();
+        SquareMeters::new(bounds.width().get() * bounds.height().get())
+            .expect("validated planar bounds have a finite area")
     }
 
     fn cell(&self, id: CellId) -> Option<SurfaceCellMetrics> {

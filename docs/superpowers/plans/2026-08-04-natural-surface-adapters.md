@@ -179,7 +179,7 @@ git commit -m "feat: add natural surface metric adapters"
 - Keeps `NaturalTopologyIndex::new(&SpatialSnapshot)` as a planar compatibility entry point during S0B.1.
 - Replaces two-coordinate cached centers with three-coordinate `quantized_shape_positions` while preserving the planar first two quantized values and all planar ordering outcomes.
 
-- [ ] **Step 1: Write RED topology tests**
+- [x] **Step 1: Write RED topology tests**
 
 Add tests that:
 
@@ -196,13 +196,13 @@ cargo test --lib generators::natural::topology
 
 Expected: FAIL because the generic constructor and three-coordinate cache do not exist.
 
-- [ ] **Step 2: Implement the generic index path**
+- [x] **Step 2: Implement the generic index path**
 
 Build arcs from dense edge metric records. Normalize traversal lengths by the adapter-provided maximum scale, normalize cell areas by adapter total area, and quantize adapter-provided shape coordinates with the existing deterministic rounding protocol. Keep owner sorting, arc sorting, queue ordering, tie rotations, and quantization constants unchanged.
 
 Update only the internal crust nucleus distance calculation to sum three squared coordinate deltas. With the planar adapter's constant third coordinate, its integer arithmetic and results remain identical.
 
-- [ ] **Step 3: Prove planar behavior did not drift**
+- [x] **Step 3: Prove planar behavior did not drift**
 
 Run focused natural suites before the whole repository:
 
@@ -214,7 +214,7 @@ cargo test --test natural_display_golden
 
 Expected: all PASS without accepting new planar goldens.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git add src/generators/natural/topology.rs tests/natural_surface_adapters.rs

@@ -461,12 +461,13 @@ fn spread_crust_nuclei(
     let mut minimum_squared_distance = vec![u128::MAX; candidates.len()];
     while nuclei.len() < count {
         let newest = *nuclei.last().expect("one nucleus was selected");
-        let newest_center = topology.quantized_centers()[newest.raw() as usize];
+        let newest_center = topology.quantized_shape_positions()[newest.raw() as usize];
         for (candidate_index, &candidate) in candidates.iter().enumerate() {
-            let center = topology.quantized_centers()[candidate.raw() as usize];
+            let center = topology.quantized_shape_positions()[candidate.raw() as usize];
             let dx = i128::from(center[0]) - i128::from(newest_center[0]);
             let dy = i128::from(center[1]) - i128::from(newest_center[1]);
-            let squared = (dx * dx + dy * dy) as u128;
+            let dz = i128::from(center[2]) - i128::from(newest_center[2]);
+            let squared = (dx * dx + dy * dy + dz * dz) as u128;
             minimum_squared_distance[candidate_index] =
                 minimum_squared_distance[candidate_index].min(squared);
         }
@@ -687,8 +688,8 @@ fn classify_and_aggregate_boundaries(
         }
         let first_index = first.raw() as usize;
         let second_index = second.raw() as usize;
-        let first_center = topology.quantized_centers()[first_index];
-        let second_center = topology.quantized_centers()[second_index];
+        let first_center = topology.quantized_shape_positions()[first_index];
+        let second_center = topology.quantized_shape_positions()[second_index];
         let normal = [
             second_center[0] - first_center[0],
             second_center[1] - first_center[1],

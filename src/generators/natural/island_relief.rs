@@ -242,7 +242,7 @@ pub(super) fn synthesize_oceanic_arc_peaks(
         let ranked = candidates
             .into_iter()
             .map(|(cell, strength)| {
-                let center = topology.quantized_centers()[cell.raw() as usize];
+                let center = topology.quantized_shape_positions()[cell.raw() as usize];
                 let point = [
                     center[0] as f64 / 1_000_000.0,
                     center[1] as f64 / 1_000_000.0,
