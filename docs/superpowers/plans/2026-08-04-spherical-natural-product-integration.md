@@ -394,17 +394,17 @@ git commit -m "feat: publish spherical relief geology stages"
 - Consumes: `SphericalSurfaceArtifact`, `SphericalReliefArtifact`, `SphericalGeologicArtifact`, `ResolvedClimateInputArtifact`, `ResolvedHydroErosionInputArtifact`, `ClimateGenerator::generate_spherical`, and `HydroErosionGenerator::generate_spherical`.
 - Produces: `SphericalPreliminaryClimateArtifact`, `SphericalPreliminaryClimateStage`, `SphericalPreliminaryClimateStageInputs`, `SphericalHydroErosionArtifact`, `SphericalHydroErosionStage`, and `SphericalHydroErosionStageInputs`.
 
-- [ ] **Step 1: Write RED tests for both downstream stages**
+- [x] **Step 1: Write RED tests for both downstream stages**
 
 Assert the approved keys/IDs/version/namespace, exact typed dependencies, strict serde, same-count/different-surface rejection, and equality with direct generator calls. The climate and hydro adapters consume no RNG draws; prove that their outputs equal direct calls regardless of an unused `StageRng` value.
 
-- [ ] **Step 2: Run and observe RED**
+- [x] **Step 2: Run and observe RED**
 
 Run: `cargo test --test spherical_climate_hydro_stage -- --nocapture`
 
 Expected: compilation fails on the missing stage modules and types.
 
-- [ ] **Step 3: Implement preliminary-climate transport**
+- [x] **Step 3: Implement preliminary-climate transport**
 
 Match only `ClimateModel::SeasonalEnergyMoistureV1`, call:
 
@@ -418,11 +418,11 @@ ClimateGenerator::generate_spherical(
 
 Validate with `snapshot.validate_against(surface, relief)` and publish key `world.spherical-preliminary-climate`.
 
-- [ ] **Step 4: Implement atomic hydro-erosion transport**
+- [x] **Step 4: Implement atomic hydro-erosion transport**
 
 Match only `HydroErosionModel::PriorityFloodStreamPowerV1`, call the one-index, two-hydrology-pass generator, validate with the public four-upstream `validate_against`, and publish key `world.spherical-hydro-erosion`. The stage must not publish initial hydrology separately.
 
-- [ ] **Step 5: Run focused and direct-generator regressions**
+- [x] **Step 5: Run focused and direct-generator regressions**
 
 Run:
 
@@ -433,7 +433,7 @@ cargo test --test spherical_climate_generation --test spherical_climate_matrix -
 
 Expected: all pass and no existing sphere scientific fixture changes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/generators/natural/spherical_climate_stage.rs src/generators/natural/spherical_hydro_erosion_stage.rs src/generators/natural/mod.rs tests/spherical_climate_hydro_stage.rs

@@ -20,10 +20,12 @@ mod relief;
 mod relief_noise;
 mod rule_input;
 mod spherical_climate;
+mod spherical_climate_stage;
 mod spherical_erosion;
 mod spherical_geologic_stage;
 mod spherical_geology;
 mod spherical_hydro_erosion;
+mod spherical_hydro_erosion_stage;
 mod spherical_hydrology;
 mod spherical_island_relief;
 mod spherical_mantle;
@@ -79,6 +81,10 @@ pub use rule_input::{
     RuleTectonicResolutionStage, RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
 };
 pub use spherical_climate::SphericalClimateGenerationError;
+pub use spherical_climate_stage::{
+    SphericalPreliminaryClimateArtifact, SphericalPreliminaryClimateStage,
+    SphericalPreliminaryClimateStageInputs,
+};
 pub use spherical_erosion::SphericalFluvialErosionError;
 pub use spherical_geologic_stage::{
     SphericalGeologicArtifact, SphericalGeologicStage, SphericalGeologicStageInputs,
@@ -86,6 +92,9 @@ pub use spherical_geologic_stage::{
 };
 pub use spherical_geology::SphericalGeologicGenerationError;
 pub use spherical_hydro_erosion::SphericalHydroErosionGenerationError;
+pub use spherical_hydro_erosion_stage::{
+    SphericalHydroErosionArtifact, SphericalHydroErosionStage, SphericalHydroErosionStageInputs,
+};
 pub use spherical_hydrology::SphericalHydrologyGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
