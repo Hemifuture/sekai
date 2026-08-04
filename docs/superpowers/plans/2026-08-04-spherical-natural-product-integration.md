@@ -899,9 +899,9 @@ git commit -m "feat: publish spherical natural field document"
 - Consumes: the completed spherical graph/document and frozen planar compatibility path.
 - Produces: Release performance/memory evidence, final golden hashes, ownership audit, and a completed S0B.6 checklist.
 
-- [ ] **Step 1: Write the ignored Release full-graph budget test**
+- [x] **Step 1: Write the ignored Release full-graph budget test**
 
-Build an Earth-radius `target_cell_count = 20_000` sphere through `spherical_natural_foundation_graph`. Measure the full `BuildEngine::build`, validate the final document, calculate persistent semantic bytes per Artifact, serialized Artifact bytes separately, and process working-set delta with the existing Windows/Linux helpers.
+Build an Earth-radius `target_cell_count = 20_000` sphere through `spherical_natural_foundation_graph`. Measure the full `BuildEngine::build`, validate the complete final Artifact chain and sphere registry used by the crate-private field document, calculate persistent semantic bytes per Artifact, serialized Artifact bytes separately, and process working-set delta with the existing Windows/Linux helpers. The document constructor and all 36 borrowed payloads remain directly validated by the `app::spherical_natural_display::tests` unit boundary.
 
 Assert:
 
@@ -913,9 +913,9 @@ if let Some(additional_working_set_bytes) = additional_working_set_bytes {
 }
 ```
 
-Run the planar baseline first in the same Release test binary by reusing the exact `tests/natural_performance.rs` fixture: root seed `42`, `PlanarSpaceSpec { width: 40_000_000 m, height: 20_000_000 m, target_cell_count: 20_000, boundary: WrapBoth }`, default tectonic/geologic/climate/hydro/formation inputs, and empty rules/constraints. Time only `BuildEngine::build(legacy_planar_natural_foundation_graph(), ...)`. Drop that outcome and cache before taking the sphere working-set baseline. Then build the Earth-radius sphere with root seed `42`, the same non-spatial external inputs, and `target_cell_count: 20_000`; print all counts/timings/bytes with one stable evidence line.
+Run the planar baseline first in the same Release test binary by reusing the exact `tests/natural_performance.rs` fixture: root seed `42`, `PlanarSpaceSpec { width: 20_000_000 m, height: 10_000_000 m, target_cell_count: 20_000, boundary: Closed }`, default tectonic/geologic/climate/hydro/formation inputs, the default rule-pack set, and empty author constraints. Time only `BuildEngine::build(legacy_planar_natural_foundation_graph(), ...)`. Drop that outcome and cache before taking the sphere working-set baseline. Then build the Earth-radius sphere with root seed `42`, the same non-spatial external inputs, and `target_cell_count: 20_000`; print all counts/timings/bytes with one stable evidence line. This corrects the draft's stale `40_000_000 × 20_000_000 / WrapBoth` description: the frozen fixture is `20_000_000 × 10_000_000 / Closed`, and `BoundaryCondition` intentionally has no `WrapBoth` variant.
 
-- [ ] **Step 2: Run focused Release and scientific acceptance**
+- [x] **Step 2: Run focused Release and scientific acceptance**
 
 Run:
 
@@ -927,7 +927,7 @@ cargo test --test spherical_natural_matrix --test spherical_relief_geology_matri
 
 Expected: hard time/memory gates pass and every frozen scientific matrix remains exact.
 
-- [ ] **Step 3: Audit ownership and forbidden dependencies**
+- [x] **Step 3: Audit ownership and forbidden dependencies**
 
 Run:
 
@@ -939,7 +939,7 @@ rg -n 'spherical_natural_foundation_graph|legacy_planar_natural_foundation_graph
 
 Expected: sphere stage files contain no planar/presentation types; the spherical document contains Artifact handles and derived value arrays but no copied geometry or mesh; the visible S0B.6 canvas calls only the explicit legacy presenter while the new graph is the sole sphere creation entry.
 
-- [ ] **Step 4: Run the complete verification suite**
+- [x] **Step 4: Run the complete verification suite**
 
 Run fresh, in this order:
 
@@ -954,7 +954,7 @@ cargo check --target wasm32-unknown-unknown --all-features --lib
 
 Expected: every command exits `0`, with only the repository's explicitly ignored stress/doc examples reported as ignored.
 
-- [ ] **Step 5: Record exact execution evidence and self-audit the spec**
+- [x] **Step 5: Record exact execution evidence and self-audit the spec**
 
 Append an `Execution Evidence` section containing:
 
@@ -968,9 +968,113 @@ Append an `Execution Evidence` section containing:
 
 Then search the plan for unchecked implementation steps and forbidden incomplete-work markers; resolve every actual implementation checkbox before final review.
 
-- [ ] **Step 6: Commit final acceptance evidence**
+- [x] **Step 6: Commit final acceptance evidence**
 
 ```powershell
 git add tests/spherical_natural_graph_performance.rs docs/superpowers/plans/2026-08-04-spherical-natural-product-integration.md
 git commit -m "test: gate spherical natural product integration"
 ```
+
+---
+
+## Execution Evidence
+
+Recorded on 2026-08-04 from the isolated `feat/spherical-natural-product-integration` worktree.
+
+### Reference environment
+
+- Compiler: `rustc 1.97.1 (8bab26f4f 2026-07-14)`, LLVM `22.1.6`, host `x86_64-pc-windows-msvc`.
+- OS: Microsoft Windows 11 Pro `10.0.22631`, 64-bit.
+- CPU: Intel Core i9-14900KF, 24 physical cores / 32 logical processors.
+- Release measurements use one process and one test binary. The planar outcome and cache are dropped before the spherical working-set baseline. Only `BuildEngine::build` is timed.
+
+### RED/GREEN ledger
+
+1. Task 1 (`ecca70a`): RED `cargo test --test legacy_planar_boundary -- --nocapture` failed on the intentionally missing `legacy_planar_natural_foundation_graph`; GREEN used that command plus `cargo test --test natural_stage_graph --test foundation_build --test natural_display_golden -- --nocapture` and `cargo test --lib natural_app_tests -- --nocapture`.
+2. Task 2 (`fc6285f`): RED `cargo test --test spherical_tectonic_mantle_stage -- --nocapture` failed on the missing spherical Artifact/Stage contracts; GREEN used that command plus `cargo test --test spherical_tectonic_generation --test spherical_mantle_generation --test spherical_natural_matrix -- --nocapture`.
+3. Task 3 (`69dfa60`): RED `cargo test --test spherical_relief_geologic_stage -- --nocapture` failed on the missing relief/geology transports; GREEN used that command plus `cargo test --test spherical_relief_generation --test spherical_geologic_generation --test spherical_relief_geology_matrix -- --nocapture`.
+4. Task 4 (`a015587`): RED `cargo test --test spherical_climate_hydro_stage -- --nocapture` failed on the missing climate/hydro transports; GREEN used that command plus `cargo test --test spherical_climate_generation --test spherical_climate_matrix --test spherical_hydro_erosion_generation --test spherical_hydro_erosion_matrix -- --nocapture`.
+5. Task 5 (`7bf204c`): RED `cargo test --test spherical_natural_stage_graph graph_declares_the_authoritative_sphere_path -- --nocapture` failed on the missing authoritative graph; GREEN used `cargo test --test spherical_natural_stage_graph -- --nocapture` plus `cargo test --test engine_execution --test natural_stage_graph --test legacy_planar_boundary -- --nocapture`.
+6. Task 6 (`097fbad`): the planar hash-capture RED deliberately compared against 64 zeroes; the sphere RED `cargo test --test natural_field_registry_spherical -- --nocapture` then failed on the missing area-aware builder. GREEN used that command plus `cargo test --test field_contracts --test natural_field_views --test natural_display_golden -- --nocapture`. The frozen planar registry hash is `0fb5b0ca1973270bd5a10788fb9549b4f743bb1e89195c0b6f3c5ac2036fa94a`.
+7. Task 7 (`18df892`): RED `cargo test --lib app::field_document::tests -- --nocapture` failed on the missing data/presentation trait split; the single-mapping behavior test was also added before implementation. GREEN used that command, `cargo test --lib app::natural_display::tests -- --nocapture`, and `cargo test --test natural_field_views --test natural_display_golden --test field_display_golden -- --nocapture`.
+8. Task 8 (`d27b08c`): RED `cargo test --lib world::spatial::sphere_geometry::tests -- --nocapture` failed on the missing canonical tangent basis, then RED `cargo test --lib app::spherical_natural_display::tests -- --nocapture` failed on the missing document. GREEN reran both commands plus the field-document and planar natural-display unit suites. The frozen spherical 36-field hash is `937bb06d57650e7f501fbc05fef9736a824aa41f7ce0f24d8b207cbe5afb7a66`.
+9. Task 9: this task adds an acceptance gate after the behavior exists, so manufacturing a production RED would be misleading. `cargo test --test spherical_natural_graph_performance --no-run` compiled the new ignored gate, strict Clippy passed, and its first required Release execution was GREEN. The focused Release and scientific commands below all exited `0`.
+
+### Frozen graph identity and cache matrix
+
+The required Release graph run printed and rechecked these exact semantic hashes:
+
+- surface: `213c897cc3af183bfb7a47c421d768e41f2993bd93d05f347ddf86fbb35500ec`
+- tectonic: `4f77bb9e0c123d73c38ee48b6b6ff5468c1839f76e1e4b458d6c9bc2f9956ab9`
+- mantle: `c0213d96cfdad2bf5014eb56b6947642cac82f7124ff0ead3f2aa094dbce939e`
+- relief: `1e4649ba69af1f4cdc7e084a76a9d11ef72ed92603d569f18a8dde6bf4481494`
+- geology: `492dff0e8cbcc81ab1fc856d1e981e03dbe1d406dafe36937402acbf16d3d803`
+- climate: `92ec685370c5547431235742c4937a3f73bb2d305d508d7a72abd3cd91c435cc`
+- hydro-erosion: `f9bcbb8ef4406caa5217f56eeba028caef06c861684b3fcbd74379542d091aa2`
+- `BuildResultHash`: `22fe482b4243ce64cbd0ad2aee493710e69e1cf144a9e984a0378b163c7d21a3`
+
+`cache_invalidation_matches_each_independent_input` and `cache_isolates_same_count_surfaces_with_different_radii` enforce the following exact misses; every unlisted stage is a hit:
+
+| Rebuild input | Exact cache misses |
+|---|---|
+| First build | all 16 stages |
+| Identical repeat | none; all 16 stages hit |
+| Root seed | all 16 stages |
+| Formation preset | `natural.resolve-world-formation` and all six `natural.spherical-*` stages |
+| Tectonic spec | `natural.resolve-tectonic-rules`, `natural.project-tectonic-input`, tectonics, relief, geology, climate, hydro-erosion |
+| Geologic spec | `natural.resolve-geologic-rules`, `natural.project-geologic-input`, mantle, relief, geology, climate, hydro-erosion |
+| Climate spec | `natural.resolve-climate-rules`, `natural.project-climate-input`, climate, hydro-erosion |
+| Hydro-erosion spec | `natural.resolve-hydro-erosion-rules`, `natural.project-hydro-erosion-input`, hydro-erosion |
+| Same cell count, different radius | spherical surface and all six `natural.spherical-*` stages |
+
+### Release full-graph result
+
+Command: `cargo test --release --test spherical_natural_graph_performance -- --ignored --nocapture` — 1 passed, 0 failed.
+
+- Planar baseline: `1,889.970 ms`; spherical graph: `1,348.750 ms`; sphere/planar ratio: `0.713635×` (gate `≤ 2.5×`); absolute sphere gate `≤ 5,000 ms`.
+- Sphere output: 16 stages, 20,252 geodesic cells, 40,500 vertices, 60,750 edges, 12 plates, 1,359 boundary segments, 4 hotspots, 688 basins, 32 lakes, and 1,133 river segments.
+- Working set: baseline `9,162,752 B`, final `33,968,128 B`, additional `24,805,376 B` (gate `≤ 268,435,456 B`).
+- Persistent semantic total: `22,655,488 B`; serialized Artifact total: `56,376,190 B`. Serialization buffers are reported separately and are not counted as resident semantic state.
+
+| Artifact | Persistent semantic bytes | Serialized bytes |
+|---|---:|---:|
+| Spherical surface | 10,854,344 | 30,188,061 |
+| Resolved formation | 4 | 83 |
+| Spherical tectonics | 1,785,080 | 4,858,164 |
+| Spherical mantle | 162,232 | 188,118 |
+| Spherical relief | 486,248 | 850,639 |
+| Spherical geology | 567,272 | 850,163 |
+| Spherical preliminary climate | 5,508,808 | 14,547,835 |
+| Spherical hydro-erosion | 3,291,500 | 4,893,127 |
+
+The same runner validates the surface, formation, and all six natural snapshots against their exact upstream objects, verifies the build result hash, and builds the 36-field area-aware registry. The crate-private document's complete construction, payload cardinality/pointers, provenance, tangent reconstruction, Arc reuse, error rejection, and atomic replacement are covered by eight `app::spherical_natural_display::tests` cases in the full suite.
+
+### Focused science and repository verification
+
+- `cargo test --release --test spherical_natural_stage_graph -- --nocapture`: 5 passed, 0 failed; exact graph hashes and cache matrix passed.
+- The combined `spherical_natural_matrix`, `spherical_relief_geology_matrix`, `spherical_climate_matrix`, and `spherical_hydro_erosion_matrix` command: 4 suites / 4 tests passed; all printed scientific fixture hashes stayed exact.
+- `cargo fmt --all -- --check`: exit `0`.
+- `cargo check --workspace --all-targets --all-features`: exit `0`.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: exit `0`, zero warnings.
+- `cargo test --workspace --all-targets --all-features`: exit `0` in `156.4 s`. Listing audit found 961 registered tests: 946 non-ignored tests passed and 15 explicitly ignored tests remained ignored; 11 benchmark cases were also listed and the benchmark target completed.
+- `cargo test --workspace --doc`: exit `0`; 0 failed and the repository's 8 explicitly ignored documentation examples remained ignored.
+- `cargo check --target wasm32-unknown-unknown --all-features --lib`: exit `0`.
+
+### Ownership audit
+
+- `rg -n -g 'spherical_*stage.rs' 'PlanarSpaceArtifact|SpatialArtifact|PreparedCellMesh|projection|gpu|wgpu|Canvas' src/generators/natural`: zero matches.
+- `rg -n 'Vec<.*(Cell|Edge|Vertex)|PreparedCellMesh|projection|gpu|wgpu' src/app/spherical_natural_display.rs`: zero matches. The document holds eight Artifact `Arc`s plus disposable scalar/vector caches, not copied geometry or a mesh.
+- The builder audit found `spherical_natural_foundation_graph` defined only in `spherical_stage.rs` and exported by `natural::mod`; `app.rs` imports and calls only the explicitly named `legacy_planar_natural_foundation_graph`, whose definition remains isolated in `stage.rs`.
+
+### S0B.6 completion-definition mapping
+
+1. Six formal natural Artifacts from `SphericalSpaceArtifact`: proved by `spherical_natural_stage_graph`, the four direct scientific matrices, and the 20k Release full-graph runner.
+2. One exact `SurfaceRef`: every stage validates against the authoritative surface; cross-surface/radius rejection is covered by stage-graph and document tests.
+3. Sphere-only new-world service: the exact eight-external-input test rejects both missing inputs and an extra `PlanarSpaceArtifact`; the ownership audit finds no planar sphere-stage dependency.
+4. Projection-free read-only field document: 36 payloads with authoritative cardinality and borrowed pointers pass; source audit finds no projection, mesh, or GPU type.
+5. Cache/provenance/recovery/atomic publication: the exact cache matrix, frozen `BuildResultHash`, build identity tests, invalid-candidate tests, Arc reuse test, and atomic replacement test all pass.
+6. Isolated planar V1: `legacy_planar_boundary`, frozen planar graph/registry hashes, serde contracts, display goldens, and the complete pre-existing suite all pass; the active canvas uses only the explicit compatibility graph.
+7. Full scientific/product gates: frozen scientific matrices, deterministic hashes, strict serde tests, 20k time/memory/size gates, all-target repository tests, docs, and WASM all pass.
+8. S0C-ready derivation boundary: the document owns authoritative Artifact `Arc`s and reconstructible local tangent/cache values but no presentation geometry, so future 2D/3D presenters can be dropped and rebuilt without regenerating, copying, or mutating natural facts.
+
+Final self-audit: after completing this commit, `rg -n '^- \[ \]'` has no plan matches. The TODO/FIXME/TBD/XXX/`todo!`/`unimplemented!` audit has no implementation matches in the new spherical stage, document, or acceptance-test files; the only prose occurrence of “incomplete-work markers” is this checklist's own audit instruction.
