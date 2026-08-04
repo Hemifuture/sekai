@@ -30,6 +30,7 @@ pub struct Hotspot {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HotspotWire {
     id: HotspotId,
     source_cell: CellId,
@@ -75,7 +76,7 @@ impl Hotspot {
         self.support_radius_m
     }
 
-    fn validate(&self) -> Result<(), MantleValidationError> {
+    pub(super) fn validate(&self) -> Result<(), MantleValidationError> {
         if !(MIN_HOTSPOT_STRENGTH_PERMILLE..=MAX_HOTSPOT_STRENGTH_PERMILLE)
             .contains(&self.strength_permille)
         {

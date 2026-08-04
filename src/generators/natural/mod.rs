@@ -19,6 +19,7 @@ mod random;
 mod relief;
 mod relief_noise;
 mod rule_input;
+mod spherical_mantle;
 mod spherical_tectonics;
 mod stage;
 mod tectonics;
@@ -67,6 +68,7 @@ pub use rule_input::{
     ResolvedTectonicInputStage, ResolvedTectonicInputStageInputs, RulePackSetArtifact,
     RuleTectonicResolutionStage, RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
 };
+pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_tectonics::SphericalTectonicGenerationError;
 pub use stage::{
     natural_foundation_graph, ReliefArtifact, ReliefStage, TectonicArtifact, TectonicSpecArtifact,

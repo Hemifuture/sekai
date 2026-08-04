@@ -225,19 +225,19 @@ git commit -m "feat: generate spherical Euler plate tectonics"
 - Add `MantleGenerator::generate_spherical` and distinct `SphericalMantleGenerationError`.
 - Reuse `Hotspot` and one shared field-generation core.
 
-- [ ] **Step 1: Write RED V2 mantle contract tests**
+- [x] **Step 1: Write RED V2 mantle contract tests**
 
 Cover exact surface identity, strict serde, field ranges and lengths, unique hotspot sources, support no larger than `pi * R`, and rejection of a different surface with equal counts.
 
-- [ ] **Step 2: Write RED spherical generation tests**
+- [x] **Step 2: Write RED spherical generation tests**
 
 Verify deterministic global farthest-point sources, seed sensitivity, no boundary/pole special case, source influence exactly one, monotonic compact support by graph distance, zero outside support, ordered activity background, independent strength substream prefix, and unchanged planar mantle golden hash.
 
-- [ ] **Step 3: Implement shared hotspot generation**
+- [x] **Step 3: Implement shared hotspot generation**
 
 Retain planar edge-margin selection exactly. On a closed surface use global candidates and a support scale derived from `pi * R`; diffuse with the already built spherical topology and use the same compact smoothstep and bounded heat formula.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```powershell
 cargo test --test spherical_mantle_contracts --test spherical_mantle_generation
