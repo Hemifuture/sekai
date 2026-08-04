@@ -1,7 +1,12 @@
+use sekai::generators::natural::{FluvialErosionGenerator, HydrologyGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    ElevationField, LandOceanField, LandOceanKind, SphericalReliefSnapshot,
-    SphericalSurfaceProcessSnapshot, RELIEF_SCHEMA_V4, SURFACE_PROCESS_SCHEMA_V2,
+    BedrockKind, BedrockKindField, ElevationField, HydroErosionSpec, LandOceanField, LandOceanKind,
+    MonthlyScalarField, MonthlyVector3Field, SphericalGeologicSnapshot,
+    SphericalHydroErosionSnapshot, SphericalPreliminaryClimateSnapshot, SphericalReliefSnapshot,
+    SphericalSurfaceProcessSnapshot, CLIMATE_MONTH_COUNT, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
+    HYDRO_EROSION_SNAPSHOT_SCHEMA_V2, PRELIMINARY_CLIMATE_SCHEMA_V2, RELIEF_SCHEMA_V4,
+    SURFACE_PROCESS_SCHEMA_V2,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT};
@@ -161,4 +166,110 @@ fn spherical_surface_process_constructor_rejects_dense_length_mismatch() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("erosion_depth_m"));
+}
+
+fn composite_inputs(
+    surface: &SphericalSurfaceSnapshot,
+) -> (
+    SphericalReliefSnapshot,
+    SphericalGeologicSnapshot,
+    SphericalPreliminaryClimateSnapshot,
+    SphericalHydroErosionSnapshot,
+) {
+    let count = surface.cells().len();
+    let relief = relief(surface, vec![1_000.0; count]);
+    let surface_ref = SurfaceRef::try_for_spherical(surface).unwrap();
+    let geology = SphericalGeologicSnapshot::new(
+        GEOLOGIC_SNAPSHOT_SCHEMA_V2,
+        surface_ref,
+        BedrockKindField::from_kinds(vec![BedrockKind::ContinentalCrystalline; count]),
+        vec![0.0; count],
+        vec![0.5; count],
+        vec![0.25; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+    )
+    .unwrap();
+    let latitude = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.centroid.components()[2].asin().to_degrees() as f32)
+        .collect();
+    let precipitation = 100.0;
+    let climate = SphericalPreliminaryClimateSnapshot::new(
+        PRELIMINARY_CLIMATE_SCHEMA_V2,
+        surface_ref,
+        latitude,
+        vec![0.0; count],
+        MonthlyScalarField::from_values(vec![[20.0; CLIMATE_MONTH_COUNT]; count]).unwrap(),
+        MonthlyScalarField::from_values(vec![[precipitation; CLIMATE_MONTH_COUNT]; count]).unwrap(),
+        MonthlyVector3Field::from_values(vec![[[0.0; 3]; CLIMATE_MONTH_COUNT]; count]).unwrap(),
+        vec![20.0; count],
+        vec![0.0; count],
+        vec![precipitation * CLIMATE_MONTH_COUNT as f32; count],
+        vec![[0.0; 3]; count],
+    )
+    .unwrap();
+    let spec = HydroErosionSpec {
+        river_discharge_threshold_deci_m3_s: 1,
+        erosion_strength_permille: 0,
+        ..HydroErosionSpec::default()
+    };
+    let hydrology =
+        HydrologyGenerator::generate_spherical(surface, &relief, &geology, &climate, &spec)
+            .unwrap();
+    let process =
+        FluvialErosionGenerator::generate_spherical(surface, &relief, &geology, &hydrology, &spec)
+            .unwrap();
+    let composite =
+        SphericalHydroErosionSnapshot::new(HYDRO_EROSION_SNAPSHOT_SCHEMA_V2, process, hydrology)
+            .unwrap();
+    (relief, geology, climate, composite)
+}
+
+#[test]
+fn spherical_hydro_erosion_composite_round_trips_and_cross_validates() {
+    let surface = surface(6_371_000.0);
+    let (relief, geology, climate, snapshot) = composite_inputs(&surface);
+
+    snapshot
+        .validate_against(&surface, &relief, &geology, &climate)
+        .unwrap();
+    assert_eq!(snapshot.schema_version(), HYDRO_EROSION_SNAPSHOT_SCHEMA_V2);
+    assert_eq!(
+        snapshot.surface_ref(),
+        SurfaceRef::try_for_spherical(&surface).unwrap()
+    );
+    assert_eq!(snapshot.cell_count() as usize, surface.cells().len());
+    assert_eq!(
+        snapshot.surface().surface_ref(),
+        snapshot.hydrology().surface_ref()
+    );
+
+    let encoded = serde_json::to_vec(&snapshot).unwrap();
+    let decoded: SphericalHydroErosionSnapshot = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, snapshot);
+    decoded
+        .validate_against(&surface, &relief, &geology, &climate)
+        .unwrap();
+}
+
+#[test]
+fn spherical_hydro_erosion_composite_rejects_mixed_surfaces_and_unknown_fields() {
+    let first_surface = surface(6_371_000.0);
+    let second_surface = surface(6_372_000.0);
+    let (_, _, _, first) = composite_inputs(&first_surface);
+    let (_, _, _, second) = composite_inputs(&second_surface);
+
+    assert!(SphericalHydroErosionSnapshot::new(
+        HYDRO_EROSION_SNAPSHOT_SCHEMA_V2,
+        first.surface().clone(),
+        second.hydrology().clone(),
+    )
+    .is_err());
+
+    let mut unknown = serde_json::to_value(first).unwrap();
+    unknown["initial_hydrology"] = unknown["hydrology"].clone();
+    assert!(serde_json::from_value::<SphericalHydroErosionSnapshot>(unknown).is_err());
 }

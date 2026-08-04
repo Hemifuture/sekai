@@ -3,16 +3,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    ClimateValidationError, GeologicSnapshot, GeologicValidationError, HydrologySnapshot,
-    HydrologyValidationError, LandOceanKind, PreliminaryClimateSnapshot, ReliefSnapshot,
-    ReliefValidationError, SurfaceProcessSnapshot, SurfaceProcessValidationError, SurfaceWaterKind,
-    SURFACE_IDENTITY_TOLERANCE_M,
+    ClimateValidationError, ElevationField, GeologicSnapshot, GeologicValidationError,
+    HydrologySnapshot, HydrologyValidationError, LandOceanKind, PreliminaryClimateSnapshot,
+    ReliefSnapshot, ReliefValidationError, SurfaceProcessSnapshot, SurfaceProcessValidationError,
+    SurfaceWaterKind, CLIMATE_MONTH_COUNT, SURFACE_IDENTITY_TOLERANCE_M,
 };
 use crate::world::spatial::{SpatialSnapshot, SpatialValidationError, Topology};
 use crate::world::CellId;
 
 /// The supported version of the atomic hydro-erosion snapshot schema.
 pub const HYDRO_EROSION_SNAPSHOT_SCHEMA_V1: u16 = 1;
+/// The surface-bound closed-sphere atomic hydro-erosion envelope schema.
+pub const HYDRO_EROSION_SNAPSHOT_SCHEMA_V2: u16 = 2;
 /// Allowed absolute rounding difference in the effective-runoff identity.
 pub const RUNOFF_IDENTITY_TOLERANCE_MM: f32 = 0.05;
 
@@ -129,77 +131,14 @@ impl HydroErosionSnapshot {
         self.surface
             .validate_against_validated_spatial(spatial, relief)?;
         self.hydrology.validate_against_validated_spatial(spatial)?;
-
-        for index in 0..self.cell_count() as usize {
-            let cell = CellId::from_raw(index as u32);
-            let current_surface = self.surface.surface_elevation_m().values()[index];
-            let stored_water = self
-                .hydrology
-                .surface_water()
-                .get(index)
-                .expect("self-validated surface-water field decodes");
-            let expected_ocean = LandOceanKind::classify(current_surface, relief.sea_level_m())
-                == LandOceanKind::Ocean;
-            if expected_ocean != (stored_water == SurfaceWaterKind::Ocean) {
-                return Err(HydroErosionValidationError::OceanClassificationMismatch {
-                    cell,
-                    current_surface,
-                    sea_level: relief.sea_level_m(),
-                    stored: stored_water,
-                    expected_ocean,
-                });
-            }
-
-            let drainage_surface = self.hydrology.drainage_surface_elevation_m().values()[index];
-            if drainage_surface + SURFACE_IDENTITY_TOLERANCE_M < current_surface {
-                return Err(HydroErosionValidationError::DrainageSurfaceBelowCurrent {
-                    cell,
-                    current_surface,
-                    drainage_surface,
-                });
-            }
-            if stored_water == SurfaceWaterKind::Lake {
-                let calculated_depth = drainage_surface - current_surface;
-                let stored_depth = self.hydrology.lake_depth_m()[index];
-                if (stored_depth - calculated_depth).abs() > SURFACE_IDENTITY_TOLERANCE_M {
-                    return Err(HydroErosionValidationError::LakeDepthSurfaceMismatch {
-                        cell,
-                        stored: stored_depth,
-                        calculated: calculated_depth,
-                    });
-                }
-            }
-
-            for month in 0..super::CLIMATE_MONTH_COUNT {
-                let stored_runoff = self.hydrology.monthly_local_runoff_mm()[index][month];
-                if expected_ocean {
-                    if stored_runoff != 0.0 {
-                        return Err(HydroErosionValidationError::OceanRunoffNonZero {
-                            cell,
-                            month,
-                            found: stored_runoff,
-                        });
-                    }
-                    continue;
-                }
-
-                let permeability = geology.relative_permeability()[index];
-                let runoff_fraction = 0.85 + (0.20 - 0.85) * permeability;
-                let precipitation = climate
-                    .precipitation_mm(cell, month)
-                    .expect("validated climate has every cell and month");
-                let calculated = precipitation * runoff_fraction;
-                if (stored_runoff - calculated).abs() > RUNOFF_IDENTITY_TOLERANCE_MM {
-                    return Err(HydroErosionValidationError::RunoffIdentityMismatch {
-                        cell,
-                        month,
-                        stored: stored_runoff,
-                        calculated,
-                    });
-                }
-            }
-        }
-        Ok(())
+        validate_hydro_erosion_semantics(
+            self.cell_count(),
+            self.surface.surface_elevation_m(),
+            &self.hydrology,
+            relief.sea_level_m(),
+            geology.relative_permeability(),
+            climate.monthly_precipitation_mm().values(),
+        )
     }
 
     /// Returns the serialized schema version.
@@ -221,6 +160,88 @@ impl HydroErosionSnapshot {
     pub const fn hydrology(&self) -> &HydrologySnapshot {
         &self.hydrology
     }
+}
+
+/// Rechecks the geometry-independent identities shared by planar and spherical composites.
+///
+/// All dense fields must already have passed their own cardinality contracts. Keeping this
+/// relation pass here makes current-surface classification, lake depth, and effective runoff a
+/// single semantic source for both geometry adapters.
+pub(crate) fn validate_hydro_erosion_semantics(
+    cell_count: u32,
+    current_surface_elevation_m: &ElevationField,
+    hydrology: &HydrologySnapshot,
+    sea_level_m: f32,
+    relative_permeability: &[f32],
+    monthly_precipitation_mm: &[[f32; CLIMATE_MONTH_COUNT]],
+) -> Result<(), HydroErosionValidationError> {
+    for index in 0..cell_count as usize {
+        let cell = CellId::from_raw(index as u32);
+        let current_surface = current_surface_elevation_m.values()[index];
+        let stored_water = hydrology
+            .surface_water()
+            .get(index)
+            .expect("self-validated surface-water field decodes");
+        let expected_ocean =
+            LandOceanKind::classify(current_surface, sea_level_m) == LandOceanKind::Ocean;
+        if expected_ocean != (stored_water == SurfaceWaterKind::Ocean) {
+            return Err(HydroErosionValidationError::OceanClassificationMismatch {
+                cell,
+                current_surface,
+                sea_level: sea_level_m,
+                stored: stored_water,
+                expected_ocean,
+            });
+        }
+
+        let drainage_surface = hydrology.drainage_surface_elevation_m().values()[index];
+        if drainage_surface + SURFACE_IDENTITY_TOLERANCE_M < current_surface {
+            return Err(HydroErosionValidationError::DrainageSurfaceBelowCurrent {
+                cell,
+                current_surface,
+                drainage_surface,
+            });
+        }
+        if stored_water == SurfaceWaterKind::Lake {
+            let calculated_depth = drainage_surface - current_surface;
+            let stored_depth = hydrology.lake_depth_m()[index];
+            if (stored_depth - calculated_depth).abs() > SURFACE_IDENTITY_TOLERANCE_M {
+                return Err(HydroErosionValidationError::LakeDepthSurfaceMismatch {
+                    cell,
+                    stored: stored_depth,
+                    calculated: calculated_depth,
+                });
+            }
+        }
+
+        for month in 0..CLIMATE_MONTH_COUNT {
+            let stored_runoff = hydrology.monthly_local_runoff_mm()[index][month];
+            if expected_ocean {
+                if stored_runoff != 0.0 {
+                    return Err(HydroErosionValidationError::OceanRunoffNonZero {
+                        cell,
+                        month,
+                        found: stored_runoff,
+                    });
+                }
+                continue;
+            }
+
+            let permeability = relative_permeability[index];
+            let runoff_fraction = 0.85 + (0.20 - 0.85) * permeability;
+            let precipitation = monthly_precipitation_mm[index][month];
+            let calculated = precipitation * runoff_fraction;
+            if (stored_runoff - calculated).abs() > RUNOFF_IDENTITY_TOLERANCE_MM {
+                return Err(HydroErosionValidationError::RunoffIdentityMismatch {
+                    cell,
+                    month,
+                    stored: stored_runoff,
+                    calculated,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for HydroErosionSnapshot {

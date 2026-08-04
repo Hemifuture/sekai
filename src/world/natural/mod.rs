@@ -15,6 +15,7 @@ mod relief;
 mod spec;
 mod spherical_climate;
 mod spherical_geology;
+mod spherical_hydro_erosion;
 mod spherical_hydrology;
 mod spherical_mantle;
 mod spherical_relief;
@@ -72,7 +73,7 @@ pub use geology::{
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,
-    RUNOFF_IDENTITY_TOLERANCE_MM,
+    HYDRO_EROSION_SNAPSHOT_SCHEMA_V2, RUNOFF_IDENTITY_TOLERANCE_MM,
 };
 pub use hydro_erosion_spec::{
     HydroErosionSpec, HydroErosionSpecError, HYDRO_EROSION_SPEC_SCHEMA_V1,
@@ -107,6 +108,9 @@ pub use spherical_climate::{
     SPHERICAL_LATITUDE_IDENTITY_TOLERANCE_DEGREES, SPHERICAL_WIND_TANGENCY_TOLERANCE_M_S,
 };
 pub use spherical_geology::{SphericalGeologicSnapshot, SphericalGeologicValidationError};
+pub use spherical_hydro_erosion::{
+    SphericalHydroErosionSnapshot, SphericalHydroErosionValidationError,
+};
 pub use spherical_hydrology::{SphericalHydrologySnapshot, SphericalHydrologyValidationError};
 pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
