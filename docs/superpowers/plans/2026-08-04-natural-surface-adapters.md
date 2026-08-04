@@ -117,7 +117,7 @@ The contract exposes only:
 
 It does not yet expose plate motion or stable edge endpoint connectivity; those enter S0B.2 with their own witnessed consumer.
 
-- [ ] **Step 1: Write RED adapter conformance tests**
+- [x] **Step 1: Write RED adapter conformance tests**
 
 Planar fixture assertions:
 
@@ -141,13 +141,13 @@ cargo test --test natural_surface_adapters
 
 Expected: FAIL because the contract and adapters do not exist.
 
-- [ ] **Step 2: Implement borrowed adapters**
+- [x] **Step 2: Implement borrowed adapters**
 
 Construct adapters through validating public constructors and crate-visible constructors for already validated stage inputs. Store only a borrowed snapshot and one computed `SurfaceRef`. Return small copyable metric records; never allocate a neighbors vector or clone geometry per query.
 
 For planar compatibility, graph traversal length remains the current shared-edge length in this slice. For the sphere, use stored center distance as graph traversal length. Record both meanings explicitly to prevent accidental scientific conflation.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run:
 

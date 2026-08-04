@@ -74,6 +74,12 @@ impl SurfaceRef {
     /// has not passed validation, or in the cryptographically negligible event
     /// that its BLAKE3 fingerprint is all zero bytes.
     pub fn for_planar(snapshot: &SpatialSnapshot) -> Self {
+        Self::try_for_planar(snapshot)
+            .expect("validated planar snapshots have a supported, non-empty surface identity")
+    }
+
+    /// Tries to create the identity of a planar snapshot without assuming validation.
+    pub fn try_for_planar(snapshot: &SpatialSnapshot) -> Result<Self, SurfaceRefError> {
         Self::new(
             SurfaceGeometryKind::PlanarV1,
             snapshot.schema_version,
@@ -81,7 +87,6 @@ impl SurfaceRef {
             snapshot.edges.len() as u32,
             snapshot.fingerprint(),
         )
-        .expect("validated planar snapshots have a supported, non-empty surface identity")
     }
 
     /// Creates the identity of a validated authoritative spherical snapshot.
@@ -90,6 +95,12 @@ impl SurfaceRef {
     ///
     /// Panics only when `snapshot` has not passed its validation boundary.
     pub fn for_spherical(snapshot: &SphericalSurfaceSnapshot) -> Self {
+        Self::try_for_spherical(snapshot)
+            .expect("validated spherical snapshots have a supported, non-empty surface identity")
+    }
+
+    /// Tries to create the identity of a spherical snapshot without assuming validation.
+    pub fn try_for_spherical(snapshot: &SphericalSurfaceSnapshot) -> Result<Self, SurfaceRefError> {
         Self::new(
             SurfaceGeometryKind::SphericalV1,
             snapshot.schema_version(),
@@ -97,7 +108,6 @@ impl SurfaceRef {
             snapshot.edges().len() as u32,
             snapshot.fingerprint(),
         )
-        .expect("validated spherical snapshots have a supported, non-empty surface identity")
     }
 
     /// Rechecks this serialized identity without consulting the referenced surface.

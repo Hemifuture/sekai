@@ -1,5 +1,6 @@
 //! Immutable planar and spherical cells, edges, topology queries, and validation.
 
+mod natural_surface;
 mod snapshot;
 mod sphere_geometry;
 mod spherical_snapshot;
@@ -8,6 +9,10 @@ mod surface_ref;
 mod topology;
 mod validation;
 
+pub use natural_surface::{
+    NaturalSurface, NaturalSurfaceError, PlanarNaturalSurface, SphericalNaturalSurface,
+    SurfaceCellMetrics, SurfaceEdgeMetrics,
+};
 pub use snapshot::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
 pub(crate) use sphere_geometry::{
     add, central_angle_raw, cross, dot, normalize_legacy_compatible, oriented_arc_normal,
