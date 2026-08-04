@@ -170,14 +170,16 @@ S0D 完成后，正式气候从 cubed-sphere 经守恒重映射写入稳定语�
 
 ## 8. 流水线与模块边界
 
-保持两条显式产品路径：
+保持一条权威生产路径和一条隔离兼容路径：
 
 ```text
-旧平面世界：PlanarSpaceArtifact → SpatialArtifact → 平面自然阶段 V1
-新球面世界：SphericalSpaceArtifact → SphericalSurfaceArtifact → 球面自然阶段 V2
+权威生产路径：SphericalSpaceArtifact → SphericalSurfaceArtifact → 球面自然阶段 V2
+隔离兼容路径：PlanarSpaceArtifact → SpatialArtifact → 平面自然阶段 V1
 ```
 
-两条路径共享：
+新建世界只使用权威球面生产路径。旧平面路径仅用于读取既有 V1 数据、回归测试和显式兼容，不进入新世界创建服务，也不作为可与球面切换的产品模式。二维地图和三维球体都在 S0C 从同一个 `SphericalSurfaceSnapshot` 派生；投影切缝、重复顶点、选取索引和 GPU 网格均为可删除缓存，不是第二地表。
+
+生产路径与兼容路径共享：
 
 - 自然字段语义与验证规则；
 - 几何无关的图算法；
@@ -185,7 +187,7 @@ S0D 完成后，正式气候从 cubed-sphere 经守恒重映射写入稳定语�
 - 地质和水文的局部物理公式；
 - 字段注册与下游只读接口。
 
-两条路径不共享：
+生产路径与兼容路径不共享：
 
 - 平面平移与球面 Euler 旋转的运动参数；
 - 平面外边界与闭合流形的出口规则；
@@ -193,6 +195,8 @@ S0D 完成后，正式气候从 cubed-sphere 经守恒重映射写入稳定语�
 - 渲染投影或选取缓存。
 
 阶段适配器可以各自声明 `SpatialArtifact` 或 `SphericalSurfaceArtifact` 依赖，但必须调用同一被测科学核心或明确的几何策略。禁止复制整套 `spherical_tectonics.rs`、`spherical_hydrology.rs` 后独立演化。
+
+保留平面 V1 类型不表示保留两个事实源：一个已加载的旧平面文档只属于兼容域；一个新球面文档的自然事实只能绑定其球面 `SurfaceRef`。二者不得混装、自动互转或在同一活动世界中并存。
 
 ## 9. 实施顺序
 
