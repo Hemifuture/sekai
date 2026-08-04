@@ -149,7 +149,7 @@ tests/
 - [x] Measure Release generation near 20,000 cells, report relief time, geology time, persistent semantic bytes, and working-set delta. Audit topology construction and O(C/E) allocations.
 - [x] Audit that no S0B.3 type owns surface geometry and no app/stage/UI path consumes half-migrated snapshots.
 - [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical relief and geology evidence`.
-- [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.3 worktree/branch, then continue to S0B.4.
+- [x] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.3 worktree/branch, then continue to S0B.4.
 
 ## Verification evidence (2026-08-04)
 
