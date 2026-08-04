@@ -3,7 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    SpatialSnapshot, SphericalSurfaceSnapshot, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
+    SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot,
+    SphericalSurfaceValidationError, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
 };
 
 /// The authoritative geometry family addressed by a natural-field snapshot.
@@ -80,6 +81,13 @@ impl SurfaceRef {
 
     /// Tries to create the identity of a planar snapshot without assuming validation.
     pub fn try_for_planar(snapshot: &SpatialSnapshot) -> Result<Self, SurfaceRefError> {
+        snapshot.validate()?;
+        Self::from_validated_planar(snapshot)
+    }
+
+    pub(crate) fn from_validated_planar(
+        snapshot: &SpatialSnapshot,
+    ) -> Result<Self, SurfaceRefError> {
         Self::new(
             SurfaceGeometryKind::PlanarV1,
             snapshot.schema_version,
@@ -101,6 +109,13 @@ impl SurfaceRef {
 
     /// Tries to create the identity of a spherical snapshot without assuming validation.
     pub fn try_for_spherical(snapshot: &SphericalSurfaceSnapshot) -> Result<Self, SurfaceRefError> {
+        snapshot.validate()?;
+        Self::from_validated_spherical(snapshot)
+    }
+
+    pub(crate) fn from_validated_spherical(
+        snapshot: &SphericalSurfaceSnapshot,
+    ) -> Result<Self, SurfaceRefError> {
         Self::new(
             SurfaceGeometryKind::SphericalV1,
             snapshot.schema_version(),
@@ -176,8 +191,14 @@ impl<'de> Deserialize<'de> for SurfaceRef {
 }
 
 /// Invalid or incomplete authoritative-surface identities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum SurfaceRefError {
+    /// The referenced planar snapshot failed its authoritative validation.
+    #[error("cannot identify an invalid planar surface: {0}")]
+    InvalidPlanarSnapshot(#[from] SpatialValidationError),
+    /// The referenced spherical snapshot failed its authoritative validation.
+    #[error("cannot identify an invalid spherical surface: {0}")]
+    InvalidSphericalSnapshot(#[from] SphericalSurfaceValidationError),
     /// The geometry kind and schema version do not form a supported contract.
     #[error("unsupported {kind:?} geometry schema {found}; supported schema is {supported}")]
     UnsupportedGeometrySchema {

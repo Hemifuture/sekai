@@ -117,7 +117,7 @@ impl<'a> PlanarNaturalSurface<'a> {
         snapshot.validate()?;
         Ok(Self {
             snapshot,
-            surface_ref: Some(SurfaceRef::try_for_planar(snapshot)?),
+            surface_ref: Some(SurfaceRef::from_validated_planar(snapshot)?),
         })
     }
 
@@ -131,8 +131,10 @@ impl<'a> PlanarNaturalSurface<'a> {
 
 impl NaturalSurface for PlanarNaturalSurface<'_> {
     fn surface_ref(&self) -> SurfaceRef {
-        self.surface_ref
-            .unwrap_or_else(|| SurfaceRef::for_planar(self.snapshot))
+        self.surface_ref.unwrap_or_else(|| {
+            SurfaceRef::from_validated_planar(self.snapshot)
+                .expect("validated planar snapshots have a complete surface identity")
+        })
     }
 
     fn is_closed(&self) -> bool {
@@ -211,9 +213,15 @@ impl<'a> SphericalNaturalSurface<'a> {
     /// Validates and borrows a spherical snapshot for natural-process queries.
     pub fn new(snapshot: &'a SphericalSurfaceSnapshot) -> Result<Self, NaturalSurfaceError> {
         snapshot.validate()?;
+        Ok(Self::from_validated(snapshot)?)
+    }
+
+    pub(crate) fn from_validated(
+        snapshot: &'a SphericalSurfaceSnapshot,
+    ) -> Result<Self, SurfaceRefError> {
         Ok(Self {
             snapshot,
-            surface_ref: SurfaceRef::try_for_spherical(snapshot)?,
+            surface_ref: SurfaceRef::from_validated_spherical(snapshot)?,
         })
     }
 }

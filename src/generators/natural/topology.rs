@@ -376,8 +376,8 @@ mod tests {
     };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::spatial::{
-        PlanarNaturalSurface, SpatialCell, SpatialEdge, SpatialSnapshot, SphericalNaturalSurface,
-        SPATIAL_SCHEMA_V1,
+        NaturalSurface, PlanarNaturalSurface, SpatialCell, SpatialEdge, SpatialSnapshot,
+        SphericalNaturalSurface, SPATIAL_SCHEMA_V1,
     };
     use crate::world::{
         BoundaryCondition, CellId, EdgeId, Meters, SphericalSpaceSpec, SquareMeters, WorldPoint,
@@ -581,7 +581,9 @@ mod tests {
             target_cell_count: 42,
         })
         .unwrap();
-        let surface = SphericalNaturalSurface::new(&snapshot).unwrap();
+        let checked_surface = SphericalNaturalSurface::new(&snapshot).unwrap();
+        let surface = SphericalNaturalSurface::from_validated(&snapshot).unwrap();
+        assert_eq!(surface.surface_ref(), checked_surface.surface_ref());
         let first = NaturalTopologyIndex::from_surface(&surface);
         let second = NaturalTopologyIndex::from_surface(&surface);
 

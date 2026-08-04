@@ -1,7 +1,7 @@
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::spatial::{
-    SpatialCell, SpatialEdge, SpatialSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
-    Topology, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
+    SpatialCell, SpatialEdge, SpatialSnapshot, SphericalSurfaceSnapshot, SurfaceGeometryKind,
+    SurfaceRef, SurfaceRefError, Topology, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use sekai::world::{
     BoundaryCondition, CellId, EdgeId, Meters, SphericalSpaceSpec, SquareMeters, WorldPoint,
@@ -123,7 +123,13 @@ fn planar_fingerprint_is_deterministic_without_changing_the_wire_shape() {
     let first = snapshot.fingerprint();
     let second = snapshot.fingerprint();
     assert_eq!(first, second);
-    assert_ne!(first, [0; 32]);
+    assert_eq!(
+        first,
+        [
+            187, 107, 152, 75, 134, 63, 189, 53, 122, 140, 10, 196, 71, 101, 188, 49, 209, 227, 6,
+            237, 34, 167, 97, 17, 35, 102, 3, 194, 223, 219, 22, 49,
+        ]
+    );
 
     let encoded = serde_json::to_value(&snapshot).unwrap();
     assert!(encoded.get("fingerprint").is_none());
@@ -158,6 +164,27 @@ fn spherical_identity_reuses_the_authoritative_surface_fingerprint() {
     assert_eq!(surface_ref.cell_count(), snapshot.cells().len() as u32);
     assert_eq!(surface_ref.edge_count(), snapshot.edges().len() as u32);
     assert_eq!(surface_ref.fingerprint(), snapshot.fingerprint());
+}
+
+#[test]
+fn public_planar_identity_factory_rejects_invalid_deserialized_geometry() {
+    let mut value = serde_json::to_value(planar_fixture(1.0)).unwrap();
+    value["cells"][0]["neighbors"] = json!([]);
+    let malformed: SpatialSnapshot = serde_json::from_value(value).unwrap();
+
+    assert!(malformed.validate().is_err());
+    assert!(SurfaceRef::try_for_planar(&malformed).is_err());
+}
+
+#[test]
+fn public_spherical_identity_factory_rejects_a_stale_stored_fingerprint() {
+    let mut value = serde_json::to_value(spherical_fixture(6_371_000.0)).unwrap();
+    let original = value["fingerprint"][0].as_u64().unwrap() as u8;
+    value["fingerprint"][0] = json!(original.wrapping_add(1));
+    let malformed: SphericalSurfaceSnapshot = serde_json::from_value(value).unwrap();
+
+    assert!(malformed.validate().is_err());
+    assert!(SurfaceRef::try_for_spherical(&malformed).is_err());
 }
 
 #[test]
