@@ -26,7 +26,7 @@ const TARGET_CELL_COUNT: u32 = 20_000;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const SPHERE_TIME_BUDGET: Duration = Duration::from_secs(5);
 const SPHERE_TO_PLANAR_TIME_RATIO_BUDGET: f64 = 2.5;
-const ADDITIONAL_WORKING_SET_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct ArtifactBytes {
@@ -45,9 +45,19 @@ impl ArtifactBytes {
 
 #[cfg(windows)]
 fn process_working_set_bytes() -> Option<u64> {
+    windows_process_memory_property("WorkingSet64")
+}
+
+#[cfg(windows)]
+fn process_peak_working_set_bytes() -> Option<u64> {
+    windows_process_memory_property("PeakWorkingSet64")
+}
+
+#[cfg(windows)]
+fn windows_process_memory_property(property: &str) -> Option<u64> {
     use std::process::Command;
 
-    let script = format!("(Get-Process -Id {}).WorkingSet64", std::process::id());
+    let script = format!("(Get-Process -Id {}).{property}", std::process::id());
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
@@ -58,10 +68,20 @@ fn process_working_set_bytes() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn process_working_set_bytes() -> Option<u64> {
+    linux_process_status_bytes("VmRSS:")
+}
+
+#[cfg(target_os = "linux")]
+fn process_peak_working_set_bytes() -> Option<u64> {
+    linux_process_status_bytes("VmHWM:")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_status_bytes(field: &str) -> Option<u64> {
     std::fs::read_to_string("/proc/self/status")
         .ok()?
         .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .find_map(|line| line.strip_prefix(field))?
         .split_whitespace()
         .next()?
         .parse::<u64>()
@@ -71,6 +91,11 @@ fn process_working_set_bytes() -> Option<u64> {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 fn process_working_set_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_peak_working_set_bytes() -> Option<u64> {
     None
 }
 
@@ -88,6 +113,7 @@ fn release_spherical_natural_full_graph_budget() {
     assert_eq!(planar_outcome.report.stages().len(), 16);
     drop(planar_outcome);
     drop(planar_cache);
+    let planar_peak_working_set = process_peak_working_set_bytes();
 
     let sphere_engine = BuildEngine::new(spherical_natural_foundation_graph().unwrap());
     let sphere_external = spherical_external_artifacts();
@@ -98,6 +124,7 @@ fn release_spherical_natural_full_graph_budget() {
         .build(ROOT_SEED, sphere_external, &mut sphere_cache)
         .unwrap();
     let sphere_elapsed = sphere_started.elapsed();
+    let sphere_peak_working_set = process_peak_working_set_bytes();
 
     let surface = sphere_outcome
         .artifacts
@@ -136,11 +163,19 @@ fn release_spherical_natural_full_graph_budget() {
         &surface, &formation, &tectonic, &mantle, &relief, &geology, &climate, &hydro,
     );
     assert_eq!(sphere_outcome.report.stages().len(), 16);
-    assert!(sphere_outcome.report.result_hash().is_some());
+    let provenance = sphere_outcome.verified_provenance().unwrap();
+    assert_eq!(provenance.root_seed(), ROOT_SEED);
+    assert_eq!(
+        Some(provenance.result_hash()),
+        sphere_outcome.report.result_hash()
+    );
     let final_working_set = process_working_set_bytes();
     let additional_working_set_bytes = baseline_working_set
         .zip(final_working_set)
         .map(|(before, after)| after.saturating_sub(before));
+    let additional_peak_working_set_bytes = planar_peak_working_set
+        .zip(sphere_peak_working_set)
+        .map(|(planar_peak, sphere_peak)| sphere_peak.saturating_sub(planar_peak));
 
     let surface_bytes = ArtifactBytes::measure(
         surface.as_ref(),
@@ -210,7 +245,7 @@ fn release_spherical_natural_full_graph_budget() {
     let hydro_snapshot = hydro.snapshot().hydrology();
 
     eprintln!(
-        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
+        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
         planar_elapsed.as_secs_f64() * 1_000.0,
         sphere_elapsed.as_secs_f64() * 1_000.0,
         sphere_outcome.report.stages().len(),
@@ -255,10 +290,10 @@ fn release_spherical_natural_full_graph_budget() {
         planar_elapsed.as_secs_f64() * 1_000.0,
         SPHERE_TO_PLANAR_TIME_RATIO_BUDGET,
     );
-    if let Some(additional_working_set_bytes) = additional_working_set_bytes {
+    if let Some(additional_peak_working_set_bytes) = additional_peak_working_set_bytes {
         assert!(
-            additional_working_set_bytes <= ADDITIONAL_WORKING_SET_BUDGET_BYTES,
-            "spherical graph added {additional_working_set_bytes} working-set bytes; budget is {ADDITIONAL_WORKING_SET_BUDGET_BYTES}"
+            additional_peak_working_set_bytes <= ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES,
+            "spherical graph added {additional_peak_working_set_bytes} peak working-set bytes above the planar peak; budget is {ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES}"
         );
     }
 }

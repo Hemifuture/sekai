@@ -20,5 +20,8 @@ pub use diagnostics::{
 pub use graph::{GraphError, StageGraph, StageGraphBuilder};
 pub use provenance::{EntityRef, FactorContribution, ProvenanceError, ProvenanceIndex, SourceRef};
 pub use random::{derive_entity_seed, derive_stage_seed, StageIdentity, StageRng, StageSeed};
-pub use scheduler::{BuildEngine, BuildFailure, BuildOutcome, ExternalArtifacts};
+pub use scheduler::{
+    BuildEngine, BuildFailure, BuildOutcome, BuildOutcomeIntegrityError, BuildProvenance,
+    ExternalArtifacts,
+};
 pub use stage::{Stage, StageDescriptor, StageError, StageId, StageInputs};

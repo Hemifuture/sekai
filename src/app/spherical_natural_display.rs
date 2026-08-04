@@ -4,7 +4,10 @@ use thiserror::Error;
 
 use super::field_document::{owned_view_diagnostics, FieldDocument};
 use super::natural_field_payloads::{natural_preferred_range, NaturalFieldPayloadBundle};
-use crate::engine::{ArtifactError, BuildOutcome, BuildReport, BuildResultHash};
+use crate::engine::{
+    ArtifactError, BuildOutcome, BuildOutcomeIntegrityError, BuildProvenance, BuildReport,
+    BuildResultHash,
+};
 use crate::generators::natural::{
     ResolvedWorldFormationArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
     SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
@@ -36,15 +39,11 @@ pub(super) struct SphericalNaturalBuildIdentity {
 }
 
 impl SphericalNaturalBuildIdentity {
-    fn new(
-        root_seed: RootSeed,
-        surface_ref: SurfaceRef,
-        build_result_hash: BuildResultHash,
-    ) -> Self {
+    fn new(provenance: &BuildProvenance, surface_ref: SurfaceRef) -> Self {
         Self {
-            root_seed,
+            root_seed: provenance.root_seed(),
             surface_ref,
-            build_result_hash,
+            build_result_hash: *provenance.result_hash(),
             graph_contract_version: SPHERICAL_NATURAL_GRAPH_CONTRACT_VERSION,
         }
     }
@@ -171,11 +170,17 @@ pub(super) struct SphericalNaturalFieldDocument {
 impl SphericalNaturalFieldDocument {
     /// Extracts shared Artifacts and builds a fully cross-validated document.
     pub(super) fn from_build_outcome(
-        root_seed: RootSeed,
         outcome: &BuildOutcome,
     ) -> Result<Self, SphericalNaturalDisplayError> {
+        let provenance = match outcome.verified_provenance() {
+            Ok(provenance) => *provenance,
+            Err(BuildOutcomeIntegrityError::MissingReportResultHash) => {
+                return Err(SphericalNaturalDisplayError::MissingBuildResultHash)
+            }
+            Err(error) => return Err(SphericalNaturalDisplayError::BuildOutcomeIntegrity(error)),
+        };
         Self::build(
-            root_seed,
+            provenance,
             outcome.artifacts.get::<SphericalSurfaceArtifact>()?,
             outcome.artifacts.get::<ResolvedWorldFormationArtifact>()?,
             outcome.artifacts.get::<SphericalTectonicArtifact>()?,
@@ -192,7 +197,7 @@ impl SphericalNaturalFieldDocument {
 
     #[allow(clippy::too_many_arguments)]
     fn build(
-        root_seed: RootSeed,
+        provenance: BuildProvenance,
         surface: Arc<SphericalSurfaceArtifact>,
         formation: Arc<ResolvedWorldFormationArtifact>,
         tectonic: Arc<SphericalTectonicArtifact>,
@@ -203,9 +208,6 @@ impl SphericalNaturalFieldDocument {
         hydro_erosion: Arc<SphericalHydroErosionArtifact>,
         report: &BuildReport,
     ) -> Result<Self, SphericalNaturalDisplayError> {
-        let build_result_hash = *report
-            .result_hash()
-            .ok_or(SphericalNaturalDisplayError::MissingBuildResultHash)?;
         surface.snapshot().validate()?;
         formation.formation().validate()?;
         tectonic.snapshot().validate_against(surface.snapshot())?;
@@ -239,9 +241,8 @@ impl SphericalNaturalFieldDocument {
         )?;
         let display_cache = SphericalNaturalDisplayCache::build(&surface, &tectonic, &climate)?;
         let identity = SphericalNaturalBuildIdentity::new(
-            root_seed,
+            &provenance,
             SurfaceRef::for_spherical(surface.snapshot()),
-            build_result_hash,
         );
         let document = Self {
             surface,
@@ -309,12 +310,9 @@ impl FieldDocument for SphericalNaturalFieldDocument {
 /// Atomically replaces a published document only after a candidate is complete.
 pub(super) fn try_replace_spherical_natural_document(
     published: &mut Arc<SphericalNaturalFieldDocument>,
-    root_seed: RootSeed,
     outcome: &BuildOutcome,
 ) -> Result<(), SphericalNaturalDisplayError> {
-    let candidate = Arc::new(SphericalNaturalFieldDocument::from_build_outcome(
-        root_seed, outcome,
-    )?);
+    let candidate = Arc::new(SphericalNaturalFieldDocument::from_build_outcome(outcome)?);
     *published = candidate;
     Ok(())
 }
@@ -324,6 +322,8 @@ pub(super) fn try_replace_spherical_natural_document(
 pub(super) enum SphericalNaturalDisplayError {
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
+    #[error(transparent)]
+    BuildOutcomeIntegrity(BuildOutcomeIntegrityError),
     #[error(transparent)]
     Surface(#[from] SphericalSurfaceValidationError),
     #[error(transparent)]
@@ -360,7 +360,8 @@ mod tests {
     };
     use crate::app::field_document::FieldDocument;
     use crate::engine::{
-        BuildEngine, BuildOutcome, BuildReport, ExternalArtifacts, MemoryStageCache,
+        BuildEngine, BuildOutcome, BuildOutcomeIntegrityError, BuildReport, ExternalArtifacts,
+        MemoryStageCache,
     };
     use crate::generators::natural::{
         spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
@@ -386,7 +387,7 @@ mod tests {
     const EXPECTED_FIELD_HASH: &str =
         "937bb06d57650e7f501fbc05fef9736a824aa41f7ce0f24d8b207cbe5afb7a66";
 
-    fn build_outcome(radius_m: f64) -> BuildOutcome {
+    fn build_outcome_with_seed(root_seed: RootSeed, radius_m: f64) -> BuildOutcome {
         let mut external = ExternalArtifacts::new();
         external
             .insert(SphericalSpaceArtifact::new(SphericalSpaceSpec {
@@ -419,8 +420,12 @@ mod tests {
             .unwrap();
 
         BuildEngine::new(spherical_natural_foundation_graph().unwrap())
-            .build(ROOT_SEED, external, &mut MemoryStageCache::new())
+            .build(root_seed, external, &mut MemoryStageCache::new())
             .unwrap()
+    }
+
+    fn build_outcome(radius_m: f64) -> BuildOutcome {
+        build_outcome_with_seed(ROOT_SEED, radius_m)
     }
 
     fn assert_data_document<T: FieldDocument + ?Sized>(_document: &T) {}
@@ -532,8 +537,7 @@ mod tests {
     #[test]
     fn document_preserves_authoritative_build_identity_without_a_presenter() {
         let outcome = build_outcome(6_371_000.0);
-        let document =
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
 
         assert_data_document(&document);
         assert_eq!(
@@ -550,10 +554,36 @@ mod tests {
     }
 
     #[test]
+    fn document_identity_comes_only_from_verified_outcome_provenance() {
+        let alternate_seed = RootSeed::new(77);
+        let outcome = build_outcome_with_seed(alternate_seed, 6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+
+        assert_eq!(document.identity().root_seed(), alternate_seed);
+
+        let mut artifact_mismatch = build_outcome(6_371_000.0);
+        artifact_mismatch.artifacts = build_outcome(7_000_000.0).artifacts;
+        assert!(matches!(
+            SphericalNaturalFieldDocument::from_build_outcome(&artifact_mismatch),
+            Err(SphericalNaturalDisplayError::BuildOutcomeIntegrity(
+                BuildOutcomeIntegrityError::ArtifactSetMismatch { .. }
+            ))
+        ));
+
+        let mut report_mismatch = build_outcome(6_371_000.0);
+        report_mismatch.report = build_outcome(7_000_000.0).report;
+        assert!(matches!(
+            SphericalNaturalFieldDocument::from_build_outcome(&report_mismatch),
+            Err(SphericalNaturalDisplayError::BuildOutcomeIntegrity(
+                BuildOutcomeIntegrityError::ReportResultHashMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
     fn document_publishes_every_payload_with_surface_cardinality_and_borrowed_storage() {
         let outcome = build_outcome(6_371_000.0);
-        let document =
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
         let catalog = payload_catalog(&document);
         let cell_count = document.surface.snapshot().cells().len();
         let edge_count = document.surface.snapshot().edges().len();
@@ -637,9 +667,8 @@ mod tests {
     #[test]
     fn registry_order_field_bytes_are_deterministic_and_frozen() {
         let outcome = build_outcome(6_371_000.0);
-        let first = SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
-        let second =
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
+        let first = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let second = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
         let first_hash = field_hash(&first);
         let second_hash = field_hash(&second);
 
@@ -651,8 +680,7 @@ mod tests {
     #[test]
     fn local_east_north_vectors_reconstruct_authoritative_tangent_vectors() {
         let outcome = build_outcome(6_371_000.0);
-        let document =
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
         let catalog = payload_catalog(&document);
         let local_plate_velocity = catalog
             .get(&plate_velocity_field_id())
@@ -722,7 +750,7 @@ mod tests {
         );
 
         let result = SphericalNaturalFieldDocument::build(
-            ROOT_SEED,
+            *first.verified_provenance().unwrap(),
             artifacts.surface,
             artifacts.formation,
             artifacts.tectonic,
@@ -745,7 +773,7 @@ mod tests {
         outcome.report = BuildReport::new();
 
         assert!(matches!(
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome),
+            SphericalNaturalFieldDocument::from_build_outcome(&outcome),
             Err(SphericalNaturalDisplayError::MissingBuildResultHash)
         ));
     }
@@ -753,9 +781,8 @@ mod tests {
     #[test]
     fn rebuilding_the_document_reuses_artifacts_and_recreates_only_disposable_vectors() {
         let outcome = build_outcome(6_371_000.0);
-        let first = SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
-        let second =
-            SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &outcome).unwrap();
+        let first = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let second = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
 
         assert!(Arc::ptr_eq(&first.surface, &second.surface));
         assert!(Arc::ptr_eq(&first.formation, &second.formation));
@@ -781,19 +808,19 @@ mod tests {
     fn failed_candidate_does_not_replace_the_published_document() {
         let valid = build_outcome(6_371_000.0);
         let mut published =
-            Arc::new(SphericalNaturalFieldDocument::from_build_outcome(ROOT_SEED, &valid).unwrap());
+            Arc::new(SphericalNaturalFieldDocument::from_build_outcome(&valid).unwrap());
         let before = Arc::clone(&published);
         let mut invalid = build_outcome(7_000_000.0);
         invalid.report = BuildReport::new();
 
         assert!(matches!(
-            try_replace_spherical_natural_document(&mut published, ROOT_SEED, &invalid),
+            try_replace_spherical_natural_document(&mut published, &invalid),
             Err(SphericalNaturalDisplayError::MissingBuildResultHash)
         ));
         assert!(Arc::ptr_eq(&published, &before));
 
         let replacement = build_outcome(7_000_000.0);
-        try_replace_spherical_natural_document(&mut published, ROOT_SEED, &replacement).unwrap();
+        try_replace_spherical_natural_document(&mut published, &replacement).unwrap();
         assert!(!Arc::ptr_eq(&published, &before));
         assert_eq!(
             published.identity().surface_ref(),

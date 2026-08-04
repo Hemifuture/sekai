@@ -278,6 +278,20 @@ impl BuildArtifacts {
     pub(crate) fn keys(&self) -> impl ExactSizeIterator<Item = ArtifactKey> + '_ {
         self.entries.keys().copied()
     }
+
+    pub(crate) fn semantic_binding_hash(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai-build-artifact-set-v1\0");
+        for (key, stored) in &self.entries {
+            let key_bytes = key.as_str().as_bytes();
+            let key_length = u32::try_from(key_bytes.len())
+                .expect("validated artifact keys fit in a u32 frame length");
+            hasher.update(&key_length.to_le_bytes());
+            hasher.update(key_bytes);
+            hasher.update(stored.hash.as_bytes());
+        }
+        *hasher.finalize().as_bytes()
+    }
 }
 
 fn stream_hash<T: Serialize>(value: &T) -> Result<ContentHash, serde_json::Error> {

@@ -196,8 +196,40 @@ impl BuildEngine {
                 return Err(BuildFailure { report });
             }
         };
-        report.set_result_hash(result_hash(&output_hashes));
-        Ok(BuildOutcome { artifacts, report })
+        let result_hash = result_hash(&output_hashes);
+        report.set_result_hash(result_hash);
+        let provenance = BuildProvenance {
+            root_seed,
+            result_hash,
+            artifact_set_hash: artifacts.semantic_binding_hash(),
+            report_hash: report_binding_hash(&report),
+        };
+        Ok(BuildOutcome {
+            artifacts,
+            report,
+            provenance,
+        })
+    }
+}
+
+/// Immutable semantic provenance retained by one successful engine build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildProvenance {
+    root_seed: RootSeed,
+    result_hash: BuildResultHash,
+    artifact_set_hash: [u8; 32],
+    report_hash: [u8; 32],
+}
+
+impl BuildProvenance {
+    /// Returns the root seed used by the engine for every stage seed.
+    pub const fn root_seed(&self) -> RootSeed {
+        self.root_seed
+    }
+
+    /// Returns the semantic hash of the successful graph outputs.
+    pub const fn result_hash(&self) -> &BuildResultHash {
+        &self.result_hash
     }
 }
 
@@ -208,6 +240,74 @@ pub struct BuildOutcome {
     pub artifacts: BuildArtifacts,
     /// Deterministic stage ordering, diagnostics, and non-semantic reporting metadata.
     pub report: BuildReport,
+    provenance: BuildProvenance,
+}
+
+impl BuildOutcome {
+    /// Verifies that the report and artifact store still belong to this build.
+    ///
+    /// The public compatibility fields may be inspected or moved by callers;
+    /// consumers that publish audited identity must call this method before
+    /// trusting either component.
+    pub fn verified_provenance(&self) -> Result<&BuildProvenance, BuildOutcomeIntegrityError> {
+        let report_result_hash = self
+            .report
+            .result_hash()
+            .ok_or(BuildOutcomeIntegrityError::MissingReportResultHash)?;
+        if report_result_hash != self.provenance.result_hash() {
+            return Err(BuildOutcomeIntegrityError::ReportResultHashMismatch {
+                expected: self.provenance.result_hash,
+                found: *report_result_hash,
+            });
+        }
+        let report_hash = report_binding_hash(&self.report);
+        if report_hash != self.provenance.report_hash {
+            return Err(BuildOutcomeIntegrityError::ReportMetadataMismatch {
+                expected: self.provenance.report_hash,
+                found: report_hash,
+            });
+        }
+        let artifact_set_hash = self.artifacts.semantic_binding_hash();
+        if artifact_set_hash != self.provenance.artifact_set_hash {
+            return Err(BuildOutcomeIntegrityError::ArtifactSetMismatch {
+                expected: self.provenance.artifact_set_hash,
+                found: artifact_set_hash,
+            });
+        }
+        Ok(&self.provenance)
+    }
+}
+
+/// Integrity failures detected after successful build components were changed.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum BuildOutcomeIntegrityError {
+    /// The report no longer carries its successful semantic result hash.
+    #[error("successful build report is missing its result hash")]
+    MissingReportResultHash,
+    /// The report was replaced with metadata from another successful build.
+    #[error("build report result hash does not match immutable build provenance")]
+    ReportResultHashMismatch {
+        /// The result hash retained by the successful build.
+        expected: BuildResultHash,
+        /// The result hash found in the current report.
+        found: BuildResultHash,
+    },
+    /// The successful report's stages or diagnostics were changed in place.
+    #[error("build report metadata does not match immutable build provenance")]
+    ReportMetadataMismatch {
+        /// The serialized report hash retained by the successful build.
+        expected: [u8; 32],
+        /// The hash of the current report.
+        found: [u8; 32],
+    },
+    /// The artifact store was replaced with data from another build.
+    #[error("build artifact set does not match immutable build provenance")]
+    ArtifactSetMismatch {
+        /// The artifact-set hash retained by the successful build.
+        expected: [u8; 32],
+        /// The hash of the current artifact set.
+        found: [u8; 32],
+    },
 }
 
 /// A failed build attempt that intentionally exposes no partial artifact store.
@@ -271,6 +371,14 @@ fn result_hash(outputs: &[(ArtifactKey, ContentHash)]) -> BuildResultHash {
     BuildResultHash::new(*hasher.finalize().as_bytes())
 }
 
+fn report_binding_hash(report: &BuildReport) -> [u8; 32] {
+    let bytes = serde_json::to_vec(report).expect("engine-owned build reports always serialize");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai-build-report-v1\0");
+    hasher.update(&bytes);
+    *hasher.finalize().as_bytes()
+}
+
 fn update_length_prefixed(hasher: &mut blake3::Hasher, value: &str) {
     hasher.update(&length_u32(value.len()).to_le_bytes());
     hasher.update(value.as_bytes());
@@ -286,7 +394,7 @@ mod tests {
 
     use serde::Serialize;
 
-    use super::{erased_stage_error, BuildEngine, ExternalArtifacts};
+    use super::{erased_stage_error, BuildEngine, BuildOutcomeIntegrityError, ExternalArtifacts};
     use crate::engine::artifact::{
         Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
         StoredArtifact,
@@ -331,7 +439,7 @@ mod tests {
         }
     }
 
-    struct Inputs(#[allow(dead_code)] Arc<External>);
+    struct Inputs(Arc<External>);
 
     impl StageInputs for Inputs {
         fn dependencies() -> &'static [ArtifactKey] {
@@ -363,12 +471,69 @@ mod tests {
 
         fn run(
             &self,
-            _inputs: Self::Inputs,
+            inputs: Self::Inputs,
             _rng: &mut StageRng,
             _diagnostics: &mut Vec<Diagnostic>,
         ) -> Result<Self::Output, StageError> {
-            Ok(Output(1))
+            let external_value = inputs.0.as_ref().0;
+            Ok(Output(external_value))
         }
+    }
+
+    fn successful_outcome(root_seed: RootSeed, external_value: u32) -> super::BuildOutcome {
+        let engine = BuildEngine::new(
+            StageGraphBuilder::new()
+                .external::<External>()
+                .stage(OutputStage)
+                .build()
+                .unwrap(),
+        );
+        let mut external = ExternalArtifacts::new();
+        external.insert(External(external_value)).unwrap();
+        engine
+            .build(root_seed, external, &mut MemoryStageCache::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn successful_outcome_provenance_binds_seed_report_and_artifact_store() {
+        let first_seed = RootSeed::new(42);
+        let mut first = successful_outcome(first_seed, 7);
+        let second = successful_outcome(RootSeed::new(43), 8);
+
+        let provenance = first.verified_provenance().unwrap();
+        assert_eq!(provenance.root_seed(), first_seed);
+        assert_eq!(
+            provenance.result_hash(),
+            first.report.result_hash().unwrap()
+        );
+
+        first.report.push_diagnostic(
+            Diagnostic::new(
+                DiagnosticSeverity::Warning,
+                "test.foreign-warning",
+                "must invalidate successful outcome provenance",
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            first.verified_provenance(),
+            Err(BuildOutcomeIntegrityError::ReportMetadataMismatch { .. })
+        ));
+
+        let mut first = successful_outcome(first_seed, 7);
+        first.report = second.report.clone();
+        assert!(matches!(
+            first.verified_provenance(),
+            Err(BuildOutcomeIntegrityError::ReportResultHashMismatch { .. })
+        ));
+
+        let mut first = successful_outcome(first_seed, 7);
+        first.artifacts = second.artifacts;
+        assert!(matches!(
+            first.verified_provenance(),
+            Err(BuildOutcomeIntegrityError::ArtifactSetMismatch { .. })
+        ));
     }
 
     #[test]
