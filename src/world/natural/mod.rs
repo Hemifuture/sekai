@@ -99,6 +99,7 @@ pub use spec::{
 pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
+pub(crate) use spherical_tectonics::classify_spherical_boundary_kinematics;
 pub use spherical_tectonics::{
     SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
     SphericalTectonicValidationError, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
@@ -108,6 +109,9 @@ pub use surface_process::{
     SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,
     MAX_EROSION_DEPTH_M, SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3, SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
     SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1,
+};
+pub(crate) use tectonics::{
+    classify_boundary_kinematics, BoundaryClassification, BoundaryKinematics,
 };
 pub use tectonics::{
     BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, Plate, PlateIdField,

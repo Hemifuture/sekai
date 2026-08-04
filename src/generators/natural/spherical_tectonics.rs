@@ -5,17 +5,17 @@ use thiserror::Error;
 
 use super::random::{LabeledSubstreams, PLATE_MOTION_LABEL};
 use super::tectonics::{
-    classify_local_kinematics, generate_crust, generate_plate_partition, normalized_plate_pair,
-    CrustDomain, InsufficientCrustFormationArea, KinematicClassification, LocalKinematics,
-    StableUnionFind, TectonicGenerator,
+    generate_crust, generate_plate_partition, normalized_plate_pair, CrustDomain,
+    InsufficientCrustFormationArea, StableUnionFind, TectonicGenerator,
 };
 use super::topology::NaturalTopologyIndex;
 use crate::engine::StageRng;
 use crate::world::natural::{
-    BoundaryKind, BoundaryRecord, CrustKind, CrustKindField, NaturalSpecError, PlateIdField,
-    ResolvedWorldFormation, SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation,
-    SphericalTectonicSnapshot, SphericalTectonicValidationError, TectonicActivity, TectonicSpec,
-    WorldFormationSpecError, TECTONIC_SNAPSHOT_SCHEMA_V2,
+    classify_spherical_boundary_kinematics, BoundaryKind, BoundaryRecord, CrustKindField,
+    NaturalSpecError, PlateIdField, ResolvedWorldFormation, SphericalBoundarySegment,
+    SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
+    SphericalTectonicValidationError, TectonicActivity, TectonicSpec, WorldFormationSpecError,
+    TECTONIC_SNAPSHOT_SCHEMA_V2,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -24,8 +24,6 @@ use crate::world::spatial::{
 use crate::world::{BoundarySegmentId, EdgeId, Meters, PlateId, SurfaceVertexId};
 
 const VELOCITY_QUANTIZATION: f64 = 1_000_000.0;
-const WEAK_RELATIVE_SPEED_MM_PER_YEAR: f64 = 8.0;
-const MAX_RELATIVE_SPEED_MM_PER_YEAR: f32 = 240.0;
 
 const EULER_POLES: [[i8; 3]; 26] = [
     [1, 0, 0],
@@ -324,19 +322,19 @@ fn classify_and_aggregate_boundaries(
             continue;
         }
         let indices = edge.cells.map(|cell| cell.raw() as usize);
-        let classification = classify_kinematics(
+        let classification = classify_spherical_boundary_kinematics(
             owner_plates,
             owner_plates.map(|plate| plates[plate.raw() as usize].rotation()),
             surface.radius(),
-            edge.midpoint,
-            edge.normal_from_first,
+            edge,
             indices.map(|index| {
                 crust_kinds
                     .get(index)
                     .expect("crust field is aligned with the validated surface")
             }),
             indices.map(|index| crust_thickness_km[index]),
-        );
+        )
+        .expect("generated plate rotations are valid for the authoritative sphere");
         events.push(BoundaryEventDraft {
             edge: edge.id,
             vertices: edge.vertices,
@@ -347,42 +345,6 @@ fn classify_and_aggregate_boundaries(
         });
     }
     aggregate_boundary_events(surface.edges().len(), &events)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn classify_kinematics(
-    plates: [PlateId; 2],
-    rotations: [SphericalPlateRotation; 2],
-    radius: Meters,
-    midpoint: UnitVector3,
-    normal_from_first: UnitVector3,
-    crust: [CrustKind; 2],
-    thickness_km: [f32; 2],
-) -> KinematicClassification {
-    let relative = relative_velocity_at(rotations[0], rotations[1], radius, midpoint);
-    let speed =
-        (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2]).sqrt();
-    let normal = normal_from_first.components();
-    let signed_normal_speed =
-        relative[0] * normal[0] + relative[1] * normal[1] + relative[2] * normal[2];
-    let normal_speed = signed_normal_speed.abs();
-    let tangent_speed = (speed * speed - normal_speed * normal_speed)
-        .max(0.0)
-        .sqrt();
-    classify_local_kinematics(
-        plates,
-        crust,
-        thickness_km,
-        LocalKinematics {
-            speed: speed as f32,
-            normal_speed: normal_speed as f32,
-            tangent_speed: tangent_speed as f32,
-            maximum_relative_speed: MAX_RELATIVE_SPEED_MM_PER_YEAR,
-            weak: speed < WEAK_RELATIVE_SPEED_MM_PER_YEAR,
-            strong_normal_component: normal_speed >= speed * 0.4,
-            converging: signed_normal_speed < 0.0,
-        },
-    )
 }
 
 fn aggregate_boundary_events(

@@ -3,6 +3,7 @@ pub mod natural;
 pub mod spatial;
 
 mod ids;
+mod serde_bounded;
 mod spec;
 mod units;
 

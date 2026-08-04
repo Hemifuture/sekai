@@ -3,10 +3,13 @@ use std::f64::consts::PI;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
     Hotspot, SphericalMantleSnapshot, SphericalMantleValidationError, HEAT_FLOW_MAX_MW_M2,
-    HEAT_FLOW_MIN_MW_M2, MANTLE_SNAPSHOT_SCHEMA_V2,
+    HEAT_FLOW_MIN_MW_M2, MANTLE_SNAPSHOT_SCHEMA_V2, MAX_HOTSPOT_COUNT,
 };
 use sekai::world::spatial::{SurfaceGeometryKind, SurfaceRef, SPATIAL_SCHEMA_V1};
-use sekai::world::{CellId, HotspotId, Meters, SphericalSpaceSpec};
+use sekai::world::{
+    CellId, HotspotId, Meters, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT,
+    MAX_SPHERICAL_EDGE_COUNT,
+};
 
 fn meters(value: f64) -> Meters {
     Meters::new(value).unwrap()
@@ -74,6 +77,57 @@ fn spherical_mantle_round_trips_with_one_exact_surface_identity() {
     let mut unknown_hotspot = encoded;
     unknown_hotspot["hotspots"][0]["longitude"] = serde_json::json!(0.0);
     assert!(serde_json::from_value::<SphericalMantleSnapshot>(unknown_hotspot).is_err());
+}
+
+#[test]
+fn spherical_mantle_wire_bounds_hotspots_before_contract_validation() {
+    let surface = spherical_surface(6_371_000.0);
+    let mut encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+    let encoded_hotspot = encoded["hotspots"][0].clone();
+    encoded["hotspots"] =
+        serde_json::Value::Array(vec![encoded_hotspot; usize::from(MAX_HOTSPOT_COUNT) + 1]);
+
+    let error = serde_json::from_value::<SphericalMantleSnapshot>(encoded)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("at most 16 elements"), "{error}");
+
+    let mut dense = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+    dense["heat_flow_mw_m2"] = serde_json::Value::Array(vec![
+        serde_json::json!(65.0);
+        MAX_SPHERICAL_CELL_COUNT as usize + 1
+    ]);
+    let error = serde_json::from_value::<SphericalMantleSnapshot>(dense)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&format!("at most {MAX_SPHERICAL_CELL_COUNT} elements")),
+        "{error}"
+    );
+
+    let mut legacy_hotspot = serde_json::to_value(hotspot(0, 0, 1.0)).unwrap();
+    legacy_hotspot["legacy_extension"] = serde_json::json!(true);
+    assert_eq!(
+        serde_json::from_value::<Hotspot>(legacy_hotspot).unwrap(),
+        hotspot(0, 0, 1.0)
+    );
+}
+
+#[test]
+fn spherical_mantle_rejects_impossible_surface_allocations() {
+    let surface = spherical_surface(6_371_000.0);
+    let encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+    for (field, found) in [
+        ("cell_count", MAX_SPHERICAL_CELL_COUNT + 1),
+        ("edge_count", MAX_SPHERICAL_EDGE_COUNT + 1),
+    ] {
+        let mut oversized = encoded.clone();
+        oversized["surface_ref"][field] = serde_json::json!(found);
+        let error = serde_json::from_value::<SphericalMantleSnapshot>(oversized)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds spherical limit"), "{error}");
+    }
 }
 
 #[test]

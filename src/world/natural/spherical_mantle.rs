@@ -8,14 +8,19 @@ use thiserror::Error;
 use super::{
     Hotspot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_HOTSPOT_COUNT,
 };
+use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
     SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
     SurfaceRefError,
 };
-use crate::world::{CellId, HotspotId};
+use crate::world::{CellId, HotspotId, Meters, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
 /// The supported schema for surface-bound spherical mantle snapshots.
 pub const MANTLE_SNAPSHOT_SCHEMA_V2: u16 = 2;
+
+const MAX_SPHERICAL_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
+const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;
+const MAX_SPHERICAL_HOTSPOTS: usize = MAX_HOTSPOT_COUNT as usize;
 
 /// Immutable present-day mantle forcing bound to one authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -33,9 +38,48 @@ pub struct SphericalMantleSnapshot {
 struct SphericalMantleSnapshotWire {
     schema_version: u16,
     surface_ref: SurfaceRef,
-    hotspots: Vec<Hotspot>,
+    #[serde(deserialize_with = "deserialize_spherical_hotspots")]
+    hotspots: Vec<StrictHotspotWire>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_values")]
     heat_flow_mw_m2: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_values")]
     volcanic_influence: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictHotspotWire {
+    id: HotspotId,
+    source_cell: CellId,
+    strength_permille: u16,
+    support_radius_m: Meters,
+}
+
+impl StrictHotspotWire {
+    fn try_into_hotspot(self) -> Result<Hotspot, MantleValidationError> {
+        Hotspot::new(
+            self.id,
+            self.source_cell,
+            self.strength_permille,
+            self.support_radius_m,
+        )
+    }
+}
+
+fn deserialize_spherical_hotspots<'de, D>(
+    deserializer: D,
+) -> Result<Vec<StrictHotspotWire>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_HOTSPOTS>(deserializer)
+}
+
+fn deserialize_spherical_cell_values<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELLS>(deserializer)
 }
 
 impl SphericalMantleSnapshot {
@@ -73,6 +117,16 @@ impl SphericalMantleSnapshot {
                 found: self.surface_ref.geometry_kind(),
             });
         }
+        validate_allocation_limit(
+            "surface_ref.cell_count",
+            self.surface_ref.cell_count() as usize,
+            MAX_SPHERICAL_CELLS,
+        )?;
+        validate_allocation_limit(
+            "surface_ref.edge_count",
+            self.surface_ref.edge_count() as usize,
+            MAX_SPHERICAL_EDGES,
+        )?;
         if self.hotspots.len() > usize::from(MAX_HOTSPOT_COUNT) {
             return Err(SphericalMantleValidationError::TooManyHotspots {
                 found: self.hotspots.len(),
@@ -145,7 +199,7 @@ impl SphericalMantleSnapshot {
     ) -> Result<(), SphericalMantleValidationError> {
         self.validate()?;
         surface.validate()?;
-        let authoritative = SurfaceRef::try_for_spherical(surface)?;
+        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalMantleValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -199,15 +253,32 @@ impl<'de> Deserialize<'de> for SphericalMantleSnapshot {
         D: Deserializer<'de>,
     {
         let wire = SphericalMantleSnapshotWire::deserialize(deserializer)?;
+        let hotspots = wire
+            .hotspots
+            .into_iter()
+            .map(StrictHotspotWire::try_into_hotspot)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(D::Error::custom)?;
         Self::new(
             wire.schema_version,
             wire.surface_ref,
-            wire.hotspots,
+            hotspots,
             wire.heat_flow_mw_m2,
             wire.volcanic_influence,
         )
         .map_err(D::Error::custom)
     }
+}
+
+fn validate_allocation_limit(
+    field: &'static str,
+    found: usize,
+    max: usize,
+) -> Result<(), SphericalMantleValidationError> {
+    if found > max {
+        return Err(SphericalMantleValidationError::AllocationExceedsLimit { field, found, max });
+    }
+    Ok(())
 }
 
 fn validate_length(
@@ -246,6 +317,16 @@ pub enum SphericalMantleValidationError {
     InvalidSurfaceKind {
         /// The rejected geometry kind.
         found: SurfaceGeometryKind,
+    },
+    /// A surface identity exceeds the spherical allocation budget.
+    #[error("{field} allocation {found} exceeds spherical limit {max}")]
+    AllocationExceedsLimit {
+        /// The bounded identity field.
+        field: &'static str,
+        /// The rejected allocation.
+        found: usize,
+        /// The inclusive maximum.
+        max: usize,
     },
     /// The snapshot exceeds the hotspot allocation budget.
     #[error("hotspot count {found} exceeds the maximum {max}")]

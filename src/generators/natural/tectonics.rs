@@ -12,8 +12,9 @@ use super::topology::{
 };
 use crate::engine::StageRng;
 use crate::world::natural::{
-    BoundaryKind, BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, NaturalSpecError,
-    Plate, PlateIdField, PlateVelocity, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    classify_boundary_kinematics, BoundaryClassification, BoundaryKind, BoundaryKinematics,
+    BoundaryRecord, BoundarySegment, CrustKind, CrustKindField, NaturalSpecError, Plate,
+    PlateIdField, PlateVelocity, ResolvedWorldFormation, ResolvedWorldFormationPreset,
     TectonicActivity, TectonicSnapshot, TectonicSpec, TectonicValidationError,
     WorldFormationSpecError, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
     CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_PLATE_VELOCITY_MM_PER_YEAR,
@@ -710,24 +711,6 @@ struct BoundaryEventDraft {
     direction: [i64; 2],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct KinematicClassification {
-    pub(super) kind: BoundaryKind,
-    pub(super) strength: f32,
-    pub(super) subducting_plate: Option<PlateId>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) struct LocalKinematics {
-    pub(super) speed: f32,
-    pub(super) normal_speed: f32,
-    pub(super) tangent_speed: f32,
-    pub(super) maximum_relative_speed: f32,
-    pub(super) weak: bool,
-    pub(super) strong_normal_component: bool,
-    pub(super) converging: bool,
-}
-
 fn classify_and_aggregate_boundaries(
     spatial: &SpatialSnapshot,
     topology: &NaturalTopologyIndex,
@@ -802,7 +785,7 @@ fn classify_kinematics(
     normal: [i64; 2],
     crust: [CrustKind; 2],
     thickness_km: [f32; 2],
-) -> KinematicClassification {
+) -> BoundaryClassification {
     let first_velocity = velocities[0].components_mm_per_year();
     let second_velocity = velocities[1].components_mm_per_year();
     let relative = [
@@ -813,11 +796,11 @@ fn classify_kinematics(
     let speed = (speed_squared as f32).sqrt();
     let maximum_relative_speed = f32::from(MAX_PLATE_VELOCITY_MM_PER_YEAR) * 2.0 * 2.0_f32.sqrt();
     if speed_squared < WEAK_RELATIVE_SPEED_MM_PER_YEAR * WEAK_RELATIVE_SPEED_MM_PER_YEAR {
-        return classify_local_kinematics(
+        return classify_boundary_kinematics(
             plates,
             crust,
             thickness_km,
-            LocalKinematics {
+            BoundaryKinematics {
                 speed,
                 normal_speed: 0.0,
                 tangent_speed: speed,
@@ -843,11 +826,11 @@ fn classify_kinematics(
         .sqrt();
     let has_strong_normal_component = normal_squared > 0
         && projection * projection * 100 >= i128::from(speed_squared) * normal_squared * 16;
-    classify_local_kinematics(
+    classify_boundary_kinematics(
         plates,
         crust,
         thickness_km,
-        LocalKinematics {
+        BoundaryKinematics {
             speed,
             normal_speed,
             tangent_speed,
@@ -857,77 +840,6 @@ fn classify_kinematics(
             converging: projection < 0,
         },
     )
-}
-
-pub(super) fn classify_local_kinematics(
-    plates: [PlateId; 2],
-    crust: [CrustKind; 2],
-    thickness_km: [f32; 2],
-    kinematics: LocalKinematics,
-) -> KinematicClassification {
-    if kinematics.weak {
-        return KinematicClassification {
-            kind: BoundaryKind::Weak,
-            strength: (kinematics.speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0),
-            subducting_plate: None,
-        };
-    }
-    if !kinematics.strong_normal_component {
-        return KinematicClassification {
-            kind: BoundaryKind::Transform,
-            strength: (kinematics.tangent_speed / kinematics.maximum_relative_speed)
-                .clamp(0.0, 1.0),
-            subducting_plate: None,
-        };
-    }
-    let strength = (kinematics.normal_speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0);
-
-    if kinematics.converging {
-        if crust == [CrustKind::Continental, CrustKind::Continental] {
-            KinematicClassification {
-                kind: BoundaryKind::ContinentalCollision,
-                strength,
-                subducting_plate: None,
-            }
-        } else {
-            KinematicClassification {
-                kind: BoundaryKind::Subduction,
-                strength,
-                subducting_plate: Some(select_subducting_plate(plates, crust, thickness_km)),
-            }
-        }
-    } else {
-        let kind = if crust == [CrustKind::Oceanic, CrustKind::Oceanic] {
-            BoundaryKind::OceanicRidge
-        } else {
-            BoundaryKind::ContinentalRift
-        };
-        KinematicClassification {
-            kind,
-            strength,
-            subducting_plate: None,
-        }
-    }
-}
-
-fn select_subducting_plate(
-    plates: [PlateId; 2],
-    crust: [CrustKind; 2],
-    thickness_km: [f32; 2],
-) -> PlateId {
-    match crust {
-        [CrustKind::Oceanic, CrustKind::Continental] => plates[0],
-        [CrustKind::Continental, CrustKind::Oceanic] => plates[1],
-        _ => {
-            if thickness_km[0] < thickness_km[1] {
-                plates[0]
-            } else if thickness_km[1] < thickness_km[0] {
-                plates[1]
-            } else {
-                plates[0].min(plates[1])
-            }
-        }
-    }
 }
 
 fn quantized_edge_endpoints(

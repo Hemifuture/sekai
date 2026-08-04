@@ -265,6 +265,98 @@ impl BoundaryRecord {
     }
 }
 
+/// Geometry-independent local motion components used by the boundary classifier.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BoundaryKinematics {
+    pub(crate) speed: f32,
+    pub(crate) normal_speed: f32,
+    pub(crate) tangent_speed: f32,
+    pub(crate) maximum_relative_speed: f32,
+    pub(crate) weak: bool,
+    pub(crate) strong_normal_component: bool,
+    pub(crate) converging: bool,
+}
+
+/// The semantic boundary event derived from authoritative motion and crust fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BoundaryClassification {
+    pub(crate) kind: BoundaryKind,
+    pub(crate) strength: f32,
+    pub(crate) subducting_plate: Option<PlateId>,
+}
+
+/// Classifies local plate motion independently of planar or spherical geometry storage.
+pub(crate) fn classify_boundary_kinematics(
+    plates: [PlateId; 2],
+    crust: [CrustKind; 2],
+    thickness_km: [f32; 2],
+    kinematics: BoundaryKinematics,
+) -> BoundaryClassification {
+    if kinematics.weak {
+        return BoundaryClassification {
+            kind: BoundaryKind::Weak,
+            strength: (kinematics.speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0),
+            subducting_plate: None,
+        };
+    }
+    if !kinematics.strong_normal_component {
+        return BoundaryClassification {
+            kind: BoundaryKind::Transform,
+            strength: (kinematics.tangent_speed / kinematics.maximum_relative_speed)
+                .clamp(0.0, 1.0),
+            subducting_plate: None,
+        };
+    }
+    let strength = (kinematics.normal_speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0);
+
+    if kinematics.converging {
+        if crust == [CrustKind::Continental, CrustKind::Continental] {
+            BoundaryClassification {
+                kind: BoundaryKind::ContinentalCollision,
+                strength,
+                subducting_plate: None,
+            }
+        } else {
+            BoundaryClassification {
+                kind: BoundaryKind::Subduction,
+                strength,
+                subducting_plate: Some(select_subducting_plate(plates, crust, thickness_km)),
+            }
+        }
+    } else {
+        let kind = if crust == [CrustKind::Oceanic, CrustKind::Oceanic] {
+            BoundaryKind::OceanicRidge
+        } else {
+            BoundaryKind::ContinentalRift
+        };
+        BoundaryClassification {
+            kind,
+            strength,
+            subducting_plate: None,
+        }
+    }
+}
+
+fn select_subducting_plate(
+    plates: [PlateId; 2],
+    crust: [CrustKind; 2],
+    thickness_km: [f32; 2],
+) -> PlateId {
+    match crust {
+        [CrustKind::Oceanic, CrustKind::Continental] => plates[0],
+        [CrustKind::Continental, CrustKind::Oceanic] => plates[1],
+        _ => {
+            if thickness_km[0] < thickness_km[1] {
+                plates[0]
+            } else if thickness_km[1] < thickness_km[0] {
+                plates[1]
+            } else {
+                plates[0].min(plates[1])
+            }
+        }
+    }
+}
+
 /// A connected, same-kind portion of a current plate boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoundarySegment {

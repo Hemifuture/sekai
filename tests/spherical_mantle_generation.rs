@@ -85,6 +85,9 @@ fn global_farthest_sources_and_strengths_are_repeatable_prefix_stable_and_seed_s
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&repeated).unwrap()
     );
+    let decoded: SphericalMantleSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
+    assert_eq!(decoded, first);
     assert_ne!(first.hotspots(), changed.hotspots());
     first.validate_against(surface()).unwrap();
 

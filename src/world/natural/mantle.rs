@@ -30,7 +30,6 @@ pub struct Hotspot {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct HotspotWire {
     id: HotspotId,
     source_cell: CellId,

@@ -2,11 +2,14 @@ use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
     BoundaryRecord, CrustKind, CrustKindField, PlateIdField, SphericalPlate,
     SphericalPlateRotation, SphericalTectonicSnapshot, SphericalTectonicValidationError,
-    MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR, MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
-    OCEANIC_CRUST_MIN_THICKNESS_KM, TECTONIC_SNAPSHOT_SCHEMA_V2,
+    MAX_PLATE_COUNT, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+    MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    TECTONIC_SNAPSHOT_SCHEMA_V2,
 };
 use sekai::world::spatial::{SurfaceGeometryKind, SurfaceRef, UnitVector3, SPATIAL_SCHEMA_V1};
-use sekai::world::{CellId, Meters, PlateId, SphericalSpaceSpec};
+use sekai::world::{
+    CellId, Meters, PlateId, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT,
+};
 
 fn meters(value: f64) -> Meters {
     Meters::new(value).unwrap()
@@ -172,6 +175,50 @@ fn spherical_snapshot_round_trips_with_exact_surface_identity() {
     let mut unknown = encoded;
     unknown["projection"] = serde_json::json!("mercator");
     assert!(serde_json::from_value::<SphericalTectonicSnapshot>(unknown).is_err());
+}
+
+#[test]
+fn spherical_snapshot_wire_bounds_tables_and_rejects_nested_unknown_fields() {
+    let surface = spherical_surface(6_371_000.0);
+    let snapshot = one_plate_snapshot(&surface);
+    let encoded = serde_json::to_value(snapshot).unwrap();
+
+    let mut unknown_boundary = encoded.clone();
+    unknown_boundary["boundaries"][0]["projection"] = serde_json::json!("mercator");
+    assert!(serde_json::from_value::<SphericalTectonicSnapshot>(unknown_boundary).is_err());
+
+    let mut too_many_plates = encoded;
+    let plate = too_many_plates["plates"][0].clone();
+    too_many_plates["plates"] =
+        serde_json::Value::Array(vec![plate; usize::from(MAX_PLATE_COUNT) + 1]);
+    let error = serde_json::from_value::<SphericalTectonicSnapshot>(too_many_plates)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("at most 64 elements"), "{error}");
+
+    let mut legacy_boundary = serde_json::to_value(BoundaryRecord::none()).unwrap();
+    legacy_boundary["legacy_extension"] = serde_json::json!(true);
+    assert_eq!(
+        serde_json::from_value::<BoundaryRecord>(legacy_boundary).unwrap(),
+        BoundaryRecord::none()
+    );
+}
+
+#[test]
+fn spherical_snapshot_rejects_impossible_surface_allocations() {
+    let surface = spherical_surface(6_371_000.0);
+    let encoded = serde_json::to_value(one_plate_snapshot(&surface)).unwrap();
+    for (field, found) in [
+        ("cell_count", MAX_SPHERICAL_CELL_COUNT + 1),
+        ("edge_count", MAX_SPHERICAL_EDGE_COUNT + 1),
+    ] {
+        let mut oversized = encoded.clone();
+        oversized["surface_ref"][field] = serde_json::json!(found);
+        let error = serde_json::from_value::<SphericalTectonicSnapshot>(oversized)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds spherical limit"), "{error}");
+    }
 }
 
 #[test]

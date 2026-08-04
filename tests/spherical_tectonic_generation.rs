@@ -6,8 +6,9 @@ use sekai::generators::natural::TectonicGenerator;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
     BoundaryKind, CrustKind, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    SphericalTectonicSnapshot, TectonicActivity, TectonicSpec, WorldFormationPreset,
-    MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    SphericalTectonicSnapshot, SphericalTectonicValidationError, TectonicActivity, TectonicSpec,
+    WorldFormationPreset, MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, PlateId, RootSeed, SphericalSpaceSpec};
 
@@ -116,6 +117,9 @@ fn spherical_rotations_are_repeatable_bounded_connected_and_locally_separated() 
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&repeated).unwrap()
     );
+    let decoded: SphericalTectonicSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
+    assert_eq!(decoded, first);
     assert_ne!(
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&changed).unwrap()
@@ -314,6 +318,37 @@ fn spherical_boundaries_use_each_edges_local_tangent_frame_and_canonical_vertice
         }
         assert_eq!(reached, members);
     }
+}
+
+#[test]
+fn authoritative_surface_kinematics_reject_forged_boundary_strengths() {
+    let snapshot = generate(
+        0xC0_FFEE,
+        &TectonicSpec::default(),
+        ResolvedWorldFormationPreset::Continents,
+    );
+    let segment = snapshot
+        .boundary_segments()
+        .first()
+        .expect("the multi-plate fixture has a boundary segment");
+    let forged_strength = if segment.mean_strength() < 0.5 {
+        1.0
+    } else {
+        0.0
+    };
+    let mut encoded = serde_json::to_value(&snapshot).unwrap();
+    for edge in segment.member_edges() {
+        encoded["boundaries"][edge.raw() as usize]["strength"] = serde_json::json!(forged_strength);
+    }
+    encoded["boundary_segments"][segment.id().raw() as usize]["mean_strength"] =
+        serde_json::json!(forged_strength);
+
+    let forged: SphericalTectonicSnapshot = serde_json::from_value(encoded).unwrap();
+    assert!(forged.validate().is_ok());
+    assert!(matches!(
+        forged.validate_against(surface()),
+        Err(SphericalTectonicValidationError::BoundaryKinematicsMismatch { .. })
+    ));
 }
 
 #[test]
