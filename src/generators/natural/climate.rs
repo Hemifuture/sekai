@@ -15,7 +15,7 @@ const MIN_CLIMATE_GRID_CELLS: usize = 16;
 const MAX_CLIMATE_GRID_CELLS: usize = 4_096;
 const MIN_GRID_AXIS: usize = 4;
 const WATER_VAPOR_TRANSPORT_STEPS: usize = 48;
-const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 = 0.0065;
+pub(super) const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 = 0.0065;
 
 /// Deterministic bounded solver for preliminary monthly climate forcing.
 #[derive(Debug, Clone, Copy, Default)]
@@ -414,12 +414,12 @@ fn solve_grid_climate(grid: &ClimateGrid, maritime: &[f32], spec: &ClimateSpec) 
     }
 }
 
-fn monthly_declination_degrees(month: usize, axial_tilt_degrees: f32) -> f32 {
+pub(super) fn monthly_declination_degrees(month: usize, axial_tilt_degrees: f32) -> f32 {
     let phase = TAU * (month as f32 - 2.0) / CLIMATE_MONTH_COUNT as f32;
     axial_tilt_degrees * phase.sin()
 }
 
-fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32 {
+pub(super) fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32 {
     let latitude = latitude_degrees.to_radians();
     let declination = declination_degrees.to_radians();
     let hour_angle_argument = -latitude.tan() * declination.tan();
@@ -436,12 +436,16 @@ fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32
         / PI
 }
 
-fn annual_sea_level_temperature(latitude_degrees: f32) -> f32 {
+pub(super) fn annual_sea_level_temperature(latitude_degrees: f32) -> f32 {
     let latitude_factor = latitude_degrees.to_radians().sin().abs().powf(1.18);
     29.0 - 35.0 * latitude_factor
 }
 
-fn circulation_wind(latitude_degrees: f32, declination_degrees: f32, maritime: f32) -> [f32; 2] {
+pub(super) fn circulation_wind(
+    latitude_degrees: f32,
+    declination_degrees: f32,
+    maritime: f32,
+) -> [f32; 2] {
     let effective_latitude = latitude_degrees - declination_degrees * 0.18;
     let absolute_latitude = effective_latitude.abs();
     let zonal = if absolute_latitude <= 20.0 {
@@ -584,7 +588,7 @@ fn condensation_fraction(
         .clamp(0.012, 0.78)
 }
 
-fn evaporation_warmth(temperature_c: f32) -> f32 {
+pub(super) fn evaporation_warmth(temperature_c: f32) -> f32 {
     ((temperature_c + 12.0) / 42.0).clamp(0.0, 1.0)
 }
 
