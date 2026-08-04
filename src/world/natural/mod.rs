@@ -14,6 +14,7 @@ mod mantle;
 mod relief;
 mod spec;
 mod spherical_mantle;
+mod spherical_relief;
 mod spherical_tectonics;
 mod surface_process;
 mod tectonics;
@@ -89,7 +90,7 @@ pub use relief::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
     COMPONENT_IDENTITY_TOLERANCE_M, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
     ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
-    RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V3, TECTONIC_OFFSET_MAX_M,
+    RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V3, RELIEF_SCHEMA_V4, TECTONIC_OFFSET_MAX_M,
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 pub use spec::{
@@ -99,6 +100,7 @@ pub use spec::{
 pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
+pub use spherical_relief::{SphericalReliefSnapshot, SphericalReliefValidationError};
 pub(crate) use spherical_tectonics::classify_spherical_boundary_kinematics;
 pub use spherical_tectonics::{
     SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,

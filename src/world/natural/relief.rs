@@ -10,6 +10,8 @@ pub const RELIEF_SCHEMA_V1: u16 = 1;
 pub const RELIEF_SCHEMA_V2: u16 = 2;
 /// The current relief schema with deep-ocean volcanic edifices up to 6,000 m.
 pub const RELIEF_SCHEMA_V3: u16 = 3;
+/// The surface-bound relief schema used by authoritative spherical worlds.
+pub const RELIEF_SCHEMA_V4: u16 = 4;
 /// The minimum safe final elevation, in meters.
 pub const ELEVATION_MIN_M: f32 = -11_000.0;
 /// The maximum safe final elevation, in meters.
@@ -220,92 +222,20 @@ impl ReliefSnapshot {
                 });
             }
         };
-        if !self.sea_level_m.is_finite() {
-            return Err(ReliefValidationError::NonFiniteSeaLevel {
-                found: self.sea_level_m,
-            });
-        }
 
-        for (name, field) in [
-            ("crust_base_elevation_m", &self.crust_base_elevation_m),
-            ("tectonic_offset_m", &self.tectonic_offset_m),
-            ("volcanic_offset_m", &self.volcanic_offset_m),
-            ("regional_offset_m", &self.regional_offset_m),
-            ("elevation_m", &self.elevation_m),
-        ] {
-            validate_length(name, field.len(), self.cell_count)?;
-            validate_finite_values(name, field.values())?;
-        }
-        validate_length(
-            "land_ocean_kind",
-            self.land_ocean_kind.len(),
+        validate_relief_fields(
             self.cell_count,
-        )?;
-
-        validate_range(
-            "crust_base_elevation_m",
-            self.crust_base_elevation_m.values(),
-            CRUST_BASE_ELEVATION_MIN_M,
-            CRUST_BASE_ELEVATION_MAX_M,
-        )?;
-        validate_range(
-            "tectonic_offset_m",
-            self.tectonic_offset_m.values(),
-            TECTONIC_OFFSET_MIN_M,
-            TECTONIC_OFFSET_MAX_M,
-        )?;
-        validate_range(
-            "volcanic_offset_m",
-            self.volcanic_offset_m.values(),
-            VOLCANIC_OFFSET_MIN_M,
+            self.sea_level_m,
             volcanic_offset_max_m,
-        )?;
-        validate_range(
-            "regional_offset_m",
-            self.regional_offset_m.values(),
-            REGIONAL_OFFSET_MIN_M,
-            REGIONAL_OFFSET_MAX_M,
-        )?;
-        validate_range(
-            "elevation_m",
-            self.elevation_m.values(),
-            ELEVATION_MIN_M,
-            ELEVATION_MAX_M,
-        )?;
-
-        for index in 0..self.cell_count as usize {
-            let cell = CellId::from_raw(index as u32);
-            let base = self.crust_base_elevation_m.values()[index];
-            let tectonic = self.tectonic_offset_m.values()[index];
-            let volcanic = self.volcanic_offset_m.values()[index];
-            let regional = self.regional_offset_m.values()[index];
-            let elevation = self.elevation_m.values()[index];
-            let calculated = base + tectonic + volcanic + regional;
-            if (elevation - calculated).abs() > COMPONENT_IDENTITY_TOLERANCE_M {
-                return Err(ReliefValidationError::ComponentIdentityMismatch {
-                    cell,
-                    elevation,
-                    calculated,
-                });
-            }
-
-            let raw_kind = self.land_ocean_kind.raw_values()[index];
-            let stored = LandOceanKind::try_from_raw(raw_kind).map_err(|_| {
-                ReliefValidationError::InvalidLandOceanKind {
-                    cell: Some(cell),
-                    found: raw_kind,
-                }
-            })?;
-            let expected = LandOceanKind::classify(elevation, self.sea_level_m);
-            if stored != expected {
-                return Err(ReliefValidationError::LandOceanMismatch {
-                    cell,
-                    stored,
-                    expected,
-                });
-            }
-        }
-        Ok(())
+            ReliefFields {
+                crust_base_elevation_m: &self.crust_base_elevation_m,
+                tectonic_offset_m: &self.tectonic_offset_m,
+                volcanic_offset_m: &self.volcanic_offset_m,
+                regional_offset_m: &self.regional_offset_m,
+                elevation_m: &self.elevation_m,
+                land_ocean_kind: &self.land_ocean_kind,
+            },
+        )
     }
 
     /// Validates the cell alignment against a spatial snapshot.
@@ -374,6 +304,103 @@ impl ReliefSnapshot {
     pub fn land_ocean_kind(&self, cell: CellId) -> Option<LandOceanKind> {
         self.land_ocean_kind.get(cell.raw() as usize)
     }
+}
+
+pub(crate) struct ReliefFields<'a> {
+    pub(crate) crust_base_elevation_m: &'a ElevationField,
+    pub(crate) tectonic_offset_m: &'a ElevationField,
+    pub(crate) volcanic_offset_m: &'a ElevationField,
+    pub(crate) regional_offset_m: &'a ElevationField,
+    pub(crate) elevation_m: &'a ElevationField,
+    pub(crate) land_ocean_kind: &'a LandOceanField,
+}
+
+pub(crate) fn validate_relief_fields(
+    cell_count: u32,
+    sea_level_m: f32,
+    volcanic_offset_max_m: f32,
+    fields: ReliefFields<'_>,
+) -> Result<(), ReliefValidationError> {
+    if !sea_level_m.is_finite() {
+        return Err(ReliefValidationError::NonFiniteSeaLevel { found: sea_level_m });
+    }
+
+    for (name, field) in [
+        ("crust_base_elevation_m", fields.crust_base_elevation_m),
+        ("tectonic_offset_m", fields.tectonic_offset_m),
+        ("volcanic_offset_m", fields.volcanic_offset_m),
+        ("regional_offset_m", fields.regional_offset_m),
+        ("elevation_m", fields.elevation_m),
+    ] {
+        validate_length(name, field.len(), cell_count)?;
+        validate_finite_values(name, field.values())?;
+    }
+    validate_length("land_ocean_kind", fields.land_ocean_kind.len(), cell_count)?;
+
+    validate_range(
+        "crust_base_elevation_m",
+        fields.crust_base_elevation_m.values(),
+        CRUST_BASE_ELEVATION_MIN_M,
+        CRUST_BASE_ELEVATION_MAX_M,
+    )?;
+    validate_range(
+        "tectonic_offset_m",
+        fields.tectonic_offset_m.values(),
+        TECTONIC_OFFSET_MIN_M,
+        TECTONIC_OFFSET_MAX_M,
+    )?;
+    validate_range(
+        "volcanic_offset_m",
+        fields.volcanic_offset_m.values(),
+        VOLCANIC_OFFSET_MIN_M,
+        volcanic_offset_max_m,
+    )?;
+    validate_range(
+        "regional_offset_m",
+        fields.regional_offset_m.values(),
+        REGIONAL_OFFSET_MIN_M,
+        REGIONAL_OFFSET_MAX_M,
+    )?;
+    validate_range(
+        "elevation_m",
+        fields.elevation_m.values(),
+        ELEVATION_MIN_M,
+        ELEVATION_MAX_M,
+    )?;
+
+    for index in 0..cell_count as usize {
+        let cell = CellId::from_raw(index as u32);
+        let base = fields.crust_base_elevation_m.values()[index];
+        let tectonic = fields.tectonic_offset_m.values()[index];
+        let volcanic = fields.volcanic_offset_m.values()[index];
+        let regional = fields.regional_offset_m.values()[index];
+        let elevation = fields.elevation_m.values()[index];
+        let calculated = base + tectonic + volcanic + regional;
+        if (elevation - calculated).abs() > COMPONENT_IDENTITY_TOLERANCE_M {
+            return Err(ReliefValidationError::ComponentIdentityMismatch {
+                cell,
+                elevation,
+                calculated,
+            });
+        }
+
+        let raw_kind = fields.land_ocean_kind.raw_values()[index];
+        let stored = LandOceanKind::try_from_raw(raw_kind).map_err(|_| {
+            ReliefValidationError::InvalidLandOceanKind {
+                cell: Some(cell),
+                found: raw_kind,
+            }
+        })?;
+        let expected = LandOceanKind::classify(elevation, sea_level_m);
+        if stored != expected {
+            return Err(ReliefValidationError::LandOceanMismatch {
+                cell,
+                stored,
+                expected,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_length(
