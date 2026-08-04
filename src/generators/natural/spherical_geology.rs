@@ -27,9 +27,9 @@ impl GeologicGenerator {
     ) -> Result<SphericalGeologicSnapshot, SphericalGeologicGenerationError> {
         spec.validate()?;
         surface.validate()?;
-        tectonic.validate_against(surface)?;
-        mantle.validate_against(surface)?;
-        relief.validate_against(surface, tectonic, mantle)?;
+        tectonic.validate_against_validated_surface(surface)?;
+        mantle.validate_against_validated_surface(surface)?;
+        relief.validate_against_validated_surface(surface)?;
 
         let view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&view);
@@ -57,7 +57,7 @@ impl GeologicGenerator {
             fields.geothermal,
             fields.sedimentary,
         )?;
-        snapshot.validate_against(surface, tectonic, mantle, relief)?;
+        snapshot.validate_against_validated_surface(surface, tectonic)?;
         Ok(snapshot)
     }
 }

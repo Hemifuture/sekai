@@ -49,8 +49,8 @@ impl ReliefGenerator {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<SphericalReliefSnapshot, SphericalReliefGenerationError> {
         surface.validate()?;
-        tectonic.validate_against(surface)?;
-        mantle.validate_against(surface)?;
+        tectonic.validate_against_validated_surface(surface)?;
+        mantle.validate_against_validated_surface(surface)?;
 
         let view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&view);
@@ -106,7 +106,7 @@ impl ReliefGenerator {
             elevation,
             land_ocean,
         )?;
-        snapshot.validate_against(surface, tectonic, mantle)?;
+        snapshot.validate_against_validated_surface(surface)?;
         Ok(snapshot)
     }
 }

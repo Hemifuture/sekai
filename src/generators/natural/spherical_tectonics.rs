@@ -113,7 +113,7 @@ impl TectonicGenerator {
             boundaries,
             boundary_segments,
         )?;
-        snapshot.validate_against(surface)?;
+        snapshot.validate_against_validated_surface(surface)?;
         Ok(snapshot)
     }
 }

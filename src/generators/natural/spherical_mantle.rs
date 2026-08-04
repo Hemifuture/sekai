@@ -54,7 +54,7 @@ impl MantleGenerator {
             fields.heat_flow_mw_m2,
             fields.volcanic_influence,
         )?;
-        snapshot.validate_against(surface)?;
+        snapshot.validate_against_validated_surface(surface)?;
         Ok(snapshot)
     }
 }

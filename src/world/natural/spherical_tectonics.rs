@@ -620,8 +620,15 @@ impl SphericalTectonicSnapshot {
         &self,
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalTectonicValidationError> {
-        self.validate()?;
         surface.validate()?;
+        self.validate_against_validated_surface(surface)
+    }
+
+    pub(crate) fn validate_against_validated_surface(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SphericalTectonicValidationError> {
+        self.validate()?;
         let authoritative = SurfaceRef::from_validated_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalTectonicValidationError::SurfaceMismatch {

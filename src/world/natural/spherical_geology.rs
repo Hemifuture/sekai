@@ -149,8 +149,19 @@ impl SphericalGeologicSnapshot {
         mantle: &SphericalMantleSnapshot,
         relief: &SphericalReliefSnapshot,
     ) -> Result<(), SphericalGeologicValidationError> {
-        self.validate()?;
         surface.validate()?;
+        tectonic.validate_against_validated_surface(surface)?;
+        mantle.validate_against_validated_surface(surface)?;
+        relief.validate_against_validated_surface(surface)?;
+        self.validate_against_validated_surface(surface, tectonic)
+    }
+
+    pub(crate) fn validate_against_validated_surface(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        tectonic: &SphericalTectonicSnapshot,
+    ) -> Result<(), SphericalGeologicValidationError> {
+        self.validate()?;
         let authoritative = SurfaceRef::from_validated_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalGeologicValidationError::SurfaceMismatch {
@@ -158,9 +169,6 @@ impl SphericalGeologicSnapshot {
                 authoritative,
             });
         }
-        tectonic.validate_against(surface)?;
-        mantle.validate_against(surface)?;
-        relief.validate_against(surface, tectonic, mantle)?;
         validate_bedrock_crust_compatibility(
             self.surface_ref.cell_count(),
             &self.bedrock_kinds,

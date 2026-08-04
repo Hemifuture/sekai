@@ -143,8 +143,17 @@ impl SphericalReliefSnapshot {
         tectonic: &SphericalTectonicSnapshot,
         mantle: &SphericalMantleSnapshot,
     ) -> Result<(), SphericalReliefValidationError> {
-        self.validate()?;
         surface.validate()?;
+        tectonic.validate_against_validated_surface(surface)?;
+        mantle.validate_against_validated_surface(surface)?;
+        self.validate_against_validated_surface(surface)
+    }
+
+    pub(crate) fn validate_against_validated_surface(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SphericalReliefValidationError> {
+        self.validate()?;
         let authoritative = SurfaceRef::from_validated_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalReliefValidationError::SurfaceMismatch {
@@ -152,8 +161,6 @@ impl SphericalReliefSnapshot {
                 authoritative,
             });
         }
-        tectonic.validate_against(surface)?;
-        mantle.validate_against(surface)?;
         Ok(())
     }
 
