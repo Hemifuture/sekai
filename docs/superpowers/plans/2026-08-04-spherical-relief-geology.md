@@ -8,7 +8,7 @@
 
 **Science/product position:** This is a deterministic current-state synthesis, not archived geologic history and not a coupled viscoelastic lithosphere solver. Compact graph-distance kernels approximate finite tectonic belts; 3D coherent noise sampled on unit radial vectors supplies seamless long-wavelength heterogeneity; local Euler velocity and geodesic geometry orient hotspot chains and island arcs. These choices retain the causal signs and spatial relationships needed by ecology and climate while keeping generation interactive and smoothly replaceable by richer internal solvers later.
 
-**Tech stack:** Rust 1.85, serde/serde_json, existing deterministic stage RNG, `noise` crate Perlin basis, authoritative geodesic Voronoi surface, and existing spatial vector primitives; no new dependencies.
+**Tech stack:** Rust 1.85, serde/serde_json, existing deterministic stage RNG, the existing `noise` crate (frozen planar Perlin plus sphere-only 3D OpenSimplex), authoritative geodesic Voronoi surface, and existing spatial vector primitives; no new dependencies.
 
 ## Global constraints
 
@@ -100,7 +100,7 @@ tests/
 - Test: `tests/spherical_relief_generation.rs`
 
 - [ ] Write RED tests for deterministic `ReliefNoise3d`, seed sensitivity, finite/bounded samples, continuity across an arbitrary longitude cut, ordinary pole statistics, and rotation-equivalent sampling.
-- [ ] Sample coherent 3D Perlin octaves at authoritative unit radial cell centers. Limit useful octaves from representative cell spacing so unresolved frequencies cannot alias into cell noise.
+- [ ] Sample coherent 3D OpenSimplex octaves at authoritative unit radial cell centers. This trades a modest constant-factor cost for less lattice-direction bias than Perlin; limit useful octaves from representative cell spacing so unresolved frequencies cannot alias into cell noise.
 - [ ] Area-weight the global recentering with authoritative cell areas, then quantize and clamp through the existing regional-offset bounds. Do not use longitude/latitude, a seam coordinate, or cubed-sphere faces.
 - [ ] Verify no changes to existing `ReliefNoise2d` output and commit the noise work with the spherical relief generator task.
 

@@ -1,6 +1,6 @@
 use std::array;
 
-use noise::{NoiseFn, Perlin};
+use noise::{NoiseFn, OpenSimplex, Perlin};
 
 const MAX_OCTAVES: usize = 6;
 const MIN_SAMPLES_PER_WAVELENGTH: f64 = 2.0;
@@ -134,14 +134,14 @@ impl ReliefNoise2d {
 /// or a privileged pole. The type is deliberately separate from the frozen 2D
 /// implementation so spherical work cannot perturb planar morphology.
 pub(super) struct ReliefNoise3d {
-    octaves: [Perlin; MAX_OCTAVES],
+    octaves: [OpenSimplex; MAX_OCTAVES],
 }
 
 impl ReliefNoise3d {
     pub(super) fn new(seed: u32) -> Self {
         Self {
             octaves: array::from_fn(|index| {
-                Perlin::new(seed.wrapping_add(OCTAVE_SEED_STEP.wrapping_mul(index as u32 + 1)))
+                OpenSimplex::new(seed.wrapping_add(OCTAVE_SEED_STEP.wrapping_mul(index as u32 + 1)))
             }),
         }
     }
