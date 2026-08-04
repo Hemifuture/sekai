@@ -189,6 +189,12 @@ fn same_inputs_produce_byte_identical_composite_snapshots() {
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&second).unwrap()
     );
+    assert_eq!(
+        blake3::hash(&serde_json::to_vec(&first).unwrap())
+            .to_hex()
+            .as_str(),
+        "59f982f1902fcaa81e601d91d270909526e0d9a5986a043c675f2924710b6b8f"
+    );
 }
 
 #[test]

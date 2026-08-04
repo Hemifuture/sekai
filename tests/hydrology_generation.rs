@@ -182,6 +182,12 @@ fn same_inputs_produce_byte_identical_hydrology() {
         serde_json::to_vec(&first).unwrap(),
         serde_json::to_vec(&second).unwrap()
     );
+    assert_eq!(
+        blake3::hash(&serde_json::to_vec(&first).unwrap())
+            .to_hex()
+            .as_str(),
+        "5530d416b1c84d865610e463c4393e63cc41dfa01cdf1da869f25f5f489b0b6c"
+    );
 }
 
 #[test]
