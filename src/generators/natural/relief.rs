@@ -12,11 +12,12 @@ use super::random::{
 use super::topology::{multi_source_distance, multi_source_ownership, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
 use crate::world::natural::{
-    BoundaryKind, CrustKind, ElevationField, LandOceanField, MantleSnapshot, MantleValidationError,
-    ReliefSnapshot, ReliefValidationError, TectonicSnapshot, TectonicValidationError,
-    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V3, TECTONIC_OFFSET_MAX_M,
-    TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    BoundaryKind, BoundaryRecord, CrustKind, CrustKindField, ElevationField, LandOceanField,
+    MantleSnapshot, MantleValidationError, PlateIdField, ReliefSnapshot, ReliefValidationError,
+    TectonicSnapshot, TectonicValidationError, CRUST_BASE_ELEVATION_MAX_M,
+    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M,
+    REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V3, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::{CellId, PlateId};
@@ -48,13 +49,18 @@ impl ReliefGenerator {
         mantle.validate_against(spatial)?;
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
-        let mut crust_base = synthesize_crust_base(&topology, tectonic);
+        let mut crust_base = synthesize_crust_base(
+            &topology,
+            tectonic.crust_kinds(),
+            tectonic.crust_thickness_km(),
+        );
         let mut tectonic_offset =
             synthesize_tectonic_offset(spatial, &topology, tectonic, &streams);
         let mut hotspot_rng = streams.stream(RELIEF_HOTSPOT_MORPHOLOGY_LABEL);
         let mut volcanic_offset =
             synthesize_hotspot_offset(spatial, tectonic, mantle, hotspot_rng.next_u32());
-        let mut regional_offset = synthesize_regional_offset(&topology, tectonic, &streams);
+        let mut regional_offset =
+            synthesize_regional_offset(&topology, tectonic.crust_kinds(), &streams);
         apply_closed_ocean_frame(
             &topology,
             &mut crust_base,
@@ -142,17 +148,21 @@ fn verify_closed_ocean_frame(
     Ok(())
 }
 
-fn synthesize_crust_base(topology: &NaturalTopologyIndex, tectonic: &TectonicSnapshot) -> Vec<f32> {
+pub(super) fn synthesize_crust_base(
+    topology: &NaturalTopologyIndex,
+    crust_kinds: &CrustKindField,
+    crust_thickness_km: &[f32],
+) -> Vec<f32> {
     let transition_cells: Vec<_> = topology
         .arcs()
         .iter()
         .enumerate()
         .filter_map(|(index, arcs)| {
-            let kind = tectonic
-                .crust_kind(CellId::from_raw(index as u32))
+            let kind = crust_kinds
+                .get(index)
                 .expect("tectonic field is cell aligned");
             arcs.iter()
-                .any(|arc| tectonic.crust_kind(arc.neighbor) != Some(kind))
+                .any(|arc| crust_kinds.get(arc.neighbor.raw() as usize) != Some(kind))
                 .then_some(CellId::from_raw(index as u32))
         })
         .collect();
@@ -168,11 +178,12 @@ fn synthesize_crust_base(topology: &NaturalTopologyIndex, tectonic: &TectonicSna
     (0..topology.arcs().len())
         .map(|index| {
             let cell = CellId::from_raw(index as u32);
-            let kind = tectonic
-                .crust_kind(cell)
+            let kind = crust_kinds
+                .get(cell.raw() as usize)
                 .expect("tectonic field is cell aligned");
-            let thickness = tectonic
-                .crust_thickness_for_cell(cell)
+            let thickness = crust_thickness_km
+                .get(cell.raw() as usize)
+                .copied()
                 .expect("tectonic field is cell aligned");
             let (margin, interior) = match kind {
                 CrustKind::Oceanic => (OCEANIC_MARGIN_BASE_M, -5_200.0 + thickness * 110.0),
@@ -224,20 +235,41 @@ fn synthesize_tectonic_offset(
     tectonic: &TectonicSnapshot,
     streams: &LabeledSubstreams,
 ) -> Vec<f32> {
+    let mut result = synthesize_tectonic_offset_core(
+        topology,
+        tectonic.cell_plates(),
+        tectonic.boundaries(),
+        streams,
+    );
+    let mut island_arc_rng = streams.stream(RELIEF_ISLAND_ARC_LABEL);
+    let island_arc =
+        synthesize_oceanic_arc_peaks(spatial, topology, tectonic, island_arc_rng.next_u32());
+    for (value, island_peak) in result.iter_mut().zip(island_arc) {
+        *value = (*value + island_peak).clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
+    }
+    result
+}
+
+pub(super) fn synthesize_tectonic_offset_core(
+    topology: &NaturalTopologyIndex,
+    cell_plates: &PlateIdField,
+    boundaries: &[BoundaryRecord],
+    streams: &LabeledSubstreams,
+) -> Vec<f32> {
     let mut sources: [BTreeMap<CellId, f32>; EffectClass::COUNT] =
         array::from_fn(|_| BTreeMap::new());
-    for edge in spatial.edges() {
-        let record = tectonic
-            .boundary_for_edge(edge.id)
+    for (edge_index, &owners) in topology.edge_owners().iter().enumerate() {
+        let record = boundaries
+            .get(edge_index)
             .expect("tectonic boundary field is edge aligned");
-        let [Some(first), Some(second)] = edge.cells else {
+        let [Some(first), Some(second)] = owners else {
             continue;
         };
-        let first_plate = tectonic
-            .plate_for_cell(first)
+        let first_plate = cell_plates
+            .get(first.raw() as usize)
             .expect("tectonic plate field is cell aligned");
-        let second_plate = tectonic
-            .plate_for_cell(second)
+        let second_plate = cell_plates
+            .get(second.raw() as usize)
             .expect("tectonic plate field is cell aligned");
         if first_plate == second_plate {
             continue;
@@ -359,12 +391,6 @@ fn synthesize_tectonic_offset(
         }
         *value = value.clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
     }
-    let mut island_arc_rng = streams.stream(RELIEF_ISLAND_ARC_LABEL);
-    let island_arc =
-        synthesize_oceanic_arc_peaks(spatial, topology, tectonic, island_arc_rng.next_u32());
-    for (value, island_peak) in result.iter_mut().zip(island_arc) {
-        *value = (*value + island_peak).clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
-    }
     result
 }
 
@@ -392,7 +418,7 @@ fn insert_source(sources: &mut BTreeMap<CellId, f32>, cell: CellId, amplitude: f
 
 fn synthesize_regional_offset(
     topology: &NaturalTopologyIndex,
-    tectonic: &TectonicSnapshot,
+    crust_kinds: &CrustKindField,
     streams: &LabeledSubstreams,
 ) -> Vec<f32> {
     let mut rng = streams.stream(RELIEF_REGIONAL_LABEL);
@@ -404,8 +430,8 @@ fn synthesize_regional_offset(
         .map(|index| {
             let combined = (wide[index] * 5 + medium[index] * 3 + fine[index] * 2) as f32
                 / (REGIONAL_NOISE_SCALE as f32 * 10.0);
-            let amplitude = match tectonic
-                .crust_kind(CellId::from_raw(index as u32))
+            let amplitude = match crust_kinds
+                .get(index)
                 .expect("tectonic field is cell aligned")
             {
                 CrustKind::Oceanic => 300.0,
@@ -455,7 +481,7 @@ fn center_and_bound(values: &mut [f32], min: f32, max: f32) {
     }
 }
 
-fn reconcile_final_safety(
+pub(super) fn reconcile_final_safety(
     crust_base: &mut [f32],
     tectonic_offset: &mut [f32],
     volcanic_offset: &mut [f32],
@@ -543,7 +569,7 @@ fn adjust_component(value: &mut f32, delta: f32, min: f32, max: f32) -> f32 {
     delta - (*value - previous)
 }
 
-fn typical_traversal_cost(topology: &NaturalTopologyIndex) -> u64 {
+pub(super) fn typical_traversal_cost(topology: &NaturalTopologyIndex) -> u64 {
     let mut costs: Vec<_> = topology
         .arcs()
         .iter()
