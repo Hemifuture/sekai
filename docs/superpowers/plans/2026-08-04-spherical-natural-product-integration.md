@@ -178,7 +178,7 @@ git commit -m "refactor: isolate legacy planar natural path"
 - Consumes: `SphericalSurfaceArtifact`, `ResolvedTectonicInputArtifact`, `ResolvedGeologicInputArtifact`, `ResolvedWorldFormationArtifact`, `TectonicGenerator::generate_spherical`, and `MantleGenerator::generate_spherical`.
 - Produces: `SphericalTectonicArtifact`, `SphericalTectonicStage`, `SphericalTectonicStageInputs`, `SphericalMantleArtifact`, `SphericalMantleStage`, and `SphericalMantleStageInputs`.
 
-- [ ] **Step 1: Write RED tests for exact keys, dependencies, strict wires, and stage results**
+- [x] **Step 1: Write RED tests for exact keys, dependencies, strict wires, and stage results**
 
 The tests must assert:
 
@@ -195,13 +195,13 @@ assert_eq!(SphericalMantleStage.namespace(), "sekai.core");
 
 Build each stage in a minimal `StageGraphBuilder` with its exact external dependencies, compare the output to a direct generator call using `derive_stage_seed` with the stage identity, validate against the same sphere, round-trip the Artifact through JSON, and reject an unknown wrapper field.
 
-- [ ] **Step 2: Run the focused test and observe RED**
+- [x] **Step 2: Run the focused test and observe RED**
 
 Run: `cargo test --test spherical_tectonic_mantle_stage -- --nocapture`
 
 Expected: compilation fails because the spherical Artifact and Stage types do not exist.
 
-- [ ] **Step 3: Implement strict Artifact wrappers and input bundles**
+- [x] **Step 3: Implement strict Artifact wrappers and input bundles**
 
 Use this exact wrapper shape for each output:
 
@@ -253,7 +253,7 @@ impl Artifact for SphericalMantleArtifact {
 
 `SphericalTectonicStageInputs::dependencies()` returns `[ResolvedTectonicInputArtifact::KEY, ResolvedWorldFormationArtifact::KEY, SphericalSurfaceArtifact::KEY]`. `SphericalMantleStageInputs::dependencies()` returns `[ResolvedGeologicInputArtifact::KEY, ResolvedWorldFormationArtifact::KEY, SphericalSurfaceArtifact::KEY]`. The graph normalizer owns final sorting.
 
-- [ ] **Step 4: Implement the minimal stage adapters**
+- [x] **Step 4: Implement the minimal stage adapters**
 
 Match the resolved model exactly, call the existing generator, validate against the supplied sphere, and map errors to stable sphere-specific stage codes:
 
@@ -287,7 +287,7 @@ Ok(SphericalMantleArtifact::new(snapshot))
 
 Do not construct a topology index or draw RNG in either adapter; the tested generators own those operations.
 
-- [ ] **Step 5: Run RED-to-GREEN and adjacent scientific tests**
+- [x] **Step 5: Run RED-to-GREEN and adjacent scientific tests**
 
 Run:
 
@@ -298,7 +298,7 @@ cargo test --test spherical_tectonic_generation --test spherical_mantle_generati
 
 Expected: all pass and the existing frozen scientific hashes remain unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/generators/natural/spherical_stage.rs src/generators/natural/spherical_geologic_stage.rs src/generators/natural/mod.rs tests/spherical_tectonic_mantle_stage.rs
