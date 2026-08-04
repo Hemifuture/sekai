@@ -87,14 +87,23 @@ impl TectonicGenerator {
     }
 }
 
+pub(super) fn generate_plate_partition(
+    topology: &NaturalTopologyIndex,
+    spec: &TectonicSpec,
+    streams: &LabeledSubstreams,
+) -> (Vec<CellId>, PlateIdField) {
+    let mut rng = streams.stream(PLATE_SEEDS_LABEL);
+    let seeds = farthest_point_seeds(topology, spec.plate_count as usize, rng.next_u64());
+    let assignment = multi_source_ownership(topology, &seeds);
+    (seeds, PlateIdField::from_raw(assignment.owners))
+}
+
 fn generate_plates(
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
     streams: &LabeledSubstreams,
 ) -> Result<(Vec<Plate>, PlateIdField), TectonicGenerationError> {
-    let mut rng = streams.stream(PLATE_SEEDS_LABEL);
-    let seeds = farthest_point_seeds(topology, spec.plate_count as usize, rng.next_u64());
-    let assignment = multi_source_ownership(topology, &seeds);
+    let (seeds, cell_plates) = generate_plate_partition(topology, spec, streams);
     let mut plates: Vec<_> = seeds
         .into_iter()
         .enumerate()
@@ -105,7 +114,6 @@ fn generate_plates(
                 .expect("zero velocity is inside the fixed physical bound"),
         })
         .collect();
-    let cell_plates = PlateIdField::from_raw(assignment.owners);
     assign_plate_velocities(topology, &cell_plates, spec.activity, streams, &mut plates)?;
     Ok((plates, cell_plates))
 }
@@ -236,16 +244,15 @@ fn relative_speed_squared(first: PlateVelocity, second: PlateVelocity) -> i64 {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CrustDomain {
+pub(super) enum CrustDomain {
     PlanarOceanFrame,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "wired into the spherical tectonic generator in the next implementation step"
-        )
-    )]
     ClosedSurface,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InsufficientCrustFormationArea {
+    pub(super) requested_area_weight: u128,
+    pub(super) available_area_weight: u128,
 }
 
 struct CrustBoundaryFrame {
@@ -253,13 +260,13 @@ struct CrustBoundaryFrame {
     desired_width: u64,
 }
 
-fn generate_crust(
+pub(super) fn generate_crust(
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
     preset: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
     domain: CrustDomain,
-) -> Result<(CrustKindField, Vec<f32>), TectonicGenerationError> {
+) -> Result<(CrustKindField, Vec<f32>), InsufficientCrustFormationArea> {
     let boundary_frame = match domain {
         CrustDomain::PlanarOceanFrame => {
             let sources: Vec<_> = topology
@@ -285,7 +292,7 @@ fn generate_crust(
         &mut seed_rng,
     );
     if continental_nuclei.is_empty() {
-        return Err(TectonicGenerationError::InsufficientCrustFormationArea {
+        return Err(InsufficientCrustFormationArea {
             requested_area_weight: crust_target_weight(
                 topology.area_weights(),
                 spec.continental_crust_fraction,
@@ -367,11 +374,10 @@ fn generate_crust(
             }
         }
     }
-    let ranked_cells =
-        ranked_cells.ok_or(TectonicGenerationError::InsufficientCrustFormationArea {
-            requested_area_weight: target_weight / u128::from(FRACTION_QUANTIZATION),
-            available_area_weight: best_available,
-        })?;
+    let ranked_cells = ranked_cells.ok_or(InsufficientCrustFormationArea {
+        requested_area_weight: target_weight / u128::from(FRACTION_QUANTIZATION),
+        available_area_weight: best_available,
+    })?;
     let continental_count = closest_area_prefix(
         &ranked_cells,
         topology.area_weights(),
@@ -705,10 +711,21 @@ struct BoundaryEventDraft {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct KinematicClassification {
-    kind: BoundaryKind,
-    strength: f32,
-    subducting_plate: Option<PlateId>,
+pub(super) struct KinematicClassification {
+    pub(super) kind: BoundaryKind,
+    pub(super) strength: f32,
+    pub(super) subducting_plate: Option<PlateId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LocalKinematics {
+    pub(super) speed: f32,
+    pub(super) normal_speed: f32,
+    pub(super) tangent_speed: f32,
+    pub(super) maximum_relative_speed: f32,
+    pub(super) weak: bool,
+    pub(super) strong_normal_component: bool,
+    pub(super) converging: bool,
 }
 
 fn classify_and_aggregate_boundaries(
@@ -796,11 +813,20 @@ fn classify_kinematics(
     let speed = (speed_squared as f32).sqrt();
     let maximum_relative_speed = f32::from(MAX_PLATE_VELOCITY_MM_PER_YEAR) * 2.0 * 2.0_f32.sqrt();
     if speed_squared < WEAK_RELATIVE_SPEED_MM_PER_YEAR * WEAK_RELATIVE_SPEED_MM_PER_YEAR {
-        return KinematicClassification {
-            kind: BoundaryKind::Weak,
-            strength: (speed / maximum_relative_speed).clamp(0.0, 1.0),
-            subducting_plate: None,
-        };
+        return classify_local_kinematics(
+            plates,
+            crust,
+            thickness_km,
+            LocalKinematics {
+                speed,
+                normal_speed: 0.0,
+                tangent_speed: speed,
+                maximum_relative_speed,
+                weak: true,
+                strong_normal_component: false,
+                converging: false,
+            },
+        );
     }
 
     let normal_squared = i128::from(normal[0]) * i128::from(normal[0])
@@ -817,16 +843,46 @@ fn classify_kinematics(
         .sqrt();
     let has_strong_normal_component = normal_squared > 0
         && projection * projection * 100 >= i128::from(speed_squared) * normal_squared * 16;
-    if !has_strong_normal_component {
+    classify_local_kinematics(
+        plates,
+        crust,
+        thickness_km,
+        LocalKinematics {
+            speed,
+            normal_speed,
+            tangent_speed,
+            maximum_relative_speed,
+            weak: false,
+            strong_normal_component: has_strong_normal_component,
+            converging: projection < 0,
+        },
+    )
+}
+
+pub(super) fn classify_local_kinematics(
+    plates: [PlateId; 2],
+    crust: [CrustKind; 2],
+    thickness_km: [f32; 2],
+    kinematics: LocalKinematics,
+) -> KinematicClassification {
+    if kinematics.weak {
         return KinematicClassification {
-            kind: BoundaryKind::Transform,
-            strength: (tangent_speed / maximum_relative_speed).clamp(0.0, 1.0),
+            kind: BoundaryKind::Weak,
+            strength: (kinematics.speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0),
             subducting_plate: None,
         };
     }
-    let strength = (normal_speed / maximum_relative_speed).clamp(0.0, 1.0);
+    if !kinematics.strong_normal_component {
+        return KinematicClassification {
+            kind: BoundaryKind::Transform,
+            strength: (kinematics.tangent_speed / kinematics.maximum_relative_speed)
+                .clamp(0.0, 1.0),
+            subducting_plate: None,
+        };
+    }
+    let strength = (kinematics.normal_speed / kinematics.maximum_relative_speed).clamp(0.0, 1.0);
 
-    if projection < 0 {
+    if kinematics.converging {
         if crust == [CrustKind::Continental, CrustKind::Continental] {
             KinematicClassification {
                 kind: BoundaryKind::ContinentalCollision,
@@ -1008,18 +1064,18 @@ fn aggregate_direction(component: &[usize], events: &[BoundaryEventDraft]) -> [f
     }
 }
 
-struct StableUnionFind {
+pub(super) struct StableUnionFind {
     parent: Vec<usize>,
 }
 
 impl StableUnionFind {
-    fn new(count: usize) -> Self {
+    pub(super) fn new(count: usize) -> Self {
         Self {
             parent: (0..count).collect(),
         }
     }
 
-    fn find(&mut self, index: usize) -> usize {
+    pub(super) fn find(&mut self, index: usize) -> usize {
         let parent = self.parent[index];
         if parent != index {
             self.parent[index] = self.find(parent);
@@ -1027,7 +1083,7 @@ impl StableUnionFind {
         self.parent[index]
     }
 
-    fn union(&mut self, first: usize, second: usize) {
+    pub(super) fn union(&mut self, first: usize, second: usize) {
         let first = self.find(first);
         let second = self.find(second);
         if first == second {
@@ -1042,7 +1098,7 @@ impl StableUnionFind {
     }
 }
 
-fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
+pub(super) fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
     if first < second {
         [first, second]
     } else {
@@ -1092,6 +1148,15 @@ pub enum TectonicGenerationError {
     /// Generated tectonic data violated a snapshot invariant.
     #[error("generated tectonic snapshot is invalid: {0}")]
     InvalidSnapshot(#[from] TectonicValidationError),
+}
+
+impl From<InsufficientCrustFormationArea> for TectonicGenerationError {
+    fn from(error: InsufficientCrustFormationArea) -> Self {
+        Self::InsufficientCrustFormationArea {
+            requested_area_weight: error.requested_area_weight,
+            available_area_weight: error.available_area_weight,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -148,15 +148,15 @@ git commit -m "feat: add spherical tectonic snapshot contracts"
 - Parameterize crust placement with a narrow domain policy: `PlanarOceanFrame` retains the exact old boundary exclusion; `ClosedSurface` uses all cells, global farthest nuclei, graph distance, true area weights, and seam-free smoothed graph noise.
 - Keep crust random substreams independent of plate count and motion.
 
-- [ ] **Step 1: Write RED closed-surface crust tests**
+- [x] **Step 1: Write RED closed-surface crust tests**
 
 For every formation preset, verify deterministic output, requested area within one maximum cell area, both crust kinds present, connected preset morphology envelopes, no privileged seam/pole band, and independence from plate count. Retain the existing planar byte/golden checks unchanged.
 
-- [ ] **Step 2: Refactor the minimal shared core**
+- [x] **Step 2: Refactor the minimal shared core**
 
 Preserve the planar branch byte-for-byte in ordering and arithmetic. The closed branch must not manufacture boundary sources or reuse an all-`u64::MAX` boundary-distance sentinel as physical data.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```powershell
 cargo test --test tectonic_generation --test tectonic_boundaries
@@ -181,23 +181,23 @@ git commit -m "refactor: share closed surface crust generation"
 - Add a distinct `SphericalTectonicGenerationError`; do not alter planar stage-error mapping.
 - Use a fixed literal spherical pole set and radius-derived fixed-point rate ladder per `TectonicActivity`.
 
-- [ ] **Step 1: Write RED rotation-assignment tests**
+- [x] **Step 1: Write RED rotation-assignment tests**
 
 Verify exact plate count, non-empty connected ownership, repeatability, seed sensitivity, maximum local speed, one shared Euler vector per plate, and a minimum generated relative speed on every adjacent plate interface.
 
-- [ ] **Step 2: Implement deterministic candidate assignment**
+- [x] **Step 2: Implement deterministic candidate assignment**
 
 Score each candidate only over interfaces to already assigned neighboring plates, using quantized local relative-speed energy at authoritative edge midpoints. Keep complexity proportional to candidate count times plate-boundary edges, not all cells times all plates. Use stable candidate rotation/tie order.
 
-- [ ] **Step 3: Write RED local-boundary tests**
+- [x] **Step 3: Write RED local-boundary tests**
 
 Verify the sign of relative normal motion matches convergent/divergent classification; weak/transform decisions use the local normal/tangent ratio; subduction polarity respects crust kind/thickness; every cross-plate edge has one record; same-kind segments join only through shared canonical vertices; pole and antimeridian neighborhoods stay finite and ordinary.
 
-- [ ] **Step 4: Implement shared local classification and spherical aggregation**
+- [x] **Step 4: Implement shared local classification and spherical aggregation**
 
 Extract a geometry-independent classification kernel accepting normal and tangential relative speeds plus crust facts. Adapt the planar wrapper without changing its integer projections or results. Aggregate spherical edges with `SurfaceVertexId`, and never compute or serialize a global segment direction.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 cargo test --test spherical_tectonic_generation
