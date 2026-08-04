@@ -56,8 +56,13 @@ impl TectonicGenerator {
         let streams = LabeledSubstreams::capture(rng);
         let topology = NaturalTopologyIndex::new(spatial);
         let (plates, cell_plates) = generate_plates(&topology, spec, &streams)?;
-        let (crust_kinds, crust_thickness_km) =
-            generate_crust(&topology, spec, formation.resolved(), &streams)?;
+        let (crust_kinds, crust_thickness_km) = generate_crust(
+            &topology,
+            spec,
+            formation.resolved(),
+            &streams,
+            CrustDomain::PlanarOceanFrame,
+        )?;
         let (boundaries, segments) = classify_and_aggregate_boundaries(
             spatial,
             &topology,
@@ -230,26 +235,51 @@ fn relative_speed_squared(first: PlateVelocity, second: PlateVelocity) -> i64 {
     dx * dx + dy * dy
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CrustDomain {
+    PlanarOceanFrame,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "wired into the spherical tectonic generator in the next implementation step"
+        )
+    )]
+    ClosedSurface,
+}
+
+struct CrustBoundaryFrame {
+    distances: Vec<u64>,
+    desired_width: u64,
+}
+
 fn generate_crust(
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
     preset: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
+    domain: CrustDomain,
 ) -> Result<(CrustKindField, Vec<f32>), TectonicGenerationError> {
-    let boundary_sources: Vec<_> = topology
-        .boundary_cells()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &boundary)| boundary.then_some(CellId::from_raw(index as u32)))
-        .collect();
-    let boundary_distance = multi_source_distance(topology, &boundary_sources, None);
+    let boundary_frame = match domain {
+        CrustDomain::PlanarOceanFrame => {
+            let sources: Vec<_> = topology
+                .boundary_cells()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &boundary)| boundary.then_some(CellId::from_raw(index as u32)))
+                .collect();
+            Some(CrustBoundaryFrame {
+                distances: multi_source_distance(topology, &sources, None),
+                desired_width: topology.quantized_short_side_fraction(0.04),
+            })
+        }
+        CrustDomain::ClosedSurface => None,
+    };
     let profile = CrustFormationProfile::for_preset(preset);
-    let desired_frame = topology.quantized_short_side_fraction(0.04);
     let mut seed_rng = streams.stream(CRUST_SEEDS_LABEL);
     let (continental_nuclei, maximum_frame) = spread_crust_nuclei(
         topology,
-        &boundary_distance,
-        desired_frame,
+        boundary_frame.as_ref(),
         profile.nucleus_count,
         profile.primary_interior,
         &mut seed_rng,
@@ -276,7 +306,11 @@ fn generate_crust(
     let typical_cost = i128::from(typical_cost_u64);
     let target_weight =
         crust_target_weight(topology.area_weights(), spec.continental_crust_fraction);
-    let frame_options = [maximum_frame, maximum_frame * 2 / 3, maximum_frame / 3, 0];
+    let frame_options = match boundary_frame {
+        Some(_) => [maximum_frame, maximum_frame * 2 / 3, maximum_frame / 3, 0],
+        None => [0; 4],
+    };
+    let frame_option_count = if boundary_frame.is_some() { 4 } else { 1 };
     let mut best_available = 0_u128;
     let mut ranked_cells = None;
     let corridor_options = if continental_nuclei.len() > 1 {
@@ -289,7 +323,7 @@ fn generate_crust(
         vec![None]
     };
     'corridor_fallback: for corridor_half_width_steps in corridor_options {
-        for frame in frame_options {
+        for &frame in &frame_options[..frame_option_count] {
             let scores: Vec<_> = (0..topology.arcs().len())
                 .map(|index| {
                     let cell = CellId::from_raw(index as u32);
@@ -299,8 +333,10 @@ fn generate_crust(
                     let inside_corridor = local_half_width_steps.is_some_and(|steps| {
                         divider_distance[index] <= typical_cost_u64.saturating_mul(steps)
                     });
-                    if boundary_distance[index] <= frame
-                        || (inside_corridor && !nucleus_cells.contains(&cell))
+                    let inside_boundary_frame = boundary_frame
+                        .as_ref()
+                        .is_some_and(|boundary| boundary.distances[index] <= frame);
+                    if inside_boundary_frame || (inside_corridor && !nucleus_cells.contains(&cell))
                     {
                         return None;
                     }
@@ -413,49 +449,60 @@ impl CrustFormationProfile {
 
 fn spread_crust_nuclei(
     topology: &NaturalTopologyIndex,
-    boundary_distance: &[u64],
-    desired_frame: u64,
+    boundary_frame: Option<&CrustBoundaryFrame>,
     requested: usize,
     primary_interior: bool,
     rng: &mut impl RngCore,
 ) -> (Vec<CellId>, u64) {
-    let mut maximum_frame = desired_frame;
-    let mut candidates: Vec<_> = boundary_distance
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &distance)| {
-            (distance > maximum_frame).then_some(CellId::from_raw(index as u32))
-        })
-        .collect();
-    if candidates.len() < requested {
-        maximum_frame = 0;
-        candidates = boundary_distance
-            .iter()
-            .enumerate()
-            .filter_map(|(index, &distance)| {
-                (distance > 0).then_some(CellId::from_raw(index as u32))
-            })
-            .collect();
-    }
+    let (candidates, maximum_frame) = match boundary_frame {
+        Some(boundary) => {
+            let mut maximum_frame = boundary.desired_width;
+            let mut candidates: Vec<_> = boundary
+                .distances
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &distance)| {
+                    (distance > maximum_frame).then_some(CellId::from_raw(index as u32))
+                })
+                .collect();
+            if candidates.len() < requested {
+                maximum_frame = 0;
+                candidates = boundary
+                    .distances
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &distance)| {
+                        (distance > 0).then_some(CellId::from_raw(index as u32))
+                    })
+                    .collect();
+            }
+            (candidates, maximum_frame)
+        }
+        None => (
+            (0..topology.arcs().len())
+                .map(|index| CellId::from_raw(index as u32))
+                .collect(),
+            0,
+        ),
+    };
     if candidates.is_empty() {
         return (Vec::new(), maximum_frame);
     }
 
     let count = requested.min(candidates.len());
     let rotation = rng.next_u64() as usize % candidates.len();
-    let first = if primary_interior {
-        candidates
+    let first = match (primary_interior, boundary_frame) {
+        (true, Some(boundary)) => candidates
             .iter()
             .copied()
             .max_by_key(|cell| {
                 (
-                    boundary_distance[cell.raw() as usize],
+                    boundary.distances[cell.raw() as usize],
                     std::cmp::Reverse(*cell),
                 )
             })
-            .expect("candidate list is non-empty")
-    } else {
-        candidates[rotation]
+            .expect("candidate list is non-empty"),
+        _ => candidates[rotation],
     };
     let mut nuclei = vec![first];
     let mut minimum_squared_distance = vec![u128::MAX; candidates.len()];
@@ -1050,10 +1097,19 @@ pub enum TectonicGenerationError {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_kinematics, closest_area_prefix, select_velocity_candidate, velocity_candidates,
+        classify_kinematics, closest_area_prefix, generate_crust, select_velocity_candidate,
+        velocity_candidates, CrustDomain,
     };
-    use crate::world::natural::{BoundaryKind, CrustKind, PlateVelocity, TectonicActivity};
-    use crate::world::{CellId, PlateId};
+    use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
+    use crate::generators::natural::random::LabeledSubstreams;
+    use crate::generators::natural::topology::NaturalTopologyIndex;
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::world::natural::{
+        BoundaryKind, CrustKind, PlateVelocity, ResolvedWorldFormationPreset, TectonicActivity,
+        TectonicSpec,
+    };
+    use crate::world::spatial::SphericalNaturalSurface;
+    use crate::world::{CellId, Meters, PlateId, RootSeed, SphericalSpaceSpec};
 
     #[test]
     fn area_prefix_selects_the_closest_non_extreme_partition() {
@@ -1076,6 +1132,75 @@ mod tests {
             select_velocity_candidate(&candidates, 0, &[velocity(0, 0)]),
             velocity(-96, -96)
         );
+    }
+
+    #[test]
+    fn closed_surface_crust_uses_global_area_without_an_artificial_boundary_frame() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 162,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::new(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        assert!(topology.boundary_cells().iter().all(|boundary| !boundary));
+
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(0xC0_FFEE),
+            StageIdentity::new("spherical-crust-test", 1, "sekai.test"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let spec = TectonicSpec::default();
+        let first = generate_crust(
+            &topology,
+            &spec,
+            ResolvedWorldFormationPreset::Continents,
+            &streams,
+            CrustDomain::ClosedSurface,
+        )
+        .unwrap();
+        let more_plates = TectonicSpec {
+            plate_count: spec.plate_count + 5,
+            ..spec.clone()
+        };
+        let repeated = generate_crust(
+            &topology,
+            &more_plates,
+            ResolvedWorldFormationPreset::Continents,
+            &streams,
+            CrustDomain::ClosedSurface,
+        )
+        .unwrap();
+        assert_eq!(first, repeated);
+
+        let continental_weight = first
+            .0
+            .raw_values()
+            .iter()
+            .zip(topology.area_weights())
+            .filter_map(|(&kind, &area)| (kind == CrustKind::Continental.raw()).then_some(area))
+            .map(u128::from)
+            .sum::<u128>();
+        let total_weight = topology
+            .area_weights()
+            .iter()
+            .copied()
+            .map(u128::from)
+            .sum::<u128>();
+        let target = (total_weight as f64 * f64::from(spec.continental_crust_fraction)).round();
+        let maximum_cell = *topology.area_weights().iter().max().unwrap() as f64;
+        assert!((continental_weight as f64 - target).abs() <= maximum_cell);
+        assert!(first
+            .0
+            .raw_values()
+            .iter()
+            .any(|&kind| kind == CrustKind::Continental.raw()));
+        assert!(first
+            .0
+            .raw_values()
+            .iter()
+            .any(|&kind| kind == CrustKind::Oceanic.raw()));
+        assert_eq!(first.1.len(), surface.cells().len());
     }
 
     #[test]
