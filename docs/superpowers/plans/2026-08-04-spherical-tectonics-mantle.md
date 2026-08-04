@@ -256,11 +256,11 @@ git commit -m "feat: generate spherical mantle forcing"
 - Modify: `docs/superpowers/plans/2026-08-04-spherical-tectonics-mantle.md`
 - Test: repository-wide commands and ignored Release measurements
 
-- [ ] **Step 1: Run deterministic and scientific matrix**
+- [x] **Step 1: Run deterministic and scientific matrix**
 
 Run multiple radii, surface frequencies, seeds, plate counts, activity levels, formation presets, and mantle biases. Record tangency, speed, interface classification, continental area, hotspot support, exact identity, and deterministic hashes.
 
-- [ ] **Step 2: Run all compatibility gates**
+- [x] **Step 2: Run all compatibility gates**
 
 ```powershell
 cargo fmt --all -- --check
@@ -269,15 +269,15 @@ cargo test --all-targets --all-features
 cargo check --target wasm32-unknown-unknown --all-features
 ```
 
-- [ ] **Step 3: Run Release performance smoke**
+- [x] **Step 3: Run Release performance smoke**
 
 At approximately 20,000 cells, record spherical tectonic time, mantle time, counts, dense persistent bytes, and available process-memory evidence. S0B.2 combined generation should remain comfortably inside the final S0B `2.5x`/`256 MiB` envelope and perform no repeated O(V+E+C) surface validation inside loops.
 
-- [ ] **Step 4: Audit ownership and publication boundary**
+- [x] **Step 4: Audit ownership and publication boundary**
 
 Confirm V2 snapshots own only semantic plates/fields/events and a `SurfaceRef`; they contain no copied surface vertices, edges, cells, adjacency, projections, or render buffers. Confirm no application graph or UI path consumes these snapshots before S0B.6.
 
-- [ ] **Step 5: Independent review, evidence, and commit**
+- [x] **Step 5: Independent review, evidence, and commit**
 
 Request read-only review for scientific signs/units, fixed-point bounds, identity trust, planar no-drift, allocation behavior, and serialization. Fix all critical/important findings, rerun gates, append exact evidence here, then commit:
 
@@ -294,3 +294,83 @@ git commit -m "docs: record spherical tectonics and mantle evidence"
 - S0B.6 owns artifact keys, stage graph registration, cache/provenance publication, field adapters, and UI exposure.
 - S0C owns spherical presentation and selection.
 - No time-history archive, plate-age chronology, final circulation, ENSO, or cyclone model is introduced here.
+
+---
+
+## Verification Evidence (2026-08-04)
+
+### Deterministic scientific matrix
+
+`tests/spherical_natural_matrix.rs` passes four frozen cases spanning radii `1 m`,
+`1,000 km`, Earth radius, and `100,000 km`; resolved surfaces of 42, 92, 162,
+and 642 cells; 2, 7, 12, and 64 plates; all three activity levels; multiple
+formation presets; neutral and volcanic mantle bias. Every case checks exact
+surface identity, repeatability, tangent/bounded velocity, area-weighted crust,
+unique bounded hotspots, and source influence.
+
+| Case | Tectonic hash | Mantle hash |
+|---|---|---|
+| minimum-radius-quiet | `9a6ed8324ad0b0be66041fd3b4ee2d77905f2bb6dd5db4b08f94abc3da1b5522` | `3f7b966c4918d1d4a3edf0c94990c2ab1f0870e209e1803fd7e36378a2eda77d` |
+| regional-great-island | `36fa5154ae4b0c9c178573e444ee55e26f9c69bad69338c3d77d37dae4c024c6` | `6235cfbdb57d1bfbce12fa426916b7e4376191da13f80efeb2750e5802b047db` |
+| earth-continents | `28dd7110996b4f1a6c591e38c669d971271ba931e05695124af26b9e7f27bcc7` | `03a432dafeead07521176d659a29f904ef52efe34e239389adbb6602682e5cfa` |
+| maximum-radius-volcanic | `67ac95dcf61f789eb784cc13b00f29bff366dc889c022667a745673f3ea30bb1` | `6e5def0d9603031ce138043672e45f8487e7779e92ec5b8c5f0d62c2c118f673` |
+
+### Compatibility gates
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --all-targets --all-features`: passed, with only explicitly ignored
+  measurement tests skipped.
+- `cargo check --target wasm32-unknown-unknown --all-features`: passed.
+- The reviewed planar natural-display goldens pass, and the planar neutral-mantle
+  hash remains `9d7beb0e7739b223bacc64e19fbafaaaf314a72eb728bae1e3b091fb49580047`.
+
+### Release performance at production scale
+
+`cargo test --release --test spherical_natural_performance -- --ignored --nocapture`
+passes on the 20,252-cell (`f=45`) Earth-radius surface:
+
+- 60,750 edges, 12 plates, 1,511 boundary segments, and 4 hotspots.
+- Spherical tectonics: `114.048 ms`.
+- Spherical mantle: `80.681 ms`.
+- Combined generation: `194.729 ms`.
+- Semantic persistent data: `1,956,232 bytes` total
+  (`1,794,120` tectonic + `162,112` mantle).
+- Available Windows working-set evidence: `17,174,528` bytes after the surface,
+  `18,845,696` after tectonics, and `19,632,128` after mantle; measured delta
+  `2,457,600 bytes`.
+
+This is comfortably inside the S0B `2.5x` time and `256 MiB` memory envelope.
+Validation occurs at public trust boundaries and once again for the completed
+snapshot, never inside per-cell, per-edge, or per-candidate loops.
+
+### Independent review closure
+
+The final read-only review found no remaining Critical or Important issues. Its
+initial Important findings were closed before the fresh gates above:
+
+- Boundary kind, normalized strength, and subduction polarity are now derived
+  during validation from the authoritative edge frame, Euler rotations, and
+  crust fields through the same domain classifier used by generation. Stored
+  boundary records are caches rather than a competing source of truth.
+- Every V2 sequence has a streaming allocation cap. Boundary segments also
+  share one aggregate member-edge budget. Private strict V2 wire records reject
+  unknown nested fields without changing permissive planar V1 decoding.
+- Plate connectivity validation now pre-counts owners and reuses one visited
+  workspace, giving total `O(C + E)` traversal instead of `O(P * C)` scans and
+  repeated cell-sized allocation.
+- A validated surface now produces its `SurfaceRef` without a second complete
+  validation pass.
+
+Review reproduction covered 20 spherical contract/generation tests, 27 planar
+tectonic/mantle regressions (including the frozen mantle hash), the bounded-wire
+unit tests, and `git diff --check`.
+
+### Ownership and publication audit
+
+- `SphericalTectonicSnapshot` and `SphericalMantleSnapshot` own only semantic
+  records/dense fields plus one `SurfaceRef`.
+- Neither snapshot stores copied surface vertices, edges, cells, adjacency,
+  projection state, or render buffers.
+- Source search confirms no application graph, document, field adapter, or UI path
+  consumes either V2 snapshot. Publication remains explicitly deferred to S0B.6.
