@@ -214,7 +214,7 @@ pub(crate) fn validate_hydro_erosion_semantics(
             }
         }
 
-        for month in 0..CLIMATE_MONTH_COUNT {
+        for (month, &precipitation) in monthly_precipitation_mm[index].iter().enumerate() {
             let stored_runoff = hydrology.monthly_local_runoff_mm()[index][month];
             if expected_ocean {
                 if stored_runoff != 0.0 {
@@ -229,7 +229,6 @@ pub(crate) fn validate_hydro_erosion_semantics(
 
             let permeability = relative_permeability[index];
             let runoff_fraction = 0.85 + (0.20 - 0.85) * permeability;
-            let precipitation = monthly_precipitation_mm[index][month];
             let calculated = precipitation * runoff_fraction;
             if (stored_runoff - calculated).abs() > RUNOFF_IDENTITY_TOLERANCE_MM {
                 return Err(HydroErosionValidationError::RunoffIdentityMismatch {

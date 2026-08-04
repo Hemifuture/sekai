@@ -107,10 +107,45 @@ impl SphericalHydroErosionSnapshot {
         self.hydrology.validate_against_validated_surface(surface)?;
 
         let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        self.validate_relations_against_validated_inputs(authoritative, relief, geology, climate)
+    }
+
+    /// Rechecks only cross-snapshot identities after every input and output is self-validated.
+    pub(crate) fn validate_relations_against_validated_inputs(
+        &self,
+        authoritative: SurfaceRef,
+        relief: &SphericalReliefSnapshot,
+        geology: &SphericalGeologicSnapshot,
+        climate: &SphericalPreliminaryClimateSnapshot,
+    ) -> Result<(), SphericalHydroErosionValidationError> {
+        if self.surface_ref() != authoritative {
+            return Err(
+                SphericalHydroErosionValidationError::CompositeSurfaceMismatch {
+                    composite: self.surface_ref(),
+                    authoritative,
+                },
+            );
+        }
+        if relief.surface_ref() != authoritative {
+            return Err(
+                SphericalHydroErosionValidationError::ReliefSurfaceMismatch {
+                    relief: relief.surface_ref(),
+                    authoritative,
+                },
+            );
+        }
         if geology.surface_ref() != authoritative {
             return Err(
                 SphericalHydroErosionValidationError::GeologySurfaceMismatch {
                     geology: geology.surface_ref(),
+                    authoritative,
+                },
+            );
+        }
+        if climate.surface_ref() != authoritative {
+            return Err(
+                SphericalHydroErosionValidationError::ClimateSurfaceMismatch {
+                    climate: climate.surface_ref(),
                     authoritative,
                 },
             );
@@ -182,10 +217,30 @@ pub enum SphericalHydroErosionValidationError {
         surface: SurfaceRef,
         hydrology: SurfaceRef,
     },
+    /// The composite output belongs to another exact closed sphere.
+    #[error(
+        "hydro-erosion identity {composite:?} does not match authoritative surface {authoritative:?}"
+    )]
+    CompositeSurfaceMismatch {
+        composite: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
+    /// The relief upstream belongs to another exact closed sphere.
+    #[error("relief identity {relief:?} does not match authoritative surface {authoritative:?}")]
+    ReliefSurfaceMismatch {
+        relief: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
     /// The geology upstream belongs to another exact closed sphere.
     #[error("geology identity {geology:?} does not match authoritative surface {authoritative:?}")]
     GeologySurfaceMismatch {
         geology: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
+    /// The climate upstream belongs to another exact closed sphere.
+    #[error("climate identity {climate:?} does not match authoritative surface {authoritative:?}")]
+    ClimateSurfaceMismatch {
+        climate: SurfaceRef,
         authoritative: SurfaceRef,
     },
     /// The authoritative surface is invalid.

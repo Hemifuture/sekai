@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
-use sekai::generators::natural::{FluvialErosionGenerator, HydrologyGenerator};
+use sekai::generators::natural::{
+    FluvialErosionGenerator, HydroErosionGenerator, HydrologyGenerator,
+};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
     BedrockKind, BedrockKindField, ElevationField, HydroErosionSpec, LandOceanField, LandOceanKind,
@@ -214,6 +216,100 @@ fn zero_strength_preserves_the_constructional_spherical_surface_exactly() {
         .iter()
         .all(|&value| value == 0.0));
     assert_eq!(output.sediment_terminal_transfer_m3(), 0.0);
+}
+
+#[test]
+fn atomic_spherical_hydro_erosion_is_deterministic_and_publishes_only_final_hydrology() {
+    let surface = surface();
+    let relief = relief(&surface, ocean_basin_elevations(&surface));
+    let substrate = geology(&surface, 0.1);
+    let climate = climate(&surface, &relief);
+    let spec = spec();
+    let initial =
+        HydrologyGenerator::generate_spherical(&surface, &relief, &substrate, &climate, &spec)
+            .unwrap();
+
+    let first =
+        HydroErosionGenerator::generate_spherical(&surface, &relief, &substrate, &climate, &spec)
+            .unwrap();
+    let repeated =
+        HydroErosionGenerator::generate_spherical(&surface, &relief, &substrate, &climate, &spec)
+            .unwrap();
+
+    first
+        .validate_against(&surface, &relief, &substrate, &climate)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&repeated).unwrap()
+    );
+    assert!(first
+        .surface()
+        .erosion_depth_m()
+        .iter()
+        .any(|&depth| depth > 0.0));
+    assert_ne!(
+        serde_json::to_vec(&initial).unwrap(),
+        serde_json::to_vec(first.hydrology()).unwrap()
+    );
+
+    let wire = serde_json::to_value(&first).unwrap();
+    let keys = wire
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["hydrology", "schema_version", "surface"]);
+    assert!(wire.get("initial_hydrology").is_none());
+}
+
+#[test]
+fn zero_strength_atomic_pass_recomputes_byte_identical_hydrology() {
+    let surface = surface();
+    let relief = relief(&surface, ocean_basin_elevations(&surface));
+    let substrate = geology(&surface, 0.1);
+    let climate = climate(&surface, &relief);
+    let zero = HydroErosionSpec {
+        river_discharge_threshold_deci_m3_s: 1,
+        erosion_strength_permille: 0,
+        ..HydroErosionSpec::default()
+    };
+    let initial =
+        HydrologyGenerator::generate_spherical(&surface, &relief, &substrate, &climate, &zero)
+            .unwrap();
+    let atomic =
+        HydroErosionGenerator::generate_spherical(&surface, &relief, &substrate, &climate, &zero)
+            .unwrap();
+
+    assert_eq!(atomic.surface().surface_elevation_m(), relief.elevation_m());
+    assert_eq!(
+        serde_json::to_vec(atomic.hydrology()).unwrap(),
+        serde_json::to_vec(&initial).unwrap()
+    );
+}
+
+#[test]
+fn atomic_spherical_generator_rejects_same_count_inputs_from_another_surface() {
+    let surface = surface();
+    let other_surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+        radius: Meters::new(6_372_000.0).unwrap(),
+        target_cell_count: 162,
+    })
+    .unwrap();
+    let relief = relief(&surface, ocean_basin_elevations(&surface));
+    let foreign_geology = geology(&other_surface, 0.1);
+    let climate = climate(&surface, &relief);
+
+    let error = HydroErosionGenerator::generate_spherical(
+        &surface,
+        &relief,
+        &foreign_geology,
+        &climate,
+        &spec(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("geology surface"));
 }
 
 fn ocean_basin_elevations(surface: &SphericalSurfaceSnapshot) -> Vec<f32> {
