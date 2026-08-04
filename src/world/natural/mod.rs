@@ -15,6 +15,7 @@ mod relief;
 mod spec;
 mod spherical_climate;
 mod spherical_geology;
+mod spherical_hydrology;
 mod spherical_mantle;
 mod spherical_relief;
 mod spherical_tectonics;
@@ -81,7 +82,7 @@ pub use hydrology::{
     BasinOutletKind, DrainageBasin, HydrologySnapshot, HydrologyValidationError, Lake,
     RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind,
     CLIMATOLOGICAL_YEAR_SECONDS, DISCHARGE_ACCUMULATION_ABSOLUTE_TOLERANCE_M3_S,
-    DRAINAGE_AREA_ABSOLUTE_TOLERANCE_KM2, HYDROLOGY_SCHEMA_V1,
+    DRAINAGE_AREA_ABSOLUTE_TOLERANCE_KM2, HYDROLOGY_SCHEMA_V1, HYDROLOGY_SCHEMA_V2,
     HYDROLOGY_SUMMARY_ABSOLUTE_TOLERANCE, HYDROLOGY_SUMMARY_RELATIVE_TOLERANCE, MAX_LAKE_DEPTH_M,
     MAX_STRAHLER_ORDER, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
@@ -105,6 +106,7 @@ pub use spherical_climate::{
     SPHERICAL_LATITUDE_IDENTITY_TOLERANCE_DEGREES, SPHERICAL_WIND_TANGENCY_TOLERANCE_M_S,
 };
 pub use spherical_geology::{SphericalGeologicSnapshot, SphericalGeologicValidationError};
+pub use spherical_hydrology::{SphericalHydrologySnapshot, SphericalHydrologyValidationError};
 pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };

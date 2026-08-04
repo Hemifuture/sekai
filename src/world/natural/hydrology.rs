@@ -14,6 +14,8 @@ use crate::world::{CellId, DrainageBasinId, LakeId, RiverSegmentId};
 
 /// The supported version of the serialized hydrology schema.
 pub const HYDROLOGY_SCHEMA_V1: u16 = 1;
+/// The surface-bound hydrology schema used by authoritative spherical worlds.
+pub const HYDROLOGY_SCHEMA_V2: u16 = 2;
 /// The fixed number of climatological months.
 const MONTH_COUNT: usize = 12;
 /// Mean Gregorian-year duration used by the current-slice water-volume conversion.
@@ -185,7 +187,7 @@ pub enum BasinOutletKind {
     Ocean,
     /// Drainage terminates in an endorheic lake.
     Lake,
-    /// An all-land world drains to its single stable closed sink.
+    /// An all-land drainage basin terminates at a stable closed sink.
     ClosedSink,
 }
 
@@ -657,20 +659,44 @@ impl HydrologySnapshot {
         &self,
         spatial: &SpatialSnapshot,
     ) -> Result<(), HydrologyValidationError> {
-        if self.cell_count as usize != spatial.cell_count() {
+        self.validate_metric_relations(
+            spatial.cell_count(),
+            |cell| {
+                spatial
+                    .cell(cell)
+                    .expect("validated dense spatial input contains every cell")
+                    .area
+                    .get()
+            },
+            |cell, receiver| {
+                spatial
+                    .neighbors(cell)
+                    .is_some_and(|neighbors| neighbors.contains(&receiver))
+            },
+        )
+    }
+
+    pub(crate) fn validate_metric_relations<Area, Adjacent>(
+        &self,
+        metric_cell_count: usize,
+        mut cell_area_m2: Area,
+        mut adjacent: Adjacent,
+    ) -> Result<(), HydrologyValidationError>
+    where
+        Area: FnMut(CellId) -> f64,
+        Adjacent: FnMut(CellId, CellId) -> bool,
+    {
+        if self.cell_count as usize != metric_cell_count {
             return Err(HydrologyValidationError::SpatialCellCountMismatch {
                 hydrology: self.cell_count,
-                spatial: spatial.cell_count(),
+                spatial: metric_cell_count,
             });
         }
 
         for (index, receiver) in self.flow_receiver.iter().enumerate() {
             if let Some(receiver) = receiver {
                 let cell = CellId::from_raw(index as u32);
-                if !spatial
-                    .neighbors(cell)
-                    .is_some_and(|neighbors| neighbors.contains(receiver))
-                {
+                if !adjacent(cell, *receiver) {
                     return Err(HydrologyValidationError::ReceiverNotAdjacent {
                         cell,
                         receiver: *receiver,
@@ -687,11 +713,7 @@ impl HydrologySnapshot {
             .zip(&mut expected_discharge)
             .enumerate()
         {
-            let area_m2 = spatial
-                .cell(CellId::from_raw(index as u32))
-                .expect("validated dense spatial input contains every cell")
-                .area
-                .get();
+            let area_m2 = cell_area_m2(CellId::from_raw(index as u32));
             *expected_area = area_m2 / 1_000_000.0;
             for (expected, &runoff_mm) in expected_months
                 .iter_mut()
@@ -757,11 +779,7 @@ impl HydrologySnapshot {
             let mut volume_m3 = 0.0;
             for &cell in &lake.cells {
                 let index = cell.raw() as usize;
-                let cell_area = spatial
-                    .cell(cell)
-                    .expect("validated lake cell exists in dense spatial input")
-                    .area
-                    .get();
+                let cell_area = cell_area_m2(cell);
                 area_m2 += cell_area;
                 volume_m3 += cell_area * f64::from(self.lake_depth_m[index]);
             }
