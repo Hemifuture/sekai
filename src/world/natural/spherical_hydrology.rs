@@ -533,6 +533,10 @@ impl SphericalHydrologySnapshot {
     pub fn river_segment_length_m(&self) -> &[f64] {
         &self.river_segment_length_m
     }
+
+    pub(crate) const fn semantic_payload(&self) -> &HydrologySnapshot {
+        &self.hydrology
+    }
 }
 
 impl<'de> Deserialize<'de> for SphericalHydrologySnapshot {

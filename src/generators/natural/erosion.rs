@@ -3,13 +3,16 @@ use std::collections::BinaryHeap;
 
 use thiserror::Error;
 
+use super::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     ElevationField, HydroErosionSpec, HydroErosionSpecError, HydrologySnapshot,
-    HydrologyValidationError, LandOceanKind, ReliefSnapshot, ReliefValidationError,
+    HydrologyValidationError, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,
     SurfaceProcessSnapshot, SurfaceProcessValidationError, SurfaceWaterKind, ELEVATION_MAX_M,
     ELEVATION_MIN_M, MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, SURFACE_PROCESS_SCHEMA_V1,
 };
-use crate::world::spatial::{SpatialSnapshot, SpatialValidationError, Topology};
+use crate::world::spatial::{
+    NaturalSurface, PlanarNaturalSurface, SpatialSnapshot, SpatialValidationError, Topology,
+};
 use crate::world::CellId;
 
 const MAX_FORMATION_INCISION_M: f32 = 300.0;
@@ -49,44 +52,91 @@ impl FluvialErosionGenerator {
             hydrology,
             spec,
         )?;
-        let energy = stream_energy(spatial, hydrology);
-        let erosion_depth_m = incision(relief, erosion_resistance, &energy, spec);
-        let order = upstream_to_downstream_order(hydrology.flow_receiver())?;
-        let sediment = route_sediment(
-            spatial,
-            relief,
+        let surface = PlanarNaturalSurface::from_validated(spatial);
+        let topology = NaturalTopologyIndex::new(spatial);
+        let output = generate_erosion_core(
+            &surface,
+            &topology,
+            relief.elevation_m(),
+            relief.land_ocean(),
+            erosion_resistance,
             hydrology,
-            &order,
-            &energy,
-            &erosion_depth_m,
-        );
-        let surface_values = relief
-            .elevation_m()
-            .values()
-            .iter()
-            .zip(&erosion_depth_m)
-            .zip(&sediment.deposition_thickness_m)
-            .map(|((&constructional, &erosion), &deposition)| {
-                if erosion == 0.0 && deposition == 0.0 {
-                    constructional
-                } else {
-                    constructional - erosion + deposition
-                }
-            })
-            .collect();
-
+            spec,
+        )?;
         let snapshot = SurfaceProcessSnapshot::new(
             SURFACE_PROCESS_SCHEMA_V1,
             relief.cell_count(),
-            erosion_depth_m,
-            sediment.deposition_thickness_m,
-            ElevationField::from_values(surface_values)?,
-            sediment.throughput_m3,
-            sediment.export_m3,
+            output.erosion_depth_m,
+            output.deposition_thickness_m,
+            output.surface_elevation_m,
+            output.sediment_throughput_m3,
+            output.sediment_terminal_transfer_m3,
         )?;
         snapshot.validate_against_validated_spatial(spatial, relief)?;
         Ok(snapshot)
     }
+}
+
+pub(crate) struct ErosionCoreOutput {
+    pub(crate) erosion_depth_m: Vec<f32>,
+    pub(crate) deposition_thickness_m: Vec<f32>,
+    pub(crate) surface_elevation_m: ElevationField,
+    pub(crate) sediment_throughput_m3: Vec<f64>,
+    pub(crate) sediment_terminal_transfer_m3: f64,
+    pub(crate) sediment_ocean_delivery_m3: f64,
+    pub(crate) sediment_endorheic_storage_m3: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_erosion_core(
+    surface: &impl NaturalSurface,
+    topology: &NaturalTopologyIndex,
+    constructional_elevation_m: &ElevationField,
+    land_ocean: &LandOceanField,
+    erosion_resistance: &[f32],
+    hydrology: &HydrologySnapshot,
+    spec: &HydroErosionSpec,
+) -> Result<ErosionCoreOutput, FluvialErosionError> {
+    let energy = stream_energy(surface, topology, hydrology);
+    let erosion_depth_m = incision(
+        constructional_elevation_m,
+        land_ocean,
+        erosion_resistance,
+        &energy,
+        spec,
+    );
+    let order = upstream_to_downstream_order(hydrology.flow_receiver())?;
+    let sediment = route_sediment(
+        surface,
+        constructional_elevation_m,
+        land_ocean,
+        hydrology,
+        &order,
+        &energy,
+        &erosion_depth_m,
+    );
+    let surface_values = constructional_elevation_m
+        .values()
+        .iter()
+        .zip(&erosion_depth_m)
+        .zip(&sediment.deposition_thickness_m)
+        .map(|((&constructional, &erosion), &deposition)| {
+            if erosion == 0.0 && deposition == 0.0 {
+                constructional
+            } else {
+                constructional - erosion + deposition
+            }
+        })
+        .collect();
+    Ok(ErosionCoreOutput {
+        erosion_depth_m,
+        deposition_thickness_m: sediment.deposition_thickness_m,
+        surface_elevation_m: ElevationField::from_values(surface_values)?,
+        sediment_throughput_m3: sediment.throughput_m3,
+        sediment_terminal_transfer_m3: sediment.terminal_transfer_m3,
+        sediment_ocean_delivery_m3: sediment.ocean_delivery_m3,
+        sediment_endorheic_storage_m3: sediment.endorheic_storage_m3,
+    })
 }
 
 fn validate_inputs_against_validated_spatial(
@@ -99,17 +149,31 @@ fn validate_inputs_against_validated_spatial(
     relief.validate_against(spatial)?;
     hydrology.validate_against_validated_spatial(spatial)?;
     spec.validate()?;
-    if erosion_resistance.len() != spatial.cell_count() {
+    validate_erosion_semantic_inputs(
+        spatial.cell_count(),
+        relief.land_ocean(),
+        erosion_resistance,
+        hydrology,
+    )
+}
+
+pub(crate) fn validate_erosion_semantic_inputs(
+    cell_count: usize,
+    land_ocean: &LandOceanField,
+    erosion_resistance: &[f32],
+    hydrology: &HydrologySnapshot,
+) -> Result<(), FluvialErosionError> {
+    if erosion_resistance.len() != cell_count {
         return Err(FluvialErosionError::CellCountMismatch {
             input: "erosion_resistance",
-            expected: spatial.cell_count(),
+            expected: cell_count,
             found: erosion_resistance.len(),
         });
     }
-    if hydrology.cell_count() != relief.cell_count() {
+    if hydrology.cell_count() as usize != cell_count {
         return Err(FluvialErosionError::CellCountMismatch {
             input: "hydrology",
-            expected: relief.cell_count() as usize,
+            expected: cell_count,
             found: hydrology.cell_count() as usize,
         });
     }
@@ -121,9 +185,9 @@ fn validate_inputs_against_validated_spatial(
             });
         }
     }
-    for index in 0..spatial.cell_count() {
+    for index in 0..cell_count {
         let cell = CellId::from_raw(index as u32);
-        let expected_ocean = relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean);
+        let expected_ocean = land_ocean.get(index) == Some(LandOceanKind::Ocean);
         let stored_ocean = hydrology.surface_water().get(index) == Some(SurfaceWaterKind::Ocean);
         if expected_ocean != stored_ocean {
             return Err(FluvialErosionError::OceanClassificationMismatch { cell });
@@ -132,7 +196,11 @@ fn validate_inputs_against_validated_spatial(
     Ok(())
 }
 
-fn stream_energy(spatial: &SpatialSnapshot, hydrology: &HydrologySnapshot) -> Vec<f32> {
+fn stream_energy(
+    surface: &impl NaturalSurface,
+    topology: &NaturalTopologyIndex,
+    hydrology: &HydrologySnapshot,
+) -> Vec<f32> {
     let drainage_surface = hydrology.drainage_surface_elevation_m().values();
     hydrology
         .flow_receiver()
@@ -146,9 +214,14 @@ fn stream_energy(spatial: &SpatialSnapshot, hydrology: &HydrologySnapshot) -> Ve
             if drop_m <= 0.0 {
                 return 0.0;
             }
-            let distance_m = spatial
-                .distance_between_sites(CellId::from_raw(index as u32), *receiver)
-                .expect("validated receiver is a real spatial neighbor")
+            let cell = CellId::from_raw(index as u32);
+            let edge = topology
+                .edge_between(cell, *receiver)
+                .expect("validated receiver is a real natural-surface neighbor");
+            let distance_m = surface
+                .edge(edge)
+                .and_then(|edge| edge.center_distance())
+                .expect("two-owner natural-surface edges have center distance")
                 .get() as f32;
             let slope = drop_m / distance_m;
             let discharge = hydrology.mean_annual_discharge_m3_s()[index];
@@ -163,22 +236,22 @@ fn stream_energy(spatial: &SpatialSnapshot, hydrology: &HydrologySnapshot) -> Ve
 }
 
 fn incision(
-    relief: &ReliefSnapshot,
+    constructional_elevation_m: &ElevationField,
+    land_ocean: &LandOceanField,
     erosion_resistance: &[f32],
     energy: &[f32],
     spec: &HydroErosionSpec,
 ) -> Vec<f32> {
     let strength = spec.erosion_strength();
-    (0..relief.cell_count() as usize)
+    (0..constructional_elevation_m.len())
         .map(|index| {
-            let cell = CellId::from_raw(index as u32);
             if strength == 0.0
                 || energy[index] == 0.0
-                || relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean)
+                || land_ocean.get(index) == Some(LandOceanKind::Ocean)
             {
                 return 0.0;
             }
-            let constructional = relief.elevation_m().values()[index];
+            let constructional = constructional_elevation_m.values()[index];
             let lower_bound = (constructional - ELEVATION_MIN_M).max(0.0);
             let hard_cap = MAX_EROSION_DEPTH_M.min(lower_bound);
             let raw = MAX_FORMATION_INCISION_M
@@ -193,33 +266,38 @@ fn incision(
 struct SedimentRouting {
     deposition_thickness_m: Vec<f32>,
     throughput_m3: Vec<f64>,
-    export_m3: f64,
+    terminal_transfer_m3: f64,
+    ocean_delivery_m3: f64,
+    endorheic_storage_m3: f64,
 }
 
 fn route_sediment(
-    spatial: &SpatialSnapshot,
-    relief: &ReliefSnapshot,
+    surface: &impl NaturalSurface,
+    constructional_elevation_m: &ElevationField,
+    land_ocean: &LandOceanField,
     hydrology: &HydrologySnapshot,
     order: &[CellId],
     energy: &[f32],
     erosion_depth_m: &[f32],
 ) -> SedimentRouting {
-    let cell_count = spatial.cell_count();
+    let cell_count = surface.cell_count();
     let mut incoming_m3 = vec![0.0_f64; cell_count];
     let mut deposition_thickness_m = vec![0.0_f32; cell_count];
     let mut throughput_m3 = vec![0.0_f64; cell_count];
-    let mut export_m3 = 0.0;
+    let mut terminal_transfer_m3 = 0.0;
+    let mut ocean_delivery_m3 = 0.0;
+    let mut endorheic_storage_m3 = 0.0;
 
     for &cell in order {
         let index = cell.raw() as usize;
-        let area_m2 = spatial
+        let area_m2 = surface
             .cell(cell)
-            .expect("validated spatial input contains every routed cell")
-            .area
+            .expect("validated natural surface contains every routed cell")
+            .area()
             .get();
         let local_eroded_m3 = area_m2 * f64::from(erosion_depth_m[index]);
         let available_m3 = incoming_m3[index] + local_eroded_m3;
-        let is_ocean = relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean);
+        let is_ocean = land_ocean.get(index) == Some(LandOceanKind::Ocean);
         let water = hydrology
             .surface_water()
             .get(index)
@@ -243,7 +321,7 @@ fn route_sediment(
             } else {
                 0.20 + 0.80 * (1.0 - energy[index])
             };
-            let post_erosion = relief.elevation_m().values()[index] - erosion_depth_m[index];
+            let post_erosion = constructional_elevation_m.values()[index] - erosion_depth_m[index];
             let elevation_room = (ELEVATION_MAX_M - post_erosion).max(0.0);
             let capacity_m = (MAX_LOCAL_DEPOSITION_M * capacity_response)
                 .min(MAX_DEPOSITION_THICKNESS_M)
@@ -258,14 +336,21 @@ fn route_sediment(
         if let Some(receiver) = hydrology.flow_receiver()[index] {
             incoming_m3[receiver.raw() as usize] += outgoing_m3;
         } else {
-            export_m3 += outgoing_m3;
+            terminal_transfer_m3 += outgoing_m3;
+            if water == SurfaceWaterKind::Ocean {
+                ocean_delivery_m3 += outgoing_m3;
+            } else {
+                endorheic_storage_m3 += outgoing_m3;
+            }
         }
     }
 
     SedimentRouting {
         deposition_thickness_m,
         throughput_m3,
-        export_m3,
+        terminal_transfer_m3,
+        ocean_delivery_m3,
+        endorheic_storage_m3,
     }
 }
 
