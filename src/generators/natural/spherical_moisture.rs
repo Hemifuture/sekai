@@ -27,11 +27,13 @@ pub(super) fn solve_monthly_precipitation(
     surface: &SphericalNaturalSurface<'_>,
     relief: &SphericalReliefSnapshot,
     spec: &ClimateSpec,
+    latitude_degrees: &[f32],
     maritime: &[f32],
     temperature: &[[f32; CLIMATE_MONTH_COUNT]],
 ) -> Vec<[f32; CLIMATE_MONTH_COUNT]> {
     let cell_count = surface.cell_count();
     debug_assert_eq!(relief.elevation_m().values().len(), cell_count);
+    debug_assert_eq!(latitude_degrees.len(), cell_count);
     debug_assert_eq!(maritime.len(), cell_count);
     debug_assert_eq!(temperature.len(), cell_count);
 
@@ -59,6 +61,7 @@ pub(super) fn solve_monthly_precipitation(
         build_monthly_flows(
             surface,
             relief,
+            latitude_degrees,
             maritime,
             temperature,
             month,
@@ -109,6 +112,7 @@ pub(super) fn solve_monthly_precipitation(
 fn build_monthly_flows(
     surface: &SphericalNaturalSurface<'_>,
     relief: &SphericalReliefSnapshot,
+    latitude_degrees: &[f32],
     maritime: &[f32],
     temperature: &[[f32; CLIMATE_MONTH_COUNT]],
     month: usize,
@@ -148,7 +152,7 @@ fn build_monthly_flows(
             relief.elevation_m().values()[receiver],
             relief.elevation_m().values()[donor],
             temperature[receiver][month],
-            latitude,
+            latitude_degrees[receiver],
             declination_degrees,
         );
         outgoing_conductance[donor] += conductance;
@@ -380,5 +384,16 @@ mod tests {
             flows[0].donor_mass_fraction,
             flows[1].donor_mass_fraction
         );
+    }
+
+    #[test]
+    fn condensation_responds_to_receiver_climate_and_positive_upwind_relief() {
+        let warm_tropical = condensation_fraction(0.0, 0.0, 30.0, 5.0, 10.0);
+        let cold_polar = condensation_fraction(0.0, 0.0, -25.0, 75.0, 10.0);
+        let windward_uplift = condensation_fraction(2_000.0, 0.0, 10.0, 45.0, 10.0);
+        let leeward_descent = condensation_fraction(0.0, 2_000.0, 10.0, 45.0, 10.0);
+
+        assert!(warm_tropical > cold_polar);
+        assert!(windward_uplift > leeward_descent);
     }
 }

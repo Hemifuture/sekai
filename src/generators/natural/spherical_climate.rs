@@ -31,6 +31,9 @@ struct SphericalThermalWindFields {
 
 impl ClimateGenerator {
     /// Generates current-slice monthly forcing directly on an authoritative closed sphere.
+    ///
+    /// Latitude always comes from the canonical `+Z` spin axis. The shared specification's
+    /// south/north latitude fields remain planar extent controls and do not crop a closed sphere.
     pub fn generate_spherical(
         surface: &SphericalSurfaceSnapshot,
         relief: &SphericalReliefSnapshot,
@@ -47,6 +50,7 @@ impl ClimateGenerator {
             &view,
             relief,
             spec,
+            &fields.latitude_degrees,
             &fields.maritime_influence,
             &fields.monthly_air_temperature_c,
         );
@@ -237,7 +241,7 @@ pub(super) fn tangent_wind(
 }
 
 /// Failures while deriving preliminary climate directly on a closed sphere.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalClimateGenerationError {
     /// The resolved shared climate forcing is invalid.
     #[error("invalid spherical preliminary-climate specification: {0}")]

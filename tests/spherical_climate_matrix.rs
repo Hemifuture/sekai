@@ -36,7 +36,7 @@ const CASES: [MatrixCase; 4] = [
         axial_tilt_centideg: 0,
         temperature_offset_deci_c: -300,
         moisture_scale_permille: 250,
-        expected_hash: "608115e779cf49646b9b897833af6ef5ec1c4f14b66b8e32e8fc5ea083a5f885",
+        expected_hash: "f00d5b7e0768597c4f0112c69940ddd6378945a9a0acb5d7640cbf0a5bc3a6b6",
     },
     MatrixCase {
         name: "regional-high-tilt-ocean",
@@ -46,7 +46,7 @@ const CASES: [MatrixCase; 4] = [
         axial_tilt_centideg: 6_000,
         temperature_offset_deci_c: 300,
         moisture_scale_permille: 2_500,
-        expected_hash: "add3607bf9512757fe79b878236c0f886caad311161089b47f0ddc35060336a6",
+        expected_hash: "7835c9d0a6107c12220e3878b26a059afdf8ea7ab04ab955de856b2d6075b185",
     },
     MatrixCase {
         name: "earth-mixed-continents",
@@ -56,7 +56,7 @@ const CASES: [MatrixCase; 4] = [
         axial_tilt_centideg: 2_340,
         temperature_offset_deci_c: 0,
         moisture_scale_permille: 1_000,
-        expected_hash: "c76e77f6f73d8596577191c375fc8b00d9cd57ef1ddbead26936a9babad9c930",
+        expected_hash: "43f5ad23c89ee39cbe7142e6aab0f6b4d6003308f467e9055e0cdc37ea8fc532",
     },
     MatrixCase {
         name: "maximum-radius-mountain-arc",
@@ -66,7 +66,7 @@ const CASES: [MatrixCase; 4] = [
         axial_tilt_centideg: 4_500,
         temperature_offset_deci_c: -100,
         moisture_scale_permille: 1_500,
-        expected_hash: "808c6e20b0da1659f5f7450642a07eb684f96c2def51acc45abc29aa4071a0bf",
+        expected_hash: "aa8efb1b8d4ba180bb8faf451d013f732c7c86afb178fa1e90530dd1ef873821",
     },
 ];
 
