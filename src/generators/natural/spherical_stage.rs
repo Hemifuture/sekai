@@ -5,8 +5,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
-    SphericalTectonicGenerationError, TectonicGenerator,
+    ReliefGenerator, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
+    SphericalMantleArtifact, SphericalReliefGenerationError, SphericalTectonicGenerationError,
+    TectonicGenerator,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
@@ -14,11 +15,14 @@ use crate::engine::{
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::rules::TectonicModel;
-use crate::world::natural::SphericalTectonicSnapshot;
+use crate::world::natural::{SphericalReliefSnapshot, SphericalTectonicSnapshot};
 
 const INVALID_INPUT_CODE: &str = "spherical-natural.invalid-tectonic-input";
 const BUILD_FAILED_CODE: &str = "spherical-natural.tectonic-build-failed";
 const INVALID_TECTONICS_CODE: &str = "spherical-natural.invalid-tectonics";
+const INVALID_RELIEF_INPUT_CODE: &str = "spherical-natural.invalid-relief-input";
+const RELIEF_BUILD_FAILED_CODE: &str = "spherical-natural.relief-build-failed";
+const INVALID_RELIEF_CODE: &str = "spherical-natural.invalid-relief";
 
 /// Engine transport for one complete spherical tectonic snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +136,121 @@ impl Stage for SphericalTectonicStage {
     }
 }
 
+/// Engine transport for one complete spherical relief snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalReliefArtifact {
+    snapshot: SphericalReliefSnapshot,
+}
+
+impl SphericalReliefArtifact {
+    /// Wraps a locally valid spherical relief snapshot.
+    pub const fn new(snapshot: SphericalReliefSnapshot) -> Self {
+        Self { snapshot }
+    }
+
+    /// Returns the immutable surface-bound snapshot.
+    pub const fn snapshot(&self) -> &SphericalReliefSnapshot {
+        &self.snapshot
+    }
+}
+
+impl Artifact for SphericalReliefArtifact {
+    const KEY: ArtifactKey = ArtifactKey::new("world.spherical-relief");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        self.snapshot
+            .validate()
+            .map_err(|error| ArtifactValidationError::new(INVALID_RELIEF_CODE, error.to_string()))
+    }
+}
+
+/// The exact typed inputs visible to [`SphericalReliefStage`].
+pub struct SphericalReliefStageInputs {
+    mantle: Arc<SphericalMantleArtifact>,
+    surface: Arc<SphericalSurfaceArtifact>,
+    tectonic: Arc<SphericalTectonicArtifact>,
+}
+
+impl StageInputs for SphericalReliefStageInputs {
+    fn dependencies() -> &'static [ArtifactKey] {
+        &[
+            SphericalMantleArtifact::KEY,
+            SphericalSurfaceArtifact::KEY,
+            SphericalTectonicArtifact::KEY,
+        ]
+    }
+
+    fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
+        Ok(Self {
+            mantle: artifacts.get::<SphericalMantleArtifact>()?,
+            surface: artifacts.get::<SphericalSurfaceArtifact>()?,
+            tectonic: artifacts.get::<SphericalTectonicArtifact>()?,
+        })
+    }
+}
+
+/// Deterministic adapter for the frozen spherical relief scientific stream.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SphericalReliefStage;
+
+impl Stage for SphericalReliefStage {
+    type Inputs = SphericalReliefStageInputs;
+    type Output = SphericalReliefArtifact;
+
+    fn id(&self) -> StageId {
+        StageId::new("natural.spherical-relief")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "sekai.core"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        rng: &mut StageRng,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        inputs
+            .surface
+            .snapshot()
+            .validate()
+            .map_err(|error| invalid_relief_input(error.to_string()))?;
+        inputs
+            .tectonic
+            .snapshot()
+            .validate_against(inputs.surface.snapshot())
+            .map_err(|error| invalid_relief_input(error.to_string()))?;
+        inputs
+            .mantle
+            .snapshot()
+            .validate_against(inputs.surface.snapshot())
+            .map_err(|error| invalid_relief_input(error.to_string()))?;
+
+        let snapshot = ReliefGenerator::generate_spherical(
+            inputs.surface.snapshot(),
+            inputs.tectonic.snapshot(),
+            inputs.mantle.snapshot(),
+            rng,
+            diagnostics,
+        )
+        .map_err(relief_generation_failure)?;
+        snapshot
+            .validate_against(
+                inputs.surface.snapshot(),
+                inputs.tectonic.snapshot(),
+                inputs.mantle.snapshot(),
+            )
+            .map_err(|error| invalid_relief(error.to_string()))?;
+        Ok(SphericalReliefArtifact::new(snapshot))
+    }
+}
+
 fn invalid_input(message: String) -> StageError {
     StageError::new(INVALID_INPUT_CODE, message)
 }
@@ -157,4 +276,27 @@ fn generation_failure(error: SphericalTectonicGenerationError) -> StageError {
 
 fn invalid_tectonics(message: String) -> StageError {
     StageError::new(INVALID_TECTONICS_CODE, message)
+}
+
+fn invalid_relief_input(message: String) -> StageError {
+    StageError::new(INVALID_RELIEF_INPUT_CODE, message)
+}
+
+fn relief_generation_failure(error: SphericalReliefGenerationError) -> StageError {
+    match error {
+        SphericalReliefGenerationError::InvalidSurface(_)
+        | SphericalReliefGenerationError::InvalidSurfaceIdentity(_)
+        | SphericalReliefGenerationError::InvalidTectonics(_)
+        | SphericalReliefGenerationError::InvalidMantle(_) => {
+            invalid_relief_input(error.to_string())
+        }
+        SphericalReliefGenerationError::InvalidReliefField(_) => {
+            StageError::new(RELIEF_BUILD_FAILED_CODE, error.to_string())
+        }
+        SphericalReliefGenerationError::InvalidSnapshot(_) => invalid_relief(error.to_string()),
+    }
+}
+
+fn invalid_relief(message: String) -> StageError {
+    StageError::new(INVALID_RELIEF_CODE, message)
 }

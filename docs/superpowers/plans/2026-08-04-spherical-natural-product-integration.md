@@ -319,19 +319,19 @@ git commit -m "feat: publish spherical tectonic mantle stages"
 - Consumes: the Task 2 Artifact types, `SphericalSurfaceArtifact`, `ResolvedGeologicInputArtifact`, `ReliefGenerator::generate_spherical`, and `GeologicGenerator::generate_spherical`.
 - Produces: `SphericalReliefArtifact`, `SphericalReliefStage`, `SphericalReliefStageInputs`, `SphericalGeologicArtifact`, `SphericalGeologicStage`, and `SphericalGeologicStageInputs`.
 
-- [ ] **Step 1: Write failing Stage/Artifact contract tests**
+- [x] **Step 1: Write failing Stage/Artifact contract tests**
 
 Assert keys `world.spherical-relief` and `world.spherical-geology`, Stage IDs `natural.spherical-relief` and `natural.spherical-geology`, namespace `sekai.core`, version `1`, exact dependency arrays, strict wrapper serde, cross-surface rejection, and equality with direct generator results under the same stage identities.
 
 The relief test must also verify that a generator diagnostic emitted through the stage appears in `BuildReport`; the geology stage must emit no synthetic diagnostic.
 
-- [ ] **Step 2: Run and observe RED**
+- [x] **Step 2: Run and observe RED**
 
 Run: `cargo test --test spherical_relief_geologic_stage -- --nocapture`
 
 Expected: compilation fails on the missing relief/geology Artifact types.
 
-- [ ] **Step 3: Implement the relief adapter**
+- [x] **Step 3: Implement the relief adapter**
 
 Use exact dependencies `[SphericalMantleArtifact::KEY, SphericalSurfaceArtifact::KEY, SphericalTectonicArtifact::KEY]`. Call:
 
@@ -347,7 +347,7 @@ ReliefGenerator::generate_spherical(
 
 Then call the public three-upstream `validate_against` method and publish the strict Artifact.
 
-- [ ] **Step 4: Implement the geology adapter**
+- [x] **Step 4: Implement the geology adapter**
 
 Load the resolved geologic input plus surface, tectonic, mantle, and relief. Match `GeologicModel::CurrentSliceV1`, call the existing spherical generator, then call:
 
@@ -362,7 +362,7 @@ snapshot.validate_against(
 
 Use the stable geology codes `spherical-natural.invalid-geologic-input`, `spherical-natural.geologic-build-failed`, and `spherical-natural.invalid-geology`; use the relief codes `spherical-natural.invalid-relief-input`, `spherical-natural.relief-build-failed`, and `spherical-natural.invalid-relief`. Preserve the source error text so a `SurfaceRef` mismatch remains identifiable.
 
-- [ ] **Step 5: Run focused and scientific regression tests**
+- [x] **Step 5: Run focused and scientific regression tests**
 
 Run:
 
@@ -373,7 +373,7 @@ cargo test --test spherical_relief_generation --test spherical_geologic_generati
 
 Expected: all pass with existing direct-generator hashes unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/generators/natural/spherical_stage.rs src/generators/natural/spherical_geologic_stage.rs src/generators/natural/mod.rs tests/spherical_relief_geologic_stage.rs

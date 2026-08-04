@@ -81,6 +81,7 @@ pub use rule_input::{
 pub use spherical_climate::SphericalClimateGenerationError;
 pub use spherical_erosion::SphericalFluvialErosionError;
 pub use spherical_geologic_stage::{
+    SphericalGeologicArtifact, SphericalGeologicStage, SphericalGeologicStageInputs,
     SphericalMantleArtifact, SphericalMantleStage, SphericalMantleStageInputs,
 };
 pub use spherical_geology::SphericalGeologicGenerationError;
@@ -89,6 +90,7 @@ pub use spherical_hydrology::SphericalHydrologyGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_stage::{
+    SphericalReliefArtifact, SphericalReliefStage, SphericalReliefStageInputs,
     SphericalTectonicArtifact, SphericalTectonicStage, SphericalTectonicStageInputs,
 };
 pub use spherical_tectonics::SphericalTectonicGenerationError;
