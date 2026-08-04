@@ -18,6 +18,7 @@ mod spherical_geology;
 mod spherical_hydrology;
 mod spherical_mantle;
 mod spherical_relief;
+mod spherical_surface_process;
 mod spherical_tectonics;
 mod surface_process;
 mod tectonics;
@@ -111,6 +112,9 @@ pub use spherical_mantle::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
 pub use spherical_relief::{SphericalReliefSnapshot, SphericalReliefValidationError};
+pub use spherical_surface_process::{
+    SphericalSurfaceProcessSnapshot, SphericalSurfaceProcessValidationError,
+};
 pub(crate) use spherical_tectonics::classify_spherical_boundary_kinematics;
 pub use spherical_tectonics::{
     SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
@@ -120,7 +124,7 @@ pub use spherical_tectonics::{
 pub use surface_process::{
     SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,
     MAX_EROSION_DEPTH_M, SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3, SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
-    SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1,
+    SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1, SURFACE_PROCESS_SCHEMA_V2,
 };
 pub(crate) use tectonics::{
     classify_boundary_kinematics, BoundaryClassification, BoundaryKinematics,

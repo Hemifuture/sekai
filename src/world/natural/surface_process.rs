@@ -11,6 +11,8 @@ use crate::world::CellId;
 
 /// The supported version of the serialized surface-process schema.
 pub const SURFACE_PROCESS_SCHEMA_V1: u16 = 1;
+/// The surface-bound process schema used by authoritative spherical worlds.
+pub const SURFACE_PROCESS_SCHEMA_V2: u16 = 2;
 /// The hard safety bound for fluvial incision depth in one current-slice solve.
 pub const MAX_EROSION_DEPTH_M: f32 = 5_000.0;
 /// The hard safety bound for sediment deposition thickness in one current-slice solve.
@@ -168,70 +170,24 @@ impl SurfaceProcessSnapshot {
             });
         }
         relief.validate_against(spatial)?;
-
-        let mut eroded_volume_m3 = CompensatedSum::default();
-        let mut deposited_volume_m3 = CompensatedSum::default();
-
-        for index in 0..self.cell_count as usize {
-            let cell = CellId::from_raw(index as u32);
-            let constructional = relief.elevation_m().values()[index];
-            let erosion = self.erosion_depth_m[index];
-            let deposition = self.deposition_thickness_m[index];
-            let surface = self.surface_elevation_m.values()[index];
-            let calculated = constructional - erosion + deposition;
-            if (surface - calculated).abs() > SURFACE_IDENTITY_TOLERANCE_M {
-                return Err(SurfaceProcessValidationError::SurfaceIdentityMismatch {
-                    cell,
-                    surface,
-                    calculated,
-                });
-            }
-
-            if relief.land_ocean_kind(cell) == Some(LandOceanKind::Ocean)
-                && (erosion != 0.0 || deposition != 0.0)
-            {
-                return Err(SurfaceProcessValidationError::OceanSurfaceProcess {
-                    cell,
-                    erosion,
-                    deposition,
-                });
-            }
-
-            let area_m2 = spatial
-                .cell(cell)
-                .expect("validated dense spatial snapshot contains every cell")
-                .area
-                .get();
-            eroded_volume_m3.add_checked(area_m2 * f64::from(erosion), cell)?;
-            deposited_volume_m3.add_checked(area_m2 * f64::from(deposition), cell)?;
-        }
-
-        let eroded_volume_m3 = eroded_volume_m3.total();
-        let deposited_volume_m3 = deposited_volume_m3.total();
-        let accounted_volume_m3 = deposited_volume_m3 + self.sediment_export_m3;
-        if !accounted_volume_m3.is_finite() {
-            return Err(
-                SurfaceProcessValidationError::NonFiniteDerivedSedimentVolume {
-                    cell: None,
-                    found: accounted_volume_m3,
-                },
-            );
-        }
-        let difference_m3 = (eroded_volume_m3 - accounted_volume_m3).abs();
-        let tolerance_m3 = SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3.max(
-            eroded_volume_m3.abs().max(accounted_volume_m3.abs())
-                * SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
-        );
-        if difference_m3 > tolerance_m3 {
-            return Err(SurfaceProcessValidationError::SedimentMassMismatch {
-                eroded_volume_m3,
-                deposited_volume_m3,
-                exported_volume_m3: self.sediment_export_m3,
-                difference_m3,
-                tolerance_m3,
-            });
-        }
-        Ok(())
+        validate_surface_process_relations(
+            self.cell_count,
+            &self.erosion_depth_m,
+            &self.deposition_thickness_m,
+            &self.surface_elevation_m,
+            self.sediment_export_m3,
+            spatial.cell_count(),
+            relief.cell_count(),
+            relief.elevation_m(),
+            |cell| relief.land_ocean_kind(cell),
+            |cell| {
+                spatial
+                    .cell(cell)
+                    .expect("validated dense spatial snapshot contains every cell")
+                    .area
+                    .get()
+            },
+        )
     }
 
     /// Returns the serialized snapshot schema version.
@@ -270,6 +226,96 @@ impl SurfaceProcessSnapshot {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_surface_process_relations<LandOcean, Area>(
+    cell_count: u32,
+    erosion_depth_m: &[f32],
+    deposition_thickness_m: &[f32],
+    surface_elevation_m: &ElevationField,
+    sediment_terminal_transfer_m3: f64,
+    metric_cell_count: usize,
+    relief_cell_count: u32,
+    constructional_elevation_m: &ElevationField,
+    mut land_ocean_kind: LandOcean,
+    mut cell_area_m2: Area,
+) -> Result<(), SurfaceProcessValidationError>
+where
+    LandOcean: FnMut(CellId) -> Option<LandOceanKind>,
+    Area: FnMut(CellId) -> f64,
+{
+    if cell_count as usize != metric_cell_count {
+        return Err(SurfaceProcessValidationError::SpatialCellCountMismatch {
+            surface: cell_count,
+            spatial: metric_cell_count,
+        });
+    }
+    if cell_count != relief_cell_count {
+        return Err(SurfaceProcessValidationError::ReliefCellCountMismatch {
+            surface: cell_count,
+            relief: relief_cell_count,
+        });
+    }
+
+    let mut eroded_volume_m3 = CompensatedSum::default();
+    let mut deposited_volume_m3 = CompensatedSum::default();
+
+    for index in 0..cell_count as usize {
+        let cell = CellId::from_raw(index as u32);
+        let constructional = constructional_elevation_m.values()[index];
+        let erosion = erosion_depth_m[index];
+        let deposition = deposition_thickness_m[index];
+        let surface = surface_elevation_m.values()[index];
+        let calculated = constructional - erosion + deposition;
+        if (surface - calculated).abs() > SURFACE_IDENTITY_TOLERANCE_M {
+            return Err(SurfaceProcessValidationError::SurfaceIdentityMismatch {
+                cell,
+                surface,
+                calculated,
+            });
+        }
+
+        if land_ocean_kind(cell) == Some(LandOceanKind::Ocean)
+            && (erosion != 0.0 || deposition != 0.0)
+        {
+            return Err(SurfaceProcessValidationError::OceanSurfaceProcess {
+                cell,
+                erosion,
+                deposition,
+            });
+        }
+
+        let area_m2 = cell_area_m2(cell);
+        eroded_volume_m3.add_checked(area_m2 * f64::from(erosion), cell)?;
+        deposited_volume_m3.add_checked(area_m2 * f64::from(deposition), cell)?;
+    }
+
+    let eroded_volume_m3 = eroded_volume_m3.total();
+    let deposited_volume_m3 = deposited_volume_m3.total();
+    let accounted_volume_m3 = deposited_volume_m3 + sediment_terminal_transfer_m3;
+    if !accounted_volume_m3.is_finite() {
+        return Err(
+            SurfaceProcessValidationError::NonFiniteDerivedSedimentVolume {
+                cell: None,
+                found: accounted_volume_m3,
+            },
+        );
+    }
+    let difference_m3 = (eroded_volume_m3 - accounted_volume_m3).abs();
+    let tolerance_m3 = SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3.max(
+        eroded_volume_m3.abs().max(accounted_volume_m3.abs()) * SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
+    );
+    if difference_m3 > tolerance_m3 {
+        return Err(SurfaceProcessValidationError::SedimentMassMismatch {
+            eroded_volume_m3,
+            deposited_volume_m3,
+            exported_volume_m3: sediment_terminal_transfer_m3,
+            difference_m3,
+            tolerance_m3,
+        });
+    }
+    Ok(())
+}
+
 impl<'de> Deserialize<'de> for SurfaceProcessSnapshot {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -289,7 +335,7 @@ impl<'de> Deserialize<'de> for SurfaceProcessSnapshot {
     }
 }
 
-fn validate_length(
+pub(crate) fn validate_length(
     field: &'static str,
     found: usize,
     cell_count: u32,
@@ -305,7 +351,7 @@ fn validate_length(
     Ok(())
 }
 
-fn validate_f32_range(
+pub(crate) fn validate_f32_range(
     field: &'static str,
     values: &[f32],
     min: f32,
@@ -325,7 +371,7 @@ fn validate_f32_range(
     Ok(())
 }
 
-fn validate_sediment_volume(
+pub(crate) fn validate_sediment_volume(
     field: &'static str,
     cell: Option<CellId>,
     found: f64,
