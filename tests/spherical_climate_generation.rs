@@ -231,6 +231,51 @@ fn spherical_generation_rejects_wrong_surface_relief_before_work() {
         ClimateGenerator::generate_spherical(&sphere, &wrong_relief, &ClimateSpec::default()),
         Err(SphericalClimateGenerationError::InvalidRelief(_))
     ));
+
+    let invalid_spec = ClimateSpec {
+        schema_version: 0,
+        ..ClimateSpec::default()
+    };
+    assert!(matches!(
+        ClimateGenerator::generate_spherical(&sphere, &relief(&sphere, |_| 100.0), &invalid_spec),
+        Err(SphericalClimateGenerationError::InvalidSpec(_))
+    ));
+}
+
+#[test]
+fn spherical_forcing_ignores_planar_extent_but_responds_to_temperature_offset() {
+    let sphere = surface(162);
+    let land = relief(&sphere, |_| 100.0);
+    let default_spec = ClimateSpec::default();
+    let alternate_planar_extent = ClimateSpec {
+        south_latitude_centideg: -9_000,
+        north_latitude_centideg: -8_000,
+        ..default_spec.clone()
+    };
+    let default_climate =
+        ClimateGenerator::generate_spherical(&sphere, &land, &default_spec).unwrap();
+    let alternate_climate =
+        ClimateGenerator::generate_spherical(&sphere, &land, &alternate_planar_extent).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&default_climate).unwrap(),
+        serde_json::to_vec(&alternate_climate).unwrap()
+    );
+
+    let cold_spec = ClimateSpec {
+        temperature_offset_deci_c: -300,
+        ..default_spec.clone()
+    };
+    let warm_spec = ClimateSpec {
+        temperature_offset_deci_c: 300,
+        ..default_spec
+    };
+    let cold = ClimateGenerator::generate_spherical(&sphere, &land, &cold_spec).unwrap();
+    let warm = ClimateGenerator::generate_spherical(&sphere, &land, &warm_spec).unwrap();
+    let equator = nearest_latitude(&sphere, 0.0);
+    assert!(
+        warm.mean_annual_air_temperature_c()[equator]
+            > cold.mean_annual_air_temperature_c()[equator] + 50.0
+    );
 }
 
 #[test]
