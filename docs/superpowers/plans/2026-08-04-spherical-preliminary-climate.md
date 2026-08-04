@@ -58,10 +58,10 @@ tests/
 - Test: `tests/climate_contracts.rs`
 - Test: `tests/climate_generation.rs`
 
-- [ ] Write a frozen planar V1 JSON/hash regression around representative monthly and annual fields.
-- [ ] Add `PRELIMINARY_CLIMATE_SCHEMA_V2`, `MonthlyVector3Field`, and narrow package-visible scalar/monthly validation helpers. Do not make planar V1 strict or bounded retroactively.
-- [ ] Reuse the existing `ClimateValidationError` for geometry-independent finite/range/summary failures; keep spherical identity and tangency errors in a separate type.
-- [ ] Run all planar climate contracts/generation/stage/golden tests and commit `refactor: share preliminary climate field semantics`.
+- [x] Write a frozen planar V1 JSON/hash regression around representative monthly and annual fields.
+- [x] Add `PRELIMINARY_CLIMATE_SCHEMA_V2`, `MonthlyVector3Field`, and narrow package-visible scalar/monthly validation helpers. Do not make planar V1 strict or bounded retroactively.
+- [x] Reuse the existing `ClimateValidationError` for geometry-independent finite/range/summary failures; keep spherical identity and tangency errors in a separate type.
+- [x] Run all planar climate contracts/generation/stage/golden tests and commit `refactor: share preliminary climate field semantics`.
 
 ### Task 2: Define the strict surface-bound V2 climate contract
 
@@ -70,11 +70,11 @@ tests/
 - Modify: `src/world/natural/mod.rs`
 - Test: `tests/spherical_climate_contracts.rs`
 
-- [ ] Write RED tests for V2 schema, exact `SurfaceRef`, every dense length/range, monthly/annual identities, strict unknown-field rejection, exact round trip, and equal-count different-surface rejection.
-- [ ] Write streaming maximum and maximum-plus-one allocation tests for latitude, maritime, both monthly scalar fields, monthly vector3, every scalar summary, and prevailing vector3.
-- [ ] Cross-validate latitude against `asin(radial.z)`, wind tangency against authoritative radials, ocean maritime identity, all-land/all-ocean behavior, and exact spherical relief compatibility.
-- [ ] Keep all fields private and immutable; expose zero-copy slices and typed cell/month getters. Store no surface cells, edges, adjacency, bases, fluxes, or renderer state.
-- [ ] Verify planar V1 decoding remains unchanged and commit `feat: add spherical preliminary climate contracts`.
+- [x] Write RED tests for V2 schema, exact `SurfaceRef`, every dense length/range, monthly/annual identities, strict unknown-field rejection, exact round trip, and equal-count different-surface rejection.
+- [x] Write streaming maximum and maximum-plus-one allocation tests for latitude, maritime, both monthly scalar fields, monthly vector3, every scalar summary, and prevailing vector3.
+- [x] Cross-validate latitude against `asin(radial.z)`, wind tangency against authoritative radials, ocean maritime identity, all-land/all-ocean behavior, and exact spherical relief compatibility.
+- [x] Keep all fields private and immutable; expose zero-copy slices and typed cell/month getters. Store no surface cells, edges, adjacency, bases, fluxes, or renderer state.
+- [x] Verify planar V1 decoding remains unchanged and commit `feat: add spherical preliminary climate contracts`.
 
 ### Task 3: Freeze and expose only shared physical formulas
 
@@ -82,9 +82,9 @@ tests/
 - Modify: `src/generators/natural/climate.rs`
 - Test: existing planar climate tests
 
-- [ ] Make only the existing lapse rate, monthly declination, daily-mean insolation, annual sea-level temperature, circulation-band components, and evaporation response package-visible.
-- [ ] Preserve every expression, constant, call order, grid algorithm, and planar result. Do not introduce a universal climate context or make rectangular-grid helpers shared.
-- [ ] Add focused hemisphere/insolation and planar no-drift checks; commit with the first spherical generator slice that consumes these helpers.
+- [x] Make only the existing lapse rate, monthly declination, daily-mean insolation, annual sea-level temperature, circulation-band components, and evaporation response package-visible.
+- [x] Preserve every expression, constant, call order, grid algorithm, and planar result. Do not introduce a universal climate context or make rectangular-grid helpers shared.
+- [x] Add focused hemisphere/insolation and planar no-drift checks; commit with the first spherical generator slice that consumes these helpers.
 
 ### Task 4: Generate spherical latitude, maritime influence, temperature, and tangent wind
 
@@ -93,11 +93,11 @@ tests/
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/spherical_climate_generation.rs`
 
-- [ ] Write RED tests that latitude is exactly derived from unit radials, full-sphere extent reaches both polar bands, and northern/southern seasonal phases reverse.
-- [ ] Write RED wind tests for low-latitude easterlies, midlatitude westerlies, monthly band migration, finite speed bounds, strict cell tangency, ordinary pole/cut statistics, and zero longitude/projection dependencies.
-- [ ] Write RED maritime tests for all-ocean `1`, all-land `0`, ocean cells `1`, monotone graph-distance decay, and no exposed-boundary artifact.
-- [ ] Derive local east/north only as disposable three-dimensional tangent bases around canonical `+Z`; use a smooth zero-speed limit where zonal direction is undefined at the exact poles.
-- [ ] Reuse shared monthly insolation and thermal formulas, apply authoritative local elevation lapse correction directly per cell, and allocate monthly fields once.
+- [x] Write RED tests that latitude is exactly derived from unit radials, full-sphere extent reaches both polar bands, and northern/southern seasonal phases reverse.
+- [x] Write RED wind tests for low-latitude easterlies, midlatitude westerlies, monthly band migration, finite speed bounds, strict cell tangency, ordinary pole/cut statistics, and zero longitude/projection dependencies.
+- [x] Write RED maritime tests for all-ocean `1`, all-land `0`, ocean cells `1`, monotone graph-distance decay, and no exposed-boundary artifact.
+- [x] Derive local east/north only as disposable three-dimensional tangent bases around canonical `+Z`; use a smooth zero-speed limit where zonal direction is undefined at the exact poles.
+- [x] Reuse shared monthly insolation and thermal formulas, apply authoritative local elevation lapse correction directly per cell, and allocate monthly fields once.
 
 ### Task 5: Implement paired monotone spherical moisture transport
 
@@ -106,11 +106,11 @@ tests/
 - Test: module unit tests
 - Test: `tests/spherical_climate_generation.rs`
 
-- [ ] Write RED operator tests showing one shared edge is applied once, donor loss equals receiver gain plus explicit condensation, global vapor-plus-condensate closes, reversing owner labels preserves physics, and no supported outgoing fan can make vapor negative.
-- [ ] Precompute monthly edge-normal speed from an analytic tangent wind at each authoritative edge midpoint. Use `speed × shared-edge length` as conductance and cell area for a local outgoing CFL limiter.
-- [ ] Use first-order donor upwinding. Keep f64 transport mass internally, reuse vapor/delta/outgoing/condensate/flow buffers, and quantize only published f32 climate fields.
-- [ ] Make ocean evaporation and land recycling explicit sources. Make background/convective and positive upwind elevation change explicit condensation; do not hide loss at an external boundary or in an unexplained decay factor.
-- [ ] Write causal tests for warm-ocean moisture supply, moisture-scale response, windward enhancement, downstream rain shadow, nonnegative vapor/precipitation, and annual bounds.
+- [x] Write RED operator tests showing one shared edge is applied once, donor loss equals receiver gain plus explicit condensation, global vapor-plus-condensate closes, reversing owner labels preserves physics, and no supported outgoing fan can make vapor negative.
+- [x] Precompute monthly edge-normal speed from an analytic tangent wind at each authoritative edge midpoint. Use `speed × shared-edge length` as conductance and cell area for a local outgoing CFL limiter.
+- [x] Use first-order donor upwinding. Keep f64 transport mass internally, reuse vapor/delta/outgoing/condensate/flow buffers, and quantize only published f32 climate fields.
+- [x] Make ocean evaporation and land recycling explicit sources. Make background/convective and positive upwind elevation change explicit condensation; do not hide loss at an external boundary or in an unexplained decay factor.
+- [x] Write causal tests for warm-ocean moisture supply, moisture-scale response, windward enhancement, downstream rain shadow, nonnegative vapor/precipitation, and annual bounds.
 
 ### Task 6: Orchestrate and validate spherical V2 generation
 
@@ -119,10 +119,10 @@ tests/
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/spherical_climate_generation.rs`
 
-- [ ] Implement `ClimateGenerator::generate_spherical(surface, relief, spec)`: validate each public input once, build one topology index, derive monthly forcing, compute exact summaries, construct V2, and cross-validate the completed snapshot.
-- [ ] Reject same-count wrong-surface relief and malformed specs before generating work arrays.
-- [ ] Verify deterministic byte repeatability, spec sensitivity, several radii/resolutions, all-land/all-ocean safety, no mutation of upstreams, and planar no drift.
-- [ ] Commit `feat: generate spherical preliminary climate`.
+- [x] Implement `ClimateGenerator::generate_spherical(surface, relief, spec)`: validate each public input once, build one topology index, derive monthly forcing, compute exact summaries, construct V2, and cross-validate the completed snapshot.
+- [x] Reject same-count wrong-surface relief and malformed specs before generating work arrays.
+- [x] Verify deterministic byte repeatability, spec sensitivity, several radii/resolutions, all-land/all-ocean safety, no mutation of upstreams, and planar no drift.
+- [x] Commit the generator in reviewable thermal/wind and conservative-moisture slices.
 
 ### Task 7: Whole-slice scientific, ownership, and performance gates
 
@@ -131,13 +131,28 @@ tests/
 - Create: `tests/spherical_climate_performance.rs`
 - Modify: this plan with exact evidence
 
-- [ ] Run a deterministic matrix spanning minimum/Earth/maximum radii, coarse/medium meshes, climate-spec extremes, ocean/continent mixtures, and multiple upstream seeds. Freeze representative V2 hashes after review.
-- [ ] Confirm latitude/temperature/season signs, tangent wind, maritime causality, moisture nonnegativity, paired edge budgets, windward/rain-shadow response, and no seam/pole statistical outlier.
-- [ ] Measure Release generation near 20,000 cells: total time, per-month transport time if practical, persistent V2 bytes, peak/working-set delta, and diagnostics. Confirm O(months × iterations × edges) time and O(cells + edges) work memory.
-- [ ] Audit that S0B.4 owns no geometry, does not consume geology/circulation/UI state, and is not published through a half-migrated stage or field path.
-- [ ] Run focused planar climate/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
-- [ ] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical preliminary climate evidence`.
+- [x] Run a deterministic matrix spanning minimum/Earth/maximum radii, coarse/medium meshes, climate-spec extremes, and distinct all-land/all-ocean/continent/mountain upstream relief fields. S0B.4 is deliberately RNG-free, so exact upstream fields replace meaningless seed variation. Freeze representative V2 hashes after review.
+- [x] Confirm latitude/temperature/season signs, tangent wind, maritime causality, moisture nonnegativity, paired edge budgets, windward/rain-shadow response, and no seam/pole statistical outlier.
+- [x] Measure Release generation near 20,000 cells: total time, persistent V2 bytes, working-set delta, and diagnostics. Confirm O(months × iterations × edges) time and O(cells + edges) work memory.
+- [x] Audit that S0B.4 owns no geometry, does not consume geology/circulation/UI state, and is not published through a half-migrated stage or field path.
+- [x] Run focused planar climate/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
+- [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical preliminary climate evidence`.
 - [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.4 worktree/branch, then continue to S0B.5.
+
+## Verification evidence (2026-08-04)
+
+- Planar compatibility: the representative V1 snapshot remains byte-stable at BLAKE3 `a6f42228c9e520fdaa83cf9d2757178b2a8d103578127a46757131d812d88862`; planar contract, generation, stage, field, display, and golden coverage passed unchanged.
+- Strict V2 contract: schema/kind/range/length/summary rejection, unknown-field rejection, bounded streaming decode, exact `SurfaceRef`, equal-count/different-surface rejection, latitude identity, monthly and annual wind tangency, all-land/all-ocean maritime identities, exact round trip, and zero-copy access all passed.
+- Scientific properties: the tests witness reversed hemispheric seasons, low-latitude easterlies, midlatitude westerlies, monthly band migration, maritime seasonal moderation and graph-distance decay, explicit warm-ocean supply, moisture-scale response, positive-upwind orographic condensation, downstream rain shadow, nonnegative vapor/precipitation, paired transport closure, arbitrary-fan positivity, and ordinary cut/pole statistics.
+- Frozen V2 matrix hashes:
+  - minimum radius / 42 cells / cold all-land: `f00d5b7e0768597c4f0112c69940ddd6378945a9a0acb5d7640cbf0a5bc3a6b6`
+  - regional radius / 92 cells / high-tilt all-ocean: `7835c9d0a6107c12220e3878b26a059afdf8ea7ab04ab955de856b2d6075b185`
+  - Earth radius / 162 cells / mixed continents: `43f5ad23c89ee39cbe7142e6aab0f6b4d6003308f467e9055e0cdc37ea8fc532`
+  - maximum radius / 642 cells / mountain arc: `aa8efb1b8d4ba180bb8faf451d013f732c7c86afb178fa1e90530dd1ef873821`
+- Release performance at 20,252 cells and 60,750 shared edges: `129.468 ms` total for all twelve months, `5,508,808 bytes` of complete persistent V2 storage, and `5,939,200 bytes` final working-set delta on the reference Windows run. The measured loop is structurally `O(12 × (edges + 48 × edges))`; reusable work storage is `O(cells + edges)`. Per-month transport was not separately instrumented because the whole-slice time is already small and instrumentation would perturb the short measurement.
+- Ownership audit: the snapshot stores only semantic dense fields plus one exact `SurfaceRef`; it stores no cells, edges, adjacency, bases, flux work arrays, projection, stage, artifact, cache, renderer, or UI state. The generator consumes only the authoritative sphere, spherical relief, and shared `ClimateSpec`; it builds one disposable topology index and does not consume geology or the transient circulation solver.
+- Review corrections: the outgoing limiter was changed to preserve ordinary wind-speed response below its CFL ceiling; condensation now uses the receiver cell's authoritative latitude while edge wind remains evaluated at the edge midpoint; the performance byte count includes the complete snapshot header and identity. No Critical or Important finding remains.
+- Fresh commands exited `0`: `cargo fmt --all -- --check`; `cargo clippy --all-targets --all-features -- -D warnings`; `cargo test --all-targets --all-features` (225-test library batch with one pre-existing ignored stress test, plus all integration/binary/bench targets); `cargo check --all-features --lib --target wasm32-unknown-unknown`; and the ignored Release performance gate invoked explicitly.
 
 ## Explicitly deferred
 
