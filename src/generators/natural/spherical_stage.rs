@@ -5,15 +5,23 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ReliefGenerator, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
-    SphericalMantleArtifact, SphericalReliefGenerationError, SphericalTectonicGenerationError,
-    TectonicGenerator,
+    AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
+    ReliefGenerator, ResolvedClimateInputStage, ResolvedGeologicInputStage,
+    ResolvedHydroErosionInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
+    ResolvedWorldFormationArtifact, RuleClimateResolutionStage, RuleGeologicResolutionStage,
+    RuleHydroErosionResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
+    SphericalGeologicStage, SphericalHydroErosionStage, SphericalMantleArtifact,
+    SphericalMantleStage, SphericalPreliminaryClimateStage, SphericalReliefGenerationError,
+    SphericalTectonicGenerationError, TectonicGenerator, TectonicSpecArtifact,
+    WorldFormationSpecArtifact, WorldFormationStage,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
-    Stage, StageError, StageId, StageInputs, StageRng,
+    GraphError, Stage, StageError, StageGraph, StageGraphBuilder, StageId, StageInputs, StageRng,
 };
-use crate::generators::spatial::SphericalSurfaceArtifact;
+use crate::generators::spatial::{
+    SphericalSpaceArtifact, SphericalSurfaceArtifact, SphericalSurfaceStage,
+};
 use crate::rules::TectonicModel;
 use crate::world::natural::{SphericalReliefSnapshot, SphericalTectonicSnapshot};
 
@@ -249,6 +257,44 @@ impl Stage for SphericalReliefStage {
             .map_err(|error| invalid_relief(error.to_string()))?;
         Ok(SphericalReliefArtifact::new(snapshot))
     }
+}
+
+/// Builds the authoritative spherical natural-foundation stage graph.
+///
+/// The spherical surface is the sole geometry source for generated worlds;
+/// planar artifacts remain confined to the legacy compatibility graph.
+///
+/// # Errors
+///
+/// Returns a graph error if these fixed declarations cease to satisfy the
+/// engine dependency contract.
+pub fn spherical_natural_foundation_graph() -> Result<StageGraph, GraphError> {
+    StageGraphBuilder::new()
+        .external::<SphericalSpaceArtifact>()
+        .external::<TectonicSpecArtifact>()
+        .external::<GeologicSpecArtifact>()
+        .external::<ClimateSpecArtifact>()
+        .external::<HydroErosionSpecArtifact>()
+        .external::<WorldFormationSpecArtifact>()
+        .external::<RulePackSetArtifact>()
+        .external::<AuthorConstraintsArtifact>()
+        .stage(SphericalSurfaceStage)
+        .stage(RuleTectonicResolutionStage)
+        .stage(RuleGeologicResolutionStage)
+        .stage(RuleClimateResolutionStage)
+        .stage(RuleHydroErosionResolutionStage)
+        .stage(ResolvedTectonicInputStage)
+        .stage(ResolvedGeologicInputStage)
+        .stage(ResolvedClimateInputStage)
+        .stage(ResolvedHydroErosionInputStage)
+        .stage(WorldFormationStage)
+        .stage(SphericalTectonicStage)
+        .stage(SphericalMantleStage)
+        .stage(SphericalReliefStage)
+        .stage(SphericalGeologicStage)
+        .stage(SphericalPreliminaryClimateStage)
+        .stage(SphericalHydroErosionStage)
+        .build()
 }
 
 fn invalid_input(message: String) -> StageError {

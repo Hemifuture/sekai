@@ -453,7 +453,7 @@ git commit -m "feat: publish spherical climate hydro stages"
 - Consumes: all Task 2–4 stages, `SphericalSurfaceStage`, and the existing rule/formation stages.
 - Produces: `spherical_natural_foundation_graph() -> Result<StageGraph, GraphError>` with exactly eight external inputs and all required resolved stages.
 
-- [ ] **Step 1: Write the failing whole-graph metadata test**
+- [x] **Step 1: Write the failing whole-graph metadata test**
 
 Construct the graph and assert:
 
@@ -480,13 +480,13 @@ assert!(graph.descriptors().iter().all(|descriptor| {
 
 Also assert every sphere-natural descriptor directly includes `SphericalSurfaceArtifact::KEY`.
 
-- [ ] **Step 2: Run the metadata test and observe RED**
+- [x] **Step 2: Run the metadata test and observe RED**
 
 Run: `cargo test --test spherical_natural_stage_graph graph_declares_the_authoritative_sphere_path -- --nocapture`
 
 Expected: compilation fails because `spherical_natural_foundation_graph` is missing.
 
-- [ ] **Step 3: Implement the graph with exact external inputs**
+- [x] **Step 3: Implement the graph with exact external inputs**
 
 Use this registration shape:
 
@@ -519,13 +519,13 @@ StageGraphBuilder::new()
     .build()
 ```
 
-- [ ] **Step 4: Add end-to-end cross-validation and deterministic hash tests**
+- [x] **Step 4: Add end-to-end cross-validation and deterministic hash tests**
 
 Build a 162-cell Earth-radius fixture through `BuildEngine`. Extract all eight sphere surface/natural Artifacts and call each public `validate_against` chain. Build twice with identical inputs and assert Artifact content hashes and `BuildResultHash` equality.
 
 For fixed graph goldens, temporarily make the test print all seven produced sphere hashes and the result hash under `--nocapture`, run it once, then replace the print-only assertions with exact byte/hex constants in the same test before committing. This is the approved golden-capture step; do not regenerate those constants after review without a scientific version change.
 
-- [ ] **Step 5: Add the exact cache invalidation matrix**
+- [x] **Step 5: Add the exact cache invalidation matrix**
 
 For every row below, create a fresh `MemoryStageCache::with_max_entries(128)`, warm it with the same 162-cell Earth baseline, change only the named input, then assert the exact miss set; every stage not named in that row must be a hit:
 
@@ -544,7 +544,7 @@ Use one additional fresh cache and the same root seed for spatial identity:
 
 Assert both surfaces have equal cell/edge counts and unequal `SurfaceRef` values so the test cannot pass by changing cardinality.
 
-- [ ] **Step 6: Run graph, engine, and legacy regressions**
+- [x] **Step 6: Run graph, engine, and legacy regressions**
 
 Run:
 
@@ -555,7 +555,7 @@ cargo test --test engine_execution --test natural_stage_graph --test legacy_plan
 
 Expected: all pass; the sphere and legacy graphs remain disjoint.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add src/generators/natural/spherical_stage.rs src/generators/natural/mod.rs tests/spherical_natural_stage_graph.rs

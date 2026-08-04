@@ -99,8 +99,9 @@ pub use spherical_hydrology::SphericalHydrologyGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_stage::{
-    SphericalReliefArtifact, SphericalReliefStage, SphericalReliefStageInputs,
-    SphericalTectonicArtifact, SphericalTectonicStage, SphericalTectonicStageInputs,
+    spherical_natural_foundation_graph, SphericalReliefArtifact, SphericalReliefStage,
+    SphericalReliefStageInputs, SphericalTectonicArtifact, SphericalTectonicStage,
+    SphericalTectonicStageInputs,
 };
 pub use spherical_tectonics::SphericalTectonicGenerationError;
 pub use stage::{
