@@ -21,6 +21,7 @@ mod relief_noise;
 mod rule_input;
 mod spherical_climate;
 mod spherical_geology;
+mod spherical_hydrology;
 mod spherical_island_relief;
 mod spherical_mantle;
 mod spherical_moisture;
@@ -75,6 +76,7 @@ pub use rule_input::{
 };
 pub use spherical_climate::SphericalClimateGenerationError;
 pub use spherical_geology::SphericalGeologicGenerationError;
+pub use spherical_hydrology::SphericalHydrologyGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_tectonics::SphericalTectonicGenerationError;

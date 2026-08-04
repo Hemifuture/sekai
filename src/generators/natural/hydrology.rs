@@ -11,7 +11,9 @@ use crate::world::natural::{
     StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind, CLIMATE_MONTH_COUNT, ELEVATION_MAX_M,
     ELEVATION_MIN_M, HYDROLOGY_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
-use crate::world::spatial::{SpatialSnapshot, SpatialValidationError, Topology};
+use crate::world::spatial::{
+    NaturalSurface, PlanarNaturalSurface, SpatialSnapshot, SpatialValidationError, Topology,
+};
 use crate::world::{CellId, DrainageBasinId, LakeId, RiverSegmentId};
 
 const CENTIMETERS_PER_METER: f64 = 100.0;
@@ -59,88 +61,119 @@ impl HydrologyGenerator {
         )?;
 
         let topology = NaturalTopologyIndex::new(spatial);
-        let original_height_cm = surface_elevation_m
-            .values()
-            .iter()
-            .map(|&value| quantize_centimeters(value))
-            .collect::<Vec<_>>();
-        let sea_level_cm = quantize_centimeters(sea_level_m);
-        let ocean = original_height_cm
-            .iter()
-            .map(|&height| height < sea_level_cm)
-            .collect::<Vec<_>>();
-
-        let flood = priority_flood(&topology, &original_height_cm, &ocean)?;
-        let mut receiver = select_receivers(
+        let surface = PlanarNaturalSurface::from_validated(spatial);
+        let snapshot = generate_hydrology_core(
+            &surface,
             &topology,
-            &original_height_cm,
-            &flood.filled_height_cm,
-            &flood.rank,
-            &flood.terminal,
-        )?;
-        let lakes = identify_and_route_lakes(
-            &topology,
-            &original_height_cm,
-            &flood.filled_height_cm,
-            &flood.rank,
-            &ocean,
-            spec.minimum_lake_depth_cm,
-            &mut receiver,
-        )?;
-        let order = upstream_to_downstream_order(&receiver)?;
-
-        let water = build_surface_water(&ocean, &lakes.owner);
-        let lake_depth_m =
-            build_lake_depth(&original_height_cm, &flood.filled_height_cm, &lakes.owner);
-        let monthly_local_runoff_mm = local_runoff(&water, relative_permeability, climate);
-        let accumulation = accumulate_water(spatial, &receiver, &order, &monthly_local_runoff_mm);
-        let lake_records = build_lake_records(spatial, &lakes, &lake_depth_m)?;
-        let (basin_id, basins) = build_basins(
-            &receiver,
-            &order,
-            &water,
-            &accumulation.drainage_area_km2,
-            &accumulation.mean_discharge_m3_s,
-        )?;
-        let (strahler_order, river_segments) = build_rivers(
-            &receiver,
-            &order,
-            &water,
-            &lakes,
-            &accumulation.mean_discharge_m3_s,
-            spec.river_discharge_threshold_m3_s(),
-        )?;
-
-        let drainage_surface_elevation_m = ElevationField::from_values(
-            flood
-                .filled_height_cm
-                .iter()
-                .map(|&height| height as f32 / CENTIMETERS_PER_METER as f32)
-                .collect(),
-        )?;
-        let snapshot = HydrologySnapshot::new(
-            HYDROLOGY_SCHEMA_V1,
-            spatial.cell_count() as u32,
-            spec.river_discharge_threshold_m3_s(),
-            spec.minimum_lake_depth_m(),
-            monthly_local_runoff_mm,
-            accumulation.monthly_discharge_m3_s,
-            accumulation.annual_local_runoff_mm,
-            accumulation.mean_discharge_m3_s,
-            accumulation.drainage_area_km2,
-            drainage_surface_elevation_m,
-            lake_depth_m,
-            SurfaceWaterField::from_kinds(water),
-            receiver,
-            basin_id,
-            StrahlerOrderField::from_raw(strahler_order.into_iter().map(u32::from).collect())?,
-            basins,
-            lake_records,
-            river_segments,
+            surface_elevation_m,
+            sea_level_m,
+            relative_permeability,
+            climate.monthly_precipitation_mm().values(),
+            spec,
+            DrainageOutletPolicy::LegacySingleSink,
         )?;
         snapshot.validate_against_validated_spatial(spatial)?;
         Ok(snapshot)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainageOutletPolicy {
+    LegacySingleSink,
+    ClosedLocalMinima,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_hydrology_core(
+    surface: &impl NaturalSurface,
+    topology: &NaturalTopologyIndex,
+    surface_elevation_m: &ElevationField,
+    sea_level_m: f32,
+    relative_permeability: &[f32],
+    monthly_precipitation_mm: &[[f32; CLIMATE_MONTH_COUNT]],
+    spec: &HydroErosionSpec,
+    outlet_policy: DrainageOutletPolicy,
+) -> Result<HydrologySnapshot, HydrologyGenerationError> {
+    let original_height_cm = surface_elevation_m
+        .values()
+        .iter()
+        .map(|&value| quantize_centimeters(value))
+        .collect::<Vec<_>>();
+    let sea_level_cm = quantize_centimeters(sea_level_m);
+    let ocean = original_height_cm
+        .iter()
+        .map(|&height| height < sea_level_cm)
+        .collect::<Vec<_>>();
+
+    let flood = priority_flood(topology, &original_height_cm, &ocean, outlet_policy)?;
+    let mut receiver = select_receivers(
+        topology,
+        &original_height_cm,
+        &flood.filled_height_cm,
+        &flood.rank,
+        &flood.terminal,
+    )?;
+    let lakes = identify_and_route_lakes(
+        topology,
+        &original_height_cm,
+        &flood.filled_height_cm,
+        &flood.rank,
+        &ocean,
+        spec.minimum_lake_depth_cm,
+        &mut receiver,
+    )?;
+    let order = upstream_to_downstream_order(&receiver)?;
+
+    let water = build_surface_water(&ocean, &lakes.owner);
+    let lake_depth_m = build_lake_depth(&original_height_cm, &flood.filled_height_cm, &lakes.owner);
+    let monthly_local_runoff_mm =
+        local_runoff(&water, relative_permeability, monthly_precipitation_mm);
+    let accumulation = accumulate_water(surface, &receiver, &order, &monthly_local_runoff_mm);
+    let lake_records = build_lake_records(surface, &lakes, &lake_depth_m)?;
+    let (basin_id, basins) = build_basins(
+        &receiver,
+        &order,
+        &water,
+        &accumulation.drainage_area_km2,
+        &accumulation.mean_discharge_m3_s,
+    )?;
+    let (strahler_order, river_segments) = build_rivers(
+        &receiver,
+        &order,
+        &water,
+        &lakes,
+        &accumulation.mean_discharge_m3_s,
+        spec.river_discharge_threshold_m3_s(),
+    )?;
+
+    let drainage_surface_elevation_m = ElevationField::from_values(
+        flood
+            .filled_height_cm
+            .iter()
+            .map(|&height| height as f32 / CENTIMETERS_PER_METER as f32)
+            .collect(),
+    )?;
+    let snapshot = HydrologySnapshot::new(
+        HYDROLOGY_SCHEMA_V1,
+        surface.cell_count() as u32,
+        spec.river_discharge_threshold_m3_s(),
+        spec.minimum_lake_depth_m(),
+        monthly_local_runoff_mm,
+        accumulation.monthly_discharge_m3_s,
+        accumulation.annual_local_runoff_mm,
+        accumulation.mean_discharge_m3_s,
+        accumulation.drainage_area_km2,
+        drainage_surface_elevation_m,
+        lake_depth_m,
+        SurfaceWaterField::from_kinds(water),
+        receiver,
+        basin_id,
+        StrahlerOrderField::from_raw(strahler_order.into_iter().map(u32::from).collect())?,
+        basins,
+        lake_records,
+        river_segments,
+    )?;
+    Ok(snapshot)
 }
 
 fn validate_inputs_against_validated_spatial(
@@ -207,14 +240,22 @@ fn priority_flood(
     topology: &NaturalTopologyIndex,
     original_height_cm: &[i64],
     ocean: &[bool],
+    outlet_policy: DrainageOutletPolicy,
 ) -> Result<FloodResult, HydrologyGenerationError> {
     let cell_count = original_height_cm.len();
     let mut terminal = ocean.to_vec();
     if !terminal.iter().any(|&value| value) {
-        let sink = (0..cell_count)
-            .min_by_key(|&index| (original_height_cm[index], index))
-            .ok_or(HydrologyGenerationError::EmptyWorld)?;
-        terminal[sink] = true;
+        match outlet_policy {
+            DrainageOutletPolicy::LegacySingleSink => {
+                let sink = (0..cell_count)
+                    .min_by_key(|&index| (original_height_cm[index], index))
+                    .ok_or(HydrologyGenerationError::EmptyWorld)?;
+                terminal[sink] = true;
+            }
+            DrainageOutletPolicy::ClosedLocalMinima => {
+                terminal = closed_local_minimum_terminals(topology, original_height_cm)?;
+            }
+        }
     }
 
     let mut filled_height_cm = vec![i64::MAX; cell_count];
@@ -255,6 +296,47 @@ fn priority_flood(
         rank,
         terminal,
     })
+}
+
+fn closed_local_minimum_terminals(
+    topology: &NaturalTopologyIndex,
+    original_height_cm: &[i64],
+) -> Result<Vec<bool>, HydrologyGenerationError> {
+    if original_height_cm.is_empty() {
+        return Err(HydrologyGenerationError::EmptyWorld);
+    }
+    let mut terminal = vec![false; original_height_cm.len()];
+    let mut visited = vec![false; original_height_cm.len()];
+    for start in 0..original_height_cm.len() {
+        if visited[start] {
+            continue;
+        }
+        let plateau_height = original_height_cm[start];
+        let mut representative = CellId::from_raw(start as u32);
+        let mut is_local_minimum = true;
+        let mut queue = VecDeque::from([representative]);
+        visited[start] = true;
+        while let Some(cell) = queue.pop_front() {
+            representative = representative.min(cell);
+            for arc in &topology.arcs()[cell.raw() as usize] {
+                let neighbor_index = arc.neighbor.raw() as usize;
+                let neighbor_height = original_height_cm[neighbor_index];
+                if neighbor_height < plateau_height {
+                    is_local_minimum = false;
+                } else if neighbor_height == plateau_height && !visited[neighbor_index] {
+                    visited[neighbor_index] = true;
+                    queue.push_back(arc.neighbor);
+                }
+            }
+        }
+        if is_local_minimum {
+            terminal[representative.raw() as usize] = true;
+        }
+    }
+    if !terminal.iter().any(|&value| value) {
+        return Err(HydrologyGenerationError::MissingClosedTerminal);
+    }
+    Ok(terminal)
 }
 
 fn select_receivers(
@@ -541,7 +623,7 @@ fn build_lake_depth(
 fn local_runoff(
     water: &[SurfaceWaterKind],
     relative_permeability: &[f32],
-    climate: &PreliminaryClimateSnapshot,
+    monthly_precipitation_mm: &[[f32; CLIMATE_MONTH_COUNT]],
 ) -> Vec<[f32; CLIMATE_MONTH_COUNT]> {
     (0..water.len())
         .map(|index| {
@@ -550,7 +632,7 @@ fn local_runoff(
             } else {
                 let runoff_fraction = 0.85 + (0.20 - 0.85) * relative_permeability[index];
                 std::array::from_fn(|month| {
-                    climate.monthly_precipitation_mm().values()[index][month] * runoff_fraction
+                    monthly_precipitation_mm[index][month] * runoff_fraction
                 })
             }
         })
@@ -565,7 +647,7 @@ struct WaterAccumulation {
 }
 
 fn accumulate_water(
-    spatial: &SpatialSnapshot,
+    surface: &impl NaturalSurface,
     receiver: &[Option<CellId>],
     order: &[CellId],
     monthly_local_runoff_mm: &[[f32; CLIMATE_MONTH_COUNT]],
@@ -574,10 +656,10 @@ fn accumulate_water(
     let mut area_km2 = vec![0.0_f64; cell_count];
     let mut discharge = vec![[0.0_f64; CLIMATE_MONTH_COUNT]; cell_count];
     for index in 0..cell_count {
-        let area_m2 = spatial
+        let area_m2 = surface
             .cell(CellId::from_raw(index as u32))
-            .expect("validated dense spatial input contains every cell")
-            .area
+            .expect("validated natural surface contains every dense cell")
+            .area()
             .get();
         area_km2[index] = area_m2 / 1_000_000.0;
         for (stored, &runoff_mm) in discharge[index]
@@ -625,7 +707,7 @@ fn accumulate_water(
 }
 
 fn build_lake_records(
-    spatial: &SpatialSnapshot,
+    surface: &impl NaturalSurface,
     lakes: &LakeRouting,
     lake_depth_m: &[f32],
 ) -> Result<Vec<Lake>, HydrologyGenerationError> {
@@ -637,10 +719,10 @@ fn build_lake_records(
             let mut area_m2 = 0.0;
             let mut volume_m3 = 0.0;
             for &cell in &draft.cells {
-                let area = spatial
+                let area = surface
                     .cell(cell)
-                    .expect("validated lake cells exist in spatial input")
-                    .area
+                    .expect("validated lake cells exist in the natural surface")
+                    .area()
                     .get();
                 area_m2 += area;
                 volume_m3 += area * f64::from(lake_depth_m[cell.raw() as usize]);
@@ -881,6 +963,9 @@ pub enum HydrologyGenerationError {
     /// The validated topology was unexpectedly disconnected.
     #[error("priority flood could not reach every spatial cell")]
     DisconnectedTopology,
+    /// A nonempty closed surface unexpectedly had no local-minimum plateau.
+    #[error("closed hydrology could not identify an endorheic terminal")]
+    MissingClosedTerminal,
     /// A nonterminal cell had no legal earlier drainage neighbor.
     #[error("cell {cell:?} has no legal drainage receiver")]
     MissingReceiver {
