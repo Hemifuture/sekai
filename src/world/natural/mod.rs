@@ -13,6 +13,7 @@ mod hydrology;
 mod mantle;
 mod relief;
 mod spec;
+mod spherical_tectonics;
 mod surface_process;
 mod tectonics;
 
@@ -93,6 +94,11 @@ pub use relief::{
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
     MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
+};
+pub use spherical_tectonics::{
+    SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
+    SphericalTectonicValidationError, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+    MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, TECTONIC_SNAPSHOT_SCHEMA_V2,
 };
 pub use surface_process::{
     SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,

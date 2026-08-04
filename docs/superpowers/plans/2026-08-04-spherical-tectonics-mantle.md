@@ -104,11 +104,11 @@ git commit -m "feat: expose spherical natural local frames"
 - Add `SphericalBoundarySegment` with stable IDs, plates, kind, sorted member edges, mean strength, and optional subducting plate; deliberately no aggregate 2D direction.
 - Add `SphericalTectonicSnapshot` with `SurfaceRef`, plates, existing dense `PlateIdField`/`CrustKindField`, thickness, existing edge-aligned `BoundaryRecord`, and spherical segments.
 
-- [ ] **Step 1: Write RED Euler-motion tests**
+- [x] **Step 1: Write RED Euler-motion tests**
 
 Cover fixed-point bounds, strict serde, pole speed zero, equatorial speed, tangent dot product, common angular vector for all points, and 120 mm/year validation against radii from 1 m through 100,000 km.
 
-- [ ] **Step 2: Write RED snapshot-contract tests**
+- [x] **Step 2: Write RED snapshot-contract tests**
 
 Cover schema, exact spherical `SurfaceRef`, dense lengths, plate/seed ownership, field ranges, segment partition, boundary/subduction consistency, same-cardinality different-surface rejection, unknown fields, and JSON round-trip. Assert the V1 tectonic fixture retains its exact wire/hash.
 
@@ -120,11 +120,11 @@ cargo test --test spherical_tectonic_contracts
 
 Expected: FAIL because V2 contracts do not exist.
 
-- [ ] **Step 3: Implement immutable contracts and validation**
+- [x] **Step 3: Implement immutable contracts and validation**
 
 Reuse existing semantic field and boundary types. Keep all V2 fields private and route deserialization through validation. Self-contained validation checks allocation and semantic consistency; `validate_against(&SphericalSurfaceSnapshot)` additionally checks the exact surface identity, radius-dependent speed, seed ownership, connected plate regions, every cross-plate edge, and canonical-vertex segment connectivity.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```powershell
 cargo test --test spherical_tectonic_contracts

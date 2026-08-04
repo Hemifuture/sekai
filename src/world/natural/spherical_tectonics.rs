@@ -1,0 +1,928 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use thiserror::Error;
+
+use super::{
+    BoundaryKind, BoundaryRecord, CrustKind, CrustKindField, PlateIdField,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+};
+use crate::world::spatial::{
+    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
+    SurfaceRefError, UnitVector3,
+};
+use crate::world::{BoundarySegmentId, CellId, EdgeId, Meters, PlateId, SurfaceVertexId};
+
+/// The supported schema for surface-bound spherical tectonic snapshots.
+pub const TECTONIC_SNAPSHOT_SCHEMA_V2: u16 = 2;
+/// The maximum supported local rigid-plate speed, in millimeters per year.
+pub const MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR: f64 = 120.0;
+/// The largest representable angular rate, sized for 120 mm/year on a one-meter sphere.
+pub const MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR: u64 = 120_000_000_000;
+
+const PRAD_TO_RAD: f64 = 1.0e-12;
+const METERS_TO_MILLIMETERS: f64 = 1_000.0;
+const UNIT_NORM_TOLERANCE: f64 = 16.0 * f64::EPSILON;
+const SPEED_TOLERANCE_MM_PER_YEAR: f64 = 1.0e-9;
+
+/// One rigid spherical plate rotation about an Euler pole.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalPlateRotation {
+    pole: UnitVector3,
+    angular_rate_prad_per_year: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SphericalPlateRotationWire {
+    pole: [f64; 3],
+    angular_rate_prad_per_year: u64,
+}
+
+impl SphericalPlateRotation {
+    /// Constructs a nonzero, fixed-point Euler rotation inside the numerical budget.
+    pub fn new(
+        pole: UnitVector3,
+        angular_rate_prad_per_year: u64,
+    ) -> Result<Self, SphericalTectonicValidationError> {
+        if !(1..=MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR)
+            .contains(&angular_rate_prad_per_year)
+        {
+            return Err(SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: angular_rate_prad_per_year,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            });
+        }
+        Ok(Self {
+            pole,
+            angular_rate_prad_per_year,
+        })
+    }
+
+    /// Returns the canonical Euler-pole direction.
+    pub const fn pole(self) -> UnitVector3 {
+        self.pole
+    }
+
+    /// Returns the stored fixed-point angular rate in picoradians per year.
+    pub const fn angular_rate_prad_per_year(self) -> u64 {
+        self.angular_rate_prad_per_year
+    }
+
+    /// Returns the angular-rate magnitude in radians per year.
+    pub fn angular_rate_rad_per_year(self) -> f64 {
+        self.angular_rate_prad_per_year as f64 * PRAD_TO_RAD
+    }
+
+    /// Returns the shared three-dimensional angular-velocity vector in radians per year.
+    pub fn angular_velocity_vector_rad_per_year(self) -> [f64; 3] {
+        let rate = self.angular_rate_rad_per_year();
+        self.pole.components().map(|component| component * rate)
+    }
+
+    /// Returns the greatest local linear speed possible at the requested radius.
+    pub fn maximum_speed_mm_per_year(
+        self,
+        radius: Meters,
+    ) -> Result<f64, SphericalTectonicValidationError> {
+        validate_radius(radius)?;
+        Ok(self.angular_rate_rad_per_year() * radius.get() * METERS_TO_MILLIMETERS)
+    }
+
+    /// Validates the radius-dependent local-speed envelope.
+    pub fn validate_for_radius(
+        self,
+        radius: Meters,
+    ) -> Result<(), SphericalTectonicValidationError> {
+        let speed = self.maximum_speed_mm_per_year(radius)?;
+        if speed > MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR + SPEED_TOLERANCE_MM_PER_YEAR {
+            return Err(SphericalTectonicValidationError::PlateSpeedOutOfRange {
+                found_mm_per_year: speed,
+                max_mm_per_year: MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
+            });
+        }
+        Ok(())
+    }
+
+    /// Derives the local tangent velocity from the shared Euler rotation.
+    pub fn velocity_mm_per_year(
+        self,
+        radius: Meters,
+        radial: UnitVector3,
+    ) -> Result<[f64; 3], SphericalTectonicValidationError> {
+        self.validate_for_radius(radius)?;
+        let [px, py, pz] = self.pole.components();
+        let [rx, ry, rz] = radial.components();
+        let scale = self.angular_rate_rad_per_year() * radius.get() * METERS_TO_MILLIMETERS;
+        Ok([
+            (py * rz - pz * ry) * scale,
+            (pz * rx - px * rz) * scale,
+            (px * ry - py * rx) * scale,
+        ])
+    }
+}
+
+impl<'de> Deserialize<'de> for SphericalPlateRotation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SphericalPlateRotationWire::deserialize(deserializer)?;
+        if wire.pole.iter().any(|component| !component.is_finite()) {
+            return Err(D::Error::custom("Euler-pole components must be finite"));
+        }
+        let squared_norm = wire
+            .pole
+            .iter()
+            .map(|component| component * component)
+            .sum::<f64>();
+        let norm = squared_norm.sqrt();
+        if (norm - 1.0).abs() > UNIT_NORM_TOLERANCE {
+            return Err(D::Error::custom(format_args!(
+                "Euler pole must be a unit vector, got norm {norm}"
+            )));
+        }
+        let pole =
+            UnitVector3::new(wire.pole[0], wire.pole[1], wire.pole[2]).map_err(D::Error::custom)?;
+        Self::new(pole, wire.angular_rate_prad_per_year).map_err(D::Error::custom)
+    }
+}
+
+/// A rigid plate on the current spherical world slice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalPlate {
+    id: PlateId,
+    seed_cell: CellId,
+    rotation: SphericalPlateRotation,
+}
+
+impl SphericalPlate {
+    /// Creates one plate record; snapshot validation checks its dense references.
+    pub const fn new(id: PlateId, seed_cell: CellId, rotation: SphericalPlateRotation) -> Self {
+        Self {
+            id,
+            seed_cell,
+            rotation,
+        }
+    }
+
+    /// Returns the contiguous stable plate identifier.
+    pub const fn id(&self) -> PlateId {
+        self.id
+    }
+
+    /// Returns one cell guaranteed to be owned by this plate.
+    pub const fn seed_cell(&self) -> CellId {
+        self.seed_cell
+    }
+
+    /// Returns the plate's single authoritative Euler rotation.
+    pub const fn rotation(&self) -> SphericalPlateRotation {
+        self.rotation
+    }
+}
+
+/// A connected same-kind portion of a spherical plate boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalBoundarySegment {
+    id: BoundarySegmentId,
+    plates: [PlateId; 2],
+    kind: BoundaryKind,
+    member_edges: Vec<EdgeId>,
+    mean_strength: f32,
+    subducting_plate: Option<PlateId>,
+}
+
+impl SphericalBoundarySegment {
+    /// Creates a segment whose full partition is checked by its snapshot.
+    pub fn new(
+        id: BoundarySegmentId,
+        plates: [PlateId; 2],
+        kind: BoundaryKind,
+        member_edges: Vec<EdgeId>,
+        mean_strength: f32,
+        subducting_plate: Option<PlateId>,
+    ) -> Self {
+        Self {
+            id,
+            plates,
+            kind,
+            member_edges,
+            mean_strength,
+            subducting_plate,
+        }
+    }
+
+    /// Returns the contiguous stable segment identifier.
+    pub const fn id(&self) -> BoundarySegmentId {
+        self.id
+    }
+
+    /// Returns the involved plates in ascending identifier order.
+    pub const fn plates(&self) -> [PlateId; 2] {
+        self.plates
+    }
+
+    /// Returns the common edge-event classification.
+    pub const fn kind(&self) -> BoundaryKind {
+        self.kind
+    }
+
+    /// Returns sorted canonical member-edge identifiers.
+    pub fn member_edges(&self) -> &[EdgeId] {
+        &self.member_edges
+    }
+
+    /// Returns the arithmetic mean of member-edge strengths.
+    pub const fn mean_strength(&self) -> f32 {
+        self.mean_strength
+    }
+
+    /// Returns the descending plate for a subduction segment.
+    pub const fn subducting_plate(&self) -> Option<PlateId> {
+        self.subducting_plate
+    }
+}
+
+/// Immutable surface-bound spherical plates, crust, and current boundary events.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalTectonicSnapshot {
+    schema_version: u16,
+    surface_ref: SurfaceRef,
+    plates: Vec<SphericalPlate>,
+    cell_plates: PlateIdField,
+    crust_kinds: CrustKindField,
+    crust_thickness_km: Vec<f32>,
+    boundaries: Vec<BoundaryRecord>,
+    boundary_segments: Vec<SphericalBoundarySegment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SphericalTectonicSnapshotWire {
+    schema_version: u16,
+    surface_ref: SurfaceRef,
+    plates: Vec<SphericalPlate>,
+    cell_plates: PlateIdField,
+    crust_kinds: CrustKindField,
+    crust_thickness_km: Vec<f32>,
+    boundaries: Vec<BoundaryRecord>,
+    boundary_segments: Vec<SphericalBoundarySegment>,
+}
+
+impl SphericalTectonicSnapshot {
+    /// Canonicalizes stable-ID tables and validates every self-contained invariant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        schema_version: u16,
+        surface_ref: SurfaceRef,
+        mut plates: Vec<SphericalPlate>,
+        cell_plates: PlateIdField,
+        crust_kinds: CrustKindField,
+        crust_thickness_km: Vec<f32>,
+        boundaries: Vec<BoundaryRecord>,
+        mut boundary_segments: Vec<SphericalBoundarySegment>,
+    ) -> Result<Self, SphericalTectonicValidationError> {
+        plates.sort_by_key(SphericalPlate::id);
+        boundary_segments.sort_by_key(SphericalBoundarySegment::id);
+        let snapshot = Self {
+            schema_version,
+            surface_ref,
+            plates,
+            cell_plates,
+            crust_kinds,
+            crust_thickness_km,
+            boundaries,
+            boundary_segments,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    /// Rechecks all invariants that do not require the referenced surface records.
+    pub fn validate(&self) -> Result<(), SphericalTectonicValidationError> {
+        if self.schema_version != TECTONIC_SNAPSHOT_SCHEMA_V2 {
+            return Err(SphericalTectonicValidationError::UnsupportedSchema {
+                found: self.schema_version,
+                supported: TECTONIC_SNAPSHOT_SCHEMA_V2,
+            });
+        }
+        self.surface_ref.validate()?;
+        if self.surface_ref.geometry_kind() != SurfaceGeometryKind::SphericalV1 {
+            return Err(SphericalTectonicValidationError::InvalidSurfaceKind {
+                found: self.surface_ref.geometry_kind(),
+            });
+        }
+
+        let cell_count = self.surface_ref.cell_count() as usize;
+        let edge_count = self.surface_ref.edge_count() as usize;
+        if self.plates.is_empty() || self.plates.len() > cell_count {
+            return Err(SphericalTectonicValidationError::InvalidPlateCount {
+                found: self.plates.len(),
+                cell_count,
+            });
+        }
+        for (expected, plate) in self.plates.iter().enumerate() {
+            if plate.id.raw() as usize != expected {
+                return Err(SphericalTectonicValidationError::NonContiguousPlateId {
+                    expected: PlateId::from_raw(expected as u32),
+                    found: plate.id,
+                });
+            }
+            if plate.seed_cell.raw() as usize >= cell_count {
+                return Err(SphericalTectonicValidationError::InvalidPlateSeed {
+                    plate: plate.id,
+                    seed: plate.seed_cell,
+                    cell_count,
+                });
+            }
+            SphericalPlateRotation::new(
+                plate.rotation.pole(),
+                plate.rotation.angular_rate_prad_per_year(),
+            )?;
+        }
+
+        validate_length("cell_plates", self.cell_plates.len(), cell_count)?;
+        validate_length("crust_kinds", self.crust_kinds.len(), cell_count)?;
+        validate_length(
+            "crust_thickness_km",
+            self.crust_thickness_km.len(),
+            cell_count,
+        )?;
+        validate_length("boundaries", self.boundaries.len(), edge_count)?;
+        for index in 0..cell_count {
+            let cell = CellId::from_raw(index as u32);
+            let plate = self
+                .cell_plates
+                .get(index)
+                .expect("dense plate field length was validated");
+            if plate.raw() as usize >= self.plates.len() {
+                return Err(SphericalTectonicValidationError::InvalidCellPlate { cell, plate });
+            }
+            let raw_kind = self.crust_kinds.raw_values()[index];
+            let kind = CrustKind::try_from_raw(raw_kind).map_err(|_| {
+                SphericalTectonicValidationError::InvalidCrustKind {
+                    cell,
+                    found: raw_kind,
+                }
+            })?;
+            let thickness = self.crust_thickness_km[index];
+            let (min, max) = crust_thickness_range(kind);
+            if !thickness.is_finite() || !(min..=max).contains(&thickness) {
+                return Err(SphericalTectonicValidationError::CrustThicknessOutOfRange {
+                    cell,
+                    kind,
+                    found: thickness,
+                    min,
+                    max,
+                });
+            }
+        }
+        self.validate_segments_and_boundaries()
+    }
+
+    /// Rechecks identity, speed, ownership, connectivity, and edge incidence.
+    pub fn validate_against(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SphericalTectonicValidationError> {
+        self.validate()?;
+        surface.validate()?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
+        if self.surface_ref != authoritative {
+            return Err(SphericalTectonicValidationError::SurfaceMismatch {
+                snapshot: self.surface_ref,
+                authoritative,
+            });
+        }
+        for plate in &self.plates {
+            plate.rotation.validate_for_radius(surface.radius())?;
+            if self.plate_for_cell(plate.seed_cell) != Some(plate.id) {
+                return Err(SphericalTectonicValidationError::PlateSeedOwnership {
+                    plate: plate.id,
+                    seed: plate.seed_cell,
+                    owner: self.plate_for_cell(plate.seed_cell),
+                });
+            }
+            self.validate_plate_connectivity(plate.id, surface)?;
+        }
+        for edge in surface.edges() {
+            self.validate_edge_topology(edge.id, edge.cells)?;
+        }
+        for segment in &self.boundary_segments {
+            self.validate_segment_connectivity(segment, surface)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the V2 schema version.
+    pub const fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
+
+    /// Returns the exact authoritative surface identity.
+    pub const fn surface_ref(&self) -> SurfaceRef {
+        self.surface_ref
+    }
+
+    /// Returns plates in stable identifier order.
+    pub fn plates(&self) -> &[SphericalPlate] {
+        &self.plates
+    }
+
+    /// Returns the dense plate-identifier field.
+    pub const fn cell_plates(&self) -> &PlateIdField {
+        &self.cell_plates
+    }
+
+    /// Returns the dense crust-category field.
+    pub const fn crust_kinds(&self) -> &CrustKindField {
+        &self.crust_kinds
+    }
+
+    /// Returns crust thickness values in kilometers.
+    pub fn crust_thickness_km(&self) -> &[f32] {
+        &self.crust_thickness_km
+    }
+
+    /// Returns edge-aligned current boundary events.
+    pub fn boundaries(&self) -> &[BoundaryRecord] {
+        &self.boundaries
+    }
+
+    /// Returns canonical-vertex-connected boundary segments.
+    pub fn boundary_segments(&self) -> &[SphericalBoundarySegment] {
+        &self.boundary_segments
+    }
+
+    /// Returns the plate owning one surface cell.
+    pub fn plate_for_cell(&self, cell: CellId) -> Option<PlateId> {
+        self.cell_plates.get(cell.raw() as usize)
+    }
+
+    /// Returns the crust kind at one surface cell.
+    pub fn crust_kind(&self, cell: CellId) -> Option<CrustKind> {
+        self.crust_kinds.get(cell.raw() as usize)
+    }
+
+    /// Returns crust thickness at one surface cell in kilometers.
+    pub fn crust_thickness_for_cell(&self, cell: CellId) -> Option<f32> {
+        self.crust_thickness_km.get(cell.raw() as usize).copied()
+    }
+
+    fn validate_segments_and_boundaries(&self) -> Result<(), SphericalTectonicValidationError> {
+        let edge_count = self.surface_ref.edge_count() as usize;
+        let mut membership = vec![None; edge_count];
+        for (expected, segment) in self.boundary_segments.iter().enumerate() {
+            let expected_id = BoundarySegmentId::from_raw(expected as u32);
+            if segment.id != expected_id {
+                return Err(
+                    SphericalTectonicValidationError::NonContiguousBoundarySegmentId {
+                        expected: expected_id,
+                        found: segment.id,
+                    },
+                );
+            }
+            validate_segment_header(segment, self.plates.len(), edge_count)?;
+            let mut strength_sum = 0.0_f64;
+            for &edge in &segment.member_edges {
+                let index = edge.raw() as usize;
+                if membership[index].replace(segment.id).is_some() {
+                    return Err(SphericalTectonicValidationError::DuplicateBoundaryEdge { edge });
+                }
+                let record = self.boundaries[index];
+                if record.kind != segment.kind
+                    || record.segment_id != Some(segment.id)
+                    || record.subducting_plate != segment.subducting_plate
+                {
+                    return Err(SphericalTectonicValidationError::BoundarySegmentMismatch {
+                        segment: segment.id,
+                        edge,
+                    });
+                }
+                strength_sum += f64::from(record.strength);
+            }
+            let mean = (strength_sum / segment.member_edges.len() as f64) as f32;
+            if (mean - segment.mean_strength).abs() > 1.0e-5 {
+                return Err(SphericalTectonicValidationError::BoundaryMeanMismatch {
+                    segment: segment.id,
+                    stored: segment.mean_strength,
+                    calculated: mean,
+                });
+            }
+        }
+
+        for (index, record) in self.boundaries.iter().copied().enumerate() {
+            let edge = EdgeId::from_raw(index as u32);
+            validate_boundary_record(edge, record, self.plates.len())?;
+            if membership[index] != record.segment_id {
+                return Err(SphericalTectonicValidationError::BoundaryMembershipMismatch { edge });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_plate_connectivity(
+        &self,
+        plate: PlateId,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SphericalTectonicValidationError> {
+        let seed = self.plates[plate.raw() as usize].seed_cell;
+        let expected = self
+            .cell_plates
+            .raw_values()
+            .iter()
+            .filter(|&&owner| owner == plate.raw())
+            .count();
+        let mut visited = vec![false; self.surface_ref.cell_count() as usize];
+        visited[seed.raw() as usize] = true;
+        let mut reached = 0_usize;
+        let mut queue = VecDeque::from([seed]);
+        while let Some(cell) = queue.pop_front() {
+            reached += 1;
+            for &edge in surface
+                .cell_edges(cell)
+                .expect("surface identity guarantees the cell exists")
+            {
+                let neighbor = surface
+                    .opposite_cell(cell, edge)
+                    .expect("closed spherical edges have two owners");
+                let index = neighbor.raw() as usize;
+                if !visited[index] && self.plate_for_cell(neighbor) == Some(plate) {
+                    visited[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        if reached != expected {
+            return Err(SphericalTectonicValidationError::DisconnectedPlate {
+                plate,
+                reached,
+                expected,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_edge_topology(
+        &self,
+        edge: EdgeId,
+        owners: [CellId; 2],
+    ) -> Result<(), SphericalTectonicValidationError> {
+        let owner_plates = owners.map(|cell| {
+            self.plate_for_cell(cell)
+                .expect("surface identity guarantees the cell field exists")
+        });
+        let record = self.boundaries[edge.raw() as usize];
+        if owner_plates[0] == owner_plates[1] {
+            if record != BoundaryRecord::none() {
+                return Err(SphericalTectonicValidationError::BoundaryTopologyMismatch { edge });
+            }
+            return Ok(());
+        }
+        let Some(segment_id) = record.segment_id else {
+            return Err(SphericalTectonicValidationError::BoundaryTopologyMismatch { edge });
+        };
+        if record.kind == BoundaryKind::None {
+            return Err(SphericalTectonicValidationError::BoundaryTopologyMismatch { edge });
+        }
+        let Some(segment) = self.boundary_segments.get(segment_id.raw() as usize) else {
+            return Err(SphericalTectonicValidationError::BoundaryTopologyMismatch { edge });
+        };
+        if segment.plates != normalized_plate_pair(owner_plates[0], owner_plates[1]) {
+            return Err(SphericalTectonicValidationError::BoundaryTopologyMismatch { edge });
+        }
+        if self.plates[owner_plates[0].raw() as usize].rotation
+            == self.plates[owner_plates[1].raw() as usize].rotation
+        {
+            return Err(SphericalTectonicValidationError::AdjacentPlatesCoMoving {
+                plates: normalized_plate_pair(owner_plates[0], owner_plates[1]),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_segment_connectivity(
+        &self,
+        segment: &SphericalBoundarySegment,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SphericalTectonicValidationError> {
+        let members: BTreeSet<_> = segment.member_edges.iter().copied().collect();
+        let mut by_vertex = BTreeMap::<SurfaceVertexId, Vec<EdgeId>>::new();
+        for &edge_id in &segment.member_edges {
+            let edge = surface
+                .edge(edge_id)
+                .expect("validated segment edge lies inside the referenced surface");
+            for vertex in edge.vertices {
+                by_vertex.entry(vertex).or_default().push(edge_id);
+            }
+        }
+        let first = segment.member_edges[0];
+        let mut reached = BTreeSet::from([first]);
+        let mut queue = VecDeque::from([first]);
+        while let Some(edge_id) = queue.pop_front() {
+            let edge = surface
+                .edge(edge_id)
+                .expect("validated segment edge lies inside the referenced surface");
+            for vertex in edge.vertices {
+                for &neighbor in &by_vertex[&vertex] {
+                    if members.contains(&neighbor) && reached.insert(neighbor) {
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+        }
+        if reached.len() != members.len() {
+            return Err(
+                SphericalTectonicValidationError::DisconnectedBoundarySegment {
+                    segment: segment.id,
+                    reached: reached.len(),
+                    expected: members.len(),
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for SphericalTectonicSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SphericalTectonicSnapshotWire::deserialize(deserializer)?;
+        Self::new(
+            wire.schema_version,
+            wire.surface_ref,
+            wire.plates,
+            wire.cell_plates,
+            wire.crust_kinds,
+            wire.crust_thickness_km,
+            wire.boundaries,
+            wire.boundary_segments,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+fn validate_length(
+    field: &'static str,
+    found: usize,
+    expected: usize,
+) -> Result<(), SphericalTectonicValidationError> {
+    if found != expected {
+        return Err(SphericalTectonicValidationError::FieldLengthMismatch {
+            field,
+            expected,
+            found,
+        });
+    }
+    Ok(())
+}
+
+fn crust_thickness_range(kind: CrustKind) -> (f32, f32) {
+    match kind {
+        CrustKind::Oceanic => (
+            OCEANIC_CRUST_MIN_THICKNESS_KM,
+            OCEANIC_CRUST_MAX_THICKNESS_KM,
+        ),
+        CrustKind::Continental => (
+            CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+            CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+        ),
+    }
+}
+
+fn validate_boundary_record(
+    edge: EdgeId,
+    record: BoundaryRecord,
+    plate_count: usize,
+) -> Result<(), SphericalTectonicValidationError> {
+    if !record.strength.is_finite() || !(0.0..=1.0).contains(&record.strength) {
+        return Err(
+            SphericalTectonicValidationError::BoundaryStrengthOutOfRange {
+                edge,
+                found: record.strength,
+            },
+        );
+    }
+    match record.kind {
+        BoundaryKind::None
+            if record.strength == 0.0
+                && record.segment_id.is_none()
+                && record.subducting_plate.is_none() => {}
+        BoundaryKind::None => {
+            return Err(SphericalTectonicValidationError::InvalidBoundaryRecord { edge });
+        }
+        BoundaryKind::Subduction
+            if record.segment_id.is_some()
+                && record
+                    .subducting_plate
+                    .is_some_and(|plate| (plate.raw() as usize) < plate_count) => {}
+        BoundaryKind::Subduction => {
+            return Err(SphericalTectonicValidationError::InvalidBoundaryRecord { edge });
+        }
+        _ if record.segment_id.is_some() && record.subducting_plate.is_none() => {}
+        _ => return Err(SphericalTectonicValidationError::InvalidBoundaryRecord { edge }),
+    }
+    Ok(())
+}
+
+fn validate_segment_header(
+    segment: &SphericalBoundarySegment,
+    plate_count: usize,
+    edge_count: usize,
+) -> Result<(), SphericalTectonicValidationError> {
+    if segment.plates[0] >= segment.plates[1]
+        || segment.plates[1].raw() as usize >= plate_count
+        || segment.kind == BoundaryKind::None
+        || segment.member_edges.is_empty()
+        || !segment.mean_strength.is_finite()
+        || !(0.0..=1.0).contains(&segment.mean_strength)
+    {
+        return Err(SphericalTectonicValidationError::InvalidBoundarySegment {
+            segment: segment.id,
+        });
+    }
+    let mut previous = None;
+    for &edge in &segment.member_edges {
+        if edge.raw() as usize >= edge_count || previous.is_some_and(|value| value >= edge) {
+            return Err(SphericalTectonicValidationError::InvalidBoundarySegment {
+                segment: segment.id,
+            });
+        }
+        previous = Some(edge);
+    }
+    match segment.kind {
+        BoundaryKind::Subduction
+            if segment
+                .subducting_plate
+                .is_some_and(|plate| segment.plates.contains(&plate)) => {}
+        BoundaryKind::Subduction => {
+            return Err(SphericalTectonicValidationError::InvalidBoundarySegment {
+                segment: segment.id,
+            });
+        }
+        _ if segment.subducting_plate.is_none() => {}
+        _ => {
+            return Err(SphericalTectonicValidationError::InvalidBoundarySegment {
+                segment: segment.id,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
+    if first < second {
+        [first, second]
+    } else {
+        [second, first]
+    }
+}
+
+fn validate_radius(radius: Meters) -> Result<(), SphericalTectonicValidationError> {
+    let radius = radius.get();
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(SphericalTectonicValidationError::InvalidRadius { found_m: radius });
+    }
+    Ok(())
+}
+
+/// Failures in surface-bound spherical tectonic contracts.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum SphericalTectonicValidationError {
+    /// The snapshot schema is not the supported surface-bound V2 contract.
+    #[error("unsupported spherical tectonic schema {found}; supported schema is {supported}")]
+    UnsupportedSchema { found: u16, supported: u16 },
+    /// The stored surface identity is internally invalid.
+    #[error("invalid spherical tectonic surface identity: {0}")]
+    InvalidSurfaceIdentity(#[from] SurfaceRefError),
+    /// The stored identity addresses a non-spherical geometry family.
+    #[error("spherical tectonics cannot reference geometry kind {found:?}")]
+    InvalidSurfaceKind { found: SurfaceGeometryKind },
+    /// The authoritative spherical surface itself failed validation.
+    #[error("invalid authoritative spherical surface: {0}")]
+    InvalidSurface(#[from] SphericalSurfaceValidationError),
+    /// The stored and authoritative surface identities differ.
+    #[error("tectonic surface identity {snapshot:?} does not match {authoritative:?}")]
+    SurfaceMismatch {
+        snapshot: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
+    /// The fixed-point Euler angular rate is zero or exceeds the numerical budget.
+    #[error("Euler angular rate {found} is outside {min}..={max} prad/year")]
+    AngularRateOutOfRange { found: u64, min: u64, max: u64 },
+    /// A local velocity query used a non-positive or non-finite sphere radius.
+    #[error("spherical tectonic radius must be finite and positive, got {found_m} m")]
+    InvalidRadius { found_m: f64 },
+    /// A radius and angular rate would exceed the local plate-speed envelope.
+    #[error("maximum plate speed {found_mm_per_year} mm/year exceeds {max_mm_per_year} mm/year")]
+    PlateSpeedOutOfRange {
+        found_mm_per_year: f64,
+        max_mm_per_year: f64,
+    },
+    /// The plate table is empty or larger than the referenced cell allocation.
+    #[error("plate count {found} is invalid for {cell_count} cells")]
+    InvalidPlateCount { found: usize, cell_count: usize },
+    /// Plate identifiers are not the exact contiguous stable range.
+    #[error("expected plate ID {expected:?}, found {found:?}")]
+    NonContiguousPlateId { expected: PlateId, found: PlateId },
+    /// A plate seed lies outside the referenced surface allocation.
+    #[error("plate {plate:?} seed {seed:?} lies outside {cell_count} cells")]
+    InvalidPlateSeed {
+        plate: PlateId,
+        seed: CellId,
+        cell_count: usize,
+    },
+    /// A dense field length differs from the surface identity.
+    #[error("field {field} has length {found}; expected {expected}")]
+    FieldLengthMismatch {
+        field: &'static str,
+        expected: usize,
+        found: usize,
+    },
+    /// A cell references a plate outside the stable plate table.
+    #[error("cell {cell:?} references invalid plate {plate:?}")]
+    InvalidCellPlate { cell: CellId, plate: PlateId },
+    /// A dense crust category is not one of the stable semantic values.
+    #[error("cell {cell:?} stores invalid crust kind {found}")]
+    InvalidCrustKind { cell: CellId, found: u32 },
+    /// Crust thickness is non-finite or outside its material-specific range.
+    #[error("cell {cell:?} {kind:?} crust thickness {found} is outside {min}..={max} km")]
+    CrustThicknessOutOfRange {
+        cell: CellId,
+        kind: CrustKind,
+        found: f32,
+        min: f32,
+        max: f32,
+    },
+    /// A boundary strength is non-finite or outside zero to one.
+    #[error("edge {edge:?} boundary strength {found} is outside 0..=1")]
+    BoundaryStrengthOutOfRange { edge: EdgeId, found: f32 },
+    /// A boundary kind, segment, strength, and subduction polarity are inconsistent.
+    #[error("edge {edge:?} stores an inconsistent boundary record")]
+    InvalidBoundaryRecord { edge: EdgeId },
+    /// Segment identifiers are not the exact contiguous stable range.
+    #[error("expected boundary segment {expected:?}, found {found:?}")]
+    NonContiguousBoundarySegmentId {
+        expected: BoundarySegmentId,
+        found: BoundarySegmentId,
+    },
+    /// A segment header, plate pair, kind, mean, or member list is malformed.
+    #[error("boundary segment {segment:?} is malformed")]
+    InvalidBoundarySegment { segment: BoundarySegmentId },
+    /// An edge appears in more than one segment.
+    #[error("boundary edge {edge:?} appears in more than one segment")]
+    DuplicateBoundaryEdge { edge: EdgeId },
+    /// A segment and one of its edge-aligned records disagree.
+    #[error("segment {segment:?} disagrees with member edge {edge:?}")]
+    BoundarySegmentMismatch {
+        segment: BoundarySegmentId,
+        edge: EdgeId,
+    },
+    /// A segment's stored mean does not match its member strengths.
+    #[error("segment {segment:?} mean {stored} does not match {calculated}")]
+    BoundaryMeanMismatch {
+        segment: BoundarySegmentId,
+        stored: f32,
+        calculated: f32,
+    },
+    /// An edge record and the canonical segment membership partition disagree.
+    #[error("edge {edge:?} boundary membership does not match its segment")]
+    BoundaryMembershipMismatch { edge: EdgeId },
+    /// A plate's declared seed is not owned by that plate.
+    #[error("plate {plate:?} seed {seed:?} is owned by {owner:?}")]
+    PlateSeedOwnership {
+        plate: PlateId,
+        seed: CellId,
+        owner: Option<PlateId>,
+    },
+    /// Cells owned by a plate do not form one connected surface region.
+    #[error("plate {plate:?} reaches {reached} of {expected} owned cells")]
+    DisconnectedPlate {
+        plate: PlateId,
+        reached: usize,
+        expected: usize,
+    },
+    /// Edge-aligned tectonic state disagrees with the authoritative owner topology.
+    #[error("edge {edge:?} boundary state disagrees with its owner plates")]
+    BoundaryTopologyMismatch { edge: EdgeId },
+    /// Adjacent plates store an identical Euler rotation.
+    #[error("adjacent plates {plates:?} have identical Euler rotations")]
+    AdjacentPlatesCoMoving { plates: [PlateId; 2] },
+    /// Member edges do not form one canonical-vertex-connected segment.
+    #[error("segment {segment:?} reaches {reached} of {expected} member edges")]
+    DisconnectedBoundarySegment {
+        segment: BoundarySegmentId,
+        reached: usize,
+        expected: usize,
+    },
+}
