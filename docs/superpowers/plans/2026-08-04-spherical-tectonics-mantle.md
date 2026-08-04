@@ -62,7 +62,7 @@ tests/
 - Add copyable `SphericalSurfaceEdgeFrame` containing `EdgeId`, canonical `[SurfaceVertexId; 2]`, ordered `[CellId; 2]`, midpoint radial, and `normal_from_first`.
 - Add inherent `SphericalNaturalSurface::cell_frame` and `edge_frame` queries. Keep the geometry-neutral `NaturalSurface` trait unchanged.
 
-- [ ] **Step 1: Write RED adapter-frame tests**
+- [x] **Step 1: Write RED adapter-frame tests**
 
 Verify exact equality with the borrowed spherical snapshot, canonical endpoint IDs, owner ordering, unit/tangent frame properties, out-of-range lookups, and no new serialized or owned geometry.
 
@@ -74,11 +74,11 @@ cargo test --test natural_surface_adapters spherical_local_frames
 
 Expected: FAIL because the frame types and queries do not exist.
 
-- [ ] **Step 2: Implement thin frame queries**
+- [x] **Step 2: Implement thin frame queries**
 
 Return values copied from one validated borrowed edge/cell record. Do not allocate, reconstruct adjacency, or derive a projection.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```powershell
 cargo test --test natural_surface_adapters

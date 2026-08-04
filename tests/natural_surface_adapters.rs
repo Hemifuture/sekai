@@ -229,6 +229,36 @@ fn spherical_adapter_exposes_closed_authoritative_metrics_without_a_projection()
 }
 
 #[test]
+fn spherical_local_frames_match_authoritative_records_without_allocating_geometry() {
+    let snapshot = spherical_fixture(6_371_000.0);
+    let surface = SphericalNaturalSurface::new(&snapshot).unwrap();
+
+    for (index, authoritative) in snapshot.cells().iter().enumerate() {
+        let frame = surface.cell_frame(CellId::from_raw(index as u32)).unwrap();
+        assert_eq!(frame.id(), authoritative.id);
+        assert_eq!(frame.radial(), authoritative.centroid);
+    }
+    assert!(surface
+        .cell_frame(CellId::from_raw(snapshot.cells().len() as u32))
+        .is_none());
+
+    for (index, authoritative) in snapshot.edges().iter().enumerate() {
+        let frame = surface.edge_frame(EdgeId::from_raw(index as u32)).unwrap();
+        assert_eq!(frame.id(), authoritative.id);
+        assert_eq!(frame.vertices(), authoritative.vertices);
+        assert_eq!(frame.owners(), authoritative.cells);
+        assert_eq!(frame.midpoint(), authoritative.midpoint);
+        assert_eq!(frame.normal_from_first(), authoritative.normal_from_first);
+        assert!(frame.midpoint().dot(frame.normal_from_first()).abs() <= 1.0e-12);
+        assert!((frame.midpoint().norm() - 1.0).abs() <= 1.0e-12);
+        assert!((frame.normal_from_first().norm() - 1.0).abs() <= 1.0e-12);
+    }
+    assert!(surface
+        .edge_frame(EdgeId::from_raw(snapshot.edges().len() as u32))
+        .is_none());
+}
+
+#[test]
 fn public_adapter_construction_revalidates_untrusted_snapshots() {
     let planar = planar_fixture(1.0, 1.0);
     let mut planar_json = serde_json::to_value(&planar).unwrap();

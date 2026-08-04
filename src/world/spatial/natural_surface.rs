@@ -4,9 +4,9 @@ use thiserror::Error;
 
 use super::{
     SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError, Topology,
+    SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError, Topology, UnitVector3,
 };
-use crate::world::{CellId, EdgeId, Meters, SquareMeters};
+use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
 
 /// Copyable natural-process metrics for one authoritative surface cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +67,62 @@ impl SurfaceEdgeMetrics {
     /// Returns the physical distance between cell sites when the edge has two owners.
     pub const fn center_distance(self) -> Option<Meters> {
         self.center_distance
+    }
+}
+
+/// Copyable spherical orientation facts for one authoritative surface cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphericalSurfaceCellFrame {
+    id: CellId,
+    radial: UnitVector3,
+}
+
+impl SphericalSurfaceCellFrame {
+    /// Returns the authoritative dense cell identifier.
+    pub const fn id(self) -> CellId {
+        self.id
+    }
+
+    /// Returns the outward unit direction at the stored spherical centroid.
+    pub const fn radial(self) -> UnitVector3 {
+        self.radial
+    }
+}
+
+/// Copyable spherical orientation and incidence facts for one authoritative edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphericalSurfaceEdgeFrame {
+    id: EdgeId,
+    vertices: [SurfaceVertexId; 2],
+    owners: [CellId; 2],
+    midpoint: UnitVector3,
+    normal_from_first: UnitVector3,
+}
+
+impl SphericalSurfaceEdgeFrame {
+    /// Returns the authoritative dense edge identifier.
+    pub const fn id(self) -> EdgeId {
+        self.id
+    }
+
+    /// Returns canonical endpoint identifiers in the stored order.
+    pub const fn vertices(self) -> [SurfaceVertexId; 2] {
+        self.vertices
+    }
+
+    /// Returns the two canonical owner cells in ascending identifier order.
+    pub const fn owners(self) -> [CellId; 2] {
+        self.owners
+    }
+
+    /// Returns the outward unit direction at the edge's great-circle midpoint.
+    pub const fn midpoint(self) -> UnitVector3 {
+        self.midpoint
+    }
+
+    /// Returns the unit tangent normal pointing from the first owner to the second.
+    pub const fn normal_from_first(self) -> UnitVector3 {
+        self.normal_from_first
     }
 }
 
@@ -222,6 +278,27 @@ impl<'a> SphericalNaturalSurface<'a> {
         Ok(Self {
             snapshot,
             surface_ref: SurfaceRef::from_validated_spherical(snapshot)?,
+        })
+    }
+
+    /// Returns one cell's authoritative spherical orientation without allocating.
+    pub fn cell_frame(&self, id: CellId) -> Option<SphericalSurfaceCellFrame> {
+        let cell = self.snapshot.cell(id)?;
+        Some(SphericalSurfaceCellFrame {
+            id: cell.id,
+            radial: cell.centroid,
+        })
+    }
+
+    /// Returns one edge's authoritative spherical local frame without allocating.
+    pub fn edge_frame(&self, id: EdgeId) -> Option<SphericalSurfaceEdgeFrame> {
+        let edge = self.snapshot.edge(id)?;
+        Some(SphericalSurfaceEdgeFrame {
+            id: edge.id,
+            vertices: edge.vertices,
+            owners: edge.cells,
+            midpoint: edge.midpoint,
+            normal_from_first: edge.normal_from_first,
         })
     }
 }

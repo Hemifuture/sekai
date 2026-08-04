@@ -11,7 +11,7 @@ mod validation;
 
 pub use natural_surface::{
     NaturalSurface, NaturalSurfaceError, PlanarNaturalSurface, SphericalNaturalSurface,
-    SurfaceCellMetrics, SurfaceEdgeMetrics,
+    SphericalSurfaceCellFrame, SphericalSurfaceEdgeFrame, SurfaceCellMetrics, SurfaceEdgeMetrics,
 };
 pub use snapshot::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
 pub(crate) use sphere_geometry::{
