@@ -297,13 +297,13 @@ impl Stage for ReliefStage {
     }
 }
 
-/// Builds the complete current-slice natural foundation stage graph.
+/// Builds the frozen planar V1 natural foundation stage graph.
 ///
 /// # Errors
 ///
 /// Returns a graph error if the fixed stage declarations cease to satisfy the
 /// engine dependency contract.
-pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
+pub fn legacy_planar_natural_foundation_graph() -> Result<StageGraph, GraphError> {
     StageGraphBuilder::new()
         .external::<PlanarSpaceArtifact>()
         .external::<TectonicSpecArtifact>()
@@ -330,6 +330,19 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .stage(PreliminaryClimateStage)
         .stage(HydroErosionStage)
         .build()
+}
+
+/// Builds the frozen planar V1 natural graph through its compatibility name.
+///
+/// New spherical worlds use `spherical_natural_foundation_graph`; this alias
+/// remains stable for callers that still load the legacy planar product.
+///
+/// # Errors
+///
+/// Returns a graph error if the frozen stage declarations cease to satisfy the
+/// engine dependency contract.
+pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
+    legacy_planar_natural_foundation_graph()
 }
 
 fn invalid_tectonics(error: TectonicValidationError) -> StageError {

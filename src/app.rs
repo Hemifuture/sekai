@@ -9,7 +9,7 @@ mod legacy_display;
 mod natural_display;
 
 use field_document::{prepare_control_action, prepare_new_document_display, AppFieldDocument};
-use natural_display::{NaturalDisplayError, NaturalFieldDocument};
+use natural_display::{LegacyPlanarNaturalFieldDocument, NaturalDisplayError};
 
 use crate::world::spatial::Topology;
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     },
     generators::{
         natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+            legacy_planar_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
             GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
             MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
             ResolvedWorldFormationArtifact, RulePackSetArtifact, TectonicArtifact,
@@ -108,7 +108,7 @@ pub struct TemplateApp {
     #[serde(skip)]
     field_viewer_state: FieldViewerStateResource,
     #[serde(skip)]
-    natural_document: Option<NaturalFieldDocument>,
+    legacy_planar_document: Option<LegacyPlanarNaturalFieldDocument>,
     #[serde(skip)]
     stage_cache: MemoryStageCache,
     #[serde(skip)]
@@ -135,7 +135,7 @@ impl Default for TemplateApp {
             field_renderer: None,
             field_display,
             field_viewer_state,
-            natural_document: None,
+            legacy_planar_document: None,
             stage_cache: MemoryStageCache::new(),
             display_revision_clock: DisplayRevisionClock::default(),
             rule_build_summary: RuleBuildSummary::default(),
@@ -160,7 +160,7 @@ impl TemplateApp {
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             app.field_renderer = Some(app.create_field_renderer_resource(render_state));
         }
-        app.generate_natural_world();
+        app.generate_legacy_planar_natural_world();
         app
     }
 
@@ -197,22 +197,22 @@ impl TemplateApp {
         resource
     }
 
-    fn generate_natural_world(&mut self) {
+    fn generate_legacy_planar_natural_world(&mut self) {
         let world = default_world_spec(RootSeed::new(self.world_seed));
         let tectonic = self.tectonic_spec.clone();
-        if let Err(error) = self.try_replace_natural_world(&world, &tectonic) {
+        if let Err(error) = self.try_replace_legacy_planar_natural_world(&world, &tectonic) {
             log::error!("natural world build failed: {error}");
         }
     }
 
-    fn try_replace_natural_world(
+    fn try_replace_legacy_planar_natural_world(
         &mut self,
         world: &WorldSpec,
         tectonic: &TectonicSpec,
     ) -> Result<(), NaturalWorldBuildError> {
         let current_state = self.field_viewer_state.read_resource(Clone::clone);
         let geologic = self.geologic_spec.clone();
-        let candidate = build_natural_candidate(
+        let candidate = build_legacy_planar_natural_candidate(
             world,
             &self.formation_spec,
             tectonic,
@@ -221,11 +221,11 @@ impl TemplateApp {
             &current_state,
             &self.display_revision_clock,
         );
-        self.publish_natural_candidate(candidate)
+        self.publish_legacy_planar_natural_candidate(candidate)
     }
 
     #[cfg(test)]
-    fn try_replace_natural_world_with_rule_inputs(
+    fn try_replace_legacy_planar_natural_world_with_rule_inputs(
         &mut self,
         world: &WorldSpec,
         tectonic: &TectonicSpec,
@@ -234,7 +234,7 @@ impl TemplateApp {
     ) -> Result<(), NaturalWorldBuildError> {
         let current_state = self.field_viewer_state.read_resource(Clone::clone);
         let geologic = self.geologic_spec.clone();
-        let candidate = build_natural_candidate_with_rule_inputs(
+        let candidate = build_legacy_planar_natural_candidate_with_rule_inputs(
             world,
             &self.formation_spec,
             tectonic,
@@ -245,12 +245,12 @@ impl TemplateApp {
             &current_state,
             &self.display_revision_clock,
         );
-        self.publish_natural_candidate(candidate)
+        self.publish_legacy_planar_natural_candidate(candidate)
     }
 
-    fn publish_natural_candidate(
+    fn publish_legacy_planar_natural_candidate(
         &mut self,
-        candidate: Result<NaturalWorldCandidate, NaturalWorldBuildError>,
+        candidate: Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError>,
     ) -> Result<(), NaturalWorldBuildError> {
         let candidate = match candidate {
             Ok(candidate) => candidate,
@@ -264,7 +264,7 @@ impl TemplateApp {
             }
         };
 
-        let NaturalWorldCandidate {
+        let LegacyPlanarNaturalWorldCandidate {
             document,
             state,
             packet,
@@ -284,7 +284,7 @@ impl TemplateApp {
         let plates = document.tectonic.snapshot().plates().len();
         let segments = document.tectonic.snapshot().boundary_segments().len();
 
-        self.natural_document = Some(document);
+        self.legacy_planar_document = Some(document);
         self.field_viewer_state
             .with_resource(|current| *current = state);
         self.field_display
@@ -299,7 +299,7 @@ impl TemplateApp {
     }
 
     fn apply_field_control_action(&mut self, action: FieldControlAction) {
-        let Some(document) = self.natural_document.as_ref() else {
+        let Some(document) = self.legacy_planar_document.as_ref() else {
             return;
         };
         if let FieldControlAction::InspectField(field) = action {
@@ -449,7 +449,7 @@ impl eframe::App for TemplateApp {
                         rebuild = true;
                     }
 
-                    if let Some(document) = self.natural_document.as_ref() {
+                    if let Some(document) = self.legacy_planar_document.as_ref() {
                         ui.separator();
                         ui.label(format!(
                             "{} 个单元｜{} 个板块｜{} 条边界段",
@@ -497,7 +497,7 @@ impl eframe::App for TemplateApp {
             rebuild = true;
         }
         if rebuild {
-            self.generate_natural_world();
+            self.generate_legacy_planar_natural_world();
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -587,13 +587,13 @@ fn default_world_spec(root_seed: RootSeed) -> WorldSpec {
     }
 }
 
-fn build_natural_external_artifacts(
+fn build_legacy_planar_natural_external_artifacts(
     world: &WorldSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
-    build_natural_external_artifacts_with_rule_inputs(
+    build_legacy_planar_natural_external_artifacts_with_rule_inputs(
         world,
         formation,
         tectonic,
@@ -603,7 +603,7 @@ fn build_natural_external_artifacts(
     )
 }
 
-fn build_natural_external_artifacts_with_rule_inputs(
+fn build_legacy_planar_natural_external_artifacts_with_rule_inputs(
     world: &WorldSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
@@ -627,7 +627,7 @@ fn build_natural_external_artifacts_with_rule_inputs(
     Ok(external)
 }
 
-fn build_natural_candidate(
+fn build_legacy_planar_natural_candidate(
     world: &WorldSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
@@ -635,13 +635,20 @@ fn build_natural_candidate(
     cache: &mut MemoryStageCache,
     current_state: &FieldDisplayState,
     clock: &DisplayRevisionClock,
-) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
-    let external = build_natural_external_artifacts(world, formation, tectonic, geologic)?;
-    build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
+) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
+    let external =
+        build_legacy_planar_natural_external_artifacts(world, formation, tectonic, geologic)?;
+    build_legacy_planar_natural_candidate_from_external(
+        world.root_seed,
+        external,
+        cache,
+        current_state,
+        clock,
+    )
 }
 
 #[cfg(test)]
-fn build_natural_candidate_with_rule_inputs(
+fn build_legacy_planar_natural_candidate_with_rule_inputs(
     world: &WorldSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
@@ -651,8 +658,8 @@ fn build_natural_candidate_with_rule_inputs(
     cache: &mut MemoryStageCache,
     current_state: &FieldDisplayState,
     clock: &DisplayRevisionClock,
-) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
-    let external = build_natural_external_artifacts_with_rule_inputs(
+) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
+    let external = build_legacy_planar_natural_external_artifacts_with_rule_inputs(
         world,
         formation,
         tectonic,
@@ -660,18 +667,24 @@ fn build_natural_candidate_with_rule_inputs(
         pack_set,
         author_constraints,
     )?;
-    build_natural_candidate_from_external(world.root_seed, external, cache, current_state, clock)
+    build_legacy_planar_natural_candidate_from_external(
+        world.root_seed,
+        external,
+        cache,
+        current_state,
+        clock,
+    )
 }
 
-fn build_natural_candidate_from_external(
+fn build_legacy_planar_natural_candidate_from_external(
     root_seed: RootSeed,
     external: ExternalArtifacts,
     cache: &mut MemoryStageCache,
     current_state: &FieldDisplayState,
     clock: &DisplayRevisionClock,
-) -> Result<NaturalWorldCandidate, NaturalWorldBuildError> {
-    let outcome =
-        BuildEngine::new(natural_foundation_graph()?).build(root_seed, external, cache)?;
+) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
+    let outcome = BuildEngine::new(legacy_planar_natural_foundation_graph()?)
+        .build(root_seed, external, cache)?;
     let rule_resolution = outcome.artifacts.get::<TectonicRuleResolutionArtifact>()?;
     let rule_summary = RuleBuildSummary::from_resolution(rule_resolution.resolution());
     let spatial = outcome.artifacts.get::<SpatialArtifact>()?;
@@ -682,7 +695,7 @@ fn build_natural_candidate_from_external(
     let geology = outcome.artifacts.get::<GeologicArtifact>()?;
     let climate = outcome.artifacts.get::<PreliminaryClimateArtifact>()?;
     let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>()?;
-    let document = NaturalFieldDocument::build(
+    let document = LegacyPlanarNaturalFieldDocument::build(
         spatial,
         formation,
         tectonic,
@@ -695,7 +708,7 @@ fn build_natural_candidate_from_external(
     )?;
     let mut next_clock = clock.clone();
     let (state, packet) = prepare_new_document_display(&document, current_state, &mut next_clock)?;
-    Ok(NaturalWorldCandidate {
+    Ok(LegacyPlanarNaturalWorldCandidate {
         document,
         state,
         packet,
@@ -705,8 +718,8 @@ fn build_natural_candidate_from_external(
     })
 }
 
-struct NaturalWorldCandidate {
-    document: NaturalFieldDocument,
+struct LegacyPlanarNaturalWorldCandidate {
+    document: LegacyPlanarNaturalFieldDocument,
     state: FieldDisplayState,
     packet: Arc<PreparedFieldDisplay>,
     clock: DisplayRevisionClock,
@@ -743,9 +756,9 @@ mod natural_app_tests {
     use std::sync::Arc;
 
     use super::{
-        apply_formation_preset_selection, build_natural_external_artifacts, default_world_spec,
-        formation_provenance_label, NaturalWorldBuildError, TemplateApp, CURRENT_SLICE_STATUS_TEXT,
-        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
+        default_world_spec, formation_provenance_label, NaturalWorldBuildError, TemplateApp,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -842,7 +855,7 @@ mod natural_app_tests {
             preset: WorldFormationPreset::Archipelago,
             ..WorldFormationSpec::default()
         };
-        let external: ExternalArtifacts = build_natural_external_artifacts(
+        let external: ExternalArtifacts = build_legacy_planar_natural_external_artifacts(
             &world,
             &formation,
             &TectonicSpec::default(),
@@ -909,7 +922,7 @@ mod natural_app_tests {
         let world = default_world_spec(RootSeed::new(7));
         let mut formation = WorldFormationSpec::default();
         formation.schema_version += 1;
-        let result = build_natural_external_artifacts(
+        let result = build_legacy_planar_natural_external_artifacts(
             &world,
             &formation,
             &TectonicSpec::default(),
@@ -926,11 +939,11 @@ mod natural_app_tests {
         let mut app = TemplateApp::default();
         let mut world = default_world_spec(RootSeed::new(11));
         world.space.target_cell_count = 128;
-        app.try_replace_natural_world(&world, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
             .unwrap();
 
         let document = app
-            .natural_document
+            .legacy_planar_document
             .as_ref()
             .expect("successful replacement publishes a document");
         assert_eq!(document.spatial.snapshot().cell_count(), 128);
@@ -961,10 +974,15 @@ mod natural_app_tests {
         app.formation_spec.preset = WorldFormationPreset::Random;
         let mut world = default_world_spec(RootSeed::new(11));
         world.space.target_cell_count = 128;
-        app.try_replace_natural_world(&world, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
             .unwrap();
 
-        let formation = app.natural_document.as_ref().unwrap().formation.formation();
+        let formation = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .formation
+            .formation();
         assert_eq!(formation.requested(), WorldFormationPreset::Random);
         assert!(matches!(
             formation.resolved(),
@@ -984,16 +1002,31 @@ mod natural_app_tests {
         let mut app = TemplateApp::default();
         let mut valid = default_world_spec(RootSeed::new(13));
         valid.space.target_cell_count = 128;
-        app.try_replace_natural_world(&valid, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&valid, &TectonicSpec::default())
             .unwrap();
-        let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
-        let formation_before = app.natural_document.as_ref().unwrap().formation.clone();
-        let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
-        let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
-        let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
-        let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
-        let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
-        let hydro_erosion_before = app.natural_document.as_ref().unwrap().hydro_erosion.clone();
+        let spatial_before = app.legacy_planar_document.as_ref().unwrap().spatial.clone();
+        let formation_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .formation
+            .clone();
+        let tectonic_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .tectonic
+            .clone();
+        let mantle_before = app.legacy_planar_document.as_ref().unwrap().mantle.clone();
+        let relief_before = app.legacy_planar_document.as_ref().unwrap().relief.clone();
+        let geology_before = app.legacy_planar_document.as_ref().unwrap().geology.clone();
+        let climate_before = app.legacy_planar_document.as_ref().unwrap().climate.clone();
+        let hydro_erosion_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .hydro_erosion
+            .clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -1006,14 +1039,14 @@ mod natural_app_tests {
         let mut invalid = valid;
         invalid.space.target_cell_count = 1;
         assert!(app
-            .try_replace_natural_world(&invalid, &TectonicSpec::default())
+            .try_replace_legacy_planar_natural_world(&invalid, &TectonicSpec::default())
             .is_err());
 
         assert!(Arc::ptr_eq(
             &spatial_before,
-            &app.natural_document.as_ref().unwrap().spatial
+            &app.legacy_planar_document.as_ref().unwrap().spatial
         ));
-        let document_after = app.natural_document.as_ref().unwrap();
+        let document_after = app.legacy_planar_document.as_ref().unwrap();
         assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
         assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
         assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
@@ -1039,24 +1072,40 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn default_application_source_has_no_legacy_generator_call_path() {
-        let source = include_str!("app.rs");
-        let old_generator = ["Terrain", "Generator"].concat();
-        let old_entrypoint = ["generate_terrain_with", "_template"].concat();
-        let projection_constructor = ["ResolvedTectonicInputArtifact", "::new"].concat();
-        let geologic_projection_constructor = ["ResolvedGeologicInputArtifact", "::new"].concat();
-        let tectonic_generator = ["Tectonic", "Generator"].concat();
-        let mantle_generator = ["Mantle", "Generator"].concat();
-        let geologic_generator = ["Geologic", "Generator"].concat();
-        let climate_generator = ["Climate", "Generator"].concat();
-        assert!(!source.contains(&old_generator));
-        assert!(!source.contains(&old_entrypoint));
-        assert!(!source.contains(&projection_constructor));
-        assert!(!source.contains(&geologic_projection_constructor));
-        assert!(!source.contains(&tectonic_generator));
-        assert!(!source.contains(&mantle_generator));
-        assert!(!source.contains(&geologic_generator));
-        assert!(!source.contains(&climate_generator));
+    fn active_canvas_build_executes_the_legacy_planar_graph() {
+        let mut world = default_world_spec(RootSeed::new(19));
+        world.space.target_cell_count = 128;
+        let candidate = super::build_legacy_planar_natural_candidate(
+            &world,
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut crate::engine::MemoryStageCache::new(),
+            &crate::view::FieldDisplayState::default(),
+            &crate::view::DisplayRevisionClock::default(),
+        )
+        .unwrap();
+
+        assert!(candidate
+            .report
+            .stage_ids()
+            .contains(&"spatial.planar-voronoi"));
+        assert!(candidate
+            .report
+            .stage_ids()
+            .iter()
+            .all(|stage_id| !stage_id.starts_with("natural.spherical-")));
+        assert_eq!(candidate.document.spatial.snapshot().cell_count(), 128);
+        assert_eq!(candidate.document.tectonic.snapshot().cell_count(), 128);
+        assert_eq!(candidate.document.mantle.snapshot().cell_count(), 128);
+        assert_eq!(candidate.document.relief.snapshot().cell_count(), 128);
+        assert_eq!(candidate.document.geology.snapshot().cell_count(), 128);
+        assert_eq!(candidate.document.climate.snapshot().cell_count(), 128);
+        assert_eq!(
+            candidate.document.hydro_erosion.snapshot().cell_count(),
+            128
+        );
+        assert_eq!(candidate.packet.mesh().cell_count(), 128);
     }
 
     #[test]
@@ -1064,16 +1113,31 @@ mod natural_app_tests {
         let mut app = TemplateApp::default();
         let mut world = default_world_spec(RootSeed::new(17));
         world.space.target_cell_count = 128;
-        app.try_replace_natural_world(&world, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
             .unwrap();
-        let spatial_before = app.natural_document.as_ref().unwrap().spatial.clone();
-        let formation_before = app.natural_document.as_ref().unwrap().formation.clone();
-        let tectonic_before = app.natural_document.as_ref().unwrap().tectonic.clone();
-        let mantle_before = app.natural_document.as_ref().unwrap().mantle.clone();
-        let relief_before = app.natural_document.as_ref().unwrap().relief.clone();
-        let geology_before = app.natural_document.as_ref().unwrap().geology.clone();
-        let climate_before = app.natural_document.as_ref().unwrap().climate.clone();
-        let hydro_erosion_before = app.natural_document.as_ref().unwrap().hydro_erosion.clone();
+        let spatial_before = app.legacy_planar_document.as_ref().unwrap().spatial.clone();
+        let formation_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .formation
+            .clone();
+        let tectonic_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .tectonic
+            .clone();
+        let mantle_before = app.legacy_planar_document.as_ref().unwrap().mantle.clone();
+        let relief_before = app.legacy_planar_document.as_ref().unwrap().relief.clone();
+        let geology_before = app.legacy_planar_document.as_ref().unwrap().geology.clone();
+        let climate_before = app.legacy_planar_document.as_ref().unwrap().climate.clone();
+        let hydro_erosion_before = app
+            .legacy_planar_document
+            .as_ref()
+            .unwrap()
+            .hydro_erosion
+            .clone();
         let packet_before = app
             .field_display
             .read_resource(FieldDisplayResourceState::current_cloned)
@@ -1111,7 +1175,7 @@ mod natural_app_tests {
             AuthorConstraints::new(AUTHOR_CONSTRAINTS_SCHEMA_V1, vec![author_constraint]).unwrap();
 
         assert!(app
-            .try_replace_natural_world_with_rule_inputs(
+            .try_replace_legacy_planar_natural_world_with_rule_inputs(
                 &world,
                 &TectonicSpec::default(),
                 packs,
@@ -1119,7 +1183,7 @@ mod natural_app_tests {
             )
             .is_err());
 
-        let document_after = app.natural_document.as_ref().unwrap();
+        let document_after = app.legacy_planar_document.as_ref().unwrap();
         assert!(Arc::ptr_eq(&spatial_before, &document_after.spatial));
         assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
         assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
@@ -1148,7 +1212,7 @@ mod natural_app_tests {
         let mut app = TemplateApp::default();
         let mut first = default_world_spec(RootSeed::new(23));
         first.space.target_cell_count = 128;
-        app.try_replace_natural_world(&first, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&first, &TectonicSpec::default())
             .unwrap();
         let selected = surface_elevation_m_field_id();
         app.apply_field_control_action(FieldControlAction::SelectField(selected.clone()));
@@ -1160,7 +1224,7 @@ mod natural_app_tests {
 
         let mut second = first;
         second.root_seed = RootSeed::new(24);
-        app.try_replace_natural_world(&second, &TectonicSpec::default())
+        app.try_replace_legacy_planar_natural_world(&second, &TectonicSpec::default())
             .unwrap();
         assert_eq!(
             app.field_viewer_state

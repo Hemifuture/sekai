@@ -36,7 +36,7 @@ use crate::world::natural::{
 use crate::world::spatial::SpatialValidationError;
 
 /// Immutable formal natural-world document used by the application display boundary.
-pub(super) struct NaturalFieldDocument {
+pub(super) struct LegacyPlanarNaturalFieldDocument {
     pub(super) spatial: Arc<SpatialArtifact>,
     pub(super) formation: Arc<ResolvedWorldFormationArtifact>,
     pub(super) tectonic: Arc<TectonicArtifact>,
@@ -51,7 +51,7 @@ pub(super) struct NaturalFieldDocument {
     display_cache: NaturalFieldDisplayCache,
 }
 
-impl NaturalFieldDocument {
+impl LegacyPlanarNaturalFieldDocument {
     pub(super) fn build(
         spatial: Arc<SpatialArtifact>,
         formation: Arc<ResolvedWorldFormationArtifact>,
@@ -323,7 +323,7 @@ impl NaturalFieldDocument {
     pub(super) fn test_fixture() -> Self {
         use crate::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
         use crate::generators::natural::{
-            natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+            legacy_planar_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
             GeologicSpecArtifact, HydroErosionSpecArtifact, RulePackSetArtifact,
             TectonicSpecArtifact, WorldFormationSpecArtifact,
         };
@@ -366,7 +366,7 @@ impl NaturalFieldDocument {
         external
             .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
             .unwrap();
-        let outcome = BuildEngine::new(natural_foundation_graph().unwrap())
+        let outcome = BuildEngine::new(legacy_planar_natural_foundation_graph().unwrap())
             .build(RootSeed::new(42), external, &mut MemoryStageCache::new())
             .unwrap();
         Self::build(
@@ -390,7 +390,7 @@ impl NaturalFieldDocument {
     }
 }
 
-impl AppFieldDocument for NaturalFieldDocument {
+impl AppFieldDocument for LegacyPlanarNaturalFieldDocument {
     fn mesh(&self) -> &Arc<PreparedCellMesh> {
         &self.mesh
     }
@@ -476,9 +476,9 @@ mod tests {
         ExternalArtifacts, MemoryStageCache,
     };
     use crate::generators::natural::{
-        natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicArtifact,
-        GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact, MantleArtifact,
-        PreliminaryClimateArtifact, ReliefArtifact, ResolvedWorldFormationArtifact,
+        legacy_planar_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+        GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
+        MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact, ResolvedWorldFormationArtifact,
         RulePackSetArtifact, TectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::{PlanarSpaceArtifact, SpatialArtifact};
@@ -497,9 +497,9 @@ mod tests {
     use crate::world::spatial::Topology;
     use crate::world::{BoundaryCondition, CellId, Meters, PlanarSpaceSpec, RootSeed};
 
-    use super::NaturalFieldDocument;
+    use super::LegacyPlanarNaturalFieldDocument;
 
-    fn build_document_with_diagnostic() -> NaturalFieldDocument {
+    fn build_document_with_diagnostic() -> LegacyPlanarNaturalFieldDocument {
         let mut external = ExternalArtifacts::new();
         external
             .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
@@ -532,7 +532,7 @@ mod tests {
         external
             .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
             .unwrap();
-        let mut outcome = BuildEngine::new(natural_foundation_graph().unwrap())
+        let mut outcome = BuildEngine::new(legacy_planar_natural_foundation_graph().unwrap())
             .build(RootSeed::new(42), external, &mut MemoryStageCache::new())
             .unwrap();
         outcome.report.push_diagnostic(
@@ -562,7 +562,7 @@ mod tests {
             .get::<PreliminaryClimateArtifact>()
             .unwrap();
         let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>().unwrap();
-        NaturalFieldDocument::build(
+        LegacyPlanarNaturalFieldDocument::build(
             spatial,
             formation,
             tectonic,
@@ -804,7 +804,7 @@ mod tests {
             .unwrap(),
         ));
 
-        let result = NaturalFieldDocument::build(
+        let result = LegacyPlanarNaturalFieldDocument::build(
             document.spatial.clone(),
             document.formation.clone(),
             document.tectonic.clone(),

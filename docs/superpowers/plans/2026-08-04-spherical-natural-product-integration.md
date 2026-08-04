@@ -62,7 +62,7 @@
 - Consumes: existing `natural_foundation_graph()`, planar Artifact types, and `TemplateApp` serialization.
 - Produces: `legacy_planar_natural_foundation_graph() -> Result<StageGraph, GraphError>` while retaining `natural_foundation_graph()` as an exact compatibility alias; `LegacyPlanarNaturalFieldDocument` as the explicit internal presenter name.
 
-- [ ] **Step 1: Write the failing legacy-boundary test**
+- [x] **Step 1: Write the failing legacy-boundary test**
 
 Add a test that demands the new explicit alias and proves both entry points retain the exact graph contract:
 
@@ -98,13 +98,13 @@ fn old_application_state_defaults_into_the_legacy_presenter_contract() {
 
 In `src/app.rs` tests, replace the existing source-grep test with a real candidate build named `active_canvas_build_executes_the_legacy_planar_graph`. Build 128 cells through `build_legacy_planar_natural_candidate`, assert the report includes `spatial.planar-voronoi`, contains no stage ID prefixed by `natural.spherical-`, and assert the resulting document contains the 128-cell `SpatialArtifact`, all seven planar natural snapshots, and a prepared display packet. This test fails if the active presenter is accidentally wired to sphere inputs or bypasses the typed legacy graph.
 
-- [ ] **Step 2: Run the test and observe RED**
+- [x] **Step 2: Run the test and observe RED**
 
 Run: `cargo test --test legacy_planar_boundary -- --nocapture`
 
 Expected: compilation fails because `legacy_planar_natural_foundation_graph` is not exported.
 
-- [ ] **Step 3: Add the compatibility alias and explicit app naming**
+- [x] **Step 3: Add the compatibility alias and explicit app naming**
 
 Move the existing graph body without changing any stage registration:
 
@@ -145,7 +145,7 @@ pub fn natural_foundation_graph() -> Result<StageGraph, GraphError> {
 
 Export both functions. Rename only private application symbols (`NaturalFieldDocument` to `LegacyPlanarNaturalFieldDocument`, `natural_document` to `legacy_planar_document`, `build_natural_candidate` to `build_legacy_planar_natural_candidate`, `build_natural_candidate_from_external` to `build_legacy_planar_natural_candidate_from_external`, and the remaining planar candidate/external helpers to the same `legacy_planar_*` convention) and make the app call the explicit legacy graph. Replace `default_application_source_has_no_legacy_generator_call_path` with the behavior test specified in Step 1. Do not change persisted fields or runtime behavior.
 
-- [ ] **Step 4: Run focused legacy compatibility gates**
+- [x] **Step 4: Run focused legacy compatibility gates**
 
 Run:
 
@@ -157,7 +157,7 @@ cargo test --lib natural_app_tests -- --nocapture
 
 Expected: all pass with the pre-existing planar stage IDs and golden images.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/natural/stage.rs src/generators/natural/mod.rs src/app.rs src/app/natural_display.rs tests/legacy_planar_boundary.rs

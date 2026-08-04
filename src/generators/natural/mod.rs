@@ -85,7 +85,7 @@ pub use spherical_mantle::SphericalMantleGenerationError;
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_tectonics::SphericalTectonicGenerationError;
 pub use stage::{
-    natural_foundation_graph, ReliefArtifact, ReliefStage, TectonicArtifact, TectonicSpecArtifact,
-    TectonicStage,
+    legacy_planar_natural_foundation_graph, natural_foundation_graph, ReliefArtifact, ReliefStage,
+    TectonicArtifact, TectonicSpecArtifact, TectonicStage,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

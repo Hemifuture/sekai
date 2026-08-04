@@ -266,7 +266,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{prepare_control_action, prepare_new_document_display, AppFieldDocument};
-    use crate::app::natural_display::NaturalFieldDocument;
+    use crate::app::natural_display::LegacyPlanarNaturalFieldDocument;
     use crate::ui::field::FieldControlAction;
     use crate::view::{
         DisplayRangeMode, DisplayRevisionClock, FieldCatalog, FieldDisplayState, FieldViewError,
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn switching_fields_reuses_mesh_and_untouched_buffers() {
-        let document = NaturalFieldDocument::test_fixture();
+        let document = LegacyPlanarNaturalFieldDocument::test_fixture();
         let mut clock = DisplayRevisionClock::default();
         let (mut state, initial) =
             prepare_new_document_display(&document, &FieldDisplayState::default(), &mut clock)
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn switching_to_a_process_field_uses_its_document_preferred_range() {
-        let document = NaturalFieldDocument::test_fixture();
+        let document = LegacyPlanarNaturalFieldDocument::test_fixture();
         let mut clock = DisplayRevisionClock::default();
         let (mut state, initial) =
             prepare_new_document_display(&document, &FieldDisplayState::default(), &mut clock)
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn failed_candidate_leaves_current_state_packet_and_clock_unchanged() {
-        let current_document = NaturalFieldDocument::test_fixture();
+        let current_document = LegacyPlanarNaturalFieldDocument::test_fixture();
         let mut clock = DisplayRevisionClock::default();
         let (current_state, current_packet) = prepare_new_document_display(
             &current_document,
