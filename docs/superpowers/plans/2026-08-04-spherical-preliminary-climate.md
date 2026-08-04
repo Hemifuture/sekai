@@ -137,7 +137,7 @@ tests/
 - [x] Audit that S0B.4 owns no geometry, does not consume geology/circulation/UI state, and is not published through a half-migrated stage or field path.
 - [x] Run focused planar climate/golden regressions, `cargo fmt --all -- --check`, all-target/all-feature Clippy with warnings denied, all-target/all-feature tests, and the all-feature WASM check.
 - [x] Complete a fresh read-only scientific/code review, close all Critical/Important findings, rerun fresh gates, append exact evidence, and commit `docs: record spherical preliminary climate evidence`.
-- [ ] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.4 worktree/branch, then continue to S0B.5.
+- [x] Fast-forward merge the reviewed branch into `main`, remove only the verified S0B.4 worktree/branch, then continue to S0B.5.
 
 ## Verification evidence (2026-08-04)
 
@@ -153,6 +153,7 @@ tests/
 - Ownership audit: the snapshot stores only semantic dense fields plus one exact `SurfaceRef`; it stores no cells, edges, adjacency, bases, flux work arrays, projection, stage, artifact, cache, renderer, or UI state. The generator consumes only the authoritative sphere, spherical relief, and shared `ClimateSpec`; it builds one disposable topology index and does not consume geology or the transient circulation solver.
 - Review corrections: the outgoing limiter was changed to preserve ordinary wind-speed response below its CFL ceiling; condensation now uses the receiver cell's authoritative latitude while edge wind remains evaluated at the edge midpoint; the performance byte count includes the complete snapshot header and identity. No Critical or Important finding remains.
 - Fresh commands exited `0`: `cargo fmt --all -- --check`; `cargo clippy --all-targets --all-features -- -D warnings`; `cargo test --all-targets --all-features` (225-test library batch with one pre-existing ignored stress test, plus all integration/binary/bench targets); `cargo check --all-features --lib --target wasm32-unknown-unknown`; and the ignored Release performance gate invoked explicitly.
+- Integration: reviewed head `615f381` was fast-forwarded into `main`; the clean `spherical-preliminary-climate` worktree and merged feature branch were then removed.
 
 ## Explicitly deferred
 
