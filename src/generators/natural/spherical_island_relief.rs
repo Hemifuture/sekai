@@ -24,6 +24,7 @@ const HOTSPOT_RIDGES: FractalProfile = FractalProfile {
     persistence: 0.46,
 };
 const HOTSPOT_SEED_STEP: u32 = 0x9E37_79B9;
+const HOTSPOT_TRAIL_COORDINATE_STRETCH: f64 = 5.3;
 const SUPPORTED_BACKGROUND_FRACTION: f64 = 0.015;
 const ARC_SEED_STEP: u32 = 0x85EB_CA6B;
 const ARC_FBM: FractalProfile = FractalProfile {
@@ -85,7 +86,10 @@ pub(super) fn synthesize_spherical_hotspot_offset(
         let surface_fbm = HOTSPOT_FBM.limited_to_resolution(support_radius_m, sample_spacing_m);
         let surface_ridges =
             HOTSPOT_RIDGES.limited_to_resolution(support_radius_m, sample_spacing_m);
-        let trail_fbm = HOTSPOT_FBM.limited_to_resolution(support_radius_m, sample_spacing_m);
+        let trail_fbm = HOTSPOT_FBM.limited_to_resolution(
+            support_radius_m / HOTSPOT_TRAIL_COORDINATE_STRETCH,
+            sample_spacing_m,
+        );
         let strength = f64::from(hotspot.strength_permille()) / 1_000.0;
         let noise = ReliefNoise3d::new(
             morphology_seed
@@ -119,18 +123,19 @@ pub(super) fn synthesize_spherical_hotspot_offset(
             }
 
             let current_edifice = compact_peak(distance / 0.48);
-            let trail =
-                directional_trail(local, direction, speed_fraction, &noise, radial, trail_fbm);
+            let trail = directional_trail(local, direction, speed_fraction, &noise, trail_fbm);
             let morphology = current_edifice.max(trail);
             if morphology <= 0.0 {
                 continue;
             }
 
-            let point = radial.components();
-            let fbm = ((noise.fbm(point, surface_fbm) + 1.0) * 0.5)
+            // Sample detail in the source-centered coordinate normalized by
+            // hotspot support. Sampling the unit radial here would make the
+            // physical wavelength depend on whole-planet radius instead.
+            let fbm = ((noise.fbm(local, surface_fbm) + 1.0) * 0.5)
                 .clamp(0.0, 1.0)
                 .powf(1.65);
-            let ridges = noise.ridged(point, surface_ridges).powf(2.2);
+            let ridges = noise.ridged(local, surface_ridges).powf(2.2);
             let surface_detail = 0.72 + 0.18 * fbm + 0.10 * ridges;
             let support = mantle_envelope.powf(0.35);
             let amplitude = f64::from(volcanic_amplitude(tectonic, cell));
@@ -291,7 +296,6 @@ fn directional_trail(
     direction: Option<[f64; 3]>,
     speed_fraction: f64,
     noise: &ReliefNoise3d,
-    radial: UnitVector3,
     profile: FractalProfile,
 ) -> f64 {
     let Some(direction) = direction else {
@@ -308,7 +312,7 @@ fn directional_trail(
         return 0.0;
     }
 
-    let chain_signal = ((noise.fbm(radial.components(), profile) + 1.0) * 0.5)
+    let chain_signal = ((noise.fbm(point, profile) + 1.0) * 0.5)
         .clamp(0.0, 1.0)
         .powi(2);
     let lateral_width = 0.13 + 0.05 * chain_signal;
