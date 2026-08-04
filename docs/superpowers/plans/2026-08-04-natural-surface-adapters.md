@@ -229,7 +229,7 @@ git commit -m "refactor: drive natural topology through surface metrics"
 - Modify: `docs/superpowers/plans/2026-08-04-natural-surface-adapters.md`
 - Test: repository-wide commands only
 
-- [ ] **Step 1: Run formatting, lint, native, feature, and WASM gates**
+- [x] **Step 1: Run formatting, lint, native, feature, and WASM gates**
 
 Run:
 
@@ -240,11 +240,11 @@ cargo test --all-targets --all-features
 cargo check --target wasm32-unknown-unknown --all-features
 ```
 
-- [ ] **Step 2: Run Release performance smoke checks**
+- [x] **Step 2: Run Release performance smoke checks**
 
 Use the existing spherical foundation performance fixtures and a Release planar natural build. Record machine, command, cell count, elapsed time, and peak-memory evidence where the repository harness supports it. S0B.1 must not introduce a measurable repeated per-cell allocation in topology construction.
 
-- [ ] **Step 3: Audit ownership and dependency direction**
+- [x] **Step 3: Audit ownership and dependency direction**
 
 Search and record that:
 
@@ -253,7 +253,7 @@ Search and record that:
 - `NaturalTopologyIndex` remains private, un-serialized, and absent from artifact/public snapshot types;
 - no natural stage has yet switched to spherical production before its scientific model is migrated.
 
-- [ ] **Step 4: Record evidence and commit**
+- [x] **Step 4: Record evidence and commit**
 
 Append exact gate results and any measured baselines under an `Execution Evidence` section in this plan.
 
@@ -263,6 +263,43 @@ git commit -m "docs: record natural surface adapter evidence"
 ```
 
 ---
+
+## Execution Evidence
+
+Environment:
+
+- Date: 2026-08-04, Asia/Shanghai.
+- OS: Windows NT 10.0.22631, x86_64 MSVC.
+- CPU: Intel Core i9-14900KF, 32 logical processors.
+- Compiler used for evidence: `rustc 1.97.1 (8bab26f4f 2026-07-14)`; crate MSRV remains declared as Rust 1.85 and this slice adds no post-1.85 language dependency.
+
+TDD and focused compatibility evidence:
+
+- `cargo test --test surface_ref_contracts`: RED first failed on missing `SurfaceRef` and planar fingerprint APIs; GREEN passed 5/5.
+- `cargo test --test natural_surface_adapters`: RED first failed on missing adapter contracts; GREEN passed 4/4.
+- `cargo test --lib generators::natural::topology`: RED first failed on missing generic constructor; GREEN passed 9/9, including closed-sphere symmetry and frozen planar quantization.
+- `cargo test --test tectonic_generation --test tectonic_boundaries --test relief_generation --test geologic_generation --test hydro_erosion_generation --test natural_display_golden`: exit 0; every existing planar result and reviewed golden passed without regeneration.
+
+Whole-repository gates:
+
+- `cargo fmt --all -- --check`: exit 0.
+- `cargo clippy --all-targets --all-features -- -D warnings`: exit 0, no warnings.
+- `cargo test --all-targets --all-features`: exit 0; all executed targets passed. Library result was 214 passed, 1 ignored; integration, binary, and bench targets also passed.
+- `cargo check --target wasm32-unknown-unknown --all-features`: exit 0.
+
+Release measurements on the same machine:
+
+- Feature branch, `cargo test --release --test natural_performance release_default_hydro_erosion_budget -- --ignored --nocapture`: exit 0; 20,000 cells, 60,001 edges, 12 plates, 1,581 boundary segments, total `1856.711 ms`, dense semantic fields `10,521,284` bytes, climate fields `4,400,000` bytes, hydro-erosion fields `3,241,260` bytes.
+- Unmodified `main`, same command and seed: exit 0; total `1916.822 ms` with exactly the same counts, dense-byte totals, continental fraction `0.3796`, and land fraction `0.1703`. The feature/main total-time ratio was about `0.969`; individual natural stages remained within about 5% single-run scheduling variance.
+- `cargo test --release --test spherical_surface_generation production_scale_measurement -- --ignored --nocapture`: exit 0; 20,252 authoritative spherical cells built and validated in `100.0668 ms`, relative area residual `0` in the fixture report.
+- The existing Release harness enforces the hydro-erosion dense-memory budget and reports persistent field bytes; it does not expose process peak RSS. This slice adds no persistent topology field and performs no per-cell allocation inside adapter query methods.
+
+Ownership and dependency audit:
+
+- `src/world/spatial/natural_surface.rs` imports no generator, UI, GPU, renderer, cubed-sphere, or serialization module and owns no cell, edge, vertex, or adjacency `Vec`.
+- `NaturalTopologyIndex` remains `pub(super)`, has no serde implementation, is absent from artifacts and public world snapshots, and is rebuilt from a borrowed authoritative surface.
+- Every current production natural stage still depends on `SpatialArtifact`; no half-migrated spherical natural result can reach the UI before S0B.2–S0B.6 supply their scientific models and atomic graph.
+- The planar adapter's third shape coordinate is constant and its first two quantized coordinates, traversal costs, area weights, tie order, output fields, and reviewed images are frozen by tests.
 
 ## Follow-on Plans
 

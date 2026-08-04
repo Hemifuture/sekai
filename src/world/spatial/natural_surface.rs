@@ -88,7 +88,7 @@ pub trait NaturalSurface {
     /// Returns the exact dense edge count.
     fn edge_count(&self) -> usize;
 
-    /// Returns the compensated authoritative cell-area sum.
+    /// Returns the authoritative whole-surface area used to normalize cell weights.
     fn total_area(&self) -> SquareMeters;
 
     /// Looks up one dense cell's natural-process metrics.
