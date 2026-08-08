@@ -331,6 +331,25 @@ impl SphericalGpuPacket {
         }
     }
 
+    /// Validates and returns a GPU-neutral packet before any renderer allocation occurs.
+    pub(crate) fn try_new(
+        map: Arc<PreparedProjectedMap>,
+        map_geometry_revision: DisplayRevision,
+        globe: Arc<PreparedGlobeMesh>,
+        globe_geometry_revision: DisplayRevision,
+        layers: Arc<PreparedFieldLayers>,
+    ) -> Result<Self, SphericalRenderError> {
+        let packet = Self::new(
+            map,
+            map_geometry_revision,
+            globe,
+            globe_geometry_revision,
+            layers,
+        );
+        validate_packet(&packet)?;
+        Ok(packet)
+    }
+
     /// Returns the source identity shared by every valid packet component.
     pub fn source(&self) -> &SphericalPresentationSource {
         self.layers.source()

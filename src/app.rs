@@ -10,6 +10,15 @@ mod natural_display;
 mod natural_field_payloads;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
+mod spherical_presentation;
+
+pub use spherical_natural_display::{SphericalNaturalDisplayError, SphericalNaturalFieldDocument};
+pub use spherical_presentation::{
+    build_spherical_external_artifacts, build_spherical_presentation_candidate,
+    PublishedSphericalPresentation, SphericalFieldCandidate, SphericalGlobePresenter,
+    SphericalMapPresenter, SphericalPresentationCandidate, SphericalPresentationError,
+    SphericalProjectionCandidate, SphericalRendererPreparer,
+};
 
 use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
 use natural_display::{LegacyPlanarNaturalFieldDocument, NaturalDisplayError};

@@ -3,7 +3,7 @@
 #![allow(clippy::let_and_return)]
 #![allow(clippy::derivable_impls)]
 
-mod app;
+pub mod app;
 pub mod delaunay;
 /// Domain-neutral deterministic generation services.
 pub mod engine;

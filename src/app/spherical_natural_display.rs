@@ -155,7 +155,7 @@ fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
 }
 
 /// Projection-free, immutable document for one complete spherical natural world.
-pub(super) struct SphericalNaturalFieldDocument {
+pub struct SphericalNaturalFieldDocument {
     pub(super) surface: Arc<SphericalSurfaceArtifact>,
     pub(super) formation: Arc<ResolvedWorldFormationArtifact>,
     pub(super) tectonic: Arc<SphericalTectonicArtifact>,
@@ -271,7 +271,7 @@ impl SphericalNaturalFieldDocument {
     }
 
     /// Derives the presentation identity from this document's validated natural-build identity.
-    pub(super) fn presentation_source(&self) -> SphericalPresentationSource {
+    pub fn presentation_source(&self) -> SphericalPresentationSource {
         let identity = self.identity();
         SphericalPresentationSource::new(
             identity.root_seed(),
@@ -347,7 +347,7 @@ pub(super) fn try_replace_spherical_natural_document(
 
 /// Errors returned while composing a complete spherical natural document.
 #[derive(Debug, Error)]
-pub(super) enum SphericalNaturalDisplayError {
+pub enum SphericalNaturalDisplayError {
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
