@@ -1,0 +1,393 @@
+//! Independent renderer-neutral camera state for spherical map and globe views.
+//!
+//! Globe orientation is a normalized world-to-camera quaternion. At reset the
+//! camera looks from `+Z` toward the origin, so the canonical front direction is
+//! `+Z`. Screen x points right and screen y points down; conversion to camera
+//! space flips y so camera x/y both use the usual right/up convention. Rays and
+//! visibility use this same orientation, and rays transform back to world space
+//! through its inverse.
+
+use super::{SphericalProjectionKind, UnitRay};
+use crate::world::spatial::UnitVector3;
+
+const IDENTITY_ORIENTATION: Quaternion = Quaternion {
+    x: 0.0,
+    y: 0.0,
+    z: 0.0,
+    w: 1.0,
+};
+
+/// The active presentation family shown by the single spherical canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SphericalViewMode {
+    /// A two-dimensional projected map.
+    #[default]
+    Map,
+    /// The undeformed three-dimensional unit globe.
+    Globe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MapCameraState {
+    pan: [f64; 2],
+    zoom: f64,
+}
+
+impl Default for MapCameraState {
+    fn default() -> Self {
+        Self {
+            pan: [0.0, 0.0],
+            zoom: 1.0,
+        }
+    }
+}
+
+/// Independent pan and zoom state retained for every supported map projection.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MapCamera {
+    equal_earth: MapCameraState,
+    equirectangular: MapCameraState,
+}
+
+impl MapCamera {
+    /// Returns the retained normalized pan for `projection`.
+    pub const fn pan(self, projection: SphericalProjectionKind) -> [f64; 2] {
+        self.state(projection).pan
+    }
+
+    /// Returns the retained positive zoom for `projection`.
+    pub const fn zoom(self, projection: SphericalProjectionKind) -> f64 {
+        self.state(projection).zoom
+    }
+
+    /// Adds a finite pan delta without modifying the other projection camera.
+    pub fn pan_by(&mut self, projection: SphericalProjectionKind, delta: [f64; 2]) -> bool {
+        if delta.into_iter().any(|component| !component.is_finite()) {
+            return false;
+        }
+        let state = self.state_mut(projection);
+        let next = [state.pan[0] + delta[0], state.pan[1] + delta[1]];
+        if next.into_iter().any(|component| !component.is_finite()) {
+            return false;
+        }
+        state.pan = next;
+        true
+    }
+
+    /// Multiplies one projection's zoom by a finite positive factor.
+    pub fn zoom_by(&mut self, projection: SphericalProjectionKind, factor: f64) -> bool {
+        if !factor.is_finite() || factor <= 0.0 {
+            return false;
+        }
+        let state = self.state_mut(projection);
+        let next = state.zoom * factor;
+        if !next.is_finite() || next <= 0.0 {
+            return false;
+        }
+        state.zoom = next;
+        true
+    }
+
+    /// Resets only `projection`, preserving the other map camera.
+    pub fn reset(&mut self, projection: SphericalProjectionKind) {
+        *self.state_mut(projection) = MapCameraState::default();
+    }
+
+    const fn state(self, projection: SphericalProjectionKind) -> MapCameraState {
+        match projection {
+            SphericalProjectionKind::EqualEarth => self.equal_earth,
+            SphericalProjectionKind::Equirectangular => self.equirectangular,
+        }
+    }
+
+    fn state_mut(&mut self, projection: SphericalProjectionKind) -> &mut MapCameraState {
+        match projection {
+            SphericalProjectionKind::EqualEarth => &mut self.equal_earth,
+            SphericalProjectionKind::Equirectangular => &mut self.equirectangular,
+        }
+    }
+}
+
+/// Orthographic trackball state for the undeformed unit globe.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlobeCamera {
+    orientation: Quaternion,
+    orthographic_scale: f64,
+}
+
+impl Default for GlobeCamera {
+    fn default() -> Self {
+        Self {
+            orientation: IDENTITY_ORIENTATION,
+            orthographic_scale: 1.0,
+        }
+    }
+}
+
+impl GlobeCamera {
+    /// Smallest supported visible-globe scale.
+    pub const MIN_SCALE: f64 = 0.55;
+    /// Largest supported visible-globe scale.
+    pub const MAX_SCALE: f64 = 8.0;
+
+    /// Returns the normalized world-to-camera quaternion as `[x, y, z, w]`.
+    pub const fn orientation_xyzw(self) -> [f64; 4] {
+        self.orientation.components()
+    }
+
+    /// Returns the finite bounded orthographic display scale.
+    pub const fn orthographic_scale(self) -> f64 {
+        self.orthographic_scale
+    }
+
+    /// Restores the canonical `+Z` front direction and full-globe scale.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Applies a deterministic shortest-arc trackball rotation.
+    ///
+    /// Coordinates are logical screen pixels within `canvas_size`. Inputs
+    /// outside the canvas or with non-finite components are ignored.
+    pub fn trackball_drag(
+        &mut self,
+        start: [f64; 2],
+        end: [f64; 2],
+        canvas_size: [f64; 2],
+    ) -> bool {
+        let Some(start) = trackball_vector(start, canvas_size) else {
+            return false;
+        };
+        let Some(end) = trackball_vector(end, canvas_size) else {
+            return false;
+        };
+        let Some(delta) = Quaternion::shortest_rotation(start, end) else {
+            return false;
+        };
+        if delta == IDENTITY_ORIENTATION {
+            return false;
+        }
+        let Some(next) = delta.multiply(self.orientation).normalized() else {
+            return false;
+        };
+        self.orientation = next;
+        true
+    }
+
+    /// Multiplies scale by a finite positive factor and clamps to the contract.
+    pub fn zoom_by(&mut self, factor: f64) -> bool {
+        if !factor.is_finite() || factor <= 0.0 {
+            return false;
+        }
+        let requested = if self.orthographic_scale > Self::MAX_SCALE / factor {
+            Self::MAX_SCALE
+        } else {
+            self.orthographic_scale * factor
+        };
+        self.orthographic_scale = requested.clamp(Self::MIN_SCALE, Self::MAX_SCALE);
+        true
+    }
+
+    /// Sets a finite positive scale and clamps it to the supported interval.
+    pub fn set_orthographic_scale(&mut self, scale: f64) -> bool {
+        if !scale.is_finite() || scale <= 0.0 {
+            return false;
+        }
+        self.orthographic_scale = scale.clamp(Self::MIN_SCALE, Self::MAX_SCALE);
+        true
+    }
+
+    /// Returns whether a unit world direction lies on the camera-facing hemisphere.
+    pub fn is_front_facing(self, direction: UnitVector3) -> bool {
+        self.orientation.rotate(direction.components())[2] >= 0.0
+    }
+
+    /// Produces an orthographic world-space ray for one screen point.
+    ///
+    /// Points outside the canvas or the visible unit-globe disc return `None`
+    /// before ray/sphere intersection. The inverse world-to-camera orientation
+    /// transforms both the camera-space ray origin and direction.
+    pub fn screen_to_ray(self, screen: [f64; 2], canvas_size: [f64; 2]) -> Option<UnitRay> {
+        let [x, y] = normalized_screen_point(screen, canvas_size)?;
+        let camera_x = x / self.orthographic_scale;
+        let camera_y = y / self.orthographic_scale;
+        if camera_x.mul_add(camera_x, camera_y * camera_y) > 1.0 {
+            return None;
+        }
+        let inverse = self.orientation.conjugate();
+        let origin = inverse.rotate([camera_x, camera_y, 2.0]);
+        let direction = inverse.rotate([0.0, 0.0, -1.0]);
+        UnitRay::new(origin, direction).ok()
+    }
+}
+
+fn normalized_screen_point(screen: [f64; 2], canvas_size: [f64; 2]) -> Option<[f64; 2]> {
+    if screen.into_iter().any(|component| !component.is_finite())
+        || canvas_size
+            .into_iter()
+            .any(|component| !component.is_finite() || component <= 0.0)
+        || screen[0] < 0.0
+        || screen[0] > canvas_size[0]
+        || screen[1] < 0.0
+        || screen[1] > canvas_size[1]
+    {
+        return None;
+    }
+    let diameter = canvas_size[0].min(canvas_size[1]);
+    Some([
+        (2.0 * screen[0] - canvas_size[0]) / diameter,
+        (canvas_size[1] - 2.0 * screen[1]) / diameter,
+    ])
+}
+
+fn trackball_vector(screen: [f64; 2], canvas_size: [f64; 2]) -> Option<[f64; 3]> {
+    let [mut x, mut y] = normalized_screen_point(screen, canvas_size)?;
+    let radius_squared = x.mul_add(x, y * y);
+    let z = if radius_squared <= 1.0 {
+        (1.0 - radius_squared).sqrt()
+    } else {
+        let inverse_radius = radius_squared.sqrt().recip();
+        x *= inverse_radius;
+        y *= inverse_radius;
+        0.0
+    };
+    Some([x, y, z])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Quaternion {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+
+impl Quaternion {
+    const fn components(self) -> [f64; 4] {
+        [self.x, self.y, self.z, self.w]
+    }
+
+    fn shortest_rotation(start: [f64; 3], end: [f64; 3]) -> Option<Self> {
+        let direction_dot = dot(start, end).clamp(-1.0, 1.0);
+        let rotation_axis = cross(start, end);
+        let cross_norm_squared = dot(rotation_axis, rotation_axis);
+        if cross_norm_squared <= 64.0 * f64::EPSILON * f64::EPSILON {
+            if direction_dot >= 0.0 {
+                return Some(IDENTITY_ORIENTATION);
+            }
+            let basis = if start[0].abs() <= start[1].abs() && start[0].abs() <= start[2].abs() {
+                [1.0, 0.0, 0.0]
+            } else if start[1].abs() <= start[2].abs() {
+                [0.0, 1.0, 0.0]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
+            let axis = normalize(cross(start, basis))?;
+            return Self {
+                x: axis[0],
+                y: axis[1],
+                z: axis[2],
+                w: 0.0,
+            }
+            .normalized();
+        }
+        Self {
+            x: rotation_axis[0],
+            y: rotation_axis[1],
+            z: rotation_axis[2],
+            w: 1.0 + direction_dot,
+        }
+        .normalized()
+    }
+
+    fn multiply(self, right: Self) -> Self {
+        Self {
+            x: self.w * right.x + self.x * right.w + self.y * right.z - self.z * right.y,
+            y: self.w * right.y - self.x * right.z + self.y * right.w + self.z * right.x,
+            z: self.w * right.z + self.x * right.y - self.y * right.x + self.z * right.w,
+            w: self.w * right.w - self.x * right.x - self.y * right.y - self.z * right.z,
+        }
+    }
+
+    const fn conjugate(self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+            w: self.w,
+        }
+    }
+
+    fn normalized(self) -> Option<Self> {
+        let components = self.components();
+        if components
+            .into_iter()
+            .any(|component| !component.is_finite())
+        {
+            return None;
+        }
+        let largest = components.into_iter().map(f64::abs).fold(0.0_f64, f64::max);
+        if largest == 0.0 {
+            return None;
+        }
+        let scaled = components.map(|component| component / largest);
+        let inverse_norm = dot4(scaled, scaled).sqrt().recip();
+        let mut normalized = scaled.map(|component| component * inverse_norm);
+        if normalized[3] < 0.0
+            || (normalized[3] == 0.0
+                && normalized[..3]
+                    .iter()
+                    .copied()
+                    .find(|component| *component != 0.0)
+                    .is_some_and(|component| component < 0.0))
+        {
+            normalized = normalized.map(|component| -component);
+        }
+        Some(Self {
+            x: normalized[0],
+            y: normalized[1],
+            z: normalized[2],
+            w: normalized[3],
+        })
+    }
+
+    fn rotate(self, vector: [f64; 3]) -> [f64; 3] {
+        let quaternion_vector = [self.x, self.y, self.z];
+        let first_cross = cross(quaternion_vector, vector);
+        let second_cross = cross(quaternion_vector, first_cross);
+        [
+            vector[0] + 2.0 * (self.w * first_cross[0] + second_cross[0]),
+            vector[1] + 2.0 * (self.w * first_cross[1] + second_cross[1]),
+            vector[2] + 2.0 * (self.w * first_cross[2] + second_cross[2]),
+        ]
+    }
+}
+
+fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn dot4(left: [f64; 4], right: [f64; 4]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3]
+}
+
+fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn normalize(vector: [f64; 3]) -> Option<[f64; 3]> {
+    if vector.into_iter().any(|component| !component.is_finite()) {
+        return None;
+    }
+    let largest = vector.into_iter().map(f64::abs).fold(0.0_f64, f64::max);
+    if largest == 0.0 {
+        return None;
+    }
+    let scaled = vector.map(|component| component / largest);
+    let inverse_norm = dot(scaled, scaled).sqrt().recip();
+    Some(scaled.map(|component| component * inverse_norm))
+}

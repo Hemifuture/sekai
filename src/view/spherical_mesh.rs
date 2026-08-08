@@ -20,6 +20,7 @@ const MAX_PROJECTED_FRAGMENT_VERTICES: usize = 5;
 const ARC_BISECTION_ITERATIONS: usize = 64;
 const POLE_HORIZONTAL_EPSILON: f64 = 32.0 * f64::EPSILON;
 const SPAN_EPSILON: f64 = 2.0e-12;
+const GLOBE_RADIUS_EPSILON: f32 = 2.0e-6;
 
 const DEFAULT_CELL_BUDGET: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 const DEFAULT_TRIANGLE_BUDGET: usize = DEFAULT_CELL_BUDGET
@@ -45,6 +46,26 @@ impl ProjectedMapVertex {
     /// Returns the authoritative cell represented by this display vertex.
     pub const fn cell(self) -> CellId {
         self.cell
+    }
+}
+
+/// One undeformed unit-globe vertex carrying its authoritative raw cell ID.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct GlobeVertex {
+    position: [f32; 3],
+    cell: u32,
+}
+
+impl GlobeVertex {
+    /// Returns the finite display-unit-sphere position.
+    pub const fn position(self) -> [f32; 3] {
+        self.position
+    }
+
+    /// Returns the authoritative cell represented by this display vertex.
+    pub const fn cell(self) -> CellId {
+        CellId::from_raw(self.cell)
     }
 }
 
@@ -182,12 +203,117 @@ pub enum SphericalMeshError {
     /// A cell fan produced a non-finite, degenerate, or cross-map display triangle.
     #[error("cell {cell:?} produced invalid projected geometry")]
     InvalidCellGeometry { cell: CellId },
+    /// A cell fan could not produce finite outward unit-globe geometry.
+    #[error("cell {cell:?} produced invalid unit-globe geometry")]
+    InvalidGlobeGeometry { cell: CellId },
     /// An authoritative edge produced a non-finite, degenerate, or cross-map fragment.
     #[error("edge {edge:?} produced invalid projected geometry")]
     InvalidEdgeGeometry { edge: EdgeId },
     /// A cell was not represented by any usable display triangle.
     #[error("cell {cell:?} produced no projected triangles")]
     MissingCellGeometry { cell: CellId },
+}
+
+/// A bounded source-bound triangle mesh on the undeformed display unit sphere.
+#[derive(Debug, Clone)]
+pub struct PreparedGlobeMesh {
+    source: SphericalPresentationSource,
+    cell_count: usize,
+    vertices: Vec<GlobeVertex>,
+    indices: Vec<u32>,
+}
+
+impl PreparedGlobeMesh {
+    /// Builds static unit-sphere geometry from authoritative surface directions.
+    ///
+    /// Field payloads, ranges, palettes, elevation, animation, and camera state
+    /// are deliberately absent from this boundary and cannot alter stored bytes.
+    pub fn build(
+        source: SphericalPresentationSource,
+        surface: &SphericalSurfaceSnapshot,
+        budgets: SphericalMeshBudgets,
+    ) -> Result<Self, SphericalMeshError> {
+        let surface_ref = SurfaceRef::try_for_spherical(surface)?;
+        if source.surface_ref() != surface_ref {
+            return Err(SphericalMeshError::SourceSurfaceMismatch {
+                source_ref: source.surface_ref(),
+                surface: surface_ref,
+            });
+        }
+        budgets.check_counts(surface.cells().len(), 0, 0, 0)?;
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for cell in surface.cells() {
+            for side in 0..cell.boundary_vertices.len() {
+                let first = surface
+                    .vertex(cell.boundary_vertices[side])
+                    .expect("validated cell boundary vertex must exist")
+                    .position;
+                let second = surface
+                    .vertex(cell.boundary_vertices[(side + 1) % cell.boundary_vertices.len()])
+                    .expect("validated cell boundary vertex must exist")
+                    .position;
+                let mut triangle = [
+                    globe_vertex(cell.centroid, cell.id)?,
+                    globe_vertex(first, cell.id)?,
+                    globe_vertex(second, cell.id)?,
+                ];
+                let winding = globe_winding(triangle);
+                if !winding.is_finite() || winding == 0.0 {
+                    return Err(SphericalMeshError::InvalidGlobeGeometry { cell: cell.id });
+                }
+                if winding < 0.0 {
+                    triangle.swap(1, 2);
+                }
+
+                let next_vertex_count =
+                    checked_add(vertices.len(), TRIANGLE_VERTEX_COUNT, "globe vertex count")?;
+                let next_index_count =
+                    checked_add(indices.len(), TRIANGLE_VERTEX_COUNT, "globe index count")?;
+                budgets.check_counts(0, next_vertex_count, next_index_count, 0)?;
+                let first_index = checked_u32(vertices.len(), "globe vertex index")?;
+                let second_index = checked_u32(
+                    checked_add(vertices.len(), 1, "globe vertex index")?,
+                    "globe vertex index",
+                )?;
+                let third_index = checked_u32(
+                    checked_add(vertices.len(), 2, "globe vertex index")?,
+                    "globe vertex index",
+                )?;
+                vertices.extend(triangle);
+                indices.extend([first_index, second_index, third_index]);
+            }
+        }
+        budgets.check_counts(surface.cells().len(), vertices.len(), indices.len(), 0)?;
+
+        Ok(Self {
+            source,
+            cell_count: surface.cells().len(),
+            vertices,
+            indices,
+        })
+    }
+
+    /// Returns the immutable authoritative build identity.
+    pub const fn source(&self) -> &SphericalPresentationSource {
+        &self.source
+    }
+
+    /// Returns the authoritative cell cardinality.
+    pub const fn cell_count(&self) -> usize {
+        self.cell_count
+    }
+
+    /// Returns unit-sphere vertices in stable cell/fan order.
+    pub fn vertices(&self) -> &[GlobeVertex] {
+        &self.vertices
+    }
+
+    /// Returns checked triangle indices in stable cell/fan order.
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
 }
 
 /// A bounded, source-bound projected map derived from one authoritative surface.
@@ -365,6 +491,53 @@ fn checked_add(
 ) -> Result<usize, SphericalMeshError> {
     left.checked_add(right)
         .ok_or(SphericalMeshError::IntegerOverflow { context })
+}
+
+fn globe_vertex(direction: UnitVector3, cell: CellId) -> Result<GlobeVertex, SphericalMeshError> {
+    let position = direction.components().map(|component| component as f32);
+    let radius_squared = position[0].mul_add(
+        position[0],
+        position[1].mul_add(position[1], position[2] * position[2]),
+    );
+    let radius = radius_squared.sqrt();
+    if position.into_iter().any(|component| !component.is_finite())
+        || !radius.is_finite()
+        || (radius - 1.0).abs() > GLOBE_RADIUS_EPSILON
+    {
+        return Err(SphericalMeshError::InvalidGlobeGeometry { cell });
+    }
+    Ok(GlobeVertex {
+        position,
+        cell: cell.raw(),
+    })
+}
+
+fn globe_winding(triangle: [GlobeVertex; TRIANGLE_VERTEX_COUNT]) -> f32 {
+    let [first, second, third] = triangle.map(GlobeVertex::position);
+    let first_edge = [
+        second[0] - first[0],
+        second[1] - first[1],
+        second[2] - first[2],
+    ];
+    let second_edge = [
+        third[0] - first[0],
+        third[1] - first[1],
+        third[2] - first[2],
+    ];
+    let normal = [
+        first_edge[1] * second_edge[2] - first_edge[2] * second_edge[1],
+        first_edge[2] * second_edge[0] - first_edge[0] * second_edge[2],
+        first_edge[0] * second_edge[1] - first_edge[1] * second_edge[0],
+    ];
+    let outward = [
+        first[0] + second[0] + third[0],
+        first[1] + second[1] + third[1],
+        first[2] + second[2] + third[2],
+    ];
+    normal[0].mul_add(
+        outward[0],
+        normal[1].mul_add(outward[1], normal[2] * outward[2]),
+    )
 }
 
 fn angular_fan_polygon(
@@ -1010,7 +1183,7 @@ mod tests {
     use crate::engine::BuildResultHash;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{
-        SphericalEntityLocator, SphericalPresentationSource, SphericalProjection,
+        GlobeCamera, SphericalEntityLocator, SphericalPresentationSource, SphericalProjection,
         SphericalProjectionKind,
     };
     use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
@@ -1018,8 +1191,8 @@ mod tests {
 
     use super::{
         angular_edge, angular_fan_polygon, append_edge_fragments, project_angular,
-        split_polygon_at_seam, triangulate_fragment, AngularVertex, PreparedProjectedMap,
-        ProjectedMapVertex, SphericalMeshBudgets, SphericalMeshError,
+        split_polygon_at_seam, triangulate_fragment, AngularVertex, PreparedGlobeMesh,
+        PreparedProjectedMap, ProjectedMapVertex, SphericalMeshBudgets, SphericalMeshError,
     };
 
     const RADIUS: f64 = 6_371_000.0;
@@ -1229,6 +1402,123 @@ mod tests {
         )
         .unwrap();
         assert_exact_area_partition(&polygon, &vertices, &indices);
+    }
+
+    fn globe_hash(globe: &PreparedGlobeMesh) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::new();
+        for vertex in globe.vertices() {
+            for component in vertex.position() {
+                hasher.update(&component.to_bits().to_le_bytes());
+            }
+            hasher.update(&vertex.cell().raw().to_le_bytes());
+        }
+        for &index in globe.indices() {
+            hasher.update(&index.to_le_bytes());
+        }
+        hasher.finalize()
+    }
+
+    fn cross_3d(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+        [
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ]
+    }
+
+    fn subtract_3d(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+        [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+    }
+
+    fn dot_3d(left: [f32; 3], right: [f32; 3]) -> f32 {
+        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+    }
+
+    #[test]
+    fn generated_globe_is_an_outward_unit_sphere_with_exact_semantic_cells() {
+        let surface = surface(162);
+        let source = source(&surface);
+        let budgets = SphericalMeshBudgets::default();
+
+        // This exact call is the API regression: no field, range, palette, relief,
+        // animation, or camera value can enter static globe construction.
+        let globe = PreparedGlobeMesh::build(source.clone(), &surface, budgets).unwrap();
+
+        assert_eq!(globe.source(), &source);
+        assert_eq!(globe.cell_count(), surface.cells().len());
+        assert_eq!(globe.indices().len() % 3, 0);
+        assert!(globe
+            .indices()
+            .iter()
+            .all(|&index| (index as usize) < globe.vertices().len()));
+        assert!(globe.vertices().iter().all(|vertex| {
+            let position = vertex.position();
+            let radius = dot_3d(position, position).sqrt();
+            position.into_iter().all(f32::is_finite) && (radius - 1.0).abs() <= 2.0e-6
+        }));
+
+        for triangle in globe.indices().chunks_exact(3) {
+            let positions = [triangle[0], triangle[1], triangle[2]]
+                .map(|index| globe.vertices()[index as usize].position());
+            let normal = cross_3d(
+                subtract_3d(positions[1], positions[0]),
+                subtract_3d(positions[2], positions[0]),
+            );
+            let outward = [
+                positions[0][0] + positions[1][0] + positions[2][0],
+                positions[0][1] + positions[1][1] + positions[2][1],
+                positions[0][2] + positions[1][2] + positions[2][2],
+            ];
+            assert!(dot_3d(normal, outward) > 0.0);
+        }
+
+        assert_eq!(
+            globe
+                .vertices()
+                .iter()
+                .map(|vertex| vertex.cell())
+                .collect::<BTreeSet<_>>(),
+            surface
+                .cells()
+                .iter()
+                .map(|cell| cell.id)
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn elevation_ranges_and_camera_mutations_cannot_change_globe_geometry() {
+        let surface = surface(42);
+        let source = source(&surface);
+        let budgets = SphericalMeshBudgets::default();
+        let first_elevation = (0..surface.cells().len())
+            .map(|index| -12_000.0 + index as f32 * 500.0)
+            .collect::<Vec<_>>();
+        let first_range = [-12_000.0_f32, 9_000.0_f32];
+        assert!(first_elevation.iter().all(|value| value.is_finite()));
+        assert!(first_range[0] < first_range[1]);
+        let first = PreparedGlobeMesh::build(source.clone(), &surface, budgets).unwrap();
+        let original_hash = globe_hash(&first);
+        let geometry_revision = first.source().surface_ref();
+
+        let second_elevation = (0..surface.cells().len())
+            .map(|index| 2_000_000.0 - index as f32 * 75_000.0)
+            .collect::<Vec<_>>();
+        let second_range = [-1_000_000.0_f32, 2_000_000.0_f32];
+        assert_ne!(first_elevation, second_elevation);
+        assert_ne!(first_range, second_range);
+        let second = PreparedGlobeMesh::build(source, &surface, budgets).unwrap();
+
+        assert_eq!(globe_hash(&second), original_hash);
+        assert_eq!(second.vertices(), first.vertices());
+        assert_eq!(second.indices(), first.indices());
+        assert_eq!(second.source().surface_ref(), geometry_revision);
+
+        let mut camera = GlobeCamera::default();
+        assert!(camera.trackball_drag([50.0, 50.0], [90.0, 35.0], [100.0, 100.0]));
+        assert!(camera.zoom_by(6.0));
+        assert_eq!(globe_hash(&first), original_hash);
+        assert_eq!(first.source().surface_ref(), geometry_revision);
     }
 
     #[test]

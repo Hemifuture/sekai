@@ -1,4 +1,19 @@
-use sekai::view::{SphericalMeshBudgets, SphericalMeshError};
+use sekai::view::{
+    PreparedGlobeMesh, SphericalMeshBudgets, SphericalMeshError, SphericalPresentationSource,
+};
+use sekai::world::spatial::SphericalSurfaceSnapshot;
+
+type GlobeBuilder = fn(
+    SphericalPresentationSource,
+    &SphericalSurfaceSnapshot,
+    SphericalMeshBudgets,
+) -> Result<PreparedGlobeMesh, SphericalMeshError>;
+
+#[test]
+fn globe_build_api_accepts_only_source_surface_and_budgets() {
+    let build: GlobeBuilder = PreparedGlobeMesh::build;
+    let _ = build;
+}
 
 #[test]
 fn public_count_checks_distinguish_budgets_and_checked_u32_overflow() {
