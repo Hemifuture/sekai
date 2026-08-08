@@ -656,7 +656,7 @@ git commit -m "feat: render spherical field fills"
 - Produces `PreparedVectorGlyphs`, `MapVectorGlyph`, `GlobeVectorGlyph`, `VectorAnimationUniform`, and discrete `GlyphLodKey` rebuilds.
 - Edge lines and arrows use triangle/quad instances, not platform-dependent wide lines.
 
-- [ ] **Step 1: Write field semantics, LOD, and animation RED tests**
+- [x] **Step 1: Write field semantics, LOD, and animation RED tests**
 
 For both vector fields, assert glyph direction reconstructs from canonical east/north components, length and color share the same magnitude range, zero vectors produce no direction instance, and any degenerate 2D Jacobian omits only the map glyph while retaining the globe glyph and inspector value.
 
@@ -664,7 +664,7 @@ For every source and selected cell, generate Low/Medium/High sets and assert `Lo
 
 Render scalar/category edge fixtures and static/animated arrow fixtures. Assert back-hemisphere globe edges/arrows do not appear. Advance only animation phase and assert instance upload counters do not change while uniform count does. Pause and render twice with the same uniform; images must be byte-identical.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -673,7 +673,7 @@ cargo test --test spherical_field_layers -- --nocapture
 cargo test --test spherical_presentation_gpu -- --nocapture
 ```
 
-- [ ] **Step 3: Implement bounded edge and vector instances**
+- [x] **Step 3: Implement bounded edge and vector instances**
 
 Filter only display primitives for zero/no-event edges; keep the complete prepared edge payload. Scalar edge width maps magnitude into `1.0..=4.0` logical pixels and category width stays `2.0`; color comes from the overlay palette. Expand segments into camera-facing quads in the shader with viewport size.
 
@@ -681,7 +681,7 @@ Build globe glyph direction as `east * x + north * y` tangent to its cell radial
 
 Only a world/field/projection/selected-cell/discrete-LOD-key change rebuilds instances. Camera and ordinary zoom changes update uniforms; crossing a predefined LOD threshold changes `GlyphLodKey` once and rebuilds the relevant instance Arc.
 
-- [ ] **Step 4: Verify overlays, frozen instances, and platform primitives**
+- [x] **Step 4: Verify overlays, frozen instances, and platform primitives**
 
 Run:
 
@@ -691,7 +691,7 @@ cargo test --test spherical_presentation_mesh -- --nocapture
 cargo fmt --all -- --check
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/field_layers.rs src/view/spherical_projection.rs src/view/spherical_mesh.rs src/gpu/spherical/renderer.rs src/gpu/spherical/callback.rs assets/shaders/spherical_field.wgsl tests/spherical_field_layers.rs tests/spherical_presentation_gpu.rs
