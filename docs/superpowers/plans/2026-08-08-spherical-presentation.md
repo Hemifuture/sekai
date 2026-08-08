@@ -70,7 +70,7 @@
 - `SphericalPresentationSource` contains `RootSeed`, `SurfaceRef`, `BuildResultHash`, and graph contract version; its constructor is `pub(crate)` and app composition creates it only from `SphericalNaturalBuildIdentity` getters.
 - Existing `FieldDisplayState` remains unchanged for legacy V1.
 
-- [ ] **Step 1: Write the failing public contract tests**
+- [x] **Step 1: Write the failing public contract tests**
 
 Add these tests to `tests/spherical_field_layers.rs` using schemas from `spherical_natural_field_registry`:
 
@@ -145,13 +145,13 @@ fn spherical_state_preserves_fill_overlay_and_stable_entity_independently() {
 
 Add an app-module test that builds the existing 162-cell spherical outcome, constructs `SphericalNaturalFieldDocument`, derives `SphericalPresentationSource`, and asserts all four identity fields equal the document identity. The test must not call a public free-form source constructor.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_field_layers -- --nocapture`
 
 Expected: compilation fails because the spherical state/channel types do not exist.
 
-- [ ] **Step 3: Implement the narrow contracts**
+- [x] **Step 3: Implement the narrow contracts**
 
 Use these exact enum shapes and defaults:
 
@@ -183,7 +183,7 @@ pub fn classify_spherical_channel(
 
 `SphericalFieldDisplayState::default()` uses no explicit field until reconciliation, no overlay, data ranges, schema palettes, diagnostics enabled/selected-field scope, no selected entity, medium glyph LOD, animation playing, and display speed `1.0`. Validate display speed as finite and in `0.0..=4.0` with a typed `FieldLayerError::InvalidVectorDisplaySpeed`.
 
-- [ ] **Step 4: Verify focused and legacy state tests**
+- [x] **Step 4: Verify focused and legacy state tests**
 
 Run:
 
@@ -193,7 +193,7 @@ cargo test --lib view::state -- --nocapture
 cargo test --lib app::spherical_natural_display -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/spherical_source.rs src/view/field_layers.rs src/view/mod.rs src/app/spherical_natural_display.rs tests/spherical_field_layers.rs
