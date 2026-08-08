@@ -333,7 +333,7 @@ git commit -m "feat: prepare spherical field layers"
 - `forward(UnitVector3) -> Result<ProjectionPoint, _>`, `inverse(ProjectionPoint) -> Result<UnitVector3, _>`, `bounds()`, `outline_contains()`, and `map_local_vector(radial, [east,north])`.
 - Central meridian is normalized into `[-π, π)` and stored in radians.
 
-- [ ] **Step 1: Write projection reference and failure tests**
+- [x] **Step 1: Write projection reference and failure tests**
 
 Add tests that derive a unit vector from longitude/latitude and assert:
 
@@ -357,13 +357,13 @@ Before committing the constants, independently calculate them from the author fo
 
 Test equirectangular exact normalized coordinates: x is relative longitude divided by π and y is latitude divided by π/2. Test zero local vector returns `None`; a finite east/north vector returns a finite normalized 2D direction or `ProjectionJacobianDegenerate` at a true singularity.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_projection -- --nocapture`
 
 Expected: module and projection types are missing.
 
-- [ ] **Step 3: Implement the published Equal Earth formula**
+- [x] **Step 3: Implement the published Equal Earth formula**
 
 Use the author coefficients exactly:
 
@@ -391,7 +391,7 @@ Inverse solves the y polynomial for theta with a bounded Newton iteration, valid
 
 Map vectors with a centered finite-difference Jacobian in tangent east/north directions (`1e-7` radians), unwrap seam x deltas before differencing, and reject mapped length below `1e-12`.
 
-- [ ] **Step 4: Verify math and format/lint the module**
+- [x] **Step 4: Verify math and format/lint the module**
 
 Run:
 
@@ -402,7 +402,7 @@ cargo fmt --all -- --check
 cargo clippy --test spherical_projection -- -D warnings
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/spherical_projection.rs src/view/mod.rs tests/spherical_projection.rs
