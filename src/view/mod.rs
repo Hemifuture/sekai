@@ -2,10 +2,12 @@
 
 mod diagnostics;
 mod field;
+mod field_layers;
 mod mesh;
 mod palette;
 mod prepared;
 mod reference;
+mod spherical_source;
 mod state;
 
 pub use diagnostics::{
@@ -15,6 +17,10 @@ pub use diagnostics::{
 pub use field::{
     CellFillKind, FieldCatalog, FieldCatalogEntry, FieldPayloadRef, FieldValue, FieldView,
     FieldViewError,
+};
+pub use field_layers::{
+    classify_spherical_channel, FieldLayerError, SelectedSurfaceEntity, SphericalFieldChannel,
+    SphericalFieldDisplayState, VectorGlyphLod,
 };
 pub use mesh::{
     CellGeometrySource, DisplayVertex, MeshCompleteness, PreparedCellMesh, MAX_DISPLAY_CELLS,
@@ -31,4 +37,5 @@ pub use prepared::{
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use reference::{rasterize_reference, ReferenceImage};
+pub use spherical_source::SphericalPresentationSource;
 pub use state::{format_field_value, FieldDisplayState, FormattedFieldValue};

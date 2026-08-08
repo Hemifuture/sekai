@@ -14,7 +14,10 @@ use crate::generators::natural::{
     SphericalTectonicArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
-use crate::view::{DisplayRangeMode, FieldCatalog, FieldViewError, OwnedViewDiagnostic};
+use crate::view::{
+    DisplayRangeMode, FieldCatalog, FieldViewError, OwnedViewDiagnostic,
+    SphericalPresentationSource,
+};
 use crate::world::fields::{FieldId, FieldRegistry};
 use crate::world::natural::{
     spherical_natural_field_registry, surface_elevation_m_field_id, NaturalFieldRegistryError,
@@ -266,6 +269,17 @@ impl SphericalNaturalFieldDocument {
     pub(super) const fn identity(&self) -> &SphericalNaturalBuildIdentity {
         &self.identity
     }
+
+    /// Derives the presentation identity from this document's validated natural-build identity.
+    pub(super) fn presentation_source(&self) -> SphericalPresentationSource {
+        let identity = self.identity();
+        SphericalPresentationSource::new(
+            identity.root_seed(),
+            identity.surface_ref(),
+            *identity.build_result_hash(),
+            identity.graph_contract_version(),
+        )
+    }
 }
 
 impl FieldDocument for SphericalNaturalFieldDocument {
@@ -372,7 +386,7 @@ mod tests {
     };
     use crate::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
-    use crate::view::FieldCatalog;
+    use crate::view::{FieldCatalog, SphericalPresentationSource};
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
         elevation_field_id, plate_id_field_id, plate_velocity_field_id,
@@ -551,6 +565,24 @@ mod tests {
         assert_eq!(document.identity().root_seed(), ROOT_SEED);
         assert_eq!(document.identity().graph_contract_version(), 1);
         assert_eq!(document.catalog().unwrap().entries().len(), 36);
+    }
+
+    #[test]
+    fn presentation_source_derives_every_value_from_the_validated_document_identity() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let source: SphericalPresentationSource = document.presentation_source();
+
+        assert_eq!(source.root_seed(), document.identity().root_seed());
+        assert_eq!(source.surface_ref(), document.identity().surface_ref());
+        assert_eq!(
+            source.build_result_hash(),
+            document.identity().build_result_hash()
+        );
+        assert_eq!(
+            source.graph_contract_version(),
+            document.identity().graph_contract_version()
+        );
     }
 
     #[test]
