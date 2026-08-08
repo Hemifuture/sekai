@@ -9,7 +9,8 @@ pub mod delaunay;
 pub mod engine;
 /// Deterministic world-generation pipelines.
 pub mod generators;
-mod gpu;
+/// GPU presentation backends.
+pub mod gpu;
 mod map_layer;
 pub mod models;
 mod resource;
