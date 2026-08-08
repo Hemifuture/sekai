@@ -66,7 +66,7 @@
 - Create: `tests/spherical_field_layers.rs`
 
 **Interfaces:**
-- Produces `SphericalPresentationSource`, `SphericalFieldDisplayState`, `SelectedSurfaceEntity`, `SphericalOverlayKind`, `VectorGlyphLod`, and `classify_spherical_channel`.
+- Produces `SphericalPresentationSource`, `SphericalFieldDisplayState`, `SelectedSurfaceEntity`, `SphericalFieldChannel`, `VectorGlyphLod`, and `classify_spherical_channel`.
 - `SphericalPresentationSource` contains `RootSeed`, `SurfaceRef`, `BuildResultHash`, and graph contract version; its constructor is `pub(crate)` and app composition creates it only from `SphericalNaturalBuildIdentity` getters.
 - Existing `FieldDisplayState` remains unchanged for legacy V1.
 
