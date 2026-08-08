@@ -210,7 +210,6 @@ fn equal_cardinality_never_allows_cross_source_presenter_composition() {
 fn whole_world_and_smaller_candidates_publish_atomically() {
     let mut cache = MemoryStageCache::new();
     let first = candidate(59, &mut cache);
-    let second = candidate(61, &mut cache);
     let (device, queue) = request_test_device();
     let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
         &device,
@@ -296,6 +295,18 @@ fn whole_world_and_smaller_candidates_publish_atomically() {
         Some(&preliminary_prevailing_wind_m_s_field_id())
     );
 
+    let replacement_state = published.state().clone();
+    let second = published
+        .prepare_replacement_candidate(
+            RootSeed::new(61),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &replacement_state,
+        )
+        .unwrap();
     published.try_replace(second, &mut gpu).unwrap();
     assert!(!Arc::ptr_eq(&document_before, published.document_arc()));
     assert!(!Arc::ptr_eq(&locator_before, published.locator_arc()));

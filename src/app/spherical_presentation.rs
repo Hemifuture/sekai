@@ -138,6 +138,7 @@ impl SphericalGlobePresenter {
 /// One fully prepared world that is safe to publish as a single value.
 #[derive(Clone)]
 pub struct SphericalPresentationCandidate {
+    lineage: WorldCandidateLineage,
     document: Arc<SphericalNaturalFieldDocument>,
     source: SphericalPresentationSource,
     locator: Arc<SphericalEntityLocator>,
@@ -293,7 +294,62 @@ impl PublishedSphericalPresentation {
         Ok(Self { current: candidate })
     }
 
+    /// Builds a whole-world candidate bound to this exact publication and revision lineage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_replacement_candidate(
+        &self,
+        root_seed: RootSeed,
+        space: &SphericalSpaceSpec,
+        formation: &WorldFormationSpec,
+        tectonic: &TectonicSpec,
+        geologic: &GeologicSpec,
+        cache: &mut MemoryStageCache,
+        requested_state: &SphericalFieldDisplayState,
+    ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+        self.prepare_replacement_candidate_impl(
+            root_seed,
+            space,
+            formation,
+            tectonic,
+            geologic,
+            cache,
+            requested_state,
+            FailureInjector::NONE,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_replacement_candidate_impl(
+        &self,
+        root_seed: RootSeed,
+        space: &SphericalSpaceSpec,
+        formation: &WorldFormationSpec,
+        tectonic: &TectonicSpec,
+        geologic: &GeologicSpec,
+        cache: &mut MemoryStageCache,
+        requested_state: &SphericalFieldDisplayState,
+        failure: FailureInjector,
+    ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+        build_spherical_presentation_candidate_impl_with_lineage(
+            root_seed,
+            space,
+            formation,
+            tectonic,
+            geologic,
+            cache,
+            requested_state,
+            self.clock(),
+            failure,
+            WorldCandidateLineage::Replacement(Arc::new(StateBoundCandidateBase::from_published(
+                self,
+            ))),
+        )
+    }
+
     /// Revalidates, prepares GPU resources, then replaces the whole publication once.
+    ///
+    /// The candidate must come from [`Self::prepare_replacement_candidate`] on this exact current
+    /// publication. Standalone candidates are initial-publication inputs only.
     pub fn try_replace(
         &mut self,
         candidate: SphericalPresentationCandidate,
@@ -307,6 +363,7 @@ impl PublishedSphericalPresentation {
         candidate: SphericalPresentationCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        candidate.lineage.validate_current(self)?;
         candidate.validate()?;
         gpu.prepare(candidate.gpu_packet())?;
         self.current = candidate;
@@ -344,6 +401,7 @@ impl PublishedSphericalPresentation {
         candidate: SphericalProjectionCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        candidate.base.validate_current(self, "projection")?;
         candidate.validate(self)?;
         let mut next = self.current.clone();
         next.map_presenter = candidate.map_presenter;
@@ -392,6 +450,7 @@ impl PublishedSphericalPresentation {
         candidate: SphericalFieldCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        candidate.base.validate_current(self, "field")?;
         candidate.validate(self)?;
         let mut next = self.current.clone();
         next.map_presenter = candidate.map_presenter;
@@ -492,8 +551,87 @@ impl PublishedSphericalPresentation {
     }
 }
 
+#[derive(Clone)]
+struct CandidateBase {
+    packet: Arc<SphericalGpuPacket>,
+    revisions: (DisplayRevision, DisplayRevision, FieldLayerRevisions),
+    clock: DisplayRevisionClock,
+}
+
+impl CandidateBase {
+    fn from_published(published: &PublishedSphericalPresentation) -> Self {
+        Self {
+            packet: Arc::clone(published.gpu_packet_arc()),
+            revisions: published.revisions(),
+            clock: published.clock().clone(),
+        }
+    }
+
+    fn validate_current(
+        &self,
+        published: &PublishedSphericalPresentation,
+        candidate: &'static str,
+    ) -> Result<(), SphericalPresentationError> {
+        let mut base_clock = self.clock.clone();
+        let mut current_clock = published.clock().clone();
+        if !Arc::ptr_eq(&self.packet, published.gpu_packet_arc())
+            || self.revisions != published.revisions()
+            || base_clock.issue().ok() != current_clock.issue().ok()
+        {
+            return Err(SphericalPresentationError::StaleCandidate { candidate });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct StateBoundCandidateBase {
+    publication: CandidateBase,
+    state: SphericalFieldDisplayState,
+}
+
+#[derive(Clone)]
+enum WorldCandidateLineage {
+    Initial,
+    Replacement(Arc<StateBoundCandidateBase>),
+}
+
+impl WorldCandidateLineage {
+    fn validate_current(
+        &self,
+        published: &PublishedSphericalPresentation,
+    ) -> Result<(), SphericalPresentationError> {
+        match self {
+            Self::Initial => Err(SphericalPresentationError::StaleCandidate { candidate: "world" }),
+            Self::Replacement(base) => base.validate_current(published, "world"),
+        }
+    }
+}
+
+impl StateBoundCandidateBase {
+    fn from_published(published: &PublishedSphericalPresentation) -> Self {
+        Self {
+            publication: CandidateBase::from_published(published),
+            state: published.state().clone(),
+        }
+    }
+
+    fn validate_current(
+        &self,
+        published: &PublishedSphericalPresentation,
+        candidate: &'static str,
+    ) -> Result<(), SphericalPresentationError> {
+        self.publication.validate_current(published, candidate)?;
+        if &self.state != published.state() {
+            return Err(SphericalPresentationError::StaleCandidate { candidate });
+        }
+        Ok(())
+    }
+}
+
 /// A complete replacement for only the projected-map sub-cache.
 pub struct SphericalProjectionCandidate {
+    base: CandidateBase,
     source: SphericalPresentationSource,
     map_presenter: SphericalMapPresenter,
     gpu_packet: Arc<SphericalGpuPacket>,
@@ -507,6 +645,7 @@ impl SphericalProjectionCandidate {
         revision: DisplayRevision,
         clock: DisplayRevisionClock,
     ) -> Result<Self, SphericalPresentationError> {
+        let base = CandidateBase::from_published(published);
         let source = published.source().clone();
         if map.source() != &source {
             return Err(SphericalPresentationError::SourceMismatch {
@@ -523,6 +662,7 @@ impl SphericalProjectionCandidate {
             Arc::clone(published.layers_arc()),
         )?);
         Ok(Self {
+            base,
             source,
             map_presenter,
             gpu_packet,
@@ -557,6 +697,7 @@ impl SphericalProjectionCandidate {
 
 /// A complete replacement for field layers and their two presenter bindings.
 pub struct SphericalFieldCandidate {
+    base: StateBoundCandidateBase,
     source: SphericalPresentationSource,
     map_presenter: SphericalMapPresenter,
     globe_presenter: SphericalGlobePresenter,
@@ -573,6 +714,7 @@ impl SphericalFieldCandidate {
         state: SphericalFieldDisplayState,
         clock: DisplayRevisionClock,
     ) -> Result<Self, SphericalPresentationError> {
+        let base = StateBoundCandidateBase::from_published(published);
         if layers.source() != published.source() {
             return Err(SphericalPresentationError::SourceMismatch {
                 resource: "field layers",
@@ -595,6 +737,7 @@ impl SphericalFieldCandidate {
             Arc::clone(&layers),
         )?);
         Ok(Self {
+            base,
             source: published.source().clone(),
             map_presenter,
             globe_presenter,
@@ -651,6 +794,10 @@ pub fn build_spherical_external_artifacts(
 }
 
 /// Runs only the formal spherical graph and constructs every publication derivative locally.
+///
+/// The returned standalone candidate is accepted by [`PublishedSphericalPresentation::try_new`].
+/// Whole replacement candidates must instead be prepared from the current publication so their
+/// revision and state lineage cannot be forged or restarted.
 #[allow(clippy::too_many_arguments)]
 pub fn build_spherical_presentation_candidate(
     root_seed: RootSeed,
@@ -686,6 +833,33 @@ fn build_spherical_presentation_candidate_impl(
     current_state: &SphericalFieldDisplayState,
     clock: &DisplayRevisionClock,
     failure: FailureInjector,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    build_spherical_presentation_candidate_impl_with_lineage(
+        root_seed,
+        space,
+        formation,
+        tectonic,
+        geologic,
+        cache,
+        current_state,
+        clock,
+        failure,
+        WorldCandidateLineage::Initial,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_spherical_presentation_candidate_impl_with_lineage(
+    root_seed: RootSeed,
+    space: &SphericalSpaceSpec,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
+    cache: &mut MemoryStageCache,
+    current_state: &SphericalFieldDisplayState,
+    clock: &DisplayRevisionClock,
+    failure: FailureInjector,
+    lineage: WorldCandidateLineage,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     let external = build_spherical_external_artifacts(space, formation, tectonic, geologic)?;
     let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
@@ -744,6 +918,7 @@ fn build_spherical_presentation_candidate_impl(
         Arc::clone(&layers),
     )?);
     let candidate = SphericalPresentationCandidate {
+        lineage,
         document,
         source,
         locator,
@@ -908,6 +1083,8 @@ pub enum SphericalPresentationError {
     FieldLayersNotShared,
     #[error("field candidate state does not match its prepared field layers")]
     FieldStateMismatch,
+    #[error("{candidate} candidate was prepared from a stale spherical publication")]
+    StaleCandidate { candidate: &'static str },
     #[cfg(test)]
     #[error("test-injected spherical candidate failure at {boundary}")]
     InjectedFailure { boundary: &'static str },
@@ -918,9 +1095,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        build_spherical_presentation_candidate, build_spherical_presentation_candidate_impl,
-        FailureInjector, PublishedSphericalPresentation, SphericalFieldCandidate,
-        SphericalGpuPreparer, SphericalPresentationError,
+        build_spherical_presentation_candidate, FailureInjector, PublishedSphericalPresentation,
+        SphericalFieldCandidate, SphericalGpuPreparer, SphericalPresentationError,
     };
     use crate::engine::MemoryStageCache;
     use crate::view::{
@@ -928,13 +1104,15 @@ mod tests {
         SphericalMeshBudgets, SphericalProjection, SphericalProjectionKind, SphericalViewMode,
     };
     use crate::world::natural::{
-        preliminary_prevailing_wind_m_s_field_id, GeologicSpec, TectonicSpec, WorldFormationSpec,
+        plate_velocity_field_id, preliminary_prevailing_wind_m_s_field_id, GeologicSpec,
+        TectonicSpec, WorldFormationSpec,
     };
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     #[derive(Default)]
     struct TestGpuPreparer {
         fail: bool,
+        calls: usize,
     }
 
     impl SphericalGpuPreparer for TestGpuPreparer {
@@ -942,6 +1120,7 @@ mod tests {
             &mut self,
             _packet: &crate::gpu::spherical::SphericalGpuPacket,
         ) -> Result<(), crate::gpu::spherical::SphericalRenderError> {
+            self.calls += 1;
             if self.fail {
                 Err(crate::gpu::spherical::SphericalRenderError::InvalidViewport)
             } else {
@@ -991,15 +1170,15 @@ mod tests {
             let mut expected_clock = published.clock().clone();
             let expected_next = expected_clock.issue().unwrap();
 
-            let candidate = build_spherical_presentation_candidate_impl(
+            let requested_state = published.state().clone();
+            let candidate = published.prepare_replacement_candidate_impl(
                 RootSeed::new(102 + index as u64),
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
-                published.state(),
-                published.clock(),
+                &requested_state,
                 if point == "gpu" {
                     FailureInjector::NONE
                 } else {
@@ -1161,5 +1340,505 @@ mod tests {
         assert_eq!(revisions, published.revisions());
         let mut actual_clock = published.clock().clone();
         assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn stale_projection_candidate_is_rejected_before_gpu_and_preserves_newer_projection() {
+        let mut cache = MemoryStageCache::new();
+        let candidate = build_spherical_presentation_candidate(
+            RootSeed::new(227),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(candidate, &mut gpu).unwrap();
+        let projection_a = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, -0.5).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        let projection_b = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.75).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        published
+            .try_replace_projection_candidate_with_preparer(projection_b, &mut gpu)
+            .unwrap();
+
+        let document = Arc::clone(published.document_arc());
+        let locator = Arc::clone(published.locator_arc());
+        let map = Arc::clone(published.map_arc());
+        let globe = Arc::clone(published.globe_arc());
+        let layers = Arc::clone(published.layers_arc());
+        let packet = Arc::clone(published.gpu_packet_arc());
+        let state = published.state().clone();
+        let report = published.report().clone();
+        let revisions = published.revisions();
+        let mut expected_clock = published.clock().clone();
+        let expected_next = expected_clock.issue().unwrap();
+        let prepare_calls = gpu.calls;
+
+        let attempt =
+            published.try_replace_projection_candidate_with_preparer(projection_a, &mut gpu);
+
+        assert!(matches!(
+            attempt,
+            Err(SphericalPresentationError::StaleCandidate {
+                candidate: "projection"
+            })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+        assert!(Arc::ptr_eq(&document, published.document_arc()));
+        assert!(Arc::ptr_eq(&locator, published.locator_arc()));
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&globe, published.globe_arc()));
+        assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+        assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+        assert_eq!(&state, published.state());
+        assert_eq!(&report, published.report());
+        assert_eq!(revisions, published.revisions());
+        let mut actual_clock = published.clock().clone();
+        assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn stale_field_candidate_is_rejected_before_gpu_and_preserves_newer_fields() {
+        let mut cache = MemoryStageCache::new();
+        let candidate = build_spherical_presentation_candidate(
+            RootSeed::new(229),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(candidate, &mut gpu).unwrap();
+        let mut state_a = published.state().clone();
+        state_a.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let mut state_b = published.state().clone();
+        state_b.select_overlay(Some(plate_velocity_field_id()));
+        let field_a = published
+            .prepare_field_candidate(
+                state_a,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        let field_b = published
+            .prepare_field_candidate(
+                state_b,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            field_a.gpu_packet.map_geometry_revision(),
+            field_b.gpu_packet.map_geometry_revision()
+        );
+        assert_eq!(
+            field_a.gpu_packet.globe_geometry_revision(),
+            field_b.gpu_packet.globe_geometry_revision()
+        );
+        assert_eq!(field_a.layers.revisions(), field_b.layers.revisions());
+        published
+            .try_replace_field_candidate_with_preparer(field_b, &mut gpu)
+            .unwrap();
+
+        let document = Arc::clone(published.document_arc());
+        let locator = Arc::clone(published.locator_arc());
+        let map = Arc::clone(published.map_arc());
+        let globe = Arc::clone(published.globe_arc());
+        let layers = Arc::clone(published.layers_arc());
+        let packet = Arc::clone(published.gpu_packet_arc());
+        let state = published.state().clone();
+        let report = published.report().clone();
+        let revisions = published.revisions();
+        let mut expected_clock = published.clock().clone();
+        let expected_next = expected_clock.issue().unwrap();
+        let prepare_calls = gpu.calls;
+
+        let attempt = published.try_replace_field_candidate_with_preparer(field_a, &mut gpu);
+
+        assert!(matches!(
+            attempt,
+            Err(SphericalPresentationError::StaleCandidate { candidate: "field" })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+        assert!(Arc::ptr_eq(&document, published.document_arc()));
+        assert!(Arc::ptr_eq(&locator, published.locator_arc()));
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&globe, published.globe_arc()));
+        assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+        assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+        assert_eq!(&state, published.state());
+        assert_eq!(&report, published.report());
+        assert_eq!(revisions, published.revisions());
+        let mut actual_clock = published.clock().clone();
+        assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn field_candidate_cannot_roll_back_a_newer_projection() {
+        let mut cache = MemoryStageCache::new();
+        let candidate = build_spherical_presentation_candidate(
+            RootSeed::new(233),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(candidate, &mut gpu).unwrap();
+        let mut requested_state = published.state().clone();
+        requested_state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let field = published
+            .prepare_field_candidate(
+                requested_state,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        let projection = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.25).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        published
+            .try_replace_projection_candidate_with_preparer(projection, &mut gpu)
+            .unwrap();
+
+        let map = Arc::clone(published.map_arc());
+        let packet = Arc::clone(published.gpu_packet_arc());
+        let layers = Arc::clone(published.layers_arc());
+        let state = published.state().clone();
+        let revisions = published.revisions();
+        let mut expected_clock = published.clock().clone();
+        let expected_next = expected_clock.issue().unwrap();
+        let prepare_calls = gpu.calls;
+
+        let attempt = published.try_replace_field_candidate_with_preparer(field, &mut gpu);
+
+        assert!(matches!(
+            attempt,
+            Err(SphericalPresentationError::StaleCandidate { candidate: "field" })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+        assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+        assert_eq!(&state, published.state());
+        assert_eq!(revisions, published.revisions());
+        let mut actual_clock = published.clock().clone();
+        assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn projection_candidate_cannot_overwrite_newer_field_layers() {
+        let mut cache = MemoryStageCache::new();
+        let candidate = build_spherical_presentation_candidate(
+            RootSeed::new(239),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(candidate, &mut gpu).unwrap();
+        let projection = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, -0.25).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        let mut requested_state = published.state().clone();
+        requested_state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let field = published
+            .prepare_field_candidate(
+                requested_state,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        published
+            .try_replace_field_candidate_with_preparer(field, &mut gpu)
+            .unwrap();
+
+        let map = Arc::clone(published.map_arc());
+        let packet = Arc::clone(published.gpu_packet_arc());
+        let layers = Arc::clone(published.layers_arc());
+        let state = published.state().clone();
+        let revisions = published.revisions();
+        let mut expected_clock = published.clock().clone();
+        let expected_next = expected_clock.issue().unwrap();
+        let prepare_calls = gpu.calls;
+
+        let attempt =
+            published.try_replace_projection_candidate_with_preparer(projection, &mut gpu);
+
+        assert!(matches!(
+            attempt,
+            Err(SphericalPresentationError::StaleCandidate {
+                candidate: "projection"
+            })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+        assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+        assert_eq!(&state, published.state());
+        assert_eq!(revisions, published.revisions());
+        let mut actual_clock = published.clock().clone();
+        assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn whole_candidates_require_the_exact_current_lineage() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(241),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let mut state_a = published.state().clone();
+        state_a.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let mut state_b = published.state().clone();
+        state_b.select_overlay(Some(plate_velocity_field_id()));
+        let whole_a = published
+            .prepare_replacement_candidate(
+                RootSeed::new(241),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &state_a,
+            )
+            .unwrap();
+        let whole_b = published
+            .prepare_replacement_candidate(
+                RootSeed::new(241),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &state_b,
+            )
+            .unwrap();
+        assert_eq!(whole_a.revisions(), whole_b.revisions());
+        assert_ne!(whole_a.state(), whole_b.state());
+        published
+            .try_replace_with_preparer(whole_b, &mut gpu)
+            .unwrap();
+
+        let document = Arc::clone(published.document_arc());
+        let locator = Arc::clone(published.locator_arc());
+        let map = Arc::clone(published.map_arc());
+        let globe = Arc::clone(published.globe_arc());
+        let layers = Arc::clone(published.layers_arc());
+        let packet = Arc::clone(published.gpu_packet_arc());
+        let state = published.state().clone();
+        let report = published.report().clone();
+        let revisions = published.revisions();
+        let mut expected_clock = published.clock().clone();
+        let expected_next = expected_clock.issue().unwrap();
+        let prepare_calls = gpu.calls;
+
+        assert!(matches!(
+            published.try_replace_with_preparer(whole_a, &mut gpu),
+            Err(SphericalPresentationError::StaleCandidate { candidate: "world" })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+
+        let standalone_default_clock = build_spherical_presentation_candidate(
+            RootSeed::new(241),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &state_a,
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        assert_eq!(standalone_default_clock.source(), published.source());
+        assert!(matches!(
+            published.try_replace_with_preparer(standalone_default_clock, &mut gpu),
+            Err(SphericalPresentationError::StaleCandidate { candidate: "world" })
+        ));
+        assert_eq!(gpu.calls, prepare_calls);
+        assert!(Arc::ptr_eq(&document, published.document_arc()));
+        assert!(Arc::ptr_eq(&locator, published.locator_arc()));
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&globe, published.globe_arc()));
+        assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+        assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+        assert_eq!(&state, published.state());
+        assert_eq!(&report, published.report());
+        assert_eq!(revisions, published.revisions());
+        let mut actual_clock = published.clock().clone();
+        assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn fresh_different_seed_whole_candidate_continues_revision_lineage() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(251),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let projection = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.5).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        published
+            .try_replace_projection_candidate_with_preparer(projection, &mut gpu)
+            .unwrap();
+        let old_document = Arc::clone(published.document_arc());
+        let old_locator = Arc::clone(published.locator_arc());
+        let old_map = Arc::clone(published.map_arc());
+        let old_globe = Arc::clone(published.globe_arc());
+        let old_layers = Arc::clone(published.layers_arc());
+        let old_packet = Arc::clone(published.gpu_packet_arc());
+        let old_revisions = published.revisions();
+        let old_max_revision = [
+            old_revisions.0.get(),
+            old_revisions.1.get(),
+            old_revisions.2.fill.get(),
+            old_revisions.2.overlay.get(),
+            old_revisions.2.diagnostics.get(),
+            old_revisions.2.fill_palette.get(),
+            old_revisions.2.overlay_palette.get(),
+            old_revisions.2.vector_glyphs.get(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
+        let mut old_clock = published.clock().clone();
+        let old_next = old_clock.issue().unwrap();
+
+        let fresh = published
+            .prepare_replacement_candidate(
+                RootSeed::new(257),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                published.state(),
+            )
+            .unwrap();
+        let fresh_revisions = fresh.revisions();
+        assert!([
+            fresh_revisions.0.get(),
+            fresh_revisions.1.get(),
+            fresh_revisions.2.fill.get(),
+            fresh_revisions.2.overlay.get(),
+            fresh_revisions.2.diagnostics.get(),
+            fresh_revisions.2.fill_palette.get(),
+            fresh_revisions.2.overlay_palette.get(),
+            fresh_revisions.2.vector_glyphs.get(),
+        ]
+        .into_iter()
+        .all(|revision| revision > old_max_revision));
+
+        published
+            .try_replace_with_preparer(fresh, &mut gpu)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&old_document, published.document_arc()));
+        assert!(!Arc::ptr_eq(&old_locator, published.locator_arc()));
+        assert!(!Arc::ptr_eq(&old_map, published.map_arc()));
+        assert!(!Arc::ptr_eq(&old_globe, published.globe_arc()));
+        assert!(!Arc::ptr_eq(&old_layers, published.layers_arc()));
+        assert!(!Arc::ptr_eq(&old_packet, published.gpu_packet_arc()));
+        assert_eq!(published.source().root_seed(), RootSeed::new(257));
+        let mut new_clock = published.clock().clone();
+        assert!(new_clock.issue().unwrap() > old_next);
+    }
+
+    #[test]
+    fn projection_candidate_preserves_newer_uniform_only_state() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(263),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let old_map = Arc::clone(published.map_arc());
+        let projection = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.125).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+
+        published.current.state.set_vector_paused(true);
+        published
+            .try_replace_projection_candidate_with_preparer(projection, &mut gpu)
+            .unwrap();
+
+        assert!(published.state().vector_paused());
+        assert!(!Arc::ptr_eq(&old_map, published.map_arc()));
     }
 }
