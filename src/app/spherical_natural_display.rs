@@ -280,6 +280,21 @@ impl SphericalNaturalFieldDocument {
             identity.graph_contract_version(),
         )
     }
+
+    /// Borrows the validated field catalog for crate-internal product UI.
+    pub(crate) fn catalog_for_ui(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
+        <Self as FieldDocument>::catalog(self)
+    }
+
+    /// Borrows document-owned diagnostics for crate-internal product UI.
+    pub(crate) fn diagnostics_for_ui(&self) -> &[OwnedViewDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Borrows the sole authoritative spherical topology for crate-internal product UI.
+    pub(crate) fn surface_for_ui(&self) -> &crate::world::spatial::SphericalSurfaceSnapshot {
+        self.surface.snapshot()
+    }
 }
 
 impl FieldDocument for SphericalNaturalFieldDocument {

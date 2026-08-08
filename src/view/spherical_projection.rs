@@ -17,7 +17,7 @@ const MIN_MAPPED_LENGTH: f64 = 1.0e-12;
 const OUTLINE_EDGE_ULPS: usize = 4;
 
 /// The available spherical map projections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SphericalProjectionKind {
     /// The Equal Earth equal-area pseudocylindrical projection.
     EqualEarth,

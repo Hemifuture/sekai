@@ -5,7 +5,7 @@ use crate::world::fields::{EntityKind, FieldDomain, FieldValueType, StableIdKind
 
 const NATURAL_FIELD_PREFIX: &str = "field.sekai.core.natural.";
 
-pub(super) fn localized_field_key(key: &str) -> Cow<'_, str> {
+pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let Some(tail) = key.strip_prefix(NATURAL_FIELD_PREFIX) else {
         return Cow::Borrowed(key);
     };

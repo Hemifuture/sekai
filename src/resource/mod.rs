@@ -9,8 +9,6 @@ use crate::{
     ui::canvas::state::CanvasState,
     view::{FieldDisplayResourceState, FieldDisplayState, SphericalFieldDisplayState},
 };
-use std::sync::Arc;
-
 mod resource_impl;
 
 // pub type GraphResource = resource_impl::Resource<Graph>;
@@ -32,6 +30,6 @@ pub type FieldViewerStateResource = resource_impl::Resource<FieldDisplayState>;
 pub type SphericalRendererResource = resource_impl::Resource<SphericalFieldRenderer>;
 #[allow(dead_code)]
 pub type SphericalPresentationResource =
-    resource_impl::Resource<Option<Arc<PublishedSphericalPresentation>>>;
+    resource_impl::Resource<Option<PublishedSphericalPresentation>>;
 #[allow(dead_code)]
 pub type SphericalViewerStateResource = resource_impl::Resource<SphericalFieldDisplayState>;

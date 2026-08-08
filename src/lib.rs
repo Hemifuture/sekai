@@ -18,7 +18,7 @@ mod resource;
 pub mod rules;
 pub mod spatial;
 pub mod terrain;
-mod ui;
+pub mod ui;
 /// Renderer-neutral, read-only world presentation contracts.
 pub mod view;
 pub mod world;

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use sekai::app::{
-    build_spherical_external_artifacts, build_spherical_presentation_candidate,
-    PublishedSphericalPresentation, SphericalGlobePresenter, SphericalMapPresenter,
-    SphericalPresentationError, SphericalRendererPreparer,
+    build_spherical_external_artifacts, build_spherical_presentation_candidate, AppRuntimeGraph,
+    PersistedWorldOrigin, PublishedSphericalPresentation, SphericalGlobePresenter,
+    SphericalMapPresenter, SphericalPresentationError, SphericalRendererPreparer,
 };
 use sekai::engine::{ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
@@ -12,13 +12,25 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SphericalSpaceArtifact};
 use sekai::view::{
-    DisplayRevisionClock, GlobeCamera, MapCamera, SphericalFieldDisplayState, SphericalMeshBudgets,
-    SphericalProjection, SphericalProjectionKind, SphericalViewMode,
+    DisplayRevisionClock, GlobeCamera, MapCamera, SelectedSurfaceEntity,
+    SphericalFieldDisplayState, SphericalMeshBudgets, SphericalProjection, SphericalProjectionKind,
+    SphericalViewMode, VectorGlyphLod,
 };
 use sekai::world::natural::{
-    preliminary_prevailing_wind_m_s_field_id, GeologicSpec, TectonicSpec, WorldFormationSpec,
+    boundary_kind_field_id, boundary_strength_field_id, land_ocean_field_id,
+    plate_velocity_field_id, preliminary_prevailing_wind_m_s_field_id,
+    surface_elevation_m_field_id, GeologicSpec, TectonicSpec, WorldFormationSpec,
 };
-use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
+use sekai::world::{CellId, EdgeId, Meters, RootSeed, SphericalSpaceSpec};
+use sekai::{
+    ui::spherical::{
+        apply_spherical_canvas_action, build_spherical_control_catalog,
+        build_spherical_inspector_model, legacy_compatibility_ui, show_spherical_canvas,
+        SphericalCanvasAction, SphericalCanvasInvalidation, SphericalCanvasState,
+        SphericalOverlayControlKind, GLYPH_DENSITY_LABELS, VECTOR_DISPLAY_SPEED_LABEL,
+    },
+    TemplateApp,
+};
 
 const EXPECTED_STAGE_IDS: [&str; 16] = [
     "natural.resolve-climate-rules",
@@ -316,4 +328,989 @@ fn whole_world_and_smaller_candidates_publish_atomically() {
     assert!(!Arc::ptr_eq(&gpu_before, published.gpu_packet_arc()));
     assert_ne!(published.source().root_seed(), RootSeed::new(59));
     assert_eq!(published.source().root_seed(), RootSeed::new(61));
+}
+
+#[test]
+fn persisted_origin_defaults_new_apps_to_spherical_and_missing_tags_to_legacy() {
+    let app = TemplateApp::default();
+    let mut encoded = serde_json::to_value(&app).unwrap();
+
+    assert_eq!(app.world_origin(), PersistedWorldOrigin::SphericalV1);
+    assert_eq!(
+        app.runtime_graph(),
+        AppRuntimeGraph::SphericalNaturalFoundation
+    );
+    assert_eq!(encoded["world_origin"], "SphericalV1");
+    assert_eq!(encoded["spherical_space_spec"]["radius"], 6_371_000.0);
+    assert_eq!(encoded["spherical_space_spec"]["target_cell_count"], 20_000);
+    assert!(encoded.get("spherical_mode").is_none());
+    assert!(encoded.get("geometry_mode").is_none());
+    assert!(encoded.get("world_mode").is_none());
+    assert!(encoded.get("spherical_presentation").is_none());
+    assert!(encoded.get("spherical_renderer").is_none());
+    assert!(encoded.get("stage_cache").is_none());
+
+    encoded.as_object_mut().unwrap().remove("world_origin");
+    encoded
+        .as_object_mut()
+        .unwrap()
+        .remove("spherical_space_spec");
+    let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        restored.world_origin(),
+        PersistedWorldOrigin::LegacyPlanarV1
+    );
+    assert_eq!(
+        restored.runtime_graph(),
+        AppRuntimeGraph::LegacyPlanarFoundation
+    );
+    assert!(restored.legacy_compatibility_notice().is_some());
+    assert!(restored.offers_regenerate_as_spherical());
+}
+
+#[test]
+fn spherical_canvas_state_round_trips_and_rejects_invalid_runtime_numbers() {
+    let mut state = SphericalCanvasState::default();
+    state
+        .apply(SphericalCanvasAction::PanMap {
+            delta: [0.25, -0.125],
+        })
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::ZoomMap { factor: 1.5 })
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::TrackballGlobe {
+            start: [320.0, 240.0],
+            end: [420.0, 200.0],
+            canvas_size: [640.0, 480.0],
+        })
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::ZoomGlobe { factor: 1.25 })
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SetVectorDisplaySpeed(2.5))
+        .unwrap();
+
+    let encoded = serde_json::to_value(&state).unwrap();
+    let restored: SphericalCanvasState = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(restored, state);
+
+    let empty: SphericalCanvasState = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(empty, SphericalCanvasState::default());
+
+    for (path, invalid) in [
+        ("/map_cameras/equal_earth_zoom", serde_json::json!(-1.0)),
+        ("/globe_camera/scale", serde_json::json!(0.0)),
+        ("/field_state/vector_display_speed", serde_json::json!(8.0)),
+        (
+            "/globe_camera/orientation_xyzw",
+            serde_json::json!([0.0, 0.0, 0.0, 0.0]),
+        ),
+    ] {
+        let mut broken = encoded.clone();
+        *broken.pointer_mut(path).expect("wire path must exist") = invalid;
+        assert!(serde_json::from_value::<SphericalCanvasState>(broken).is_err());
+    }
+}
+
+#[test]
+fn declarative_canvas_actions_preserve_shared_state_and_invalidate_exactly() {
+    let mut state = SphericalCanvasState::default();
+    state
+        .apply(SphericalCanvasAction::SelectFill(
+            surface_elevation_m_field_id(),
+        ))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SelectOverlay(Some(
+            preliminary_prevailing_wind_m_s_field_id(),
+        )))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SetDiagnosticsEnabled(false))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SelectEntity(Some(
+            SelectedSurfaceEntity::Cell(CellId::from_raw(7)),
+        )))
+        .unwrap();
+
+    let field_before = state.field_state().clone();
+    let equal_earth_before = state.map_camera();
+    let globe_before = state.globe_camera();
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe,))
+            .unwrap(),
+        SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+    );
+    assert_eq!(state.field_state(), &field_before);
+    assert_eq!(state.map_camera(), equal_earth_before);
+    assert_eq!(state.globe_camera(), globe_before);
+
+    state
+        .apply(SphericalCanvasAction::SetProjectionKind(
+            SphericalProjectionKind::Equirectangular,
+        ))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::PanMap { delta: [-0.4, 0.2] })
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::ZoomMap { factor: 1.75 })
+        .unwrap();
+    let equirectangular_camera = state.map_camera();
+
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetProjectionKind(
+                SphericalProjectionKind::EqualEarth,
+            ))
+            .unwrap(),
+        SphericalCanvasInvalidation::MAP_GEOMETRY
+    );
+    assert_eq!(
+        state.map_camera().pan(SphericalProjectionKind::EqualEarth),
+        equal_earth_before.pan(SphericalProjectionKind::EqualEarth)
+    );
+    assert_eq!(
+        state.map_camera().zoom(SphericalProjectionKind::EqualEarth),
+        equal_earth_before.zoom(SphericalProjectionKind::EqualEarth)
+    );
+    assert_eq!(
+        state
+            .map_camera()
+            .pan(SphericalProjectionKind::Equirectangular),
+        equirectangular_camera.pan(SphericalProjectionKind::Equirectangular)
+    );
+    assert_eq!(
+        state
+            .map_camera()
+            .zoom(SphericalProjectionKind::Equirectangular),
+        equirectangular_camera.zoom(SphericalProjectionKind::Equirectangular)
+    );
+    assert_eq!(state.globe_camera(), globe_before);
+    assert_eq!(state.field_state(), &field_before);
+
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetCentralMeridianRadians(0.75))
+            .unwrap(),
+        SphericalCanvasInvalidation::MAP_GEOMETRY
+    );
+    assert_eq!(state.field_state(), &field_before);
+    assert_eq!(state.globe_camera(), globe_before);
+
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::PanMap {
+                delta: [0.05, -0.025],
+            })
+            .unwrap(),
+        SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+    );
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::ZoomGlobe { factor: 1.1 })
+            .unwrap(),
+        SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+    );
+
+    let layers_before_phase = state.field_state().clone();
+    let phase_before = state.vector_animation().phase();
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::AdvanceVectorPhase {
+                frame_delta_seconds: 0.25,
+            })
+            .unwrap(),
+        SphericalCanvasInvalidation::PHASE_UNIFORM
+    );
+    assert_ne!(state.vector_animation().phase(), phase_before);
+    assert_eq!(state.field_state(), &layers_before_phase);
+
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::RegenerateAsSpherical)
+            .unwrap(),
+        SphericalCanvasInvalidation::WORLD_REGENERATION
+    );
+}
+
+#[test]
+fn selection_invalidation_tracks_both_old_and_new_cell_bound_state() {
+    let mut state = SphericalCanvasState::default();
+    let cell_a = Some(SelectedSurfaceEntity::Cell(CellId::from_raw(1)));
+    let cell_b = Some(SelectedSurfaceEntity::Cell(CellId::from_raw(2)));
+    let edge_a = Some(SelectedSurfaceEntity::Edge(EdgeId::from_raw(1)));
+    let edge_b = Some(SelectedSurfaceEntity::Edge(EdgeId::from_raw(2)));
+
+    for (selection, expected) in [
+        (cell_a, SphericalCanvasInvalidation::FIELD_LAYERS),
+        (cell_b, SphericalCanvasInvalidation::FIELD_LAYERS),
+        (edge_a, SphericalCanvasInvalidation::FIELD_LAYERS),
+        (None, SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM),
+        (
+            edge_a,
+            SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM,
+        ),
+        (
+            edge_b,
+            SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM,
+        ),
+        (edge_b, SphericalCanvasInvalidation::NONE),
+        (cell_a, SphericalCanvasInvalidation::FIELD_LAYERS),
+        (None, SphericalCanvasInvalidation::FIELD_LAYERS),
+    ] {
+        assert_eq!(
+            state
+                .apply(SphericalCanvasAction::SelectEntity(selection))
+                .unwrap(),
+            expected,
+            "unexpected invalidation for transition to {selection:?}",
+        );
+    }
+}
+
+#[test]
+fn spherical_controls_expose_exact_channels_and_non_physical_vector_labels() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(67, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let controls = build_spherical_control_catalog(&published).unwrap();
+
+    assert_eq!(controls.fill_fields().len(), 32);
+    assert_eq!(controls.overlay_fields().len(), 5);
+    assert_eq!(
+        controls
+            .overlay_fields()
+            .iter()
+            .filter(|option| option.kind() == SphericalOverlayControlKind::None)
+            .count(),
+        1
+    );
+    assert_eq!(
+        controls
+            .overlay_fields()
+            .iter()
+            .filter(|option| option.kind() == SphericalOverlayControlKind::Edge)
+            .count(),
+        2
+    );
+    assert_eq!(
+        controls
+            .overlay_fields()
+            .iter()
+            .filter(|option| option.kind() == SphericalOverlayControlKind::Vector)
+            .count(),
+        2
+    );
+    assert!(controls.contains_overlay(&boundary_kind_field_id()));
+    assert!(controls.contains_overlay(&boundary_strength_field_id()));
+    assert!(controls.contains_overlay(&plate_velocity_field_id()));
+    assert!(controls.contains_overlay(&preliminary_prevailing_wind_m_s_field_id()));
+    assert_eq!(VECTOR_DISPLAY_SPEED_LABEL, "显示速度（非物理时间）");
+    assert_eq!(GLYPH_DENSITY_LABELS, ["Low", "Medium", "High"]);
+    assert_eq!(VectorGlyphLod::default(), VectorGlyphLod::Medium);
+}
+
+#[test]
+fn inspector_uses_authoritative_catalog_and_surface_identically_in_map_and_globe() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(71, &mut cache);
+    let mut requested = candidate.state().clone();
+    requested.select_fill(surface_elevation_m_field_id());
+    requested.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let mut published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let field_candidate = published
+        .prepare_field_candidate(
+            requested,
+            SphericalViewMode::Map,
+            MapCamera::default(),
+            GlobeCamera::default(),
+        )
+        .unwrap();
+    published
+        .try_replace_field_candidate(field_candidate, &mut gpu)
+        .unwrap();
+
+    let mut state = published.state().clone();
+    state.select_entity(Some(SelectedSurfaceEntity::Cell(CellId::from_raw(0))));
+    let map_cell =
+        build_spherical_inspector_model(&published, &state, SphericalViewMode::Map).unwrap();
+    let globe_cell =
+        build_spherical_inspector_model(&published, &state, SphericalViewMode::Globe).unwrap();
+    assert_eq!(map_cell, globe_cell);
+    assert!(map_cell.has_row("填色值"));
+    assert!(map_cell.has_row("东向分量"));
+    assert!(map_cell.has_row("北向分量"));
+    assert!(map_cell.has_row("模长"));
+    assert!(map_cell.has_row("方向角"));
+    assert!(map_cell.has_row("单位"));
+    assert!(map_cell.diagnostics().iter().all(|diagnostic| diagnostic
+        .cell()
+        .is_none_or(|cell| cell == CellId::from_raw(0))));
+
+    state.select_overlay(Some(boundary_strength_field_id()));
+    state.select_entity(Some(SelectedSurfaceEntity::Edge(EdgeId::from_raw(0))));
+    let map_edge =
+        build_spherical_inspector_model(&published, &state, SphericalViewMode::Map).unwrap();
+    let globe_edge =
+        build_spherical_inspector_model(&published, &state, SphericalViewMode::Globe).unwrap();
+    assert_eq!(map_edge, globe_edge);
+    assert!(map_edge.has_row("边值"));
+    assert!(map_edge.has_row("Owners"));
+    assert!(map_edge.has_row("单位"));
+    assert!(map_edge
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| diagnostic.cell().is_none()));
+}
+
+#[test]
+fn unselected_inspector_describes_current_fields_ranges_and_legends_without_mutation() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(72, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let mut published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let mut requested = published.state().clone();
+    requested.select_fill(surface_elevation_m_field_id());
+    requested.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+    requested.select_entity(None);
+    let field_candidate = published
+        .prepare_field_candidate(
+            requested,
+            SphericalViewMode::Map,
+            MapCamera::default(),
+            GlobeCamera::default(),
+        )
+        .unwrap();
+    published
+        .try_replace_field_candidate(field_candidate, &mut gpu)
+        .unwrap();
+
+    let state_before = published.state().clone();
+    let layers_before = Arc::clone(published.layers_arc());
+    let map =
+        build_spherical_inspector_model(&published, &state_before, SphericalViewMode::Map).unwrap();
+    let globe =
+        build_spherical_inspector_model(&published, &state_before, SphericalViewMode::Globe)
+            .unwrap();
+
+    assert_eq!(map, globe);
+    assert_eq!(map.entity(), None);
+    for label in [
+        "填色说明",
+        "填色单位",
+        "填色范围",
+        "填色图例",
+        "填色类别图例",
+        "叠加说明",
+        "叠加单位",
+        "叠加范围",
+        "叠加图例",
+        "叠加类别图例",
+    ] {
+        assert!(
+            map.has_row(label),
+            "missing unselected inspector row {label}"
+        );
+    }
+    let row_value = |label| {
+        map.rows()
+            .iter()
+            .find(|row| row.label() == label)
+            .unwrap()
+            .value()
+    };
+    assert!(row_value("填色说明").contains("当前地表高程"));
+    assert_eq!(row_value("填色单位"), "m");
+    assert!(row_value("填色范围").contains('…'));
+    assert!(row_value("填色图例").contains("Diverging"));
+    assert_eq!(row_value("填色类别图例"), "不适用");
+    assert!(row_value("叠加说明").contains("初步盛行风"));
+    assert_eq!(row_value("叠加单位"), "m/s");
+    assert!(row_value("叠加图例").contains("Vector"));
+    assert_eq!(row_value("叠加类别图例"), "不适用");
+    assert_eq!(published.state(), &state_before);
+    assert!(Arc::ptr_eq(&layers_before, published.layers_arc()));
+
+    let mut category_state = state_before.clone();
+    category_state.select_fill(land_ocean_field_id());
+    let category_candidate = published
+        .prepare_field_candidate(
+            category_state,
+            SphericalViewMode::Map,
+            MapCamera::default(),
+            GlobeCamera::default(),
+        )
+        .unwrap();
+    published
+        .try_replace_field_candidate(category_candidate, &mut gpu)
+        .unwrap();
+    let category =
+        build_spherical_inspector_model(&published, published.state(), SphericalViewMode::Map)
+            .unwrap();
+    let category_legend = category
+        .rows()
+        .iter()
+        .find(|row| row.label() == "填色类别图例")
+        .unwrap()
+        .value();
+    assert!(category_legend.contains("海洋"));
+    assert!(category_legend.contains("陆地"));
+}
+
+#[test]
+fn active_spherical_canvas_emits_exactly_one_callback_per_frame() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(73, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let context = egui::Context::default();
+    let mut state = SphericalCanvasState::default();
+
+    for mode in [SphericalViewMode::Map, SphericalViewMode::Globe] {
+        state
+            .apply(SphericalCanvasAction::SetViewMode(mode))
+            .unwrap();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640.0, 480.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let output = context.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show_spherical_canvas(ui, &published, &mut state);
+            });
+        });
+        let callbacks = output
+            .shapes
+            .iter()
+            .filter(|shape| matches!(shape.shape, egui::epaint::Shape::Callback(_)))
+            .count();
+        assert_eq!(callbacks, 1, "{mode:?} must emit one active callback");
+    }
+}
+
+#[test]
+fn multi_frame_canvas_drag_applies_only_each_frames_pointer_delta_in_map_and_globe() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(77, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+
+    for mode in [SphericalViewMode::Map, SphericalViewMode::Globe] {
+        let context = egui::Context::default();
+        let mut state = SphericalCanvasState::default();
+        state
+            .apply(SphericalCanvasAction::SetViewMode(mode))
+            .unwrap();
+        let (rect, initial_actions) = run_spherical_canvas_frame(
+            &context,
+            spherical_raw_input(Vec::new()),
+            &published,
+            &mut state,
+        );
+        assert!(initial_actions.is_empty());
+        let start = rect.center() + egui::vec2(-60.0, 20.0);
+        let middle = start + egui::vec2(30.0, -10.0);
+        let end = start + egui::vec2(80.0, -35.0);
+
+        for events in [
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerMoved(middle)],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            let (_, actions) = run_spherical_canvas_frame(
+                &context,
+                spherical_raw_input(events),
+                &published,
+                &mut state,
+            );
+            for action in actions {
+                state.apply(action).unwrap();
+            }
+        }
+
+        let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
+        let local_start = [
+            f64::from(start.x - rect.min.x),
+            f64::from(start.y - rect.min.y),
+        ];
+        let local_end = [f64::from(end.x - rect.min.x), f64::from(end.y - rect.min.y)];
+        let local_middle = [
+            f64::from(middle.x - rect.min.x),
+            f64::from(middle.y - rect.min.y),
+        ];
+        match mode {
+            SphericalViewMode::Map => {
+                let actual = state.map_camera().pan(state.projection().kind());
+                let expected = [
+                    (local_end[0] - local_start[0]) / canvas_size[0],
+                    -(local_end[1] - local_start[1]) / canvas_size[1],
+                ];
+                assert!(
+                    (actual[0] - expected[0]).abs() < 1.0e-8,
+                    "map x: actual={actual:?}, expected={expected:?}"
+                );
+                assert!(
+                    (actual[1] - expected[1]).abs() < 1.0e-8,
+                    "map y: actual={actual:?}, expected={expected:?}"
+                );
+            }
+            SphericalViewMode::Globe => {
+                let mut expected = SphericalCanvasState::default();
+                expected
+                    .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))
+                    .unwrap();
+                expected
+                    .apply(SphericalCanvasAction::TrackballGlobe {
+                        start: local_start,
+                        end: local_middle,
+                        canvas_size,
+                    })
+                    .unwrap();
+                expected
+                    .apply(SphericalCanvasAction::TrackballGlobe {
+                        start: local_middle,
+                        end: local_end,
+                        canvas_size,
+                    })
+                    .unwrap();
+                for (actual, expected) in state
+                    .globe_camera()
+                    .orientation_xyzw()
+                    .into_iter()
+                    .zip(expected.globe_camera().orientation_xyzw())
+                {
+                    assert!((actual - expected).abs() < 1.0e-8);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn map_and_globe_picking_share_locator_and_edge_hits_are_incident_and_pixel_bounded() {
+    use sekai::world::spatial::UnitVector3;
+
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(79, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let canvas_size = [800.0, 600.0];
+    let north = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+    let expected_cell = published.locator().locate_cell(north).unwrap();
+    let mut state = SphericalCanvasState::default();
+
+    let map_point = state.projection().forward(north).unwrap();
+    let map_screen = map_screen_position(
+        state.projection(),
+        state.map_camera(),
+        map_point,
+        canvas_size,
+    );
+    assert_eq!(
+        state.pick_screen(&published, map_screen, canvas_size, 1.0),
+        Some(SelectedSurfaceEntity::Cell(expected_cell))
+    );
+
+    state
+        .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))
+        .unwrap();
+    assert_eq!(
+        state.pick_screen(&published, [400.0, 300.0], canvas_size, 1.0),
+        Some(SelectedSurfaceEntity::Cell(expected_cell))
+    );
+
+    state
+        .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Map))
+        .unwrap();
+    state
+        .apply(SphericalCanvasAction::SelectOverlay(Some(
+            boundary_strength_field_id(),
+        )))
+        .unwrap();
+    let segment = published
+        .map()
+        .edge_segments()
+        .iter()
+        .find(|segment| {
+            let midpoint = sekai::view::ProjectionPoint::new(
+                (segment.start().x() + segment.end().x()) * 0.5,
+                (segment.start().y() + segment.end().y()) * 0.5,
+            );
+            state.projection().inverse(midpoint).is_ok()
+        })
+        .unwrap();
+    let segment_midpoint = sekai::view::ProjectionPoint::new(
+        (segment.start().x() + segment.end().x()) * 0.5,
+        (segment.start().y() + segment.end().y()) * 0.5,
+    );
+    let edge_screen = map_screen_position(
+        state.projection(),
+        state.map_camera(),
+        segment_midpoint,
+        canvas_size,
+    );
+    assert_eq!(
+        state.pick_screen(&published, edge_screen, canvas_size, 1.0),
+        Some(SelectedSurfaceEntity::Edge(segment.edge()))
+    );
+    let tiny_canvas = [1.0, 1.0];
+    let tiny_center = [0.5, 0.5];
+    let center_direction = state
+        .projection()
+        .inverse(sekai::view::ProjectionPoint::new(0.0, 0.0))
+        .unwrap();
+    let center_cell = published.locator().locate_cell(center_direction).unwrap();
+    assert_eq!(
+        state.pick_screen(&published, tiny_center, tiny_canvas, 1.0),
+        Some(SelectedSurfaceEntity::Cell(center_cell)),
+        "an unavailable 8px angular tolerance must fall back to the located cell",
+    );
+    assert!(!published.map().edge_segments().is_empty());
+}
+
+#[test]
+fn real_publication_actions_preserve_exact_arcs_and_skip_camera_and_phase_uploads() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(83, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap()
+    };
+    let mut state = SphericalCanvasState::default();
+
+    apply_spherical_canvas_action(
+        &mut published,
+        &mut renderer,
+        &device,
+        &queue,
+        &mut state,
+        SphericalCanvasAction::SelectOverlay(Some(preliminary_prevailing_wind_m_s_field_id())),
+    )
+    .unwrap();
+    let map_before = Arc::clone(published.map_arc());
+    let globe_before = Arc::clone(published.globe_arc());
+    let layers_before = Arc::clone(published.layers_arc());
+    let packet_before = Arc::clone(published.gpu_packet_arc());
+    let counters_before = renderer.upload_counters();
+
+    for action in [
+        SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe),
+        SphericalCanvasAction::ZoomGlobe { factor: 1.1 },
+        SphericalCanvasAction::AdvanceVectorPhase {
+            frame_delta_seconds: 0.25,
+        },
+    ] {
+        apply_spherical_canvas_action(
+            &mut published,
+            &mut renderer,
+            &device,
+            &queue,
+            &mut state,
+            action,
+        )
+        .unwrap();
+    }
+    assert!(Arc::ptr_eq(&map_before, published.map_arc()));
+    assert!(Arc::ptr_eq(&globe_before, published.globe_arc()));
+    assert!(Arc::ptr_eq(&layers_before, published.layers_arc()));
+    assert!(Arc::ptr_eq(&packet_before, published.gpu_packet_arc()));
+    assert_eq!(renderer.upload_counters(), counters_before);
+
+    apply_spherical_canvas_action(
+        &mut published,
+        &mut renderer,
+        &device,
+        &queue,
+        &mut state,
+        SphericalCanvasAction::SetCentralMeridianRadians(0.5),
+    )
+    .unwrap();
+    assert!(!Arc::ptr_eq(&map_before, published.map_arc()));
+    assert!(Arc::ptr_eq(&globe_before, published.globe_arc()));
+    assert!(Arc::ptr_eq(&layers_before, published.layers_arc()));
+    assert_eq!(
+        renderer.upload_counters().map_geometry,
+        counters_before.map_geometry + 1
+    );
+    assert_eq!(
+        renderer.upload_counters().globe_geometry,
+        counters_before.globe_geometry
+    );
+    assert_eq!(
+        renderer.upload_counters().fill_field,
+        counters_before.fill_field
+    );
+}
+
+#[test]
+fn publication_selection_transitions_remove_old_cell_layers_and_keep_edge_none_o1() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(89, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap()
+    };
+    let mut state = SphericalCanvasState::default();
+    apply_spherical_canvas_action(
+        &mut published,
+        &mut renderer,
+        &device,
+        &queue,
+        &mut state,
+        SphericalCanvasAction::SelectOverlay(Some(preliminary_prevailing_wind_m_s_field_id())),
+    )
+    .unwrap();
+    let map = Arc::clone(published.map_arc());
+    let globe = Arc::clone(published.globe_arc());
+
+    let mut previous_layers = Arc::clone(published.layers_arc());
+    let mut previous_revisions = published.layers().revisions();
+    let mut previous_counters = renderer.upload_counters();
+    for selected in [CellId::from_raw(1), CellId::from_raw(2)] {
+        assert_eq!(
+            apply_spherical_canvas_action(
+                &mut published,
+                &mut renderer,
+                &device,
+                &queue,
+                &mut state,
+                SphericalCanvasAction::SelectEntity(Some(SelectedSurfaceEntity::Cell(selected))),
+            )
+            .unwrap(),
+            SphericalCanvasInvalidation::FIELD_LAYERS,
+        );
+        assert_eq!(
+            published.state().selected_entity(),
+            Some(SelectedSurfaceEntity::Cell(selected))
+        );
+        assert_eq!(published.layers().selected_vector_cell(), Some(selected));
+        assert!(Arc::ptr_eq(&map, published.map_arc()));
+        assert!(Arc::ptr_eq(&globe, published.globe_arc()));
+        assert!(!Arc::ptr_eq(&previous_layers, published.layers_arc()));
+        let revisions = published.layers().revisions();
+        assert_eq!(revisions.fill, previous_revisions.fill);
+        assert_eq!(revisions.overlay, previous_revisions.overlay);
+        assert_eq!(revisions.diagnostics, previous_revisions.diagnostics);
+        assert_eq!(revisions.fill_palette, previous_revisions.fill_palette);
+        assert_eq!(
+            revisions.overlay_palette,
+            previous_revisions.overlay_palette
+        );
+        assert!(revisions.vector_glyphs > previous_revisions.vector_glyphs);
+        let counters = renderer.upload_counters();
+        assert_eq!(counters.map_geometry, previous_counters.map_geometry);
+        assert_eq!(counters.globe_geometry, previous_counters.globe_geometry);
+        assert_eq!(counters.fill_field, previous_counters.fill_field);
+        assert_eq!(counters.diagnostics, previous_counters.diagnostics);
+        assert_eq!(
+            counters.map_overlay_instances,
+            previous_counters.map_overlay_instances + 1
+        );
+        assert_eq!(
+            counters.globe_overlay_instances,
+            previous_counters.globe_overlay_instances + 1
+        );
+        previous_layers = Arc::clone(published.layers_arc());
+        previous_revisions = revisions;
+        previous_counters = counters;
+    }
+
+    let edge = SelectedSurfaceEntity::Edge(EdgeId::from_raw(1));
+    assert_eq!(
+        apply_spherical_canvas_action(
+            &mut published,
+            &mut renderer,
+            &device,
+            &queue,
+            &mut state,
+            SphericalCanvasAction::SelectEntity(Some(edge)),
+        )
+        .unwrap(),
+        SphericalCanvasInvalidation::FIELD_LAYERS,
+    );
+    assert_eq!(published.state().selected_entity(), Some(edge));
+    assert_eq!(published.layers().selected_vector_cell(), None);
+    assert!(!Arc::ptr_eq(&previous_layers, published.layers_arc()));
+    let edge_layers = Arc::clone(published.layers_arc());
+    let edge_packet = Arc::clone(published.gpu_packet_arc());
+    let edge_revisions = published.layers().revisions();
+    assert_eq!(edge_revisions.diagnostics, previous_revisions.diagnostics);
+    assert!(edge_revisions.vector_glyphs > previous_revisions.vector_glyphs);
+    let edge_counters = renderer.upload_counters();
+    assert_eq!(
+        edge_counters.map_overlay_instances,
+        previous_counters.map_overlay_instances + 1
+    );
+    assert_eq!(
+        edge_counters.globe_overlay_instances,
+        previous_counters.globe_overlay_instances + 1
+    );
+
+    for selection in [
+        None,
+        Some(SelectedSurfaceEntity::Edge(EdgeId::from_raw(2))),
+        None,
+    ] {
+        assert_eq!(
+            apply_spherical_canvas_action(
+                &mut published,
+                &mut renderer,
+                &device,
+                &queue,
+                &mut state,
+                SphericalCanvasAction::SelectEntity(selection),
+            )
+            .unwrap(),
+            SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM,
+        );
+        assert_eq!(published.state().selected_entity(), selection);
+        assert_eq!(published.layers().selected_vector_cell(), None);
+        assert!(Arc::ptr_eq(&edge_layers, published.layers_arc()));
+        assert!(Arc::ptr_eq(&edge_packet, published.gpu_packet_arc()));
+        assert_eq!(published.layers().revisions(), edge_revisions);
+        assert_eq!(renderer.upload_counters(), edge_counters);
+    }
+    let unselected =
+        build_spherical_inspector_model(&published, published.state(), SphericalViewMode::Map)
+            .unwrap();
+    assert!(unselected
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| diagnostic.cell().is_none()));
+}
+
+#[test]
+fn legacy_compatibility_ui_exposes_only_notice_and_explicit_one_way_action() {
+    let legacy: TemplateApp =
+        serde_json::from_value(serde_json::json!({ "world_seed": 7 })).unwrap();
+    let model = legacy_compatibility_ui(&legacy).unwrap();
+    assert!(model.notice().contains("旧平面世界"));
+    assert_eq!(model.action_label(), "用当前作者参数重新生成球面世界");
+    assert!(!model.notice().contains("模式切换"));
+    assert!(legacy_compatibility_ui(&TemplateApp::default()).is_none());
+}
+
+fn map_screen_position(
+    projection: SphericalProjection,
+    camera: MapCamera,
+    point: sekai::view::ProjectionPoint,
+    canvas_size: [f64; 2],
+) -> [f64; 2] {
+    let bounds = projection.bounds();
+    let bounds_width = bounds.max_x() - bounds.min_x();
+    let bounds_height = bounds.max_y() - bounds.min_y();
+    let aspect = canvas_size[0] / canvas_size[1];
+    let map_aspect = bounds_width / bounds_height;
+    let (fit_x, fit_y) = if aspect >= map_aspect {
+        (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
+    } else {
+        (2.0 / bounds_width, 2.0 * aspect / bounds_width)
+    };
+    let zoom = camera.zoom(projection.kind());
+    let pan = camera.pan(projection.kind());
+    let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
+    let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
+    let ndc_x = (point.x() - center_x) * fit_x * zoom + pan[0] * 2.0;
+    let ndc_y = (point.y() - center_y) * fit_y * zoom + pan[1] * 2.0;
+    [
+        (ndc_x + 1.0) * 0.5 * canvas_size[0],
+        (1.0 - ndc_y) * 0.5 * canvas_size[1],
+    ]
+}
+
+fn spherical_raw_input(events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 600.0),
+        )),
+        events,
+        ..egui::RawInput::default()
+    }
+}
+
+fn run_spherical_canvas_frame(
+    context: &egui::Context,
+    input: egui::RawInput,
+    presentation: &PublishedSphericalPresentation,
+    state: &mut SphericalCanvasState,
+) -> (egui::Rect, Vec<SphericalCanvasAction>) {
+    let mut canvas_output = None;
+    let _ = context.run(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            canvas_output = Some(show_spherical_canvas(ui, presentation, state));
+        });
+    });
+    let canvas_output = canvas_output.unwrap();
+    let rect = canvas_output.response().rect;
+    (rect, canvas_output.into_actions())
 }

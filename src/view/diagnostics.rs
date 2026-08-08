@@ -68,7 +68,7 @@ impl OwnedViewDiagnostic {
 }
 
 /// Which field-associated diagnostics participate in the cell overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiagnosticScope {
     /// Global diagnostics and diagnostics for the selected field.
     SelectedField,

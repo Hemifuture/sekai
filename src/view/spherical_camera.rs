@@ -18,7 +18,7 @@ const IDENTITY_ORIENTATION: Quaternion = Quaternion {
 };
 
 /// The active presentation family shown by the single spherical canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SphericalViewMode {
     /// A two-dimensional projected map.
     #[default]
@@ -133,6 +133,24 @@ impl GlobeCamera {
     /// Returns the normalized world-to-camera quaternion as `[x, y, z, w]`.
     pub const fn orientation_xyzw(self) -> [f64; 4] {
         self.orientation.components()
+    }
+
+    /// Reconstructs a validated persisted orientation and orthographic scale.
+    ///
+    /// Finite non-zero quaternions are normalized before they enter runtime state.
+    pub fn from_orientation_xyzw(orientation: [f64; 4], scale: f64) -> Option<Self> {
+        let orientation = Quaternion {
+            x: orientation[0],
+            y: orientation[1],
+            z: orientation[2],
+            w: orientation[3],
+        }
+        .normalized()?;
+        let mut camera = Self {
+            orientation,
+            orthographic_scale: 1.0,
+        };
+        camera.set_orthographic_scale(scale).then_some(camera)
     }
 
     /// Returns the finite bounded orthographic display scale.

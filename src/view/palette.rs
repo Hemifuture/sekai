@@ -31,7 +31,7 @@ impl LinearRgba {
 }
 
 /// Built-in renderer palettes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaletteId {
     /// Dark water through pale parchment.
     Sequential,
@@ -42,7 +42,7 @@ pub enum PaletteId {
 }
 
 /// How a scalar display range is selected.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DisplayRangeMode {
     /// Use the field schema's declared valid range.
     Schema,

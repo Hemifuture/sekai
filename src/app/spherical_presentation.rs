@@ -45,6 +45,8 @@ pub struct SphericalRendererPreparer<'a> {
     renderer: &'a mut SphericalFieldRenderer,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
+    #[cfg(test)]
+    fail_next_prepare: bool,
 }
 
 impl<'a> SphericalRendererPreparer<'a> {
@@ -58,12 +60,27 @@ impl<'a> SphericalRendererPreparer<'a> {
             renderer,
             device,
             queue,
+            #[cfg(test)]
+            fail_next_prepare: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_prepare_for_test(&mut self) {
+        self.fail_next_prepare = true;
     }
 }
 
 impl SphericalGpuPreparer for SphericalRendererPreparer<'_> {
     fn prepare(&mut self, packet: &SphericalGpuPacket) -> Result<(), SphericalRenderError> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_prepare) {
+            return Err(SphericalRenderError::BufferLimitExceeded {
+                resource: "injected Task 10 migration GPU preparation",
+                required: 1,
+                max: 0,
+            });
+        }
         self.renderer
             .prepare_packet(self.device, self.queue, packet)
     }
@@ -272,6 +289,14 @@ impl SphericalPresentationCandidate {
 }
 
 /// The currently published complete spherical world and all of its presentation derivatives.
+///
+/// A publication is the unique owner of its revision clock and therefore cannot be cloned into
+/// two independently advancing current worlds.
+///
+/// ```compile_fail
+/// fn require_clone<T: Clone>() {}
+/// require_clone::<sekai::app::PublishedSphericalPresentation>();
+/// ```
 pub struct PublishedSphericalPresentation {
     current: SphericalPresentationCandidate,
 }
@@ -535,6 +560,21 @@ impl PublishedSphericalPresentation {
     /// Returns the reconciled display state.
     pub const fn state(&self) -> &SphericalFieldDisplayState {
         self.current.state()
+    }
+
+    /// Reconciles state that is already represented by the current layers or fixed uniforms.
+    ///
+    /// This is the O(1) path for camera, view, animation controls, and edge/none selection. It
+    /// refuses any state whose effective layer-bearing inputs differ from the current packet.
+    pub(crate) fn reconcile_uniform_only_state(
+        &mut self,
+        state: SphericalFieldDisplayState,
+    ) -> Result<(), SphericalPresentationError> {
+        if !self.current.layers.matches_camera_only_state(&state) {
+            return Err(SphericalPresentationError::FieldStateMismatch);
+        }
+        self.current.state = state;
+        Ok(())
     }
 
     /// Returns the current revision clock.

@@ -42,6 +42,7 @@ use crate::{
     gpu::field::CellFieldRenderer,
     resource::{
         CanvasStateResource, FieldDisplayResource, FieldRendererResource, FieldViewerStateResource,
+        SphericalPresentationResource,
     },
     rules::{
         default_rule_pack_set, AuthorConstraints, BuiltinRuleError, ConstraintAdoptionOutcome,
@@ -50,6 +51,11 @@ use crate::{
     ui::{
         canvas::canvas::Canvas,
         field::{show_field_controls, show_field_inspector, FieldControlAction},
+        spherical::{
+            apply_spherical_canvas_action, build_spherical_inspector_model,
+            legacy_compatibility_ui, show_spherical_canvas, show_spherical_controls,
+            show_spherical_inspector, SphericalCanvasAction,
+        },
     },
     view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
     world::{
@@ -71,6 +77,78 @@ const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
 const CURRENT_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
+
+/// Persisted provenance of the currently authored world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PersistedWorldOrigin {
+    /// A pre-spherical application state that must remain on the compatibility graph.
+    LegacyPlanarV1,
+    /// A world authored by the formal spherical natural graph.
+    SphericalV1,
+}
+
+fn missing_world_origin_is_legacy() -> PersistedWorldOrigin {
+    PersistedWorldOrigin::LegacyPlanarV1
+}
+
+/// The graph family selected for runtime initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppRuntimeGraph {
+    /// The explicitly named planar compatibility graph.
+    LegacyPlanarFoundation,
+    /// The formal spherical natural foundation graph.
+    SphericalNaturalFoundation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationFailurePoint {
+    None,
+    #[cfg(test)]
+    GpuPrepare,
+}
+
+fn default_spherical_space_spec() -> crate::world::SphericalSpaceSpec {
+    crate::world::SphericalSpaceSpec {
+        radius: Meters::new(6_371_000.0).expect("the Earth-like default radius is valid"),
+        target_cell_count: DEFAULT_TARGET_CELL_COUNT,
+    }
+}
+
+mod spherical_space_spec_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::world::{Meters, SphericalSpaceSpec};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire {
+        radius: f64,
+        target_cell_count: u32,
+    }
+
+    pub fn serialize<S>(spec: &SphericalSpaceSpec, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Wire {
+            radius: spec.radius.get(),
+            target_cell_count: spec.target_cell_count,
+        }
+        .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SphericalSpaceSpec, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = Wire::deserialize(deserializer)?;
+        let spec = SphericalSpaceSpec {
+            radius: Meters::new(wire.radius).map_err(serde::de::Error::custom)?,
+            target_cell_count: wire.target_cell_count,
+        };
+        spec.validate().map_err(serde::de::Error::custom)?;
+        Ok(spec)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RuleBuildSummary {
@@ -107,6 +185,15 @@ impl RuleBuildSummary {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TemplateApp {
+    #[serde(default = "missing_world_origin_is_legacy")]
+    world_origin: PersistedWorldOrigin,
+    #[serde(
+        default = "default_spherical_space_spec",
+        with = "spherical_space_spec_serde"
+    )]
+    spherical_space_spec: crate::world::SphericalSpaceSpec,
+    #[serde(default)]
+    spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
     world_seed: u64,
     formation_spec: WorldFormationSpec,
     tectonic_spec: TectonicSpec,
@@ -115,6 +202,16 @@ pub struct TemplateApp {
     canvas_widget: Canvas,
     #[serde(skip)]
     field_renderer: Option<FieldRendererResource>,
+    #[serde(skip)]
+    render_state: Option<RenderState>,
+    #[serde(skip)]
+    spherical_presentation: SphericalPresentationResource,
+    #[serde(skip)]
+    active_runtime_graph: Option<AppRuntimeGraph>,
+    #[serde(skip)]
+    active_runtime_stage_ids: Vec<String>,
+    #[serde(skip)]
+    spherical_runtime_error: Option<String>,
     #[serde(skip)]
     field_display: FieldDisplayResource,
     #[serde(skip)]
@@ -135,6 +232,9 @@ impl Default for TemplateApp {
         let field_display = FieldDisplayResource::default();
         let field_viewer_state = FieldViewerStateResource::default();
         Self {
+            world_origin: PersistedWorldOrigin::SphericalV1,
+            spherical_space_spec: default_spherical_space_spec(),
+            spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
             world_seed: 42,
             formation_spec: WorldFormationSpec::default(),
             tectonic_spec: TectonicSpec::default(),
@@ -145,6 +245,11 @@ impl Default for TemplateApp {
                 field_viewer_state.clone(),
             ),
             field_renderer: None,
+            render_state: None,
+            spherical_presentation: SphericalPresentationResource::default(),
+            active_runtime_graph: None,
+            active_runtime_stage_ids: Vec::new(),
+            spherical_runtime_error: None,
             field_display,
             field_viewer_state,
             legacy_planar_document: None,
@@ -156,6 +261,51 @@ impl Default for TemplateApp {
 }
 
 impl TemplateApp {
+    /// Returns the persisted world provenance used for runtime graph routing.
+    pub const fn world_origin(&self) -> PersistedWorldOrigin {
+        self.world_origin
+    }
+
+    /// Returns the explicit authoring specification for spherical worlds.
+    pub const fn spherical_space_spec(&self) -> &crate::world::SphericalSpaceSpec {
+        &self.spherical_space_spec
+    }
+
+    /// Returns the sole runtime graph family selected by persisted provenance.
+    pub const fn runtime_graph(&self) -> AppRuntimeGraph {
+        match self.world_origin {
+            PersistedWorldOrigin::LegacyPlanarV1 => AppRuntimeGraph::LegacyPlanarFoundation,
+            PersistedWorldOrigin::SphericalV1 => AppRuntimeGraph::SphericalNaturalFoundation,
+        }
+    }
+
+    /// Returns the compatibility notice only for an explicitly legacy world.
+    pub const fn legacy_compatibility_notice(&self) -> Option<&'static str> {
+        match self.world_origin {
+            PersistedWorldOrigin::LegacyPlanarV1 => {
+                Some("此状态来自旧平面世界；可用当前作者参数显式重新生成球面世界。")
+            }
+            PersistedWorldOrigin::SphericalV1 => None,
+        }
+    }
+
+    /// Returns whether the one-way explicit spherical regeneration action is available.
+    pub const fn offers_regenerate_as_spherical(&self) -> bool {
+        matches!(self.world_origin, PersistedWorldOrigin::LegacyPlanarV1)
+    }
+
+    /// Returns the graph that actually produced the current runtime publication.
+    pub const fn active_runtime_graph(&self) -> Option<AppRuntimeGraph> {
+        self.active_runtime_graph
+    }
+
+    /// Returns stage IDs from the graph that actually produced the current runtime publication.
+    pub fn active_runtime_stage_ids(&self) -> Option<&[String]> {
+        self.active_runtime_graph
+            .is_some()
+            .then_some(self.active_runtime_stage_ids.as_slice())
+    }
+
     /// Creates the application, registers the sole active map renderer, and builds the first slice.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::setup_fonts(&cc.egui_ctx);
@@ -164,16 +314,224 @@ impl TemplateApp {
             let mut app: TemplateApp =
                 eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
             app.field_renderer = None;
+            app.render_state = None;
+            app.spherical_presentation = SphericalPresentationResource::default();
+            app.active_runtime_graph = None;
+            app.active_runtime_stage_ids.clear();
+            app.spherical_runtime_error = None;
             app
         } else {
             Self::default()
         };
 
-        if let Some(render_state) = cc.wgpu_render_state.as_ref() {
-            app.field_renderer = Some(app.create_field_renderer_resource(render_state));
+        app.render_state = cc.wgpu_render_state.clone();
+        match (app.world_origin, cc.wgpu_render_state.as_ref()) {
+            (PersistedWorldOrigin::LegacyPlanarV1, render_state) => {
+                if let Some(render_state) = render_state {
+                    app.field_renderer = Some(app.create_field_renderer_resource(render_state));
+                }
+                app.generate_legacy_planar_natural_world();
+            }
+            (PersistedWorldOrigin::SphericalV1, Some(render_state)) => {
+                if let Err(error) =
+                    app.try_initialize_spherical_world(render_state, MigrationFailurePoint::None)
+                {
+                    log::error!("spherical natural world build failed: {error}");
+                }
+            }
+            (PersistedWorldOrigin::SphericalV1, None) => {
+                log::error!("spherical world requires the wgpu render state");
+            }
         }
-        app.generate_legacy_planar_natural_world();
         app
+    }
+
+    /// Explicitly regenerates a legacy world as spherical using the real renderer adapter.
+    pub fn try_regenerate_as_spherical(
+        &mut self,
+        render_state: &RenderState,
+    ) -> Result<(), AppRuntimeError> {
+        self.validate_legacy_spherical_regeneration()?;
+        self.try_initialize_spherical_world(render_state, MigrationFailurePoint::None)
+    }
+
+    #[cfg(test)]
+    fn try_regenerate_as_spherical_with_failure(
+        &mut self,
+        render_state: &RenderState,
+        failure: MigrationFailurePoint,
+    ) -> Result<(), AppRuntimeError> {
+        self.validate_legacy_spherical_regeneration()?;
+        self.try_initialize_spherical_world(render_state, failure)
+    }
+
+    fn validate_legacy_spherical_regeneration(&self) -> Result<(), AppRuntimeError> {
+        let publication_present = self.spherical_presentation.read_resource(Option::is_some);
+        if self.world_origin != PersistedWorldOrigin::LegacyPlanarV1 || publication_present {
+            return Err(AppRuntimeError::InvalidSphericalRegenerationState {
+                origin: self.world_origin,
+                publication_present,
+            });
+        }
+        Ok(())
+    }
+
+    fn try_initialize_spherical_world(
+        &mut self,
+        render_state: &RenderState,
+        failure: MigrationFailurePoint,
+    ) -> Result<(), AppRuntimeError> {
+        let requested_state = self.spherical_canvas_state.field_state().clone();
+        let candidate = build_spherical_presentation_candidate(
+            RootSeed::new(self.world_seed),
+            &self.spherical_space_spec,
+            &self.formation_spec,
+            &self.tectonic_spec,
+            &self.geologic_spec,
+            &mut self.stage_cache,
+            &requested_state,
+            &DisplayRevisionClock::default(),
+        )?;
+        let stage_ids = candidate
+            .report()
+            .stage_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut renderer = crate::gpu::spherical::SphericalFieldRenderer::new(
+            &render_state.device,
+            render_state.target_format,
+        );
+        let published = {
+            let mut gpu = SphericalRendererPreparer::new(
+                &mut renderer,
+                &render_state.device,
+                &render_state.queue,
+            );
+            #[cfg(test)]
+            if failure == MigrationFailurePoint::GpuPrepare {
+                gpu.fail_next_prepare_for_test();
+            }
+            #[cfg(not(test))]
+            let _ = failure;
+            PublishedSphericalPresentation::try_new(candidate, &mut gpu)?
+        };
+
+        render_state
+            .renderer
+            .write()
+            .callback_resources
+            .insert::<crate::gpu::spherical::SphericalFieldRenderer>(renderer);
+        self.spherical_canvas_state
+            .replace_field_state(published.state().clone());
+        self.spherical_presentation.with_resource(|current| {
+            *current = Some(published);
+        });
+        self.legacy_planar_document = None;
+        self.field_renderer = None;
+        self.field_display
+            .with_resource(|display| *display = Default::default());
+        self.field_viewer_state
+            .with_resource(|state| *state = Default::default());
+        render_state
+            .renderer
+            .write()
+            .callback_resources
+            .remove::<FieldRendererResource>();
+        self.active_runtime_graph = Some(AppRuntimeGraph::SphericalNaturalFoundation);
+        self.active_runtime_stage_ids = stage_ids;
+        self.world_origin = PersistedWorldOrigin::SphericalV1;
+        Ok(())
+    }
+
+    fn try_rebuild_spherical_world(
+        &mut self,
+        render_state: &RenderState,
+    ) -> Result<(), AppRuntimeError> {
+        let candidate = self.spherical_presentation.read_resource(|current| {
+            current
+                .as_ref()
+                .ok_or(AppRuntimeError::MissingSphericalPublication)?
+                .prepare_replacement_candidate(
+                    RootSeed::new(self.world_seed),
+                    &self.spherical_space_spec,
+                    &self.formation_spec,
+                    &self.tectonic_spec,
+                    &self.geologic_spec,
+                    &mut self.stage_cache,
+                    self.spherical_canvas_state.field_state(),
+                )
+                .map_err(AppRuntimeError::from)
+        })?;
+        let stage_ids = candidate
+            .report()
+            .stage_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut egui_renderer = render_state.renderer.write();
+        let renderer = egui_renderer
+            .callback_resources
+            .get_mut::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .ok_or(AppRuntimeError::MissingSphericalRenderer)?;
+        let mut gpu =
+            SphericalRendererPreparer::new(renderer, &render_state.device, &render_state.queue);
+        let reconciled_state = self.spherical_presentation.with_resource(|current| {
+            let current = current
+                .as_mut()
+                .ok_or(AppRuntimeError::MissingSphericalPublication)?;
+            current.try_replace(candidate, &mut gpu)?;
+            Ok::<_, AppRuntimeError>(current.state().clone())
+        })?;
+        self.spherical_canvas_state
+            .replace_field_state(reconciled_state);
+        self.active_runtime_graph = Some(AppRuntimeGraph::SphericalNaturalFoundation);
+        self.active_runtime_stage_ids = stage_ids;
+        Ok(())
+    }
+
+    fn apply_spherical_action(&mut self, action: SphericalCanvasAction) {
+        let Some(render_state) = self.render_state.clone() else {
+            self.spherical_runtime_error = Some("球面呈现缺少 wgpu render state".to_owned());
+            return;
+        };
+        if matches!(action, SphericalCanvasAction::RegenerateAsSpherical) {
+            let result = match self.world_origin {
+                PersistedWorldOrigin::LegacyPlanarV1 => {
+                    self.try_regenerate_as_spherical(&render_state)
+                }
+                PersistedWorldOrigin::SphericalV1 => {
+                    self.try_rebuild_spherical_world(&render_state)
+                }
+            };
+            self.spherical_runtime_error = result.err().map(|error| error.to_string());
+            return;
+        }
+
+        let mut egui_renderer = render_state.renderer.write();
+        let Some(renderer) = egui_renderer
+            .callback_resources
+            .get_mut::<crate::gpu::spherical::SphericalFieldRenderer>()
+        else {
+            self.spherical_runtime_error = Some("球面 callback renderer 尚未注册".to_owned());
+            return;
+        };
+        let result = self.spherical_presentation.with_resource(|current| {
+            let current = current
+                .as_mut()
+                .ok_or_else(|| "球面 publication 尚未建立".to_owned())?;
+            apply_spherical_canvas_action(
+                current,
+                renderer,
+                &render_state.device,
+                &render_state.queue,
+                &mut self.spherical_canvas_state,
+                action,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        });
+        self.spherical_runtime_error = result.err();
     }
 
     fn setup_fonts(ctx: &egui::Context) {
@@ -284,6 +642,7 @@ impl TemplateApp {
             report,
             rule_summary,
         } = candidate;
+        let stage_ids = report.stage_ids().into_iter().map(str::to_owned).collect();
         for stage in report.stages() {
             log::info!(
                 "natural stage {}: {:?}{}",
@@ -303,6 +662,8 @@ impl TemplateApp {
             .with_resource(|resource| resource.replace(packet));
         self.display_revision_clock = clock;
         self.rule_build_summary = rule_summary;
+        self.active_runtime_graph = Some(AppRuntimeGraph::LegacyPlanarFoundation);
+        self.active_runtime_stage_ids = stage_ids;
         log::info!(
             "published natural slice: {cells} cells, {plates} plates, {segments} boundary segments, {} rule packs",
             rule_summary.active_pack_count
@@ -380,6 +741,7 @@ impl eframe::App for TemplateApp {
         });
 
         let mut field_actions = Vec::new();
+        let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
         egui::SidePanel::left("control_panel")
@@ -461,6 +823,14 @@ impl eframe::App for TemplateApp {
                         rebuild = true;
                     }
 
+                    if let Some(compatibility) = legacy_compatibility_ui(self) {
+                        ui.separator();
+                        ui.label(compatibility.notice());
+                        if ui.button(compatibility.action_label()).clicked() {
+                            spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
+                        }
+                    }
+
                     if let Some(document) = self.legacy_planar_document.as_ref() {
                         ui.separator();
                         ui.label(format!(
@@ -489,12 +859,47 @@ impl eframe::App for TemplateApp {
                             .map(|diagnostic| diagnostic.as_ref())
                             .collect();
                         show_field_inspector(ui, &catalog, &state, &diagnostics);
+                    } else {
+                        self.spherical_presentation.read_resource(|current| {
+                            let Some(presentation) = current.as_ref() else {
+                                return;
+                            };
+                            ui.separator();
+                            ui.label(format!(
+                                "{} 个球面单元｜单位球呈现",
+                                presentation.globe().cell_count()
+                            ));
+                            match show_spherical_controls(
+                                ui,
+                                presentation,
+                                &self.spherical_canvas_state,
+                            ) {
+                                Ok(actions) => spherical_actions.extend(actions),
+                                Err(error) => {
+                                    ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                                }
+                            }
+                            match build_spherical_inspector_model(
+                                presentation,
+                                self.spherical_canvas_state.field_state(),
+                                self.spherical_canvas_state.view_mode(),
+                            ) {
+                                Ok(model) => show_spherical_inspector(ui, &model),
+                                Err(error) => {
+                                    ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                                }
+                            }
+                        });
                     }
 
                     if let Some(status) = self
                         .field_display
                         .read_resource(|display| display.error().map(ToString::to_string))
                     {
+                        ui.separator();
+                        ui.colored_label(egui::Color32::LIGHT_RED, status);
+                    }
+                    if let Some(status) = self.spherical_runtime_error.as_deref() {
                         ui.separator();
                         ui.colored_label(egui::Color32::LIGHT_RED, status);
                     }
@@ -509,12 +914,42 @@ impl eframe::App for TemplateApp {
             rebuild = true;
         }
         if rebuild {
-            self.generate_legacy_planar_natural_world();
+            match self.world_origin {
+                PersistedWorldOrigin::LegacyPlanarV1 => {
+                    self.generate_legacy_planar_natural_world();
+                }
+                PersistedWorldOrigin::SphericalV1 => {
+                    spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
+                }
+            }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add(&mut self.canvas_widget);
+        egui::CentralPanel::default().show(ctx, |ui| match self.world_origin {
+            PersistedWorldOrigin::LegacyPlanarV1 => {
+                ui.add(&mut self.canvas_widget);
+            }
+            PersistedWorldOrigin::SphericalV1 => {
+                let canvas_state = &mut self.spherical_canvas_state;
+                let was_published = self.spherical_presentation.read_resource(|current| {
+                    let Some(presentation) = current.as_ref() else {
+                        return false;
+                    };
+                    spherical_actions.extend(
+                        show_spherical_canvas(ui, presentation, canvas_state).into_actions(),
+                    );
+                    true
+                });
+                if !was_published {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("球面世界尚未发布");
+                    });
+                }
+            }
         });
+
+        for action in spherical_actions {
+            self.apply_spherical_action(action);
+        }
     }
 }
 
@@ -739,6 +1174,30 @@ struct LegacyPlanarNaturalWorldCandidate {
     rule_summary: RuleBuildSummary,
 }
 
+/// Runtime initialization or explicit spherical-regeneration failures.
+#[derive(Debug, Error)]
+pub enum AppRuntimeError {
+    /// The formal spherical candidate or GPU publication failed atomically.
+    #[error(transparent)]
+    SphericalPresentation(#[from] SphericalPresentationError),
+    /// Spherical runtime state was requested before a publication existed.
+    #[error("spherical runtime has no current publication")]
+    MissingSphericalPublication,
+    /// The spherical callback renderer was not registered.
+    #[error("spherical callback renderer is not registered")]
+    MissingSphericalRenderer,
+    /// The one-way legacy migration was requested outside its sole valid runtime state.
+    #[error(
+        "spherical regeneration requires LegacyPlanarV1 with no spherical publication (origin: {origin:?}, publication present: {publication_present})"
+    )]
+    InvalidSphericalRegenerationState {
+        /// Persisted origin observed before any build or GPU work.
+        origin: PersistedWorldOrigin,
+        /// Whether an authoritative spherical publication already exists.
+        publication_present: bool,
+    },
+}
+
 #[derive(Debug, Error)]
 enum NaturalWorldBuildError {
     #[error(transparent)]
@@ -769,7 +1228,8 @@ mod natural_app_tests {
 
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
-        default_world_spec, formation_provenance_label, NaturalWorldBuildError, TemplateApp,
+        default_world_spec, formation_provenance_label, AppRuntimeError, AppRuntimeGraph,
+        MigrationFailurePoint, NaturalWorldBuildError, PersistedWorldOrigin, TemplateApp,
         CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
@@ -793,6 +1253,342 @@ mod natural_app_tests {
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
+
+    fn request_test_render_state() -> eframe::egui_wgpu::RenderState {
+        use eframe::egui_wgpu::{self, wgpu};
+        use std::sync::Arc;
+
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                })
+                .await
+                .or_else(|| {
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        force_fallback_adapter: false,
+                        compatible_surface: None,
+                    }))
+                })
+                .expect("Task 10 app tests require a compatible GPU adapter");
+            let (device, queue) = adapter
+                .request_device(
+                    &wgpu::DeviceDescriptor {
+                        label: Some("Task 10 App Test Device"),
+                        required_limits: wgpu::Limits::downlevel_defaults(),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .expect("Task 10 app tests require a compatible GPU device");
+            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            let renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+            egui_wgpu::RenderState {
+                adapter,
+                available_adapters: Vec::new(),
+                device,
+                queue,
+                target_format: format,
+                renderer: Arc::new(egui::mutex::RwLock::new(renderer)),
+            }
+        })
+    }
+
+    #[derive(Default)]
+    struct TestStorage(std::collections::BTreeMap<String, String>);
+
+    impl eframe::Storage for TestStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    fn create_from_persisted(
+        mut persisted: TemplateApp,
+        render_state: &eframe::egui_wgpu::RenderState,
+    ) -> TemplateApp {
+        persisted.spherical_space_spec.target_cell_count = 162;
+        let mut storage = TestStorage::default();
+        eframe::set_value(&mut storage, eframe::APP_KEY, &persisted);
+        let restored: TemplateApp =
+            eframe::get_value(&storage, eframe::APP_KEY).unwrap_or_else(|| {
+                panic!(
+                "the Task 10 persisted app fixture must round-trip through eframe storage: {:?}",
+                storage.0.get(eframe::APP_KEY)
+            )
+            });
+        assert_eq!(restored.world_origin, persisted.world_origin);
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        cc.wgpu_render_state = Some(render_state.clone());
+        TemplateApp::new(&cc)
+    }
+
+    #[test]
+    fn template_app_new_executes_only_the_persisted_origin_graph() {
+        let render_state = request_test_render_state();
+
+        let legacy = TemplateApp {
+            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
+            ..TemplateApp::default()
+        };
+        let legacy = create_from_persisted(legacy, &render_state);
+        assert_eq!(
+            legacy.active_runtime_graph(),
+            Some(AppRuntimeGraph::LegacyPlanarFoundation)
+        );
+        assert!(legacy.legacy_planar_document.is_some());
+        assert!(legacy.spherical_presentation.read_resource(Option::is_none));
+        assert!(legacy
+            .active_runtime_stage_ids()
+            .unwrap()
+            .iter()
+            .any(|stage| stage == "spatial.planar-voronoi"));
+        assert!(legacy
+            .active_runtime_stage_ids()
+            .unwrap()
+            .iter()
+            .all(|stage| !stage.starts_with("natural.spherical-")));
+
+        let spherical = create_from_persisted(TemplateApp::default(), &render_state);
+        assert_eq!(
+            spherical.active_runtime_graph(),
+            Some(AppRuntimeGraph::SphericalNaturalFoundation)
+        );
+        assert!(spherical.legacy_planar_document.is_none());
+        assert!(spherical
+            .spherical_presentation
+            .read_resource(Option::is_some));
+        assert!(spherical
+            .active_runtime_stage_ids()
+            .unwrap()
+            .iter()
+            .any(|stage| stage == "spatial.spherical-voronoi"));
+        assert!(spherical
+            .active_runtime_stage_ids()
+            .unwrap()
+            .iter()
+            .all(|stage| *stage != "spatial.planar-voronoi"));
+        assert!(render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .is_some());
+    }
+
+    #[test]
+    fn explicit_legacy_regeneration_is_atomic_across_build_gpu_failure_and_success() {
+        let render_state = request_test_render_state();
+        let persisted = TemplateApp {
+            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
+            ..TemplateApp::default()
+        };
+        let mut app = create_from_persisted(persisted, &render_state);
+        let spatial_before = Arc::clone(
+            &app.legacy_planar_document
+                .as_ref()
+                .expect("legacy runtime is published")
+                .spatial,
+        );
+        let packet_before = app
+            .field_display
+            .read_resource(FieldDisplayResourceState::current_cloned)
+            .unwrap();
+        let runtime_stage_ids_before = app.active_runtime_stage_ids().unwrap().to_vec();
+
+        app.spherical_space_spec.target_cell_count = 1;
+        assert!(app.try_regenerate_as_spherical(&render_state).is_err());
+        assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
+        assert_eq!(
+            app.active_runtime_graph(),
+            Some(AppRuntimeGraph::LegacyPlanarFoundation)
+        );
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(Arc::ptr_eq(
+            &spatial_before,
+            &app.legacy_planar_document.as_ref().unwrap().spatial
+        ));
+        assert!(Arc::ptr_eq(
+            &packet_before,
+            &app.field_display
+                .read_resource(FieldDisplayResourceState::current_cloned)
+                .unwrap()
+        ));
+        assert_eq!(
+            app.active_runtime_stage_ids(),
+            Some(runtime_stage_ids_before.as_slice())
+        );
+
+        app.spherical_space_spec.target_cell_count = 162;
+        assert!(app
+            .try_regenerate_as_spherical_with_failure(
+                &render_state,
+                MigrationFailurePoint::GpuPrepare,
+            )
+            .is_err());
+        assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
+        assert_eq!(
+            app.active_runtime_graph(),
+            Some(AppRuntimeGraph::LegacyPlanarFoundation)
+        );
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(Arc::ptr_eq(
+            &spatial_before,
+            &app.legacy_planar_document.as_ref().unwrap().spatial
+        ));
+        assert!(Arc::ptr_eq(
+            &packet_before,
+            &app.field_display
+                .read_resource(FieldDisplayResourceState::current_cloned)
+                .unwrap()
+        ));
+        assert_eq!(
+            app.active_runtime_stage_ids(),
+            Some(runtime_stage_ids_before.as_slice())
+        );
+
+        app.try_regenerate_as_spherical(&render_state).unwrap();
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert_eq!(
+            app.active_runtime_graph(),
+            Some(AppRuntimeGraph::SphericalNaturalFoundation)
+        );
+        assert!(app.legacy_planar_document.is_none());
+        assert!(app.field_renderer.is_none());
+        assert!(app.spherical_presentation.read_resource(Option::is_some));
+        assert!(app
+            .active_runtime_stage_ids()
+            .unwrap()
+            .iter()
+            .any(|stage| stage == "spatial.spherical-voronoi"));
+    }
+
+    #[test]
+    fn existing_spherical_runtime_rebuilds_from_the_current_publication_lineage() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let (publication_address, packet_before, source_before) =
+            app.spherical_presentation.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                (
+                    std::ptr::from_ref(current),
+                    Arc::clone(current.gpu_packet_arc()),
+                    current.source().clone(),
+                )
+            });
+        app.world_seed = app.world_seed.wrapping_add(1);
+
+        app.try_rebuild_spherical_world(&render_state).unwrap();
+        let (address_after, packet_after, source_after) =
+            app.spherical_presentation.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                (
+                    std::ptr::from_ref(current),
+                    Arc::clone(current.gpu_packet_arc()),
+                    current.source().clone(),
+                )
+            });
+        assert_eq!(publication_address, address_after);
+        assert!(!Arc::ptr_eq(&packet_before, &packet_after));
+        assert_ne!(source_after, source_before);
+        assert_eq!(source_after.root_seed(), RootSeed::new(app.world_seed));
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert_eq!(
+            app.active_runtime_graph(),
+            Some(AppRuntimeGraph::SphericalNaturalFoundation)
+        );
+
+        app.spherical_space_spec.target_cell_count = 1;
+        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            assert_eq!(publication_address, std::ptr::from_ref(current));
+            assert!(Arc::ptr_eq(&packet_after, current.gpu_packet_arc()));
+            assert_eq!(source_after, *current.source());
+        });
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+    }
+
+    #[test]
+    fn public_legacy_regeneration_rejects_an_existing_spherical_publication_without_side_effects() {
+        let render_state = request_test_render_state();
+        let mut unpublished_spherical = TemplateApp::default();
+        unpublished_spherical.spherical_space_spec.target_cell_count = 1;
+        assert!(matches!(
+            unpublished_spherical.try_regenerate_as_spherical(&render_state),
+            Err(AppRuntimeError::InvalidSphericalRegenerationState {
+                origin: PersistedWorldOrigin::SphericalV1,
+                publication_present: false,
+            })
+        ));
+
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let (publication_address, packet_before, source_before, revisions_before) =
+            app.spherical_presentation.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                (
+                    std::ptr::from_ref(current),
+                    Arc::clone(current.gpu_packet_arc()),
+                    current.source().clone(),
+                    current.revisions(),
+                )
+            });
+        let counters_before = render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        let stage_ids_before = app.active_runtime_stage_ids.clone();
+
+        assert!(matches!(
+            app.try_regenerate_as_spherical(&render_state),
+            Err(AppRuntimeError::InvalidSphericalRegenerationState {
+                origin: PersistedWorldOrigin::SphericalV1,
+                publication_present: true,
+            })
+        ));
+        app.world_origin = PersistedWorldOrigin::LegacyPlanarV1;
+        assert!(matches!(
+            app.try_regenerate_as_spherical(&render_state),
+            Err(AppRuntimeError::InvalidSphericalRegenerationState {
+                origin: PersistedWorldOrigin::LegacyPlanarV1,
+                publication_present: true,
+            })
+        ));
+        app.world_origin = PersistedWorldOrigin::SphericalV1;
+
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert_eq!(app.active_runtime_stage_ids, stage_ids_before);
+        app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            assert_eq!(publication_address, std::ptr::from_ref(current));
+            assert!(Arc::ptr_eq(&packet_before, current.gpu_packet_arc()));
+            assert_eq!(source_before, *current.source());
+            assert_eq!(revisions_before, current.revisions());
+        });
+        let counters_after = render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        assert_eq!(counters_before, counters_after);
+    }
 
     #[test]
     fn default_application_persists_continents_with_missing_field_compatibility() {

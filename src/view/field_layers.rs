@@ -67,7 +67,7 @@ pub enum SphericalFieldChannel {
 }
 
 /// A stable spherical entity selected by either presentation mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SelectedSurfaceEntity {
     /// One authoritative surface cell.
     Cell(CellId),
@@ -76,7 +76,7 @@ pub enum SelectedSurfaceEntity {
 }
 
 /// The density of prepared vector glyphs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum VectorGlyphLod {
     /// Sparse glyph subset.
     Low,
