@@ -126,3 +126,91 @@ cargo test
 ## Concerns
 
 No blocking concerns. Exact poles necessarily have multiple planar longitude representations; the implementation duplicates only disposable display corners with the same `CellId`. The authoritative spherical point and all science remain unchanged. The additional `spherical_projection.rs` change is crate-private and exists solely to project an explicitly unwrapped seam/pole longitude without losing its display side through ordinary wrapping.
+
+## Fix Round 1: Bounded Fragment Triangulation and Exact-Pole Edges
+
+### Review findings and implementation
+
+1. Replaced the vertex-zero projected fan with deterministic bounded ear clipping. A seam fragment contains at most five projected vertices, so the implementation bounds both removal passes and candidate scans by that fixed maximum. Before emitting anything, it validates finite points, distinct consecutive vertices, non-self-intersection, finite nonzero shoelace area, and winding. Clockwise inputs are normalized as a whole; individual negative triangles are never flipped independently. Each accepted ear is positive and contains no remaining polygon vertex. The final positive triangle-area sum must equal the polygon shoelace area within a scale-relative floating-point tolerance, otherwise the fragment is rejected as `InvalidCellGeometry`.
+2. Changed exact-pole edge preparation so exactly one pole endpoint uses the non-pole endpoint's continuously unwrapped relative longitude. This makes projected edge endpoints approach the pole at the incident great-circle longitude and match the fill polygon's disposable pole representation. Near-pole directions continue through their actual `atan2` longitude. Two exact pole endpoints are explicitly rejected as an invalid authoritative edge before any segment is emitted.
+3. Added independent test geometry: a concave polygon in both windings, a self-intersecting bow tie, generated high-latitude seam fragments for both projections and all three central meridians, exact north/south pole edges in both endpoint orders, near-pole edges, and the impossible two-pole edge. Test coverage compares triangle area sums to independent polygon shoelace areas and clips every triangle pair to prove interior intersection area is zero within tolerance.
+
+### RED evidence
+
+Concave coverage command:
+
+```powershell
+cargo test --lib view::spherical_mesh::tests::concave_projected_fragment_is_partitioned_without_overlap -- --nocapture
+```
+
+Result before ear clipping: exit 1. The vertex-zero fan produced triangle area `1.35` for a simple concave polygon whose shoelace area is `0.81`, proving over-coverage.
+
+Malformed-fragment command:
+
+```powershell
+cargo test --lib view::spherical_mesh::tests::self_intersecting_projected_fragment_is_rejected -- --nocapture
+```
+
+Result before structural validation: exit 1. The bow-tie polygon was accepted instead of returning `InvalidCellGeometry`.
+
+Exact-pole edge command:
+
+```powershell
+cargo test --lib view::spherical_mesh::tests::exact_pole_edges_use_incident_arc_longitudes_and_near_poles_do_not -- --nocapture
+```
+
+Result before pole-edge longitude handling: exit 1. The exact-pole endpoint's projected x coordinate did not equal the fill polygon's incident-longitude pole x coordinate.
+
+### GREEN evidence and final verification
+
+```powershell
+cargo test --lib view::spherical_mesh::tests::concave_projected_fragment_is_partitioned_without_overlap -- --nocapture
+# exit 0: 1 passed, 0 failed
+
+cargo test --lib view::spherical_mesh::tests::self_intersecting_projected_fragment_is_rejected -- --nocapture
+# exit 0: 1 passed, 0 failed
+
+cargo test --lib view::spherical_mesh::tests::generated_high_latitude_seam_fragments_are_exact_area_partitions -- --nocapture
+# exit 0: 1 passed, 0 failed
+
+cargo test --lib view::spherical_mesh::tests::exact_pole_edges_use_incident_arc_longitudes_and_near_poles_do_not -- --nocapture
+# exit 0: 1 passed, 0 failed
+
+cargo test --lib spherical_mesh -- --nocapture
+# exit 0: 8 passed, 0 failed
+
+cargo test --test spherical_presentation_mesh -- --nocapture
+# exit 0: 2 passed, 0 failed
+
+cargo test --test spherical_projection -- --nocapture
+# exit 0: 8 passed, 0 failed
+
+cargo test --test spherical_picking -- --nocapture
+# exit 0: 5 passed, 0 failed
+
+cargo fmt --all -- --check
+# exit 0
+
+cargo clippy --lib --test spherical_presentation_mesh -- -D warnings
+# exit 0, no warnings
+
+cargo test
+# exit 0 in 139.3 seconds: 262 library tests (261 passed, 1 ignored), followed by all integration and doc tests with no failures
+```
+
+### Fix-round self-review
+
+- Confirmed the ear clip receives only the maximum five vertices derivable from a clipped ordinary or exact-pole fan and has no unbounded search or recursion.
+- Confirmed validation occurs before triangle emission, so malformed/self-intersecting/zero-area fragments do not leave partial geometry.
+- Confirmed polygon-level winding normalization replaces the former per-triangle sign flip.
+- Confirmed independent shoelace and convex-intersection test helpers do not call the production triangulator's area, ear, simplicity, or point-in-triangle helpers.
+- Confirmed both concave windings partition exactly, generated high-latitude fragments partition exactly, all output triangles remain positive, and pairwise triangle interior overlap area is zero within tolerance.
+- Confirmed exact north and south poles, either endpoint order, and both projections use the incident non-pole longitude and match fill semantics.
+- Confirmed near-pole endpoints retain their own projected longitude and the exact-pole predicate remains `x == 0 && y == 0`.
+- Confirmed a two-pole edge returns the existing structured `InvalidEdgeGeometry { edge }` error and emits no segment.
+- Confirmed no semantic IDs, authoritative surface geometry, science data, public source construction, budgets, or product scope changed.
+- The approved 20k Release memory/time evidence remains assigned to Task 11 and was not duplicated or moved into Task 5.
+
+### Fix-round concerns
+
+None.

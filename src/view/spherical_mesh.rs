@@ -16,6 +16,7 @@ use crate::world::{
 
 const MAX_CLIPPED_TRIANGLES_PER_FAN_TRIANGLE: usize = 4;
 const TRIANGLE_VERTEX_COUNT: usize = 3;
+const MAX_PROJECTED_FRAGMENT_VERTICES: usize = 5;
 const ARC_BISECTION_ITERATIONS: usize = 64;
 const POLE_HORIZONTAL_EPSILON: f64 = 32.0 * f64::EPSILON;
 const SPAN_EPSILON: f64 = 2.0e-12;
@@ -418,9 +419,26 @@ fn pole_copy(mut vertex: AngularVertex, longitude: f64) -> AngularVertex {
     vertex
 }
 
-fn angular_edge(directions: [UnitVector3; 2], central_meridian: f64) -> [AngularVertex; 2] {
-    let first_longitude = relative_longitude(directions[0], central_meridian);
-    [
+fn angular_edge(directions: [UnitVector3; 2], central_meridian: f64) -> Option<[AngularVertex; 2]> {
+    let poles = directions.map(is_pole);
+    if poles == [true, true] {
+        // Two exact-pole endpoints do not define a supported unique authoritative edge.
+        return None;
+    }
+    let first_longitude = if poles[0] {
+        relative_longitude(directions[1], central_meridian)
+    } else {
+        relative_longitude(directions[0], central_meridian)
+    };
+    let second_longitude = if poles[1] {
+        first_longitude
+    } else {
+        unwrap_near(
+            relative_longitude(directions[1], central_meridian),
+            first_longitude,
+        )
+    };
+    Some([
         AngularVertex {
             direction: directions[0],
             latitude: latitude(directions[0]),
@@ -429,12 +447,9 @@ fn angular_edge(directions: [UnitVector3; 2], central_meridian: f64) -> [Angular
         AngularVertex {
             direction: directions[1],
             latitude: latitude(directions[1]),
-            longitude: unwrap_near(
-                relative_longitude(directions[1], central_meridian),
-                first_longitude,
-            ),
+            longitude: second_longitude,
         },
-    ]
+    ])
 }
 
 fn latitude(direction: UnitVector3) -> f64 {
@@ -618,11 +633,20 @@ fn triangulate_fragment(
     vertices: &mut Vec<ProjectedMapVertex>,
     indices: &mut Vec<u32>,
 ) -> Result<(), SphericalMeshError> {
-    for pair in fragment[1..].windows(2) {
-        append_triangle(
-            [fragment[0], pair[0], pair[1]],
+    if !(TRIANGLE_VERTEX_COUNT..=MAX_PROJECTED_FRAGMENT_VERTICES).contains(&fragment.len()) {
+        return Err(SphericalMeshError::InvalidCellGeometry { cell });
+    }
+    let mut points = fragment
+        .iter()
+        .map(|&vertex| project_angular(vertex, projection))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| SphericalMeshError::InvalidCellGeometry { cell })?;
+    let triangles = triangulate_projected_polygon(&mut points)
+        .ok_or(SphericalMeshError::InvalidCellGeometry { cell })?;
+    for triangle in triangles {
+        append_projected_triangle(
+            triangle.map(|index| points[index]),
             cell,
-            projection,
             bounds,
             budgets,
             vertices,
@@ -632,21 +656,14 @@ fn triangulate_fragment(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn append_triangle(
-    triangle: [AngularVertex; TRIANGLE_VERTEX_COUNT],
+fn append_projected_triangle(
+    points: [ProjectionPoint; TRIANGLE_VERTEX_COUNT],
     cell: CellId,
-    projection: SphericalProjection,
     bounds: ProjectionBounds,
     budgets: SphericalMeshBudgets,
     vertices: &mut Vec<ProjectedMapVertex>,
     indices: &mut Vec<u32>,
 ) -> Result<(), SphericalMeshError> {
-    let points = triangle.map(|vertex| project_angular(vertex, projection));
-    if points.iter().any(Result::is_err) {
-        return Err(SphericalMeshError::InvalidCellGeometry { cell });
-    }
-    let mut points = points.map(Result::unwrap);
     if points
         .iter()
         .any(|point| !point.x().is_finite() || !point.y().is_finite())
@@ -654,11 +671,8 @@ fn append_triangle(
         return Err(SphericalMeshError::InvalidCellGeometry { cell });
     }
     let signed_area = signed_area(points);
-    if !signed_area.is_finite() || signed_area == 0.0 {
+    if !signed_area.is_finite() || signed_area <= projected_area_epsilon(&points) {
         return Err(SphericalMeshError::InvalidCellGeometry { cell });
-    }
-    if signed_area < 0.0 {
-        points.swap(1, 2);
     }
     let half_width = (bounds.max_x() - bounds.min_x()) * 0.5;
     if triangle_x_span(points) > half_width + SPAN_EPSILON {
@@ -690,6 +704,179 @@ fn append_triangle(
             })?,
     ]);
     Ok(())
+}
+
+fn triangulate_projected_polygon(
+    points: &mut [ProjectionPoint],
+) -> Option<Vec<[usize; TRIANGLE_VERTEX_COUNT]>> {
+    if !(TRIANGLE_VERTEX_COUNT..=MAX_PROJECTED_FRAGMENT_VERTICES).contains(&points.len())
+        || points
+            .iter()
+            .any(|point| !point.x().is_finite() || !point.y().is_finite())
+    {
+        return None;
+    }
+    let epsilon = projected_area_epsilon(points);
+    if !projected_polygon_is_simple(points, epsilon) {
+        return None;
+    }
+    let mut polygon_area = projected_polygon_twice_area(points);
+    if !polygon_area.is_finite() || polygon_area.abs() <= epsilon {
+        return None;
+    }
+    if polygon_area < 0.0 {
+        points.reverse();
+        polygon_area = -polygon_area;
+    }
+
+    let mut remaining = (0..points.len()).collect::<Vec<_>>();
+    let mut triangles = Vec::with_capacity(points.len() - 2);
+    for _ in 0..MAX_PROJECTED_FRAGMENT_VERTICES {
+        if remaining.len() == TRIANGLE_VERTEX_COUNT {
+            break;
+        }
+        let mut ear = None;
+        for position in 0..remaining.len() {
+            let previous = remaining[(position + remaining.len() - 1) % remaining.len()];
+            let current = remaining[position];
+            let next = remaining[(position + 1) % remaining.len()];
+            let triangle = [points[previous], points[current], points[next]];
+            if signed_area(triangle) <= epsilon {
+                continue;
+            }
+            if remaining.iter().copied().any(|candidate| {
+                candidate != previous
+                    && candidate != current
+                    && candidate != next
+                    && point_in_triangle_inclusive(points[candidate], triangle, epsilon)
+            }) {
+                continue;
+            }
+            ear = Some((position, [previous, current, next]));
+            break;
+        }
+        let (position, triangle) = ear?;
+        triangles.push(triangle);
+        remaining.remove(position);
+    }
+    if remaining.len() != TRIANGLE_VERTEX_COUNT {
+        return None;
+    }
+    let final_triangle = [remaining[0], remaining[1], remaining[2]];
+    if signed_area(final_triangle.map(|index| points[index])) <= epsilon {
+        return None;
+    }
+    triangles.push(final_triangle);
+    if triangles.len() != points.len() - 2 {
+        return None;
+    }
+
+    let triangle_area = triangles
+        .iter()
+        .map(|triangle| signed_area(triangle.map(|index| points[index])))
+        .sum::<f64>();
+    if (triangle_area - polygon_area).abs() > epsilon * points.len() as f64 * 2.0 {
+        return None;
+    }
+    Some(triangles)
+}
+
+fn projected_polygon_twice_area(points: &[ProjectionPoint]) -> f64 {
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .map(|(start, end)| start.x() * end.y() - end.x() * start.y())
+        .sum()
+}
+
+fn projected_area_epsilon(points: &[ProjectionPoint]) -> f64 {
+    let scale = points
+        .iter()
+        .flat_map(|point| [point.x().abs(), point.y().abs()])
+        .fold(1.0_f64, f64::max);
+    64.0 * f64::EPSILON * scale * scale
+}
+
+fn projected_polygon_is_simple(points: &[ProjectionPoint], epsilon: f64) -> bool {
+    for index in 0..points.len() {
+        let next = (index + 1) % points.len();
+        if projected_distance_squared(points[index], points[next]) <= epsilon * epsilon {
+            return false;
+        }
+        for other in index + 1..points.len() {
+            let other_next = (other + 1) % points.len();
+            if index == other_next || next == other {
+                continue;
+            }
+            if projected_segments_intersect(
+                points[index],
+                points[next],
+                points[other],
+                points[other_next],
+                epsilon,
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn projected_segments_intersect(
+    first_start: ProjectionPoint,
+    first_end: ProjectionPoint,
+    second_start: ProjectionPoint,
+    second_end: ProjectionPoint,
+    epsilon: f64,
+) -> bool {
+    let orientations = [
+        projected_cross(first_start, first_end, second_start),
+        projected_cross(first_start, first_end, second_end),
+        projected_cross(second_start, second_end, first_start),
+        projected_cross(second_start, second_end, first_end),
+    ];
+    if orientations[0] * orientations[1] < 0.0 && orientations[2] * orientations[3] < 0.0 {
+        return true;
+    }
+    (orientations[0].abs() <= epsilon
+        && projected_point_on_segment(second_start, first_start, first_end, epsilon))
+        || (orientations[1].abs() <= epsilon
+            && projected_point_on_segment(second_end, first_start, first_end, epsilon))
+        || (orientations[2].abs() <= epsilon
+            && projected_point_on_segment(first_start, second_start, second_end, epsilon))
+        || (orientations[3].abs() <= epsilon
+            && projected_point_on_segment(first_end, second_start, second_end, epsilon))
+}
+
+fn projected_point_on_segment(
+    point: ProjectionPoint,
+    start: ProjectionPoint,
+    end: ProjectionPoint,
+    epsilon: f64,
+) -> bool {
+    point.x() >= start.x().min(end.x()) - epsilon
+        && point.x() <= start.x().max(end.x()) + epsilon
+        && point.y() >= start.y().min(end.y()) - epsilon
+        && point.y() <= start.y().max(end.y()) + epsilon
+}
+
+fn point_in_triangle_inclusive(
+    point: ProjectionPoint,
+    triangle: [ProjectionPoint; TRIANGLE_VERTEX_COUNT],
+    epsilon: f64,
+) -> bool {
+    projected_cross(triangle[0], triangle[1], point) >= -epsilon
+        && projected_cross(triangle[1], triangle[2], point) >= -epsilon
+        && projected_cross(triangle[2], triangle[0], point) >= -epsilon
+}
+
+fn projected_cross(start: ProjectionPoint, end: ProjectionPoint, point: ProjectionPoint) -> f64 {
+    (end.x() - start.x()) * (point.y() - start.y())
+        - (end.y() - start.y()) * (point.x() - start.x())
+}
+
+fn projected_distance_squared(first: ProjectionPoint, second: ProjectionPoint) -> f64 {
+    (first.x() - second.x()).powi(2) + (first.y() - second.y()).powi(2)
 }
 
 fn signed_area(points: [ProjectionPoint; TRIANGLE_VERTEX_COUNT]) -> f64 {
@@ -725,7 +912,8 @@ fn append_edge_fragments(
     output: &mut Vec<ProjectedEdgeSegment>,
 ) -> Result<(), SphericalMeshError> {
     let segment_count_before = output.len();
-    let [start, end] = angular_edge(endpoints, projection.central_meridian());
+    let [start, end] = angular_edge(endpoints, projection.central_meridian())
+        .ok_or(SphericalMeshError::InvalidEdgeGeometry { edge })?;
     if end.longitude > PI {
         let intersection = arc_intersection(start, end, PI, projection.central_meridian())
             .ok_or(SphericalMeshError::InvalidEdgeGeometry { edge })?;
@@ -826,10 +1014,12 @@ mod tests {
         SphericalProjectionKind,
     };
     use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
-    use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
+    use crate::world::{CellId, EdgeId, Meters, RootSeed, SphericalSpaceSpec};
 
     use super::{
-        angular_fan_polygon, PreparedProjectedMap, SphericalMeshBudgets, SphericalMeshError,
+        angular_edge, angular_fan_polygon, append_edge_fragments, project_angular,
+        split_polygon_at_seam, triangulate_fragment, AngularVertex, PreparedProjectedMap,
+        ProjectedMapVertex, SphericalMeshBudgets, SphericalMeshError,
     };
 
     const RADIUS: f64 = 6_371_000.0;
@@ -914,6 +1104,284 @@ mod tests {
                 (cell.id, (non_seam, seam, pole))
             })
             .collect()
+    }
+
+    fn angular_vertex(projected: [f64; 2]) -> AngularVertex {
+        let longitude = projected[0] * PI;
+        let latitude = projected[1] * FRAC_PI_2;
+        AngularVertex {
+            direction: direction(longitude, latitude),
+            latitude,
+            longitude,
+        }
+    }
+
+    fn polygon_area(points: &[[f64; 2]]) -> f64 {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(start, end)| start[0] * end[1] - end[0] * start[1])
+            .sum::<f64>()
+            * 0.5
+    }
+
+    fn cross_2d(start: [f64; 2], end: [f64; 2], point: [f64; 2]) -> f64 {
+        (end[0] - start[0]) * (point[1] - start[1]) - (end[1] - start[1]) * (point[0] - start[0])
+    }
+
+    fn line_intersection(
+        start: [f64; 2],
+        end: [f64; 2],
+        clip_start: [f64; 2],
+        clip_end: [f64; 2],
+    ) -> [f64; 2] {
+        let start_side = cross_2d(clip_start, clip_end, start);
+        let end_side = cross_2d(clip_start, clip_end, end);
+        let amount = start_side / (start_side - end_side);
+        [
+            start[0] + (end[0] - start[0]) * amount,
+            start[1] + (end[1] - start[1]) * amount,
+        ]
+    }
+
+    fn triangle_intersection_area(first: [[f64; 2]; 3], second: [[f64; 2]; 3]) -> f64 {
+        let mut intersection = first.to_vec();
+        for edge in 0..3 {
+            let clip_start = second[edge];
+            let clip_end = second[(edge + 1) % 3];
+            let mut clipped = Vec::new();
+            let mut previous = *intersection.last().unwrap_or(&first[0]);
+            let mut previous_inside = cross_2d(clip_start, clip_end, previous) >= -1.0e-14;
+            for &current in &intersection {
+                let current_inside = cross_2d(clip_start, clip_end, current) >= -1.0e-14;
+                if previous_inside != current_inside {
+                    clipped.push(line_intersection(previous, current, clip_start, clip_end));
+                }
+                if current_inside {
+                    clipped.push(current);
+                }
+                previous = current;
+                previous_inside = current_inside;
+            }
+            intersection = clipped;
+            if intersection.is_empty() {
+                return 0.0;
+            }
+        }
+        polygon_area(&intersection).abs()
+    }
+
+    fn assert_exact_area_partition(
+        polygon: &[[f64; 2]],
+        vertices: &[ProjectedMapVertex],
+        indices: &[u32],
+    ) {
+        let triangles = indices
+            .chunks_exact(3)
+            .map(|indices| {
+                [indices[0], indices[1], indices[2]].map(|index| {
+                    let point = vertices[index as usize].position();
+                    [point.x(), point.y()]
+                })
+            })
+            .collect::<Vec<_>>();
+        let expected_area = polygon_area(polygon).abs();
+        let triangle_area = triangles
+            .iter()
+            .map(|triangle| polygon_area(triangle))
+            .sum::<f64>();
+        let tolerance = 2.0e-12 * expected_area.max(1.0);
+        assert!(
+            (triangle_area - expected_area).abs() <= tolerance,
+            "triangle area {triangle_area} does not partition polygon area {expected_area}"
+        );
+        assert!(triangles
+            .iter()
+            .all(|triangle| polygon_area(triangle) > 0.0));
+        for first in 0..triangles.len() {
+            for second in first + 1..triangles.len() {
+                assert!(
+                    triangle_intersection_area(triangles[first], triangles[second]) <= tolerance,
+                    "triangles {first} and {second} overlap in their interiors"
+                );
+            }
+        }
+    }
+
+    fn assert_fragment_partition(fragment: &[AngularVertex], projection: SphericalProjection) {
+        let polygon = fragment
+            .iter()
+            .map(|&vertex| {
+                let point = project_angular(vertex, projection).unwrap();
+                [point.x(), point.y()]
+            })
+            .collect::<Vec<_>>();
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        triangulate_fragment(
+            fragment,
+            CellId::from_raw(9),
+            projection,
+            projection.bounds(),
+            SphericalMeshBudgets::DEFAULT,
+            &mut vertices,
+            &mut indices,
+        )
+        .unwrap();
+        assert_exact_area_partition(&polygon, &vertices, &indices);
+    }
+
+    #[test]
+    fn concave_projected_fragment_is_partitioned_without_overlap() {
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.0).unwrap();
+        let fragment = [
+            [0.45, -0.6],
+            [0.0, 0.0],
+            [0.45, 0.6],
+            [-0.45, 0.6],
+            [-0.45, -0.6],
+        ]
+        .map(angular_vertex);
+
+        assert_fragment_partition(&fragment, projection);
+        let mut clockwise = fragment;
+        clockwise.reverse();
+        assert_fragment_partition(&clockwise, projection);
+    }
+
+    #[test]
+    fn self_intersecting_projected_fragment_is_rejected() {
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.0).unwrap();
+        let fragment = [[-0.4, -0.4], [0.4, 0.4], [-0.4, 0.4], [0.4, -0.4]].map(angular_vertex);
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        assert!(matches!(
+            triangulate_fragment(
+                &fragment,
+                CellId::from_raw(13),
+                projection,
+                projection.bounds(),
+                SphericalMeshBudgets::DEFAULT,
+                &mut vertices,
+                &mut indices,
+            ),
+            Err(SphericalMeshError::InvalidCellGeometry { cell })
+                if cell == CellId::from_raw(13)
+        ));
+        assert!(vertices.is_empty());
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn generated_high_latitude_seam_fragments_are_exact_area_partitions() {
+        let surface = surface(162);
+        let mut checked = 0_usize;
+        for kind in [
+            SphericalProjectionKind::EqualEarth,
+            SphericalProjectionKind::Equirectangular,
+        ] {
+            for central_meridian in [0.0, FRAC_PI_2, PI - 1.0e-9] {
+                let projection = SphericalProjection::new(kind, central_meridian).unwrap();
+                for cell in surface.cells() {
+                    for side in 0..cell.boundary_vertices.len() {
+                        let endpoints =
+                            [side, (side + 1) % cell.boundary_vertices.len()].map(|side| {
+                                surface
+                                    .vertex(cell.boundary_vertices[side])
+                                    .unwrap()
+                                    .position
+                            });
+                        let fan = angular_fan_polygon(
+                            [cell.centroid, endpoints[0], endpoints[1]],
+                            central_meridian,
+                        );
+                        let fragments =
+                            split_polygon_at_seam(&fan, central_meridian, cell.id).unwrap();
+                        if fragments.len() > 1
+                            && fan.iter().any(|vertex| vertex.latitude.abs() > 0.9)
+                        {
+                            for fragment in fragments {
+                                assert_fragment_partition(&fragment, projection);
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "fixture must exercise high-latitude seam fragments"
+        );
+    }
+
+    #[test]
+    fn exact_pole_edges_use_incident_arc_longitudes_and_near_poles_do_not() {
+        for kind in [
+            SphericalProjectionKind::EqualEarth,
+            SphericalProjectionKind::Equirectangular,
+        ] {
+            let projection = SphericalProjection::new(kind, 0.3).unwrap();
+            for latitude_sign in [-1.0, 1.0] {
+                let pole = UnitVector3::new(0.0, 0.0, latitude_sign).unwrap();
+                let incident = direction(1.1, latitude_sign * 1.2);
+                let companion = direction(1.3, latitude_sign * 1.1);
+                let fill_pole = project_angular(
+                    angular_fan_polygon([pole, incident, companion], 0.3)[0],
+                    projection,
+                )
+                .unwrap();
+
+                for endpoints in [[pole, incident], [incident, pole]] {
+                    let mut segments = Vec::new();
+                    append_edge_fragments(
+                        endpoints,
+                        EdgeId::from_raw(7),
+                        projection,
+                        projection.bounds(),
+                        SphericalMeshBudgets::DEFAULT,
+                        &mut segments,
+                    )
+                    .unwrap();
+                    assert_eq!(segments.len(), 1);
+                    let pole_point = [segments[0].start(), segments[0].end()]
+                        .into_iter()
+                        .find(|point| (point.y() - fill_pole.y()).abs() <= 2.0e-12)
+                        .unwrap();
+                    assert!((pole_point.x() - fill_pole.x()).abs() <= 2.0e-12);
+                }
+
+                let near_pole = direction(-1.0, latitude_sign * (FRAC_PI_2 - 1.0e-8));
+                let expected = projection.forward(near_pole).unwrap();
+                let angular =
+                    angular_edge([near_pole, incident], projection.central_meridian()).unwrap();
+                let actual = project_angular(angular[0], projection).unwrap();
+                assert!((actual.x() - expected.x()).abs() <= 2.0e-12);
+                assert!((actual.y() - expected.y()).abs() <= 2.0e-12);
+            }
+
+            let mut segments = Vec::new();
+            assert!(matches!(
+                append_edge_fragments(
+                    [
+                        UnitVector3::new(0.0, 0.0, 1.0).unwrap(),
+                        UnitVector3::new(0.0, 0.0, -1.0).unwrap(),
+                    ],
+                    EdgeId::from_raw(11),
+                    projection,
+                    projection.bounds(),
+                    SphericalMeshBudgets::DEFAULT,
+                    &mut segments,
+                ),
+                Err(SphericalMeshError::InvalidEdgeGeometry {
+                    edge
+                }) if edge == EdgeId::from_raw(11)
+            ));
+            assert!(segments.is_empty());
+        }
     }
 
     #[test]
