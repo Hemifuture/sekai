@@ -25,9 +25,10 @@ pub use field::{
 pub use field_layers::{
     classify_spherical_channel, prepare_edge_field, prepare_spherical_field_layers,
     prepare_vector_field, update_spherical_field_layers, FieldLayerError, FieldLayerRevisions,
-    PreparedEdgeField, PreparedFieldLayers, PreparedOverlayKind, PreparedSphericalOverlay,
-    PreparedVectorField, SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
-    VectorGlyphLod,
+    GlobeVectorGlyph, GlyphLodKey, MapVectorGlyph, PreparedEdgeField, PreparedFieldLayers,
+    PreparedOverlayKind, PreparedSphericalOverlay, PreparedVectorField, PreparedVectorGlyphs,
+    SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
+    VectorAnimationUniform, VectorGlyphLod,
 };
 #[cfg(test)]
 pub(crate) use field_layers::{

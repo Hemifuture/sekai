@@ -1,7 +1,7 @@
 use sekai::view::{
-    classify_spherical_channel, DiagnosticScope, DisplayRangeMode, FieldLayerError,
+    classify_spherical_channel, DiagnosticScope, DisplayRangeMode, FieldLayerError, GlyphLodKey,
     PreparedOverlayKind, SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
-    VectorGlyphLod,
+    VectorAnimationUniform, VectorGlyphLod,
 };
 use sekai::world::fields::{FieldDomain, FieldValueType};
 use sekai::world::natural::{
@@ -110,4 +110,66 @@ fn vector_display_speed_rejects_non_finite_and_out_of_range_values() {
     assert_eq!(state.vector_display_speed(), 0.0);
     state.set_vector_display_speed(4.0).unwrap();
     assert_eq!(state.vector_display_speed(), 4.0);
+}
+
+#[test]
+fn glyph_lod_keys_keep_the_exact_nested_sampling_denominators() {
+    assert_eq!(GlyphLodKey::Low.denominator(), 16);
+    assert_eq!(GlyphLodKey::Medium.denominator(), 8);
+    assert_eq!(GlyphLodKey::High.denominator(), 4);
+
+    for score in 0_u64..256 {
+        let low = GlyphLodKey::Low.includes_score(score);
+        let medium = GlyphLodKey::Medium.includes_score(score);
+        let high = GlyphLodKey::High.includes_score(score);
+        assert!(!low || medium, "low score {score} must remain in medium");
+        assert!(!medium || high, "medium score {score} must remain in high");
+    }
+}
+
+#[test]
+fn zoom_lod_changes_only_at_predefined_discrete_thresholds() {
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0),
+        GlyphLodKey::Low
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.99),
+        GlyphLodKey::Low
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0),
+        GlyphLodKey::Medium
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0),
+        GlyphLodKey::High
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.99),
+        GlyphLodKey::Medium
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 2.0),
+        GlyphLodKey::High
+    );
+    assert_eq!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::High, 0.5),
+        GlyphLodKey::High
+    );
+}
+
+#[test]
+fn vector_animation_phase_is_bounded_display_state_not_physical_time() {
+    let mut animation = VectorAnimationUniform::new(0.9);
+    animation.advance(0.25, 2.0, false);
+    assert!((animation.phase() - 0.4).abs() < 1.0e-6);
+
+    let paused = animation;
+    animation.advance(1000.0, 4.0, true);
+    assert_eq!(animation, paused);
+
+    animation.advance(1.0, 40.0, false);
+    assert!((animation.phase() - 0.4).abs() < 1.0e-6);
+    assert_eq!(animation.display_semantics(), "display-only");
 }

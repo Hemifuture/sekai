@@ -69,6 +69,28 @@ impl GlobeVertex {
     }
 }
 
+/// One authoritative edge segment retained on the display unit sphere for annotations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GlobeEdgeSegment {
+    start: [f32; 3],
+    end: [f32; 3],
+    edge: EdgeId,
+}
+
+impl GlobeEdgeSegment {
+    pub(crate) const fn start(self) -> [f32; 3] {
+        self.start
+    }
+
+    pub(crate) const fn end(self) -> [f32; 3] {
+        self.end
+    }
+
+    pub(crate) const fn edge(self) -> EdgeId {
+        self.edge
+    }
+}
+
 /// One seam-safe projected fragment of an authoritative spherical edge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProjectedEdgeSegment {
@@ -219,6 +241,8 @@ pub enum SphericalMeshError {
 pub struct PreparedGlobeMesh {
     source: SphericalPresentationSource,
     cell_count: usize,
+    cell_centroids: Vec<UnitVector3>,
+    edge_segments: Vec<GlobeEdgeSegment>,
     vertices: Vec<GlobeVertex>,
     indices: Vec<u32>,
 }
@@ -240,7 +264,7 @@ impl PreparedGlobeMesh {
                 surface: surface_ref,
             });
         }
-        budgets.check_counts(surface.cells().len(), 0, 0, 0)?;
+        budgets.check_counts(surface.cells().len(), 0, 0, surface.edges().len())?;
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -285,11 +309,38 @@ impl PreparedGlobeMesh {
                 indices.extend([first_index, second_index, third_index]);
             }
         }
-        budgets.check_counts(surface.cells().len(), vertices.len(), indices.len(), 0)?;
+        let cell_centroids = surface.cells().iter().map(|cell| cell.centroid).collect();
+        let edge_segments = surface
+            .edges()
+            .iter()
+            .map(|edge| {
+                let endpoints = edge.vertices.map(|vertex| {
+                    surface
+                        .vertex(vertex)
+                        .expect("validated edge vertex must exist")
+                        .position
+                        .components()
+                        .map(|component| component as f32)
+                });
+                GlobeEdgeSegment {
+                    start: endpoints[0],
+                    end: endpoints[1],
+                    edge: edge.id,
+                }
+            })
+            .collect::<Vec<_>>();
+        budgets.check_counts(
+            surface.cells().len(),
+            vertices.len(),
+            indices.len(),
+            edge_segments.len(),
+        )?;
 
         Ok(Self {
             source,
             cell_count: surface.cells().len(),
+            cell_centroids,
+            edge_segments,
             vertices,
             indices,
         })
@@ -313,6 +364,19 @@ impl PreparedGlobeMesh {
     /// Returns checked triangle indices in stable cell/fan order.
     pub fn indices(&self) -> &[u32] {
         &self.indices
+    }
+
+    pub(crate) fn cell_centroids(&self) -> &[UnitVector3] {
+        &self.cell_centroids
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_cell_centroid_for_test(&mut self, cell: CellId, centroid: UnitVector3) {
+        self.cell_centroids[cell.raw() as usize] = centroid;
+    }
+
+    pub(crate) fn edge_segments(&self) -> &[GlobeEdgeSegment] {
+        &self.edge_segments
     }
 }
 

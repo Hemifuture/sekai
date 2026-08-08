@@ -5,7 +5,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use super::renderer::{SphericalFrameUniform, SphericalGpuPacket};
 use super::{SphericalFieldRenderer, SphericalRenderMode};
-use crate::view::{GlobeCamera, MapCamera};
+use crate::view::{GlobeCamera, MapCamera, VectorAnimationUniform};
 
 /// Egui-wgpu callback for one source-bound spherical fill packet and active camera.
 pub struct SphericalPaintCallback {
@@ -14,6 +14,7 @@ pub struct SphericalPaintCallback {
     map_camera: MapCamera,
     globe_camera: GlobeCamera,
     viewport_pixels: [u32; 2],
+    vector_animation: VectorAnimationUniform,
     prepared_generation: AtomicU64,
 }
 
@@ -32,8 +33,15 @@ impl SphericalPaintCallback {
             map_camera,
             globe_camera,
             viewport_pixels,
+            vector_animation: VectorAnimationUniform::default(),
             prepared_generation: AtomicU64::new(0),
         }
+    }
+
+    /// Replaces the display-only vector highlight phase captured for this paint.
+    pub fn with_vector_animation(mut self, animation: VectorAnimationUniform) -> Self {
+        self.vector_animation = animation;
+        self
     }
 }
 
@@ -52,13 +60,17 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
             return Vec::new();
         };
         let uniform = match self.mode {
-            SphericalRenderMode::Map => {
-                SphericalFrameUniform::for_map(&self.packet, self.map_camera, self.viewport_pixels)
-            }
-            SphericalRenderMode::Globe => SphericalFrameUniform::for_globe(
+            SphericalRenderMode::Map => SphericalFrameUniform::for_map_with_animation(
+                &self.packet,
+                self.map_camera,
+                self.viewport_pixels,
+                self.vector_animation,
+            ),
+            SphericalRenderMode::Globe => SphericalFrameUniform::for_globe_with_animation(
                 &self.packet,
                 self.globe_camera,
                 self.viewport_pixels,
+                self.vector_animation,
             ),
         };
         let result = uniform.and_then(|uniform| {

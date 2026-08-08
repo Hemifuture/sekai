@@ -11,10 +11,12 @@ use super::palette::prepare_scalar_or_category_field;
 use super::{
     built_in_palette, DiagnosticScope, DisplayPrepareError, DisplayRangeMode, DisplayRevision,
     DisplayRevisionClock, FieldCatalog, FieldView, LinearRgba, OwnedViewDiagnostic, PaletteId,
-    PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind, ResolvedDisplayRange,
-    SphericalPresentationSource,
+    PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind, PreparedGlobeMesh,
+    PreparedProjectedMap, ResolvedDisplayRange, SphericalPresentationSource, SphericalProjection,
+    SphericalProjectionError, ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldPaletteHint, FieldValueType};
+use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
 use crate::world::{CellId, EdgeId};
 
 #[cfg(test)]
@@ -82,12 +84,122 @@ pub enum VectorGlyphLod {
     High,
 }
 
+/// A discrete, cacheable vector-glyph density selected from stable zoom thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlyphLodKey {
+    /// One source-keyed cell in sixteen, plus the selected cell.
+    Low,
+    /// One source-keyed cell in eight, plus the selected cell.
+    #[default]
+    Medium,
+    /// One source-keyed cell in four, plus the selected cell.
+    High,
+}
+
+impl GlyphLodKey {
+    /// Returns the exact stable sampling denominator for this density.
+    pub const fn denominator(self) -> u64 {
+        match self {
+            Self::Low => 16,
+            Self::Medium => 8,
+            Self::High => 4,
+        }
+    }
+
+    /// Tests one already-computed stable score without introducing runtime randomness.
+    pub const fn includes_score(self, score: u64) -> bool {
+        score % self.denominator() == 0
+    }
+
+    /// Resolves explicit density plus zoom through the fixed `2x` and `4x` thresholds.
+    ///
+    /// Zoom can only add glyphs. It never replaces an already-visible stable identity.
+    pub fn for_zoom(base: VectorGlyphLod, zoom: f64) -> Self {
+        let zoom = if zoom.is_finite() { zoom.max(0.0) } else { 0.0 };
+        match base {
+            VectorGlyphLod::High => Self::High,
+            VectorGlyphLod::Medium if zoom >= 2.0 => Self::High,
+            VectorGlyphLod::Medium => Self::Medium,
+            VectorGlyphLod::Low if zoom >= 4.0 => Self::High,
+            VectorGlyphLod::Low if zoom >= 2.0 => Self::Medium,
+            VectorGlyphLod::Low => Self::Low,
+        }
+    }
+}
+
+impl From<VectorGlyphLod> for GlyphLodKey {
+    fn from(value: VectorGlyphLod) -> Self {
+        match value {
+            VectorGlyphLod::Low => Self::Low,
+            VectorGlyphLod::Medium => Self::Medium,
+            VectorGlyphLod::High => Self::High,
+        }
+    }
+}
+
+/// Fixed-size display-only vector animation state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VectorAnimationUniform {
+    phase: f32,
+}
+
+impl VectorAnimationUniform {
+    /// Creates a phase normalized modulo one. Non-finite inputs start at zero.
+    pub fn new(phase: f32) -> Self {
+        Self {
+            phase: if phase.is_finite() {
+                phase.rem_euclid(1.0)
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Returns the moving-highlight phase in `[0, 1)`.
+    pub const fn phase(self) -> f32 {
+        self.phase
+    }
+
+    /// Advances only the display highlight, clamping speed to the supported readability range.
+    pub fn advance(&mut self, frame_delta_seconds: f32, display_speed: f32, paused: bool) {
+        if paused || !frame_delta_seconds.is_finite() || frame_delta_seconds <= 0.0 {
+            return;
+        }
+        let speed = if display_speed.is_finite() {
+            display_speed.clamp(0.0, 4.0)
+        } else {
+            0.0
+        };
+        self.phase = (self.phase + frame_delta_seconds * speed).rem_euclid(1.0);
+    }
+
+    /// Labels this phase as display-only rather than physical time.
+    pub const fn display_semantics(self) -> &'static str {
+        "display-only"
+    }
+}
+
+impl Default for VectorAnimationUniform {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
 /// Errors from spherical field-layer display controls.
 #[derive(Debug, Clone, Copy, PartialEq, Error)]
 pub enum FieldLayerError {
     /// The vector animation display speed is non-finite or outside its supported range.
     #[error("vector display speed must be finite and within 0.0..=4.0, got {0}")]
     InvalidVectorDisplaySpeed(f32),
+    /// Source-bound glyph inputs do not all describe the same authoritative world.
+    #[error("{resource} has a different spherical presentation source")]
+    VectorGlyphSourceMismatch { resource: &'static str },
+    /// Vector glyph data does not match the authoritative cell allocation.
+    #[error("vector glyph field cardinality {actual} does not match {expected} cells")]
+    VectorGlyphCardinalityMismatch { expected: usize, actual: usize },
+    /// A selected vector-glyph cell lies outside the authoritative allocation.
+    #[error("selected vector glyph cell {cell:?} lies outside {cell_count} cells")]
+    SelectedVectorCellOutOfRange { cell: CellId, cell_count: usize },
 }
 
 /// The renderer-neutral kind of an optional spherical overlay packet.
@@ -177,6 +289,364 @@ impl PreparedVectorField {
     pub const fn display_range(&self) -> ResolvedDisplayRange {
         self.display_range
     }
+
+    /// Returns the number of authoritative cell vectors retained for inspection.
+    pub fn len(&self) -> usize {
+        self.components.len()
+    }
+
+    /// Returns whether this field contains no authoritative cell vectors.
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+}
+
+/// One projected-map vector arrow with authoritative identity and display encodings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapVectorGlyph {
+    cell: CellId,
+    origin: [f32; 2],
+    direction: [f32; 2],
+    components: [f32; 2],
+    magnitude: f32,
+    color_position: f32,
+    length: f32,
+    cell_spacing: f32,
+}
+
+impl MapVectorGlyph {
+    /// Returns the authoritative cell represented by this display arrow.
+    pub const fn cell(self) -> CellId {
+        self.cell
+    }
+
+    /// Returns the projection-local arrow origin.
+    pub const fn origin(self) -> [f32; 2] {
+        self.origin
+    }
+
+    /// Returns the normalized projected direction.
+    pub const fn direction(self) -> [f32; 2] {
+        self.direction
+    }
+
+    /// Returns the authoritative canonical east/north components.
+    pub const fn components(self) -> [f32; 2] {
+        self.components
+    }
+
+    /// Returns the authoritative vector magnitude.
+    pub const fn magnitude(self) -> f32 {
+        self.magnitude
+    }
+
+    /// Returns the shared normalized magnitude used for palette sampling.
+    pub const fn color_position(self) -> f32 {
+        self.color_position
+    }
+
+    /// Returns the projection-local display length.
+    pub const fn length(self) -> f32 {
+        self.length
+    }
+
+    /// Returns display length as a fraction of the active LOD cell spacing.
+    pub fn length_fraction(self) -> f32 {
+        self.length / self.cell_spacing
+    }
+}
+
+/// One unit-globe tangent vector arrow with authoritative identity and display encodings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlobeVectorGlyph {
+    cell: CellId,
+    radial: UnitVector3,
+    direction: [f32; 3],
+    components: [f32; 2],
+    magnitude: f32,
+    color_position: f32,
+    length: f32,
+    cell_spacing: f32,
+}
+
+impl GlobeVectorGlyph {
+    /// Returns the authoritative cell represented by this display arrow.
+    pub const fn cell(self) -> CellId {
+        self.cell
+    }
+
+    /// Returns the exact unit radial used as the arrow origin.
+    pub const fn radial(self) -> UnitVector3 {
+        self.radial
+    }
+
+    /// Returns the normalized tangent direction reconstructed from east/north components.
+    pub const fn direction(self) -> [f32; 3] {
+        self.direction
+    }
+
+    /// Returns the authoritative canonical east/north components.
+    pub const fn components(self) -> [f32; 2] {
+        self.components
+    }
+
+    /// Returns the authoritative vector magnitude.
+    pub const fn magnitude(self) -> f32 {
+        self.magnitude
+    }
+
+    /// Returns the shared normalized magnitude used for palette sampling.
+    pub const fn color_position(self) -> f32 {
+        self.color_position
+    }
+
+    /// Returns the angular display length on the unit sphere.
+    pub const fn length(self) -> f32 {
+        self.length
+    }
+
+    /// Returns display length as a fraction of the active LOD cell spacing.
+    pub fn length_fraction(self) -> f32 {
+        self.length / self.cell_spacing
+    }
+}
+
+/// Source-bound deterministic map/globe glyph instances for one vector field and LOD key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedVectorGlyphs {
+    source: SphericalPresentationSource,
+    lod_key: GlyphLodKey,
+    sampled_cells: Arc<[CellId]>,
+    map: Arc<[MapVectorGlyph]>,
+    globe: Arc<[GlobeVectorGlyph]>,
+    diagnostics: Arc<[OwnedViewDiagnostic]>,
+}
+
+impl PreparedVectorGlyphs {
+    /// Builds nested stable glyph identities and mode-specific directions once.
+    pub fn build(
+        source: &SphericalPresentationSource,
+        map: &PreparedProjectedMap,
+        globe: &PreparedGlobeMesh,
+        field: &PreparedVectorField,
+        selected_cell: Option<CellId>,
+        lod_key: GlyphLodKey,
+    ) -> Result<Self, FieldLayerError> {
+        if map.source() != source {
+            return Err(FieldLayerError::VectorGlyphSourceMismatch {
+                resource: "projected map",
+            });
+        }
+        if globe.source() != source {
+            return Err(FieldLayerError::VectorGlyphSourceMismatch {
+                resource: "unit globe",
+            });
+        }
+        let cell_count = map.cell_count();
+        if globe.cell_count() != cell_count || field.len() != cell_count {
+            return Err(FieldLayerError::VectorGlyphCardinalityMismatch {
+                expected: cell_count,
+                actual: field.len(),
+            });
+        }
+        if let Some(cell) = selected_cell {
+            if cell.raw() as usize >= cell_count {
+                return Err(FieldLayerError::SelectedVectorCellOutOfRange { cell, cell_count });
+            }
+        }
+        let map_area = (map.bounds().max_x() - map.bounds().min_x())
+            * (map.bounds().max_y() - map.bounds().min_y());
+        let density_scale = lod_key.denominator() as f64 / cell_count as f64;
+        let map_spacing = (map_area * density_scale).sqrt() as f32;
+        let globe_spacing = (std::f64::consts::TAU * 2.0 * density_scale).sqrt() as f32;
+        let mut sampled_cells = Vec::new();
+        let mut map_glyphs = Vec::new();
+        let mut globe_glyphs = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for (index, (&components, &magnitude)) in field
+            .components()
+            .iter()
+            .zip(field.magnitudes())
+            .enumerate()
+        {
+            let cell = CellId::from_raw(index as u32);
+            if selected_cell != Some(cell)
+                && !lod_key.includes_score(vector_glyph_score(source, cell))
+            {
+                continue;
+            }
+            sampled_cells.push(cell);
+            if components == [0.0, 0.0] {
+                continue;
+            }
+            let radial = globe.cell_centroids()[index];
+            let color_position = normalize_magnitude(field.display_range(), magnitude);
+            let mut pair = prepare_vector_glyph_pair(
+                cell,
+                radial,
+                components,
+                magnitude,
+                color_position,
+                map_spacing,
+                globe_spacing,
+                map.projection(),
+            );
+            if let Some(mut diagnostic) = pair.diagnostic.take() {
+                diagnostic.field_id = Some(field.field_id().clone());
+                diagnostics.push(diagnostic);
+            }
+            if let Some(glyph) = pair.map {
+                map_glyphs.push(glyph);
+            }
+            if let Some(glyph) = pair.globe {
+                globe_glyphs.push(glyph);
+            }
+        }
+
+        Ok(Self {
+            source: source.clone(),
+            lod_key,
+            sampled_cells: Arc::from(sampled_cells),
+            map: Arc::from(map_glyphs),
+            globe: Arc::from(globe_glyphs),
+            diagnostics: Arc::from(diagnostics),
+        })
+    }
+
+    /// Returns the source identity from which every instance was derived.
+    pub const fn source(&self) -> &SphericalPresentationSource {
+        &self.source
+    }
+
+    /// Returns the discrete cache key used for this nested subset.
+    pub const fn lod_key(&self) -> GlyphLodKey {
+        self.lod_key
+    }
+
+    /// Returns sampled identities, including selected and zero-vector cells.
+    pub fn sampled_cells(&self) -> &[CellId] {
+        &self.sampled_cells
+    }
+
+    /// Returns usable projected-map direction glyphs.
+    pub fn map(&self) -> &[MapVectorGlyph] {
+        &self.map
+    }
+
+    /// Returns usable unit-globe tangent glyphs.
+    pub fn globe(&self) -> &[GlobeVectorGlyph] {
+        &self.globe
+    }
+
+    /// Returns display-only diagnostics for map Jacobian omissions.
+    pub fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
+        &self.diagnostics
+    }
+}
+
+struct PreparedVectorGlyphPair {
+    map: Option<MapVectorGlyph>,
+    globe: Option<GlobeVectorGlyph>,
+    diagnostic: Option<OwnedViewDiagnostic>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_vector_glyph_pair(
+    cell: CellId,
+    radial: UnitVector3,
+    components: [f32; 2],
+    magnitude: f32,
+    color_position: f32,
+    map_spacing: f32,
+    globe_spacing: f32,
+    projection: SphericalProjection,
+) -> PreparedVectorGlyphPair {
+    let (east, north) = canonical_east_north_basis(radial);
+    let tangent = [
+        east[0] * f64::from(components[0]) + north[0] * f64::from(components[1]),
+        east[1] * f64::from(components[0]) + north[1] * f64::from(components[1]),
+        east[2] * f64::from(components[0]) + north[2] * f64::from(components[1]),
+    ];
+    let tangent_length = tangent
+        .into_iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    let length_fraction = 0.35 + 0.65 * color_position;
+    let globe = (tangent_length.is_finite() && tangent_length > 0.0).then(|| GlobeVectorGlyph {
+        cell,
+        radial,
+        direction: tangent.map(|value| (value / tangent_length) as f32),
+        components,
+        magnitude,
+        color_position,
+        length: globe_spacing * length_fraction,
+        cell_spacing: globe_spacing,
+    });
+    let mapped =
+        projection.map_local_vector(radial, [f64::from(components[0]), f64::from(components[1])]);
+    let (map, diagnostic) = match mapped {
+        Ok(Some(direction)) => match projection.forward(radial) {
+            Ok(origin) => (
+                Some(MapVectorGlyph {
+                    cell,
+                    origin: [origin.x() as f32, origin.y() as f32],
+                    direction: [direction.x() as f32, direction.y() as f32],
+                    components,
+                    magnitude,
+                    color_position,
+                    length: map_spacing * length_fraction,
+                    cell_spacing: map_spacing,
+                }),
+                None,
+            ),
+            Err(_) => (None, None),
+        },
+        Err(SphericalProjectionError::ProjectionJacobianDegenerate) => (
+            None,
+            Some(OwnedViewDiagnostic {
+                severity: ViewDiagnosticSeverity::Warning,
+                code: "display.vector_projection_jacobian_degenerate".into(),
+                field_id: None,
+                cell_id: Some(cell),
+                message:
+                    "map vector glyph omitted because the local projection Jacobian is degenerate"
+                        .into(),
+            }),
+        ),
+        Ok(None) | Err(_) => (None, None),
+    };
+    PreparedVectorGlyphPair {
+        map,
+        globe,
+        diagnostic,
+    }
+}
+
+fn normalize_magnitude(range: ResolvedDisplayRange, magnitude: f32) -> f32 {
+    let (min, max) = range.bounds();
+    if max == min {
+        0.5
+    } else {
+        ((magnitude - min) / (max - min)).clamp(0.0, 1.0)
+    }
+}
+
+fn vector_glyph_score(source: &SphericalPresentationSource, cell: CellId) -> u64 {
+    let mut hasher = blake3::Hasher::new_keyed(source.build_result_hash().as_bytes());
+    hasher.update(b"sekai.spherical-vector-glyph-lod.v1\0");
+    hasher.update(&source.root_seed().raw().to_le_bytes());
+    let surface_ref: SurfaceRef = source.surface_ref();
+    hasher.update(&surface_ref.fingerprint());
+    hasher.update(&source.graph_contract_version().to_le_bytes());
+    hasher.update(&cell.raw().to_le_bytes());
+    let bytes = hasher.finalize();
+    u64::from_le_bytes(
+        bytes.as_bytes()[..8]
+            .try_into()
+            .expect("BLAKE3 prefix is eight bytes"),
+    )
 }
 
 /// The optional non-fill payload for one spherical presentation packet.
@@ -213,6 +683,8 @@ pub struct FieldLayerRevisions {
     pub fill_palette: DisplayRevision,
     /// Optional overlay palette entries.
     pub overlay_palette: DisplayRevision,
+    /// Source-bound vector glyph instances selected by cell and discrete LOD.
+    pub vector_glyphs: DisplayRevision,
 }
 
 /// One complete geometry-free packet shared by spherical map and globe presenters.
@@ -237,6 +709,8 @@ struct PreparedLayerState {
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostic_scope: DiagnosticScope,
+    selected_cell: Option<CellId>,
+    glyph_lod_key: GlyphLodKey,
 }
 
 impl From<&SphericalFieldDisplayState> for PreparedLayerState {
@@ -247,6 +721,11 @@ impl From<&SphericalFieldDisplayState> for PreparedLayerState {
             range_mode: state.range_mode,
             palette_override: state.palette_override,
             diagnostic_scope: state.diagnostic_scope,
+            selected_cell: match state.selected_entity {
+                Some(SelectedSurfaceEntity::Cell(cell)) => Some(cell),
+                Some(SelectedSurfaceEntity::Edge(_)) | None => None,
+            },
+            glyph_lod_key: state.vector_lod.into(),
         }
     }
 }
@@ -315,6 +794,16 @@ impl PreparedFieldLayers {
     /// Returns whether diagnostics are currently drawn.
     pub const fn diagnostics_enabled(&self) -> bool {
         self.diagnostics_enabled
+    }
+
+    /// Returns the selected cell forced into every vector-glyph LOD set.
+    pub const fn selected_vector_cell(&self) -> Option<CellId> {
+        self.prepared_state.selected_cell
+    }
+
+    /// Returns the discrete key controlling cached vector-glyph identities.
+    pub const fn glyph_lod_key(&self) -> GlyphLodKey {
+        self.prepared_state.glyph_lod_key
     }
 }
 
@@ -613,6 +1102,19 @@ pub fn update_spherical_field_layers<F>(
 where
     F: Fn(&FieldId) -> Option<DisplayRangeMode>,
 {
+    if current.source() != &source {
+        return prepare_spherical_field_layers(
+            source,
+            catalog,
+            cell_count,
+            edge_count,
+            diagnostics,
+            preferred_fill,
+            preferred_range,
+            state,
+            clock,
+        );
+    }
     let mut candidate_state = state.clone();
     let mut candidate_clock = clock.clone();
     reconcile_spherical_state(
@@ -683,6 +1185,9 @@ where
     } else {
         current.overlay_palette.clone()
     };
+    if vector_glyphs_need_rebuild(catalog, &current.prepared_state, &next_state) {
+        revisions.vector_glyphs = candidate_clock.issue()?;
+    }
     let packet = PreparedFieldLayers {
         source,
         fill,
@@ -1017,6 +1522,24 @@ fn overlay_palette_needs_preparation(
     current.overlay_field != next.overlay_field
 }
 
+fn vector_glyphs_need_rebuild(
+    catalog: &FieldCatalog<'_>,
+    current: &PreparedLayerState,
+    next: &PreparedLayerState,
+) -> bool {
+    if current.selected_cell == next.selected_cell && current.glyph_lod_key == next.glyph_lod_key {
+        return false;
+    }
+    next.overlay_field
+        .as_ref()
+        .and_then(|field| catalog.get(field))
+        .and_then(|entry| entry.view())
+        .is_some_and(|field| {
+            classify_spherical_channel(field.schema().domain, field.schema().value_type)
+                == Some(SphericalFieldChannel::VectorOverlay)
+        })
+}
+
 fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
     matches!(
         (palette, hint),
@@ -1048,6 +1571,7 @@ fn issue_all_revisions(
         diagnostics: clock.issue()?,
         fill_palette: clock.issue()?,
         overlay_palette: clock.issue()?,
+        vector_glyphs: clock.issue()?,
     })
 }
 
@@ -1124,5 +1648,467 @@ pub fn classify_spherical_channel(
             Some(SphericalFieldChannel::VectorOverlay)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod vector_glyph_tests {
+    use std::collections::BTreeSet;
+    use std::f64::consts::FRAC_PI_4;
+    use std::sync::Arc;
+
+    use super::{GlyphLodKey, PreparedVectorField, PreparedVectorGlyphs, ResolvedDisplayRange};
+    use crate::engine::BuildResultHash;
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::view::{
+        PreparedGlobeMesh, PreparedProjectedMap, SphericalMeshBudgets, SphericalPresentationSource,
+        SphericalProjection, SphericalProjectionKind,
+    };
+    use crate::world::fields::FieldId;
+    use crate::world::fields::{
+        DomainSizes, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain,
+        FieldPaletteHint, FieldRegistryBuilder, FieldSchema, FieldUnit, FieldValueType,
+        MissingValuePolicy, ValueRange,
+    };
+    use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
+    use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
+
+    fn glyph_fixture(seed: u64, selected: CellId, lod: GlyphLodKey) -> PreparedVectorGlyphs {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 42,
+        })
+        .unwrap();
+        let source = SphericalPresentationSource::new(
+            RootSeed::new(seed),
+            SurfaceRef::for_spherical(&surface),
+            BuildResultHash::new([seed as u8; 32]),
+            1,
+        );
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::Equirectangular, FRAC_PI_4).unwrap();
+        let map = Arc::new(
+            PreparedProjectedMap::build(
+                source.clone(),
+                &surface,
+                projection,
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap(),
+        );
+        let globe = Arc::new(
+            PreparedGlobeMesh::build(source.clone(), &surface, SphericalMeshBudgets::DEFAULT)
+                .unwrap(),
+        );
+        let mut components = (0..surface.cells().len())
+            .map(|index| [index as f32 + 1.0, 2.0 - index as f32 * 0.01])
+            .collect::<Vec<_>>();
+        components[0] = [0.0, 0.0];
+        let magnitudes = components
+            .iter()
+            .map(|value| value[0].hypot(value[1]))
+            .collect();
+        let field = PreparedVectorField {
+            field_id: FieldId::new("test.spherical", "vectors", 1).unwrap(),
+            components,
+            magnitudes,
+            display_range: ResolvedDisplayRange::new(0.0, 50.0).unwrap(),
+        };
+        PreparedVectorGlyphs::build(&source, &map, &globe, &field, Some(selected), lod).unwrap()
+    }
+
+    fn glyph_bytes(glyphs: &PreparedVectorGlyphs) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(glyphs.sampled_cells().len() as u64).to_le_bytes());
+        for cell in glyphs.sampled_cells() {
+            bytes.extend_from_slice(&cell.raw().to_le_bytes());
+        }
+        bytes.extend_from_slice(&(glyphs.map().len() as u64).to_le_bytes());
+        for glyph in glyphs.map() {
+            bytes.extend_from_slice(&glyph.cell().raw().to_le_bytes());
+            for value in glyph
+                .origin()
+                .into_iter()
+                .chain(glyph.direction())
+                .chain(glyph.components())
+                .chain([
+                    glyph.magnitude(),
+                    glyph.color_position(),
+                    glyph.length(),
+                    glyph.length_fraction(),
+                ])
+            {
+                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&(glyphs.globe().len() as u64).to_le_bytes());
+        for glyph in glyphs.globe() {
+            bytes.extend_from_slice(&glyph.cell().raw().to_le_bytes());
+            for value in glyph.radial().components() {
+                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+            for value in glyph
+                .direction()
+                .into_iter()
+                .chain(glyph.components())
+                .chain([
+                    glyph.magnitude(),
+                    glyph.color_position(),
+                    glyph.length(),
+                    glyph.length_fraction(),
+                ])
+            {
+                bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn source_keyed_lod_sets_are_deterministic_nested_unique_and_include_selection() {
+        for seed in [3, 17] {
+            for selected in [CellId::from_raw(0), CellId::from_raw(19)] {
+                let low = glyph_fixture(seed, selected, GlyphLodKey::Low);
+                let repeated = glyph_fixture(seed, selected, GlyphLodKey::Low);
+                let medium = glyph_fixture(seed, selected, GlyphLodKey::Medium);
+                let high = glyph_fixture(seed, selected, GlyphLodKey::High);
+
+                assert_eq!(glyph_bytes(&low), glyph_bytes(&repeated));
+                assert!(low.sampled_cells().contains(&selected));
+                assert!(medium.sampled_cells().contains(&selected));
+                assert!(high.sampled_cells().contains(&selected));
+                let low_set = low.sampled_cells().iter().copied().collect::<BTreeSet<_>>();
+                let medium_set = medium
+                    .sampled_cells()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let high_set = high
+                    .sampled_cells()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(low_set.len(), low.sampled_cells().len());
+                assert_eq!(medium_set.len(), medium.sampled_cells().len());
+                assert_eq!(high_set.len(), high.sampled_cells().len());
+                assert!(low_set.is_subset(&medium_set));
+                assert!(medium_set.is_subset(&high_set));
+            }
+        }
+    }
+
+    #[test]
+    fn globe_direction_uses_canonical_components_and_zero_has_no_direction_glyph() {
+        let glyphs = glyph_fixture(23, CellId::from_raw(0), GlyphLodKey::High);
+        assert!(glyphs.sampled_cells().contains(&CellId::from_raw(0)));
+        assert!(glyphs
+            .globe()
+            .iter()
+            .all(|glyph| glyph.cell() != CellId::from_raw(0)));
+        assert!(glyphs
+            .map()
+            .iter()
+            .all(|glyph| glyph.cell() != CellId::from_raw(0)));
+
+        let glyph = glyphs.globe().first().unwrap();
+        let (east, north) = canonical_east_north_basis(glyph.radial());
+        let [x, y] = glyph.components();
+        let expected = [
+            east[0] * f64::from(x) + north[0] * f64::from(y),
+            east[1] * f64::from(x) + north[1] * f64::from(y),
+            east[2] * f64::from(x) + north[2] * f64::from(y),
+        ];
+        let expected_length = expected
+            .into_iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        for (found, expected) in glyph.direction().into_iter().zip(expected) {
+            assert!((f64::from(found) - expected / expected_length).abs() < 2.0e-6);
+        }
+        let expected_fraction = 0.35 + 0.65 * glyph.color_position();
+        assert!((glyph.length_fraction() - expected_fraction).abs() < 1.0e-6);
+        let map = glyphs
+            .map()
+            .iter()
+            .find(|map| map.cell() == glyph.cell())
+            .expect("ordinary fixture cell has a usable map Jacobian");
+        assert_eq!(map.components(), glyph.components());
+        assert_eq!(map.magnitude(), glyph.magnitude());
+        assert_eq!(map.color_position(), glyph.color_position());
+        assert!((map.length_fraction() - expected_fraction).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn degenerate_map_jacobian_omits_only_map_glyph_and_emits_display_diagnostic() {
+        let radial = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0).unwrap();
+        let prepared = super::prepare_vector_glyph_pair(
+            CellId::from_raw(7),
+            radial,
+            [3.0, 4.0],
+            5.0,
+            0.5,
+            0.25,
+            0.5,
+            projection,
+        );
+
+        assert!(prepared.map.is_none());
+        assert!(prepared.globe.is_some());
+        let diagnostic = prepared.diagnostic.unwrap();
+        assert_eq!(diagnostic.cell_id, Some(CellId::from_raw(7)));
+        assert_eq!(
+            diagnostic.code,
+            "display.vector_projection_jacobian_degenerate"
+        );
+    }
+
+    #[test]
+    fn vector_glyph_preparation_does_not_mutate_unit_globe_geometry() {
+        let glyphs = glyph_fixture(31, CellId::from_raw(4), GlyphLodKey::High);
+        for glyph in glyphs.globe() {
+            let radius = glyph
+                .radial()
+                .components()
+                .into_iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            assert!((radius - 1.0).abs() < 1.0e-12);
+            let dot = glyph
+                .radial()
+                .components()
+                .into_iter()
+                .zip(glyph.direction())
+                .map(|(radial, direction)| radial * f64::from(direction))
+                .sum::<f64>();
+            assert!(dot.abs() < 2.0e-6);
+        }
+    }
+
+    #[test]
+    fn selected_lod_and_same_cardinality_world_changes_have_exact_revision_scope() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 42,
+        })
+        .unwrap();
+        let source = SphericalPresentationSource::new(
+            RootSeed::new(91),
+            SurfaceRef::for_spherical(&surface),
+            BuildResultHash::new([91; 32]),
+            1,
+        );
+        let cell_count = surface.cells().len();
+        let edge_count = surface.edges().len();
+        let fill_id = FieldId::new("test.spherical", "fill", 1).unwrap();
+        let vector_id = FieldId::new("test.spherical", "vector", 1).unwrap();
+        let mut registry = FieldRegistryBuilder::new();
+        registry
+            .register(FieldSchema {
+                id: fill_id.clone(),
+                domain: FieldDomain::Cells,
+                value_type: FieldValueType::ScalarF32,
+                unit: FieldUnit::Unitless,
+                valid_range: Some(ValueRange::new(0.0, 1.0).unwrap()),
+                missing: MissingValuePolicy::Forbidden,
+                dependencies: Vec::new(),
+                category_labels: Default::default(),
+                display: FieldDisplayMetadata::new(
+                    "field.test.spherical.fill",
+                    FieldPaletteHint::Sequential,
+                    4,
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        registry
+            .register(FieldSchema {
+                id: vector_id.clone(),
+                domain: FieldDomain::Cells,
+                value_type: FieldValueType::Vector2F32,
+                unit: FieldUnit::Unitless,
+                valid_range: None,
+                missing: MissingValuePolicy::Forbidden,
+                dependencies: Vec::new(),
+                category_labels: Default::default(),
+                display: FieldDisplayMetadata::new(
+                    "field.test.spherical.vector",
+                    FieldPaletteHint::Vector,
+                    4,
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let registry = registry.build().unwrap();
+        let mut fields = ExtensionFieldSet::new();
+        let sizes = DomainSizes::new(cell_count, edge_count);
+        fields
+            .insert(
+                &registry,
+                fill_id.clone(),
+                FieldData::ScalarF32(vec![0.5; cell_count]),
+                &sizes,
+            )
+            .unwrap();
+        fields
+            .insert(
+                &registry,
+                vector_id.clone(),
+                FieldData::Vector2F32(vec![[1.0, 0.0]; cell_count]),
+                &sizes,
+            )
+            .unwrap();
+        let catalog = crate::view::FieldCatalog::from_extension_fields(&registry, &fields).unwrap();
+        let mut state = super::SphericalFieldDisplayState::default();
+        state.select_overlay(Some(vector_id));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let initial = super::prepare_spherical_field_layers(
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        super::reset_field_layer_preparation_counts();
+        state.select_entity(Some(super::SelectedSurfaceEntity::Cell(CellId::from_raw(
+            7,
+        ))));
+        let selected = super::update_spherical_field_layers(
+            &initial,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_ne!(
+            initial.revisions().vector_glyphs,
+            selected.revisions().vector_glyphs
+        );
+        assert_eq!(initial.revisions().overlay, selected.revisions().overlay);
+        let (
+            Some(super::PreparedSphericalOverlay::Vector(initial_field)),
+            Some(super::PreparedSphericalOverlay::Vector(selected_field)),
+        ) = (initial.overlay(), selected.overlay())
+        else {
+            panic!("fixture retains its vector overlay");
+        };
+        assert!(Arc::ptr_eq(initial_field, selected_field));
+        assert_eq!(super::field_layer_preparation_counts().overlay, 0);
+
+        state.set_vector_paused(true);
+        state.set_vector_display_speed(3.0).unwrap();
+        let paused = super::update_spherical_field_layers(
+            &selected,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(selected.revisions(), paused.revisions());
+
+        state.set_vector_lod(super::VectorGlyphLod::High);
+        let high = super::update_spherical_field_layers(
+            &paused,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_ne!(
+            paused.revisions().vector_glyphs,
+            high.revisions().vector_glyphs
+        );
+        assert_eq!(paused.revisions().overlay, high.revisions().overlay);
+
+        let mut changed_fields = ExtensionFieldSet::new();
+        changed_fields
+            .insert(
+                &registry,
+                fill_id.clone(),
+                FieldData::ScalarF32(vec![0.75; cell_count]),
+                &DomainSizes::new(cell_count, edge_count),
+            )
+            .unwrap();
+        let vector_id = state.overlay_field().unwrap().clone();
+        changed_fields
+            .insert(
+                &registry,
+                vector_id,
+                FieldData::Vector2F32(vec![[0.0, 2.0]; cell_count]),
+                &DomainSizes::new(cell_count, edge_count),
+            )
+            .unwrap();
+        let changed_catalog =
+            crate::view::FieldCatalog::from_extension_fields(&registry, &changed_fields).unwrap();
+        let changed_source = SphericalPresentationSource::new(
+            RootSeed::new(92),
+            SurfaceRef::for_spherical(&surface),
+            BuildResultHash::new([92; 32]),
+            1,
+        );
+        let world_changed = super::update_spherical_field_layers(
+            &high,
+            changed_source.clone(),
+            &changed_catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        assert_eq!(world_changed.source(), &changed_source);
+        assert_eq!(f32::from_bits(world_changed.fill().raw_values()[0]), 0.75);
+        let Some(super::PreparedSphericalOverlay::Vector(world_vector)) = world_changed.overlay()
+        else {
+            panic!("changed world retains its vector overlay");
+        };
+        assert_eq!(world_vector.components()[0], [0.0, 2.0]);
+        assert!(!Arc::ptr_eq(high.fill_arc(), world_changed.fill_arc()));
+        assert!(!Arc::ptr_eq(
+            high.diagnostics_arc(),
+            world_changed.diagnostics_arc()
+        ));
+        assert!(!Arc::ptr_eq(
+            high.fill_palette_arc(),
+            world_changed.fill_palette_arc()
+        ));
+        assert!(
+            high.revisions().fill != world_changed.revisions().fill
+                && high.revisions().overlay != world_changed.revisions().overlay
+                && high.revisions().diagnostics != world_changed.revisions().diagnostics
+                && high.revisions().fill_palette != world_changed.revisions().fill_palette
+                && high.revisions().overlay_palette != world_changed.revisions().overlay_palette
+                && high.revisions().vector_glyphs != world_changed.revisions().vector_glyphs
+        );
     }
 }

@@ -3,10 +3,12 @@ use eframe::egui_wgpu::wgpu;
 use std::sync::Arc;
 use thiserror::Error;
 
+use super::overlay::{prepare_overlay_instances, GpuGlobeOverlayInstance, GpuMapOverlayInstance};
 use crate::view::{
-    DisplayRevision, GlobeCamera, LinearRgba, MapCamera, PreparedFieldKind, PreparedFieldLayers,
-    PreparedGlobeMesh, PreparedProjectedMap, SphericalPresentationSource, DIAGNOSTIC_ERROR_COLOR,
-    DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
+    DisplayRevision, GlobeCamera, LinearRgba, MapCamera, OwnedViewDiagnostic, PreparedFieldKind,
+    PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap, PreparedSphericalOverlay,
+    PreparedVectorGlyphs, SphericalPresentationSource, VectorAnimationUniform,
+    DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
 };
 
 const MIN_BUFFER_BYTES: u64 = 16;
@@ -95,13 +97,26 @@ pub(super) struct SphericalFrameUniform {
     diagnostic_info_index: u32,
     diagnostic_warning_index: u32,
     diagnostic_error_index: u32,
+    viewport_pixels: [f32; 2],
+    vector_phase: f32,
+    overlay_padding: u32,
 }
 
 impl SphericalFrameUniform {
+    #[cfg(test)]
     pub(super) fn for_map(
         packet: &SphericalGpuPacket,
         camera: MapCamera,
         viewport: [u32; 2],
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_map_with_animation(packet, camera, viewport, VectorAnimationUniform::default())
+    }
+
+    pub(super) fn for_map_with_animation(
+        packet: &SphericalGpuPacket,
+        camera: MapCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let bounds = packet.map().bounds();
@@ -137,13 +152,23 @@ impl SphericalFrameUniform {
             [0.0, 0.0, 1.0, 0.0],
             [translate_x, translate_y, 0.0, 1.0],
         ])?;
-        Self::with_transform(packet, transform)
+        Self::with_transform(packet, transform, [width as f32, height as f32], animation)
     }
 
+    #[cfg(test)]
     pub(super) fn for_globe(
         packet: &SphericalGpuPacket,
         camera: GlobeCamera,
         viewport: [u32; 2],
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_globe_with_animation(packet, camera, viewport, VectorAnimationUniform::default())
+    }
+
+    pub(super) fn for_globe_with_animation(
+        packet: &SphericalGpuPacket,
+        camera: GlobeCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let aspect = width / height;
@@ -192,12 +217,14 @@ impl SphericalFrameUniform {
             ],
             [0.0, 0.0, 0.5, 1.0],
         ])?;
-        Self::with_transform(packet, transform)
+        Self::with_transform(packet, transform, [width as f32, height as f32], animation)
     }
 
     fn with_transform(
         packet: &SphericalGpuPacket,
         transform: [[f32; 4]; 4],
+        viewport_pixels: [f32; 2],
+        animation: VectorAnimationUniform,
     ) -> Result<Self, SphericalRenderError> {
         let palette_len = u32::try_from(packet.layers().fill_palette().len()).map_err(|_| {
             SphericalRenderError::IntegerOverflow {
@@ -231,6 +258,9 @@ impl SphericalFrameUniform {
             diagnostic_info_index,
             diagnostic_warning_index,
             diagnostic_error_index,
+            viewport_pixels,
+            vector_phase: animation.phase(),
+            overlay_padding: 0,
         })
     }
 }
@@ -389,6 +419,9 @@ pub enum SphericalRenderError {
         /// Stable name of the invalid geometry resource.
         resource: &'static str,
     },
+    /// Source-bound overlay instances could not be prepared coherently.
+    #[error("spherical overlay instances are invalid")]
+    InvalidOverlayInstances,
 }
 
 /// Cumulative evidence of immutable spherical uploads and fixed uniform writes.
@@ -404,6 +437,10 @@ pub struct SphericalUploadCounters {
     pub diagnostics: u64,
     /// Successful combined fill/diagnostic palette upload batches.
     pub palettes: u64,
+    /// Successful projected-map edge/vector instance upload batches.
+    pub map_overlay_instances: u64,
+    /// Successful unit-globe edge/vector instance upload batches.
+    pub globe_overlay_instances: u64,
     /// Fixed-size camera/mode uniform writes.
     pub uniforms: u64,
     /// Total bytes submitted by successful uploads and uniform writes.
@@ -417,6 +454,9 @@ struct InstalledRevisions {
     fill: DisplayRevision,
     diagnostics: DisplayRevision,
     palette: DisplayRevision,
+    overlay: DisplayRevision,
+    overlay_palette: DisplayRevision,
+    vector_glyphs: DisplayRevision,
 }
 
 impl From<&SphericalGpuPacket> for InstalledRevisions {
@@ -427,6 +467,9 @@ impl From<&SphericalGpuPacket> for InstalledRevisions {
             fill: packet.layers().revisions().fill,
             diagnostics: packet.layers().revisions().diagnostics,
             palette: packet.layers().revisions().fill_palette,
+            overlay: packet.layers().revisions().overlay,
+            overlay_palette: packet.layers().revisions().overlay_palette,
+            vector_glyphs: packet.layers().revisions().vector_glyphs,
         }
     }
 }
@@ -467,6 +510,8 @@ struct UploadPlan {
     fill: bool,
     diagnostics: bool,
     palette: bool,
+    map_overlay: bool,
+    globe_overlay: bool,
 }
 
 impl UploadPlan {
@@ -482,6 +527,8 @@ impl UploadPlan {
                 fill: true,
                 diagnostics: true,
                 palette: true,
+                map_overlay: true,
+                globe_overlay: true,
             };
         }
         let next = InstalledRevisions::from(packet);
@@ -491,6 +538,18 @@ impl UploadPlan {
             fill: installed.is_none_or(|old| old.fill != next.fill),
             diagnostics: installed.is_none_or(|old| old.diagnostics != next.diagnostics),
             palette: installed.is_none_or(|old| old.palette != next.palette),
+            map_overlay: installed.is_none_or(|old| {
+                old.map_geometry != next.map_geometry
+                    || old.overlay != next.overlay
+                    || old.overlay_palette != next.overlay_palette
+                    || old.vector_glyphs != next.vector_glyphs
+            }),
+            globe_overlay: installed.is_none_or(|old| {
+                old.globe_geometry != next.globe_geometry
+                    || old.overlay != next.overlay
+                    || old.overlay_palette != next.overlay_palette
+                    || old.vector_glyphs != next.vector_glyphs
+            }),
         }
     }
 }
@@ -510,6 +569,10 @@ pub struct SphericalFieldRenderer {
     globe_vertex_capacity: u64,
     globe_index_buffer: wgpu::Buffer,
     globe_index_capacity: u64,
+    map_overlay_buffer: wgpu::Buffer,
+    map_overlay_capacity: u64,
+    globe_overlay_buffer: wgpu::Buffer,
+    globe_overlay_capacity: u64,
     fill_buffer: wgpu::Buffer,
     fill_capacity: u64,
     diagnostic_buffer: wgpu::Buffer,
@@ -523,11 +586,16 @@ pub struct SphericalFieldRenderer {
     globe_bind_group: wgpu::BindGroup,
     map_pipeline: wgpu::RenderPipeline,
     globe_pipeline: wgpu::RenderPipeline,
+    map_overlay_pipeline: wgpu::RenderPipeline,
+    globe_overlay_pipeline: wgpu::RenderPipeline,
     installed_source: Option<SphericalPresentationSource>,
     installed_revisions: Option<InstalledRevisions>,
     installed_packet_key: Option<InstalledPacketKey>,
     map_index_count: u32,
     globe_index_count: u32,
+    map_overlay_instance_count: u32,
+    globe_overlay_instance_count: u32,
+    installed_vector_glyphs: Option<Arc<PreparedVectorGlyphs>>,
     counters: SphericalUploadCounters,
     frame_generation: u64,
 }
@@ -558,6 +626,18 @@ impl SphericalFieldRenderer {
             "Spherical Globe Indices",
             MIN_BUFFER_BYTES,
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        );
+        let map_overlay_buffer = create_buffer(
+            device,
+            "Spherical Map Overlay Instances",
+            MIN_BUFFER_BYTES,
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        );
+        let globe_overlay_buffer = create_buffer(
+            device,
+            "Spherical Globe Overlay Instances",
+            MIN_BUFFER_BYTES,
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         );
         let fill_buffer = create_buffer(
             device,
@@ -620,6 +700,18 @@ impl SphericalFieldRenderer {
             &bind_group_layout,
             SphericalRenderMode::Globe,
         );
+        let map_overlay_pipeline = create_overlay_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Map,
+        );
+        let globe_overlay_pipeline = create_overlay_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Globe,
+        );
         Self {
             map_vertex_buffer,
             map_vertex_capacity: MIN_BUFFER_BYTES,
@@ -629,6 +721,10 @@ impl SphericalFieldRenderer {
             globe_vertex_capacity: MIN_BUFFER_BYTES,
             globe_index_buffer,
             globe_index_capacity: MIN_BUFFER_BYTES,
+            map_overlay_buffer,
+            map_overlay_capacity: MIN_BUFFER_BYTES,
+            globe_overlay_buffer,
+            globe_overlay_capacity: MIN_BUFFER_BYTES,
             fill_buffer,
             fill_capacity: MIN_BUFFER_BYTES,
             diagnostic_buffer,
@@ -642,11 +738,16 @@ impl SphericalFieldRenderer {
             globe_bind_group,
             map_pipeline,
             globe_pipeline,
+            map_overlay_pipeline,
+            globe_overlay_pipeline,
             installed_source: None,
             installed_revisions: None,
             installed_packet_key: None,
             map_index_count: 0,
             globe_index_count: 0,
+            map_overlay_instance_count: 0,
+            globe_overlay_instance_count: 0,
+            installed_vector_glyphs: None,
             counters: SphericalUploadCounters::default(),
             frame_generation: 0,
         }
@@ -708,10 +809,48 @@ impl SphericalFieldRenderer {
             .palette
             .then(|| combined_palette(packet.layers().fill_palette()))
             .transpose()?;
-        let sizes = BufferSizes::for_packet(packet, limits.clone())?;
+        let mut prepared_overlay = (plan.map_overlay || plan.globe_overlay)
+            .then(|| prepare_overlay_instances(packet.map(), packet.globe(), packet.layers()))
+            .transpose()
+            .map_err(|_| SphericalRenderError::InvalidOverlayInstances)?;
+        let map_overlay_instances = plan.map_overlay.then(|| {
+            prepared_overlay
+                .as_mut()
+                .map(|prepared| std::mem::take(&mut prepared.map))
+                .unwrap_or_default()
+        });
+        let globe_overlay_instances = plan.globe_overlay.then(|| {
+            prepared_overlay
+                .as_mut()
+                .map(|prepared| std::mem::take(&mut prepared.globe))
+                .unwrap_or_default()
+        });
+        let candidate_vector_glyphs = prepared_overlay
+            .as_ref()
+            .and_then(|prepared| prepared.vector_glyphs.clone());
+        let sizes = BufferSizes::for_packet(
+            packet,
+            map_overlay_instances.as_deref().unwrap_or_default().len(),
+            globe_overlay_instances.as_deref().unwrap_or_default().len(),
+            limits.clone(),
+        )?;
         let map_index_count = checked_u32(packet.map().indices().len(), "map index count")?;
         let globe_index_count = checked_u32(packet.globe().indices().len(), "globe index count")?;
-        let next_counters = preflight_counters(self.counters, plan, sizes)?;
+        let map_overlay_instance_count = match &map_overlay_instances {
+            Some(instances) => checked_u32(instances.len(), "map overlay instance count")?,
+            None => self.map_overlay_instance_count,
+        };
+        let globe_overlay_instance_count = match &globe_overlay_instances {
+            Some(instances) => checked_u32(instances.len(), "globe overlay instance count")?,
+            None => self.globe_overlay_instance_count,
+        };
+        let next_counters = preflight_counters(
+            self.counters,
+            plan,
+            sizes,
+            map_overlay_instances.is_some() && packet.layers().overlay().is_some(),
+            globe_overlay_instances.is_some() && packet.layers().overlay().is_some(),
+        )?;
 
         let new_map_vertex = replacement_buffer(
             device,
@@ -748,6 +887,24 @@ impl SphericalFieldRenderer {
             sizes.globe_indices,
             limits.max_buffer_size,
             plan.globe_geometry,
+        )?;
+        let new_map_overlay = replacement_buffer(
+            device,
+            "Spherical Map Overlay Instances",
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            self.map_overlay_capacity,
+            sizes.map_overlay,
+            limits.max_buffer_size,
+            plan.map_overlay,
+        )?;
+        let new_globe_overlay = replacement_buffer(
+            device,
+            "Spherical Globe Overlay Instances",
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            self.globe_overlay_capacity,
+            sizes.globe_overlay,
+            limits.max_buffer_size,
+            plan.globe_overlay,
         )?;
         let storage_limit =
             u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
@@ -844,6 +1001,26 @@ impl SphericalFieldRenderer {
                 bytemuck::cast_slice(packet.globe().indices()),
             );
         }
+        if let Some(instances) = &map_overlay_instances {
+            write_if_nonempty(
+                queue,
+                new_map_overlay
+                    .as_ref()
+                    .map_or(&self.map_overlay_buffer, |replacement| &replacement.buffer),
+                bytemuck::cast_slice(instances),
+            );
+        }
+        if let Some(instances) = &globe_overlay_instances {
+            write_if_nonempty(
+                queue,
+                new_globe_overlay
+                    .as_ref()
+                    .map_or(&self.globe_overlay_buffer, |replacement| {
+                        &replacement.buffer
+                    }),
+                bytemuck::cast_slice(instances),
+            );
+        }
         if plan.fill {
             write_if_nonempty(
                 queue,
@@ -892,6 +1069,16 @@ impl SphericalFieldRenderer {
             &mut self.globe_index_capacity,
             new_globe_index,
         );
+        apply_replacement(
+            &mut self.map_overlay_buffer,
+            &mut self.map_overlay_capacity,
+            new_map_overlay,
+        );
+        apply_replacement(
+            &mut self.globe_overlay_buffer,
+            &mut self.globe_overlay_capacity,
+            new_globe_overlay,
+        );
         apply_replacement(&mut self.fill_buffer, &mut self.fill_capacity, new_fill);
         apply_replacement(
             &mut self.diagnostic_buffer,
@@ -912,6 +1099,11 @@ impl SphericalFieldRenderer {
         self.installed_packet_key = Some(InstalledPacketKey::for_packet(packet));
         self.map_index_count = map_index_count;
         self.globe_index_count = globe_index_count;
+        self.map_overlay_instance_count = map_overlay_instance_count;
+        self.globe_overlay_instance_count = globe_overlay_instance_count;
+        if plan.map_overlay || plan.globe_overlay {
+            self.installed_vector_glyphs = candidate_vector_glyphs;
+        }
         self.counters = next_counters;
         Ok(())
     }
@@ -954,6 +1146,12 @@ impl SphericalFieldRenderer {
                 pass.set_vertex_buffer(0, self.map_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.map_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.map_index_count, 0, 0..1);
+                if self.map_overlay_instance_count > 0 {
+                    pass.set_pipeline(&self.map_overlay_pipeline);
+                    pass.set_bind_group(0, &self.map_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.map_overlay_buffer.slice(..));
+                    pass.draw(0..9, 0..self.map_overlay_instance_count);
+                }
             }
             SphericalRenderMode::Globe => {
                 if self.globe_index_count == 0 {
@@ -964,6 +1162,12 @@ impl SphericalFieldRenderer {
                 pass.set_vertex_buffer(0, self.globe_vertex_buffer.slice(..));
                 pass.set_index_buffer(self.globe_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.globe_index_count, 0, 0..1);
+                if self.globe_overlay_instance_count > 0 {
+                    pass.set_pipeline(&self.globe_overlay_pipeline);
+                    pass.set_bind_group(0, &self.globe_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.globe_overlay_buffer.slice(..));
+                    pass.draw(0..9, 0..self.globe_overlay_instance_count);
+                }
             }
         }
     }
@@ -971,6 +1175,14 @@ impl SphericalFieldRenderer {
     /// Returns cumulative successful immutable and uniform upload evidence.
     pub const fn upload_counters(&self) -> SphericalUploadCounters {
         self.counters
+    }
+
+    /// Returns map-projection diagnostics emitted while preparing the installed vector glyphs.
+    pub fn vector_diagnostics(&self) -> &[OwnedViewDiagnostic] {
+        self.installed_vector_glyphs
+            .as_deref()
+            .map(PreparedVectorGlyphs::diagnostics)
+            .unwrap_or_default()
     }
 
     /// Returns the source identity of the last completely installed packet.
@@ -1012,6 +1224,8 @@ struct BufferSizes {
     map_indices: u64,
     globe_vertices: u64,
     globe_indices: u64,
+    map_overlay: u64,
+    globe_overlay: u64,
     fill: u64,
     diagnostics: u64,
     palette: u64,
@@ -1020,6 +1234,8 @@ struct BufferSizes {
 impl BufferSizes {
     fn for_packet(
         packet: &SphericalGpuPacket,
+        map_overlay_count: usize,
+        globe_overlay_count: usize,
         limits: wgpu::Limits,
     ) -> Result<Self, SphericalRenderError> {
         let sizes = Self {
@@ -1035,6 +1251,14 @@ impl BufferSizes {
             globe_indices: checked_buffer_bytes::<u32>(
                 packet.globe().indices().len(),
                 "globe indices",
+            )?,
+            map_overlay: checked_buffer_bytes::<GpuMapOverlayInstance>(
+                map_overlay_count,
+                "map overlay instances",
+            )?,
+            globe_overlay: checked_buffer_bytes::<GpuGlobeOverlayInstance>(
+                globe_overlay_count,
+                "globe overlay instances",
             )?,
             fill: checked_buffer_bytes::<u32>(packet.layers().fill().len(), "fill field")?,
             diagnostics: checked_buffer_bytes::<u32>(
@@ -1061,6 +1285,16 @@ impl BufferSizes {
                 limits.max_buffer_size,
             ),
             ("globe indices", sizes.globe_indices, limits.max_buffer_size),
+            (
+                "map overlay instances",
+                sizes.map_overlay,
+                limits.max_buffer_size,
+            ),
+            (
+                "globe overlay instances",
+                sizes.globe_overlay,
+                limits.max_buffer_size,
+            ),
             ("fill field", sizes.fill, storage_limit),
             ("diagnostics", sizes.diagnostics, storage_limit),
             ("fill palette", sizes.palette, storage_limit),
@@ -1098,6 +1332,27 @@ fn validate_packet(packet: &SphericalGpuPacket) -> Result<(), SphericalRenderErr
         cell_count,
         packet.layers().diagnostics().len(),
     )?;
+    if let Some(overlay) = packet.layers().overlay() {
+        match overlay {
+            PreparedSphericalOverlay::Edge(field) => validate_cardinality(
+                "edge overlay",
+                packet.source().surface_ref().edge_count() as usize,
+                field.len(),
+            )?,
+            PreparedSphericalOverlay::Vector(field) => {
+                validate_cardinality("vector overlay", cell_count, field.len())?
+            }
+        }
+        if packet
+            .layers()
+            .overlay_palette()
+            .is_none_or(|palette| palette.is_empty())
+        {
+            return Err(SphericalRenderError::InvalidGeometry {
+                resource: "overlay palette",
+            });
+        }
+    }
     validate_geometry(
         "projected map",
         packet.map().vertices().len(),
@@ -1241,6 +1496,8 @@ fn preflight_counters(
     current: SphericalUploadCounters,
     plan: UploadPlan,
     sizes: BufferSizes,
+    uploaded_map_overlay: bool,
+    uploaded_globe_overlay: bool,
 ) -> Result<SphericalUploadCounters, SphericalRenderError> {
     let mut next = current;
     if plan.map_geometry {
@@ -1259,11 +1516,27 @@ fn preflight_counters(
     if plan.palette {
         next.palettes = checked_counter(next.palettes, 1, "palette upload counter")?;
     }
+    if uploaded_map_overlay {
+        next.map_overlay_instances = checked_counter(
+            next.map_overlay_instances,
+            1,
+            "map overlay instance upload counter",
+        )?;
+    }
+    if uploaded_globe_overlay {
+        next.globe_overlay_instances = checked_counter(
+            next.globe_overlay_instances,
+            1,
+            "globe overlay instance upload counter",
+        )?;
+    }
     let submitted = [
         plan.map_geometry.then_some(sizes.map_vertices),
         plan.map_geometry.then_some(sizes.map_indices),
         plan.globe_geometry.then_some(sizes.globe_vertices),
         plan.globe_geometry.then_some(sizes.globe_indices),
+        uploaded_map_overlay.then_some(sizes.map_overlay),
+        uploaded_globe_overlay.then_some(sizes.globe_overlay),
         plan.fill.then_some(sizes.fill),
         plan.diagnostics.then_some(sizes.diagnostics),
         plan.palette.then_some(sizes.palette),
@@ -1362,7 +1635,7 @@ fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             storage_layout_entry(2),
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -1496,6 +1769,91 @@ fn create_pipeline(
     })
 }
 
+fn create_overlay_pipeline(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    mode: SphericalRenderMode,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Spherical Overlay Shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../../assets/shaders/spherical_field.wgsl").into(),
+        ),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Spherical Overlay Pipeline Layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+        1 => Float32x2,
+        2 => Float32x4,
+        3 => Float32,
+        4 => Uint32
+    ];
+    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32,
+        2 => Float32x3,
+        3 => Float32,
+        4 => Float32x4,
+        5 => Uint32
+    ];
+    let (label, entry_point, array_stride, attributes) = match mode {
+        SphericalRenderMode::Map => (
+            "Spherical Map Overlay Pipeline",
+            "vs_map_overlay",
+            std::mem::size_of::<GpuMapOverlayInstance>() as u64,
+            &MAP_ATTRIBUTES[..],
+        ),
+        SphericalRenderMode::Globe => (
+            "Spherical Globe Overlay Pipeline",
+            "vs_globe_overlay",
+            std::mem::size_of::<GpuGlobeOverlayInstance>() as u64,
+            &GLOBE_ATTRIBUTES[..],
+        ),
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some(entry_point),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes,
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_overlay"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    })
+}
+
 fn write_if_nonempty(queue: &wgpu::Queue, buffer: &wgpu::Buffer, bytes: &[u8]) {
     if !bytes.is_empty() {
         queue.write_buffer(buffer, 0, bytes);
@@ -1507,6 +1865,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{mpsc, Arc};
 
+    use super::super::overlay::{GpuGlobeOverlayInstance, GpuMapOverlayInstance};
     use super::{
         validation_probe, wgpu, GpuGlobeVertex, GpuMapVertex, SphericalFieldRenderer,
         SphericalFrameUniform, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
@@ -1517,23 +1876,25 @@ mod tests {
         category_color, prepare_spherical_field_layers, scalar_color, DisplayRangeMode,
         DisplayRevision, DisplayRevisionClock, FieldCatalog, GlobeCamera, LinearRgba, MapCamera,
         OwnedViewDiagnostic, PaletteId, PreparedFieldKind, PreparedGlobeMesh, PreparedProjectedMap,
-        SphericalFieldDisplayState, SphericalMeshBudgets, SphericalPresentationSource,
-        SphericalProjection, SphericalProjectionKind, ViewDiagnosticSeverity,
-        DIAGNOSTIC_ERROR_COLOR,
+        SelectedSurfaceEntity, SphericalFieldDisplayState, SphericalMeshBudgets,
+        SphericalPresentationSource, SphericalProjection, SphericalProjectionKind,
+        VectorAnimationUniform, VectorGlyphLod, ViewDiagnosticSeverity, DIAGNOSTIC_ERROR_COLOR,
     };
     use crate::world::fields::{
         DomainSizes, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain, FieldId,
         FieldPaletteHint, FieldRegistryBuilder, FieldSchema, FieldUnit, FieldValueType,
         MissingValuePolicy, ValueRange,
     };
-    use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
+    use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     #[test]
     fn spherical_gpu_layouts_match_wgsl_vertex_and_uniform_contracts() {
         assert_eq!(std::mem::size_of::<GpuMapVertex>(), 12);
         assert_eq!(std::mem::size_of::<GpuGlobeVertex>(), 16);
-        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 96);
+        assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
+        assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);
+        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 112);
     }
 
     #[test]
@@ -1621,6 +1982,323 @@ mod tests {
         eprintln!("validation work after static frames: {after_static_frames:?}");
         eprintln!("after immutable upload: {after_upload:?}");
         eprintln!("after camera/mode frames: {after_frames:?}");
+    }
+
+    #[test]
+    fn vector_phase_and_camera_frames_preserve_instance_uploads_and_validation_scans() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = vector_packet_fixture(71, true);
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        validation_probe::reset();
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        let after_upload = renderer.upload_counters();
+        let after_validation = validation_probe::snapshot();
+        assert_eq!(after_upload.map_overlay_instances, 1);
+        assert_eq!(after_upload.globe_overlay_instances, 1);
+
+        let viewport = [256, 128];
+        let paused = VectorAnimationUniform::new(0.2);
+        let first_uniform = SphericalFrameUniform::for_map_with_animation(
+            &fixture.packet,
+            MapCamera::default(),
+            viewport,
+            paused,
+        )
+        .unwrap();
+        renderer
+            .prepare_frame(&queue, SphericalRenderMode::Map, &first_uniform)
+            .unwrap();
+        let first = readback_renderer(
+            &device,
+            &queue,
+            &renderer,
+            SphericalRenderMode::Map,
+            viewport,
+        );
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        renderer
+            .prepare_frame(&queue, SphericalRenderMode::Map, &first_uniform)
+            .unwrap();
+        let repeated = readback_renderer(
+            &device,
+            &queue,
+            &renderer,
+            SphericalRenderMode::Map,
+            viewport,
+        );
+        assert_eq!(
+            first, repeated,
+            "paused uniform must render byte-identically"
+        );
+
+        let advanced = SphericalFrameUniform::for_map_with_animation(
+            &fixture.packet,
+            MapCamera::default(),
+            viewport,
+            VectorAnimationUniform::new(0.65),
+        )
+        .unwrap();
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        renderer
+            .prepare_frame(&queue, SphericalRenderMode::Map, &advanced)
+            .unwrap();
+        let animated = readback_renderer(
+            &device,
+            &queue,
+            &renderer,
+            SphericalRenderMode::Map,
+            viewport,
+        );
+        assert_ne!(first, animated, "phase must move only the bright segment");
+
+        let mut zoomed_camera = MapCamera::default();
+        assert!(zoomed_camera.zoom_by(SphericalProjectionKind::Equirectangular, 1.25));
+        let zoomed = SphericalFrameUniform::for_map_with_animation(
+            &fixture.packet,
+            zoomed_camera,
+            viewport,
+            VectorAnimationUniform::new(0.65),
+        )
+        .unwrap();
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        renderer
+            .prepare_frame(&queue, SphericalRenderMode::Map, &zoomed)
+            .unwrap();
+
+        let after_frames = renderer.upload_counters();
+        assert_eq!(
+            after_frames.map_overlay_instances,
+            after_upload.map_overlay_instances
+        );
+        assert_eq!(
+            after_frames.globe_overlay_instances,
+            after_upload.globe_overlay_instances
+        );
+        assert_eq!(after_frames.uniforms, after_upload.uniforms + 4);
+        assert_eq!(validation_probe::snapshot(), after_validation);
+    }
+
+    #[test]
+    fn projection_change_rebuilds_only_map_geometry_and_map_overlay_instances() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = vector_packet_fixture(72, true);
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        let before = renderer.upload_counters();
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.3).unwrap();
+        let changed_map = Arc::new(
+            PreparedProjectedMap::build(
+                fixture.packet.source().clone(),
+                &fixture.surface,
+                projection,
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap(),
+        );
+        let changed = SphericalGpuPacket::new(
+            changed_map,
+            DisplayRevision::new(103).unwrap(),
+            Arc::clone(&fixture.packet.globe),
+            fixture.packet.globe_geometry_revision,
+            Arc::clone(&fixture.layers),
+        );
+
+        renderer.prepare_packet(&device, &queue, &changed).unwrap();
+
+        let after = renderer.upload_counters();
+        assert_eq!(after.map_geometry, before.map_geometry + 1);
+        assert_eq!(after.globe_geometry, before.globe_geometry);
+        assert_eq!(
+            after.map_overlay_instances,
+            before.map_overlay_instances + 1
+        );
+        assert_eq!(
+            after.globe_overlay_instances,
+            before.globe_overlay_instances
+        );
+        assert_eq!(after.fill_field, before.fill_field);
+        assert_eq!(after.diagnostics, before.diagnostics);
+        assert_eq!(after.palettes, before.palettes);
+    }
+
+    #[test]
+    fn offscreen_scalar_and_category_edges_render_as_triangle_instances_in_both_modes() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        for kind in [OverlayTestKind::EdgeScalar, OverlayTestKind::EdgeCategory] {
+            let seed = match kind {
+                OverlayTestKind::EdgeScalar => 73,
+                OverlayTestKind::EdgeCategory => 74,
+            };
+            let baseline = packet_fixture(TestFieldKind::Scalar, seed);
+            let overlay = overlay_packet_fixture(kind, seed);
+            for (mode, viewport) in [
+                (SphericalRenderMode::Map, [256, 128]),
+                (SphericalRenderMode::Globe, [128, 128]),
+            ] {
+                let (baseline_pixels, _) =
+                    render_offscreen(&device, &queue, &baseline.packet, mode, viewport);
+                let (overlay_pixels, _) =
+                    render_offscreen(&device, &queue, &overlay.packet, mode, viewport);
+                assert_ne!(
+                    overlay_pixels, baseline_pixels,
+                    "{kind:?} must add bounded triangle annotations in {mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_and_no_event_edges_filter_only_display_instances_not_prepared_payloads() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        for (kind, seed) in [
+            (OverlayTestKind::EdgeScalar, 75),
+            (OverlayTestKind::EdgeCategory, 76),
+        ] {
+            let fixture = overlay_packet_fixture(kind, seed);
+            let field = match fixture.layers.overlay().unwrap() {
+                crate::view::PreparedSphericalOverlay::Edge(field) => field,
+                crate::view::PreparedSphericalOverlay::Vector(_) => unreachable!(),
+            };
+            assert_eq!(field.len(), fixture.surface.edges().len());
+            let expected_visible = match field.kind() {
+                PreparedFieldKind::Scalar => field
+                    .raw_values()
+                    .iter()
+                    .filter(|&&raw| f32::from_bits(raw) != 0.0)
+                    .count(),
+                PreparedFieldKind::Category => field
+                    .raw_values()
+                    .iter()
+                    .filter(|&&raw| field.category_keys()[raw as usize] != 0)
+                    .count(),
+            };
+            let mut renderer =
+                SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            renderer
+                .prepare_packet(&device, &queue, &fixture.packet)
+                .unwrap();
+            assert_eq!(
+                renderer.globe_overlay_instance_count as usize,
+                expected_visible
+            );
+            assert!(renderer.map_overlay_instance_count as usize >= expected_visible);
+        }
+    }
+
+    #[test]
+    fn offscreen_globe_vector_glyphs_cull_back_hemisphere_and_keep_front_direction() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let seed = 79;
+        let baseline = packet_fixture(TestFieldKind::Scalar, seed);
+        let back = vector_packet_fixture(seed, false);
+        let front = vector_packet_fixture(seed, true);
+        let viewport = [192, 192];
+        let (baseline_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &baseline.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+        let (back_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &back.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+        let (front_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &front.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+
+        assert_eq!(back_pixels, baseline_pixels);
+        assert_ne!(front_pixels, baseline_pixels);
+    }
+
+    #[test]
+    fn offscreen_globe_edge_annotations_cull_back_hemisphere_segments() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let seed = 83;
+        let baseline = packet_fixture(TestFieldKind::Scalar, seed);
+        let back = edge_hemisphere_packet_fixture(seed, false);
+        let front = edge_hemisphere_packet_fixture(seed, true);
+        let viewport = [192, 192];
+        let (baseline_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &baseline.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+        let (back_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &back.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+        let (front_pixels, _) = render_offscreen(
+            &device,
+            &queue,
+            &front.packet,
+            SphericalRenderMode::Globe,
+            viewport,
+        );
+
+        assert_eq!(back_pixels, baseline_pixels);
+        assert_ne!(front_pixels, baseline_pixels);
+    }
+
+    #[test]
+    fn prepared_renderer_exposes_map_jacobian_diagnostics_from_the_real_packet_path() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = vector_jacobian_packet_fixture(89);
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+
+        assert_eq!(renderer.globe_overlay_instance_count, 1);
+        assert_eq!(renderer.map_overlay_instance_count, 0);
+        let diagnostics = renderer.vector_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            "display.vector_projection_jacobian_degenerate"
+        );
     }
 
     #[test]
@@ -1935,10 +2613,16 @@ mod tests {
         diagnostic_cell: Option<usize>,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     enum TestFieldKind {
         Scalar,
         Category,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum OverlayTestKind {
+        EdgeScalar,
+        EdgeCategory,
     }
 
     fn request_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -2088,6 +2772,228 @@ mod tests {
             layers,
             surface,
             diagnostic_cell,
+        }
+    }
+
+    fn overlay_packet_fixture(kind: OverlayTestKind, seed: u64) -> PacketFixture {
+        overlay_packet_fixture_inner(kind, seed, None, None, false)
+    }
+
+    fn vector_packet_fixture(seed: u64, front: bool) -> PacketFixture {
+        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, Some(front), None, false)
+    }
+
+    fn vector_jacobian_packet_fixture(seed: u64) -> PacketFixture {
+        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, Some(true), None, true)
+    }
+
+    fn edge_hemisphere_packet_fixture(seed: u64, front: bool) -> PacketFixture {
+        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, None, Some(front), false)
+    }
+
+    fn overlay_packet_fixture_inner(
+        kind: OverlayTestKind,
+        seed: u64,
+        vector_front: Option<bool>,
+        edge_front: Option<bool>,
+        vector_at_projection_pole: bool,
+    ) -> PacketFixture {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 42,
+        })
+        .unwrap();
+        let pole_cell = vector_at_projection_pole.then(|| surface.cells()[0].id);
+        let source = SphericalPresentationSource::new(
+            RootSeed::new(seed),
+            SurfaceRef::for_spherical(&surface),
+            BuildResultHash::new([seed as u8; 32]),
+            1,
+        );
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.0).unwrap();
+        let map = Arc::new(
+            PreparedProjectedMap::build(
+                source.clone(),
+                &surface,
+                projection,
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap(),
+        );
+        let mut globe =
+            PreparedGlobeMesh::build(source.clone(), &surface, SphericalMeshBudgets::DEFAULT)
+                .unwrap();
+        if let Some(cell) = pole_cell {
+            globe.set_cell_centroid_for_test(cell, UnitVector3::new(0.0, 0.0, 1.0).unwrap());
+        }
+        let globe = Arc::new(globe);
+        let cell_count = surface.cells().len();
+        let edge_count = surface.edges().len();
+        let (fill_schema, fill_data, _) = test_field(TestFieldKind::Scalar, cell_count);
+        let fill_id = fill_schema.id.clone();
+        let (overlay_schema, overlay_data, selected_cell) = if let Some(front) = vector_front {
+            let selected = pole_cell.unwrap_or_else(|| {
+                surface
+                    .cells()
+                    .iter()
+                    .find(|cell| {
+                        let z = cell.centroid.components()[2];
+                        if front {
+                            z > 0.55
+                        } else {
+                            z < -0.55
+                        }
+                    })
+                    .expect("fixture contains the requested hemisphere cell")
+                    .id
+            });
+            let mut vectors = vec![[0.0, 0.0]; cell_count];
+            vectors[selected.raw() as usize] = [1.0, 0.0];
+            (
+                FieldSchema {
+                    id: FieldId::new("test.spherical.gpu", "vector_overlay", 1).unwrap(),
+                    domain: FieldDomain::Cells,
+                    value_type: FieldValueType::Vector2F32,
+                    unit: FieldUnit::Unitless,
+                    valid_range: None,
+                    missing: MissingValuePolicy::Forbidden,
+                    dependencies: Vec::new(),
+                    category_labels: BTreeMap::new(),
+                    display: FieldDisplayMetadata::new(
+                        "field.test.spherical.gpu.vector_overlay",
+                        FieldPaletteHint::Vector,
+                        4,
+                    )
+                    .unwrap(),
+                },
+                FieldData::Vector2F32(vectors),
+                Some(selected),
+            )
+        } else {
+            match kind {
+                OverlayTestKind::EdgeScalar => (
+                    FieldSchema {
+                        id: FieldId::new("test.spherical.gpu", "edge_scalar", 1).unwrap(),
+                        domain: FieldDomain::Edges,
+                        value_type: FieldValueType::ScalarF32,
+                        unit: FieldUnit::Unitless,
+                        valid_range: Some(ValueRange::new(0.0, 1.0).unwrap()),
+                        missing: MissingValuePolicy::Forbidden,
+                        dependencies: Vec::new(),
+                        category_labels: BTreeMap::new(),
+                        display: FieldDisplayMetadata::new(
+                            "field.test.spherical.gpu.edge_scalar",
+                            FieldPaletteHint::Sequential,
+                            4,
+                        )
+                        .unwrap(),
+                    },
+                    FieldData::ScalarF32(if let Some(front) = edge_front {
+                        let selected = surface
+                            .edges()
+                            .iter()
+                            .find(|edge| {
+                                let z = edge.midpoint.components()[2];
+                                if front {
+                                    z > 0.65
+                                } else {
+                                    z < -0.65
+                                }
+                            })
+                            .expect("fixture contains the requested hemisphere edge")
+                            .id;
+                        let mut values = vec![0.0; edge_count];
+                        values[selected.raw() as usize] = 1.0;
+                        values
+                    } else {
+                        (0..edge_count)
+                            .map(|index| if index % 3 == 0 { 0.0 } else { 1.0 })
+                            .collect()
+                    }),
+                    None,
+                ),
+                OverlayTestKind::EdgeCategory => (
+                    FieldSchema {
+                        id: FieldId::new("test.spherical.gpu", "edge_category", 1).unwrap(),
+                        domain: FieldDomain::Edges,
+                        value_type: FieldValueType::CategoryU32,
+                        unit: FieldUnit::Unitless,
+                        valid_range: None,
+                        missing: MissingValuePolicy::Forbidden,
+                        dependencies: Vec::new(),
+                        category_labels: BTreeMap::from([
+                            (0, "field.test.edge.none".into()),
+                            (1, "field.test.edge.event".into()),
+                        ]),
+                        display: FieldDisplayMetadata::new(
+                            "field.test.spherical.gpu.edge_category",
+                            FieldPaletteHint::Categorical,
+                            0,
+                        )
+                        .unwrap(),
+                    },
+                    FieldData::CategoryU32(
+                        (0..edge_count).map(|index| (index % 2) as u32).collect(),
+                    ),
+                    None,
+                ),
+            }
+        };
+        let overlay_id = overlay_schema.id.clone();
+        let mut registry = FieldRegistryBuilder::new();
+        registry.register(fill_schema).unwrap();
+        registry.register(overlay_schema).unwrap();
+        let registry = registry.build().unwrap();
+        let mut fields = ExtensionFieldSet::new();
+        fields
+            .insert(
+                &registry,
+                fill_id.clone(),
+                fill_data,
+                &DomainSizes::new(cell_count, edge_count),
+            )
+            .unwrap();
+        fields
+            .insert(
+                &registry,
+                overlay_id.clone(),
+                overlay_data,
+                &DomainSizes::new(cell_count, edge_count),
+            )
+            .unwrap();
+        let catalog = FieldCatalog::from_extension_fields(&registry, &fields).unwrap();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(overlay_id));
+        state.set_vector_lod(VectorGlyphLod::High);
+        state.select_entity(selected_cell.map(SelectedSurfaceEntity::Cell));
+        let mut clock = DisplayRevisionClock::default();
+        let layers = Arc::new(
+            prepare_spherical_field_layers(
+                source,
+                &catalog,
+                cell_count,
+                edge_count,
+                &[],
+                Some(fill_id),
+                |_| Some(DisplayRangeMode::Data),
+                &mut state,
+                &mut clock,
+            )
+            .unwrap(),
+        );
+        let packet = SphericalGpuPacket::new(
+            map,
+            DisplayRevision::new(101).unwrap(),
+            globe,
+            DisplayRevision::new(102).unwrap(),
+            Arc::clone(&layers),
+        );
+        PacketFixture {
+            packet,
+            layers,
+            surface,
+            diagnostic_cell: None,
         }
     }
 

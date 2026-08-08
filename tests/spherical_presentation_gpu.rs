@@ -13,6 +13,8 @@ fn spherical_gpu_public_counters_start_empty_and_modes_are_distinct() {
     assert_eq!(counters.fill_field, 0);
     assert_eq!(counters.diagnostics, 0);
     assert_eq!(counters.palettes, 0);
+    assert_eq!(counters.map_overlay_instances, 0);
+    assert_eq!(counters.globe_overlay_instances, 0);
     assert_eq!(counters.uniforms, 0);
     assert_eq!(counters.uploaded_bytes, 0);
 }
