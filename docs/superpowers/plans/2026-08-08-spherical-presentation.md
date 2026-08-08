@@ -533,7 +533,7 @@ git commit -m "feat: build seam-safe spherical maps"
 - Produces `PreparedGlobeMesh`, `GlobeVertex`, `GlobeCamera`, `MapCamera`, `SphericalViewMode`, and screen-to-ray transforms.
 - Globe geometry depends only on presentation source plus spherical surface; no field/range/palette argument is accepted.
 
-- [ ] **Step 1: Write the no-deformation and camera-only invalidation tests**
+- [x] **Step 1: Write the no-deformation and camera-only invalidation tests**
 
 Build a globe, serialize raw position/index/CellId bytes into a BLAKE3 hash, then prepare two radically different elevation arrays/ranges and assert the globe hash and every vertex component are unchanged. Assert every vertex radius differs from `1.0` by at most `2e-6`, every triangle normal points outward, and the semantic `CellId` set equals the surface cell set.
 
@@ -545,11 +545,11 @@ let globe = PreparedGlobeMesh::build(source.clone(), surface, budgets).unwrap();
 
 No test or production call may pass elevation. Test camera reset, deterministic trackball drag, bounded orthographic zoom, front/back visibility, screen-center ray, outside-disc miss, and that camera changes leave globe bytes and geometry revision unchanged.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_presentation_mesh --test spherical_picking -- --nocapture`
 
-- [ ] **Step 3: Implement unit geometry and view transforms**
+- [x] **Step 3: Implement unit geometry and view transforms**
 
 Emit a per-cell triangle fan. Convert every `f64` unit component to finite `f32`, verify radius before storing, and reverse only a triangle whose computed normal points inward. Store `[f32; 3]` plus raw `CellId` in vertices and checked `u32` indices.
 
@@ -557,7 +557,7 @@ Represent globe orientation as a normalized quaternion owned by `GlobeCamera`; f
 
 `MapCamera` stores pan/zoom independently per `SphericalProjectionKind`; switching modes does not overwrite either map camera or globe camera.
 
-- [ ] **Step 4: Verify no-deformation and camera behavior**
+- [x] **Step 4: Verify no-deformation and camera behavior**
 
 Run:
 
@@ -567,7 +567,7 @@ cargo test --test spherical_picking -- --nocapture
 cargo fmt --all -- --check
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/spherical_mesh.rs src/view/spherical_camera.rs src/view/mod.rs tests/spherical_presentation_mesh.rs tests/spherical_picking.rs
