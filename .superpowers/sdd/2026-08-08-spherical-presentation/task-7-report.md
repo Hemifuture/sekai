@@ -144,3 +144,80 @@ For every rejection, the installed source and every counter are byte-for-byte/eq
 - Task 9 still needs to provide the application-owned source-bound packet factory/registration path; that is why direct public free-form packet construction is intentionally unavailable here.
 - Task 8 owns edge/vector passes; this commit deliberately renders fills and diagnostic overlays only.
 - The new offscreen suite exercised a real available adapter here, but adapter/backend diversity remains dependent on CI and developer machines.
+
+## Fix Round 1: O(1) immutable-packet fast path
+
+### Review finding and root cause
+
+The first review found that flat large-upload counters did not imply constant-time static frames. `SphericalPaintCallback::prepare` correctly calls `prepare_packet` on every frame, but `prepare_packet_with_limits` called `validate_packet` before deciding whether anything changed. `validate_packet` iterates both meshes' cell IDs, indices, and positions, so the unchanged path was O(cell count).
+
+The fix adds an installed immutable-packet key containing the source, all five renderer-relevant revisions, and retained `Arc` clones for the projected map, globe mesh, and shared field layers. An O(1) return occurs only when every scalar identity/revision and every `Arc::ptr_eq` comparison matches. Retaining the three Arcs keeps their allocations alive, so allocator address reuse cannot create an ABA false match. First installs and every different-Arc or changed-revision candidate still enter full validation before any queue write, resource swap, or successful counter change.
+
+### Fix Round 1 RED
+
+Test-only thread-local instrumentation counts every full validation and every existing per-element cell-ID, index, and position visit. The static-frame regression calls the same sequence as callback preparation: `prepare_packet`, then one fixed uniform for map, globe, and rotated/zoomed globe frames.
+
+```powershell
+cargo test --lib gpu::spherical::renderer::tests::static_frames_and_camera_or_mode_changes_upload_only_fixed_uniforms -- --exact --nocapture
+```
+
+Before the fast path, the command exited 1 at the intended assertion:
+
+```text
+left:  ScanCounts { full_validations: 4, cell_ids: 5952, indices: 5952, positions: 5952 }
+right: ScanCounts { full_validations: 1, cell_ids: 1488, indices: 1488, positions: 1488 }
+```
+
+This reproduced exactly three unnecessary full validations and three extra complete geometry scans. The immutable field/value/palette data had no separate CPU element-validation loop; the new return is before packet validation, upload planning, vertex conversion, palette assembly, and buffer-size work, so the exact-match path cannot traverse those payloads either.
+
+### Fix Round 1 GREEN and safety guard
+
+After installing the exact key, the same test returned exit 0. The final focused suite printed:
+
+```text
+validation work after first install: ScanCounts { full_validations: 1, cell_ids: 1488, indices: 1488, positions: 1488 }
+validation work after static frames: ScanCounts { full_validations: 1, cell_ids: 1488, indices: 1488, positions: 1488 }
+```
+
+Therefore the first installation performs exactly one full validation, while repeated map/globe/rotated preparations add zero full validations and zero element visits. The associated upload evidence remained:
+
+```text
+after immutable upload: SphericalUploadCounters { map_geometry: 1, globe_geometry: 1, fill_field: 1, diagnostics: 1, palettes: 1, uniforms: 0, uploaded_bytes: 27152 }
+after camera/mode frames: SphericalUploadCounters { map_geometry: 1, globe_geometry: 1, fill_field: 1, diagnostics: 1, palettes: 1, uniforms: 3, uploaded_bytes: 27440 }
+```
+
+The source-rejection regression now constructs a distinct malformed packet whose map and globe Arcs differ but whose map/globe revisions exactly equal the installed packet's revisions. It asserts both pointer differences and revision equalities. Preparation increments `full_validations` by one, rejects `SourceMismatch` before element traversal, preserves every upload counter/source, and leaves the full offscreen RGBA result unchanged. This proves reused revisions on a different allocation cannot enter the fast path.
+
+### Fix Round 1 final verification
+
+```powershell
+cargo test --lib gpu::spherical -- --nocapture
+# exit 0: 9 passed, 0 failed, 264 filtered out; real adapter/offscreen execution
+
+cargo test --test spherical_presentation_gpu -- --nocapture
+# exit 0: 3 passed, 0 failed
+
+cargo test --lib gpu::field::renderer::tests::offscreen_scalar_and_category_match_cpu_reference -- --exact --nocapture
+# exit 0: 1 passed, 0 failed; legacy emitted the established no-fallback-adapter skip
+
+cargo clippy --lib --tests -- -D warnings
+# exit 0, no warnings
+
+cargo fmt --all -- --check
+# exit 0
+
+git diff --check
+# exit 0; only Git's LF-to-CRLF working-copy notice was printed
+
+cargo test
+# exit 0 in 155.0 seconds: 273 library tests (272 passed, 1 ignored), then every binary,
+# integration, and doc-test target completed with no failures
+```
+
+### Fix Round 1 self-review and concerns
+
+- The fast path precedes every O(n) scan and allocation, but only exact immutable component identities can reach it.
+- The renderer retains the identity Arcs rather than raw addresses, preventing allocation-address reuse while a key is installed.
+- A different allocation with reused revisions remains subject to source/cardinality/geometry/byte/limit validation and the original atomic replacement rules.
+- No public API, WGSL binding, shader behavior, Task 8 overlay pass, or Task 9 packet-factory boundary changed.
+- No Fix Round 1 blocker remains. The two review observations about crate-local source-bound tests and final-ledger cleanup remain outside this fix finding, as directed.

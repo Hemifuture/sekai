@@ -12,6 +12,63 @@ use crate::view::{
 const MIN_BUFFER_BYTES: u64 = 16;
 const MAX_PALETTE_ENTRIES: usize = 65_536;
 
+#[cfg(test)]
+mod validation_probe {
+    use std::cell::Cell;
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(super) struct ScanCounts {
+        pub full_validations: u64,
+        pub cell_ids: u64,
+        pub indices: u64,
+        pub positions: u64,
+    }
+
+    thread_local! {
+        static COUNTS: Cell<ScanCounts> = Cell::new(ScanCounts::default());
+    }
+
+    pub(super) fn reset() {
+        COUNTS.set(ScanCounts::default());
+    }
+
+    pub(super) fn snapshot() -> ScanCounts {
+        COUNTS.get()
+    }
+
+    pub(super) fn full_validation() {
+        COUNTS.with(|slot| {
+            let mut counts = slot.get();
+            counts.full_validations += 1;
+            slot.set(counts);
+        });
+    }
+
+    pub(super) fn cell_id() {
+        COUNTS.with(|slot| {
+            let mut counts = slot.get();
+            counts.cell_ids += 1;
+            slot.set(counts);
+        });
+    }
+
+    pub(super) fn index() {
+        COUNTS.with(|slot| {
+            let mut counts = slot.get();
+            counts.indices += 1;
+            slot.set(counts);
+        });
+    }
+
+    pub(super) fn position() {
+        COUNTS.with(|slot| {
+            let mut counts = slot.get();
+            counts.positions += 1;
+            slot.set(counts);
+        });
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct GpuMapVertex {
@@ -374,6 +431,35 @@ impl From<&SphericalGpuPacket> for InstalledRevisions {
     }
 }
 
+#[derive(Debug, Clone)]
+struct InstalledPacketKey {
+    source: SphericalPresentationSource,
+    revisions: InstalledRevisions,
+    map: Arc<PreparedProjectedMap>,
+    globe: Arc<PreparedGlobeMesh>,
+    layers: Arc<PreparedFieldLayers>,
+}
+
+impl InstalledPacketKey {
+    fn for_packet(packet: &SphericalGpuPacket) -> Self {
+        Self {
+            source: packet.source().clone(),
+            revisions: InstalledRevisions::from(packet),
+            map: Arc::clone(&packet.map),
+            globe: Arc::clone(&packet.globe),
+            layers: Arc::clone(&packet.layers),
+        }
+    }
+
+    fn exactly_matches(&self, packet: &SphericalGpuPacket) -> bool {
+        self.source == *packet.source()
+            && self.revisions == InstalledRevisions::from(packet)
+            && Arc::ptr_eq(&self.map, &packet.map)
+            && Arc::ptr_eq(&self.globe, &packet.globe)
+            && Arc::ptr_eq(&self.layers, &packet.layers)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct UploadPlan {
     map_geometry: bool,
@@ -439,6 +525,7 @@ pub struct SphericalFieldRenderer {
     globe_pipeline: wgpu::RenderPipeline,
     installed_source: Option<SphericalPresentationSource>,
     installed_revisions: Option<InstalledRevisions>,
+    installed_packet_key: Option<InstalledPacketKey>,
     map_index_count: u32,
     globe_index_count: u32,
     counters: SphericalUploadCounters,
@@ -557,6 +644,7 @@ impl SphericalFieldRenderer {
             globe_pipeline,
             installed_source: None,
             installed_revisions: None,
+            installed_packet_key: None,
             map_index_count: 0,
             globe_index_count: 0,
             counters: SphericalUploadCounters::default(),
@@ -581,6 +669,13 @@ impl SphericalFieldRenderer {
         packet: &SphericalGpuPacket,
         limits: wgpu::Limits,
     ) -> Result<(), SphericalRenderError> {
+        if self
+            .installed_packet_key
+            .as_ref()
+            .is_some_and(|key| key.exactly_matches(packet))
+        {
+            return Ok(());
+        }
         validate_packet(packet)?;
         let plan = UploadPlan::between(
             self.installed_source.as_ref(),
@@ -814,6 +909,7 @@ impl SphericalFieldRenderer {
         }
         self.installed_source = Some(packet.source().clone());
         self.installed_revisions = Some(InstalledRevisions::from(packet));
+        self.installed_packet_key = Some(InstalledPacketKey::for_packet(packet));
         self.map_index_count = map_index_count;
         self.globe_index_count = globe_index_count;
         self.counters = next_counters;
@@ -982,6 +1078,8 @@ impl BufferSizes {
 }
 
 fn validate_packet(packet: &SphericalGpuPacket) -> Result<(), SphericalRenderError> {
+    #[cfg(test)]
+    validation_probe::full_validation();
     if packet.map().source() != packet.source() {
         return Err(SphericalRenderError::SourceMismatch {
             resource: "projected map",
@@ -1035,15 +1133,18 @@ fn validate_packet(packet: &SphericalGpuPacket) -> Result<(), SphericalRenderErr
         });
     }
     if packet.map().vertices().iter().any(|vertex| {
+        #[cfg(test)]
+        validation_probe::position();
         let point = vertex.position();
         !point.x().is_finite() || !point.y().is_finite()
-    }) || packet
-        .globe()
-        .vertices()
-        .iter()
-        .flat_map(|vertex| vertex.position())
-        .any(|component| !component.is_finite())
-    {
+    }) || packet.globe().vertices().iter().any(|vertex| {
+        #[cfg(test)]
+        validation_probe::position();
+        vertex
+            .position()
+            .into_iter()
+            .any(|component| !component.is_finite())
+    }) {
         return Err(SphericalRenderError::InvalidGeometry {
             resource: "vertex positions",
         });
@@ -1073,9 +1174,15 @@ fn validate_geometry(
     indices: &[u32],
     cell_count: usize,
 ) -> Result<(), SphericalRenderError> {
-    if cells.any(|cell| cell as usize >= cell_count)
-        || indices.iter().any(|&index| index as usize >= vertex_count)
-    {
+    if cells.any(|cell| {
+        #[cfg(test)]
+        validation_probe::cell_id();
+        cell as usize >= cell_count
+    }) || indices.iter().any(|&index| {
+        #[cfg(test)]
+        validation_probe::index();
+        index as usize >= vertex_count
+    }) {
         return Err(SphericalRenderError::InvalidGeometry { resource });
     }
     checked_u32(vertex_count, "vertex count")?;
@@ -1401,8 +1508,8 @@ mod tests {
     use std::sync::{mpsc, Arc};
 
     use super::{
-        wgpu, GpuGlobeVertex, GpuMapVertex, SphericalFieldRenderer, SphericalFrameUniform,
-        SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
+        validation_probe, wgpu, GpuGlobeVertex, GpuMapVertex, SphericalFieldRenderer,
+        SphericalFrameUniform, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
     };
     use crate::engine::BuildResultHash;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -1454,12 +1561,15 @@ mod tests {
         let mut renderer =
             SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
 
+        validation_probe::reset();
         renderer
             .prepare_packet(&device, &queue, &fixture.packet)
             .unwrap();
-        renderer
-            .prepare_packet(&device, &queue, &fixture.packet)
-            .unwrap();
+        let after_first_validation = validation_probe::snapshot();
+        assert_eq!(after_first_validation.full_validations, 1);
+        assert!(after_first_validation.cell_ids > 0);
+        assert!(after_first_validation.indices > 0);
+        assert!(after_first_validation.positions > 0);
         let after_upload = renderer.upload_counters();
         assert_eq!(after_upload.map_geometry, 1);
         assert_eq!(after_upload.globe_geometry, 1);
@@ -1479,14 +1589,25 @@ mod tests {
         let rotated_uniform =
             SphericalFrameUniform::for_globe(&fixture.packet, rotated, [128, 128]).unwrap();
 
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
         let map_generation =
             renderer.paint_for_test(&queue, SphericalRenderMode::Map, &map_uniform);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
         let globe_generation =
             renderer.paint_for_test(&queue, SphericalRenderMode::Globe, &globe_uniform);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
         let rotated_generation =
             renderer.paint_for_test(&queue, SphericalRenderMode::Globe, &rotated_uniform);
 
         let after_frames = renderer.upload_counters();
+        let after_static_frames = validation_probe::snapshot();
+        assert_eq!(after_static_frames, after_first_validation);
         assert_eq!(after_frames.map_geometry, after_upload.map_geometry);
         assert_eq!(after_frames.globe_geometry, after_upload.globe_geometry);
         assert_eq!(after_frames.fill_field, after_upload.fill_field);
@@ -1496,6 +1617,8 @@ mod tests {
         assert!(!renderer.is_frame_current(map_generation));
         assert!(!renderer.is_frame_current(globe_generation));
         assert!(renderer.is_frame_current(rotated_generation));
+        eprintln!("validation work after first install: {after_first_validation:?}");
+        eprintln!("validation work after static frames: {after_static_frames:?}");
         eprintln!("after immutable upload: {after_upload:?}");
         eprintln!("after camera/mode frames: {after_frames:?}");
     }
@@ -1516,12 +1639,24 @@ mod tests {
         );
         let mut renderer =
             SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        validation_probe::reset();
         renderer
             .prepare_packet(&device, &queue, &installed.packet)
             .unwrap();
         let baseline = prepare_and_read_map(&device, &queue, &mut renderer, &installed.packet);
         let installed_source = renderer.installed_source().cloned();
         let before = renderer.upload_counters();
+        let scans_before = validation_probe::snapshot();
+        assert_eq!(
+            rejected.map_geometry_revision(),
+            installed.packet.map_geometry_revision()
+        );
+        assert_eq!(
+            rejected.globe_geometry_revision(),
+            installed.packet.globe_geometry_revision()
+        );
+        assert!(!Arc::ptr_eq(&rejected.map, &installed.packet.map));
+        assert!(!Arc::ptr_eq(&rejected.globe, &installed.packet.globe));
 
         let error = renderer
             .prepare_packet(&device, &queue, &rejected)
@@ -1535,6 +1670,14 @@ mod tests {
         );
         assert_eq!(renderer.installed_source(), installed_source.as_ref());
         assert_eq!(renderer.upload_counters(), before);
+        let scans_after = validation_probe::snapshot();
+        assert_eq!(
+            scans_after.full_validations,
+            scans_before.full_validations + 1
+        );
+        assert_eq!(scans_after.cell_ids, scans_before.cell_ids);
+        assert_eq!(scans_after.indices, scans_before.indices);
+        assert_eq!(scans_after.positions, scans_before.positions);
         assert_eq!(
             readback_renderer(
                 &device,
