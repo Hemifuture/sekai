@@ -483,7 +483,7 @@ git commit -m "feat: add shared spherical picking"
 - Produces `PreparedProjectedMap`, `ProjectedMapVertex`, `ProjectedEdgeSegment`, `SphericalMeshBudgets`, and `SphericalMeshError`.
 - `PreparedProjectedMap::build(source, surface, projection, budgets)` derives cell triangle fans, seam fragments, edge fragments, bounds, indices, and source identity.
 
-- [ ] **Step 1: Write seam, pole, and semantic-ID tests**
+- [x] **Step 1: Write seam, pole, and semantic-ID tests**
 
 For generated 42- and 162-cell surfaces, both projections, and central meridians `0`, `π/2`, and `π - 1e-9`, assert all positions finite; every triangle has nonzero signed area; all indices are in range; and the set of vertex/triangle `CellId`s equals the authoritative cell set exactly. Assert every authoritative cell has at least one triangle.
 
@@ -491,17 +491,17 @@ Classify authoritative cell fans as seam/non-seam before projection. Assert non-
 
 Pick directions one micro-radian to each side of the anti-meridian, inverse through the projection, and assert the shared locator yields the corresponding authoritative IDs. Add budget tests for cell, vertex, index, edge-segment, and checked-integer overflow errors.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_presentation_mesh -- --nocapture`
 
-- [ ] **Step 3: Implement spherical seam clipping before projection**
+- [x] **Step 3: Implement spherical seam clipping before projection**
 
 For each cell, form triangles `(centroid, boundary[i], boundary[i+1])`. Convert vertices to latitude/relative-longitude; unwrap each triangle around its first longitude. If its unwrapped range stays inside one `[-π, π]` copy, project directly. Otherwise clip against `-π` or `π` in longitude space, compute intersections on the original minor great-circle arc by bounded bisection on wrapped longitude, emit one polygon per side, and triangulate each convex fragment as a fan. Duplicate display vertices only; retain the source `CellId`.
 
 Apply the same arc split to each authoritative edge, emitting one or two `ProjectedEdgeSegment`s with the same `EdgeId`. Reject degenerate/non-finite output instead of dropping an authoritative cell. Enforce checked `usize -> u32` conversions and explicit default budgets derived from `MAX_SPHERICAL_*` constants.
 
-- [ ] **Step 4: Verify mesh and projection adjacency**
+- [x] **Step 4: Verify mesh and projection adjacency**
 
 Run:
 
@@ -511,7 +511,7 @@ cargo test --test spherical_projection -- --nocapture
 cargo test --test spherical_picking -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/spherical_mesh.rs src/view/mod.rs tests/spherical_presentation_mesh.rs
