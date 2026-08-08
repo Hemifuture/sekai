@@ -7,3 +7,6 @@ pub use renderer::{
     SphericalFieldRenderer, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
     SphericalUploadCounters,
 };
+
+#[cfg(test)]
+pub(crate) use renderer::{installed_overlay_arc_ids, validation_probe};

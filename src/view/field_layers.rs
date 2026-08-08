@@ -32,6 +32,8 @@ pub(crate) struct FieldLayerPreparationCounts {
     pub(crate) fill: usize,
     pub(crate) overlay: usize,
     pub(crate) diagnostics: usize,
+    pub(crate) diagnostic_validation_values_scanned: usize,
+    pub(crate) diagnostic_fingerprint_values_scanned: usize,
 }
 
 #[cfg(test)]
@@ -992,6 +994,26 @@ impl PreparedFieldLayers {
     pub const fn glyph_lod_key(&self) -> GlyphLodKey {
         self.prepared_state.glyph_lod_key
     }
+
+    /// Returns whether every layer-bearing state input already matches this packet.
+    ///
+    /// Raw camera zoom and display-only vector animation are intentionally excluded. Their
+    /// effects are represented by the effective glyph key and fixed frame uniform respectively.
+    pub(crate) fn matches_camera_only_state(&self, state: &SphericalFieldDisplayState) -> bool {
+        self.prepared_state.fill_field.as_ref() == state.fill_field.as_ref()
+            && self.prepared_state.overlay_field.as_ref() == state.overlay_field.as_ref()
+            && self.prepared_state.range_mode == state.range_mode
+            && self.prepared_state.palette_override == state.palette_override
+            && self.prepared_state.diagnostic_scope == state.diagnostic_scope
+            && self.prepared_state.selected_cell
+                == match state.selected_entity {
+                    Some(SelectedSurfaceEntity::Cell(cell)) => Some(cell),
+                    Some(SelectedSurfaceEntity::Edge(_)) | None => None,
+                }
+            && self.prepared_state.glyph_lod_key
+                == GlyphLodKey::for_zoom(state.vector_lod, state.vector_view_zoom)
+            && self.diagnostics_enabled == state.diagnostics_enabled
+    }
 }
 
 /// UI-independent selection and preferences for spherical field presentation.
@@ -1503,6 +1525,10 @@ fn validate_diagnostics(
     diagnostics: &[OwnedViewDiagnostic],
     cell_count: usize,
 ) -> Result<(), DisplayPrepareError> {
+    #[cfg(test)]
+    record_preparation(|counts| {
+        counts.diagnostic_validation_values_scanned += diagnostics.len();
+    });
     for diagnostic in diagnostics {
         let Some(cell) = diagnostic.cell_id else {
             continue;
@@ -1688,6 +1714,10 @@ fn diagnostics_need_preparation(
 }
 
 fn diagnostics_fingerprint(diagnostics: &[OwnedViewDiagnostic]) -> blake3::Hash {
+    #[cfg(test)]
+    record_preparation(|counts| {
+        counts.diagnostic_fingerprint_values_scanned += diagnostics.len();
+    });
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.spherical-field-diagnostics.v1\0");
     hasher.update(&(diagnostics.len() as u64).to_le_bytes());

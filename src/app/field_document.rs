@@ -95,6 +95,46 @@ pub(super) fn update_spherical_document_layers<D: SphericalFieldLayerDocument + 
     Ok(layers)
 }
 
+/// Reconciles a camera-only event without scanning document data inside one LOD band.
+///
+/// The raw active-camera zoom is always published. Catalog construction and full layer
+/// reconciliation are deferred while source identity, layer-bearing state, and effective glyph
+/// density remain unchanged, so callers retain the exact outer packet identity on the ordinary
+/// camera fast path. Source or pending non-camera state changes fall through to the general path.
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconcile_spherical_document_camera<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    current: &Arc<PreparedFieldLayers>,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<Arc<PreparedFieldLayers>, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
+    if current.source() == &document.presentation_source()
+        && current.matches_camera_only_state(&candidate_state)
+    {
+        *state = candidate_state;
+        return Ok(Arc::clone(current));
+    }
+
+    update_spherical_document_layers(
+        document,
+        current,
+        mode,
+        projection,
+        map_camera,
+        globe_camera,
+        state,
+        clock,
+    )
+    .map(Arc::new)
+}
+
 /// Copies engine diagnostics into renderer-independent, document-owned values.
 pub(super) fn owned_view_diagnostics(report: &BuildReport) -> Vec<OwnedViewDiagnostic> {
     report

@@ -380,14 +380,18 @@ pub(super) enum SphericalNaturalDisplayError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::Arc;
+
+    use eframe::egui_wgpu::wgpu;
 
     use super::{
         try_replace_spherical_natural_document, SphericalNaturalDisplayError,
         SphericalNaturalFieldDocument,
     };
     use crate::app::field_document::{
-        prepare_spherical_document_layers, update_spherical_document_layers, FieldDocument,
+        prepare_spherical_document_layers, reconcile_spherical_document_camera,
+        update_spherical_document_layers, FieldDocument, SphericalFieldLayerDocument,
     };
     use crate::engine::{
         BuildEngine, BuildOutcome, BuildOutcomeIntegrityError, BuildReport, ExternalArtifacts,
@@ -401,14 +405,19 @@ mod tests {
         SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
+    use crate::gpu::spherical::{
+        installed_overlay_arc_ids, validation_probe, SphericalFieldRenderer, SphericalGpuPacket,
+    };
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
     use crate::view::{
-        built_in_palette, classify_spherical_channel, prepare_edge_field,
-        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, GlobeCamera,
-        GlyphLodKey, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedOverlayKind,
-        PreparedSphericalOverlay, SphericalFieldChannel, SphericalFieldDisplayState,
-        SphericalPresentationSource, SphericalProjectionKind, SphericalViewMode, VectorGlyphLod,
-        ViewDiagnosticSeverity,
+        built_in_palette, classify_spherical_channel, field_layer_preparation_counts,
+        prepare_edge_field, prepare_spherical_field_layers, reset_field_layer_preparation_counts,
+        DisplayPrepareError, DisplayRangeMode, DisplayRevision, DisplayRevisionClock, FieldCatalog,
+        GlobeCamera, GlyphLodKey, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedFieldLayers,
+        PreparedGlobeMesh, PreparedOverlayKind, PreparedProjectedMap, PreparedSphericalOverlay,
+        SphericalFieldChannel, SphericalFieldDisplayState, SphericalMeshBudgets,
+        SphericalPresentationSource, SphericalProjection, SphericalProjectionKind,
+        SphericalViewMode, VectorGlyphLod, ViewDiagnosticSeverity,
     };
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
@@ -424,6 +433,64 @@ mod tests {
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
         "937bb06d57650e7f501fbc05fef9736a824aa41f7ce0f24d8b207cbe5afb7a66";
+
+    struct CountingSphericalLayerDocument<'a> {
+        inner: &'a SphericalNaturalFieldDocument,
+        catalog_calls: Cell<usize>,
+    }
+
+    impl<'a> CountingSphericalLayerDocument<'a> {
+        fn new(inner: &'a SphericalNaturalFieldDocument) -> Self {
+            Self {
+                inner,
+                catalog_calls: Cell::new(0),
+            }
+        }
+
+        fn reset_catalog_calls(&self) {
+            self.catalog_calls.set(0);
+        }
+
+        fn catalog_calls(&self) -> usize {
+            self.catalog_calls.get()
+        }
+    }
+
+    impl FieldDocument for CountingSphericalLayerDocument<'_> {
+        fn catalog(&self) -> Result<FieldCatalog<'_>, crate::view::FieldViewError> {
+            self.catalog_calls.set(self.catalog_calls.get() + 1);
+            self.inner.catalog()
+        }
+
+        fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
+            self.inner.diagnostics()
+        }
+
+        fn preferred_field(&self) -> Option<crate::world::fields::FieldId> {
+            self.inner.preferred_field()
+        }
+
+        fn preferred_range(
+            &self,
+            field: &crate::world::fields::FieldId,
+        ) -> Option<DisplayRangeMode> {
+            self.inner.preferred_range(field)
+        }
+    }
+
+    impl SphericalFieldLayerDocument for CountingSphericalLayerDocument<'_> {
+        fn presentation_source(&self) -> SphericalPresentationSource {
+            self.inner.presentation_source()
+        }
+
+        fn spherical_cell_count(&self) -> usize {
+            self.inner.surface.snapshot().cells().len()
+        }
+
+        fn spherical_edge_count(&self) -> usize {
+            self.inner.surface.snapshot().edges().len()
+        }
+    }
 
     fn build_outcome_with_seed(root_seed: RootSeed, radius_m: f64) -> BuildOutcome {
         let mut external = ExternalArtifacts::new();
@@ -470,6 +537,86 @@ mod tests {
 
     fn payload_catalog(document: &SphericalNaturalFieldDocument) -> FieldCatalog<'_> {
         document.catalog().unwrap()
+    }
+
+    fn next_revision(clock: &DisplayRevisionClock) -> DisplayRevision {
+        let mut probe = clock.clone();
+        probe.issue().unwrap()
+    }
+
+    fn assert_only_vector_glyph_revision_changed(
+        before: &PreparedFieldLayers,
+        after: &PreparedFieldLayers,
+    ) {
+        assert_eq!(before.revisions().fill, after.revisions().fill);
+        assert_eq!(before.revisions().overlay, after.revisions().overlay);
+        assert_eq!(
+            before.revisions().diagnostics,
+            after.revisions().diagnostics
+        );
+        assert_eq!(
+            before.revisions().fill_palette,
+            after.revisions().fill_palette
+        );
+        assert_eq!(
+            before.revisions().overlay_palette,
+            after.revisions().overlay_palette
+        );
+        assert_ne!(
+            before.revisions().vector_glyphs,
+            after.revisions().vector_glyphs
+        );
+    }
+
+    fn request_spherical_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                })
+                .await;
+            let adapter = match adapter {
+                Some(adapter) => adapter,
+                None => {
+                    let adapter = instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            power_preference: wgpu::PowerPreference::LowPower,
+                            force_fallback_adapter: false,
+                            compatible_surface: None,
+                        })
+                        .await;
+                    let Some(adapter) = adapter else {
+                        return gpu_unavailable("no fallback or hardware adapter is available");
+                    };
+                    adapter
+                }
+            };
+            match adapter
+                .request_device(
+                    &wgpu::DeviceDescriptor {
+                        label: Some("Spherical Camera Reconciliation Test Device"),
+                        required_limits: wgpu::Limits::downlevel_defaults(),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+            {
+                Ok(device) => Some(device),
+                Err(error) => gpu_unavailable(&format!("test device request failed: {error}")),
+            }
+        })
+    }
+
+    fn gpu_unavailable<T>(reason: &str) -> Option<T> {
+        if std::env::var("SEKAI_REQUIRE_SPHERICAL_GPU").as_deref() == Ok("1") {
+            panic!("spherical GPU evidence is required: {reason}");
+        }
+        eprintln!("skipping optional spherical GPU test: {reason}");
+        None
     }
 
     fn hash_len(hasher: &mut blake3::Hasher, value: usize) {
@@ -833,33 +980,42 @@ mod tests {
     }
 
     #[test]
-    fn active_map_and_globe_camera_zoom_drive_document_layer_lod_crossings() {
+    fn camera_only_document_reconciliation_retains_the_outer_arc_and_skips_scans_in_band() {
         let outcome = build_outcome(6_371_000.0);
-        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let mut document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        document.diagnostics.push(OwnedViewDiagnostic {
+            severity: ViewDiagnosticSeverity::Warning,
+            code: "test.camera-lod-diagnostic".into(),
+            field_id: Some(plate_velocity_field_id()),
+            cell_id: Some(CellId::from_raw(0)),
+            message: "nonempty diagnostic fingerprint fixture".into(),
+        });
+        let document = CountingSphericalLayerDocument::new(&document);
         let mut state = SphericalFieldDisplayState::default();
         state.select_overlay(Some(plate_velocity_field_id()));
         state.set_vector_lod(VectorGlyphLod::Low);
-        let mut clock = crate::view::DisplayRevisionClock::default();
+        let mut clock = DisplayRevisionClock::default();
         let projection = SphericalProjectionKind::EqualEarth;
         let mut map_camera = MapCamera::default();
         assert!(map_camera.zoom_by(projection, 1.99));
+        let low = Arc::new(
+            prepare_spherical_document_layers(
+                &document,
+                SphericalViewMode::Map,
+                projection,
+                map_camera,
+                GlobeCamera::default(),
+                &mut state,
+                &mut clock,
+            )
+            .unwrap(),
+        );
 
-        let low = prepare_spherical_document_layers(
-            &document,
-            SphericalViewMode::Map,
-            projection,
-            map_camera,
-            GlobeCamera::default(),
-            &mut state,
-            &mut clock,
-        )
-        .unwrap();
-        assert_eq!(state.vector_view_zoom(), 1.99);
-        assert_eq!(low.glyph_lod_key(), GlyphLodKey::Low);
-
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
         map_camera.reset(projection);
         assert!(map_camera.zoom_by(projection, 2.0));
-        let medium = update_spherical_document_layers(
+        let medium = reconcile_spherical_document_camera(
             &document,
             &low,
             SphericalViewMode::Map,
@@ -870,16 +1026,25 @@ mod tests {
             &mut clock,
         )
         .unwrap();
-        assert_eq!(state.vector_view_zoom(), 2.0);
+        assert!(!Arc::ptr_eq(&low, &medium));
         assert_eq!(medium.glyph_lod_key(), GlyphLodKey::Medium);
-        assert_ne!(
-            low.revisions().vector_glyphs,
-            medium.revisions().vector_glyphs
+        assert_only_vector_glyph_revision_changed(&low, &medium);
+        assert_eq!(document.catalog_calls(), 1);
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_validation_values_scanned,
+            1
+        );
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
+            1
         );
 
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        let clock_before_in_band = next_revision(&clock);
         let mut globe_camera = GlobeCamera::default();
         assert!(globe_camera.set_orthographic_scale(2.5));
-        let globe_in_band = update_spherical_document_layers(
+        let globe_in_band = reconcile_spherical_document_camera(
             &document,
             &medium,
             SphericalViewMode::Globe,
@@ -891,11 +1056,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state.vector_view_zoom(), 2.5);
-        assert_eq!(globe_in_band.glyph_lod_key(), GlyphLodKey::Medium);
-        assert_eq!(medium.revisions(), globe_in_band.revisions());
+        assert!(Arc::ptr_eq(&medium, &globe_in_band));
+        assert_eq!(document.catalog_calls(), 0);
+        assert_eq!(
+            field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts::default()
+        );
+        assert_eq!(next_revision(&clock), clock_before_in_band);
 
-        assert!(globe_camera.set_orthographic_scale(4.0));
-        let high = update_spherical_document_layers(
+        let repeated = reconcile_spherical_document_camera(
             &document,
             &globe_in_band,
             SphericalViewMode::Globe,
@@ -906,12 +1075,450 @@ mod tests {
             &mut clock,
         )
         .unwrap();
-        assert_eq!(state.vector_view_zoom(), 4.0);
-        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
-        assert_ne!(
-            globe_in_band.revisions().vector_glyphs,
-            high.revisions().vector_glyphs
+        assert!(Arc::ptr_eq(&globe_in_band, &repeated));
+        assert_eq!(document.catalog_calls(), 0);
+        assert_eq!(
+            field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts::default()
         );
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        assert!(globe_camera.set_orthographic_scale(4.0));
+        let high = reconcile_spherical_document_camera(
+            &document,
+            &repeated,
+            SphericalViewMode::Globe,
+            projection,
+            map_camera,
+            globe_camera,
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&repeated, &high));
+        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
+        assert_only_vector_glyph_revision_changed(&repeated, &high);
+        assert_eq!(document.catalog_calls(), 1);
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_validation_values_scanned,
+            1
+        );
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
+            1
+        );
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        assert!(globe_camera.set_orthographic_scale(4.5));
+        let high_in_band = reconcile_spherical_document_camera(
+            &document,
+            &high,
+            SphericalViewMode::Globe,
+            projection,
+            map_camera,
+            globe_camera,
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(state.vector_view_zoom(), 4.5);
+        assert!(Arc::ptr_eq(&high, &high_in_band));
+        assert_eq!(document.catalog_calls(), 0);
+        assert_eq!(
+            field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts::default()
+        );
+    }
+
+    #[test]
+    fn camera_only_reconciliation_never_reuses_layers_from_another_source() {
+        let first_outcome = build_outcome_with_seed(ROOT_SEED, 6_371_000.0);
+        let second_outcome = build_outcome_with_seed(RootSeed::new(77), 6_371_000.0);
+        let first = SphericalNaturalFieldDocument::from_build_outcome(&first_outcome).unwrap();
+        let second = SphericalNaturalFieldDocument::from_build_outcome(&second_outcome).unwrap();
+        assert_eq!(
+            first.surface.snapshot().cells().len(),
+            second.surface.snapshot().cells().len()
+        );
+        assert_ne!(first.presentation_source(), second.presentation_source());
+        let first = CountingSphericalLayerDocument::new(&first);
+        let second = CountingSphericalLayerDocument::new(&second);
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(plate_velocity_field_id()));
+        state.set_vector_lod(VectorGlyphLod::Low);
+        let mut clock = DisplayRevisionClock::default();
+        let projection = SphericalProjectionKind::EqualEarth;
+        let mut camera = MapCamera::default();
+        assert!(camera.zoom_by(projection, 2.5));
+        let first_layers = Arc::new(
+            prepare_spherical_document_layers(
+                &first,
+                SphericalViewMode::Map,
+                projection,
+                camera,
+                GlobeCamera::default(),
+                &mut state,
+                &mut clock,
+            )
+            .unwrap(),
+        );
+
+        second.reset_catalog_calls();
+        let replaced = reconcile_spherical_document_camera(
+            &second,
+            &first_layers,
+            SphericalViewMode::Map,
+            projection,
+            camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        assert!(!Arc::ptr_eq(&first_layers, &replaced));
+        assert_eq!(replaced.source(), &second.presentation_source());
+        assert_eq!(second.catalog_calls(), 1);
+        assert_eq!(replaced.glyph_lod_key(), GlyphLodKey::Medium);
+    }
+
+    #[test]
+    fn camera_only_reconciliation_falls_back_for_pending_layer_state() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let document = CountingSphericalLayerDocument::new(&document);
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(plate_velocity_field_id()));
+        state.set_vector_lod(VectorGlyphLod::Low);
+        let mut clock = DisplayRevisionClock::default();
+        let projection = SphericalProjectionKind::EqualEarth;
+        let mut camera = MapCamera::default();
+        assert!(camera.zoom_by(projection, 2.5));
+        let current = Arc::new(
+            prepare_spherical_document_layers(
+                &document,
+                SphericalViewMode::Map,
+                projection,
+                camera,
+                GlobeCamera::default(),
+                &mut state,
+                &mut clock,
+            )
+            .unwrap(),
+        );
+
+        state.select_fill(preliminary_mean_air_temperature_c_field_id());
+        document.reset_catalog_calls();
+        let updated = reconcile_spherical_document_camera(
+            &document,
+            &current,
+            SphericalViewMode::Map,
+            projection,
+            camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        assert!(!Arc::ptr_eq(&current, &updated));
+        assert_eq!(document.catalog_calls(), 1);
+        assert_eq!(
+            updated.fill().field_id(),
+            &preliminary_mean_air_temperature_c_field_id()
+        );
+        assert_ne!(current.revisions().fill, updated.revisions().fill);
+    }
+
+    #[test]
+    fn retained_camera_layers_keep_renderer_validation_fixed_and_only_write_the_uniform() {
+        let Some((device, queue)) = request_spherical_test_device() else {
+            return;
+        };
+        let outcome = build_outcome(6_371_000.0);
+        let mut document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        document.diagnostics.push(OwnedViewDiagnostic {
+            severity: ViewDiagnosticSeverity::Warning,
+            code: "test.camera-renderer-diagnostic".into(),
+            field_id: Some(plate_velocity_field_id()),
+            cell_id: Some(CellId::from_raw(0)),
+            message: "renderer fast-path keeps this diagnostic unscanned".into(),
+        });
+        let document = CountingSphericalLayerDocument::new(&document);
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(plate_velocity_field_id()));
+        state.set_vector_lod(VectorGlyphLod::Low);
+        let mut clock = DisplayRevisionClock::default();
+        let projection_kind = SphericalProjectionKind::EqualEarth;
+        let projection = SphericalProjection::new(projection_kind, 0.0).unwrap();
+        let mut map_camera = MapCamera::default();
+        assert!(map_camera.zoom_by(projection_kind, 1.99));
+        let low = Arc::new(
+            prepare_spherical_document_layers(
+                &document,
+                SphericalViewMode::Map,
+                projection_kind,
+                map_camera,
+                GlobeCamera::default(),
+                &mut state,
+                &mut clock,
+            )
+            .unwrap(),
+        );
+        let source = low.source().clone();
+        let map = Arc::new(
+            PreparedProjectedMap::build(
+                source.clone(),
+                document.inner.surface.snapshot(),
+                projection,
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap(),
+        );
+        let globe = Arc::new(
+            PreparedGlobeMesh::build(
+                source,
+                document.inner.surface.snapshot(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap(),
+        );
+        let map_revision = DisplayRevision::new(700).unwrap();
+        let globe_revision = DisplayRevision::new(701).unwrap();
+        let packet = SphericalGpuPacket::new(
+            Arc::clone(&map),
+            map_revision,
+            Arc::clone(&globe),
+            globe_revision,
+            Arc::clone(&low),
+        );
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        validation_probe::reset();
+        renderer.prepare_packet(&device, &queue, &packet).unwrap();
+        let installed_scans = validation_probe::snapshot();
+        let installed_uploads = renderer.upload_counters();
+        let installed_overlay_arcs = installed_overlay_arc_ids(&renderer).unwrap();
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        map_camera.reset(projection_kind);
+        assert!(map_camera.zoom_by(projection_kind, 2.0));
+        let medium = reconcile_spherical_document_camera(
+            &document,
+            &low,
+            SphericalViewMode::Map,
+            projection_kind,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let medium_packet = SphericalGpuPacket::new(
+            Arc::clone(&map),
+            map_revision,
+            Arc::clone(&globe),
+            globe_revision,
+            Arc::clone(&medium),
+        );
+        renderer
+            .prepare_packet(&device, &queue, &medium_packet)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&low, &medium));
+        assert_only_vector_glyph_revision_changed(&low, &medium);
+        assert_eq!(document.catalog_calls(), 1);
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_validation_values_scanned,
+            1
+        );
+        assert_eq!(
+            field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
+            1
+        );
+        let medium_overlay_arcs = installed_overlay_arc_ids(&renderer).unwrap();
+        assert_ne!(medium_overlay_arcs, installed_overlay_arcs);
+        let medium_uploads = renderer.upload_counters();
+        assert_eq!(
+            medium_uploads.map_overlay_instances,
+            installed_uploads.map_overlay_instances + 1
+        );
+        assert_eq!(
+            medium_uploads.globe_overlay_instances,
+            installed_uploads.globe_overlay_instances + 1
+        );
+        let medium_scans = validation_probe::snapshot();
+        assert_eq!(
+            medium_scans.full_validations,
+            installed_scans.full_validations + 1
+        );
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        map_camera.reset(projection_kind);
+        assert!(map_camera.zoom_by(projection_kind, 2.5));
+        let retained = reconcile_spherical_document_camera(
+            &document,
+            &medium,
+            SphericalViewMode::Map,
+            projection_kind,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let retained_packet = SphericalGpuPacket::new(
+            Arc::clone(&map),
+            map_revision,
+            Arc::clone(&globe),
+            globe_revision,
+            Arc::clone(&retained),
+        );
+        renderer
+            .prepare_packet(&device, &queue, &retained_packet)
+            .unwrap();
+        let viewport = [256, 128];
+        renderer
+            .prepare_map_frame_for_test(&queue, &retained_packet, map_camera, viewport)
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&medium, &retained));
+        assert_eq!(document.catalog_calls(), 0);
+        assert_eq!(
+            field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts::default()
+        );
+        assert_eq!(validation_probe::snapshot(), medium_scans);
+        assert_eq!(
+            installed_overlay_arc_ids(&renderer).unwrap(),
+            medium_overlay_arcs
+        );
+        let after_in_band = renderer.upload_counters();
+        assert_eq!(after_in_band.map_geometry, medium_uploads.map_geometry);
+        assert_eq!(after_in_band.globe_geometry, medium_uploads.globe_geometry);
+        assert_eq!(after_in_band.fill_field, medium_uploads.fill_field);
+        assert_eq!(after_in_band.diagnostics, medium_uploads.diagnostics);
+        assert_eq!(after_in_band.palettes, medium_uploads.palettes);
+        assert_eq!(
+            after_in_band.map_overlay_instances,
+            medium_uploads.map_overlay_instances
+        );
+        assert_eq!(
+            after_in_band.globe_overlay_instances,
+            medium_uploads.globe_overlay_instances
+        );
+        assert_eq!(after_in_band.uniforms, medium_uploads.uniforms + 1);
+        assert_eq!(
+            after_in_band.uploaded_bytes,
+            medium_uploads.uploaded_bytes + SphericalFieldRenderer::frame_uniform_size_for_test()
+        );
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        map_camera.reset(projection_kind);
+        assert!(map_camera.zoom_by(projection_kind, 4.0));
+        let high = reconcile_spherical_document_camera(
+            &document,
+            &retained,
+            SphericalViewMode::Map,
+            projection_kind,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let high_packet = SphericalGpuPacket::new(
+            Arc::clone(&map),
+            map_revision,
+            Arc::clone(&globe),
+            globe_revision,
+            Arc::clone(&high),
+        );
+        renderer
+            .prepare_packet(&device, &queue, &high_packet)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&retained, &high));
+        assert_only_vector_glyph_revision_changed(&retained, &high);
+        assert_ne!(
+            installed_overlay_arc_ids(&renderer).unwrap(),
+            medium_overlay_arcs
+        );
+        let after_crossing = renderer.upload_counters();
+        assert_eq!(
+            after_crossing.map_overlay_instances,
+            after_in_band.map_overlay_instances + 1
+        );
+        assert_eq!(
+            after_crossing.globe_overlay_instances,
+            after_in_band.globe_overlay_instances + 1
+        );
+        let crossing_scans = validation_probe::snapshot();
+        assert_eq!(
+            crossing_scans.full_validations,
+            medium_scans.full_validations + 1
+        );
+        assert!(crossing_scans.cell_ids > medium_scans.cell_ids);
+        assert!(crossing_scans.indices > medium_scans.indices);
+        assert!(crossing_scans.positions > medium_scans.positions);
+
+        document.reset_catalog_calls();
+        reset_field_layer_preparation_counts();
+        map_camera.reset(projection_kind);
+        assert!(map_camera.zoom_by(projection_kind, 4.5));
+        let high_retained = reconcile_spherical_document_camera(
+            &document,
+            &high,
+            SphericalViewMode::Map,
+            projection_kind,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let high_retained_packet = SphericalGpuPacket::new(
+            map,
+            map_revision,
+            globe,
+            globe_revision,
+            Arc::clone(&high_retained),
+        );
+        renderer
+            .prepare_packet(&device, &queue, &high_retained_packet)
+            .unwrap();
+        let crossing_overlay_arcs = installed_overlay_arc_ids(&renderer).unwrap();
+        renderer
+            .prepare_map_frame_for_test(&queue, &high_retained_packet, map_camera, viewport)
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&high, &high_retained));
+        assert_eq!(state.vector_view_zoom(), 4.5);
+        assert_eq!(document.catalog_calls(), 0);
+        assert_eq!(
+            field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts::default()
+        );
+        assert_eq!(validation_probe::snapshot(), crossing_scans);
+        assert_eq!(
+            installed_overlay_arc_ids(&renderer).unwrap(),
+            crossing_overlay_arcs
+        );
+        let after_high_in_band = renderer.upload_counters();
+        assert_eq!(
+            after_high_in_band.map_overlay_instances,
+            after_crossing.map_overlay_instances
+        );
+        assert_eq!(
+            after_high_in_band.globe_overlay_instances,
+            after_crossing.globe_overlay_instances
+        );
+        assert_eq!(after_high_in_band.uniforms, after_crossing.uniforms + 1);
     }
 
     #[test]
@@ -1137,6 +1744,8 @@ mod tests {
                 fill: 1,
                 overlay: 0,
                 diagnostics: 1,
+                diagnostic_validation_values_scanned: 0,
+                diagnostic_fingerprint_values_scanned: 0,
             }
         );
 
@@ -1161,6 +1770,8 @@ mod tests {
                 fill: 0,
                 overlay: 1,
                 diagnostics: 0,
+                diagnostic_validation_values_scanned: 0,
+                diagnostic_fingerprint_values_scanned: 0,
             }
         );
     }
@@ -1168,43 +1779,37 @@ mod tests {
     #[test]
     fn spherical_updates_refresh_only_changed_diagnostics() {
         let outcome = build_outcome(6_371_000.0);
-        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
-        let catalog = payload_catalog(&document);
-        let cell_count = document.surface.snapshot().cells().len();
-        let edge_count = document.surface.snapshot().edges().len();
+        let mut document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        document.diagnostics.clear();
         let mut state = SphericalFieldDisplayState::default();
         state.select_fill(surface_elevation_m_field_id());
         state.select_overlay(Some(boundary_kind_field_id()));
         let mut clock = crate::view::DisplayRevisionClock::default();
-        let initial = prepare_spherical_field_layers(
-            document.presentation_source(),
-            &catalog,
-            cell_count,
-            edge_count,
-            &[],
-            document.preferred_field(),
-            |field| document.preferred_range(field),
+        let initial = prepare_spherical_document_layers(
+            &document,
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
             &mut state,
             &mut clock,
         )
         .unwrap();
-        let changed_diagnostics = [OwnedViewDiagnostic {
+        document.diagnostics.push(OwnedViewDiagnostic {
             severity: ViewDiagnosticSeverity::Warning,
             code: "test.changed-diagnostic".into(),
             field_id: None,
             cell_id: Some(CellId::from_raw(0)),
             message: "a valid changed diagnostic".into(),
-        }];
+        });
 
-        let changed = crate::view::update_spherical_field_layers(
+        let changed = update_spherical_document_layers(
+            &document,
             &initial,
-            document.presentation_source(),
-            &catalog,
-            cell_count,
-            edge_count,
-            &changed_diagnostics,
-            document.preferred_field(),
-            |field| document.preferred_range(field),
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
             &mut state,
             &mut clock,
         )
@@ -1243,15 +1848,13 @@ mod tests {
             changed.revisions().overlay_palette
         );
 
-        let identical = crate::view::update_spherical_field_layers(
+        let identical = update_spherical_document_layers(
+            &document,
             &changed,
-            document.presentation_source(),
-            &catalog,
-            cell_count,
-            edge_count,
-            &changed_diagnostics,
-            document.preferred_field(),
-            |field| document.preferred_range(field),
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
             &mut state,
             &mut clock,
         )

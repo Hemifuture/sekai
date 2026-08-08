@@ -18,11 +18,11 @@ const MIN_BUFFER_BYTES: u64 = 16;
 const MAX_PALETTE_ENTRIES: usize = 65_536;
 
 #[cfg(test)]
-mod validation_probe {
+pub(crate) mod validation_probe {
     use std::cell::Cell;
 
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub(super) struct ScanCounts {
+    pub(crate) struct ScanCounts {
         pub full_validations: u64,
         pub cell_ids: u64,
         pub indices: u64,
@@ -33,11 +33,11 @@ mod validation_probe {
         static COUNTS: Cell<ScanCounts> = Cell::new(ScanCounts::default());
     }
 
-    pub(super) fn reset() {
+    pub(crate) fn reset() {
         COUNTS.set(ScanCounts::default());
     }
 
-    pub(super) fn snapshot() -> ScanCounts {
+    pub(crate) fn snapshot() -> ScanCounts {
         COUNTS.get()
     }
 
@@ -781,6 +781,23 @@ impl SphericalFieldRenderer {
         self.prepare_packet_with_limits(device, queue, packet, device.limits())
     }
 
+    #[cfg(test)]
+    pub(crate) fn prepare_map_frame_for_test(
+        &mut self,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+        camera: MapCamera,
+        viewport: [u32; 2],
+    ) -> Result<u64, SphericalRenderError> {
+        let uniform = SphericalFrameUniform::for_map(packet, camera, viewport)?;
+        self.prepare_frame(queue, SphericalRenderMode::Map, &uniform)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn frame_uniform_size_for_test() -> u64 {
+        std::mem::size_of::<SphericalFrameUniform>() as u64
+    }
+
     fn prepare_packet_with_limits(
         &mut self,
         device: &wgpu::Device,
@@ -1236,6 +1253,16 @@ impl SphericalFieldRenderer {
     ) -> u64 {
         self.prepare_frame(queue, mode, uniform).unwrap()
     }
+}
+
+#[cfg(test)]
+pub(crate) fn installed_overlay_arc_ids(
+    renderer: &SphericalFieldRenderer,
+) -> Option<(usize, usize)> {
+    Some((
+        Arc::as_ptr(renderer.installed_map_overlay.as_ref()?) as usize,
+        Arc::as_ptr(renderer.installed_globe_overlay.as_ref()?) as usize,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
