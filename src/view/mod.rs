@@ -7,6 +7,7 @@ mod mesh;
 mod palette;
 mod prepared;
 mod reference;
+mod spherical_projection;
 mod spherical_source;
 mod state;
 
@@ -45,5 +46,9 @@ pub use prepared::{
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use reference::{rasterize_reference, ReferenceImage};
+pub use spherical_projection::{
+    ProjectedDirection, ProjectionBounds, ProjectionPoint, SphericalProjection,
+    SphericalProjectionError, SphericalProjectionKind,
+};
 pub use spherical_source::SphericalPresentationSource;
 pub use state::{format_field_value, FieldDisplayState, FormattedFieldValue};
