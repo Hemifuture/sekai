@@ -42,3 +42,31 @@ The first full-suite attempt was stopped by the command's 120-second execution c
 ## Concerns and follow-up
 
 No blocking concerns. The locator deliberately uses O(n) cell lookup only at discrete pick time; do not add a spatial index until a 20k-cell click-picking benchmark has been recorded and demonstrates the need.
+
+## Fix Round 1: Roundoff-safe tangent ray intersections
+
+### Root cause and implementation
+
+The unit-sphere quadratic used `b.mul_add(b, -4.0 * c)` and rejected every negative discriminant. For a valid tangent from `[1.0002, 0.0, 0.0]`, the two nearly equal terms cancel to a small negative floating-point residual (about `-1.8e-19`), rather than the mathematical zero. The ray was therefore incorrectly reported as a miss.
+
+The fix retains the stable q-root calculation and clamps only a finite negative discriminant that is within `16 * f64::EPSILON * (abs(b²) + abs(4c))` of zero. Non-finite discriminants and negative values outside that scale-relative bound remain misses.
+
+### RED/GREEN evidence
+
+1. RED: `cargo test --test spherical_picking ray_sphere_preserves_roundoff_tangents_without_accepting_nearby_true_misses -- --nocapture` failed before the fix because the supplied tangent returned `None`.
+2. GREEN: the same focused test passed after the scale-relative clamp. It also verifies a nearby geometrically true miss remains `None`.
+
+### Fix-round verification
+
+- `cargo test --test spherical_picking -- --nocapture` — passed: 5 tests.
+- `cargo test --lib spherical_picking -- --nocapture` — passed: 3 tests.
+- `cargo test --test spherical_foundation_build -- --nocapture` — passed: 6 tests (includes validated spherical-surface topology/adjacency construction).
+- `cargo clippy --test spherical_picking -- -D warnings` — passed with no warnings.
+- `cargo test` — passed with exit code 0 (254 library tests plus all integration and doc tests).
+
+### Fix-round self-review
+
+- The bound is relative to the cancellation terms, not a fixed global epsilon.
+- A materially negative nearby miss is covered by a public regression test and is not clamped.
+- Ordinary outside/inside rays still use the pre-existing stable q-root branches unchanged.
+- No locator, source, topology, or field-payload behavior changed.

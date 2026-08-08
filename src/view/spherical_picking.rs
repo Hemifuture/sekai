@@ -11,6 +11,8 @@ use crate::world::spatial::{
 };
 use crate::world::{CellId, EdgeId};
 
+const DISCRIMINANT_ROUNDOFF_ULPS: f64 = 16.0;
+
 /// A source-bound cache for deterministic spherical cell and edge picking.
 #[derive(Debug, Clone)]
 pub struct SphericalEntityLocator {
@@ -209,10 +211,22 @@ pub fn intersect_unit_sphere(ray: UnitRay) -> Option<RaySphereHit> {
     let direction = ray.direction().components();
     let b = 2.0 * dot(origin, direction);
     let c = dot(origin, origin) - 1.0;
-    let discriminant = b.mul_add(b, -4.0 * c);
-    if !discriminant.is_finite() || discriminant < 0.0 {
+    let four_c = 4.0 * c;
+    let raw_discriminant = b.mul_add(b, -four_c);
+    if !raw_discriminant.is_finite() {
         return None;
     }
+    let scale = b.mul_add(b, 0.0).abs() + four_c.abs();
+    let roundoff_bound = DISCRIMINANT_ROUNDOFF_ULPS * f64::EPSILON * scale;
+    let discriminant = if raw_discriminant < 0.0 {
+        if roundoff_bound.is_finite() && raw_discriminant >= -roundoff_bound {
+            0.0
+        } else {
+            return None;
+        }
+    } else {
+        raw_discriminant
+    };
 
     let root = discriminant.sqrt();
     let q = -0.5 * (b + if b >= 0.0 { root } else { -root });
