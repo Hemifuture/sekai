@@ -386,7 +386,9 @@ mod tests {
         try_replace_spherical_natural_document, SphericalNaturalDisplayError,
         SphericalNaturalFieldDocument,
     };
-    use crate::app::field_document::{prepare_spherical_document_layers, FieldDocument};
+    use crate::app::field_document::{
+        prepare_spherical_document_layers, update_spherical_document_layers, FieldDocument,
+    };
     use crate::engine::{
         BuildEngine, BuildOutcome, BuildOutcomeIntegrityError, BuildReport, ExternalArtifacts,
         MemoryStageCache,
@@ -402,9 +404,11 @@ mod tests {
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
     use crate::view::{
         built_in_palette, classify_spherical_channel, prepare_edge_field,
-        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, OwnedViewDiagnostic,
-        PaletteId, PreparedOverlayKind, PreparedSphericalOverlay, SphericalFieldChannel,
-        SphericalFieldDisplayState, SphericalPresentationSource, ViewDiagnosticSeverity,
+        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, GlobeCamera,
+        GlyphLodKey, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedOverlayKind,
+        PreparedSphericalOverlay, SphericalFieldChannel, SphericalFieldDisplayState,
+        SphericalPresentationSource, SphericalProjectionKind, SphericalViewMode, VectorGlyphLod,
+        ViewDiagnosticSeverity,
     };
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
@@ -810,12 +814,103 @@ mod tests {
         let mut state = SphericalFieldDisplayState::default();
         let mut clock = crate::view::DisplayRevisionClock::default();
 
-        let layers = prepare_spherical_document_layers(&document, &mut state, &mut clock).unwrap();
+        let layers = prepare_spherical_document_layers(
+            &document,
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
 
         assert_eq!(layers.source(), &document.presentation_source());
         assert_eq!(
             layers.fill().len(),
             document.surface.snapshot().cells().len()
+        );
+    }
+
+    #[test]
+    fn active_map_and_globe_camera_zoom_drive_document_layer_lod_crossings() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(plate_velocity_field_id()));
+        state.set_vector_lod(VectorGlyphLod::Low);
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let projection = SphericalProjectionKind::EqualEarth;
+        let mut map_camera = MapCamera::default();
+        assert!(map_camera.zoom_by(projection, 1.99));
+
+        let low = prepare_spherical_document_layers(
+            &document,
+            SphericalViewMode::Map,
+            projection,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(state.vector_view_zoom(), 1.99);
+        assert_eq!(low.glyph_lod_key(), GlyphLodKey::Low);
+
+        map_camera.reset(projection);
+        assert!(map_camera.zoom_by(projection, 2.0));
+        let medium = update_spherical_document_layers(
+            &document,
+            &low,
+            SphericalViewMode::Map,
+            projection,
+            map_camera,
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(state.vector_view_zoom(), 2.0);
+        assert_eq!(medium.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_ne!(
+            low.revisions().vector_glyphs,
+            medium.revisions().vector_glyphs
+        );
+
+        let mut globe_camera = GlobeCamera::default();
+        assert!(globe_camera.set_orthographic_scale(2.5));
+        let globe_in_band = update_spherical_document_layers(
+            &document,
+            &medium,
+            SphericalViewMode::Globe,
+            projection,
+            map_camera,
+            globe_camera,
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(state.vector_view_zoom(), 2.5);
+        assert_eq!(globe_in_band.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_eq!(medium.revisions(), globe_in_band.revisions());
+
+        assert!(globe_camera.set_orthographic_scale(4.0));
+        let high = update_spherical_document_layers(
+            &document,
+            &globe_in_band,
+            SphericalViewMode::Globe,
+            projection,
+            map_camera,
+            globe_camera,
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(state.vector_view_zoom(), 4.0);
+        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
+        assert_ne!(
+            globe_in_band.revisions().vector_glyphs,
+            high.revisions().vector_glyphs
         );
     }
 

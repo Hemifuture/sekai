@@ -56,6 +56,7 @@ fn spherical_state_preserves_fill_overlay_and_stable_entity_independently() {
     state.select_overlay(Some(plate_velocity_field_id()));
     state.select_entity(Some(SelectedSurfaceEntity::Cell(CellId::from_raw(7))));
     state.set_vector_lod(VectorGlyphLod::Medium);
+    state.set_vector_view_zoom(1.75).unwrap();
     state.set_vector_paused(false);
     state.set_vector_display_speed(1.5).unwrap();
 
@@ -66,6 +67,7 @@ fn spherical_state_preserves_fill_overlay_and_stable_entity_independently() {
         Some(SelectedSurfaceEntity::Cell(CellId::from_raw(7)))
     );
     assert_eq!(state.vector_lod(), VectorGlyphLod::Medium);
+    assert_eq!(state.vector_view_zoom(), 1.75);
     assert!(!state.vector_paused());
     assert_eq!(state.vector_display_speed(), 1.5);
 
@@ -90,8 +92,22 @@ fn spherical_state_defaults_to_schema_driven_display_preferences() {
     assert_eq!(state.diagnostic_scope(), DiagnosticScope::SelectedField);
     assert_eq!(state.selected_entity(), None);
     assert_eq!(state.vector_lod(), VectorGlyphLod::Medium);
+    assert_eq!(state.vector_view_zoom(), 1.0);
     assert!(!state.vector_paused());
     assert_eq!(state.vector_display_speed(), 1.0);
+}
+
+#[test]
+fn vector_view_zoom_rejects_non_positive_and_non_finite_values_atomically() {
+    let mut state = SphericalFieldDisplayState::default();
+
+    for zoom in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+        assert!(matches!(
+            state.set_vector_view_zoom(zoom),
+            Err(FieldLayerError::InvalidVectorViewZoom(_))
+        ));
+        assert_eq!(state.vector_view_zoom(), 1.0);
+    }
 }
 
 #[test]

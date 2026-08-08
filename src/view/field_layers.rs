@@ -10,10 +10,11 @@ use thiserror::Error;
 use super::palette::prepare_scalar_or_category_field;
 use super::{
     built_in_palette, DiagnosticScope, DisplayPrepareError, DisplayRangeMode, DisplayRevision,
-    DisplayRevisionClock, FieldCatalog, FieldView, LinearRgba, OwnedViewDiagnostic, PaletteId,
-    PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind, PreparedGlobeMesh,
-    PreparedProjectedMap, ResolvedDisplayRange, SphericalPresentationSource, SphericalProjection,
-    SphericalProjectionError, ViewDiagnosticSeverity,
+    DisplayRevisionClock, FieldCatalog, FieldView, GlobeCamera, LinearRgba, MapCamera,
+    OwnedViewDiagnostic, PaletteId, PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind,
+    PreparedGlobeMesh, PreparedProjectedMap, ResolvedDisplayRange, SphericalPresentationSource,
+    SphericalProjection, SphericalProjectionError, SphericalProjectionKind, SphericalViewMode,
+    ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldPaletteHint, FieldValueType};
 use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
@@ -191,6 +192,9 @@ pub enum FieldLayerError {
     /// The vector animation display speed is non-finite or outside its supported range.
     #[error("vector display speed must be finite and within 0.0..=4.0, got {0}")]
     InvalidVectorDisplaySpeed(f32),
+    /// The view zoom used to resolve vector-glyph density is non-finite or non-positive.
+    #[error("vector view zoom must be finite and greater than zero, got {0}")]
+    InvalidVectorViewZoom(f64),
     /// Source-bound glyph inputs do not all describe the same authoritative world.
     #[error("{resource} has a different spherical presentation source")]
     VectorGlyphSourceMismatch { resource: &'static str },
@@ -545,6 +549,149 @@ impl PreparedVectorGlyphs {
     }
 }
 
+pub(crate) fn prepare_map_vector_glyphs(
+    source: &SphericalPresentationSource,
+    map: &PreparedProjectedMap,
+    globe: &PreparedGlobeMesh,
+    field: &PreparedVectorField,
+    selected_cell: Option<CellId>,
+    lod_key: GlyphLodKey,
+) -> Result<(Vec<MapVectorGlyph>, Vec<OwnedViewDiagnostic>), FieldLayerError> {
+    validate_map_vector_inputs(source, map, globe, field, selected_cell)?;
+    let cell_count = map.cell_count();
+    let map_area = (map.bounds().max_x() - map.bounds().min_x())
+        * (map.bounds().max_y() - map.bounds().min_y());
+    let map_spacing = (map_area * lod_key.denominator() as f64 / cell_count as f64).sqrt() as f32;
+    let mut glyphs = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (index, (&components, &magnitude)) in field
+        .components()
+        .iter()
+        .zip(field.magnitudes())
+        .enumerate()
+    {
+        let cell = CellId::from_raw(index as u32);
+        if !vector_cell_is_sampled(source, cell, selected_cell, lod_key) || components == [0.0, 0.0]
+        {
+            continue;
+        }
+        let color_position = normalize_magnitude(field.display_range(), magnitude);
+        let (glyph, diagnostic) = prepare_map_vector_glyph(
+            cell,
+            globe.cell_centroids()[index],
+            components,
+            magnitude,
+            color_position,
+            map_spacing,
+            map.projection(),
+        );
+        if let Some(glyph) = glyph {
+            glyphs.push(glyph);
+        }
+        if let Some(mut diagnostic) = diagnostic {
+            diagnostic.field_id = Some(field.field_id().clone());
+            diagnostics.push(diagnostic);
+        }
+    }
+    Ok((glyphs, diagnostics))
+}
+
+pub(crate) fn prepare_globe_vector_glyphs(
+    source: &SphericalPresentationSource,
+    globe: &PreparedGlobeMesh,
+    field: &PreparedVectorField,
+    selected_cell: Option<CellId>,
+    lod_key: GlyphLodKey,
+) -> Result<Vec<GlobeVectorGlyph>, FieldLayerError> {
+    validate_globe_vector_inputs(source, globe, field, selected_cell)?;
+    let cell_count = globe.cell_count();
+    let globe_spacing = (std::f64::consts::TAU * 2.0 * lod_key.denominator() as f64
+        / cell_count as f64)
+        .sqrt() as f32;
+    let mut glyphs = Vec::new();
+    for (index, (&components, &magnitude)) in field
+        .components()
+        .iter()
+        .zip(field.magnitudes())
+        .enumerate()
+    {
+        let cell = CellId::from_raw(index as u32);
+        if !vector_cell_is_sampled(source, cell, selected_cell, lod_key) || components == [0.0, 0.0]
+        {
+            continue;
+        }
+        let color_position = normalize_magnitude(field.display_range(), magnitude);
+        if let Some(glyph) = prepare_globe_vector_glyph(
+            cell,
+            globe.cell_centroids()[index],
+            components,
+            magnitude,
+            color_position,
+            globe_spacing,
+        ) {
+            glyphs.push(glyph);
+        }
+    }
+    Ok(glyphs)
+}
+
+fn validate_map_vector_inputs(
+    source: &SphericalPresentationSource,
+    map: &PreparedProjectedMap,
+    globe: &PreparedGlobeMesh,
+    field: &PreparedVectorField,
+    selected_cell: Option<CellId>,
+) -> Result<(), FieldLayerError> {
+    if map.source() != source {
+        return Err(FieldLayerError::VectorGlyphSourceMismatch {
+            resource: "projected map",
+        });
+    }
+    validate_globe_vector_inputs(source, globe, field, selected_cell)?;
+    if map.cell_count() != globe.cell_count() {
+        return Err(FieldLayerError::VectorGlyphCardinalityMismatch {
+            expected: map.cell_count(),
+            actual: globe.cell_count(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_globe_vector_inputs(
+    source: &SphericalPresentationSource,
+    globe: &PreparedGlobeMesh,
+    field: &PreparedVectorField,
+    selected_cell: Option<CellId>,
+) -> Result<(), FieldLayerError> {
+    if globe.source() != source {
+        return Err(FieldLayerError::VectorGlyphSourceMismatch {
+            resource: "unit globe",
+        });
+    }
+    let cell_count = globe.cell_count();
+    if field.len() != cell_count {
+        return Err(FieldLayerError::VectorGlyphCardinalityMismatch {
+            expected: cell_count,
+            actual: field.len(),
+        });
+    }
+    if let Some(cell) = selected_cell {
+        if cell.raw() as usize >= cell_count {
+            return Err(FieldLayerError::SelectedVectorCellOutOfRange { cell, cell_count });
+        }
+    }
+    Ok(())
+}
+
+fn vector_cell_is_sampled(
+    source: &SphericalPresentationSource,
+    cell: CellId,
+    selected_cell: Option<CellId>,
+    lod_key: GlyphLodKey,
+) -> bool {
+    selected_cell == Some(cell) || lod_key.includes_score(vector_glyph_score(source, cell))
+}
+
 struct PreparedVectorGlyphPair {
     map: Option<MapVectorGlyph>,
     globe: Option<GlobeVectorGlyph>,
@@ -562,6 +709,38 @@ fn prepare_vector_glyph_pair(
     globe_spacing: f32,
     projection: SphericalProjection,
 ) -> PreparedVectorGlyphPair {
+    let globe = prepare_globe_vector_glyph(
+        cell,
+        radial,
+        components,
+        magnitude,
+        color_position,
+        globe_spacing,
+    );
+    let (map, diagnostic) = prepare_map_vector_glyph(
+        cell,
+        radial,
+        components,
+        magnitude,
+        color_position,
+        map_spacing,
+        projection,
+    );
+    PreparedVectorGlyphPair {
+        map,
+        globe,
+        diagnostic,
+    }
+}
+
+fn prepare_globe_vector_glyph(
+    cell: CellId,
+    radial: UnitVector3,
+    components: [f32; 2],
+    magnitude: f32,
+    color_position: f32,
+    globe_spacing: f32,
+) -> Option<GlobeVectorGlyph> {
     let (east, north) = canonical_east_north_basis(radial);
     let tangent = [
         east[0] * f64::from(components[0]) + north[0] * f64::from(components[1]),
@@ -574,7 +753,7 @@ fn prepare_vector_glyph_pair(
         .sum::<f64>()
         .sqrt();
     let length_fraction = 0.35 + 0.65 * color_position;
-    let globe = (tangent_length.is_finite() && tangent_length > 0.0).then(|| GlobeVectorGlyph {
+    (tangent_length.is_finite() && tangent_length > 0.0).then(|| GlobeVectorGlyph {
         cell,
         radial,
         direction: tangent.map(|value| (value / tangent_length) as f32),
@@ -583,10 +762,23 @@ fn prepare_vector_glyph_pair(
         color_position,
         length: globe_spacing * length_fraction,
         cell_spacing: globe_spacing,
-    });
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_map_vector_glyph(
+    cell: CellId,
+    radial: UnitVector3,
+    components: [f32; 2],
+    magnitude: f32,
+    color_position: f32,
+    map_spacing: f32,
+    projection: SphericalProjection,
+) -> (Option<MapVectorGlyph>, Option<OwnedViewDiagnostic>) {
+    let length_fraction = 0.35 + 0.65 * color_position;
     let mapped =
         projection.map_local_vector(radial, [f64::from(components[0]), f64::from(components[1])]);
-    let (map, diagnostic) = match mapped {
+    match mapped {
         Ok(Some(direction)) => match projection.forward(radial) {
             Ok(origin) => (
                 Some(MapVectorGlyph {
@@ -616,11 +808,6 @@ fn prepare_vector_glyph_pair(
             }),
         ),
         Ok(None) | Err(_) => (None, None),
-    };
-    PreparedVectorGlyphPair {
-        map,
-        globe,
-        diagnostic,
     }
 }
 
@@ -725,7 +912,7 @@ impl From<&SphericalFieldDisplayState> for PreparedLayerState {
                 Some(SelectedSurfaceEntity::Cell(cell)) => Some(cell),
                 Some(SelectedSurfaceEntity::Edge(_)) | None => None,
             },
-            glyph_lod_key: state.vector_lod.into(),
+            glyph_lod_key: GlyphLodKey::for_zoom(state.vector_lod, state.vector_view_zoom),
         }
     }
 }
@@ -818,6 +1005,7 @@ pub struct SphericalFieldDisplayState {
     diagnostic_scope: DiagnosticScope,
     selected_entity: Option<SelectedSurfaceEntity>,
     vector_lod: VectorGlyphLod,
+    vector_view_zoom: f64,
     vector_paused: bool,
     vector_display_speed: f32,
 }
@@ -833,6 +1021,7 @@ impl Default for SphericalFieldDisplayState {
             diagnostic_scope: DiagnosticScope::SelectedField,
             selected_entity: None,
             vector_lod: VectorGlyphLod::default(),
+            vector_view_zoom: 1.0,
             vector_paused: false,
             vector_display_speed: 1.0,
         }
@@ -910,14 +1099,42 @@ impl SphericalFieldDisplayState {
         self.selected_entity
     }
 
-    /// Selects the vector-glyph level of detail.
+    /// Selects the minimum vector-glyph density; view zoom may raise it at fixed thresholds.
     pub fn set_vector_lod(&mut self, lod: VectorGlyphLod) {
         self.vector_lod = lod;
     }
 
-    /// Returns the vector-glyph level of detail.
+    /// Returns the user-selected minimum vector-glyph density.
     pub const fn vector_lod(&self) -> VectorGlyphLod {
         self.vector_lod
+    }
+
+    /// Sets the current view zoom used to resolve the effective discrete glyph density.
+    pub fn set_vector_view_zoom(&mut self, zoom: f64) -> Result<(), FieldLayerError> {
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err(FieldLayerError::InvalidVectorViewZoom(zoom));
+        }
+        self.vector_view_zoom = zoom;
+        Ok(())
+    }
+
+    /// Returns the current view zoom used for vector-glyph LOD thresholds.
+    pub const fn vector_view_zoom(&self) -> f64 {
+        self.vector_view_zoom
+    }
+
+    /// Synchronizes vector-glyph density from the currently active map or globe camera.
+    pub fn sync_vector_view_zoom_from_cameras(
+        &mut self,
+        mode: SphericalViewMode,
+        projection: SphericalProjectionKind,
+        map_camera: MapCamera,
+        globe_camera: GlobeCamera,
+    ) {
+        self.vector_view_zoom = match mode {
+            SphericalViewMode::Map => map_camera.zoom(projection),
+            SphericalViewMode::Globe => globe_camera.orthographic_scale(),
+        };
     }
 
     /// Pauses or resumes display-only vector animation.
@@ -2026,8 +2243,9 @@ mod vector_glyph_tests {
         .unwrap();
         assert_eq!(selected.revisions(), paused.revisions());
 
-        state.set_vector_lod(super::VectorGlyphLod::High);
-        let high = super::update_spherical_field_layers(
+        state.set_vector_lod(super::VectorGlyphLod::Low);
+        state.set_vector_view_zoom(1.0).unwrap();
+        let low = super::update_spherical_field_layers(
             &paused,
             source.clone(),
             &catalog,
@@ -2042,9 +2260,100 @@ mod vector_glyph_tests {
         .unwrap();
         assert_ne!(
             paused.revisions().vector_glyphs,
+            low.revisions().vector_glyphs
+        );
+        assert_eq!(low.glyph_lod_key(), GlyphLodKey::Low);
+        assert_eq!(paused.revisions().overlay, low.revisions().overlay);
+
+        state.set_vector_view_zoom(1.99).unwrap();
+        let low_in_band = super::update_spherical_field_layers(
+            &low,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(low.revisions(), low_in_band.revisions());
+        assert_eq!(low_in_band.glyph_lod_key(), GlyphLodKey::Low);
+
+        state.set_vector_view_zoom(2.0).unwrap();
+        let medium = super::update_spherical_field_layers(
+            &low_in_band,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_ne!(
+            low_in_band.revisions().vector_glyphs,
+            medium.revisions().vector_glyphs
+        );
+        assert_eq!(medium.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_eq!(low_in_band.revisions().overlay, medium.revisions().overlay);
+
+        state.set_vector_view_zoom(2.5).unwrap();
+        let medium_in_band = super::update_spherical_field_layers(
+            &medium,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(medium.revisions(), medium_in_band.revisions());
+
+        state.set_vector_view_zoom(4.0).unwrap();
+        let high = super::update_spherical_field_layers(
+            &medium_in_band,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_ne!(
+            medium_in_band.revisions().vector_glyphs,
             high.revisions().vector_glyphs
         );
-        assert_eq!(paused.revisions().overlay, high.revisions().overlay);
+        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
+        assert_eq!(medium_in_band.revisions().overlay, high.revisions().overlay);
+
+        let repeated_high = super::update_spherical_field_layers(
+            &high,
+            source.clone(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            Some(fill_id.clone()),
+            |_| Some(crate::view::DisplayRangeMode::Data),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(high.revisions(), repeated_high.revisions());
 
         let mut changed_fields = ExtensionFieldSet::new();
         changed_fields
@@ -2073,7 +2382,7 @@ mod vector_glyph_tests {
             1,
         );
         let world_changed = super::update_spherical_field_layers(
-            &high,
+            &repeated_high,
             changed_source.clone(),
             &changed_catalog,
             cell_count,
@@ -2093,22 +2402,27 @@ mod vector_glyph_tests {
             panic!("changed world retains its vector overlay");
         };
         assert_eq!(world_vector.components()[0], [0.0, 2.0]);
-        assert!(!Arc::ptr_eq(high.fill_arc(), world_changed.fill_arc()));
         assert!(!Arc::ptr_eq(
-            high.diagnostics_arc(),
+            repeated_high.fill_arc(),
+            world_changed.fill_arc()
+        ));
+        assert!(!Arc::ptr_eq(
+            repeated_high.diagnostics_arc(),
             world_changed.diagnostics_arc()
         ));
         assert!(!Arc::ptr_eq(
-            high.fill_palette_arc(),
+            repeated_high.fill_palette_arc(),
             world_changed.fill_palette_arc()
         ));
         assert!(
-            high.revisions().fill != world_changed.revisions().fill
-                && high.revisions().overlay != world_changed.revisions().overlay
-                && high.revisions().diagnostics != world_changed.revisions().diagnostics
-                && high.revisions().fill_palette != world_changed.revisions().fill_palette
-                && high.revisions().overlay_palette != world_changed.revisions().overlay_palette
-                && high.revisions().vector_glyphs != world_changed.revisions().vector_glyphs
+            repeated_high.revisions().fill != world_changed.revisions().fill
+                && repeated_high.revisions().overlay != world_changed.revisions().overlay
+                && repeated_high.revisions().diagnostics != world_changed.revisions().diagnostics
+                && repeated_high.revisions().fill_palette != world_changed.revisions().fill_palette
+                && repeated_high.revisions().overlay_palette
+                    != world_changed.revisions().overlay_palette
+                && repeated_high.revisions().vector_glyphs
+                    != world_changed.revisions().vector_glyphs
         );
     }
 }

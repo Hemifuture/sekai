@@ -10,7 +10,7 @@ struct SphericalFrameUniform {
     diagnostic_error_index: u32,
     viewport_pixels: vec2<f32>,
     vector_phase: f32,
-    overlay_padding: u32,
+    globe_silhouette_clip: u32,
 }
 
 struct VertexOutput {
@@ -231,6 +231,20 @@ fn vs_globe_overlay(
 
 @fragment
 fn fs_overlay(input: OverlayOutput) -> @location(0) vec4<f32> {
+    if frame.globe_silhouette_clip != 0u {
+        let ndc = vec2<f32>(
+            input.position.x * 2.0 / frame.viewport_pixels.x - 1.0,
+            1.0 - input.position.y * 2.0 / frame.viewport_pixels.y,
+        );
+        let radius = vec2<f32>(
+            length(vec3<f32>(frame.transform[0].x, frame.transform[1].x, frame.transform[2].x)),
+            length(vec3<f32>(frame.transform[0].y, frame.transform[1].y, frame.transform[2].y)),
+        );
+        let normalized = ndc / radius;
+        if dot(normalized, normalized) > 1.0 {
+            discard;
+        }
+    }
     if input.kind == 0u {
         return input.color;
     }

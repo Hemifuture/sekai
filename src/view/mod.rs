@@ -35,6 +35,7 @@ pub(crate) use field_layers::{
     field_layer_preparation_counts, reset_field_layer_preparation_counts,
     FieldLayerPreparationCounts,
 };
+pub(crate) use field_layers::{prepare_globe_vector_glyphs, prepare_map_vector_glyphs};
 pub use mesh::{
     CellGeometrySource, DisplayVertex, MeshCompleteness, PreparedCellMesh, MAX_DISPLAY_CELLS,
     MAX_DISPLAY_INDICES, MAX_DISPLAY_VERTICES,

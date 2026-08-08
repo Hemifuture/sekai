@@ -4,10 +4,11 @@ use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::ui::field::FieldControlAction;
 use crate::view::{
     built_in_palette, prepare_cell_field, prepare_spherical_field_layers, resolve_display_range,
-    DisplayPrepareError, DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog,
-    FieldDisplayState, FieldView, FieldViewError, LinearRgba, OwnedViewDiagnostic, PaletteId,
-    PreparedCellField, PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay,
-    PreparedFieldLayers, SphericalFieldDisplayState, SphericalPresentationSource,
+    update_spherical_field_layers, DisplayPrepareError, DisplayRangeMode, DisplayRevisionClock,
+    DisplayRevisions, FieldCatalog, FieldDisplayState, FieldView, FieldViewError, GlobeCamera,
+    LinearRgba, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedCellField, PreparedCellMesh,
+    PreparedDiagnosticMask, PreparedFieldDisplay, PreparedFieldLayers, SphericalFieldDisplayState,
+    SphericalPresentationSource, SphericalProjectionKind, SphericalViewMode,
     ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldId, FieldPaletteHint};
@@ -37,11 +38,17 @@ pub(super) trait SphericalFieldLayerDocument: FieldDocument {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn prepare_spherical_document_layers<D: SphericalFieldLayerDocument + ?Sized>(
     document: &D,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
     state: &mut SphericalFieldDisplayState,
     clock: &mut DisplayRevisionClock,
 ) -> Result<PreparedFieldLayers, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
     let catalog = document.catalog()?;
-    prepare_spherical_field_layers(
+    let layers = prepare_spherical_field_layers(
         document.presentation_source(),
         &catalog,
         document.spherical_cell_count(),
@@ -49,9 +56,43 @@ pub(super) fn prepare_spherical_document_layers<D: SphericalFieldLayerDocument +
         document.diagnostics(),
         document.preferred_field(),
         |field| document.preferred_range(field),
-        state,
+        &mut candidate_state,
         clock,
-    )
+    )?;
+    *state = candidate_state;
+    Ok(layers)
+}
+
+/// Reconciles shared spherical field layers after consuming the active camera's real zoom.
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_spherical_document_layers<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    current: &PreparedFieldLayers,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<PreparedFieldLayers, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
+    let catalog = document.catalog()?;
+    let layers = update_spherical_field_layers(
+        current,
+        document.presentation_source(),
+        &catalog,
+        document.spherical_cell_count(),
+        document.spherical_edge_count(),
+        document.diagnostics(),
+        document.preferred_field(),
+        |field| document.preferred_range(field),
+        &mut candidate_state,
+        clock,
+    )?;
+    *state = candidate_state;
+    Ok(layers)
 }
 
 /// Copies engine diagnostics into renderer-independent, document-owned values.

@@ -3,12 +3,15 @@ use eframe::egui_wgpu::wgpu;
 use std::sync::Arc;
 use thiserror::Error;
 
-use super::overlay::{prepare_overlay_instances, GpuGlobeOverlayInstance, GpuMapOverlayInstance};
+use super::overlay::{
+    prepare_globe_overlay_instances, prepare_map_overlay_instances, GpuGlobeOverlayInstance,
+    GpuMapOverlayInstance, PreparedGlobeOverlayInstances, PreparedMapOverlayInstances,
+};
 use crate::view::{
     DisplayRevision, GlobeCamera, LinearRgba, MapCamera, OwnedViewDiagnostic, PreparedFieldKind,
     PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap, PreparedSphericalOverlay,
-    PreparedVectorGlyphs, SphericalPresentationSource, VectorAnimationUniform,
-    DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
+    SphericalPresentationSource, VectorAnimationUniform, DIAGNOSTIC_ERROR_COLOR,
+    DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
 };
 
 const MIN_BUFFER_BYTES: u64 = 16;
@@ -99,7 +102,7 @@ pub(super) struct SphericalFrameUniform {
     diagnostic_error_index: u32,
     viewport_pixels: [f32; 2],
     vector_phase: f32,
-    overlay_padding: u32,
+    globe_silhouette_clip: u32,
 }
 
 impl SphericalFrameUniform {
@@ -152,7 +155,13 @@ impl SphericalFrameUniform {
             [0.0, 0.0, 1.0, 0.0],
             [translate_x, translate_y, 0.0, 1.0],
         ])?;
-        Self::with_transform(packet, transform, [width as f32, height as f32], animation)
+        Self::with_transform(
+            packet,
+            transform,
+            [width as f32, height as f32],
+            animation,
+            false,
+        )
     }
 
     #[cfg(test)]
@@ -217,7 +226,13 @@ impl SphericalFrameUniform {
             ],
             [0.0, 0.0, 0.5, 1.0],
         ])?;
-        Self::with_transform(packet, transform, [width as f32, height as f32], animation)
+        Self::with_transform(
+            packet,
+            transform,
+            [width as f32, height as f32],
+            animation,
+            true,
+        )
     }
 
     fn with_transform(
@@ -225,6 +240,7 @@ impl SphericalFrameUniform {
         transform: [[f32; 4]; 4],
         viewport_pixels: [f32; 2],
         animation: VectorAnimationUniform,
+        globe_silhouette_clip: bool,
     ) -> Result<Self, SphericalRenderError> {
         let palette_len = u32::try_from(packet.layers().fill_palette().len()).map_err(|_| {
             SphericalRenderError::IntegerOverflow {
@@ -260,7 +276,7 @@ impl SphericalFrameUniform {
             diagnostic_error_index,
             viewport_pixels,
             vector_phase: animation.phase(),
-            overlay_padding: 0,
+            globe_silhouette_clip: u32::from(globe_silhouette_clip),
         })
     }
 }
@@ -595,7 +611,8 @@ pub struct SphericalFieldRenderer {
     globe_index_count: u32,
     map_overlay_instance_count: u32,
     globe_overlay_instance_count: u32,
-    installed_vector_glyphs: Option<Arc<PreparedVectorGlyphs>>,
+    installed_map_overlay: Option<Arc<PreparedMapOverlayInstances>>,
+    installed_globe_overlay: Option<Arc<PreparedGlobeOverlayInstances>>,
     counters: SphericalUploadCounters,
     frame_generation: u64,
 }
@@ -747,7 +764,8 @@ impl SphericalFieldRenderer {
             globe_index_count: 0,
             map_overlay_instance_count: 0,
             globe_overlay_instance_count: 0,
-            installed_vector_glyphs: None,
+            installed_map_overlay: None,
+            installed_globe_overlay: None,
             counters: SphericalUploadCounters::default(),
             frame_generation: 0,
         }
@@ -809,38 +827,37 @@ impl SphericalFieldRenderer {
             .palette
             .then(|| combined_palette(packet.layers().fill_palette()))
             .transpose()?;
-        let mut prepared_overlay = (plan.map_overlay || plan.globe_overlay)
-            .then(|| prepare_overlay_instances(packet.map(), packet.globe(), packet.layers()))
+        let candidate_map_overlay = plan
+            .map_overlay
+            .then(|| prepare_map_overlay_instances(packet.map(), packet.globe(), packet.layers()))
             .transpose()
-            .map_err(|_| SphericalRenderError::InvalidOverlayInstances)?;
-        let map_overlay_instances = plan.map_overlay.then(|| {
-            prepared_overlay
-                .as_mut()
-                .map(|prepared| std::mem::take(&mut prepared.map))
-                .unwrap_or_default()
-        });
-        let globe_overlay_instances = plan.globe_overlay.then(|| {
-            prepared_overlay
-                .as_mut()
-                .map(|prepared| std::mem::take(&mut prepared.globe))
-                .unwrap_or_default()
-        });
-        let candidate_vector_glyphs = prepared_overlay
+            .map_err(|_| SphericalRenderError::InvalidOverlayInstances)?
+            .map(Arc::new);
+        let candidate_globe_overlay = plan
+            .globe_overlay
+            .then(|| prepare_globe_overlay_instances(packet.globe(), packet.layers()))
+            .transpose()
+            .map_err(|_| SphericalRenderError::InvalidOverlayInstances)?
+            .map(Arc::new);
+        let map_overlay_instances = candidate_map_overlay
             .as_ref()
-            .and_then(|prepared| prepared.vector_glyphs.clone());
+            .map(|prepared| prepared.instances.as_ref());
+        let globe_overlay_instances = candidate_globe_overlay
+            .as_ref()
+            .map(|prepared| prepared.instances.as_ref());
         let sizes = BufferSizes::for_packet(
             packet,
-            map_overlay_instances.as_deref().unwrap_or_default().len(),
-            globe_overlay_instances.as_deref().unwrap_or_default().len(),
+            map_overlay_instances.unwrap_or_default().len(),
+            globe_overlay_instances.unwrap_or_default().len(),
             limits.clone(),
         )?;
         let map_index_count = checked_u32(packet.map().indices().len(), "map index count")?;
         let globe_index_count = checked_u32(packet.globe().indices().len(), "globe index count")?;
-        let map_overlay_instance_count = match &map_overlay_instances {
+        let map_overlay_instance_count = match map_overlay_instances {
             Some(instances) => checked_u32(instances.len(), "map overlay instance count")?,
             None => self.map_overlay_instance_count,
         };
-        let globe_overlay_instance_count = match &globe_overlay_instances {
+        let globe_overlay_instance_count = match globe_overlay_instances {
             Some(instances) => checked_u32(instances.len(), "globe overlay instance count")?,
             None => self.globe_overlay_instance_count,
         };
@@ -848,8 +865,8 @@ impl SphericalFieldRenderer {
             self.counters,
             plan,
             sizes,
-            map_overlay_instances.is_some() && packet.layers().overlay().is_some(),
-            globe_overlay_instances.is_some() && packet.layers().overlay().is_some(),
+            candidate_map_overlay.is_some() && packet.layers().overlay().is_some(),
+            candidate_globe_overlay.is_some() && packet.layers().overlay().is_some(),
         )?;
 
         let new_map_vertex = replacement_buffer(
@@ -1001,7 +1018,7 @@ impl SphericalFieldRenderer {
                 bytemuck::cast_slice(packet.globe().indices()),
             );
         }
-        if let Some(instances) = &map_overlay_instances {
+        if let Some(instances) = map_overlay_instances {
             write_if_nonempty(
                 queue,
                 new_map_overlay
@@ -1010,7 +1027,7 @@ impl SphericalFieldRenderer {
                 bytemuck::cast_slice(instances),
             );
         }
-        if let Some(instances) = &globe_overlay_instances {
+        if let Some(instances) = globe_overlay_instances {
             write_if_nonempty(
                 queue,
                 new_globe_overlay
@@ -1101,8 +1118,11 @@ impl SphericalFieldRenderer {
         self.globe_index_count = globe_index_count;
         self.map_overlay_instance_count = map_overlay_instance_count;
         self.globe_overlay_instance_count = globe_overlay_instance_count;
-        if plan.map_overlay || plan.globe_overlay {
-            self.installed_vector_glyphs = candidate_vector_glyphs;
+        if let Some(prepared) = candidate_map_overlay {
+            self.installed_map_overlay = Some(prepared);
+        }
+        if let Some(prepared) = candidate_globe_overlay {
+            self.installed_globe_overlay = Some(prepared);
         }
         self.counters = next_counters;
         Ok(())
@@ -1179,9 +1199,9 @@ impl SphericalFieldRenderer {
 
     /// Returns map-projection diagnostics emitted while preparing the installed vector glyphs.
     pub fn vector_diagnostics(&self) -> &[OwnedViewDiagnostic] {
-        self.installed_vector_glyphs
+        self.installed_map_overlay
             .as_deref()
-            .map(PreparedVectorGlyphs::diagnostics)
+            .map(PreparedMapOverlayInstances::vector_diagnostics)
             .unwrap_or_default()
     }
 
@@ -1865,7 +1885,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{mpsc, Arc};
 
-    use super::super::overlay::{GpuGlobeOverlayInstance, GpuMapOverlayInstance};
+    use super::super::overlay::{
+        overlay_preparation_counts, reset_overlay_preparation_counts, GpuGlobeOverlayInstance,
+        GpuMapOverlayInstance,
+    };
     use super::{
         validation_probe, wgpu, GpuGlobeVertex, GpuMapVertex, SphericalFieldRenderer,
         SphericalFrameUniform, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
@@ -2139,6 +2162,67 @@ mod tests {
     }
 
     #[test]
+    fn projection_change_replaces_only_map_cpu_overlay_arc_for_vectors_and_edges() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        for fixture in [
+            vector_packet_fixture(84, true),
+            overlay_packet_fixture(OverlayTestKind::EdgeScalar, 85),
+        ] {
+            let mut renderer =
+                SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+            reset_overlay_preparation_counts();
+            renderer
+                .prepare_packet(&device, &queue, &fixture.packet)
+                .unwrap();
+            assert_eq!(overlay_preparation_counts().map, 1);
+            assert_eq!(overlay_preparation_counts().globe, 1);
+            let installed_map = Arc::clone(renderer.installed_map_overlay.as_ref().unwrap());
+            let installed_globe = Arc::clone(renderer.installed_globe_overlay.as_ref().unwrap());
+            let before = renderer.upload_counters();
+            let changed_map = Arc::new(
+                PreparedProjectedMap::build(
+                    fixture.packet.source().clone(),
+                    &fixture.surface,
+                    SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.3).unwrap(),
+                    SphericalMeshBudgets::DEFAULT,
+                )
+                .unwrap(),
+            );
+            let changed = SphericalGpuPacket::new(
+                changed_map,
+                DisplayRevision::new(103).unwrap(),
+                Arc::clone(&fixture.packet.globe),
+                fixture.packet.globe_geometry_revision,
+                Arc::clone(&fixture.layers),
+            );
+
+            renderer.prepare_packet(&device, &queue, &changed).unwrap();
+
+            assert_eq!(overlay_preparation_counts().map, 2);
+            assert_eq!(overlay_preparation_counts().globe, 1);
+            assert!(!Arc::ptr_eq(
+                &installed_map,
+                renderer.installed_map_overlay.as_ref().unwrap()
+            ));
+            assert!(Arc::ptr_eq(
+                &installed_globe,
+                renderer.installed_globe_overlay.as_ref().unwrap()
+            ));
+            let after = renderer.upload_counters();
+            assert_eq!(
+                after.map_overlay_instances,
+                before.map_overlay_instances + 1
+            );
+            assert_eq!(
+                after.globe_overlay_instances,
+                before.globe_overlay_instances
+            );
+        }
+    }
+
+    #[test]
     fn offscreen_scalar_and_category_edges_render_as_triangle_instances_in_both_modes() {
         let Some((device, queue)) = request_test_device() else {
             return;
@@ -2276,6 +2360,70 @@ mod tests {
 
         assert_eq!(back_pixels, baseline_pixels);
         assert_ne!(front_pixels, baseline_pixels);
+    }
+
+    #[test]
+    fn globe_horizon_edges_and_arrows_stay_inside_the_orthographic_silhouette() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let viewport = [64, 64];
+        let mut rotated_edge_camera = GlobeCamera::default();
+        assert!(rotated_edge_camera.trackball_drag(
+            [32.0, 32.0],
+            [40.0, 32.0],
+            viewport.map(f64::from),
+        ));
+        for (seed, overlay, globe_camera) in [
+            (86, edge_horizon_packet_fixture(86), rotated_edge_camera),
+            (
+                87,
+                vector_horizon_packet_fixture(87),
+                GlobeCamera::default(),
+            ),
+        ] {
+            let baseline = packet_fixture(TestFieldKind::Scalar, seed);
+            let (baseline_pixels, _) = render_offscreen_with_globe_camera(
+                &device,
+                &queue,
+                &baseline.packet,
+                SphericalRenderMode::Globe,
+                viewport,
+                globe_camera,
+            );
+            let (overlay_pixels, uniform) = render_offscreen_with_globe_camera(
+                &device,
+                &queue,
+                &overlay.packet,
+                SphericalRenderMode::Globe,
+                viewport,
+                globe_camera,
+            );
+
+            assert_overlay_changes_inside_globe_silhouette(
+                &baseline_pixels,
+                &overlay_pixels,
+                uniform.transform,
+                viewport,
+                seed,
+            );
+        }
+    }
+
+    #[test]
+    fn horizon_edge_fixture_keeps_authoritative_prepared_segments() {
+        let fixture = edge_horizon_packet_fixture(86);
+        let authoritative = PreparedGlobeMesh::build(
+            fixture.packet.source().clone(),
+            &fixture.surface,
+            SphericalMeshBudgets::DEFAULT,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fixture.packet.globe().edge_segments(),
+            authoritative.edge_segments()
+        );
     }
 
     #[test]
@@ -2625,6 +2773,19 @@ mod tests {
         EdgeCategory,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum VectorFixturePlacement {
+        Hemisphere(bool),
+        ProjectionPole,
+        HorizonCrossing,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum EdgeFixturePlacement {
+        Hemisphere(bool),
+        HorizonCrossing,
+    }
+
     fn request_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         pollster::block_on(async {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
@@ -2776,34 +2937,70 @@ mod tests {
     }
 
     fn overlay_packet_fixture(kind: OverlayTestKind, seed: u64) -> PacketFixture {
-        overlay_packet_fixture_inner(kind, seed, None, None, false)
+        overlay_packet_fixture_inner(kind, seed, None, None)
     }
 
     fn vector_packet_fixture(seed: u64, front: bool) -> PacketFixture {
-        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, Some(front), None, false)
+        overlay_packet_fixture_inner(
+            OverlayTestKind::EdgeScalar,
+            seed,
+            Some(VectorFixturePlacement::Hemisphere(front)),
+            None,
+        )
     }
 
     fn vector_jacobian_packet_fixture(seed: u64) -> PacketFixture {
-        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, Some(true), None, true)
+        overlay_packet_fixture_inner(
+            OverlayTestKind::EdgeScalar,
+            seed,
+            Some(VectorFixturePlacement::ProjectionPole),
+            None,
+        )
     }
 
     fn edge_hemisphere_packet_fixture(seed: u64, front: bool) -> PacketFixture {
-        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, None, Some(front), false)
+        overlay_packet_fixture_inner(
+            OverlayTestKind::EdgeScalar,
+            seed,
+            None,
+            Some(EdgeFixturePlacement::Hemisphere(front)),
+        )
+    }
+
+    fn vector_horizon_packet_fixture(seed: u64) -> PacketFixture {
+        overlay_packet_fixture_inner(
+            OverlayTestKind::EdgeScalar,
+            seed,
+            Some(VectorFixturePlacement::HorizonCrossing),
+            None,
+        )
+    }
+
+    fn edge_horizon_packet_fixture(seed: u64) -> PacketFixture {
+        overlay_packet_fixture_inner(
+            OverlayTestKind::EdgeScalar,
+            seed,
+            None,
+            Some(EdgeFixturePlacement::HorizonCrossing),
+        )
     }
 
     fn overlay_packet_fixture_inner(
         kind: OverlayTestKind,
         seed: u64,
-        vector_front: Option<bool>,
-        edge_front: Option<bool>,
-        vector_at_projection_pole: bool,
+        vector_placement: Option<VectorFixturePlacement>,
+        edge_placement: Option<EdgeFixturePlacement>,
     ) -> PacketFixture {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
             radius: Meters::new(6_371_000.0).unwrap(),
             target_cell_count: 42,
         })
         .unwrap();
-        let pole_cell = vector_at_projection_pole.then(|| surface.cells()[0].id);
+        let pole_cell = matches!(
+            vector_placement,
+            Some(VectorFixturePlacement::ProjectionPole)
+        )
+        .then(|| surface.cells()[0].id);
         let source = SphericalPresentationSource::new(
             RootSeed::new(seed),
             SurfaceRef::for_spherical(&surface),
@@ -2827,119 +3024,160 @@ mod tests {
         if let Some(cell) = pole_cell {
             globe.set_cell_centroid_for_test(cell, UnitVector3::new(0.0, 0.0, 1.0).unwrap());
         }
+        let horizon_edge = matches!(edge_placement, Some(EdgeFixturePlacement::HorizonCrossing))
+            .then(|| {
+                globe
+                    .edge_segments()
+                    .iter()
+                    .filter(|segment| segment.start()[2] * segment.end()[2] < 0.0)
+                    .max_by(|left, right| {
+                        horizon_crossing_radius_squared(left.start(), left.end())
+                            .total_cmp(&horizon_crossing_radius_squared(right.start(), right.end()))
+                    })
+                    .expect("authoritative fixture contains a horizon-crossing edge")
+                    .edge()
+            });
         let globe = Arc::new(globe);
         let cell_count = surface.cells().len();
         let edge_count = surface.edges().len();
         let (fill_schema, fill_data, _) = test_field(TestFieldKind::Scalar, cell_count);
         let fill_id = fill_schema.id.clone();
-        let (overlay_schema, overlay_data, selected_cell) = if let Some(front) = vector_front {
-            let selected = pole_cell.unwrap_or_else(|| {
-                surface
-                    .cells()
-                    .iter()
-                    .find(|cell| {
-                        let z = cell.centroid.components()[2];
-                        if front {
-                            z > 0.55
-                        } else {
-                            z < -0.55
-                        }
-                    })
-                    .expect("fixture contains the requested hemisphere cell")
-                    .id
-            });
-            let mut vectors = vec![[0.0, 0.0]; cell_count];
-            vectors[selected.raw() as usize] = [1.0, 0.0];
-            (
-                FieldSchema {
-                    id: FieldId::new("test.spherical.gpu", "vector_overlay", 1).unwrap(),
-                    domain: FieldDomain::Cells,
-                    value_type: FieldValueType::Vector2F32,
-                    unit: FieldUnit::Unitless,
-                    valid_range: None,
-                    missing: MissingValuePolicy::Forbidden,
-                    dependencies: Vec::new(),
-                    category_labels: BTreeMap::new(),
-                    display: FieldDisplayMetadata::new(
-                        "field.test.spherical.gpu.vector_overlay",
-                        FieldPaletteHint::Vector,
-                        4,
-                    )
-                    .unwrap(),
-                },
-                FieldData::Vector2F32(vectors),
-                Some(selected),
-            )
-        } else {
-            match kind {
-                OverlayTestKind::EdgeScalar => (
-                    FieldSchema {
-                        id: FieldId::new("test.spherical.gpu", "edge_scalar", 1).unwrap(),
-                        domain: FieldDomain::Edges,
-                        value_type: FieldValueType::ScalarF32,
-                        unit: FieldUnit::Unitless,
-                        valid_range: Some(ValueRange::new(0.0, 1.0).unwrap()),
-                        missing: MissingValuePolicy::Forbidden,
-                        dependencies: Vec::new(),
-                        category_labels: BTreeMap::new(),
-                        display: FieldDisplayMetadata::new(
-                            "field.test.spherical.gpu.edge_scalar",
-                            FieldPaletteHint::Sequential,
-                            4,
-                        )
-                        .unwrap(),
-                    },
-                    FieldData::ScalarF32(if let Some(front) = edge_front {
-                        let selected = surface
-                            .edges()
+        let (overlay_schema, overlay_data, selected_cell) =
+            if let Some(placement) = vector_placement {
+                let selected = match placement {
+                    VectorFixturePlacement::ProjectionPole => pole_cell.unwrap(),
+                    VectorFixturePlacement::Hemisphere(front) => {
+                        surface
+                            .cells()
                             .iter()
-                            .find(|edge| {
-                                let z = edge.midpoint.components()[2];
+                            .find(|cell| {
+                                let z = cell.centroid.components()[2];
                                 if front {
-                                    z > 0.65
+                                    z > 0.55
                                 } else {
-                                    z < -0.65
+                                    z < -0.55
                                 }
                             })
-                            .expect("fixture contains the requested hemisphere edge")
-                            .id;
-                        let mut values = vec![0.0; edge_count];
-                        values[selected.raw() as usize] = 1.0;
-                        values
-                    } else {
-                        (0..edge_count)
-                            .map(|index| if index % 3 == 0 { 0.0 } else { 1.0 })
-                            .collect()
-                    }),
-                    None,
-                ),
-                OverlayTestKind::EdgeCategory => (
+                            .expect("fixture contains the requested hemisphere cell")
+                            .id
+                    }
+                    VectorFixturePlacement::HorizonCrossing => {
+                        surface
+                            .cells()
+                            .iter()
+                            .filter(|cell| {
+                                let z = cell.centroid.components()[2];
+                                z > 0.4 && z < 0.75
+                            })
+                            .min_by(|left, right| {
+                                left.centroid.components()[2]
+                                    .total_cmp(&right.centroid.components()[2])
+                            })
+                            .expect("fixture contains a near-horizon front cell")
+                            .id
+                    }
+                };
+                let mut vectors = vec![[0.0, 0.0]; cell_count];
+                vectors[selected.raw() as usize] = match placement {
+                    VectorFixturePlacement::HorizonCrossing => [1.0, -1.0],
+                    VectorFixturePlacement::Hemisphere(_)
+                    | VectorFixturePlacement::ProjectionPole => [1.0, 0.0],
+                };
+                (
                     FieldSchema {
-                        id: FieldId::new("test.spherical.gpu", "edge_category", 1).unwrap(),
-                        domain: FieldDomain::Edges,
-                        value_type: FieldValueType::CategoryU32,
+                        id: FieldId::new("test.spherical.gpu", "vector_overlay", 1).unwrap(),
+                        domain: FieldDomain::Cells,
+                        value_type: FieldValueType::Vector2F32,
                         unit: FieldUnit::Unitless,
                         valid_range: None,
                         missing: MissingValuePolicy::Forbidden,
                         dependencies: Vec::new(),
-                        category_labels: BTreeMap::from([
-                            (0, "field.test.edge.none".into()),
-                            (1, "field.test.edge.event".into()),
-                        ]),
+                        category_labels: BTreeMap::new(),
                         display: FieldDisplayMetadata::new(
-                            "field.test.spherical.gpu.edge_category",
-                            FieldPaletteHint::Categorical,
-                            0,
+                            "field.test.spherical.gpu.vector_overlay",
+                            FieldPaletteHint::Vector,
+                            4,
                         )
                         .unwrap(),
                     },
-                    FieldData::CategoryU32(
-                        (0..edge_count).map(|index| (index % 2) as u32).collect(),
+                    FieldData::Vector2F32(vectors),
+                    Some(selected),
+                )
+            } else {
+                match kind {
+                    OverlayTestKind::EdgeScalar => (
+                        FieldSchema {
+                            id: FieldId::new("test.spherical.gpu", "edge_scalar", 1).unwrap(),
+                            domain: FieldDomain::Edges,
+                            value_type: FieldValueType::ScalarF32,
+                            unit: FieldUnit::Unitless,
+                            valid_range: Some(ValueRange::new(0.0, 1.0).unwrap()),
+                            missing: MissingValuePolicy::Forbidden,
+                            dependencies: Vec::new(),
+                            category_labels: BTreeMap::new(),
+                            display: FieldDisplayMetadata::new(
+                                "field.test.spherical.gpu.edge_scalar",
+                                FieldPaletteHint::Sequential,
+                                4,
+                            )
+                            .unwrap(),
+                        },
+                        FieldData::ScalarF32(if let Some(placement) = edge_placement {
+                            let selected = match placement {
+                                EdgeFixturePlacement::Hemisphere(front) => {
+                                    surface
+                                        .edges()
+                                        .iter()
+                                        .find(|edge| {
+                                            let z = edge.midpoint.components()[2];
+                                            if front {
+                                                z > 0.65
+                                            } else {
+                                                z < -0.65
+                                            }
+                                        })
+                                        .expect("fixture contains the requested hemisphere edge")
+                                        .id
+                                }
+                                EdgeFixturePlacement::HorizonCrossing => horizon_edge.unwrap(),
+                            };
+                            let mut values = vec![0.0; edge_count];
+                            values[selected.raw() as usize] = 1.0;
+                            values
+                        } else {
+                            (0..edge_count)
+                                .map(|index| if index % 3 == 0 { 0.0 } else { 1.0 })
+                                .collect()
+                        }),
+                        None,
                     ),
-                    None,
-                ),
-            }
-        };
+                    OverlayTestKind::EdgeCategory => (
+                        FieldSchema {
+                            id: FieldId::new("test.spherical.gpu", "edge_category", 1).unwrap(),
+                            domain: FieldDomain::Edges,
+                            value_type: FieldValueType::CategoryU32,
+                            unit: FieldUnit::Unitless,
+                            valid_range: None,
+                            missing: MissingValuePolicy::Forbidden,
+                            dependencies: Vec::new(),
+                            category_labels: BTreeMap::from([
+                                (0, "field.test.edge.none".into()),
+                                (1, "field.test.edge.event".into()),
+                            ]),
+                            display: FieldDisplayMetadata::new(
+                                "field.test.spherical.gpu.edge_category",
+                                FieldPaletteHint::Categorical,
+                                0,
+                            )
+                            .unwrap(),
+                        },
+                        FieldData::CategoryU32(
+                            (0..edge_count).map(|index| (index % 2) as u32).collect(),
+                        ),
+                        None,
+                    ),
+                }
+            };
         let overlay_id = overlay_schema.id.clone();
         let mut registry = FieldRegistryBuilder::new();
         registry.register(fill_schema).unwrap();
@@ -2997,6 +3235,13 @@ mod tests {
         }
     }
 
+    fn horizon_crossing_radius_squared(start: [f32; 3], end: [f32; 3]) -> f32 {
+        let crossing = start[2] / (start[2] - end[2]);
+        let x = start[0] + (end[0] - start[0]) * crossing;
+        let y = start[1] + (end[1] - start[1]) * crossing;
+        x.mul_add(x, y * y)
+    }
+
     fn layers_for_count(
         source: SphericalPresentationSource,
         cell_count: usize,
@@ -3043,6 +3288,24 @@ mod tests {
         mode: SphericalRenderMode,
         viewport: [u32; 2],
     ) -> (Vec<u8>, SphericalFrameUniform) {
+        render_offscreen_with_globe_camera(
+            device,
+            queue,
+            packet,
+            mode,
+            viewport,
+            GlobeCamera::default(),
+        )
+    }
+
+    fn render_offscreen_with_globe_camera(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+        mode: SphericalRenderMode,
+        viewport: [u32; 2],
+        globe_camera: GlobeCamera,
+    ) -> (Vec<u8>, SphericalFrameUniform) {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let mut renderer = SphericalFieldRenderer::new(device, format);
         renderer.prepare_packet(device, queue, packet).unwrap();
@@ -3051,7 +3314,7 @@ mod tests {
                 SphericalFrameUniform::for_map(packet, MapCamera::default(), viewport).unwrap()
             }
             SphericalRenderMode::Globe => {
-                SphericalFrameUniform::for_globe(packet, GlobeCamera::default(), viewport).unwrap()
+                SphericalFrameUniform::for_globe(packet, globe_camera, viewport).unwrap()
             }
         };
         renderer.prepare_frame(queue, mode, &uniform).unwrap();
@@ -3232,6 +3495,47 @@ mod tests {
             ((ndc_x + 1.0) * 0.5 * viewport[0] as f32).floor() as i32,
             ((1.0 - ndc_y) * 0.5 * viewport[1] as f32).floor() as i32,
         ]
+    }
+
+    fn assert_overlay_changes_inside_globe_silhouette(
+        baseline: &[u8],
+        overlay: &[u8],
+        transform: [[f32; 4]; 4],
+        viewport: [u32; 2],
+        seed: u64,
+    ) {
+        let radius_x = (0..3)
+            .map(|column| transform[column][0] * transform[column][0])
+            .sum::<f32>()
+            .sqrt();
+        let radius_y = (0..3)
+            .map(|column| transform[column][1] * transform[column][1])
+            .sum::<f32>()
+            .sqrt();
+        let mut changed = 0;
+        for (pixel, (before, after)) in baseline
+            .chunks_exact(4)
+            .zip(overlay.chunks_exact(4))
+            .enumerate()
+        {
+            if before == after {
+                continue;
+            }
+            changed += 1;
+            let x = pixel as u32 % viewport[0];
+            let y = pixel as u32 / viewport[0];
+            let ndc_x = (x as f32 + 0.5) * 2.0 / viewport[0] as f32 - 1.0;
+            let ndc_y = 1.0 - (y as f32 + 0.5) * 2.0 / viewport[1] as f32;
+            let silhouette = (ndc_x / radius_x).powi(2) + (ndc_y / radius_y).powi(2);
+            assert!(
+                silhouette <= 1.0 + 1.0e-5,
+                "overlay pixel ({x}, {y}) escaped globe silhouette: {silhouette}"
+            );
+        }
+        assert!(
+            changed > 0,
+            "front part of horizon annotation for seed {seed} must remain visible"
+        );
     }
 
     fn assert_pixel_near(
