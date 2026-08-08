@@ -48,3 +48,40 @@
 ## Concerns
 
 None. Git reports the repository's existing LF-to-CRLF checkout advisory for touched Rust files; it does not alter the logical diff or verification results.
+
+## Fix Round 1
+
+### Findings addressed
+
+- Both spherical preparation paths now stage cloned display state and revision clocks. They publish those candidates only after all validation, payload preparation, palette work, and revision issuance succeeds.
+- Updates now derive a small prepared-state key and prepare only components invalidated by fill, overlay, range, diagnostic-scope, or palette changes. Test-only counters prove a fill update skips overlay construction and an overlay update skips fill construction.
+- Fill palettes retain the fill-compatible override, while overlays resolve their own schema palette. Category edges use categorical colors and vector overlays always use the sequential family.
+- Updates validate incoming diagnostics even when the existing diagnostic allocation can be reused, preventing invalid changed diagnostics from bypassing atomic failure handling.
+
+### Files changed
+
+- `src/view/field_layers.rs`
+- `src/view/mod.rs`
+- `src/app/spherical_natural_display.rs`
+
+### RED evidence
+
+- `cargo test --lib spherical_natural_display::tests -- --nocapture` — 14 passed, 2 failed before the fix:
+  - `failed_spherical_preparation_preserves_state_and_revision_clock` showed reconciliation had changed caller state after a later diagnostics error.
+  - `overlay_palette_uses_its_own_schema_not_the_fill_override` showed a category edge overlay received the diverging fill palette.
+- After the first staging/palette implementation, the new update regression failed because unchanged diagnostics skipped validation. This isolated the remaining bypass and led to the lightweight validation step.
+
+### GREEN and verification evidence
+
+- `cargo test --lib spherical_natural_display::tests -- --nocapture` — 18 passed, including preparation/update atomicity, palette independence, and preparation-counter assertions.
+- `cargo test --test spherical_field_layers -- --nocapture` — 5 passed.
+- `cargo test --lib app::field_document -- --nocapture` — 4 passed.
+- `cargo test` — exit code 0; 249 library tests plus integration, binary, and doc-test suites passed.
+- `cargo fmt --check` and `git diff --check` — passed.
+
+### Self-review
+
+- Failure paths never assign staged state or clocks to their callers.
+- The update key separates fill, overlay, diagnostics, fill palette, and overlay palette invalidation; display-only flags perform no large payload preparation.
+- Overlay palette resolution intentionally does not read the fill override, preserving category/vector compatibility.
+- Test instrumentation is `cfg(test)` and thread-local, so it does not exist in product builds.

@@ -402,9 +402,9 @@ mod tests {
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
     use crate::view::{
         built_in_palette, classify_spherical_channel, prepare_edge_field,
-        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, PaletteId,
-        PreparedOverlayKind, PreparedSphericalOverlay, SphericalFieldChannel,
-        SphericalFieldDisplayState, SphericalPresentationSource,
+        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, OwnedViewDiagnostic,
+        PaletteId, PreparedOverlayKind, PreparedSphericalOverlay, SphericalFieldChannel,
+        SphericalFieldDisplayState, SphericalPresentationSource, ViewDiagnosticSeverity,
     };
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
@@ -415,7 +415,7 @@ mod tests {
         WorldFormationSpec,
     };
     use crate::world::spatial::{canonical_east_north_basis, SurfaceRef};
-    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
+    use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
@@ -845,6 +845,229 @@ mod tests {
             Err(DisplayPrepareError::UnsupportedSphericalChannel { field })
                 if field == surface_elevation_m_field_id()
         ));
+    }
+
+    #[test]
+    fn failed_spherical_preparation_preserves_state_and_revision_clock() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_overlay(Some(surface_elevation_m_field_id()));
+        state.select_entity(Some(crate::view::SelectedSurfaceEntity::Cell(
+            CellId::from_raw(cell_count as u32),
+        )));
+        let before_state = state.clone();
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let mut expected_clock = clock.clone();
+        let invalid_diagnostics = [OwnedViewDiagnostic {
+            severity: ViewDiagnosticSeverity::Error,
+            code: "test.invalid-cell".into(),
+            field_id: None,
+            cell_id: Some(CellId::from_raw(cell_count as u32)),
+            message: "outside the spherical cell range".into(),
+        }];
+
+        assert!(prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            document.surface.snapshot().edges().len(),
+            &invalid_diagnostics,
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .is_err());
+
+        assert_eq!(state, before_state);
+        assert_eq!(
+            clock.issue().unwrap().get(),
+            expected_clock.issue().unwrap().get()
+        );
+    }
+
+    #[test]
+    fn overlay_palette_uses_its_own_schema_not_the_fill_override() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let edge_count = document.surface.snapshot().edges().len();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.set_palette_override(Some(PaletteId::Diverging));
+        state.select_overlay(Some(boundary_kind_field_id()));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let category = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(
+            category.fill_palette(),
+            built_in_palette(PaletteId::Diverging)
+        );
+        assert_eq!(
+            category.overlay_palette().unwrap(),
+            built_in_palette(PaletteId::Categorical)
+        );
+
+        state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let vector = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(
+            vector.overlay_palette().unwrap(),
+            built_in_palette(PaletteId::Sequential)
+        );
+    }
+
+    #[test]
+    fn failed_spherical_update_preserves_state_and_revision_clock() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let edge_count = document.surface.snapshot().edges().len();
+        let mut state = SphericalFieldDisplayState::default();
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let current = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        state.select_overlay(Some(surface_elevation_m_field_id()));
+        state.select_entity(Some(crate::view::SelectedSurfaceEntity::Cell(
+            CellId::from_raw(cell_count as u32),
+        )));
+        let before_state = state.clone();
+        let mut expected_clock = clock.clone();
+        let invalid_diagnostics = [OwnedViewDiagnostic {
+            severity: ViewDiagnosticSeverity::Error,
+            code: "test.invalid-cell".into(),
+            field_id: None,
+            cell_id: Some(CellId::from_raw(cell_count as u32)),
+            message: "outside the spherical cell range".into(),
+        }];
+
+        assert!(crate::view::update_spherical_field_layers(
+            &current,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &invalid_diagnostics,
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .is_err());
+
+        assert_eq!(state, before_state);
+        assert_eq!(
+            clock.issue().unwrap().get(),
+            expected_clock.issue().unwrap().get()
+        );
+    }
+
+    #[test]
+    fn spherical_updates_prepare_only_changed_large_payloads() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let edge_count = document.surface.snapshot().edges().len();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.select_overlay(Some(boundary_kind_field_id()));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let initial = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        crate::view::reset_field_layer_preparation_counts();
+        state.select_fill(elevation_field_id());
+        let fill_changed = crate::view::update_spherical_field_layers(
+            &initial,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::view::field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts {
+                fill: 1,
+                overlay: 0,
+                diagnostics: 1,
+            }
+        );
+
+        crate::view::reset_field_layer_preparation_counts();
+        state.select_overlay(Some(boundary_strength_field_id()));
+        let _ = crate::view::update_spherical_field_layers(
+            &fill_changed,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::view::field_layer_preparation_counts(),
+            crate::view::FieldLayerPreparationCounts {
+                fill: 0,
+                overlay: 1,
+                diagnostics: 0,
+            }
+        );
     }
 
     #[test]

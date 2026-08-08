@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use thiserror::Error;
 
 use super::palette::prepare_scalar_or_category_field;
@@ -13,6 +16,39 @@ use super::{
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldPaletteHint, FieldValueType};
 use crate::world::{CellId, EdgeId};
+
+#[cfg(test)]
+thread_local! {
+    static PREPARATION_COUNTS: Cell<FieldLayerPreparationCounts> = Cell::new(FieldLayerPreparationCounts::default());
+}
+
+/// Test-only counts for expensive prepared payload construction.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FieldLayerPreparationCounts {
+    pub(crate) fill: usize,
+    pub(crate) overlay: usize,
+    pub(crate) diagnostics: usize,
+}
+
+#[cfg(test)]
+pub(crate) fn reset_field_layer_preparation_counts() {
+    PREPARATION_COUNTS.with(|counts| counts.set(FieldLayerPreparationCounts::default()));
+}
+
+#[cfg(test)]
+pub(crate) fn field_layer_preparation_counts() -> FieldLayerPreparationCounts {
+    PREPARATION_COUNTS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_preparation(update: impl FnOnce(&mut FieldLayerPreparationCounts)) {
+    PREPARATION_COUNTS.with(|counts| {
+        let mut next = counts.get();
+        update(&mut next);
+        counts.set(next);
+    });
+}
 
 /// The presentation channel compatible with a spherical field schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +226,28 @@ pub struct PreparedFieldLayers {
     overlay_palette: Option<Arc<[LinearRgba]>>,
     revisions: FieldLayerRevisions,
     diagnostics_enabled: bool,
+    prepared_state: PreparedLayerState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedLayerState {
+    fill_field: Option<FieldId>,
+    overlay_field: Option<FieldId>,
+    range_mode: DisplayRangeMode,
+    palette_override: Option<PaletteId>,
+    diagnostic_scope: DiagnosticScope,
+}
+
+impl From<&SphericalFieldDisplayState> for PreparedLayerState {
+    fn from(state: &SphericalFieldDisplayState) -> Self {
+        Self {
+            fill_field: state.fill_field.clone(),
+            overlay_field: state.overlay_field.clone(),
+            range_mode: state.range_mode,
+            palette_override: state.palette_override,
+            diagnostic_scope: state.diagnostic_scope,
+        }
+    }
 }
 
 impl PreparedFieldLayers {
@@ -504,25 +562,37 @@ pub fn prepare_spherical_field_layers<F>(
 where
     F: Fn(&FieldId) -> Option<DisplayRangeMode>,
 {
+    let mut candidate_state = state.clone();
+    let mut candidate_clock = clock.clone();
     reconcile_spherical_state(
         catalog,
         cell_count,
         edge_count,
         preferred_fill,
         &preferred_range,
-        state,
+        &mut candidate_state,
     );
-    let parts = prepare_layer_parts(catalog, cell_count, edge_count, diagnostics, state)?;
-    Ok(PreparedFieldLayers {
+    let parts = prepare_layer_parts(
+        catalog,
+        cell_count,
+        edge_count,
+        diagnostics,
+        &candidate_state,
+    )?;
+    let packet = PreparedFieldLayers {
         source,
         fill: parts.fill,
         overlay: parts.overlay,
         diagnostics: parts.diagnostics,
         fill_palette: parts.fill_palette,
         overlay_palette: parts.overlay_palette,
-        revisions: issue_all_revisions(clock)?,
-        diagnostics_enabled: state.diagnostics_enabled(),
-    })
+        revisions: issue_all_revisions(&mut candidate_clock)?,
+        diagnostics_enabled: candidate_state.diagnostics_enabled(),
+        prepared_state: PreparedLayerState::from(&candidate_state),
+    };
+    *state = candidate_state;
+    *clock = candidate_clock;
+    Ok(packet)
 }
 
 /// Reconciles one changed spherical state and reuses every unchanged shared allocation.
@@ -541,42 +611,71 @@ pub fn update_spherical_field_layers<F>(
 where
     F: Fn(&FieldId) -> Option<DisplayRangeMode>,
 {
+    let mut candidate_state = state.clone();
+    let mut candidate_clock = clock.clone();
     reconcile_spherical_state(
         catalog,
         cell_count,
         edge_count,
         preferred_fill,
         &preferred_range,
-        state,
+        &mut candidate_state,
     );
-    let next = prepare_layer_parts(catalog, cell_count, edge_count, diagnostics, state)?;
+    validate_diagnostics(diagnostics, cell_count)?;
+    let next_state = PreparedLayerState::from(&candidate_state);
     let mut revisions = current.revisions;
-    let fill = reuse_or_replace(&current.fill, next.fill, &mut revisions.fill, clock)?;
-    let overlay = reuse_overlay_or_replace(
-        &current.overlay,
-        next.overlay,
-        &mut revisions.overlay,
-        clock,
-    )?;
-    let diagnostics = reuse_or_replace(
-        &current.diagnostics,
-        next.diagnostics,
-        &mut revisions.diagnostics,
-        clock,
-    )?;
-    let fill_palette = reuse_or_replace(
-        &current.fill_palette,
-        next.fill_palette,
-        &mut revisions.fill_palette,
-        clock,
-    )?;
-    let overlay_palette = reuse_optional_or_replace(
-        &current.overlay_palette,
-        next.overlay_palette,
-        &mut revisions.overlay_palette,
-        clock,
-    )?;
-    Ok(PreparedFieldLayers {
+    let fill = if fill_needs_preparation(&current.prepared_state, &next_state) {
+        reuse_or_replace(
+            &current.fill,
+            prepare_fill(catalog, cell_count, &candidate_state)?,
+            &mut revisions.fill,
+            &mut candidate_clock,
+        )?
+    } else {
+        current.fill.clone()
+    };
+    let overlay = if overlay_needs_preparation(&current.prepared_state, &next_state) {
+        reuse_overlay_or_replace(
+            &current.overlay,
+            prepare_overlay_for_state(catalog, cell_count, edge_count, &candidate_state)?,
+            &mut revisions.overlay,
+            &mut candidate_clock,
+        )?
+    } else {
+        current.overlay.clone()
+    };
+    let diagnostics = if diagnostics_need_preparation(&current.prepared_state, &next_state) {
+        reuse_or_replace(
+            &current.diagnostics,
+            prepare_diagnostics(diagnostics, cell_count, &candidate_state)?,
+            &mut revisions.diagnostics,
+            &mut candidate_clock,
+        )?
+    } else {
+        current.diagnostics.clone()
+    };
+    let fill_palette = if fill_palette_needs_preparation(&current.prepared_state, &next_state) {
+        reuse_or_replace(
+            &current.fill_palette,
+            prepare_fill_palette(catalog, &candidate_state)?,
+            &mut revisions.fill_palette,
+            &mut candidate_clock,
+        )?
+    } else {
+        current.fill_palette.clone()
+    };
+    let overlay_palette = if overlay_palette_needs_preparation(&current.prepared_state, &next_state)
+    {
+        reuse_optional_or_replace(
+            &current.overlay_palette,
+            prepare_overlay_palette(catalog, &candidate_state)?,
+            &mut revisions.overlay_palette,
+            &mut candidate_clock,
+        )?
+    } else {
+        current.overlay_palette.clone()
+    };
+    let packet = PreparedFieldLayers {
         source,
         fill,
         overlay,
@@ -584,8 +683,12 @@ where
         fill_palette,
         overlay_palette,
         revisions,
-        diagnostics_enabled: state.diagnostics_enabled(),
-    })
+        diagnostics_enabled: candidate_state.diagnostics_enabled(),
+        prepared_state: next_state,
+    };
+    *state = candidate_state;
+    *clock = candidate_clock;
+    Ok(packet)
 }
 
 struct PreparedLayerParts {
@@ -603,6 +706,22 @@ fn prepare_layer_parts(
     diagnostics: &[OwnedViewDiagnostic],
     state: &SphericalFieldDisplayState,
 ) -> Result<PreparedLayerParts, DisplayPrepareError> {
+    Ok(PreparedLayerParts {
+        fill: prepare_fill(catalog, cell_count, state)?,
+        overlay: prepare_overlay_for_state(catalog, cell_count, edge_count, state)?,
+        diagnostics: prepare_diagnostics(diagnostics, cell_count, state)?,
+        fill_palette: prepare_fill_palette(catalog, state)?,
+        overlay_palette: prepare_overlay_palette(catalog, state)?,
+    })
+}
+
+fn prepare_fill(
+    catalog: &FieldCatalog<'_>,
+    cell_count: usize,
+    state: &SphericalFieldDisplayState,
+) -> Result<Arc<PreparedCellField>, DisplayPrepareError> {
+    #[cfg(test)]
+    record_preparation(|counts| counts.fill += 1);
     let fill_entry = state
         .fill_field()
         .and_then(|field| catalog.get(field))
@@ -613,39 +732,81 @@ fn prepare_layer_parts(
         cell_count,
         state.range_mode(),
     )?);
-    let fill_palette = Arc::from(built_in_palette(palette_for(fill_entry, state)?));
-    let overlay = state
+    Ok(fill)
+}
+
+fn prepare_overlay_for_state(
+    catalog: &FieldCatalog<'_>,
+    cell_count: usize,
+    edge_count: usize,
+    state: &SphericalFieldDisplayState,
+) -> Result<Option<PreparedSphericalOverlay>, DisplayPrepareError> {
+    #[cfg(test)]
+    if state.overlay_field().is_some() {
+        record_preparation(|counts| counts.overlay += 1);
+    }
+    state
         .overlay_field()
         .and_then(|field| catalog.get(field))
         .and_then(|entry| entry.view())
         .map(|field| prepare_overlay(field, cell_count, edge_count, state.range_mode()))
-        .transpose()?;
-    let overlay_palette = overlay
-        .as_ref()
-        .map(|_| {
-            let field = state
-                .overlay_field()
-                .and_then(|id| catalog.get(id))
-                .and_then(|entry| entry.view())
-                .expect("reconciled overlay must remain present");
-            Ok::<Arc<[LinearRgba]>, DisplayPrepareError>(Arc::from(built_in_palette(palette_for(
-                field, state,
-            )?)))
-        })
-        .transpose()?;
-    let diagnostics = Arc::new(PreparedDiagnosticMask::build(
+        .transpose()
+}
+
+fn prepare_diagnostics(
+    diagnostics: &[OwnedViewDiagnostic],
+    cell_count: usize,
+    state: &SphericalFieldDisplayState,
+) -> Result<Arc<PreparedDiagnosticMask>, DisplayPrepareError> {
+    #[cfg(test)]
+    record_preparation(|counts| counts.diagnostics += 1);
+    Ok(Arc::new(PreparedDiagnosticMask::build(
         cell_count,
         diagnostics.iter().map(OwnedViewDiagnostic::as_ref),
         state.fill_field(),
         state.diagnostic_scope(),
-    )?);
-    Ok(PreparedLayerParts {
-        fill,
-        overlay,
-        diagnostics,
-        fill_palette,
-        overlay_palette,
-    })
+    )?))
+}
+
+fn validate_diagnostics(
+    diagnostics: &[OwnedViewDiagnostic],
+    cell_count: usize,
+) -> Result<(), DisplayPrepareError> {
+    for diagnostic in diagnostics {
+        let Some(cell) = diagnostic.cell_id else {
+            continue;
+        };
+        let index = usize::try_from(cell.raw())
+            .map_err(|_| DisplayPrepareError::DiagnosticCellOutOfRange { cell, cell_count })?;
+        if index >= cell_count {
+            return Err(DisplayPrepareError::DiagnosticCellOutOfRange { cell, cell_count });
+        }
+    }
+    Ok(())
+}
+
+fn prepare_fill_palette(
+    catalog: &FieldCatalog<'_>,
+    state: &SphericalFieldDisplayState,
+) -> Result<Arc<[LinearRgba]>, DisplayPrepareError> {
+    let fill = state
+        .fill_field()
+        .and_then(|field| catalog.get(field))
+        .and_then(|entry| entry.view())
+        .ok_or(DisplayPrepareError::NoRenderableField)?;
+    Ok(Arc::from(built_in_palette(fill_palette_for(fill, state)?)))
+}
+
+fn prepare_overlay_palette(
+    catalog: &FieldCatalog<'_>,
+    state: &SphericalFieldDisplayState,
+) -> Result<Option<Arc<[LinearRgba]>>, DisplayPrepareError> {
+    state
+        .overlay_field()
+        .and_then(|field| catalog.get(field))
+        .and_then(|entry| entry.view())
+        .map(|overlay| Ok(Arc::from(built_in_palette(overlay_palette_for(overlay)?))))
+        .transpose()
 }
 
 fn prepare_overlay(
@@ -748,7 +909,7 @@ fn reconcile_spherical_state<F>(
     }
 }
 
-fn palette_for(
+fn fill_palette_for(
     field: &FieldView<'_>,
     state: &SphericalFieldDisplayState,
 ) -> Result<PaletteId, DisplayPrepareError> {
@@ -763,6 +924,40 @@ fn palette_for(
         }
     };
     Ok(state.palette_override().unwrap_or(schema_palette))
+}
+
+fn overlay_palette_for(field: &FieldView<'_>) -> Result<PaletteId, DisplayPrepareError> {
+    match field.schema().display.palette() {
+        FieldPaletteHint::Sequential | FieldPaletteHint::Vector => Ok(PaletteId::Sequential),
+        FieldPaletteHint::Diverging => Ok(PaletteId::Diverging),
+        FieldPaletteHint::Categorical => Ok(PaletteId::Categorical),
+        FieldPaletteHint::Boolean => Err(DisplayPrepareError::UnsupportedSphericalChannel {
+            field: field.schema().id.clone(),
+        }),
+    }
+}
+
+fn fill_needs_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {
+    current.fill_field != next.fill_field || current.range_mode != next.range_mode
+}
+
+fn overlay_needs_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {
+    current.overlay_field != next.overlay_field || current.range_mode != next.range_mode
+}
+
+fn diagnostics_need_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {
+    current.diagnostic_scope != next.diagnostic_scope || current.fill_field != next.fill_field
+}
+
+fn fill_palette_needs_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {
+    current.fill_field != next.fill_field || current.palette_override != next.palette_override
+}
+
+fn overlay_palette_needs_preparation(
+    current: &PreparedLayerState,
+    next: &PreparedLayerState,
+) -> bool {
+    current.overlay_field != next.overlay_field
 }
 
 fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
