@@ -590,7 +590,7 @@ git commit -m "feat: add undeformed globe presentation"
 - Produces `SphericalFieldRenderer`, `SphericalPaintCallback`, `SphericalRenderMode`, `SphericalGpuPacket`, `SphericalUploadCounters`, and atomic `prepare_packet`/`paint` behavior.
 - Map and globe have separate geometry buffers/pipelines/camera uniforms; both consume one field/palette/diagnostic packet and the same value-color WGSL functions.
 
-- [ ] **Step 1: Write offscreen RED tests and upload-count expectations**
+- [x] **Step 1: Write offscreen RED tests and upload-count expectations**
 
 Adapt the existing `gpu::field::renderer` offscreen fixture. Render a four-color scalar and category fixture through map and front-facing globe modes into RGBA8. Compare sampled pixels against `scalar_color`/`category_color` within two 8-bit quantization steps. Assert unlit globe front pixels equal map value colors rather than being multiplied by a lighting term. Assert back-facing primitives are culled.
 
@@ -611,17 +611,17 @@ assert!(renderer.upload_counters().uniforms > after_upload.uniforms);
 
 Force a candidate with mismatched source/cardinality and assert the last complete GPU packet and counters remain installed.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_presentation_gpu -- --nocapture`
 
-- [ ] **Step 3: Implement checked atomic GPU resources**
+- [x] **Step 3: Implement checked atomic GPU resources**
 
 Use one storage-buffer layout for packed fill values and diagnostic severity, one palette buffer, and mode-specific vertex layouts. WGSL helper functions must decode scalar/category and diagnostic overlay exactly once, with separate `vs_map`/`vs_globe` entry points and one `fs_fill`. Globe uses front-face CCW and back-face culling; neither shader reads elevation as geometry.
 
 Build all replacement buffers/bind groups in local candidates after source, revision, byte-count, `u32/u64`, and `wgpu::Limits` checks. Swap renderer state only after all allocations succeed. Cache revisions independently for map geometry, globe geometry, fill, diagnostics, and palettes. Every paint updates only the fixed-size camera/mode uniform.
 
-- [ ] **Step 4: Verify offscreen output and legacy renderer**
+- [x] **Step 4: Verify offscreen output and legacy renderer**
 
 Run:
 
@@ -631,7 +631,7 @@ cargo test --lib gpu::field::renderer::tests::offscreen_scalar_and_category_matc
 cargo clippy --test spherical_presentation_gpu -- -D warnings
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/gpu/spherical src/gpu/mod.rs assets/shaders/spherical_field.wgsl tests/spherical_presentation_gpu.rs
