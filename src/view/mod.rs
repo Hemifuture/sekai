@@ -7,6 +7,7 @@ mod mesh;
 mod palette;
 mod prepared;
 mod reference;
+mod spherical_mesh;
 mod spherical_picking;
 mod spherical_projection;
 mod spherical_source;
@@ -47,6 +48,10 @@ pub use prepared::{
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use reference::{rasterize_reference, ReferenceImage};
+pub use spherical_mesh::{
+    PreparedProjectedMap, ProjectedEdgeSegment, ProjectedMapVertex, SphericalMeshBudgets,
+    SphericalMeshError,
+};
 pub use spherical_picking::{
     intersect_unit_sphere, RayError, RaySphereHit, SphericalEntityLocator, SphericalPickingError,
     UnitRay,

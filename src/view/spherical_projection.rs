@@ -160,6 +160,22 @@ impl SphericalProjection {
             return Err(SphericalProjectionError::NonFiniteInput);
         }
         let relative_longitude = wrap_radians(longitude - self.central_meridian);
+        self.forward_latitude_relative_longitude(latitude, relative_longitude)
+    }
+
+    pub(crate) fn forward_latitude_relative_longitude(
+        self,
+        latitude: f64,
+        relative_longitude: f64,
+    ) -> Result<ProjectionPoint, SphericalProjectionError> {
+        if !latitude.is_finite() || !relative_longitude.is_finite() {
+            return Err(SphericalProjectionError::NonFiniteInput);
+        }
+        if !(-FRAC_PI_2..=FRAC_PI_2).contains(&latitude)
+            || !(-PI..=PI).contains(&relative_longitude)
+        {
+            return Err(SphericalProjectionError::OutsideProjectionOutline);
+        }
         let point = match self.kind {
             SphericalProjectionKind::EqualEarth => {
                 let theta = (m() * latitude.sin()).asin();
