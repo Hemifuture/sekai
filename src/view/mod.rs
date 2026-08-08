@@ -19,8 +19,11 @@ pub use field::{
     FieldViewError,
 };
 pub use field_layers::{
-    classify_spherical_channel, FieldLayerError, SelectedSurfaceEntity, SphericalFieldChannel,
-    SphericalFieldDisplayState, VectorGlyphLod,
+    classify_spherical_channel, prepare_edge_field, prepare_spherical_field_layers,
+    prepare_vector_field, update_spherical_field_layers, FieldLayerError, FieldLayerRevisions,
+    PreparedEdgeField, PreparedFieldLayers, PreparedOverlayKind, PreparedSphericalOverlay,
+    PreparedVectorField, SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
+    VectorGlyphLod,
 };
 pub use mesh::{
     CellGeometrySource, DisplayVertex, MeshCompleteness, PreparedCellMesh, MAX_DISPLAY_CELLS,

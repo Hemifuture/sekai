@@ -1,6 +1,7 @@
 use sekai::view::{
     classify_spherical_channel, DiagnosticScope, DisplayRangeMode, FieldLayerError,
-    SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState, VectorGlyphLod,
+    PreparedOverlayKind, SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
+    VectorGlyphLod,
 };
 use sekai::world::fields::{FieldDomain, FieldValueType};
 use sekai::world::natural::{
@@ -33,6 +34,18 @@ fn exact_supported_domain_type_pairs_map_to_display_channels() {
     assert_eq!(
         classify_spherical_channel(FieldDomain::Edges, FieldValueType::Vector2F32),
         None
+    );
+}
+
+#[test]
+fn spherical_packets_distinguish_edge_and_vector_overlay_kinds() {
+    assert_eq!(
+        PreparedOverlayKind::EdgeScalar,
+        PreparedOverlayKind::EdgeScalar
+    );
+    assert_ne!(
+        PreparedOverlayKind::EdgeCategory,
+        PreparedOverlayKind::CellVector
     );
 }
 

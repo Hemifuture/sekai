@@ -321,6 +321,20 @@ impl FieldDocument for SphericalNaturalFieldDocument {
     }
 }
 
+impl crate::app::field_document::SphericalFieldLayerDocument for SphericalNaturalFieldDocument {
+    fn presentation_source(&self) -> SphericalPresentationSource {
+        self.presentation_source()
+    }
+
+    fn spherical_cell_count(&self) -> usize {
+        self.surface.snapshot().cells().len()
+    }
+
+    fn spherical_edge_count(&self) -> usize {
+        self.surface.snapshot().edges().len()
+    }
+}
+
 /// Atomically replaces a published document only after a candidate is complete.
 pub(super) fn try_replace_spherical_natural_document(
     published: &mut Arc<SphericalNaturalFieldDocument>,
@@ -372,7 +386,7 @@ mod tests {
         try_replace_spherical_natural_document, SphericalNaturalDisplayError,
         SphericalNaturalFieldDocument,
     };
-    use crate::app::field_document::FieldDocument;
+    use crate::app::field_document::{prepare_spherical_document_layers, FieldDocument};
     use crate::engine::{
         BuildEngine, BuildOutcome, BuildOutcomeIntegrityError, BuildReport, ExternalArtifacts,
         MemoryStageCache,
@@ -386,11 +400,17 @@ mod tests {
     };
     use crate::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
     use crate::rules::{default_rule_pack_set, AuthorConstraints};
-    use crate::view::{FieldCatalog, SphericalPresentationSource};
+    use crate::view::{
+        built_in_palette, classify_spherical_channel, prepare_edge_field,
+        prepare_spherical_field_layers, DisplayPrepareError, FieldCatalog, PaletteId,
+        PreparedOverlayKind, PreparedSphericalOverlay, SphericalFieldChannel,
+        SphericalFieldDisplayState, SphericalPresentationSource,
+    };
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
-        elevation_field_id, plate_id_field_id, plate_velocity_field_id,
-        preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
+        boundary_kind_field_id, boundary_strength_field_id, elevation_field_id, plate_id_field_id,
+        plate_velocity_field_id, preliminary_mean_air_temperature_c_field_id,
+        preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id,
         surface_water_kind_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec,
         WorldFormationSpec,
     };
@@ -583,6 +603,248 @@ mod tests {
             source.graph_contract_version(),
             document.identity().graph_contract_version()
         );
+    }
+
+    #[test]
+    fn complete_spherical_catalog_prepares_fill_edge_and_vector_layers() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let counts = catalog
+            .entries()
+            .iter()
+            .fold([0usize; 3], |mut counts, entry| {
+                let schema = entry.schema();
+                match classify_spherical_channel(schema.domain, schema.value_type).unwrap() {
+                    SphericalFieldChannel::CellFill => counts[0] += 1,
+                    SphericalFieldChannel::EdgeOverlay => counts[1] += 1,
+                    SphericalFieldChannel::VectorOverlay => counts[2] += 1,
+                }
+                counts
+            });
+        assert_eq!(counts, [32, 2, 2]);
+        assert_eq!(catalog.entries().len(), 36);
+
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let layers = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            document.surface.snapshot().cells().len(),
+            document.surface.snapshot().edges().len(),
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        let PreparedSphericalOverlay::Vector(vector) = layers.overlay().unwrap() else {
+            panic!("wind must prepare as a vector overlay");
+        };
+        let original = catalog
+            .get(&preliminary_prevailing_wind_m_s_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .vector_values()
+            .unwrap();
+        assert_eq!(vector.components(), original);
+        assert!(vector.magnitudes().iter().all(|value| value.is_finite()));
+        assert!(vector.display_range().bounds().0 <= vector.display_range().bounds().1);
+        assert_eq!(layers.overlay_kind(), Some(PreparedOverlayKind::CellVector));
+        assert_eq!(
+            layers.overlay_palette().unwrap(),
+            built_in_palette(PaletteId::Sequential)
+        );
+
+        state.select_overlay(Some(boundary_kind_field_id()));
+        let category = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            document.surface.snapshot().cells().len(),
+            document.surface.snapshot().edges().len(),
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let PreparedSphericalOverlay::Edge(edge) = category.overlay().unwrap() else {
+            panic!("boundary kind must prepare as an edge overlay");
+        };
+        assert_eq!(edge.len(), document.surface.snapshot().edges().len());
+        assert_eq!(edge.kind(), crate::view::PreparedFieldKind::Category);
+        assert!(!edge.category_keys().is_empty());
+        assert_eq!(
+            category.overlay_kind(),
+            Some(PreparedOverlayKind::EdgeCategory)
+        );
+
+        state.select_overlay(Some(boundary_strength_field_id()));
+        let scalar = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            document.surface.snapshot().cells().len(),
+            document.surface.snapshot().edges().len(),
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let PreparedSphericalOverlay::Edge(edge) = scalar.overlay().unwrap() else {
+            panic!("boundary strength must prepare as an edge overlay");
+        };
+        assert_eq!(edge.kind(), crate::view::PreparedFieldKind::Scalar);
+        assert!(edge.display_range().is_some());
+        assert_eq!(scalar.overlay_kind(), Some(PreparedOverlayKind::EdgeScalar));
+
+        let shared = std::sync::Arc::new(layers);
+        let map_layers = shared.clone();
+        let globe_layers = shared.clone();
+        assert!(std::sync::Arc::ptr_eq(&map_layers, &globe_layers));
+        assert!(std::sync::Arc::ptr_eq(
+            map_layers.fill_arc(),
+            globe_layers.fill_arc()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            map_layers.fill_palette_arc(),
+            globe_layers.fill_palette_arc()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            map_layers.diagnostics_arc(),
+            globe_layers.diagnostics_arc()
+        ));
+    }
+
+    #[test]
+    fn spherical_layer_updates_replace_only_changed_payloads() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let edge_count = document.surface.snapshot().edges().len();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.select_overlay(Some(boundary_kind_field_id()));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let initial = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        state.set_diagnostics_enabled(false);
+        let toggled = crate::view::update_spherical_field_layers(
+            &initial,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert!(!toggled.diagnostics_enabled());
+        assert!(std::sync::Arc::ptr_eq(
+            initial.fill_arc(),
+            toggled.fill_arc()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            initial.diagnostics_arc(),
+            toggled.diagnostics_arc()
+        ));
+        assert_eq!(initial.revisions(), toggled.revisions());
+
+        state.select_fill(elevation_field_id());
+        let changed_fill = crate::view::update_spherical_field_layers(
+            &toggled,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert!(!std::sync::Arc::ptr_eq(
+            toggled.fill_arc(),
+            changed_fill.fill_arc()
+        ));
+        let (PreparedSphericalOverlay::Edge(before), PreparedSphericalOverlay::Edge(after)) =
+            (toggled.overlay().unwrap(), changed_fill.overlay().unwrap())
+        else {
+            panic!("the unchanged boundary overlay must remain an edge field");
+        };
+        assert!(std::sync::Arc::ptr_eq(before, after));
+        assert_eq!(
+            toggled.revisions().overlay,
+            changed_fill.revisions().overlay
+        );
+        assert_ne!(toggled.revisions().fill, changed_fill.revisions().fill);
+    }
+
+    #[test]
+    fn spherical_document_binds_layer_preparation_to_its_own_source_and_cardinality() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let mut state = SphericalFieldDisplayState::default();
+        let mut clock = crate::view::DisplayRevisionClock::default();
+
+        let layers = prepare_spherical_document_layers(&document, &mut state, &mut clock).unwrap();
+
+        assert_eq!(layers.source(), &document.presentation_source());
+        assert_eq!(
+            layers.fill().len(),
+            document.surface.snapshot().cells().len()
+        );
+    }
+
+    #[test]
+    fn edge_preparation_reports_field_ids_for_bad_cardinality_and_channels() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let edge_count = document.surface.snapshot().edges().len();
+        let boundary = catalog
+            .get(&boundary_kind_field_id())
+            .unwrap()
+            .view()
+            .unwrap();
+        assert!(matches!(
+            prepare_edge_field(boundary, edge_count - 1, crate::view::DisplayRangeMode::Data),
+            Err(DisplayPrepareError::FieldCardinalityMismatch { field, .. })
+                if field == boundary_kind_field_id()
+        ));
+        let elevation = catalog
+            .get(&surface_elevation_m_field_id())
+            .unwrap()
+            .view()
+            .unwrap();
+        assert!(matches!(
+            prepare_edge_field(elevation, edge_count, crate::view::DisplayRangeMode::Data),
+            Err(DisplayPrepareError::UnsupportedSphericalChannel { field })
+                if field == surface_elevation_m_field_id()
+        ));
     }
 
     #[test]

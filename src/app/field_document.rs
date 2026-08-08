@@ -3,10 +3,12 @@ use std::sync::Arc;
 use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::ui::field::FieldControlAction;
 use crate::view::{
-    built_in_palette, prepare_cell_field, resolve_display_range, DisplayPrepareError,
-    DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog, FieldDisplayState,
-    FieldView, FieldViewError, LinearRgba, OwnedViewDiagnostic, PaletteId, PreparedCellField,
-    PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay, ViewDiagnosticSeverity,
+    built_in_palette, prepare_cell_field, prepare_spherical_field_layers, resolve_display_range,
+    DisplayPrepareError, DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog,
+    FieldDisplayState, FieldView, FieldViewError, LinearRgba, OwnedViewDiagnostic, PaletteId,
+    PreparedCellField, PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay,
+    PreparedFieldLayers, SphericalFieldDisplayState, SphericalPresentationSource,
+    ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldId, FieldPaletteHint};
 
@@ -21,6 +23,35 @@ pub(super) trait FieldDocument {
 /// Field document that also owns a mesh suitable for the current presenter.
 pub(super) trait PresentedFieldDocument: FieldDocument {
     fn mesh(&self) -> &Arc<PreparedCellMesh>;
+}
+
+/// Field document metadata needed to build geometry-free spherical field layers.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) trait SphericalFieldLayerDocument: FieldDocument {
+    fn presentation_source(&self) -> SphericalPresentationSource;
+    fn spherical_cell_count(&self) -> usize;
+    fn spherical_edge_count(&self) -> usize;
+}
+
+/// Prepares the shared spherical field packet directly from its owning document.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn prepare_spherical_document_layers<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<PreparedFieldLayers, DisplayPrepareError> {
+    let catalog = document.catalog()?;
+    prepare_spherical_field_layers(
+        document.presentation_source(),
+        &catalog,
+        document.spherical_cell_count(),
+        document.spherical_edge_count(),
+        document.diagnostics(),
+        document.preferred_field(),
+        |field| document.preferred_range(field),
+        state,
+        clock,
+    )
 }
 
 /// Copies engine diagnostics into renderer-independent, document-owned values.

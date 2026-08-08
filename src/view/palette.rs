@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use super::{CellFillKind, FieldView, FieldViewError};
+use super::{FieldView, FieldViewError};
 use crate::world::fields::{FieldId, ValueRange};
 use crate::world::CellId;
 
@@ -183,11 +183,37 @@ pub enum DisplayPrepareError {
         /// The supplied field count.
         actual: usize,
     },
+    /// Prepared values did not match the required cardinality for their schema domain.
+    #[error("field {field:?} payload has {actual} {domain:?} values, expected {expected}")]
+    FieldCardinalityMismatch {
+        /// The field whose payload length was rejected.
+        field: FieldId,
+        /// The domain whose cardinality was required.
+        domain: crate::world::fields::FieldDomain,
+        /// The required value count.
+        expected: usize,
+        /// The supplied value count.
+        actual: usize,
+    },
     /// The field cannot be rendered as a V1 cell fill.
     #[error("field {field:?} cannot be rendered as a V1 cell fill")]
     UnsupportedCellFill {
         /// The unsupported field.
         field: FieldId,
+    },
+    /// The field cannot be rendered by a spherical fill or overlay channel.
+    #[error("field {field:?} cannot be rendered by a spherical presentation channel")]
+    UnsupportedSphericalChannel {
+        /// The unsupported field.
+        field: FieldId,
+    },
+    /// A vector payload component or its magnitude was not finite.
+    #[error("field {field:?} has non-finite vector data at index {index}")]
+    NonFiniteVector {
+        /// The vector field whose values were rejected.
+        field: FieldId,
+        /// The rejected vector index.
+        index: usize,
     },
     /// A category payload contained a key absent from its schema.
     #[error("field {field:?} contains undeclared category key {key}")]
@@ -433,28 +459,47 @@ pub fn prepare_cell_field(
             actual: field.len(),
         });
     }
+    let prepared = prepare_scalar_or_category_field(
+        field,
+        crate::world::fields::FieldDomain::Cells,
+        range_mode,
+    )
+    .map_err(map_cell_fill_error)?;
+    Ok(PreparedCellField {
+        field_id: prepared.field_id,
+        kind: prepared.kind,
+        raw_values: prepared.raw_values,
+        source_range: prepared.source_range,
+        display_range: prepared.display_range,
+        category_keys: prepared.category_keys,
+    })
+}
 
-    let kind = field.cell_fill_kind().map_err(|error| match error {
-        FieldViewError::UnsupportedCellFill { field, .. }
-        | FieldViewError::TypeMismatch { field, .. }
-        | FieldViewError::UnknownPayload { field }
-        | FieldViewError::DuplicatePayload { field } => {
-            DisplayPrepareError::UnsupportedCellFill { field }
-        }
-    })?;
-
-    match kind {
-        CellFillKind::Scalar => {
-            let values = field
-                .scalar_values()
-                .expect("cell-fill kind guarantees scalar values");
+/// Shared scalar/category packing used by cell fills and spherical edge overlays.
+pub(crate) fn prepare_scalar_or_category_field(
+    field: &FieldView<'_>,
+    domain: crate::world::fields::FieldDomain,
+    range_mode: DisplayRangeMode,
+) -> Result<PreparedPackedField, DisplayPrepareError> {
+    if field.schema().domain != domain {
+        return Err(DisplayPrepareError::UnsupportedSphericalChannel {
+            field: field.schema().id.clone(),
+        });
+    }
+    match field.schema().value_type {
+        crate::world::fields::FieldValueType::ScalarF32 => {
+            let values = field.scalar_values().ok_or_else(|| {
+                DisplayPrepareError::UnsupportedSphericalChannel {
+                    field: field.schema().id.clone(),
+                }
+            })?;
             let source_range = finite_min_max(values).ok_or_else(|| {
                 DisplayPrepareError::NoFiniteScalarValues {
                     field: field.schema().id.clone(),
                 }
             })?;
             let display_range = resolve_display_range(field, range_mode)?;
-            Ok(PreparedCellField {
+            Ok(PreparedPackedField {
                 field_id: field.schema().id.clone(),
                 kind: PreparedFieldKind::Scalar,
                 raw_values: values.iter().map(|value| value.to_bits()).collect(),
@@ -463,10 +508,12 @@ pub fn prepare_cell_field(
                 category_keys: Vec::new(),
             })
         }
-        CellFillKind::Category => {
-            let values = field
-                .category_values()
-                .expect("cell-fill kind guarantees category values");
+        crate::world::fields::FieldValueType::CategoryU32 => {
+            let values = field.category_values().ok_or_else(|| {
+                DisplayPrepareError::UnsupportedSphericalChannel {
+                    field: field.schema().id.clone(),
+                }
+            })?;
             let field_id = field.schema().id.clone();
             let category_keys: Vec<_> = field.schema().category_labels.keys().copied().collect();
             let compact = category_keys
@@ -493,7 +540,7 @@ pub fn prepare_cell_field(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(PreparedCellField {
+            Ok(PreparedPackedField {
                 field_id,
                 kind: PreparedFieldKind::Category,
                 raw_values,
@@ -502,6 +549,28 @@ pub fn prepare_cell_field(
                 category_keys,
             })
         }
+        _ => Err(DisplayPrepareError::UnsupportedSphericalChannel {
+            field: field.schema().id.clone(),
+        }),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedPackedField {
+    pub(crate) field_id: FieldId,
+    pub(crate) kind: PreparedFieldKind,
+    pub(crate) raw_values: Vec<u32>,
+    pub(crate) source_range: Option<ResolvedDisplayRange>,
+    pub(crate) display_range: Option<ResolvedDisplayRange>,
+    pub(crate) category_keys: Vec<u32>,
+}
+
+fn map_cell_fill_error(error: DisplayPrepareError) -> DisplayPrepareError {
+    match error {
+        DisplayPrepareError::UnsupportedSphericalChannel { field } => {
+            DisplayPrepareError::UnsupportedCellFill { field }
+        }
+        other => other,
     }
 }
 
