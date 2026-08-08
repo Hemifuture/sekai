@@ -286,11 +286,12 @@ impl PublishedSphericalPresentation {
     }
 
     fn try_new_with_preparer<P: SphericalGpuPreparer + ?Sized>(
-        candidate: SphericalPresentationCandidate,
+        mut candidate: SphericalPresentationCandidate,
         gpu: &mut P,
     ) -> Result<Self, SphericalPresentationError> {
         candidate.validate()?;
         gpu.prepare(candidate.gpu_packet())?;
+        candidate.lineage.clear();
         Ok(Self { current: candidate })
     }
 
@@ -360,12 +361,13 @@ impl PublishedSphericalPresentation {
 
     fn try_replace_with_preparer<P: SphericalGpuPreparer + ?Sized>(
         &mut self,
-        candidate: SphericalPresentationCandidate,
+        mut candidate: SphericalPresentationCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
         candidate.lineage.validate_current(self)?;
         candidate.validate()?;
         gpu.prepare(candidate.gpu_packet())?;
+        candidate.lineage.clear();
         self.current = candidate;
         Ok(())
     }
@@ -592,7 +594,7 @@ struct StateBoundCandidateBase {
 
 #[derive(Clone)]
 enum WorldCandidateLineage {
-    Initial,
+    NoBase,
     Replacement(Arc<StateBoundCandidateBase>),
 }
 
@@ -602,9 +604,13 @@ impl WorldCandidateLineage {
         published: &PublishedSphericalPresentation,
     ) -> Result<(), SphericalPresentationError> {
         match self {
-            Self::Initial => Err(SphericalPresentationError::StaleCandidate { candidate: "world" }),
+            Self::NoBase => Err(SphericalPresentationError::StaleCandidate { candidate: "world" }),
             Self::Replacement(base) => base.validate_current(published, "world"),
         }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::NoBase;
     }
 }
 
@@ -844,7 +850,7 @@ fn build_spherical_presentation_candidate_impl(
         current_state,
         clock,
         failure,
-        WorldCandidateLineage::Initial,
+        WorldCandidateLineage::NoBase,
     )
 }
 
@@ -1840,5 +1846,237 @@ mod tests {
 
         assert!(published.state().vector_paused());
         assert!(!Arc::ptr_eq(&old_map, published.map_arc()));
+    }
+
+    #[test]
+    fn successful_whole_replacement_retires_predecessor_packet_and_caches() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(269),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let old_packet = Arc::downgrade(published.gpu_packet_arc());
+        let old_map = Arc::downgrade(published.map_arc());
+        let old_globe = Arc::downgrade(published.globe_arc());
+        let old_layers = Arc::downgrade(published.layers_arc());
+        let requested_state = published.state().clone();
+        let replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(271),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &requested_state,
+            )
+            .unwrap();
+
+        published
+            .try_replace_with_preparer(replacement, &mut gpu)
+            .unwrap();
+
+        assert!(old_packet.upgrade().is_none());
+        assert!(old_map.upgrade().is_none());
+        assert!(old_globe.upgrade().is_none());
+        assert!(old_layers.upgrade().is_none());
+        assert!(matches!(
+            &published.current.lineage,
+            super::WorldCandidateLineage::NoBase
+        ));
+        assert_eq!(published.source().root_seed(), RootSeed::new(271));
+        assert_eq!(published.map().source(), published.source());
+        assert_eq!(published.globe().source(), published.source());
+        assert_eq!(published.layers().source(), published.source());
+    }
+
+    #[test]
+    fn smaller_publications_do_not_resurrect_retired_whole_lineage() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(277),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let old_packet = Arc::downgrade(published.gpu_packet_arc());
+        let old_map = Arc::downgrade(published.map_arc());
+        let old_globe = Arc::downgrade(published.globe_arc());
+        let old_layers = Arc::downgrade(published.layers_arc());
+        let requested_state = published.state().clone();
+        let replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(281),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &requested_state,
+            )
+            .unwrap();
+        published
+            .try_replace_with_preparer(replacement, &mut gpu)
+            .unwrap();
+        let projection = published
+            .prepare_projection_candidate(
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.375).unwrap(),
+                SphericalMeshBudgets::DEFAULT,
+            )
+            .unwrap();
+        published
+            .try_replace_projection_candidate_with_preparer(projection, &mut gpu)
+            .unwrap();
+        let mut field_state = published.state().clone();
+        field_state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+        let field = published
+            .prepare_field_candidate(
+                field_state,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        published
+            .try_replace_field_candidate_with_preparer(field, &mut gpu)
+            .unwrap();
+
+        assert!(old_packet.upgrade().is_none());
+        assert!(old_map.upgrade().is_none());
+        assert!(old_globe.upgrade().is_none());
+        assert!(old_layers.upgrade().is_none());
+        assert!(matches!(
+            &published.current.lineage,
+            super::WorldCandidateLineage::NoBase
+        ));
+        assert_eq!(published.source().root_seed(), RootSeed::new(281));
+    }
+
+    #[test]
+    fn failed_whole_replacement_keeps_predecessor_live_and_current() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(283),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let old_packet = Arc::downgrade(published.gpu_packet_arc());
+        let old_map = Arc::downgrade(published.map_arc());
+        let old_globe = Arc::downgrade(published.globe_arc());
+        let old_layers = Arc::downgrade(published.layers_arc());
+        let requested_state = published.state().clone();
+        let replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(293),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &requested_state,
+            )
+            .unwrap();
+
+        gpu.fail = true;
+        assert!(matches!(
+            published.try_replace_with_preparer(replacement, &mut gpu),
+            Err(SphericalPresentationError::Gpu(
+                crate::gpu::spherical::SphericalRenderError::InvalidViewport
+            ))
+        ));
+
+        assert!(Arc::ptr_eq(
+            &old_packet.upgrade().unwrap(),
+            published.gpu_packet_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_map.upgrade().unwrap(),
+            published.map_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_globe.upgrade().unwrap(),
+            published.globe_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_layers.upgrade().unwrap(),
+            published.layers_arc()
+        ));
+        assert_eq!(published.source().root_seed(), RootSeed::new(283));
+    }
+
+    #[test]
+    fn initial_publication_consumes_any_predecessor_lineage() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(307),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let predecessor =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let old_packet = Arc::downgrade(predecessor.gpu_packet_arc());
+        let old_map = Arc::downgrade(predecessor.map_arc());
+        let old_globe = Arc::downgrade(predecessor.globe_arc());
+        let old_layers = Arc::downgrade(predecessor.layers_arc());
+        let requested_state = predecessor.state().clone();
+        let replacement = predecessor
+            .prepare_replacement_candidate(
+                RootSeed::new(311),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &requested_state,
+            )
+            .unwrap();
+
+        let published =
+            PublishedSphericalPresentation::try_new_with_preparer(replacement, &mut gpu).unwrap();
+        drop(predecessor);
+
+        assert!(old_packet.upgrade().is_none());
+        assert!(old_map.upgrade().is_none());
+        assert!(old_globe.upgrade().is_none());
+        assert!(old_layers.upgrade().is_none());
+        assert!(matches!(
+            &published.current.lineage,
+            super::WorldCandidateLineage::NoBase
+        ));
+        assert_eq!(published.source().root_seed(), RootSeed::new(311));
     }
 }
