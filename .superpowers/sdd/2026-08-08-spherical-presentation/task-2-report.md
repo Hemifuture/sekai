@@ -85,3 +85,34 @@ None. Git reports the repository's existing LF-to-CRLF checkout advisory for tou
 - The update key separates fill, overlay, diagnostics, fill palette, and overlay palette invalidation; display-only flags perform no large payload preparation.
 - Overlay palette resolution intentionally does not read the fill override, preserving category/vector compatibility.
 - Test instrumentation is `cfg(test)` and thread-local, so it does not exist in product builds.
+
+## Fix Round 2
+
+### Finding addressed
+
+- `update_spherical_field_layers` now fingerprints the complete incoming diagnostic content. A valid changed diagnostic slice rebuilds only the diagnostic mask and advances only its revision; an identical slice reuses the existing mask and revision.
+
+### Files changed
+
+- `src/view/field_layers.rs`
+- `src/app/spherical_natural_display.rs`
+
+### RED evidence
+
+- `cargo test --lib spherical_natural_display::tests::spherical_updates_refresh_only_changed_diagnostics -- --nocapture` — failed before the fix because a valid warning at cell zero left the reused mask value at `0` rather than the expected warning value `2`.
+
+### GREEN and verification evidence
+
+- `cargo test --lib spherical_natural_display::tests::spherical_updates_refresh_only_changed_diagnostics -- --nocapture` — 1 passed.
+- `cargo test --lib spherical_natural_display::tests -- --nocapture` — 19 passed.
+- `cargo test --test spherical_field_layers -- --nocapture` — 5 passed.
+- `cargo test --lib app::field_document -- --nocapture` — 4 passed.
+- `cargo test` — exit code 0; 250 library tests plus integration, binary, and doc-test suites passed.
+- `cargo fmt --check` and `git diff --check` — passed.
+
+### Self-review
+
+- The diagnostics fingerprint includes severity, code, optional field identity, optional cell identity, and message in slice order.
+- It is calculated after bounds validation on updates, preserving staged atomic failure behavior.
+- Only the private packet metadata stores the compact fingerprint; it does not retain or copy document diagnostics.
+- The regression asserts changed diagnostics replace only the mask/revision and that a second identical input reuses both.

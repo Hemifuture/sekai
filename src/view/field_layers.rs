@@ -227,6 +227,7 @@ pub struct PreparedFieldLayers {
     revisions: FieldLayerRevisions,
     diagnostics_enabled: bool,
     prepared_state: PreparedLayerState,
+    diagnostics_fingerprint: blake3::Hash,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -589,6 +590,7 @@ where
         revisions: issue_all_revisions(&mut candidate_clock)?,
         diagnostics_enabled: candidate_state.diagnostics_enabled(),
         prepared_state: PreparedLayerState::from(&candidate_state),
+        diagnostics_fingerprint: diagnostics_fingerprint(diagnostics),
     };
     *state = candidate_state;
     *clock = candidate_clock;
@@ -622,6 +624,7 @@ where
         &mut candidate_state,
     );
     validate_diagnostics(diagnostics, cell_count)?;
+    let next_diagnostics_fingerprint = diagnostics_fingerprint(diagnostics);
     let next_state = PreparedLayerState::from(&candidate_state);
     let mut revisions = current.revisions;
     let fill = if fill_needs_preparation(&current.prepared_state, &next_state) {
@@ -644,7 +647,12 @@ where
     } else {
         current.overlay.clone()
     };
-    let diagnostics = if diagnostics_need_preparation(&current.prepared_state, &next_state) {
+    let diagnostics = if diagnostics_need_preparation(
+        &current.prepared_state,
+        &next_state,
+        current.diagnostics_fingerprint,
+        next_diagnostics_fingerprint,
+    ) {
         reuse_or_replace(
             &current.diagnostics,
             prepare_diagnostics(diagnostics, cell_count, &candidate_state)?,
@@ -685,6 +693,7 @@ where
         revisions,
         diagnostics_enabled: candidate_state.diagnostics_enabled(),
         prepared_state: next_state,
+        diagnostics_fingerprint: next_diagnostics_fingerprint,
     };
     *state = candidate_state;
     *clock = candidate_clock;
@@ -945,8 +954,56 @@ fn overlay_needs_preparation(current: &PreparedLayerState, next: &PreparedLayerS
     current.overlay_field != next.overlay_field || current.range_mode != next.range_mode
 }
 
-fn diagnostics_need_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {
-    current.diagnostic_scope != next.diagnostic_scope || current.fill_field != next.fill_field
+fn diagnostics_need_preparation(
+    current: &PreparedLayerState,
+    next: &PreparedLayerState,
+    current_fingerprint: blake3::Hash,
+    next_fingerprint: blake3::Hash,
+) -> bool {
+    current.diagnostic_scope != next.diagnostic_scope
+        || current.fill_field != next.fill_field
+        || current_fingerprint != next_fingerprint
+}
+
+fn diagnostics_fingerprint(diagnostics: &[OwnedViewDiagnostic]) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.spherical-field-diagnostics.v1\0");
+    hasher.update(&(diagnostics.len() as u64).to_le_bytes());
+    for diagnostic in diagnostics {
+        hasher.update(&[match diagnostic.severity {
+            super::ViewDiagnosticSeverity::Info => 1,
+            super::ViewDiagnosticSeverity::Warning => 2,
+            super::ViewDiagnosticSeverity::Error => 3,
+        }]);
+        hash_diagnostic_text(&mut hasher, &diagnostic.code);
+        match &diagnostic.field_id {
+            Some(field) => {
+                hasher.update(&[1]);
+                hash_diagnostic_text(&mut hasher, field.namespace());
+                hash_diagnostic_text(&mut hasher, field.name());
+                hasher.update(&field.version().to_le_bytes());
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+        match diagnostic.cell_id {
+            Some(cell) => {
+                hasher.update(&[1]);
+                hasher.update(&cell.raw().to_le_bytes());
+            }
+            None => {
+                hasher.update(&[0]);
+            }
+        }
+        hash_diagnostic_text(&mut hasher, &diagnostic.message);
+    }
+    hasher.finalize()
+}
+
+fn hash_diagnostic_text(hasher: &mut blake3::Hasher, value: &str) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
 }
 
 fn fill_palette_needs_preparation(current: &PreparedLayerState, next: &PreparedLayerState) -> bool {

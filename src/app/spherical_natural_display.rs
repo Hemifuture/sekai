@@ -1071,6 +1071,107 @@ mod tests {
     }
 
     #[test]
+    fn spherical_updates_refresh_only_changed_diagnostics() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let catalog = payload_catalog(&document);
+        let cell_count = document.surface.snapshot().cells().len();
+        let edge_count = document.surface.snapshot().edges().len();
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.select_overlay(Some(boundary_kind_field_id()));
+        let mut clock = crate::view::DisplayRevisionClock::default();
+        let initial = prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &[],
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let changed_diagnostics = [OwnedViewDiagnostic {
+            severity: ViewDiagnosticSeverity::Warning,
+            code: "test.changed-diagnostic".into(),
+            field_id: None,
+            cell_id: Some(CellId::from_raw(0)),
+            message: "a valid changed diagnostic".into(),
+        }];
+
+        let changed = crate::view::update_spherical_field_layers(
+            &initial,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &changed_diagnostics,
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(changed.diagnostics().cells()[0], 2);
+        assert!(!std::sync::Arc::ptr_eq(
+            initial.diagnostics_arc(),
+            changed.diagnostics_arc()
+        ));
+        assert_ne!(
+            initial.revisions().diagnostics,
+            changed.revisions().diagnostics
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            initial.fill_arc(),
+            changed.fill_arc()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            initial.fill_palette_arc(),
+            changed.fill_palette_arc()
+        ));
+        let (PreparedSphericalOverlay::Edge(before), PreparedSphericalOverlay::Edge(after)) =
+            (initial.overlay().unwrap(), changed.overlay().unwrap())
+        else {
+            panic!("the unchanged overlay must remain an edge field");
+        };
+        assert!(std::sync::Arc::ptr_eq(before, after));
+        assert_eq!(initial.revisions().fill, changed.revisions().fill);
+        assert_eq!(initial.revisions().overlay, changed.revisions().overlay);
+        assert_eq!(
+            initial.revisions().fill_palette,
+            changed.revisions().fill_palette
+        );
+        assert_eq!(
+            initial.revisions().overlay_palette,
+            changed.revisions().overlay_palette
+        );
+
+        let identical = crate::view::update_spherical_field_layers(
+            &changed,
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            edge_count,
+            &changed_diagnostics,
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            changed.diagnostics_arc(),
+            identical.diagnostics_arc()
+        ));
+        assert_eq!(
+            changed.revisions().diagnostics,
+            identical.revisions().diagnostics
+        );
+    }
+
+    #[test]
     fn document_identity_comes_only_from_verified_outcome_provenance() {
         let alternate_seed = RootSeed::new(77);
         let outcome = build_outcome_with_seed(alternate_seed, 6_371_000.0);
