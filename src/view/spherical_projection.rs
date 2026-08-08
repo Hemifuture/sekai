@@ -14,7 +14,7 @@ const MAX_NEWTON_ITERATIONS: usize = 12;
 const NEWTON_TOLERANCE: f64 = 1.0e-13;
 const JACOBIAN_STEP: f64 = 1.0e-7;
 const MIN_MAPPED_LENGTH: f64 = 1.0e-12;
-const OUTLINE_TOLERANCE: f64 = 1.0e-12;
+const OUTLINE_EDGE_ULPS: usize = 4;
 
 /// The available spherical map projections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +223,7 @@ impl SphericalProjection {
                     Ok(theta) => theta,
                     Err(_) => return false,
                 };
-                point.x.abs() <= equal_earth_half_width(theta) + OUTLINE_TOLERANCE
+                point.x.abs() <= equal_earth_outline_edge(equal_earth_half_width(theta))
             }
         }
     }
@@ -283,18 +283,25 @@ impl SphericalProjection {
             SphericalProjectionKind::Equirectangular => (point.x * PI, point.y * FRAC_PI_2),
             SphericalProjectionKind::EqualEarth => {
                 let theta = equal_earth_theta_for_y(point.y, max_iterations)?;
-                if point.x.abs() > equal_earth_half_width(theta) + OUTLINE_TOLERANCE {
+                let half_width = equal_earth_half_width(theta);
+                if point.x.abs() > equal_earth_outline_edge(half_width) {
                     return Err(SphericalProjectionError::OutsideProjectionOutline);
                 }
-                let relative_longitude = point.x / equal_earth_half_width(theta) * PI;
+                let recovered_longitude = point.x / half_width * PI;
+                if !recovered_longitude.is_finite()
+                    || recovered_longitude.abs() > equal_earth_outline_edge(PI)
+                {
+                    return Err(SphericalProjectionError::OutsideProjectionOutline);
+                }
+                // A forward edge point can be a few ulps outside the width
+                // recovered from its rounded y. It is the same analytical
+                // antimeridian, not an out-of-range longitude to wrap.
+                let relative_longitude = recovered_longitude.clamp(-PI, PI);
                 let latitude_argument = theta.sin() / m();
-                if !latitude_argument.is_finite() || latitude_argument.abs() > 1.0 + 1.0e-14 {
+                if !latitude_argument.is_finite() || latitude_argument.abs() > 1.0 {
                     return Err(SphericalProjectionError::OutsideProjectionOutline);
                 }
-                (
-                    relative_longitude,
-                    latitude_argument.clamp(-1.0, 1.0).asin(),
-                )
+                (relative_longitude, latitude_argument.asin())
             }
         };
         let longitude = wrap_radians(self.central_meridian + relative_longitude);
@@ -362,6 +369,16 @@ fn equal_earth_derivative(theta: f64) -> f64 {
 fn equal_earth_half_width(theta: f64) -> f64 {
     let denominator = m() * equal_earth_derivative(theta);
     PI * theta.cos() / denominator
+}
+
+fn equal_earth_outline_edge(half_width: f64) -> f64 {
+    let mut edge = half_width;
+    for _ in 0..OUTLINE_EDGE_ULPS {
+        // This helper only receives finite positive half-widths, so incrementing
+        // the IEEE-754 representation is the next larger finite f64 value.
+        edge = f64::from_bits(edge.to_bits() + 1);
+    }
+    edge
 }
 
 fn m() -> f64 {

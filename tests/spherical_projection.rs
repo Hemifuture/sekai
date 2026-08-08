@@ -155,3 +155,47 @@ fn equirectangular_inverse_preserves_cardinal_latitudes() {
     let south = projection.inverse(ProjectionPoint::new(0.0, -1.0)).unwrap();
     assert!(south.components()[2] < -1.0 + EPS);
 }
+
+// Independent Equal Earth outline calculation from Savric et al. (2018),
+// equations 1-3; this fixture deliberately does not call projection code.
+fn equal_earth_outline_at_latitude(latitude_degrees: f64) -> (f64, f64) {
+    const A1: f64 = 1.340_264;
+    const A2: f64 = -0.081_106;
+    const A3: f64 = 0.000_893;
+    const A4: f64 = 0.003_796;
+    let latitude = latitude_degrees.to_radians();
+    let m = 3.0_f64.sqrt() / 2.0;
+    let theta = (m * latitude.sin()).asin();
+    let theta2 = theta * theta;
+    let theta6 = theta2 * theta2 * theta2;
+    let derivative = A1 + 3.0 * A2 * theta2 + theta6 * (7.0 * A3 + 9.0 * A4 * theta2);
+    let half_width = PI * theta.cos() / (m * derivative);
+    let y = theta * (A1 + A2 * theta2 + theta6 * (A3 + A4 * theta2));
+    (half_width, y)
+}
+
+#[test]
+fn equal_earth_strictly_rejects_points_beyond_the_curved_outline() {
+    let projection = SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0).unwrap();
+    let (half_width, y) = equal_earth_outline_at_latitude(30.0);
+    let interior = ProjectionPoint::new(half_width * 0.4, y);
+    assert!(projection.outline_contains(interior));
+    assert!(central_angle(projection.inverse(interior).unwrap(), direction(72.0, 30.0)) < 2.0e-12);
+
+    let boundary = ProjectionPoint::new(half_width, y);
+    assert!(projection.outline_contains(boundary));
+    assert!(projection.inverse(boundary).is_ok());
+
+    let outside = ProjectionPoint::new(half_width + 5.0e-13, y);
+    assert!(!projection.outline_contains(outside));
+    assert_eq!(
+        projection.inverse(outside),
+        Err(SphericalProjectionError::OutsideProjectionOutline)
+    );
+
+    let (_, pole_y) = equal_earth_outline_at_latitude(90.0);
+    let pole = projection
+        .inverse(ProjectionPoint::new(0.0, pole_y))
+        .unwrap();
+    assert!(pole.components()[2] > 1.0 - EPS);
+}
