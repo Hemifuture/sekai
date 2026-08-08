@@ -216,7 +216,7 @@ git commit -m "feat: add spherical presentation state"
 - Consumes a borrowed `FieldCatalog`, cell/edge cardinalities, diagnostics, preferred ranges, `SphericalFieldDisplayState`, source, and `DisplayRevisionClock`.
 - The returned packet owns only the selected fill/overlay payloads, two palettes, diagnostic mask, and vector magnitudes; the document remains owner of all 36 authoritative arrays.
 
-- [ ] **Step 1: Extend the test with the exact 36-field matrix**
+- [x] **Step 1: Extend the test with the exact 36-field matrix**
 
 Build the existing full spherical document fixture inside `src/app/spherical_natural_display.rs` tests and pass its catalog through a public pure helper. Assert:
 
@@ -248,13 +248,13 @@ assert!(Arc::ptr_eq(map_layers.fill_palette_arc(), globe_layers.fill_palette_arc
 assert!(Arc::ptr_eq(map_layers.diagnostics_arc(), globe_layers.diagnostics_arc()));
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_field_layers -- --nocapture`
 
 Expected: missing preparation types/functions.
 
-- [ ] **Step 3: Implement typed preparation without renderer geometry**
+- [x] **Step 3: Implement typed preparation without renderer geometry**
 
 Use these packet shapes:
 
@@ -302,7 +302,7 @@ Extract the scalar/category packing internals behind a private domain-aware help
 
 Reconciliation must retain still-compatible choices; otherwise choose document-preferred elevation (or first fill), clear an invalid overlay, and clear out-of-range cell/edge selections. Update only affected Arcs/revisions: changing fill does not rebuild overlay, changing overlay does not rebuild fill, changing range only changes its resolved range/revision, and toggling diagnostics/animation changes no large Arc.
 
-- [ ] **Step 4: Verify field preparation and frozen legacy behavior**
+- [x] **Step 4: Verify field preparation and frozen legacy behavior**
 
 Run:
 
@@ -312,7 +312,7 @@ cargo test --lib app::field_document -- --nocapture
 cargo test --test natural_display_golden -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/field_layers.rs src/view/palette.rs src/view/mod.rs src/app/field_document.rs tests/spherical_field_layers.rs
