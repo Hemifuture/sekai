@@ -422,7 +422,7 @@ git commit -m "feat: add spherical map projections"
 - Produces source-bound `SphericalEntityLocator`, `UnitRay`, `RaySphereHit`, `locate_cell`, `locate_incident_edge`, and `intersect_unit_sphere`.
 - Locator caches unit sites and each cell's incident `EdgeId`s/midpoints; it does not own polygon geometry or field payloads.
 
-- [ ] **Step 1: Write shared locator tests against a generated 162-cell surface**
+- [x] **Step 1: Write shared locator tests against a generated 162-cell surface**
 
 Generate a public spherical surface fixture through `spherical_foundation_graph`. For every authoritative site, assert `locate_cell(site) == cell.id`. For every edge midpoint, assert a lookup started from either owner and a generous angular tolerance returns that edge. Add a synthetic equal-dot tie and require lowest `CellId`; add equal-distance incident edge tie and require lowest `EdgeId`.
 
@@ -443,17 +443,17 @@ fn ray_sphere_returns_nearest_positive_hit_and_rejects_misses() {
 
 Project a fixed direction through both projections, inverse it, and compare its cell ID to a camera ray hitting the same direction. Test outside-map, ray miss, edge farther than tolerance, and non-incident edge return `None`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_picking -- --nocapture`
 
-- [ ] **Step 3: Implement deterministic bounded lookup**
+- [x] **Step 3: Implement deterministic bounded lookup**
 
 Start with a source-bound contiguous site array and a deterministic maximum-dot scan; ties within exact `f64::total_cmp` ordering resolve by lower ID. This O(n) lookup is allowed only on click, not hover/frame. Record a follow-up benchmark before adding any spatial index. `locate_incident_edge` iterates only the hit cell's stored boundary edges and evaluates minor-arc distance to each great-circle segment; enforce finite `0..=π` tolerance and stable `EdgeId` tie-breaking.
 
 Normalize ray direction at construction. Solve `|origin + t direction|² = 1` with a stable quadratic, choose the nearest `t >= 0`, and return a normalized intersection direction. Non-finite/zero directions are structured errors.
 
-- [ ] **Step 4: Verify picking and surface contracts**
+- [x] **Step 4: Verify picking and surface contracts**
 
 Run:
 
@@ -463,7 +463,7 @@ cargo test --test spherical_foundation_build -- --nocapture
 cargo clippy --test spherical_picking -- -D warnings
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/view/spherical_picking.rs src/view/mod.rs tests/spherical_picking.rs
