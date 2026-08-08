@@ -713,7 +713,7 @@ git commit -m "feat: animate spherical field annotations"
 - Produces `PublishedSphericalPresentation`, `SphericalPresentationCandidate`, `SphericalPresentationError`, `build_spherical_external_artifacts`, `build_spherical_presentation_candidate`, and atomic publication.
 - The candidate owns `Arc<SphericalNaturalFieldDocument>`, source, `Arc<SphericalEntityLocator>`, `Arc<PreparedProjectedMap>`, `Arc<PreparedGlobeMesh>`, and one `Arc<PreparedFieldLayers>`.
 
-- [ ] **Step 1: Write exact graph-input, source, sharing, and failure tests**
+- [x] **Step 1: Write exact graph-input, source, sharing, and failure tests**
 
 Build external inputs for radius `6_371_000` and 162 cells, assert length 8 and exact Artifact keys/types including `SphericalSpaceArtifact` and excluding `PlanarSpaceArtifact`. Build a candidate and assert its report contains all spherical stage IDs and no planar spatial/natural stage ID.
 
@@ -721,11 +721,11 @@ Assert every candidate component source equals the document-derived source; map 
 
 Publish a valid candidate, record all Arcs, state, clock, and report. Inject failures at document, locator, map, globe, layers, and GPU preparation boundaries through test-only failure points; each attempt must preserve every recorded handle and revision. A successful different root seed must atomically replace all source-bound handles.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_presentation_integration -- --nocapture`
 
-- [ ] **Step 3: Implement the exact candidate pipeline**
+- [x] **Step 3: Implement the exact candidate pipeline**
 
 Build external Artifacts in this order-independent set: `SphericalSpaceArtifact`, tectonic/geologic/climate/hydro specs, formation spec, rule-pack set, and author constraints. Call only `spherical_natural_foundation_graph()`.
 
@@ -740,7 +740,7 @@ pub type SphericalPresentationResource =
 pub type SphericalViewerStateResource = resource_impl::Resource<SphericalFieldDisplayState>;
 ```
 
-- [ ] **Step 4: Verify formal graph and atomic app boundary**
+- [x] **Step 4: Verify formal graph and atomic app boundary**
 
 Run:
 
@@ -750,7 +750,7 @@ cargo test --test spherical_natural_stage_graph -- --nocapture
 cargo test --lib app::spherical_natural_display -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/app/spherical_presentation.rs src/app/spherical_natural_display.rs src/app.rs src/resource/mod.rs tests/spherical_presentation_integration.rs
