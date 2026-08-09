@@ -192,7 +192,27 @@ fn generate_crust_observed(
 ) -> Result<CrustMorphology, CrustMorphologyError> {
     spec.validate()?;
     validate_cardinality(surface, topology, plates, spec)?;
-    let profile = PresetProfile::for_preset(preset);
+    let total_weight = topology
+        .area_weights()
+        .iter()
+        .copied()
+        .map(u128::from)
+        .sum::<u128>();
+    let target_weight =
+        (total_weight as f64 * f64::from(spec.continental_crust_fraction)).round() as u128;
+    let minimum_cell = topology
+        .area_weights()
+        .iter()
+        .copied()
+        .min()
+        .map(u128::from)
+        .unwrap_or(1);
+    let mut profile = PresetProfile::for_preset(preset);
+    if preset != ResolvedWorldFormationPreset::VolcanicIslands {
+        let island_total = target_weight * u128::from(profile.island_budget_milli) / 1_000;
+        let resolvable_islands = (island_total / (minimum_cell * 8)).max(1) as usize;
+        profile.island_components = profile.island_components.min(resolvable_islands);
+    }
     let recipe = affinity_recipe(preset);
     let base_seed = streams.stream(CRUST_AFFINITY_FIELD_LABEL).next_u32();
     let base_affinity = sample_spherical_field(surface, recipe, base_seed)?;
@@ -204,12 +224,22 @@ fn generate_crust_observed(
         .iter()
         .map(|&value| (i64::from(value) * i64::from(SCORE_SCALE) / i64::from(i16::MAX)) as i32)
         .collect::<Vec<_>>();
+    let median_cell_diameter = median_equivalent_cell_diameter(surface);
+    let primary_share = if profile.primary_clusters == 0 {
+        0.0
+    } else {
+        f64::from(spec.continental_crust_fraction)
+            * (1.0 - f64::from(profile.island_budget_milli) / 1_000.0)
+            / profile.primary_clusters as f64
+    };
+    let primary_radius = equivalent_cap_radius(primary_share);
     let primary = select_spread_anchors(
         surface,
         topology,
         &base_scores,
         profile.primary_clusters,
         &[],
+        (median_cell_diameter * 1.5).max(primary_radius * 2.0 + median_cell_diameter * 0.5),
         &mut anchor_rng,
     );
     let lobe_influence = clustered_lobe_influence(
@@ -228,12 +258,25 @@ fn generate_crust_observed(
             i64_to_i32(i64::from(base) + i64::from(lobe) * LOBE_WEIGHT_MILLI / 1_000)
         })
         .collect::<Vec<_>>();
+    let island_share = f64::from(spec.continental_crust_fraction)
+        * f64::from(profile.island_budget_milli)
+        / 1_000.0
+        / profile.island_components.max(1) as f64;
+    let island_radius = equivalent_cap_radius(island_share);
+    let island_separation = (median_cell_diameter * 1.5)
+        .max(island_radius * 2.0 + median_cell_diameter * 0.5)
+        .max(if primary.is_empty() {
+            0.0
+        } else {
+            primary_radius + island_radius + median_cell_diameter * 0.75
+        });
     let islands = select_spread_anchors(
         surface,
         topology,
         &pre_plate_scores,
         profile.island_components,
         &primary,
+        island_separation,
         &mut anchor_rng,
     );
     let anchors = primary.iter().chain(&islands).copied().collect::<Vec<_>>();
@@ -248,22 +291,7 @@ fn generate_crust_observed(
         .collect::<Vec<_>>();
     observe(&base_affinity, &anchors, &final_scores);
 
-    let total_weight = topology
-        .area_weights()
-        .iter()
-        .copied()
-        .map(u128::from)
-        .sum::<u128>();
-    let target_weight =
-        (total_weight as f64 * f64::from(spec.continental_crust_fraction)).round() as u128;
-    let protected = component_budgets(&primary, &islands, profile, target_weight);
-    let minimum_cell = topology
-        .area_weights()
-        .iter()
-        .copied()
-        .min()
-        .map(u128::from)
-        .unwrap_or(1);
+    let protected = component_budgets(&primary, &islands, profile, target_weight, minimum_cell);
     let minimum_component_weight = if profile.minimum_component_millionths == 0 {
         minimum_cell
     } else {
@@ -343,6 +371,7 @@ fn select_spread_anchors(
     scores: &[i32],
     count: usize,
     fixed: &[CellId],
+    minimum_separation_rad: f64,
     rng: &mut impl RngCore,
 ) -> Vec<CellId> {
     if count == 0 {
@@ -355,6 +384,12 @@ fn select_spread_anchors(
             .filter(|&index| {
                 let cell = CellId::from_raw(index as u32);
                 !selected.contains(&cell)
+                    && selected.iter().all(|&other| {
+                        central_angle(
+                            surface.cells()[index].centroid,
+                            surface.cells()[other.raw() as usize].centroid,
+                        ) >= minimum_separation_rad
+                    })
                     && topology.arcs()[index]
                         .iter()
                         .all(|arc| scores[index] >= scores[arc.neighbor.raw() as usize])
@@ -377,12 +412,51 @@ fn select_spread_anchors(
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             candidates = (0..topology.cell_count())
+                .filter(|&index| {
+                    let cell = CellId::from_raw(index as u32);
+                    !selected.contains(&cell)
+                        && selected.iter().all(|&other| {
+                            central_angle(
+                                surface.cells()[index].centroid,
+                                surface.cells()[other.raw() as usize].centroid,
+                            ) >= minimum_separation_rad
+                        })
+                })
+                .map(|index| {
+                    let cell = CellId::from_raw(index as u32);
+                    let separation = selected
+                        .iter()
+                        .map(|&other| {
+                            central_angle(
+                                surface.cells()[index].centroid,
+                                surface.cells()[other.raw() as usize].centroid,
+                            )
+                        })
+                        .fold(std::f64::consts::PI, f64::min);
+                    let merit = i64::from(scores[index])
+                        + (separation / std::f64::consts::PI * 1_200_000.0).round() as i64;
+                    (merit, scores[index], cell)
+                })
+                .collect();
+        }
+        if candidates.is_empty() {
+            candidates = (0..topology.cell_count())
                 .filter(|&index| !selected.contains(&CellId::from_raw(index as u32)))
                 .map(|index| {
+                    let cell = CellId::from_raw(index as u32);
+                    let separation = selected
+                        .iter()
+                        .map(|&other| {
+                            central_angle(
+                                surface.cells()[index].centroid,
+                                surface.cells()[other.raw() as usize].centroid,
+                            )
+                        })
+                        .fold(std::f64::consts::PI, f64::min);
                     (
-                        i64::from(scores[index]),
+                        (separation * 1_200_000.0).round() as i64 + i64::from(scores[index]),
                         scores[index],
-                        CellId::from_raw(index as u32),
+                        cell,
                     )
                 })
                 .collect();
@@ -401,6 +475,24 @@ fn select_spread_anchors(
         added.push(cell);
     }
     added
+}
+
+fn median_equivalent_cell_diameter(surface: &SphericalSurfaceSnapshot) -> f64 {
+    let sphere_area = 4.0 * std::f64::consts::PI * surface.radius().get().powi(2);
+    let mut diameters = surface
+        .cells()
+        .iter()
+        .map(|cell| {
+            let area_fraction = (cell.area.get() / sphere_area).clamp(0.0, 1.0);
+            2.0 * (1.0 - 2.0 * area_fraction).clamp(-1.0, 1.0).acos()
+        })
+        .collect::<Vec<_>>();
+    diameters.sort_by(f64::total_cmp);
+    diameters[diameters.len() / 2]
+}
+
+fn equivalent_cap_radius(component_fraction: f64) -> f64 {
+    (1.0 - 2.0 * component_fraction).clamp(-1.0, 1.0).acos()
 }
 
 fn clustered_lobe_influence(
@@ -527,12 +619,26 @@ fn component_budgets(
     islands: &[CellId],
     profile: PresetProfile,
     target_weight: u128,
+    minimum_cell_weight: u128,
 ) -> Vec<ProtectedRegionSeed> {
     let island_total = target_weight * u128::from(profile.island_budget_milli) / 1_000;
     let primary_total = target_weight - island_total;
     let mut seeds = Vec::with_capacity(primary.len() + islands.len());
     append_equal_budgets(&mut seeds, primary, primary_total);
-    append_equal_budgets(&mut seeds, islands, island_total);
+    let coarse_volcanic = primary.is_empty()
+        && !islands.is_empty()
+        && island_total / (islands.len() as u128) < minimum_cell_weight * 8;
+    if coarse_volcanic {
+        for &cell in islands {
+            seeds.push(ProtectedRegionSeed {
+                cell,
+                budget_weight: minimum_cell_weight,
+                component: seeds.len() as u16,
+            });
+        }
+    } else {
+        append_equal_budgets(&mut seeds, islands, island_total);
+    }
     seeds
 }
 
@@ -664,7 +770,7 @@ mod tests {
     fn stage_rng(seed: u64) -> StageRng {
         StageRng::from_seed(derive_stage_seed(
             RootSeed::new(seed),
-            StageIdentity::new("spherical-crust-morphology-test", 2, "sekai.test"),
+            StageIdentity::new("natural.spherical-tectonics", 2, "sekai.core"),
         ))
     }
 
@@ -682,7 +788,17 @@ mod tests {
         fraction: f32,
         seed: u64,
     ) -> ObservedCrust {
-        let surface = fixture_surface(642);
+        fixture_crust_components_at(642, plate_count, preset, fraction, seed)
+    }
+
+    fn fixture_crust_components_at(
+        target_cell_count: u32,
+        plate_count: u16,
+        preset: ResolvedWorldFormationPreset,
+        fraction: f32,
+        seed: u64,
+    ) -> ObservedCrust {
+        let surface = fixture_surface(target_cell_count);
         let view = SphericalNaturalSurface::new(&surface).unwrap();
         let topology = NaturalTopologyIndex::from_surface(&view);
         let spec = TectonicSpec {
@@ -708,7 +824,7 @@ mod tests {
                 final_affinity = final_scores.to_vec();
             },
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{preset:?} crust fixture failed: {error:?}"));
         assert_eq!(
             morphology,
             generate_crust(&surface, &topology, &plates, &spec, preset, &streams,).unwrap()
@@ -720,6 +836,20 @@ mod tests {
             final_affinity,
             plates,
             topology,
+        }
+    }
+
+    #[test]
+    fn coarse_sphere_still_fulfills_every_protected_continental_budget() {
+        for preset in [
+            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Archipelago,
+            ResolvedWorldFormationPreset::Supercontinent,
+            ResolvedWorldFormationPreset::GreatIsland,
+            ResolvedWorldFormationPreset::VolcanicIslands,
+        ] {
+            let case = fixture_crust_components_at(162, 12, preset, 0.38, 0xC0_FFEE);
+            assert_eq!(case.morphology.kinds.len(), 162, "{preset:?}");
         }
     }
 

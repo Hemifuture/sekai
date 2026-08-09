@@ -5,8 +5,10 @@ use std::collections::{BinaryHeap, VecDeque};
 
 use thiserror::Error;
 
-use crate::generators::natural::topology::NaturalTopologyIndex;
+use crate::generators::natural::topology::{multi_source_distance, NaturalTopologyIndex};
 use crate::world::CellId;
+
+const PROTECTED_GROWTH_ROUNDS: u128 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::generators::natural) struct AreaMask {
@@ -117,48 +119,16 @@ pub(in crate::generators::natural) fn build_area_constrained_mask(
     }
 
     let mut frontier = BinaryHeap::new();
-    for (component, seed) in protected.iter().enumerate() {
-        push_neighbors(
-            topology,
-            scores,
-            &selected,
-            component,
-            seed.cell,
-            &mut frontier,
-        );
-    }
-    while component_area
-        .iter()
-        .zip(protected)
-        .any(|(&area, seed)| area < seed.budget_weight)
-    {
-        let Some(candidate) = frontier.pop() else {
-            let component = component_area
-                .iter()
-                .zip(protected)
-                .position(|(&area, seed)| area < seed.budget_weight)
-                .unwrap();
-            return Err(AreaSelectionError::ProtectedGrowthExhausted {
-                component: component as u16,
-            });
-        };
-        if selected[candidate.cell.raw() as usize]
-            || component_area[candidate.component] >= protected[candidate.component].budget_weight
-            || !has_component_neighbor(topology, &selected, &labels, candidate)
-        {
-            continue;
-        }
-        select_candidate(
-            topology,
-            scores,
-            &mut selected,
-            &mut labels,
-            &mut component_area,
-            &mut total_area,
-            candidate,
-            &mut frontier,
-        );
-    }
+    grow_protected_budgets(
+        topology,
+        scores,
+        protected,
+        &mut selected,
+        &mut labels,
+        &mut component_area,
+        &mut total_area,
+        &mut frontier,
+    )?;
 
     frontier.clear();
     for (index, &is_selected) in selected.iter().enumerate() {
@@ -412,6 +382,116 @@ fn has_component_neighbor(
         has_own_neighbor = true;
     }
     has_own_neighbor
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grow_protected_budgets(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    protected: &[ProtectedRegionSeed],
+    selected: &mut [bool],
+    labels: &mut [usize],
+    component_area: &mut [u128],
+    total_area: &mut u128,
+    frontier: &mut BinaryHeap<GrowthCandidate>,
+) -> Result<(), AreaSelectionError> {
+    let initial_area = component_area.to_vec();
+    let growth_scores = protected
+        .iter()
+        .map(|seed| compact_growth_scores(topology, scores, seed.cell, seed.budget_weight))
+        .collect::<Vec<_>>();
+    for round in 1..=PROTECTED_GROWTH_ROUNDS {
+        let round_targets = initial_area
+            .iter()
+            .zip(protected)
+            .map(|(&initial, seed)| {
+                let remaining = seed.budget_weight.saturating_sub(initial);
+                initial + remaining * round / PROTECTED_GROWTH_ROUNDS
+            })
+            .collect::<Vec<_>>();
+        frontier.clear();
+        for (index, &is_selected) in selected.iter().enumerate() {
+            if is_selected && component_area[labels[index]] < round_targets[labels[index]] {
+                let component = labels[index];
+                push_neighbors(
+                    topology,
+                    &growth_scores[component],
+                    selected,
+                    component,
+                    CellId::from_raw(index as u32),
+                    frontier,
+                );
+            }
+        }
+        while component_area
+            .iter()
+            .zip(&round_targets)
+            .any(|(&area, &target)| area < target)
+        {
+            let Some(candidate) = frontier.pop() else {
+                let component = component_area
+                    .iter()
+                    .zip(&round_targets)
+                    .position(|(&area, &target)| area < target)
+                    .expect("one protected round target is unmet");
+                return Err(AreaSelectionError::ProtectedGrowthExhausted {
+                    component: component as u16,
+                });
+            };
+            if selected[candidate.cell.raw() as usize]
+                || component_area[candidate.component] >= round_targets[candidate.component]
+                || !has_component_neighbor(topology, selected, labels, candidate)
+            {
+                continue;
+            }
+            select_candidate(
+                topology,
+                &growth_scores[candidate.component],
+                selected,
+                labels,
+                component_area,
+                total_area,
+                candidate,
+                frontier,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn compact_growth_scores(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    seed: CellId,
+    budget_weight: u128,
+) -> Vec<i32> {
+    const RADIAL_PENALTY_AT_BUDGET_RADIUS: u128 = 2_000_000;
+
+    let distances = multi_source_distance(topology, &[seed], None);
+    let mut by_distance = (0..topology.cell_count()).collect::<Vec<_>>();
+    by_distance.sort_by_key(|&index| (distances[index], index));
+    let mut accumulated = 0_u128;
+    let mut budget_radius = 1_u64;
+    for index in by_distance {
+        accumulated += u128::from(topology.area_weights()[index]);
+        budget_radius = distances[index].max(1);
+        if accumulated >= budget_weight {
+            break;
+        }
+    }
+    scores
+        .iter()
+        .zip(distances)
+        .map(|(&score, distance)| {
+            let penalty =
+                u128::from(distance) * RADIAL_PENALTY_AT_BUDGET_RADIUS / u128::from(budget_radius);
+            i64_to_i32(i64::from(score) - penalty.min(i64::MAX as u128) as i64)
+        })
+        .collect()
+}
+
+fn i64_to_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[allow(clippy::too_many_arguments)]

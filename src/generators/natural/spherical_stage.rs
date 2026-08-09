@@ -99,7 +99,7 @@ impl Stage for SphericalTectonicStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {
@@ -310,7 +310,8 @@ fn generation_failure(error: SphericalTectonicGenerationError) -> StageError {
         | SphericalTectonicGenerationError::PlateCountExceedsCells { .. } => {
             invalid_input(error.to_string())
         }
-        SphericalTectonicGenerationError::InsufficientCrustFormationArea { .. }
+        SphericalTectonicGenerationError::Morphology { .. }
+        | SphericalTectonicGenerationError::InsufficientCrustFormationArea { .. }
         | SphericalTectonicGenerationError::UnsatisfiedRelativeMotion { .. } => {
             StageError::new(BUILD_FAILED_CODE, error.to_string())
         }

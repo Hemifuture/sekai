@@ -38,7 +38,7 @@ fn formation(preset: ResolvedWorldFormationPreset) -> ResolvedWorldFormation {
 fn stage_rng(root_seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(root_seed),
-        StageIdentity::new("natural.spherical-tectonics", 1, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 2, "sekai.core"),
     ))
 }
 
@@ -47,13 +47,33 @@ fn generate(
     spec: &TectonicSpec,
     preset: ResolvedWorldFormationPreset,
 ) -> SphericalTectonicSnapshot {
+    generate_on(surface(), root_seed, spec, preset)
+}
+
+fn generate_on(
+    target_surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
+    root_seed: u64,
+    spec: &TectonicSpec,
+    preset: ResolvedWorldFormationPreset,
+) -> SphericalTectonicSnapshot {
     TectonicGenerator::generate_spherical(
-        surface(),
+        target_surface,
         spec,
         &formation(preset),
         &mut stage_rng(root_seed),
     )
-    .unwrap()
+    .unwrap_or_else(|error| panic!("{preset:?} generation failed: {error:?}"))
+}
+
+fn morphology_surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
+    static SURFACE: OnceLock<sekai::world::spatial::SphericalSurfaceSnapshot> = OnceLock::new();
+    SURFACE.get_or_init(|| {
+        GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 642,
+        })
+        .unwrap()
+    })
 }
 
 fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
@@ -80,20 +100,24 @@ fn normalized_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
     }
 }
 
-fn continental_component_count(snapshot: &SphericalTectonicSnapshot) -> usize {
-    let mut visited = vec![false; surface().cells().len()];
-    let mut component_count = 0;
-    for cell in surface().cells() {
+fn continental_component_areas(
+    target_surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
+    snapshot: &SphericalTectonicSnapshot,
+) -> Vec<f64> {
+    let mut visited = vec![false; target_surface.cells().len()];
+    let mut component_areas = Vec::new();
+    for cell in target_surface.cells() {
         let start = cell.id.raw() as usize;
         if visited[start] || snapshot.crust_kind(cell.id) != Some(CrustKind::Continental) {
             continue;
         }
-        component_count += 1;
         visited[start] = true;
         let mut queue = VecDeque::from([cell.id]);
+        let mut area = 0.0;
         while let Some(current) = queue.pop_front() {
-            for &edge in surface().cell_edges(current).unwrap() {
-                let neighbor = surface().opposite_cell(current, edge).unwrap();
+            area += target_surface.cell(current).unwrap().area.get();
+            for &edge in target_surface.cell_edges(current).unwrap() {
+                let neighbor = target_surface.opposite_cell(current, edge).unwrap();
                 let index = neighbor.raw() as usize;
                 if !visited[index] && snapshot.crust_kind(neighbor) == Some(CrustKind::Continental)
                 {
@@ -102,8 +126,9 @@ fn continental_component_count(snapshot: &SphericalTectonicSnapshot) -> usize {
                 }
             }
         }
+        component_areas.push(area);
     }
-    component_count
+    component_areas
 }
 
 #[test]
@@ -352,20 +377,21 @@ fn authoritative_surface_kinematics_reject_forged_boundary_strengths() {
 }
 
 #[test]
-fn every_formation_preset_uses_global_spherical_area_and_plate_independent_crust() {
+fn every_formation_preset_uses_global_area_and_soft_plate_coupling() {
+    let target_surface = morphology_surface();
     let cases = [
-        (ResolvedWorldFormationPreset::Continents, 0.38, 3..=6),
-        (ResolvedWorldFormationPreset::Archipelago, 0.26, 8..=12),
+        (ResolvedWorldFormationPreset::Continents, 0.38, 3..=5),
+        (ResolvedWorldFormationPreset::Archipelago, 0.26, 2..=6),
         (ResolvedWorldFormationPreset::Supercontinent, 0.42, 1..=1),
-        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 2..=4),
-        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16, 8..=10),
+        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 1..=1),
+        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16, 0..=2),
     ];
-    let total_area = surface()
+    let total_area = target_surface
         .cells()
         .iter()
         .map(|cell| cell.area.get())
         .sum::<f64>();
-    let maximum_cell_area = surface()
+    let maximum_cell_area = target_surface
         .cells()
         .iter()
         .map(|cell| cell.area.get())
@@ -376,19 +402,11 @@ fn every_formation_preset_uses_global_spherical_area_and_plate_independent_crust
             continental_crust_fraction: fraction,
             ..TectonicSpec::default()
         };
-        let first = generate(0xC0_FFEE, &spec, preset);
-        let more_plates = generate(
-            0xC0_FFEE,
-            &TectonicSpec {
-                plate_count: spec.plate_count + 5,
-                ..spec.clone()
-            },
-            preset,
-        );
-        assert_eq!(first.crust_kinds(), more_plates.crust_kinds());
-        assert_eq!(first.crust_thickness_km(), more_plates.crust_thickness_km());
+        let first = generate_on(target_surface, 0xC0_FFEE, &spec, preset);
+        let repeated = generate_on(target_surface, 0xC0_FFEE, &spec, preset);
+        assert_eq!(first, repeated);
 
-        let continental_area = surface()
+        let continental_area = target_surface
             .cells()
             .iter()
             .filter(|cell| first.crust_kind(cell.id) == Some(CrustKind::Continental))
@@ -405,14 +423,55 @@ fn every_formation_preset_uses_global_spherical_area_and_plate_independent_crust
             .raw_values()
             .iter()
             .any(|&kind| kind == CrustKind::Oceanic.raw()));
-        assert!(surface()
+        assert!(target_surface
             .edges()
             .iter()
             .all(|edge| edge.cells[0] != edge.cells[1]));
-        let component_count = continental_component_count(&first);
+        let component_areas = continental_component_areas(target_surface, &first);
+        let component_total = component_areas.iter().sum::<f64>();
+        let component_count = component_areas
+            .iter()
+            .filter(|&&area| area * 10.0 >= component_total)
+            .count();
         assert!(
             component_envelope.contains(&component_count),
-            "{preset:?} produced {component_count} continental components"
+            "{preset:?} produced {component_count} major continental components"
         );
     }
+
+    let twelve = generate_on(
+        target_surface,
+        0xC0_FFEE,
+        &TectonicSpec::default(),
+        ResolvedWorldFormationPreset::Continents,
+    );
+    let seventeen = generate_on(
+        target_surface,
+        0xC0_FFEE,
+        &TectonicSpec {
+            plate_count: 17,
+            ..TectonicSpec::default()
+        },
+        ResolvedWorldFormationPreset::Continents,
+    );
+    assert_ne!(twelve.crust_kinds(), seventeen.crust_kinds());
+    let intersection = twelve
+        .crust_kinds()
+        .raw_values()
+        .iter()
+        .zip(seventeen.crust_kinds().raw_values())
+        .filter(|&(&first, &second)| {
+            first == CrustKind::Continental.raw() && second == CrustKind::Continental.raw()
+        })
+        .count();
+    let union = twelve
+        .crust_kinds()
+        .raw_values()
+        .iter()
+        .zip(seventeen.crust_kinds().raw_values())
+        .filter(|&(&first, &second)| {
+            first == CrustKind::Continental.raw() || second == CrustKind::Continental.raw()
+        })
+        .count();
+    assert!(intersection as f64 / union as f64 >= 0.55);
 }

@@ -52,9 +52,10 @@ fn formation() -> ResolvedWorldFormation {
 }
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
+    let version = u32::from(stage_id == "natural.spherical-tectonics") + 1;
     StageRng::from_seed(derive_stage_seed(
         root_seed,
-        StageIdentity::new(stage_id, 1, "sekai.core"),
+        StageIdentity::new(stage_id, version, "sekai.core"),
     ))
 }
 
