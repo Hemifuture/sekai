@@ -15,6 +15,7 @@ mod hydro_erosion_stage;
 mod hydrology;
 mod island_relief;
 mod mantle;
+mod morphology;
 mod random;
 mod relief;
 mod relief_noise;
