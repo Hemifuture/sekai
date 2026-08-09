@@ -1,8 +1,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
+use super::morphology::arrival::{assign_arrivals_bounded, ArrivalSource, ArrivalWorkspace};
+use super::morphology::metric::PositiveEdgeMetric;
 use crate::world::spatial::{NaturalSurface, PlanarNaturalSurface, SpatialSnapshot};
 use crate::world::{CellId, EdgeId};
 
@@ -21,6 +20,7 @@ pub(super) struct NeighborArc {
 pub(super) struct NaturalTopologyIndex {
     arcs: Vec<Vec<NeighborArc>>,
     edge_owners: Vec<[Option<CellId>; 2]>,
+    edge_traversal_costs: Vec<u64>,
     quantized_shape_positions: Vec<[i64; 3]>,
     area_weights: Vec<u64>,
     boundary_cells: Vec<bool>,
@@ -37,6 +37,7 @@ impl NaturalTopologyIndex {
         let cell_count = surface.cell_count();
         let mut arcs = vec![Vec::new(); cell_count];
         let mut edge_owners = vec![[None, None]; surface.edge_count()];
+        let mut edge_traversal_costs = vec![0; surface.edge_count()];
         let mut boundary_cells = vec![false; cell_count];
         let coordinate_scale = surface.long_length_scale().get();
 
@@ -49,6 +50,7 @@ impl NaturalTopologyIndex {
                 edge.traversal_length().get() / coordinate_scale,
                 LENGTH_QUANTIZATION,
             );
+            edge_traversal_costs[edge_index] = traversal_cost;
             match edge.owners() {
                 [Some(first), Some(second)] => {
                     let owners = normalized_owner_pair(first, second);
@@ -101,6 +103,7 @@ impl NaturalTopologyIndex {
         Self {
             arcs,
             edge_owners,
+            edge_traversal_costs,
             quantized_shape_positions,
             area_weights,
             boundary_cells,
@@ -115,6 +118,10 @@ impl NaturalTopologyIndex {
 
     pub(super) fn edge_owners(&self) -> &[[Option<CellId>; 2]] {
         &self.edge_owners
+    }
+
+    pub(super) fn edge_traversal_costs(&self) -> &[u64] {
+        &self.edge_traversal_costs
     }
 
     pub(super) fn quantized_shape_positions(&self) -> &[[i64; 3]] {
@@ -151,8 +158,12 @@ impl NaturalTopologyIndex {
             .map(|index| self.arcs[first.raw() as usize][index].edge)
     }
 
-    fn cell_count(&self) -> usize {
+    pub(super) fn cell_count(&self) -> usize {
         self.arcs.len()
+    }
+
+    pub(super) fn edge_count(&self) -> usize {
+        self.edge_traversal_costs.len()
     }
 }
 
@@ -160,29 +171,6 @@ impl NaturalTopologyIndex {
 pub(super) struct GraphAssignment {
     pub(super) owners: Vec<u32>,
     pub(super) distances: Vec<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueueEntry {
-    distance: u64,
-    owner: u32,
-    cell: CellId,
-}
-
-impl Ord for QueueEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .distance
-            .cmp(&self.distance)
-            .then_with(|| other.owner.cmp(&self.owner))
-            .then_with(|| other.cell.cmp(&self.cell))
-    }
-}
-
-impl PartialOrd for QueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 pub(super) fn multi_source_ownership(
@@ -300,52 +288,42 @@ fn propagate(
     sources: &[CellId],
     maximum_distance: Option<u64>,
 ) -> GraphAssignment {
-    let mut owners = vec![u32::MAX; topology.cell_count()];
-    let mut distances = vec![u64::MAX; topology.cell_count()];
-    let mut queue = BinaryHeap::new();
-
+    if sources.is_empty() {
+        return GraphAssignment {
+            owners: vec![u32::MAX; topology.cell_count()],
+            distances: vec![u64::MAX; topology.cell_count()],
+        };
+    }
+    let mut seen = vec![false; topology.cell_count()];
+    let mut arrival_sources = Vec::with_capacity(sources.len());
     for (owner, &source) in sources.iter().enumerate() {
         let index = source.raw() as usize;
         assert!(index < topology.cell_count(), "source cell must exist");
-        let owner = owner as u32;
-        if (0, owner) < (distances[index], owners[index]) {
-            distances[index] = 0;
-            owners[index] = owner;
-            queue.push(QueueEntry {
-                distance: 0,
-                owner,
-                cell: source,
-            });
-        }
-    }
-
-    while let Some(entry) = queue.pop() {
-        let cell_index = entry.cell.raw() as usize;
-        if (entry.distance, entry.owner) != (distances[cell_index], owners[cell_index]) {
+        if seen[index] {
             continue;
         }
-        for arc in &topology.arcs[cell_index] {
-            debug_assert!(arc.traversal_cost > 0);
-            let candidate_distance = entry.distance.saturating_add(arc.traversal_cost);
-            if maximum_distance.is_some_and(|maximum| candidate_distance > maximum) {
-                continue;
-            }
-            let neighbor_index = arc.neighbor.raw() as usize;
-            if (candidate_distance, entry.owner)
-                < (distances[neighbor_index], owners[neighbor_index])
-            {
-                distances[neighbor_index] = candidate_distance;
-                owners[neighbor_index] = entry.owner;
-                queue.push(QueueEntry {
-                    distance: candidate_distance,
-                    owner: entry.owner,
-                    cell: arc.neighbor,
-                });
-            }
-        }
+        seen[index] = true;
+        arrival_sources.push(ArrivalSource {
+            owner: owner as u32,
+            cell: source,
+            initial_cost: 0,
+        });
     }
-
-    GraphAssignment { owners, distances }
+    let metric = PositiveEdgeMetric::from_topology_lengths(topology)
+        .expect("validated topology traversal costs are positive");
+    let mut workspace = ArrivalWorkspace::default();
+    let assignment = assign_arrivals_bounded(
+        topology,
+        &metric,
+        &arrival_sources,
+        maximum_distance,
+        &mut workspace,
+    )
+    .expect("legacy topology sources and costs are valid");
+    GraphAssignment {
+        owners: assignment.owners.into_vec(),
+        distances: assignment.costs.into_vec(),
+    }
 }
 
 fn quantize_positive(normalized: f64, scale: f64) -> u64 {

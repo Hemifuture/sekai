@@ -16,50 +16,57 @@ const OCTAVE_ROTATION_3D: [[f64; 3]; 3] = [[0.36, 0.48, -0.8], [-0.8, 0.6, 0.0],
 const MIN_CELL_DIAMETERS_PER_BAND: f64 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FieldShape {
+pub(in crate::generators::natural) enum FieldShape {
     Smooth,
     Ridged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct FieldBand {
-    pub(super) angular_scale_rad: f64,
-    pub(super) weight_milli: i32,
-    pub(super) shape: FieldShape,
+pub(in crate::generators::natural) struct FieldBand {
+    pub(in crate::generators::natural) angular_scale_rad: f64,
+    pub(in crate::generators::natural) weight_milli: i32,
+    pub(in crate::generators::natural) shape: FieldShape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct FieldRecipe {
-    pub(super) bands: &'static [FieldBand],
-    pub(super) clamp_sigma_milli: u16,
+pub(in crate::generators::natural) struct FieldRecipe {
+    pub(in crate::generators::natural) bands: &'static [FieldBand],
+    pub(in crate::generators::natural) clamp_sigma_milli: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct QuantizedScalarField {
+pub(in crate::generators::natural) struct QuantizedScalarField {
     values: Box<[i16]>,
 }
 
 impl QuantizedScalarField {
-    pub(super) fn get(&self, cell: CellId) -> Option<i16> {
+    #[cfg(test)]
+    pub(super) fn from_test_values(values: Vec<i16>) -> Self {
+        Self {
+            values: values.into_boxed_slice(),
+        }
+    }
+
+    pub(in crate::generators::natural) fn get(&self, cell: CellId) -> Option<i16> {
         self.values.get(cell.raw() as usize).copied()
     }
 
-    pub(super) fn values(&self) -> &[i16] {
+    pub(in crate::generators::natural) fn values(&self) -> &[i16] {
         &self.values
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::generators::natural) fn len(&self) -> usize {
         self.values.len()
     }
 
-    pub(super) fn normalized_f64(&self, cell: CellId) -> f64 {
+    pub(in crate::generators::natural) fn normalized_f64(&self, cell: CellId) -> f64 {
         self.get(cell)
             .map_or(0.0, |value| f64::from(value) / f64::from(i16::MAX))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
-pub(super) enum MorphologyFieldError {
+pub(in crate::generators::natural) enum MorphologyFieldError {
     #[error("a spherical morphology field requires at least one cell")]
     EmptySurface,
     #[error("a spherical morphology field recipe requires at least one band")]
@@ -144,7 +151,7 @@ impl CoherentNoise3d {
     }
 }
 
-pub(super) fn sample_spherical_field(
+pub(in crate::generators::natural) fn sample_spherical_field(
     surface: &SphericalSurfaceSnapshot,
     recipe: FieldRecipe,
     seed: u32,
