@@ -40,6 +40,12 @@ pub(in crate::generators::natural) struct QuantizedScalarField {
 }
 
 impl QuantizedScalarField {
+    pub(in crate::generators::natural) fn neutral(cell_count: usize) -> Self {
+        Self {
+            values: vec![0; cell_count].into_boxed_slice(),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn from_test_values(values: Vec<i16>) -> Self {
         Self {
@@ -235,6 +241,19 @@ pub(in crate::generators::natural) fn sample_spherical_field(
     }
 
     quantize_area_normalized(surface, &samples, recipe.clamp_sigma_milli)
+}
+
+pub(in crate::generators::natural) fn sample_spherical_field_or_neutral(
+    surface: &SphericalSurfaceSnapshot,
+    recipe: FieldRecipe,
+    seed: u32,
+) -> Result<QuantizedScalarField, MorphologyFieldError> {
+    match sample_spherical_field(surface, recipe, seed) {
+        Err(MorphologyFieldError::NoResolvableBand { .. }) => {
+            Ok(QuantizedScalarField::neutral(surface.cells().len()))
+        }
+        result => result,
+    }
 }
 
 fn median_equivalent_cell_diameter(surface: &SphericalSurfaceSnapshot) -> f64 {

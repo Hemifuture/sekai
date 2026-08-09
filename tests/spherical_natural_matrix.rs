@@ -39,7 +39,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "9a6ed8324ad0b0be66041fd3b4ee2d77905f2bb6dd5db4b08f94abc3da1b5522",
+        expected_tectonic_hash: "4388270b96e047a3662feab4575a200b3bc29353edc3e6f6601332224e75ff0f",
         expected_mantle_hash: "3f7b966c4918d1d4a3edf0c94990c2ab1f0870e209e1803fd7e36378a2eda77d",
     },
     MatrixCase {
@@ -53,7 +53,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "36fa5154ae4b0c9c178573e444ee55e26f9c69bad69338c3d77d37dae4c024c6",
+        expected_tectonic_hash: "72e3196a0469a1a8fc0fd268b9a8630427f27a1c40fff3d058004d586610f0d2",
         expected_mantle_hash: "6235cfbdb57d1bfbce12fa426916b7e4376191da13f80efeb2750e5802b047db",
     },
     MatrixCase {
@@ -67,7 +67,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "28dd7110996b4f1a6c591e38c669d971271ba931e05695124af26b9e7f27bcc7",
+        expected_tectonic_hash: "ebe4095a2de5e8ec8cd75aa667b7891b1ec0d7f6321011f488f1cff58d99b8ad",
         expected_mantle_hash: "03a432dafeead07521176d659a29f904ef52efe34e239389adbb6602682e5cfa",
     },
     MatrixCase {
@@ -81,7 +81,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_tectonic_hash: "67ac95dcf61f789eb784cc13b00f29bff366dc889c022667a745673f3ea30bb1",
+        expected_tectonic_hash: "5b566d6d29f79b74cd4100efe1752ca695a31bd43b82fa33119de955b4216fd2",
         expected_mantle_hash: "6e5def0d9603031ce138043672e45f8487e7779e92ec5b8c5f0d62c2c118f673",
     },
 ];

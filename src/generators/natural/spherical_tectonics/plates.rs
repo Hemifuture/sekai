@@ -9,7 +9,7 @@ use crate::generators::natural::morphology::arrival::{
     assign_arrivals, ArrivalAssignment, ArrivalError, ArrivalSource, ArrivalWorkspace,
 };
 use crate::generators::natural::morphology::field::{
-    sample_spherical_field, FieldBand, FieldRecipe, FieldShape, MorphologyFieldError,
+    sample_spherical_field_or_neutral, FieldBand, FieldRecipe, FieldShape, MorphologyFieldError,
     QuantizedScalarField,
 };
 use crate::generators::natural::morphology::metric::{
@@ -163,10 +163,14 @@ fn generate_plate_partition_observed(
     let targets = generate_target_area_weights(plate_count, &mut target_rng)?;
 
     let mut placement_rng = streams.stream(PLATE_SEED_PLACEMENT_LABEL);
-    let seed_preference =
-        sample_spherical_field(surface, SEED_PREFERENCE_RECIPE, placement_rng.next_u32())?;
+    let seed_preference = sample_spherical_field_or_neutral(
+        surface,
+        SEED_PREFERENCE_RECIPE,
+        placement_rng.next_u32(),
+    )?;
     let resistance_seed = streams.stream(PLATE_RESISTANCE_FIELD_LABEL).next_u32();
-    let resistance = sample_spherical_field(surface, PLATE_RESISTANCE_RECIPE, resistance_seed)?;
+    let resistance =
+        sample_spherical_field_or_neutral(surface, PLATE_RESISTANCE_RECIPE, resistance_seed)?;
     let fabric = sample_plate_fabric(surface, streams)?;
     let metric = build_plate_metric(topology, &resistance, &fabric)?;
 
@@ -192,7 +196,7 @@ pub(super) fn sample_plate_fabric(
     streams: &LabeledSubstreams,
 ) -> Result<QuantizedScalarField, MorphologyFieldError> {
     let fabric_seed = streams.stream(PLATE_FABRIC_FIELD_LABEL).next_u32();
-    sample_spherical_field(surface, PLATE_FABRIC_RECIPE, fabric_seed)
+    sample_spherical_field_or_neutral(surface, PLATE_FABRIC_RECIPE, fabric_seed)
 }
 
 fn generate_target_area_weights(

@@ -8,8 +8,8 @@ use crate::generators::natural::morphology::area::{
     build_area_constrained_mask, AreaSelectionError, ProtectedRegionSeed,
 };
 use crate::generators::natural::morphology::field::{
-    sample_spherical_field, FieldBand, FieldRecipe, FieldShape, MorphologyFieldError,
-    QuantizedScalarField,
+    sample_spherical_field, sample_spherical_field_or_neutral, FieldBand, FieldRecipe, FieldShape,
+    MorphologyFieldError, QuantizedScalarField,
 };
 use crate::generators::natural::random::{
     CRUST_AFFINITY_FIELD_LABEL, CRUST_ANCHOR_LAYOUT_LABEL, CRUST_THICKNESS_FIELD_LABEL,
@@ -210,12 +210,15 @@ fn generate_crust_observed(
     let mut profile = PresetProfile::for_preset(preset);
     if preset != ResolvedWorldFormationPreset::VolcanicIslands {
         let island_total = target_weight * u128::from(profile.island_budget_milli) / 1_000;
+        let primary_total = target_weight - island_total;
+        let resolvable_primary = (primary_total / (minimum_cell * 8)).max(1) as usize;
+        profile.primary_clusters = profile.primary_clusters.min(resolvable_primary);
         let resolvable_islands = (island_total / (minimum_cell * 8)).max(1) as usize;
         profile.island_components = profile.island_components.min(resolvable_islands);
     }
     let recipe = affinity_recipe(preset);
     let base_seed = streams.stream(CRUST_AFFINITY_FIELD_LABEL).next_u32();
-    let base_affinity = sample_spherical_field(surface, recipe, base_seed)?;
+    let base_affinity = sample_spherical_field_or_neutral(surface, recipe, base_seed)?;
     let fabric = sample_plate_fabric(surface, streams)?;
     let mut anchor_rng = streams.stream(CRUST_ANCHOR_LAYOUT_LABEL);
 
@@ -840,16 +843,23 @@ mod tests {
     }
 
     #[test]
-    fn coarse_sphere_still_fulfills_every_protected_continental_budget() {
-        for preset in [
-            ResolvedWorldFormationPreset::Continents,
-            ResolvedWorldFormationPreset::Archipelago,
-            ResolvedWorldFormationPreset::Supercontinent,
-            ResolvedWorldFormationPreset::GreatIsland,
-            ResolvedWorldFormationPreset::VolcanicIslands,
-        ] {
-            let case = fixture_crust_components_at(162, 12, preset, 0.38, 0xC0_FFEE);
-            assert_eq!(case.morphology.kinds.len(), 162, "{preset:?}");
+    fn minimum_and_coarse_spheres_fulfill_every_protected_continental_budget() {
+        for target_cell_count in [42, 162] {
+            for preset in [
+                ResolvedWorldFormationPreset::Continents,
+                ResolvedWorldFormationPreset::Archipelago,
+                ResolvedWorldFormationPreset::Supercontinent,
+                ResolvedWorldFormationPreset::GreatIsland,
+                ResolvedWorldFormationPreset::VolcanicIslands,
+            ] {
+                let case =
+                    fixture_crust_components_at(target_cell_count, 12, preset, 0.38, 0xC0_FFEE);
+                assert_eq!(
+                    case.morphology.kinds.len(),
+                    target_cell_count as usize,
+                    "{preset:?}"
+                );
+            }
         }
     }
 
