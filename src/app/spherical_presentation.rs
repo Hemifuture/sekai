@@ -38,9 +38,25 @@ use crate::world::natural::{
 use crate::world::{RootSeed, SphericalSpaceSpec, SphericalSpecError};
 
 /// The renderer-side preparation gate that must succeed before CPU publication changes.
+#[derive(Clone, Copy)]
+enum SphericalGpuPreparation<'a> {
+    Initial,
+    Replacement { expected: &'a SphericalGpuPacket },
+}
+
 trait SphericalGpuPreparer {
+    /// Rejects the wrong renderer owner before candidate or GPU validation performs work.
+    fn preflight(
+        &self,
+        preparation: SphericalGpuPreparation<'_>,
+    ) -> Result<(), SphericalRenderError>;
+
     /// Atomically prepares the complete GPU packet or retains the previous renderer state.
-    fn prepare(&mut self, packet: &SphericalGpuPacket) -> Result<(), SphericalRenderError>;
+    fn prepare(
+        &mut self,
+        preparation: SphericalGpuPreparation<'_>,
+        packet: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError>;
 }
 
 /// Production adapter from publication orchestration to the spherical wgpu renderer.
@@ -53,7 +69,10 @@ pub struct SphericalRendererPreparer<'a> {
 }
 
 impl<'a> SphericalRendererPreparer<'a> {
-    /// Binds the renderer and device resources used for one or more atomic publications.
+    /// Binds the renderer and device resources used by one publication lineage.
+    ///
+    /// Initial publication requires an empty renderer. Every later replacement requires that
+    /// renderer to still contain the exact current packet owned by the publication being changed.
     pub const fn new(
         renderer: &'a mut SphericalFieldRenderer,
         device: &'a wgpu::Device,
@@ -75,7 +94,23 @@ impl<'a> SphericalRendererPreparer<'a> {
 }
 
 impl SphericalGpuPreparer for SphericalRendererPreparer<'_> {
-    fn prepare(&mut self, packet: &SphericalGpuPacket) -> Result<(), SphericalRenderError> {
+    fn preflight(
+        &self,
+        preparation: SphericalGpuPreparation<'_>,
+    ) -> Result<(), SphericalRenderError> {
+        match preparation {
+            SphericalGpuPreparation::Initial => self.renderer.ensure_publication_uninitialized(),
+            SphericalGpuPreparation::Replacement { expected } => {
+                self.renderer.ensure_publication_current(expected)
+            }
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        preparation: SphericalGpuPreparation<'_>,
+        packet: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError> {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_next_prepare) {
             return Err(SphericalRenderError::BufferLimitExceeded {
@@ -84,8 +119,15 @@ impl SphericalGpuPreparer for SphericalRendererPreparer<'_> {
                 max: 0,
             });
         }
-        self.renderer
-            .prepare_packet(self.device, self.queue, packet)
+        match preparation {
+            SphericalGpuPreparation::Initial => {
+                self.renderer
+                    .prepare_initial_publication_packet(self.device, self.queue, packet)
+            }
+            SphericalGpuPreparation::Replacement { expected } => self
+                .renderer
+                .prepare_replacement_publication_packet(self.device, self.queue, expected, packet),
+        }
     }
 }
 
@@ -370,8 +412,10 @@ impl PublishedSphericalPresentation {
         gpu: &mut P,
     ) -> Result<Self, SphericalPresentationError> {
         candidate.lineage.validate_initial()?;
+        let preparation = SphericalGpuPreparation::Initial;
+        gpu.preflight(preparation)?;
         candidate.validate()?;
-        gpu.prepare(candidate.gpu_packet())?;
+        gpu.prepare(preparation, candidate.gpu_packet())?;
         candidate.lineage.clear();
         Ok(Self { current: candidate })
     }
@@ -499,9 +543,14 @@ impl PublishedSphericalPresentation {
         mut candidate: SphericalPresentationCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        let expected = Arc::clone(self.gpu_packet_arc());
+        let preparation = SphericalGpuPreparation::Replacement {
+            expected: &expected,
+        };
+        gpu.preflight(preparation)?;
         candidate.lineage.validate_current(self)?;
         candidate.validate()?;
-        gpu.prepare(candidate.gpu_packet())?;
+        gpu.prepare(preparation, candidate.gpu_packet())?;
         candidate.lineage.clear();
         self.current = candidate;
         Ok(())
@@ -567,6 +616,11 @@ impl PublishedSphericalPresentation {
         candidate: SphericalProjectionCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        let expected = Arc::clone(self.gpu_packet_arc());
+        let preparation = SphericalGpuPreparation::Replacement {
+            expected: &expected,
+        };
+        gpu.preflight(preparation)?;
         candidate.base.validate_current(self, "projection")?;
         candidate.validate(self)?;
         let mut state = candidate.state;
@@ -592,7 +646,7 @@ impl PublishedSphericalPresentation {
         next.state = state;
         next.clock = candidate.clock;
         next.validate()?;
-        gpu.prepare(next.gpu_packet())?;
+        gpu.prepare(preparation, next.gpu_packet())?;
         self.current = next;
         Ok(())
     }
@@ -651,6 +705,11 @@ impl PublishedSphericalPresentation {
         candidate: SphericalFieldCandidate,
         gpu: &mut P,
     ) -> Result<(), SphericalPresentationError> {
+        let expected = Arc::clone(self.gpu_packet_arc());
+        let preparation = SphericalGpuPreparation::Replacement {
+            expected: &expected,
+        };
+        gpu.preflight(preparation)?;
         candidate.base.validate_current(self, "field")?;
         candidate.validate(self)?;
         let mut next = self.current.snapshot_for_update();
@@ -662,7 +721,7 @@ impl PublishedSphericalPresentation {
         next.state = candidate.state;
         next.clock = candidate.clock;
         next.validate()?;
-        gpu.prepare(next.gpu_packet())?;
+        gpu.prepare(preparation, next.gpu_packet())?;
         self.current = next;
         Ok(())
     }
@@ -1416,7 +1475,8 @@ mod tests {
 
     use super::{
         build_spherical_presentation_candidate, FailureInjector, PublishedSphericalPresentation,
-        SphericalFieldCandidate, SphericalGpuPreparer, SphericalPresentationError,
+        SphericalFieldCandidate, SphericalGpuPreparation, SphericalGpuPreparer,
+        SphericalPresentationError,
     };
     use crate::engine::MemoryStageCache;
     use crate::view::{
@@ -1433,11 +1493,23 @@ mod tests {
     struct TestGpuPreparer {
         fail: bool,
         calls: usize,
+        preflight_error: Option<crate::gpu::spherical::SphericalRenderError>,
     }
 
     impl SphericalGpuPreparer for TestGpuPreparer {
+        fn preflight(
+            &self,
+            _preparation: SphericalGpuPreparation<'_>,
+        ) -> Result<(), crate::gpu::spherical::SphericalRenderError> {
+            match &self.preflight_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+
         fn prepare(
             &mut self,
+            _preparation: SphericalGpuPreparation<'_>,
             _packet: &crate::gpu::spherical::SphericalGpuPacket,
         ) -> Result<(), crate::gpu::spherical::SphericalRenderError> {
             self.calls += 1;
@@ -1454,6 +1526,87 @@ mod tests {
             radius: Meters::new(6_371_000.0).unwrap(),
             target_cell_count: 162,
         }
+    }
+
+    #[test]
+    fn renderer_ownership_preflight_precedes_candidate_validation_and_prepare() {
+        let mut cache = MemoryStageCache::new();
+        let mut invalid_initial = build_spherical_presentation_candidate(
+            RootSeed::new(89),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let other = build_spherical_presentation_candidate(
+            RootSeed::new(97),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        invalid_initial.source = other.source().clone();
+        let mut initial_gpu = TestGpuPreparer {
+            preflight_error: Some(
+                crate::gpu::spherical::SphericalRenderError::RendererAlreadyInitialized,
+            ),
+            ..Default::default()
+        };
+        assert!(matches!(
+            PublishedSphericalPresentation::try_new_with_preparer(
+                invalid_initial,
+                &mut initial_gpu
+            ),
+            Err(SphericalPresentationError::Gpu(
+                crate::gpu::spherical::SphericalRenderError::RendererAlreadyInitialized
+            ))
+        ));
+        assert_eq!(initial_gpu.calls, 0);
+
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(101),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut replacement_gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut replacement_gpu)
+                .unwrap();
+        let mut invalid_replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(103),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                published.state(),
+            )
+            .unwrap();
+        invalid_replacement.source = other.source().clone();
+        replacement_gpu.preflight_error =
+            Some(crate::gpu::spherical::SphericalRenderError::RendererCurrentPacketMismatch);
+        assert!(matches!(
+            published.try_replace_with_preparer(invalid_replacement, &mut replacement_gpu),
+            Err(SphericalPresentationError::Gpu(
+                crate::gpu::spherical::SphericalRenderError::RendererCurrentPacketMismatch
+            ))
+        ));
+        assert_eq!(replacement_gpu.calls, 1);
     }
 
     #[test]

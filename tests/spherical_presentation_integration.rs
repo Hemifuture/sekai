@@ -412,6 +412,199 @@ fn public_frame_paths_cannot_restore_a_retained_packet_after_source_replacement(
 }
 
 #[test]
+fn a_renderer_cannot_be_initialized_by_two_live_publications() {
+    let mut cache = MemoryStageCache::new();
+    let first = candidate(421, &mut cache);
+    let second = candidate(423, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(first, &mut gpu).unwrap()
+    };
+    renderer
+        .prepare_map_frame(
+            &queue,
+            published.gpu_packet(),
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        )
+        .unwrap();
+    let packet_before = Arc::clone(published.gpu_packet_arc());
+    let source_before = published.source().clone();
+    let revisions_before = published.revisions();
+    let state_before = published.state().clone();
+    let counters_before = renderer.upload_counters();
+    let pixels_before = read_prepared_map_pixels(&device, &queue, &renderer, [192, 96]);
+
+    let result = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(second, &mut gpu)
+    };
+    assert!(matches!(
+        result,
+        Err(SphericalPresentationError::Gpu(
+            sekai::gpu::spherical::SphericalRenderError::RendererAlreadyInitialized
+        ))
+    ));
+    assert!(Arc::ptr_eq(&packet_before, published.gpu_packet_arc()));
+    assert_eq!(published.source(), &source_before);
+    assert_eq!(published.revisions(), revisions_before);
+    assert_eq!(published.state(), &state_before);
+    assert_eq!(renderer.installed_source(), Some(&source_before));
+    assert_eq!(renderer.upload_counters(), counters_before);
+    assert_eq!(
+        read_prepared_map_pixels(&device, &queue, &renderer, [192, 96]),
+        pixels_before
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WrongRendererReplacement {
+    Whole,
+    Projection,
+    Field,
+}
+
+#[test]
+fn every_replacement_path_rejects_a_renderer_owned_by_another_publication() {
+    for replacement in [
+        WrongRendererReplacement::Whole,
+        WrongRendererReplacement::Projection,
+        WrongRendererReplacement::Field,
+    ] {
+        assert_wrong_renderer_replacement_is_inert(replacement);
+    }
+}
+
+fn assert_wrong_renderer_replacement_is_inert(replacement: WrongRendererReplacement) {
+    let mut first_cache = MemoryStageCache::new();
+    let mut second_cache = MemoryStageCache::new();
+    let first = candidate(431, &mut first_cache);
+    let second = candidate(433, &mut second_cache);
+    assert_ne!(first.source(), second.source());
+    let (device, queue) = request_test_device();
+    let format = eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut first_renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(&device, format);
+    let mut second_renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(&device, format);
+    let mut first_published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut first_renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(first, &mut gpu).unwrap()
+    };
+    let second_published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut second_renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(second, &mut gpu).unwrap()
+    };
+    first_renderer
+        .prepare_map_frame(
+            &queue,
+            first_published.gpu_packet(),
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        )
+        .unwrap();
+    second_renderer
+        .prepare_map_frame(
+            &queue,
+            second_published.gpu_packet(),
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        )
+        .unwrap();
+    let first_packet = Arc::clone(first_published.gpu_packet_arc());
+    let second_packet = Arc::clone(second_published.gpu_packet_arc());
+    let first_source = first_published.source().clone();
+    let second_source = second_published.source().clone();
+    let first_revisions = first_published.revisions();
+    let second_revisions = second_published.revisions();
+    let first_state = first_published.state().clone();
+    let second_state = second_published.state().clone();
+    let first_counters = first_renderer.upload_counters();
+    let second_counters = second_renderer.upload_counters();
+    let first_pixels = read_prepared_map_pixels(&device, &queue, &first_renderer, [192, 96]);
+    let second_pixels = read_prepared_map_pixels(&device, &queue, &second_renderer, [192, 96]);
+
+    let result = match replacement {
+        WrongRendererReplacement::Whole => {
+            let next = first_published
+                .prepare_replacement_candidate(
+                    RootSeed::new(439),
+                    &space(),
+                    &WorldFormationSpec::default(),
+                    &TectonicSpec::default(),
+                    &GeologicSpec::default(),
+                    &mut first_cache,
+                    first_published.state(),
+                )
+                .unwrap();
+            let mut gpu = SphericalRendererPreparer::new(&mut second_renderer, &device, &queue);
+            first_published.try_replace(next, &mut gpu)
+        }
+        WrongRendererReplacement::Projection => {
+            let projection =
+                SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.31).unwrap();
+            let next = first_published
+                .prepare_projection_candidate(projection, SphericalMeshBudgets::DEFAULT)
+                .unwrap();
+            let mut gpu = SphericalRendererPreparer::new(&mut second_renderer, &device, &queue);
+            first_published.try_replace_projection_candidate(next, &mut gpu)
+        }
+        WrongRendererReplacement::Field => {
+            let mut requested = first_published.state().clone();
+            requested.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+            let next = first_published
+                .prepare_field_candidate(
+                    requested,
+                    SphericalViewMode::Map,
+                    MapCamera::default(),
+                    GlobeCamera::default(),
+                )
+                .unwrap();
+            let mut gpu = SphericalRendererPreparer::new(&mut second_renderer, &device, &queue);
+            first_published.try_replace_field_candidate(next, &mut gpu)
+        }
+    };
+    assert!(
+        matches!(
+            result,
+            Err(SphericalPresentationError::Gpu(
+                sekai::gpu::spherical::SphericalRenderError::RendererCurrentPacketMismatch
+            ))
+        ),
+        "{replacement:?} replacement seized another publication's renderer"
+    );
+    assert!(Arc::ptr_eq(&first_packet, first_published.gpu_packet_arc()));
+    assert!(Arc::ptr_eq(
+        &second_packet,
+        second_published.gpu_packet_arc()
+    ));
+    assert_eq!(first_published.source(), &first_source);
+    assert_eq!(second_published.source(), &second_source);
+    assert_eq!(first_published.revisions(), first_revisions);
+    assert_eq!(second_published.revisions(), second_revisions);
+    assert_eq!(first_published.state(), &first_state);
+    assert_eq!(second_published.state(), &second_state);
+    assert_eq!(first_renderer.installed_source(), Some(&first_source));
+    assert_eq!(second_renderer.installed_source(), Some(&second_source));
+    assert_eq!(first_renderer.upload_counters(), first_counters);
+    assert_eq!(second_renderer.upload_counters(), second_counters);
+    assert_eq!(
+        read_prepared_map_pixels(&device, &queue, &first_renderer, [192, 96]),
+        first_pixels
+    );
+    assert_eq!(
+        read_prepared_map_pixels(&device, &queue, &second_renderer, [192, 96]),
+        second_pixels
+    );
+}
+
+#[test]
 fn replacement_candidate_cannot_fork_a_second_initial_publication() {
     let mut cache = MemoryStageCache::new();
     let initial = candidate(313, &mut cache);
@@ -1836,6 +2029,105 @@ fn immutable_upload_counts(counters: sekai::gpu::spherical::SphericalUploadCount
         counters.map_overlay_instances,
         counters.globe_overlay_instances,
     ]
+}
+
+fn read_prepared_map_pixels(
+    device: &eframe::egui_wgpu::wgpu::Device,
+    queue: &eframe::egui_wgpu::wgpu::Queue,
+    renderer: &sekai::gpu::spherical::SphericalFieldRenderer,
+    viewport: [u32; 2],
+) -> Vec<u8> {
+    use eframe::egui_wgpu::wgpu;
+
+    let extent = wgpu::Extent3d {
+        width: viewport[0],
+        height: viewport[1],
+        depth_or_array_layers: 1,
+    };
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Spherical Publication Ownership Readback Target"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let unpadded_bytes_per_row = viewport[0] * 4;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Spherical Publication Ownership Readback Buffer"),
+        size: u64::from(padded_bytes_per_row) * u64::from(viewport[1]),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Spherical Publication Ownership Readback Encoder"),
+    });
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Spherical Publication Ownership Readback Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            })
+            .forget_lifetime();
+        renderer.paint(sekai::gpu::spherical::SphericalRenderMode::Map, &mut pass);
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(viewport[1]),
+            },
+        },
+        extent,
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender
+            .send(result)
+            .expect("ownership readback receiver lives");
+    });
+    let _ = device.poll(wgpu::Maintain::Wait);
+    receiver
+        .recv()
+        .expect("ownership readback callback runs")
+        .expect("ownership readback maps");
+    let mapped = slice.get_mapped_range();
+    let mut rgba8 = vec![0; (unpadded_bytes_per_row * viewport[1]) as usize];
+    for row in 0..viewport[1] as usize {
+        let source_start = row * padded_bytes_per_row as usize;
+        let target_start = row * unpadded_bytes_per_row as usize;
+        rgba8[target_start..target_start + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&mapped[source_start..source_start + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    readback.unmap();
+    rgba8
 }
 
 fn queued_canvas_jobs(

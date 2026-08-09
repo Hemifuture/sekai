@@ -451,6 +451,12 @@ pub enum SphericalRenderError {
     /// A fixed-size frame uniform named a packet that is not currently installed.
     #[error("spherical frame packet is not the currently installed GPU packet")]
     FramePacketNotInstalled,
+    /// An initial publication targeted a renderer that already owns another publication packet.
+    #[error("spherical renderer is already initialized by a publication")]
+    RendererAlreadyInitialized,
+    /// A replacement publication targeted a renderer whose current packet belongs elsewhere.
+    #[error("spherical renderer does not contain the publication's expected current packet")]
+    RendererCurrentPacketMismatch,
     /// One changed packet component reused or regressed its installed revision.
     #[error(
         "{resource} changed without a newer spherical display revision (installed {installed}, candidate {candidate})"
@@ -936,7 +942,50 @@ impl SphericalFieldRenderer {
         }
     }
 
-    /// Validates and atomically installs every revision-changed immutable resource.
+    /// Returns whether this renderer can accept one standalone initial publication.
+    pub(crate) fn ensure_publication_uninitialized(&self) -> Result<(), SphericalRenderError> {
+        if self.installed_packet_key.is_some() {
+            return Err(SphericalRenderError::RendererAlreadyInitialized);
+        }
+        Ok(())
+    }
+
+    /// Requires the renderer to contain the exact packet owned by a publication.
+    pub(crate) fn ensure_publication_current(
+        &self,
+        expected: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError> {
+        if !self.callback_packet_is_current(expected) {
+            return Err(SphericalRenderError::RendererCurrentPacketMismatch);
+        }
+        Ok(())
+    }
+
+    /// Validates and atomically installs the first publication packet into an empty renderer.
+    pub(crate) fn prepare_initial_publication_packet(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError> {
+        self.ensure_publication_uninitialized()?;
+        self.prepare_packet_with_limits(device, queue, packet, device.limits())
+    }
+
+    /// Atomically replaces the exact packet currently owned by one publication.
+    pub(crate) fn prepare_replacement_publication_packet(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        expected: &SphericalGpuPacket,
+        packet: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError> {
+        self.ensure_publication_current(expected)?;
+        self.prepare_packet_with_limits(device, queue, packet, device.limits())
+    }
+
+    /// Test-only raw installation boundary for renderer unit and sealed crate fixtures.
+    #[cfg(test)]
     pub(crate) fn prepare_packet(
         &mut self,
         device: &wgpu::Device,
@@ -2170,6 +2219,65 @@ mod tests {
             fixture.packet.layers().fill().kind(),
             PreparedFieldKind::Scalar
         );
+    }
+
+    #[test]
+    fn publication_ownership_guards_run_before_packet_validation_or_uploads() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let installed = packet_fixture(TestFieldKind::Scalar, 103);
+        let elsewhere = packet_fixture(TestFieldKind::Category, 103);
+        assert_eq!(installed.packet.source(), elsewhere.packet.source());
+        assert_eq!(
+            installed.packet.map_geometry_revision(),
+            elsewhere.packet.map_geometry_revision()
+        );
+        assert_eq!(
+            installed.packet.globe_geometry_revision(),
+            elsewhere.packet.globe_geometry_revision()
+        );
+        assert_eq!(
+            installed.packet.layers().revisions(),
+            elsewhere.packet.layers().revisions()
+        );
+        assert!(!Arc::ptr_eq(
+            installed.packet.layers_arc(),
+            elsewhere.packet.layers_arc()
+        ));
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_initial_publication_packet(&device, &queue, &installed.packet)
+            .unwrap();
+        let before = renderer.upload_counters();
+        assert!(renderer.callback_packet_is_current(&installed.packet));
+        assert!(!renderer.callback_packet_is_current(&elsewhere.packet));
+
+        validation_probe::reset();
+        assert_eq!(
+            renderer.prepare_initial_publication_packet(&device, &queue, &elsewhere.packet),
+            Err(SphericalRenderError::RendererAlreadyInitialized)
+        );
+        assert_eq!(validation_probe::snapshot(), Default::default());
+        assert_eq!(renderer.upload_counters(), before);
+        assert!(renderer.callback_packet_is_current(&installed.packet));
+        assert!(!renderer.callback_packet_is_current(&elsewhere.packet));
+
+        validation_probe::reset();
+        assert_eq!(
+            renderer.prepare_replacement_publication_packet(
+                &device,
+                &queue,
+                &elsewhere.packet,
+                &elsewhere.packet,
+            ),
+            Err(SphericalRenderError::RendererCurrentPacketMismatch)
+        );
+        assert_eq!(validation_probe::snapshot(), Default::default());
+        assert_eq!(renderer.upload_counters(), before);
+        assert!(renderer.callback_packet_is_current(&installed.packet));
+        assert!(!renderer.callback_packet_is_current(&elsewhere.packet));
     }
 
     #[test]

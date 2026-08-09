@@ -75,6 +75,14 @@ fn spherical_gpu_rejections_have_stable_typed_contracts() {
         .to_string(),
         "integer overflow while computing map index count"
     );
+    assert_eq!(
+        SphericalRenderError::RendererAlreadyInitialized.to_string(),
+        "spherical renderer is already initialized by a publication"
+    );
+    assert_eq!(
+        SphericalRenderError::RendererCurrentPacketMismatch.to_string(),
+        "spherical renderer does not contain the publication's expected current packet"
+    );
 }
 
 #[test]
