@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use sekai::app::{
     build_spherical_external_artifacts, build_spherical_presentation_candidate, AppRuntimeGraph,
@@ -16,6 +16,7 @@ use sekai::view::{
     SphericalFieldDisplayState, SphericalMeshBudgets, SphericalProjection, SphericalProjectionKind,
     SphericalViewMode, VectorGlyphLod,
 };
+use sekai::world::fields::FieldId;
 use sekai::world::natural::{
     boundary_kind_field_id, boundary_strength_field_id, land_ocean_field_id,
     plate_velocity_field_id, preliminary_prevailing_wind_m_s_field_id,
@@ -25,9 +26,9 @@ use sekai::world::{CellId, EdgeId, Meters, RootSeed, SphericalSpaceSpec};
 use sekai::{
     ui::spherical::{
         apply_spherical_canvas_action, build_spherical_control_catalog,
-        build_spherical_inspector_model, legacy_compatibility_ui, show_spherical_canvas,
-        SphericalCanvasAction, SphericalCanvasInvalidation, SphericalCanvasState,
-        SphericalOverlayControlKind, SphericalUiError, GLYPH_DENSITY_LABELS,
+        build_spherical_inspector_model, interact_spherical_canvas, legacy_compatibility_ui,
+        queue_spherical_canvas_callback, SphericalCanvasAction, SphericalCanvasInvalidation,
+        SphericalCanvasState, SphericalOverlayControlKind, SphericalUiError, GLYPH_DENSITY_LABELS,
         VECTOR_DISPLAY_SPEED_LABEL,
     },
     TemplateApp,
@@ -329,6 +330,165 @@ fn whole_world_and_smaller_candidates_publish_atomically() {
     assert!(!Arc::ptr_eq(&gpu_before, published.gpu_packet_arc()));
     assert_ne!(published.source().root_seed(), RootSeed::new(59));
     assert_eq!(published.source().root_seed(), RootSeed::new(61));
+}
+
+#[test]
+fn replacement_candidate_cannot_fork_a_second_initial_publication() {
+    let mut cache = MemoryStageCache::new();
+    let initial = candidate(313, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let predecessor = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(initial, &mut gpu).unwrap()
+    };
+    let packet_before = Arc::clone(predecessor.gpu_packet_arc());
+    let document_before = Arc::clone(predecessor.document_arc());
+    let layers_before = Arc::clone(predecessor.layers_arc());
+    let source_before = predecessor.source().clone();
+    let revisions_before = predecessor.revisions();
+    let state_before = predecessor.state().clone();
+    let mut clock_before = predecessor.clock().clone();
+    let expected_next = clock_before.issue().unwrap();
+    let uploads_before = renderer.upload_counters();
+    let replacement = predecessor
+        .prepare_replacement_candidate(
+            RootSeed::new(317),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            predecessor.state(),
+        )
+        .unwrap();
+
+    let result = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(replacement, &mut gpu)
+    };
+    match result {
+        Err(error) => assert_eq!(
+            error.to_string(),
+            "initial spherical publication requires a standalone candidate"
+        ),
+        Ok(_) => panic!("replacement lineage forked a second initial publication"),
+    }
+
+    assert_eq!(renderer.upload_counters(), uploads_before);
+    assert!(Arc::ptr_eq(&packet_before, predecessor.gpu_packet_arc()));
+    assert!(Arc::ptr_eq(&document_before, predecessor.document_arc()));
+    assert!(Arc::ptr_eq(&layers_before, predecessor.layers_arc()));
+    assert_eq!(predecessor.source(), &source_before);
+    assert_eq!(predecessor.revisions(), revisions_before);
+    assert_eq!(predecessor.state(), &state_before);
+    let mut clock_after = predecessor.clock().clone();
+    assert_eq!(clock_after.issue().unwrap(), expected_next);
+}
+
+#[test]
+fn standalone_and_replacement_builds_reconcile_edges_to_the_final_overlay_channel() {
+    let invalid_overlay = FieldId::new("test.spherical", "missing-overlay", 1).unwrap();
+    let edge = Some(SelectedSurfaceEntity::Edge(EdgeId::from_raw(0)));
+    for (case, overlay, expected_entity) in [
+        ("none", None, None),
+        (
+            "vector",
+            Some(preliminary_prevailing_wind_m_s_field_id()),
+            None,
+        ),
+        ("invalid", Some(invalid_overlay.clone()), None),
+        ("edge", Some(boundary_strength_field_id()), edge),
+    ] {
+        let mut cache = MemoryStageCache::new();
+        let mut requested = SphericalFieldDisplayState::default();
+        requested.select_overlay(overlay.clone());
+        requested.select_entity(edge);
+        let standalone = build_spherical_presentation_candidate(
+            RootSeed::new(331),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &requested,
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            standalone.state().selected_entity(),
+            expected_entity,
+            "standalone {case}"
+        );
+
+        let (device, queue) = request_test_device();
+        let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+            &device,
+            eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        let mut published = PublishedSphericalPresentation::try_new(standalone, &mut gpu).unwrap();
+        assert!(Arc::ptr_eq(
+            published.gpu_packet().layers_arc(),
+            published.layers_arc()
+        ));
+        let map_model =
+            build_spherical_inspector_model(&published, published.state(), SphericalViewMode::Map)
+                .unwrap();
+        let globe_model = build_spherical_inspector_model(
+            &published,
+            published.state(),
+            SphericalViewMode::Globe,
+        )
+        .unwrap();
+        assert_eq!(map_model, globe_model, "standalone {case}");
+        assert_eq!(map_model.entity(), expected_entity, "standalone {case}");
+
+        let mut replacement_state = published.state().clone();
+        replacement_state.select_overlay(overlay);
+        replacement_state.select_entity(edge);
+        let replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(337),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                &replacement_state,
+            )
+            .unwrap();
+        assert_eq!(
+            replacement.state().selected_entity(),
+            expected_entity,
+            "replacement {case}"
+        );
+        published.try_replace(replacement, &mut gpu).unwrap();
+        assert_eq!(
+            published.state().selected_entity(),
+            expected_entity,
+            "published {case}"
+        );
+        assert_eq!(published.source().root_seed(), RootSeed::new(337));
+        assert!(Arc::ptr_eq(
+            published.gpu_packet().layers_arc(),
+            published.layers_arc()
+        ));
+        assert_eq!(
+            published.gpu_packet().layers().revisions(),
+            published.revisions().2
+        );
+        assert_eq!(
+            build_spherical_inspector_model(&published, published.state(), SphericalViewMode::Map,)
+                .unwrap()
+                .entity(),
+            expected_entity,
+            "replacement inspector {case}"
+        );
+    }
 }
 
 #[test]
@@ -1064,7 +1224,10 @@ fn active_spherical_canvas_emits_exactly_one_callback_per_frame() {
         };
         let output = context.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                show_spherical_canvas(ui, &published, &mut state);
+                let canvas = interact_spherical_canvas(ui, &published, &mut state);
+                let rect = canvas.response().rect;
+                assert!(canvas.into_actions().is_empty());
+                queue_spherical_canvas_callback(ui, &published, &state, rect);
             });
         });
         let callbacks = output
@@ -1073,6 +1236,385 @@ fn active_spherical_canvas_emits_exactly_one_callback_per_frame() {
             .filter(|shape| matches!(shape.shape, egui::epaint::Shape::Callback(_)))
             .count();
         assert_eq!(callbacks, 1, "{mode:?} must emit one active callback");
+    }
+}
+
+#[test]
+fn public_canvas_packet_action_paints_the_published_packet_in_the_same_frame() {
+    let mut cache = MemoryStageCache::new();
+    let initial = candidate(74, &mut cache);
+    let (device, queue) = request_test_device();
+    let format = eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut spherical_renderer =
+        sekai::gpu::spherical::SphericalFieldRenderer::new(&device, format);
+    let mut gpu = SphericalRendererPreparer::new(&mut spherical_renderer, &device, &queue);
+    let mut published = PublishedSphericalPresentation::try_new(initial, &mut gpu).unwrap();
+    let mut egui_renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
+    egui_renderer
+        .callback_resources
+        .insert::<sekai::gpu::spherical::SphericalFieldRenderer>(spherical_renderer);
+    let context = egui::Context::default();
+    let mut state = SphericalCanvasState::default();
+
+    for action in [
+        SphericalCanvasAction::SelectEntity(Some(SelectedSurfaceEntity::Cell(CellId::from_raw(0)))),
+        SphericalCanvasAction::ZoomMap { factor: 4.0 },
+    ] {
+        let output = context.run(spherical_raw_input(Vec::new()), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let canvas = interact_spherical_canvas(ui, &published, &mut state);
+                let rect = canvas.response().rect;
+                assert!(canvas.into_actions().is_empty());
+                let renderer = egui_renderer
+                    .callback_resources
+                    .get_mut::<sekai::gpu::spherical::SphericalFieldRenderer>()
+                    .unwrap();
+                apply_spherical_canvas_action(
+                    &mut published,
+                    renderer,
+                    &device,
+                    &queue,
+                    &mut state,
+                    action.clone(),
+                )
+                .unwrap_or_else(|error| panic!("{action:?}: {error:?}"));
+                queue_spherical_canvas_callback(ui, &published, &state, rect);
+            });
+        });
+        let jobs = context.tessellate(output.shapes, 1.0);
+        let before = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        render_queued_canvas_jobs(&device, &queue, &mut egui_renderer, &jobs);
+        let after = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+
+        assert_eq!(after.uniforms, before.uniforms + 1, "{action:?}");
+        assert_eq!(
+            immutable_upload_counts(after),
+            immutable_upload_counts(before),
+            "{action:?}"
+        );
+        assert!(Arc::ptr_eq(
+            published.gpu_packet().layers_arc(),
+            published.layers_arc()
+        ));
+    }
+    assert_eq!(
+        published.state().selected_entity(),
+        Some(SelectedSurfaceEntity::Cell(CellId::from_raw(0)))
+    );
+    assert_eq!(state.map_camera().zoom(state.projection().kind()), 4.0);
+}
+
+#[test]
+fn public_canvas_uniform_actions_paint_current_pan_and_view_in_the_same_frame() {
+    for action in [
+        SphericalCanvasAction::PanMap {
+            delta: [0.25, -0.125],
+        },
+        SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe),
+    ] {
+        let mut cache = MemoryStageCache::new();
+        let initial = candidate(745, &mut cache);
+        let (device, queue) = request_test_device();
+        let format = eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut spherical_renderer =
+            sekai::gpu::spherical::SphericalFieldRenderer::new(&device, format);
+        let mut gpu = SphericalRendererPreparer::new(&mut spherical_renderer, &device, &queue);
+        let mut published = PublishedSphericalPresentation::try_new(initial, &mut gpu).unwrap();
+        let mut egui_renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        egui_renderer
+            .callback_resources
+            .insert::<sekai::gpu::spherical::SphericalFieldRenderer>(spherical_renderer);
+        let context = egui::Context::default();
+        let mut state = SphericalCanvasState::default();
+        let current_fill = published.state().fill_field().unwrap().clone();
+        apply_spherical_canvas_action(
+            &mut published,
+            egui_renderer
+                .callback_resources
+                .get_mut::<sekai::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap(),
+            &device,
+            &queue,
+            &mut state,
+            SphericalCanvasAction::SelectFill(current_fill),
+        )
+        .unwrap();
+
+        let baseline_output = context.run(spherical_raw_input(Vec::new()), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let canvas = interact_spherical_canvas(ui, &published, &mut state);
+                let rect = canvas.response().rect;
+                assert!(canvas.into_actions().is_empty());
+                queue_spherical_canvas_callback(ui, &published, &state, rect);
+            });
+        });
+        let baseline_jobs = context.tessellate(baseline_output.shapes, 1.0);
+        let baseline =
+            render_queued_canvas_jobs_to_bytes(&device, &queue, &mut egui_renderer, &baseline_jobs);
+
+        let action_output = context.run(spherical_raw_input(Vec::new()), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let canvas = interact_spherical_canvas(ui, &published, &mut state);
+                let rect = canvas.response().rect;
+                assert!(canvas.into_actions().is_empty());
+                let renderer = egui_renderer
+                    .callback_resources
+                    .get_mut::<sekai::gpu::spherical::SphericalFieldRenderer>()
+                    .unwrap();
+                apply_spherical_canvas_action(
+                    &mut published,
+                    renderer,
+                    &device,
+                    &queue,
+                    &mut state,
+                    action.clone(),
+                )
+                .unwrap_or_else(|error| panic!("{action:?}: {error:?}"));
+                queue_spherical_canvas_callback(ui, &published, &state, rect);
+            });
+        });
+        assert_eq!(
+            action_output
+                .shapes
+                .iter()
+                .filter(|shape| matches!(shape.shape, egui::epaint::Shape::Callback(_)))
+                .count(),
+            1
+        );
+        let jobs = context.tessellate(action_output.shapes, 1.0);
+        let before = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        let rendered =
+            render_queued_canvas_jobs_to_bytes(&device, &queue, &mut egui_renderer, &jobs);
+        let after = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+
+        assert_ne!(
+            rendered, baseline,
+            "{action:?} painted its predecessor uniform"
+        );
+        assert_eq!(after.uniforms, before.uniforms + 1, "{action:?}");
+        assert_eq!(
+            immutable_upload_counts(after),
+            immutable_upload_counts(before),
+            "{action:?}"
+        );
+        match action {
+            SphericalCanvasAction::PanMap { delta } => {
+                assert_eq!(state.map_camera().pan(state.projection().kind()), delta);
+            }
+            SphericalCanvasAction::SetViewMode(mode) => assert_eq!(state.view_mode(), mode),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PublicCanvasInputCase {
+    Cell,
+    Lod,
+    Pan,
+    View,
+}
+
+#[test]
+fn public_canvas_output_actions_publish_before_same_frame_callback() {
+    for case in [
+        PublicCanvasInputCase::Cell,
+        PublicCanvasInputCase::Lod,
+        PublicCanvasInputCase::Pan,
+        PublicCanvasInputCase::View,
+    ] {
+        let mut cache = MemoryStageCache::new();
+        let initial = candidate(746, &mut cache);
+        let (device, queue) = request_test_device();
+        let format = eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut spherical_renderer =
+            sekai::gpu::spherical::SphericalFieldRenderer::new(&device, format);
+        let mut gpu = SphericalRendererPreparer::new(&mut spherical_renderer, &device, &queue);
+        let mut published = PublishedSphericalPresentation::try_new(initial, &mut gpu).unwrap();
+        let mut egui_renderer = eframe::egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        egui_renderer
+            .callback_resources
+            .insert::<sekai::gpu::spherical::SphericalFieldRenderer>(spherical_renderer);
+        let context = egui::Context::default();
+        let mut state = SphericalCanvasState::default();
+        let current_fill = published.state().fill_field().unwrap().clone();
+        apply_spherical_canvas_action(
+            &mut published,
+            egui_renderer
+                .callback_resources
+                .get_mut::<sekai::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap(),
+            &device,
+            &queue,
+            &mut state,
+            SphericalCanvasAction::SelectFill(current_fill),
+        )
+        .unwrap();
+
+        let (canvas_rect, globe_button) =
+            discover_public_canvas_layout(&context, &published, &mut state);
+        let (baseline_actions, baseline_jobs) = run_public_canvas_action_frame(
+            &context,
+            spherical_raw_input(Vec::new()),
+            &mut published,
+            &mut state,
+            &mut egui_renderer,
+            &device,
+            &queue,
+        );
+        assert!(baseline_actions.is_empty());
+        let baseline =
+            render_queued_canvas_jobs_to_bytes(&device, &queue, &mut egui_renderer, &baseline_jobs);
+
+        let center = canvas_rect.center();
+        let action_input = match case {
+            PublicCanvasInputCase::Cell => {
+                run_canvas_interaction_only(
+                    &context,
+                    spherical_raw_input(vec![
+                        egui::Event::PointerMoved(center),
+                        egui::Event::PointerButton {
+                            pos: center,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    &published,
+                    &mut state,
+                );
+                spherical_raw_input(vec![egui::Event::PointerButton {
+                    pos: center,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }])
+            }
+            PublicCanvasInputCase::Lod => spherical_raw_input(vec![
+                egui::Event::PointerMoved(center),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 800.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+            PublicCanvasInputCase::Pan => {
+                let start = center + egui::vec2(-40.0, 20.0);
+                run_canvas_interaction_only(
+                    &context,
+                    spherical_raw_input(vec![
+                        egui::Event::PointerMoved(start),
+                        egui::Event::PointerButton {
+                            pos: start,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    &published,
+                    &mut state,
+                );
+                spherical_raw_input(vec![egui::Event::PointerMoved(
+                    start + egui::vec2(90.0, -45.0),
+                )])
+            }
+            PublicCanvasInputCase::View => {
+                run_canvas_interaction_only(
+                    &context,
+                    spherical_raw_input(vec![
+                        egui::Event::PointerMoved(globe_button),
+                        egui::Event::PointerButton {
+                            pos: globe_button,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]),
+                    &published,
+                    &mut state,
+                );
+                spherical_raw_input(vec![egui::Event::PointerButton {
+                    pos: globe_button,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }])
+            }
+        };
+
+        let (actions, jobs) = run_public_canvas_action_frame(
+            &context,
+            action_input,
+            &mut published,
+            &mut state,
+            &mut egui_renderer,
+            &device,
+            &queue,
+        );
+        assert!(
+            actions.iter().any(|action| matches!(
+                (case, action),
+                (
+                    PublicCanvasInputCase::Cell,
+                    SphericalCanvasAction::SelectEntity(Some(SelectedSurfaceEntity::Cell(_))),
+                ) | (
+                    PublicCanvasInputCase::Lod,
+                    SphericalCanvasAction::ZoomMap { .. }
+                ) | (
+                    PublicCanvasInputCase::Pan,
+                    SphericalCanvasAction::PanMap { .. }
+                ) | (
+                    PublicCanvasInputCase::View,
+                    SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe),
+                )
+            )),
+            "{case:?} did not emit its public canvas action: {actions:?}"
+        );
+        let before = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        let rendered =
+            render_queued_canvas_jobs_to_bytes(&device, &queue, &mut egui_renderer, &jobs);
+        let after = egui_renderer
+            .callback_resources
+            .get::<sekai::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        assert_eq!(after.uniforms, before.uniforms + 1, "{case:?}");
+        assert_eq!(
+            immutable_upload_counts(after),
+            immutable_upload_counts(before),
+            "callback re-uploaded immutable data for {case:?}"
+        );
+        if matches!(
+            case,
+            PublicCanvasInputCase::Pan | PublicCanvasInputCase::View
+        ) {
+            assert_ne!(rendered, baseline, "{case:?} painted its old uniform");
+        }
+        assert!(Arc::ptr_eq(
+            published.gpu_packet().layers_arc(),
+            published.layers_arc()
+        ));
+        assert_eq!(published.state(), state.field_state());
     }
 }
 
@@ -1224,7 +1766,10 @@ fn queued_canvas_jobs(
 ) -> Vec<egui::ClippedPrimitive> {
     let output = context.run(spherical_raw_input(Vec::new()), |context| {
         egui::CentralPanel::default().show(context, |ui| {
-            show_spherical_canvas(ui, presentation, state);
+            let canvas = interact_spherical_canvas(ui, presentation, state);
+            let rect = canvas.response().rect;
+            assert!(canvas.into_actions().is_empty());
+            queue_spherical_canvas_callback(ui, presentation, state, rect);
         });
     });
     context.tessellate(output.shapes, 1.0)
@@ -1236,27 +1781,48 @@ fn render_queued_canvas_jobs(
     renderer: &mut eframe::egui_wgpu::Renderer,
     jobs: &[egui::ClippedPrimitive],
 ) {
+    let _ = render_queued_canvas_jobs_to_bytes(device, queue, renderer, jobs);
+}
+
+fn render_queued_canvas_jobs_to_bytes(
+    device: &eframe::egui_wgpu::wgpu::Device,
+    queue: &eframe::egui_wgpu::wgpu::Queue,
+    renderer: &mut eframe::egui_wgpu::Renderer,
+    jobs: &[egui::ClippedPrimitive],
+) -> Vec<u8> {
     use eframe::egui_wgpu::wgpu;
 
+    const WIDTH: u32 = 800;
+    const HEIGHT: u32 = 600;
     let descriptor = eframe::egui_wgpu::ScreenDescriptor {
-        size_in_pixels: [800, 600],
+        size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
+    };
+    let extent = wgpu::Extent3d {
+        width: WIDTH,
+        height: HEIGHT,
+        depth_or_array_layers: 1,
     };
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Task 10 callback lifecycle target"),
-        size: wgpu::Extent3d {
-            width: 800,
-            height: 600,
-            depth_or_array_layers: 1,
-        },
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let unpadded_bytes_per_row = WIDTH * 4;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Task 10 callback lifecycle readback"),
+        size: u64::from(padded_bytes_per_row) * u64::from(HEIGHT),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Task 10 callback lifecycle encoder"),
     });
@@ -1280,7 +1846,46 @@ fn render_queued_canvas_jobs(
             .forget_lifetime();
         renderer.render(&mut pass, jobs, &descriptor);
     }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(HEIGHT),
+            },
+        },
+        extent,
+    );
     queue.submit([encoder.finish()]);
+
+    let slice = readback.slice(..);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).expect("mapping receiver remains alive");
+    });
+    let _ = device.poll(wgpu::Maintain::Wait);
+    receiver
+        .recv()
+        .expect("mapping callback runs")
+        .expect("callback target maps");
+    let mapped = slice.get_mapped_range();
+    let mut rgba8 = vec![0; unpadded_bytes_per_row as usize * HEIGHT as usize];
+    for row in 0..HEIGHT as usize {
+        let source_start = row * padded_bytes_per_row as usize;
+        let target_start = row * unpadded_bytes_per_row as usize;
+        rgba8[target_start..target_start + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&mapped[source_start..source_start + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    readback.unmap();
+    rgba8
 }
 
 #[test]
@@ -1761,6 +2366,95 @@ fn spherical_raw_input(events: Vec<egui::Event>) -> egui::RawInput {
     }
 }
 
+fn discover_public_canvas_layout(
+    context: &egui::Context,
+    presentation: &PublishedSphericalPresentation,
+    state: &mut SphericalCanvasState,
+) -> (egui::Rect, egui::Pos2) {
+    let mut canvas_rect = None;
+    let output = context.run(spherical_raw_input(Vec::new()), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            canvas_rect = Some(
+                interact_spherical_canvas(ui, presentation, state)
+                    .response()
+                    .rect,
+            );
+        });
+    });
+    let globe_button = output
+        .shapes
+        .iter()
+        .find_map(|shape| find_text_center(&shape.shape, "三维球体"))
+        .expect("the public globe tab is visible");
+    (canvas_rect.unwrap(), globe_button)
+}
+
+fn find_text_center(shape: &egui::epaint::Shape, text: &str) -> Option<egui::Pos2> {
+    match shape {
+        egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+            Some(shape.visual_bounding_rect().center())
+        }
+        egui::epaint::Shape::Vec(shapes) => shapes
+            .iter()
+            .find_map(|shape| find_text_center(shape, text)),
+        _ => None,
+    }
+}
+
+fn run_canvas_interaction_only(
+    context: &egui::Context,
+    input: egui::RawInput,
+    presentation: &PublishedSphericalPresentation,
+    state: &mut SphericalCanvasState,
+) {
+    let _ = context.run(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            assert!(
+                interact_spherical_canvas(ui, presentation, state)
+                    .into_actions()
+                    .is_empty(),
+                "pointer-down priming frame must not publish an action"
+            );
+        });
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_public_canvas_action_frame(
+    context: &egui::Context,
+    input: egui::RawInput,
+    presentation: &mut PublishedSphericalPresentation,
+    state: &mut SphericalCanvasState,
+    renderer: &mut eframe::egui_wgpu::Renderer,
+    device: &eframe::egui_wgpu::wgpu::Device,
+    queue: &eframe::egui_wgpu::wgpu::Queue,
+) -> (Vec<SphericalCanvasAction>, Vec<egui::ClippedPrimitive>) {
+    let mut frame_actions = Vec::new();
+    let output = context.run(input, |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            let canvas = interact_spherical_canvas(ui, presentation, state);
+            let rect = canvas.response().rect;
+            frame_actions = canvas.into_actions();
+            for action in frame_actions.iter().cloned() {
+                apply_spherical_canvas_action(
+                    presentation,
+                    renderer
+                        .callback_resources
+                        .get_mut::<sekai::gpu::spherical::SphericalFieldRenderer>()
+                        .unwrap(),
+                    device,
+                    queue,
+                    state,
+                    action,
+                )
+                .unwrap();
+            }
+            queue_spherical_canvas_callback(ui, presentation, state, rect);
+        });
+    });
+    (frame_actions, context.tessellate(output.shapes, 1.0))
+}
+
 fn run_spherical_canvas_frame(
     context: &egui::Context,
     input: egui::RawInput,
@@ -1770,7 +2464,7 @@ fn run_spherical_canvas_frame(
     let mut canvas_output = None;
     let _ = context.run(input, |context| {
         egui::CentralPanel::default().show(context, |ui| {
-            canvas_output = Some(show_spherical_canvas(ui, presentation, state));
+            canvas_output = Some(interact_spherical_canvas(ui, presentation, state));
         });
     });
     let canvas_output = canvas_output.unwrap();

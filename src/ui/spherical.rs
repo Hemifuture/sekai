@@ -984,6 +984,14 @@ fn inspector_overlay_field_is_edge(
 }
 
 /// The response and deferred product actions produced by one canvas frame.
+///
+/// Canvas input and callback queuing are deliberately a two-stage public protocol. The former
+/// one-shot entry point is unavailable because it necessarily captured a packet/camera before the
+/// caller could publish the actions it returned.
+///
+/// ```compile_fail
+/// use sekai::ui::spherical::show_spherical_canvas;
+/// ```
 pub struct SphericalCanvasOutput {
     response: egui::Response,
     actions: Vec<SphericalCanvasAction>,
@@ -1001,19 +1009,11 @@ impl SphericalCanvasOutput {
     }
 }
 
-/// Draws the single active spherical presenter and emits exactly one egui-wgpu callback.
-pub fn show_spherical_canvas(
-    ui: &mut egui::Ui,
-    presentation: &PublishedSphericalPresentation,
-    state: &mut SphericalCanvasState,
-) -> SphericalCanvasOutput {
-    let output = interact_spherical_canvas(ui, presentation, state);
-    queue_spherical_canvas_callback(ui, presentation, state, output.response.rect);
-    output
-}
-
 /// Allocates the canvas and collects input without capturing a deferred GPU packet yet.
-pub(crate) fn interact_spherical_canvas(
+///
+/// The caller must publish [`SphericalCanvasOutput::into_actions`] before calling
+/// [`queue_spherical_canvas_callback`] with the re-read current publication.
+pub fn interact_spherical_canvas(
     ui: &mut egui::Ui,
     presentation: &PublishedSphericalPresentation,
     state: &mut SphericalCanvasState,
@@ -1097,7 +1097,7 @@ pub(crate) fn interact_spherical_canvas(
 }
 
 /// Queues exactly one callback after the app has published all actions from this frame.
-pub(crate) fn queue_spherical_canvas_callback(
+pub fn queue_spherical_canvas_callback(
     ui: &mut egui::Ui,
     presentation: &PublishedSphericalPresentation,
     state: &SphericalCanvasState,

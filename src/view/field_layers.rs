@@ -1648,11 +1648,19 @@ fn reconcile_spherical_state<F>(
                 }
             })
         });
+    let edge_overlay_active = overlay.is_some_and(|entry| {
+        entry.view().is_some_and(|view| {
+            classify_spherical_channel(view.schema().domain, view.schema().value_type)
+                == Some(SphericalFieldChannel::EdgeOverlay)
+        })
+    });
     state.overlay_field = overlay.map(|entry| entry.schema().id.clone());
 
     if state.selected_entity.is_some_and(|entity| match entity {
         SelectedSurfaceEntity::Cell(cell) => cell.raw() as usize >= cell_count,
-        SelectedSurfaceEntity::Edge(edge) => edge.raw() as usize >= edge_count,
+        SelectedSurfaceEntity::Edge(edge) => {
+            !edge_overlay_active || edge.raw() as usize >= edge_count
+        }
     }) {
         state.selected_entity = None;
     }

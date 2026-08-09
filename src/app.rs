@@ -1325,6 +1325,7 @@ mod natural_app_tests {
         FieldDisplayResourceState, OwnedViewDiagnostic, PreparedSphericalOverlay,
         SphericalProjectionKind, SphericalViewMode, VectorGlyphLod, ViewDiagnosticSeverity,
     };
+    use crate::world::fields::FieldId;
     use crate::world::natural::{
         boundary_strength_field_id, land_ocean_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
@@ -1467,6 +1468,93 @@ mod natural_app_tests {
             .callback_resources
             .get::<crate::gpu::spherical::SphericalFieldRenderer>()
             .is_some());
+    }
+
+    #[test]
+    fn persisted_edges_without_a_valid_edge_overlay_reconcile_before_first_inspector_frame() {
+        let render_state = request_test_render_state();
+        let invalid_overlay = FieldId::new("test.spherical", "missing-overlay", 1).unwrap();
+        for (case, overlay) in [
+            ("none", None),
+            ("vector", Some(preliminary_prevailing_wind_m_s_field_id())),
+            ("invalid", Some(invalid_overlay.clone())),
+        ] {
+            let mut persisted = TemplateApp::default();
+            persisted
+                .spherical_canvas_state
+                .apply(SphericalCanvasAction::SelectOverlay(overlay))
+                .unwrap();
+            persisted
+                .spherical_canvas_state
+                .apply(SphericalCanvasAction::SelectEntity(Some(
+                    crate::view::SelectedSurfaceEntity::Edge(crate::world::EdgeId::from_raw(0)),
+                )))
+                .unwrap();
+            let mut app = create_from_persisted(persisted, &render_state);
+            assert_eq!(
+                app.spherical_canvas_state.field_state().selected_entity(),
+                None,
+                "persisted UI {case}"
+            );
+
+            let resource = &app.spherical_presentation;
+            let canvas_state = &app.spherical_canvas_state;
+            let cache = &mut app.spherical_inspector_cache;
+            resource.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                assert_eq!(current.state(), canvas_state.field_state(), "state {case}");
+                assert_eq!(
+                    current.state().selected_entity(),
+                    None,
+                    "publication {case}"
+                );
+                assert_eq!(
+                    current.gpu_packet().source(),
+                    current.source(),
+                    "source {case}"
+                );
+                assert!(Arc::ptr_eq(
+                    current.gpu_packet().layers_arc(),
+                    current.layers_arc()
+                ));
+                assert_eq!(
+                    current.gpu_packet().layers().revisions(),
+                    current.revisions().2,
+                    "revisions {case}"
+                );
+                let diagnostic_count = current.document().diagnostics_for_ui().len();
+                assert_eq!(
+                    cache
+                        .model(
+                            current,
+                            canvas_state.field_state(),
+                            canvas_state.view_mode()
+                        )
+                        .unwrap()
+                        .entity(),
+                    None,
+                    "first inspector {case}"
+                );
+                assert_eq!(cache.probe_for_test(), (1, diagnostic_count));
+                assert_eq!(
+                    cache
+                        .model(
+                            current,
+                            canvas_state.field_state(),
+                            canvas_state.view_mode()
+                        )
+                        .unwrap()
+                        .entity(),
+                    None,
+                    "second inspector {case}"
+                );
+                assert_eq!(
+                    cache.probe_for_test(),
+                    (1, diagnostic_count),
+                    "static inspector must not rescan {case}"
+                );
+            });
+        }
     }
 
     #[test]

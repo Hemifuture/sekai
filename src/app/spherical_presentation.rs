@@ -369,6 +369,7 @@ impl PublishedSphericalPresentation {
         mut candidate: SphericalPresentationCandidate,
         gpu: &mut P,
     ) -> Result<Self, SphericalPresentationError> {
+        candidate.lineage.validate_initial()?;
         candidate.validate()?;
         gpu.prepare(candidate.gpu_packet())?;
         candidate.lineage.clear();
@@ -826,6 +827,15 @@ enum WorldCandidateLineage {
 }
 
 impl WorldCandidateLineage {
+    fn validate_initial(&self) -> Result<(), SphericalPresentationError> {
+        match self {
+            Self::NoBase => Ok(()),
+            Self::Replacement(_) => {
+                Err(SphericalPresentationError::InitialCandidateRequiresStandalone)
+            }
+        }
+    }
+
     fn validate_current(
         &self,
         published: &PublishedSphericalPresentation,
@@ -1391,6 +1401,8 @@ pub enum SphericalPresentationError {
     FieldStateMismatch,
     #[error("spherical candidate view does not match its geometry, cameras, or active LOD")]
     ViewStateMismatch,
+    #[error("initial spherical publication requires a standalone candidate")]
+    InitialCandidateRequiresStandalone,
     #[error("{candidate} candidate was prepared from a stale spherical publication")]
     StaleCandidate { candidate: &'static str },
     #[cfg(test)]
@@ -2334,7 +2346,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_publication_consumes_any_predecessor_lineage() {
+    fn initial_publication_rejects_predecessor_lineage_before_gpu_prepare() {
         let mut cache = MemoryStageCache::new();
         let initial = build_spherical_presentation_candidate(
             RootSeed::new(307),
@@ -2367,18 +2379,30 @@ mod tests {
             )
             .unwrap();
 
-        let published =
-            PublishedSphericalPresentation::try_new_with_preparer(replacement, &mut gpu).unwrap();
-        drop(predecessor);
+        let calls_before = gpu.calls;
+        let result = PublishedSphericalPresentation::try_new_with_preparer(replacement, &mut gpu);
 
-        assert!(old_packet.upgrade().is_none());
-        assert!(old_map.upgrade().is_none());
-        assert!(old_globe.upgrade().is_none());
-        assert!(old_layers.upgrade().is_none());
         assert!(matches!(
-            &published.current.lineage,
-            super::WorldCandidateLineage::NoBase
+            result,
+            Err(SphericalPresentationError::InitialCandidateRequiresStandalone)
         ));
-        assert_eq!(published.source().root_seed(), RootSeed::new(311));
+        assert_eq!(gpu.calls, calls_before);
+        assert!(Arc::ptr_eq(
+            &old_packet.upgrade().unwrap(),
+            predecessor.gpu_packet_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_map.upgrade().unwrap(),
+            predecessor.map_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_globe.upgrade().unwrap(),
+            predecessor.globe_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &old_layers.upgrade().unwrap(),
+            predecessor.layers_arc()
+        ));
+        assert_eq!(predecessor.source().root_seed(), RootSeed::new(307));
     }
 }
