@@ -333,6 +333,85 @@ fn whole_world_and_smaller_candidates_publish_atomically() {
 }
 
 #[test]
+fn public_frame_paths_cannot_restore_a_retained_packet_after_source_replacement() {
+    let mut cache = MemoryStageCache::new();
+    let initial = candidate(401, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(initial, &mut gpu).unwrap()
+    };
+    let retained = Arc::clone(published.gpu_packet_arc());
+    let retained_source = retained.source().clone();
+    let replacement = published
+        .prepare_replacement_candidate(
+            RootSeed::new(409),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            published.state(),
+        )
+        .unwrap();
+    {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        published.try_replace(replacement, &mut gpu).unwrap();
+    }
+    assert_ne!(published.source(), &retained_source);
+    let after_replacement = renderer.upload_counters();
+
+    assert_eq!(
+        renderer.prepare_map_frame(
+            &queue,
+            &retained,
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        ),
+        Err(sekai::gpu::spherical::SphericalRenderError::FramePacketNotInstalled)
+    );
+    assert_eq!(
+        renderer.prepare_globe_frame(
+            &queue,
+            &retained,
+            GlobeCamera::default(),
+            [192, 96],
+            Default::default(),
+        ),
+        Err(sekai::gpu::spherical::SphericalRenderError::FramePacketNotInstalled)
+    );
+    assert_eq!(renderer.upload_counters(), after_replacement);
+
+    renderer
+        .prepare_map_frame(
+            &queue,
+            published.gpu_packet(),
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        )
+        .unwrap();
+    let after_current_frame = renderer.upload_counters();
+    assert_eq!(after_current_frame.uniforms, after_replacement.uniforms + 1);
+    assert_eq!(
+        renderer.prepare_map_frame(
+            &queue,
+            &retained,
+            MapCamera::default(),
+            [192, 96],
+            Default::default(),
+        ),
+        Err(sekai::gpu::spherical::SphericalRenderError::FramePacketNotInstalled)
+    );
+    assert_eq!(renderer.upload_counters(), after_current_frame);
+}
+
+#[test]
 fn replacement_candidate_cannot_fork_a_second_initial_publication() {
     let mut cache = MemoryStageCache::new();
     let initial = candidate(313, &mut cache);

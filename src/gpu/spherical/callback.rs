@@ -48,7 +48,7 @@ impl SphericalPaintCallback {
 impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
     fn prepare(
         &self,
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
@@ -77,10 +77,7 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
                 self.vector_animation,
             ),
         };
-        let result = uniform.and_then(|uniform| {
-            renderer.prepare_packet(device, queue, &self.packet)?;
-            renderer.prepare_frame(queue, self.mode, &uniform)
-        });
+        let result = uniform.and_then(|uniform| renderer.prepare_frame(queue, self.mode, &uniform));
         match result {
             Ok(generation) => self
                 .prepared_generation

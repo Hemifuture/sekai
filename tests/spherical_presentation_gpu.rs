@@ -5,7 +5,10 @@ use sekai::gpu::spherical::{
 use std::sync::{mpsc, Arc};
 
 use eframe::egui_wgpu::wgpu;
-use sekai::app::{build_spherical_presentation_candidate_for_view, SphericalPresentationCandidate};
+use sekai::app::{
+    build_spherical_presentation_candidate_for_view, PublishedSphericalPresentation,
+    SphericalPresentationCandidate, SphericalRendererPreparer,
+};
 use sekai::engine::MemoryStageCache;
 use sekai::view::{
     sample_palette, DisplayRevisionClock, GlobeCamera, MapCamera, PreparedFieldKind,
@@ -123,9 +126,11 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     );
     assert_fill_semantics(&scalar, surface_elevation_m_field_id());
     assert_undeformed_globe(&scalar);
+    let (scalar, mut scalar_renderer) = publish_for_render(&device, &queue, scalar);
     let map_scalar = render(
         &device,
         &queue,
+        &mut scalar_renderer,
         &scalar,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
@@ -134,6 +139,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let globe_scalar = render(
         &device,
         &queue,
+        &mut scalar_renderer,
         &scalar,
         SphericalRenderMode::Globe,
         GlobeCamera::default(),
@@ -147,9 +153,17 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         &mut cache,
     );
     assert_fill_semantics(&category, land_ocean_field_id());
+    let front_camera = GlobeCamera::default();
+    let back_camera = GlobeCamera::from_orientation_xyzw([0.0, 1.0, 0.0, 0.0], 1.0).unwrap();
+    let north = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+    assert!(front_camera.is_front_facing(north));
+    assert!(!back_camera.is_front_facing(north));
+    assert_front_back_semantic_ids(&category, front_camera, back_camera);
+    let (category, mut category_renderer) = publish_for_render(&device, &queue, category);
     let map_category = render(
         &device,
         &queue,
+        &mut category_renderer,
         &category,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
@@ -158,6 +172,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let globe_category = render(
         &device,
         &queue,
+        &mut category_renderer,
         &category,
         SphericalRenderMode::Globe,
         GlobeCamera::default(),
@@ -179,9 +194,11 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         boundary_strength_field_id(),
         PreparedOverlayKind::EdgeScalar,
     );
+    let (edge_scalar, mut edge_scalar_renderer) = publish_for_render(&device, &queue, edge_scalar);
     let map_edge_scalar = render(
         &device,
         &queue,
+        &mut edge_scalar_renderer,
         &edge_scalar,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
@@ -190,6 +207,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let globe_edge_scalar = render(
         &device,
         &queue,
+        &mut edge_scalar_renderer,
         &edge_scalar,
         SphericalRenderMode::Globe,
         GlobeCamera::default(),
@@ -211,9 +229,12 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         boundary_kind_field_id(),
         PreparedOverlayKind::EdgeCategory,
     );
+    let (edge_category, mut edge_category_renderer) =
+        publish_for_render(&device, &queue, edge_category);
     let map_edge_category = render(
         &device,
         &queue,
+        &mut edge_category_renderer,
         &edge_category,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
@@ -222,6 +243,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let globe_edge_category = render(
         &device,
         &queue,
+        &mut edge_category_renderer,
         &edge_category,
         SphericalRenderMode::Globe,
         GlobeCamera::default(),
@@ -257,8 +279,9 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     )
     .unwrap();
     assert_vector_glyph_semantics(&vector, &glyphs);
+    let (vector, mut vector_renderer) = publish_for_render(&device, &queue, vector);
     let (map_vector_paused, map_vector_animated, globe_vector_paused, globe_vector_animated) =
-        render_vector_phases(&device, &queue, &vector);
+        render_vector_phases(&device, &queue, &mut vector_renderer, &vector);
     assert_ne!(map_vector_paused, map_vector_animated);
     assert_ne!(globe_vector_paused, globe_vector_animated);
 
@@ -277,9 +300,11 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         &mut cache,
     );
     assert_seam_geometry(&seam);
+    let (seam, mut seam_renderer) = publish_for_render(&device, &queue, seam);
     let map_seam = render(
         &device,
         &queue,
+        &mut seam_renderer,
         &seam,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
@@ -301,24 +326,21 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         &mut cache,
     );
     assert_pole_semantics(&poles);
+    let (poles, mut poles_renderer) = publish_for_render(&device, &queue, poles);
     let map_poles = render(
         &device,
         &queue,
+        &mut poles_renderer,
         &poles,
         SphericalRenderMode::Map,
         GlobeCamera::default(),
         VectorAnimationUniform::new(0.0),
     );
 
-    let front_camera = GlobeCamera::default();
-    let back_camera = GlobeCamera::from_orientation_xyzw([0.0, 1.0, 0.0, 0.0], 1.0).unwrap();
-    let north = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
-    assert!(front_camera.is_front_facing(north));
-    assert!(!back_camera.is_front_facing(north));
-    assert_front_back_semantic_ids(&category, front_camera, back_camera);
     let globe_front = render(
         &device,
         &queue,
+        &mut category_renderer,
         &category,
         SphericalRenderMode::Globe,
         front_camera,
@@ -327,6 +349,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let globe_back = render(
         &device,
         &queue,
+        &mut category_renderer,
         &category,
         SphericalRenderMode::Globe,
         back_camera,
@@ -468,6 +491,19 @@ fn candidate(
         &DisplayRevisionClock::default(),
     )
     .unwrap()
+}
+
+fn publish_for_render(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    candidate: SphericalPresentationCandidate,
+) -> (PublishedSphericalPresentation, SphericalFieldRenderer) {
+    let mut renderer = SphericalFieldRenderer::new(device, GOLDEN_FORMAT);
+    let published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, device, queue);
+        PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap()
+    };
+    (published, renderer)
 }
 
 fn assert_fill_semantics(
@@ -934,74 +970,85 @@ fn golden_mismatch(
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    candidate: &SphericalPresentationCandidate,
+    renderer: &mut SphericalFieldRenderer,
+    published: &PublishedSphericalPresentation,
     mode: SphericalRenderMode,
     globe_camera: GlobeCamera,
     animation: VectorAnimationUniform,
 ) -> Vec<u8> {
-    render_packet(
-        device,
-        queue,
-        candidate.gpu_packet(),
-        candidate.view_state().map_camera(),
-        mode,
-        globe_camera,
-        animation,
-    )
+    let packet = published.gpu_packet();
+    match mode {
+        SphericalRenderMode::Map => renderer
+            .prepare_map_frame(
+                queue,
+                packet,
+                published.view_state().map_camera(),
+                [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+                animation,
+            )
+            .unwrap(),
+        SphericalRenderMode::Globe => renderer
+            .prepare_globe_frame(
+                queue,
+                packet,
+                globe_camera,
+                [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+                animation,
+            )
+            .unwrap(),
+    };
+    readback(device, queue, renderer, mode)
 }
 
 fn render_vector_phases(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    candidate: &SphericalPresentationCandidate,
+    renderer: &mut SphericalFieldRenderer,
+    published: &PublishedSphericalPresentation,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let layers = Arc::clone(candidate.layers_arc());
-    let mut renderer = SphericalFieldRenderer::new(device, GOLDEN_FORMAT);
-    renderer
-        .prepare_packet(device, queue, candidate.gpu_packet())
-        .unwrap();
+    let layers = Arc::clone(published.layers_arc());
     let immutable_uploads = renderer.upload_counters();
 
     renderer
         .prepare_map_frame(
             queue,
-            candidate.gpu_packet(),
-            candidate.view_state().map_camera(),
+            published.gpu_packet(),
+            published.view_state().map_camera(),
             [GOLDEN_WIDTH, GOLDEN_HEIGHT],
             VectorAnimationUniform::new(0.0),
         )
         .unwrap();
-    let map_paused = readback(device, queue, &renderer, SphericalRenderMode::Map);
+    let map_paused = readback(device, queue, renderer, SphericalRenderMode::Map);
     renderer
         .prepare_map_frame(
             queue,
-            candidate.gpu_packet(),
-            candidate.view_state().map_camera(),
+            published.gpu_packet(),
+            published.view_state().map_camera(),
             [GOLDEN_WIDTH, GOLDEN_HEIGHT],
             VectorAnimationUniform::new(0.375),
         )
         .unwrap();
-    let map_animated = readback(device, queue, &renderer, SphericalRenderMode::Map);
+    let map_animated = readback(device, queue, renderer, SphericalRenderMode::Map);
     renderer
         .prepare_globe_frame(
             queue,
-            candidate.gpu_packet(),
+            published.gpu_packet(),
             GlobeCamera::default(),
             [GOLDEN_WIDTH, GOLDEN_HEIGHT],
             VectorAnimationUniform::new(0.0),
         )
         .unwrap();
-    let globe_paused = readback(device, queue, &renderer, SphericalRenderMode::Globe);
+    let globe_paused = readback(device, queue, renderer, SphericalRenderMode::Globe);
     renderer
         .prepare_globe_frame(
             queue,
-            candidate.gpu_packet(),
+            published.gpu_packet(),
             GlobeCamera::default(),
             [GOLDEN_WIDTH, GOLDEN_HEIGHT],
             VectorAnimationUniform::new(0.375),
         )
         .unwrap();
-    let globe_animated = readback(device, queue, &renderer, SphericalRenderMode::Globe);
+    let globe_animated = readback(device, queue, renderer, SphericalRenderMode::Globe);
 
     let after_phase_only_frames = renderer.upload_counters();
     assert_eq!(
@@ -1034,42 +1081,8 @@ fn render_vector_phases(
         immutable_uploads.uniforms + 4
     );
     assert!(after_phase_only_frames.uploaded_bytes > immutable_uploads.uploaded_bytes);
-    assert!(Arc::ptr_eq(&layers, candidate.layers_arc()));
+    assert!(Arc::ptr_eq(&layers, published.layers_arc()));
     (map_paused, map_animated, globe_paused, globe_animated)
-}
-
-fn render_packet(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    packet: &sekai::gpu::spherical::SphericalGpuPacket,
-    map_camera: MapCamera,
-    mode: SphericalRenderMode,
-    globe_camera: GlobeCamera,
-    animation: VectorAnimationUniform,
-) -> Vec<u8> {
-    let mut renderer = SphericalFieldRenderer::new(device, GOLDEN_FORMAT);
-    renderer.prepare_packet(device, queue, packet).unwrap();
-    match mode {
-        SphericalRenderMode::Map => renderer
-            .prepare_map_frame(
-                queue,
-                packet,
-                map_camera,
-                [GOLDEN_WIDTH, GOLDEN_HEIGHT],
-                animation,
-            )
-            .unwrap(),
-        SphericalRenderMode::Globe => renderer
-            .prepare_globe_frame(
-                queue,
-                packet,
-                globe_camera,
-                [GOLDEN_WIDTH, GOLDEN_HEIGHT],
-                animation,
-            )
-            .unwrap(),
-    };
-    readback(device, queue, &renderer, mode)
 }
 
 fn readback(

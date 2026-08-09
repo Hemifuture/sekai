@@ -728,6 +728,19 @@ struct ReplacementBuffer {
 }
 
 /// Independent projected-map and unit-globe fill renderer sharing one field packet.
+///
+/// Immutable packet installation is sealed behind the publication lineage boundary.
+///
+/// ```compile_fail
+/// fn bypass_publication_lineage(
+///     renderer: &mut sekai::gpu::spherical::SphericalFieldRenderer,
+///     device: &eframe::egui_wgpu::wgpu::Device,
+///     queue: &eframe::egui_wgpu::wgpu::Queue,
+///     retained: &sekai::gpu::spherical::SphericalGpuPacket,
+/// ) {
+///     renderer.prepare_packet(device, queue, retained).unwrap();
+/// }
+/// ```
 pub struct SphericalFieldRenderer {
     map_vertex_buffer: wgpu::Buffer,
     map_vertex_capacity: u64,
@@ -924,7 +937,7 @@ impl SphericalFieldRenderer {
     }
 
     /// Validates and atomically installs every revision-changed immutable resource.
-    pub fn prepare_packet(
+    pub(crate) fn prepare_packet(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2738,6 +2751,92 @@ mod tests {
     }
 
     #[test]
+    fn globe_overlay_silhouette_is_invariant_to_nonzero_viewport_origin() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let viewport = [192, 192];
+        let target = [640, 320];
+        let mut rotated_edge_camera = GlobeCamera::default();
+        assert!(rotated_edge_camera.trackball_drag(
+            [96.0, 96.0],
+            [120.0, 96.0],
+            viewport.map(f64::from),
+        ));
+        for (seed, fixture, camera) in [
+            (86, edge_horizon_packet_fixture(86), rotated_edge_camera),
+            (
+                87,
+                vector_horizon_packet_fixture(87),
+                GlobeCamera::default(),
+            ),
+        ] {
+            let baseline = packet_fixture(TestFieldKind::Scalar, seed);
+            let baseline_zero = render_globe_viewport_crop(
+                &device,
+                &queue,
+                &baseline.packet,
+                viewport,
+                target,
+                [0, 0],
+                camera,
+            );
+            let baseline_offset = render_globe_viewport_crop(
+                &device,
+                &queue,
+                &baseline.packet,
+                viewport,
+                target,
+                [320, 40],
+                camera,
+            );
+            assert_eq!(
+                baseline_zero, baseline_offset,
+                "the globe fill establishes a viewport-local crop oracle for seed {seed}"
+            );
+
+            let overlay_zero = render_globe_viewport_crop(
+                &device,
+                &queue,
+                &fixture.packet,
+                viewport,
+                target,
+                [0, 0],
+                camera,
+            );
+            let overlay_offset = render_globe_viewport_crop(
+                &device,
+                &queue,
+                &fixture.packet,
+                viewport,
+                target,
+                [320, 40],
+                camera,
+            );
+            let uniform =
+                SphericalFrameUniform::for_globe(&fixture.packet, camera, viewport).unwrap();
+            assert_overlay_changes_inside_globe_silhouette(
+                &baseline_zero,
+                &overlay_zero,
+                uniform.transform,
+                viewport,
+                seed,
+            );
+            assert_overlay_changes_inside_globe_silhouette(
+                &baseline_offset,
+                &overlay_offset,
+                uniform.transform,
+                viewport,
+                seed,
+            );
+            assert_eq!(
+                overlay_zero, overlay_offset,
+                "globe edge/vector silhouette clipping must use callback-local coordinates for seed {seed}"
+            );
+        }
+    }
+
+    #[test]
     fn horizon_edge_fixture_keeps_authoritative_prepared_segments() {
         let fixture = edge_horizon_packet_fixture(86);
         let authoritative = PreparedGlobeMesh::build(
@@ -3828,6 +3927,122 @@ mod tests {
         drop(mapped);
         readback.unmap();
         rgba8
+    }
+
+    fn render_globe_viewport_crop(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+        viewport: [u32; 2],
+        target: [u32; 2],
+        origin: [u32; 2],
+        camera: GlobeCamera,
+    ) -> Vec<u8> {
+        assert!(origin[0] + viewport[0] <= target[0]);
+        assert!(origin[1] + viewport[1] <= target[1]);
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut renderer = SphericalFieldRenderer::new(device, format);
+        renderer.prepare_packet(device, queue, packet).unwrap();
+        let uniform = SphericalFrameUniform::for_globe(packet, camera, viewport).unwrap();
+        renderer
+            .prepare_frame(queue, SphericalRenderMode::Globe, &uniform)
+            .unwrap();
+
+        let extent = wgpu::Extent3d {
+            width: target[0],
+            height: target[1],
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Spherical Nonzero Viewport Test Target"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let unpadded_bytes_per_row = target[0] * 4;
+        let padded_bytes_per_row = unpadded_bytes_per_row
+            .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Spherical Nonzero Viewport Test Readback"),
+            size: u64::from(padded_bytes_per_row) * u64::from(target[1]),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Spherical Nonzero Viewport Test Encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Spherical Nonzero Viewport Test Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_viewport(
+                origin[0] as f32,
+                origin[1] as f32,
+                viewport[0] as f32,
+                viewport[1] as f32,
+                0.0,
+                1.0,
+            );
+            pass.set_scissor_rect(origin[0], origin[1], viewport[0], viewport[1]);
+            renderer.paint(SphericalRenderMode::Globe, &mut pass.forget_lifetime());
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(target[1]),
+                },
+            },
+            extent,
+        );
+        queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).expect("mapping receiver is alive");
+        });
+        let _ = device.poll(wgpu::Maintain::Wait);
+        receiver
+            .recv()
+            .expect("mapping callback runs")
+            .expect("readback maps");
+        let mapped = slice.get_mapped_range();
+        let mut crop = vec![0; (viewport[0] * viewport[1] * 4) as usize];
+        for row in 0..viewport[1] as usize {
+            let source_start =
+                (origin[1] as usize + row) * padded_bytes_per_row as usize + origin[0] as usize * 4;
+            let target_start = row * viewport[0] as usize * 4;
+            crop[target_start..target_start + viewport[0] as usize * 4]
+                .copy_from_slice(&mapped[source_start..source_start + viewport[0] as usize * 4]);
+        }
+        drop(mapped);
+        readback.unmap();
+        crop
     }
 
     fn sample_cells(fixture: &PacketFixture, mode: SphericalRenderMode) -> Vec<usize> {

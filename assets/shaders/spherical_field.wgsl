@@ -23,6 +23,7 @@ struct OverlayOutput {
     @location(0) color: vec4<f32>,
     @location(1) along_arrow: f32,
     @location(2) @interpolate(flat) kind: u32,
+    @location(3) @interpolate(linear) local_ndc: vec2<f32>,
 }
 
 @group(0) @binding(0)
@@ -112,6 +113,7 @@ fn clipped_overlay(color: vec4<f32>, kind: u32) -> OverlayOutput {
     output.color = color;
     output.along_arrow = 0.0;
     output.kind = kind;
+    output.local_ndc = vec2<f32>(0.0);
     return output;
 }
 
@@ -160,6 +162,7 @@ fn expanded_overlay_vertex(
         let clip = mix(start, end, along);
         output.position = vec4<f32>(ndc * clip.w, clip.z, clip.w);
         output.along_arrow = along;
+        output.local_ndc = ndc;
         return output;
     }
     let head_back = direction_pixels * (width * 7.0) * 2.0 / frame.viewport_pixels;
@@ -172,6 +175,7 @@ fn expanded_overlay_vertex(
     }
     output.position = vec4<f32>(ndc * end.w, end.z, end.w);
     output.along_arrow = 1.0;
+    output.local_ndc = ndc;
     return output;
 }
 
@@ -232,15 +236,11 @@ fn vs_globe_overlay(
 @fragment
 fn fs_overlay(input: OverlayOutput) -> @location(0) vec4<f32> {
     if frame.globe_silhouette_clip != 0u {
-        let ndc = vec2<f32>(
-            input.position.x * 2.0 / frame.viewport_pixels.x - 1.0,
-            1.0 - input.position.y * 2.0 / frame.viewport_pixels.y,
-        );
         let radius = vec2<f32>(
             length(vec3<f32>(frame.transform[0].x, frame.transform[1].x, frame.transform[2].x)),
             length(vec3<f32>(frame.transform[0].y, frame.transform[1].y, frame.transform[2].y)),
         );
-        let normalized = ndc / radius;
+        let normalized = input.local_ndc / radius;
         if dot(normalized, normalized) > 1.0 {
             discard;
         }

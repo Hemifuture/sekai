@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use eframe::egui_wgpu::wgpu;
 use sekai::app::{
     build_spherical_presentation_candidate, default_spherical_space_spec,
-    PRODUCT_DEFAULT_WORLD_SEED,
+    PublishedSphericalPresentation, SphericalRendererPreparer, PRODUCT_DEFAULT_WORLD_SEED,
 };
 use sekai::engine::MemoryStageCache;
 use sekai::gpu::spherical::{SphericalFieldRenderer, SphericalUploadCounters};
@@ -137,13 +137,14 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
 
     let (adapter_info, device, queue) = request_device();
     let mut renderer = SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
-    renderer
-        .prepare_packet(&device, &queue, candidate.gpu_packet())
-        .unwrap();
+    let published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap()
+    };
     renderer
         .prepare_map_frame(
             &queue,
-            candidate.gpu_packet(),
+            published.gpu_packet(),
             Default::default(),
             [1280, 720],
             Default::default(),
@@ -151,12 +152,9 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
         .unwrap();
     let first_frame = renderer.upload_counters();
     renderer
-        .prepare_packet(&device, &queue, candidate.gpu_packet())
-        .unwrap();
-    renderer
         .prepare_map_frame(
             &queue,
-            candidate.gpu_packet(),
+            published.gpu_packet(),
             Default::default(),
             [1280, 720],
             Default::default(),
