@@ -23,6 +23,7 @@ use crate::world::spatial::{
 };
 use crate::world::{BoundarySegmentId, EdgeId, Meters, PlateId, SurfaceVertexId};
 
+mod crust;
 mod plates;
 
 const VELOCITY_QUANTIZATION: f64 = 1_000_000.0;

@@ -167,8 +167,7 @@ fn generate_plate_partition_observed(
         sample_spherical_field(surface, SEED_PREFERENCE_RECIPE, placement_rng.next_u32())?;
     let resistance_seed = streams.stream(PLATE_RESISTANCE_FIELD_LABEL).next_u32();
     let resistance = sample_spherical_field(surface, PLATE_RESISTANCE_RECIPE, resistance_seed)?;
-    let fabric_seed = streams.stream(PLATE_FABRIC_FIELD_LABEL).next_u32();
-    let fabric = sample_spherical_field(surface, PLATE_FABRIC_RECIPE, fabric_seed)?;
+    let fabric = sample_plate_fabric(surface, streams)?;
     let metric = build_plate_metric(topology, &resistance, &fabric)?;
 
     let placed = place_plate_seeds(
@@ -186,6 +185,14 @@ fn generate_plate_partition_observed(
         &placed.source_distances,
         observe_error,
     )
+}
+
+pub(super) fn sample_plate_fabric(
+    surface: &SphericalSurfaceSnapshot,
+    streams: &LabeledSubstreams,
+) -> Result<QuantizedScalarField, MorphologyFieldError> {
+    let fabric_seed = streams.stream(PLATE_FABRIC_FIELD_LABEL).next_u32();
+    sample_spherical_field(surface, PLATE_FABRIC_RECIPE, fabric_seed)
 }
 
 fn generate_target_area_weights(
