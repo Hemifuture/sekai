@@ -1,7 +1,7 @@
 # Sekai 场驱动球面地形设计
 
-日期：2026-08-10  
-状态：待书面评审  
+日期：2026-08-10
+状态：待书面评审
 范围：修正球面新世界的板块、陆海与宏观高程形态；不改变球面呈现架构
 
 ## 1. 决策摘要
@@ -62,16 +62,16 @@ Sekai 保留现有权威球面 Voronoi–Delaunay 地表，把它严格限定为
 
 系统分成四层，每层只有一个职责：
 
-1. **球面地表层**  
+1. **球面地表层**
    SphericalSurfaceSnapshot 是几何、拓扑、面积和实体身份的唯一事实源。
 
-2. **形态构建层**  
+2. **形态构建层**
    多尺度场、边代价、到达时间、面积目标和区域生长是一次构建中的内部工作数据。它们可以丢弃，不序列化，不进入 UI，也不是第二份地表。
 
-3. **自然事实层**  
+3. **自然事实层**
    SphericalTectonicSnapshot 继续发布板块、地壳、厚度、当前运动和边界事件。下游只依赖这个稳定契约，不读取形态构建内部。
 
-4. **派生过程与呈现层**  
+4. **派生过程与呈现层**
    地幔、地形、地质、气候、水文、字段文档、二维投影和单位球渲染继续消费现有权威 Artifact。
 
 形态字段是“生成自然事实的方法”，不是需要长期保留的产品事实。这样既能使用场驱动算法，也不会制造新的缓存、序列化或来源身份体系。
@@ -303,16 +303,16 @@ CrustKind 确定后，厚度继续遵守现有大陆／海洋物理范围。变�
 
 职责如下：
 
-- field.rs  
+- field.rs
   定义 FieldRecipe、FieldBand、QuantizedScalarField 和唯一的球面采样／面积归一化／量化实现。它不知道板块、大陆、地形或 UI。
 
-- metric.rs  
+- metric.rs
   把 NaturalTopologyIndex、阻力场和结构势场变成 PositiveEdgeMetric。它只保证长度对齐、严格正代价和确定性，不知道 owner 或 PlateId。
 
-- arrival.rs  
+- arrival.rs
   提供单源距离、多源到达时间、源偏置和稳定 tie-break。旧的共同距离函数可委托给这里的统一核心；LegacyPlanarV1 的输出由无偏置、原边长兼容入口冻结。
 
-- area.rs  
+- area.rs
   提供真实面积统计、最接近面积前缀、连通分量、受保护区域生长、孔洞清理和海岸再平衡。它只处理 CellId、邻接、分数和面积权重，不知道 CrustKind。
 
 这些类型不导出到 crate 外，不实现 serde，不进入 Artifact。通用模块不得依赖 spherical_tectonics、relief、stage、app、view 或 gpu。
@@ -327,19 +327,19 @@ CrustKind 确定后，厚度继续遵守现有大陆／海洋物理范围。变�
         motion.rs
         boundaries.rs
 
-- plates.rs  
+- plates.rs
   只生成目标面积、种子和 PlateIdField。输入为已验证球面 domain、TectonicSpec 和板块专用随机流。
 
-- crust.rs  
+- crust.rs
   只生成 CrustKindField 和厚度。输入为 domain、PlateIdField、formation preset、目标陆地比例和地壳专用随机流。
 
-- motion.rs  
+- motion.rs
   保留每板块 Euler 极刚性运动和相邻板块相对速度选择。它不读取大陆亲和场或厚度噪声。
 
-- boundaries.rs  
+- boundaries.rs
   组合 owner、Euler 运动和最终地壳类型，生成现有 BoundaryRecord 与 SphericalBoundarySegment。
 
-- spherical_tectonics.rs  
+- spherical_tectonics.rs
   只做输入验证、按顺序调用四个模块、组装并验证 SphericalTectonicSnapshot。
 
 任何模块都不得调用 Stage、写缓存或发布 Artifact。SphericalTectonicStage 仍是唯一的引擎适配器。
@@ -524,22 +524,22 @@ SphericalTectonicStage 的版本从 1 递增到 2，以使 tectonic 及所有下
 
 ## 15. 研究依据与产品取舍
 
-- Engwirda, JIGSAW-GEO：球面 Voronoi–Delaunay 网格适合大气、海洋和有限体积计算。Sekai 因此保留 Voronoi 作为数值骨架。  
+- Engwirda, JIGSAW-GEO：球面 Voronoi–Delaunay 网格适合大气、海洋和有限体积计算。Sekai 因此保留 Voronoi 作为数值骨架。
   https://gmd.copernicus.org/articles/10/2117/2017/index.html
 
-- Cortial et al., Procedural Tectonic Planets：球面 Voronoi 只是初始板块，真实形态来自后续相互作用、地块、抬升与细化。Sekai 不复制历史演化，而直接近似其当前态输出。  
+- Cortial et al., Procedural Tectonic Planets：球面 Voronoi 只是初始板块，真实形态来自后续相互作用、地块、抬升与细化。Sekai 不复制历史演化，而直接近似其当前态输出。
   https://onlinelibrary.wiley.com/doi/10.1111/cgf.13614
 
-- Kimmel and Sethian, Computing Geodesic Paths on Manifolds：三角曲面上的 Fast Marching 为到达时间场提供 O(M log M) 基础。Sekai 使用量化图传播作为更便宜、确定性更强的近似。  
+- Kimmel and Sethian, Computing Geodesic Paths on Manifolds：三角曲面上的 Fast Marching 为到达时间场提供 O(M log M) 基础。Sekai 使用量化图传播作为更便宜、确定性更强的近似。
   https://www.cis.upenn.edu/~cis6100/Kimmel-Sethian-geodesics-98.pdf
 
-- Cui et al., Spherical Optimal Transportation：球面 power diagram 可以通过源权重控制区域质量／面积。Sekai 使用六轮有界 bias 校准近似这个思想，不引入无界凸优化。  
+- Cui et al., Spherical Optimal Transportation：球面 power diagram 可以通过源权重控制区域质量／面积。Sekai 使用六轮有界 bias 校准近似这个思想，不引入无界凸优化。
   https://www.sciencedirect.com/science/article/pii/S0010448519302003
 
-- Lang and Schwab, Isotropic Gaussian Random Fields on the Sphere：球面相关场可用频谱和快速近似表达。Sekai 使用现有三维确定性噪声构造有限频带近似，不引入 SPDE 求解器。  
+- Lang and Schwab, Isotropic Gaussian Random Fields on the Sphere：球面相关场可用频谱和快速近似表达。Sekai 使用现有三维确定性噪声构造有限频带近似，不引入 SPDE 求解器。
   https://arxiv.org/abs/1305.1170
 
-- Cordonnier et al., Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion：抬升场与河网侵蚀能以较低成本生成可信大尺度地形。Sekai 保留当前态 uplift／hydrology 组合，不追求完整物理历史。  
+- Cordonnier et al., Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion：抬升场与河网侵蚀能以较低成本生成可信大尺度地形。Sekai 保留当前态 uplift／hydrology 组合，不追求完整物理历史。
   https://onlinelibrary.wiley.com/doi/10.1111/cgf.12820
 
 ## 16. 完成定义
