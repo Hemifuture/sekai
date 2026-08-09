@@ -23,6 +23,8 @@ use crate::world::spatial::{
 };
 use crate::world::{BoundarySegmentId, EdgeId, Meters, PlateId, SurfaceVertexId};
 
+mod plates;
+
 const VELOCITY_QUANTIZATION: f64 = 1_000_000.0;
 
 const EULER_POLES: [[i8; 3]; 26] = [
