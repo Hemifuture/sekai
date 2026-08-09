@@ -773,7 +773,7 @@ git commit -m "feat: publish spherical natural presentation"
 - Produces `PersistedWorldOrigin::{LegacyPlanarV1,SphericalV1}`, `SphericalCanvasAction`, a single spherical canvas widget, view/projection/camera controls, fill/overlay controls, vector animation controls, and entity inspector.
 - Missing persisted `world_origin` uses a custom serde default returning `LegacyPlanarV1`; Rust `Default` for a new app explicitly sets `SphericalV1`.
 
-- [ ] **Step 1: Write migration and declarative UI RED tests**
+- [x] **Step 1: Write migration and declarative UI RED tests**
 
 Assert `TemplateApp::default()` serializes `"world_origin":"SphericalV1"`, includes explicit spherical radius/cell-count spec, and has no ordinary planar/spherical mode selector. Remove `world_origin` and spherical spec from JSON, deserialize, and assert legacy origin. Instantiate app runtime from each origin through test helpers: new state builds only the spherical graph; old state builds only the explicit legacy graph and exposes a compatibility notice/action.
 
@@ -781,11 +781,11 @@ Feed declarative UI actions and assert 2D/3D switching preserves fill, overlay, 
 
 Inspector tests must read from catalog/surface, not GPU: cell shows fill, vector east/north, magnitude, direction angle, unit, and cell diagnostics; edge shows edge value, owners, unit, and only global/field diagnostics. The same entity reports byte-equal formatted values in map and globe modes.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --test spherical_presentation_integration -- --nocapture`
 
-- [ ] **Step 3: Implement the single-canvas product UI**
+- [x] **Step 3: Implement the single-canvas product UI**
 
 Add top-level `SphericalViewMode::{Map,Globe}` segmented controls. Map mode shows projection, central meridian, reset map; globe mode shows reset globe. Fill list contains exactly the 32 fill-capable fields; overlay list contains none plus 2 edge and 2 vector fields. When a vector overlay is active, show play/pause, `显示速度（非物理时间）`, and Low/Medium/High glyph density.
 
@@ -793,7 +793,7 @@ The canvas issues one egui wgpu callback for the active presenter. Screen clicks
 
 `TemplateApp::new` dispatches by persisted origin. New/default `SphericalV1` uses default `SphericalSpaceSpec { radius: 6_371_000m, target_cell_count: 20_000 }`. Legacy state continues the current renderer and never changes origin implicitly. Save only author/UI state and source tag, not Artifacts or GPU caches.
 
-- [ ] **Step 4: Verify UI, migration, and legacy compatibility**
+- [x] **Step 4: Verify UI, migration, and legacy compatibility**
 
 Run:
 
@@ -804,7 +804,7 @@ cargo test --lib natural_app_tests -- --nocapture
 cargo test --lib ui -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/ui/spherical.rs src/ui/mod.rs src/ui/field/localization.rs src/app.rs src/resource/mod.rs tests/spherical_presentation_integration.rs
