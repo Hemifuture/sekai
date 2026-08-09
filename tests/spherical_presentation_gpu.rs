@@ -1,6 +1,6 @@
 use sekai::gpu::spherical::{
-    SphericalFieldRenderer, SphericalGpuPacket, SphericalPaintCallback, SphericalRenderError,
-    SphericalRenderMode, SphericalUploadCounters,
+    SphericalFieldRenderer, SphericalPaintCallback, SphericalRenderError, SphericalRenderMode,
+    SphericalUploadCounters,
 };
 use std::sync::{mpsc, Arc};
 
@@ -8,23 +8,25 @@ use eframe::egui_wgpu::wgpu;
 use sekai::app::{build_spherical_presentation_candidate_for_view, SphericalPresentationCandidate};
 use sekai::engine::MemoryStageCache;
 use sekai::view::{
-    prepare_spherical_field_layers, DiagnosticScope, DisplayRevisionClock, GlobeCamera, MapCamera,
-    OwnedViewDiagnostic, PreparedFieldKind, PreparedFieldLayers, PreparedOverlayKind,
-    PreparedSphericalOverlay, SphericalFieldDisplayState, SphericalPresentationViewState,
-    SphericalProjection, SphericalProjectionKind, SphericalViewMode, VectorAnimationUniform,
-    ViewDiagnosticSeverity,
+    sample_palette, DisplayRevisionClock, GlobeCamera, MapCamera, PreparedFieldKind,
+    PreparedOverlayKind, PreparedSphericalOverlay, PreparedVectorGlyphs,
+    SphericalFieldDisplayState, SphericalPresentationViewState, SphericalProjection,
+    SphericalProjectionKind, SphericalViewMode, VectorAnimationUniform,
 };
+use sekai::world::fields::{FieldDomain, FieldValueType};
 use sekai::world::natural::{
     boundary_kind_field_id, boundary_strength_field_id, land_ocean_field_id,
     preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
     TectonicSpec, WorldFormationSpec,
 };
-use sekai::world::spatial::UnitVector3;
-use sekai::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
+use sekai::world::spatial::{canonical_east_north_basis, UnitVector3};
+use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 const GOLDEN_WIDTH: u32 = 192;
 const GOLDEN_HEIGHT: u32 = 96;
 const GOLDEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const AUDITED_ADAPTER_NAME: &str = "NVIDIA GeForce RTX 4080 SUPER";
+const AUDITED_GL_ADAPTER_NAME: &str = "NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2";
 
 #[test]
 fn spherical_gpu_public_counters_start_empty_and_modes_are_distinct() {
@@ -76,6 +78,26 @@ fn spherical_gpu_rejections_have_stable_typed_contracts() {
 fn spherical_paint_callback_implements_the_egui_wgpu_callback_contract() {
     fn assert_callback<T: eframe::egui_wgpu::CallbackTrait>() {}
     assert_callback::<SphericalPaintCallback>();
+}
+
+#[test]
+fn exact_golden_policy_is_keyed_only_to_the_audited_adapter_and_backend() {
+    assert!(exact_goldens_are_audited(
+        AUDITED_ADAPTER_NAME,
+        wgpu::Backend::Vulkan
+    ));
+    assert!(!exact_goldens_are_audited(
+        AUDITED_ADAPTER_NAME,
+        wgpu::Backend::Gl
+    ));
+    assert!(exact_goldens_are_audited(
+        AUDITED_GL_ADAPTER_NAME,
+        wgpu::Backend::Gl
+    ));
+    assert!(!exact_goldens_are_audited(
+        "another Vulkan adapter",
+        wgpu::Backend::Vulkan
+    ));
 }
 
 #[test]
@@ -221,38 +243,22 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         preliminary_prevailing_wind_m_s_field_id(),
         PreparedOverlayKind::CellVector,
     );
-    let map_vector_paused = render(
-        &device,
-        &queue,
-        &vector,
-        SphericalRenderMode::Map,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.0),
-    );
-    let map_vector_animated = render(
-        &device,
-        &queue,
-        &vector,
-        SphericalRenderMode::Map,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.375),
-    );
-    let globe_vector_paused = render(
-        &device,
-        &queue,
-        &vector,
-        SphericalRenderMode::Globe,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.0),
-    );
-    let globe_vector_animated = render(
-        &device,
-        &queue,
-        &vector,
-        SphericalRenderMode::Globe,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.375),
-    );
+    let vector_field = match vector.layers().overlay().unwrap() {
+        PreparedSphericalOverlay::Vector(field) => field,
+        PreparedSphericalOverlay::Edge(_) => unreachable!(),
+    };
+    let glyphs = PreparedVectorGlyphs::build(
+        vector.source(),
+        vector.map(),
+        vector.globe(),
+        vector_field,
+        vector.layers().selected_vector_cell(),
+        vector.layers().glyph_lod_key(),
+    )
+    .unwrap();
+    assert_vector_glyph_semantics(&vector, &glyphs);
+    let (map_vector_paused, map_vector_animated, globe_vector_paused, globe_vector_animated) =
+        render_vector_phases(&device, &queue, &vector);
     assert_ne!(map_vector_paused, map_vector_animated);
     assert_ne!(globe_vector_paused, globe_vector_animated);
 
@@ -309,6 +315,7 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     let north = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
     assert!(front_camera.is_front_facing(north));
     assert!(!back_camera.is_front_facing(north));
+    assert_front_back_semantic_ids(&category, front_camera, back_camera);
     let globe_front = render(
         &device,
         &queue,
@@ -327,35 +334,12 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
     );
     assert_ne!(globe_front, globe_back);
 
-    let (diagnostic_packet, diagnostic_layers, diagnostic) = diagnostic_packet(&scalar);
-    assert_diagnostic_semantics(&diagnostic_layers, std::slice::from_ref(&diagnostic));
-    let map_diagnostics = render_packet(
-        &device,
-        &queue,
-        &diagnostic_packet,
-        scalar.view_state().map_camera(),
-        SphericalRenderMode::Map,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.0),
-    );
-    let globe_diagnostics = render_packet(
-        &device,
-        &queue,
-        &diagnostic_packet,
-        scalar.view_state().map_camera(),
-        SphericalRenderMode::Globe,
-        GlobeCamera::default(),
-        VectorAnimationUniform::new(0.0),
-    );
-
     assert_ne!(map_scalar, map_category);
     assert_ne!(globe_scalar, globe_category);
     assert_ne!(map_scalar, map_edge_scalar);
     assert_ne!(globe_scalar, globe_edge_scalar);
     assert_ne!(map_edge_scalar, map_edge_category);
     assert_ne!(globe_edge_scalar, globe_edge_category);
-    assert_ne!(map_scalar, map_diagnostics);
-    assert_ne!(globe_scalar, globe_diagnostics);
 
     let mismatches: Vec<_> = [
         (
@@ -438,19 +422,11 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
             &globe_back,
             "517ed29b500712fe7ff712e6eaa65d839c1e5a158da55e07597b2681532fe34c",
         ),
-        (
-            "map_diagnostics",
-            &map_diagnostics,
-            "a150adb60c1432bb1876bd80148ef7c9f3b2fad4e6db6d06cef2aef9df77df39",
-        ),
-        (
-            "globe_diagnostics",
-            &globe_diagnostics,
-            "119bd962b7a3b682dcf277d46e7e094344c384da7f4012d1c0f72e872917d500",
-        ),
     ]
     .into_iter()
-    .filter_map(|(name, pixels, expected_hash)| golden_mismatch(name, pixels, expected_hash))
+    .filter_map(|(name, pixels, expected_hash)| {
+        golden_mismatch(&adapter_info, name, pixels, expected_hash)
+    })
     .collect();
     assert!(
         mismatches.is_empty(),
@@ -500,18 +476,39 @@ fn assert_fill_semantics(
 ) {
     let prepared = candidate.layers().fill();
     assert_eq!(prepared.field_id(), &expected);
+    assert_eq!(candidate.layers().source(), candidate.source());
+    let surface = candidate.document().surface();
+    assert_eq!(prepared.len(), surface.cells().len());
+    for (index, cell) in surface.cells().iter().enumerate() {
+        assert_eq!(cell.id.raw() as usize, index);
+    }
     let catalog = candidate.document().catalog().unwrap();
     let field = catalog.get(&expected).unwrap().view().unwrap();
-    for index in [0, prepared.len() / 2, prepared.len() - 1] {
-        match prepared.kind() {
-            PreparedFieldKind::Scalar => assert_eq!(
-                f32::from_bits(prepared.raw_values()[index]),
-                field.scalar_values().unwrap()[index]
-            ),
-            PreparedFieldKind::Category => assert_eq!(
-                prepared.category_keys()[prepared.raw_values()[index] as usize],
-                field.category_values().unwrap()[index]
-            ),
+    assert_eq!(field.schema().id, expected);
+    assert_eq!(field.schema().domain, FieldDomain::Cells);
+    assert_eq!(field.len(), surface.cells().len());
+    match prepared.kind() {
+        PreparedFieldKind::Scalar => {
+            assert_eq!(field.schema().value_type, FieldValueType::ScalarF32);
+            let authoritative = field.scalar_values().unwrap();
+            assert!(prepared.category_keys().is_empty());
+            for (raw, &value) in prepared.raw_values().iter().zip(authoritative) {
+                assert_eq!(*raw, value.to_bits());
+            }
+        }
+        PreparedFieldKind::Category => {
+            assert_eq!(field.schema().value_type, FieldValueType::CategoryU32);
+            let authoritative = field.category_values().unwrap();
+            let keys = field
+                .schema()
+                .category_labels
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(prepared.category_keys(), keys);
+            for (raw, &value) in prepared.raw_values().iter().zip(authoritative) {
+                assert_eq!(*raw as usize, keys.binary_search(&value).unwrap());
+            }
         }
     }
 }
@@ -524,33 +521,274 @@ fn assert_overlay_semantics(
     assert_eq!(candidate.layers().overlay_kind(), Some(kind));
     let catalog = candidate.document().catalog().unwrap();
     let authoritative = catalog.get(&expected).unwrap().view().unwrap();
+    assert_eq!(candidate.layers().source(), candidate.source());
     match candidate.layers().overlay().unwrap() {
         PreparedSphericalOverlay::Edge(prepared) => {
             assert_eq!(prepared.field_id(), &expected);
-            for index in [0, prepared.len() / 2, prepared.len() - 1] {
-                match prepared.kind() {
-                    PreparedFieldKind::Scalar => assert_eq!(
-                        f32::from_bits(prepared.raw_values()[index]),
-                        authoritative.scalar_values().unwrap()[index]
-                    ),
-                    PreparedFieldKind::Category => assert_eq!(
-                        prepared.category_keys()[prepared.raw_values()[index] as usize],
-                        authoritative.category_values().unwrap()[index]
-                    ),
+            let surface = candidate.document().surface();
+            assert_eq!(authoritative.schema().domain, FieldDomain::Edges);
+            assert_eq!(prepared.len(), surface.edges().len());
+            assert_eq!(authoritative.len(), surface.edges().len());
+            for (index, edge) in surface.edges().iter().enumerate() {
+                assert_eq!(edge.id.raw() as usize, index);
+            }
+            match prepared.kind() {
+                PreparedFieldKind::Scalar => {
+                    assert_eq!(authoritative.schema().value_type, FieldValueType::ScalarF32);
+                    assert!(prepared.category_keys().is_empty());
+                    for (raw, &value) in prepared
+                        .raw_values()
+                        .iter()
+                        .zip(authoritative.scalar_values().unwrap())
+                    {
+                        assert_eq!(*raw, value.to_bits());
+                    }
+                }
+                PreparedFieldKind::Category => {
+                    assert_eq!(
+                        authoritative.schema().value_type,
+                        FieldValueType::CategoryU32
+                    );
+                    let values = authoritative.category_values().unwrap();
+                    let keys = authoritative
+                        .schema()
+                        .category_labels
+                        .keys()
+                        .copied()
+                        .collect::<Vec<_>>();
+                    assert_eq!(prepared.category_keys(), keys);
+                    for (raw, &value) in prepared.raw_values().iter().zip(values) {
+                        assert_eq!(*raw as usize, keys.binary_search(&value).unwrap());
+                    }
                 }
             }
+            assert_edge_instance_semantics(candidate, prepared);
         }
         PreparedSphericalOverlay::Vector(prepared) => {
             assert_eq!(prepared.field_id(), &expected);
-            for index in [0, prepared.len() / 2, prepared.len() - 1] {
+            let surface = candidate.document().surface();
+            assert_eq!(authoritative.schema().domain, FieldDomain::Cells);
+            assert_eq!(
+                authoritative.schema().value_type,
+                FieldValueType::Vector2F32
+            );
+            assert_eq!(prepared.len(), surface.cells().len());
+            assert_eq!(authoritative.len(), surface.cells().len());
+            for (index, (&components, &magnitude)) in prepared
+                .components()
+                .iter()
+                .zip(prepared.magnitudes())
+                .enumerate()
+            {
+                let expected_components = authoritative.vector_values().unwrap()[index];
                 assert_eq!(
-                    prepared.components()[index],
-                    authoritative.vector_values().unwrap()[index]
+                    components.map(f32::to_bits),
+                    expected_components.map(f32::to_bits)
                 );
-                assert!(prepared.magnitudes()[index].is_finite());
+                assert_close(
+                    magnitude,
+                    expected_components[0].hypot(expected_components[1]),
+                    2.0e-6,
+                );
             }
         }
     }
+}
+
+fn assert_edge_instance_semantics(
+    candidate: &SphericalPresentationCandidate,
+    field: &sekai::view::PreparedEdgeField,
+) {
+    let edge_count = candidate.document().surface().edges().len();
+    let mut represented = vec![false; edge_count];
+    let mut visible_fragments = 0_usize;
+    for segment in candidate.map().edge_segments() {
+        let edge = segment.edge().raw() as usize;
+        assert!(edge < edge_count);
+        represented[edge] = true;
+        let start = segment.start();
+        let end = segment.end();
+        assert!(start.x().is_finite() && start.y().is_finite());
+        assert!(end.x().is_finite() && end.y().is_finite());
+        assert_ne!(
+            [start.x().to_bits(), start.y().to_bits()],
+            [end.x().to_bits(), end.y().to_bits()]
+        );
+        let visible = match field.kind() {
+            PreparedFieldKind::Scalar => f32::from_bits(field.raw_values()[edge]) != 0.0,
+            PreparedFieldKind::Category => {
+                field.category_keys()[field.raw_values()[edge] as usize] != 0
+            }
+        };
+        visible_fragments += usize::from(visible);
+    }
+    assert!(represented.into_iter().all(|represented| represented));
+    assert!(visible_fragments > 0);
+}
+
+fn assert_vector_glyph_semantics(
+    candidate: &SphericalPresentationCandidate,
+    glyphs: &PreparedVectorGlyphs,
+) {
+    const EXPECTED_SAMPLED_IDS: &[u32] = &[9, 15, 27, 39, 102, 110, 122, 131, 136, 150, 152, 160];
+    assert_eq!(glyphs.source(), candidate.source());
+    assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());
+    assert_eq!(
+        glyphs
+            .sampled_cells()
+            .iter()
+            .map(|cell| cell.raw())
+            .collect::<Vec<_>>(),
+        EXPECTED_SAMPLED_IDS
+    );
+    assert!(glyphs.diagnostics().is_empty());
+    let map_ids = glyphs
+        .map()
+        .iter()
+        .map(|glyph| glyph.cell())
+        .collect::<Vec<_>>();
+    let globe_ids = glyphs
+        .globe()
+        .iter()
+        .map(|glyph| glyph.cell())
+        .collect::<Vec<_>>();
+    assert_eq!(map_ids, globe_ids);
+    assert_eq!(
+        map_ids.iter().map(|cell| cell.raw()).collect::<Vec<_>>(),
+        EXPECTED_SAMPLED_IDS
+    );
+
+    let field = match candidate.layers().overlay().unwrap() {
+        PreparedSphericalOverlay::Vector(field) => field,
+        PreparedSphericalOverlay::Edge(_) => unreachable!(),
+    };
+    let palette = candidate.layers().overlay_palette().unwrap();
+    let (display_min, display_max) = field.display_range().bounds();
+    for (map, globe) in glyphs.map().iter().zip(glyphs.globe()) {
+        assert_eq!(map.cell(), globe.cell());
+        let index = map.cell().raw() as usize;
+        let authoritative = candidate
+            .document()
+            .catalog()
+            .unwrap()
+            .get(&preliminary_prevailing_wind_m_s_field_id())
+            .unwrap()
+            .view()
+            .unwrap()
+            .vector_values()
+            .unwrap()[index];
+        let magnitude = authoritative[0].hypot(authoritative[1]);
+        let color_position = if display_max == display_min {
+            0.5
+        } else {
+            ((magnitude - display_min) / (display_max - display_min)).clamp(0.0, 1.0)
+        };
+        assert_eq!(
+            map.components().map(f32::to_bits),
+            authoritative.map(f32::to_bits)
+        );
+        assert_eq!(
+            globe.components().map(f32::to_bits),
+            authoritative.map(f32::to_bits)
+        );
+        assert_close(map.magnitude(), magnitude, 2.0e-6);
+        assert_close(globe.magnitude(), magnitude, 2.0e-6);
+        assert_close(map.color_position(), color_position, 2.0e-6);
+        assert_close(globe.color_position(), color_position, 2.0e-6);
+        assert_close(map.length_fraction(), 0.35 + 0.65 * color_position, 2.0e-6);
+        assert_close(
+            globe.length_fraction(),
+            0.35 + 0.65 * color_position,
+            2.0e-6,
+        );
+        assert!(sample_palette(palette, color_position)
+            .components()
+            .into_iter()
+            .all(f32::is_finite));
+
+        let radial = candidate.document().surface().cells()[index].centroid;
+        assert_eq!(globe.radial(), radial);
+        let (east, north) = canonical_east_north_basis(radial);
+        let tangent = [
+            east[0] * f64::from(authoritative[0]) + north[0] * f64::from(authoritative[1]),
+            east[1] * f64::from(authoritative[0]) + north[1] * f64::from(authoritative[1]),
+            east[2] * f64::from(authoritative[0]) + north[2] * f64::from(authoritative[1]),
+        ];
+        let tangent_length = tangent
+            .into_iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        let expected_globe = tangent.map(|value| (value / tangent_length) as f32);
+        assert_direction3(globe.direction(), expected_globe, 3.0e-6);
+        let expected_map =
+            finite_difference_map_direction(candidate.map().projection(), radial, tangent);
+        assert_direction2(map.direction(), expected_map, 2.0e-4);
+        let origin = candidate.map().projection().forward(radial).unwrap();
+        assert_close(map.origin()[0], origin.x() as f32, 2.0e-6);
+        assert_close(map.origin()[1], origin.y() as f32, 2.0e-6);
+    }
+}
+
+fn finite_difference_map_direction(
+    projection: SphericalProjection,
+    radial: UnitVector3,
+    tangent: [f64; 3],
+) -> [f32; 2] {
+    const STEP: f64 = 1.0e-5;
+    let tangent_length = tangent
+        .into_iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    let tangent = tangent.map(|value| value / tangent_length);
+    let radial_components = radial.components();
+    let positive = UnitVector3::new(
+        radial_components[0] * STEP.cos() + tangent[0] * STEP.sin(),
+        radial_components[1] * STEP.cos() + tangent[1] * STEP.sin(),
+        radial_components[2] * STEP.cos() + tangent[2] * STEP.sin(),
+    )
+    .unwrap();
+    let negative = UnitVector3::new(
+        radial_components[0] * STEP.cos() - tangent[0] * STEP.sin(),
+        radial_components[1] * STEP.cos() - tangent[1] * STEP.sin(),
+        radial_components[2] * STEP.cos() - tangent[2] * STEP.sin(),
+    )
+    .unwrap();
+    let positive = projection.forward(positive).unwrap();
+    let negative = projection.forward(negative).unwrap();
+    let delta = [positive.x() - negative.x(), positive.y() - negative.y()];
+    let length = delta[0].hypot(delta[1]);
+    [(delta[0] / length) as f32, (delta[1] / length) as f32]
+}
+
+fn assert_direction2(actual: [f32; 2], expected: [f32; 2], tolerance: f32) {
+    assert_close(actual[0], expected[0], tolerance);
+    assert_close(actual[1], expected[1], tolerance);
+    assert_close(actual[0].hypot(actual[1]), 1.0, tolerance);
+}
+
+fn assert_direction3(actual: [f32; 3], expected: [f32; 3], tolerance: f32) {
+    for (actual, expected) in actual.into_iter().zip(expected) {
+        assert_close(actual, expected, tolerance);
+    }
+    assert_close(
+        actual[0]
+            .mul_add(
+                actual[0],
+                actual[1].mul_add(actual[1], actual[2] * actual[2]),
+            )
+            .sqrt(),
+        1.0,
+        tolerance,
+    );
+}
+
+fn assert_close(actual: f32, expected: f32, tolerance: f32) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "expected {expected}, got {actual}, tolerance {tolerance}"
+    );
 }
 
 fn assert_undeformed_globe(candidate: &SphericalPresentationCandidate) {
@@ -563,6 +801,8 @@ fn assert_undeformed_globe(candidate: &SphericalPresentationCandidate) {
 
 fn assert_seam_geometry(candidate: &SphericalPresentationCandidate) {
     let map = candidate.map();
+    let edge_count = candidate.document().surface().edges().len();
+    let mut fragment_counts = vec![0_usize; edge_count];
     let half_width = (map.bounds().max_x() - map.bounds().min_x()) * 0.5;
     assert!(map.vertices().iter().any(|vertex| {
         let x = vertex.position().x();
@@ -575,6 +815,16 @@ fn assert_seam_geometry(candidate: &SphericalPresentationCandidate) {
             - xs.into_iter().fold(f64::INFINITY, f64::min);
         assert!(span <= half_width + 2.0e-12);
     }
+    for segment in map.edge_segments() {
+        let edge = segment.edge().raw() as usize;
+        assert!(edge < edge_count);
+        fragment_counts[edge] += 1;
+    }
+    assert!(fragment_counts.iter().all(|count| *count >= 1));
+    assert!(
+        fragment_counts.iter().any(|count| *count > 1),
+        "the seam fixture must split at least one authoritative edge without changing its ID"
+    );
 }
 
 fn assert_pole_semantics(candidate: &SphericalPresentationCandidate) {
@@ -586,72 +836,98 @@ fn assert_pole_semantics(candidate: &SphericalPresentationCandidate) {
             .unwrap();
         assert!(restored.components()[2] * sign > 1.0 - 2.0e-12);
     }
-}
-
-fn diagnostic_packet(
-    candidate: &SphericalPresentationCandidate,
-) -> (
-    SphericalGpuPacket,
-    Arc<PreparedFieldLayers>,
-    OwnedViewDiagnostic,
-) {
-    let diagnostic = OwnedViewDiagnostic {
-        severity: ViewDiagnosticSeverity::Warning,
-        code: "acceptance.synthetic-cell-warning".into(),
-        field_id: Some(surface_elevation_m_field_id()),
-        cell_id: Some(CellId::from_raw(0)),
-        message: "source-consistent diagnostic golden fixture".into(),
-    };
-    let mut state = state(surface_elevation_m_field_id(), None, true);
-    state.set_diagnostic_scope(DiagnosticScope::AllFields);
-    let mut clock = DisplayRevisionClock::default();
-    let catalog = candidate.document().catalog().unwrap();
-    let layers = Arc::new(
-        prepare_spherical_field_layers(
-            candidate.source().clone(),
-            &catalog,
-            candidate.document().surface().cells().len(),
-            candidate.document().surface().edges().len(),
-            std::slice::from_ref(&diagnostic),
-            candidate.document().preferred_field(),
-            |field| candidate.document().preferred_range(field),
-            &mut state,
-            &mut clock,
-        )
-        .unwrap(),
-    );
-    let packet = candidate
-        .gpu_packet()
-        .try_with_layers(Arc::clone(&layers))
-        .unwrap();
-    (packet, layers, diagnostic)
-}
-
-fn assert_diagnostic_semantics(layers: &PreparedFieldLayers, diagnostics: &[OwnedViewDiagnostic]) {
-    let mut expected = vec![0_u32; layers.diagnostics().len()];
-    for diagnostic in diagnostics {
-        let Some(cell) = diagnostic.cell_id else {
-            continue;
-        };
-        let severity = match diagnostic.severity {
-            ViewDiagnosticSeverity::Info => 1,
-            ViewDiagnosticSeverity::Warning => 2,
-            ViewDiagnosticSeverity::Error => 3,
-        };
-        expected[cell.raw() as usize] = expected[cell.raw() as usize].max(severity);
+    let surface = candidate.document().surface();
+    let north = surface
+        .cells()
+        .iter()
+        .max_by(|left, right| {
+            left.centroid.components()[2].total_cmp(&right.centroid.components()[2])
+        })
+        .unwrap()
+        .id;
+    let south = surface
+        .cells()
+        .iter()
+        .min_by(|left, right| {
+            left.centroid.components()[2].total_cmp(&right.centroid.components()[2])
+        })
+        .unwrap()
+        .id;
+    let mut represented = vec![false; surface.cells().len()];
+    for vertex in candidate.map().vertices() {
+        let cell = vertex.cell().raw() as usize;
+        assert!(cell < represented.len());
+        represented[cell] = true;
     }
-    assert!(expected.iter().any(|severity| *severity != 0));
-    assert_eq!(layers.diagnostics().cells(), expected);
+    assert!(represented[north.raw() as usize]);
+    assert!(represented[south.raw() as usize]);
 }
 
-fn golden_mismatch(name: &str, pixels: &[u8], expected_hash: &str) -> Option<String> {
+fn assert_front_back_semantic_ids(
+    candidate: &SphericalPresentationCandidate,
+    front: GlobeCamera,
+    back: GlobeCamera,
+) {
+    let surface = candidate.document().surface();
+    let mut front_ids = Vec::new();
+    let mut back_ids = Vec::new();
+    let mut horizon_ids = Vec::new();
+    for (index, cell) in surface.cells().iter().enumerate() {
+        assert_eq!(cell.id.raw() as usize, index);
+        let is_front = front.is_front_facing(cell.centroid);
+        let is_back = back.is_front_facing(cell.centroid);
+        if is_front == is_back {
+            assert!(is_front, "a horizon cell is included by both >= 0 clips");
+            assert!(cell.centroid.components()[2].abs() <= 2.0e-15);
+            horizon_ids.push(cell.id);
+        }
+        if is_front {
+            front_ids.push(cell.id);
+        }
+        if is_back {
+            back_ids.push(cell.id);
+        }
+    }
+    assert!(!front_ids.is_empty());
+    assert!(!back_ids.is_empty());
+    assert_eq!(
+        front_ids.len() + back_ids.len() - horizon_ids.len(),
+        surface.cells().len()
+    );
+}
+
+fn exact_goldens_are_audited(adapter_name: &str, backend: wgpu::Backend) -> bool {
+    matches!(
+        (adapter_name, backend),
+        (AUDITED_ADAPTER_NAME, wgpu::Backend::Vulkan)
+            | (AUDITED_GL_ADAPTER_NAME, wgpu::Backend::Gl)
+    )
+}
+
+fn golden_mismatch(
+    adapter: &wgpu::AdapterInfo,
+    name: &str,
+    pixels: &[u8],
+    expected_hash: &str,
+) -> Option<String> {
     assert_eq!(pixels.len(), (GOLDEN_WIDTH * GOLDEN_HEIGHT * 4) as usize);
     assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] != 0));
     let hash = blake3::hash(pixels).to_hex().to_string();
+    let audited = exact_goldens_are_audited(&adapter.name, adapter.backend);
     println!(
-        "golden {name}: {}x{} {:?} blake3={hash}",
-        GOLDEN_WIDTH, GOLDEN_HEIGHT, GOLDEN_FORMAT
+        "golden {name}: {}x{} {:?} blake3={hash} policy={}",
+        GOLDEN_WIDTH,
+        GOLDEN_HEIGHT,
+        GOLDEN_FORMAT,
+        if audited {
+            "audited-exact"
+        } else {
+            "semantic-only-unaudited"
+        }
     );
+    if !audited {
+        return None;
+    }
     (hash != expected_hash).then(|| format!("{name}: expected {expected_hash}, actual {hash}"))
 }
 
@@ -674,10 +950,98 @@ fn render(
     )
 }
 
+fn render_vector_phases(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    candidate: &SphericalPresentationCandidate,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let layers = Arc::clone(candidate.layers_arc());
+    let mut renderer = SphericalFieldRenderer::new(device, GOLDEN_FORMAT);
+    renderer
+        .prepare_packet(device, queue, candidate.gpu_packet())
+        .unwrap();
+    let immutable_uploads = renderer.upload_counters();
+
+    renderer
+        .prepare_map_frame(
+            queue,
+            candidate.gpu_packet(),
+            candidate.view_state().map_camera(),
+            [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+            VectorAnimationUniform::new(0.0),
+        )
+        .unwrap();
+    let map_paused = readback(device, queue, &renderer, SphericalRenderMode::Map);
+    renderer
+        .prepare_map_frame(
+            queue,
+            candidate.gpu_packet(),
+            candidate.view_state().map_camera(),
+            [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+            VectorAnimationUniform::new(0.375),
+        )
+        .unwrap();
+    let map_animated = readback(device, queue, &renderer, SphericalRenderMode::Map);
+    renderer
+        .prepare_globe_frame(
+            queue,
+            candidate.gpu_packet(),
+            GlobeCamera::default(),
+            [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+            VectorAnimationUniform::new(0.0),
+        )
+        .unwrap();
+    let globe_paused = readback(device, queue, &renderer, SphericalRenderMode::Globe);
+    renderer
+        .prepare_globe_frame(
+            queue,
+            candidate.gpu_packet(),
+            GlobeCamera::default(),
+            [GOLDEN_WIDTH, GOLDEN_HEIGHT],
+            VectorAnimationUniform::new(0.375),
+        )
+        .unwrap();
+    let globe_animated = readback(device, queue, &renderer, SphericalRenderMode::Globe);
+
+    let after_phase_only_frames = renderer.upload_counters();
+    assert_eq!(
+        after_phase_only_frames.map_geometry,
+        immutable_uploads.map_geometry
+    );
+    assert_eq!(
+        after_phase_only_frames.globe_geometry,
+        immutable_uploads.globe_geometry
+    );
+    assert_eq!(
+        after_phase_only_frames.fill_field,
+        immutable_uploads.fill_field
+    );
+    assert_eq!(
+        after_phase_only_frames.diagnostics,
+        immutable_uploads.diagnostics
+    );
+    assert_eq!(after_phase_only_frames.palettes, immutable_uploads.palettes);
+    assert_eq!(
+        after_phase_only_frames.map_overlay_instances,
+        immutable_uploads.map_overlay_instances
+    );
+    assert_eq!(
+        after_phase_only_frames.globe_overlay_instances,
+        immutable_uploads.globe_overlay_instances
+    );
+    assert_eq!(
+        after_phase_only_frames.uniforms,
+        immutable_uploads.uniforms + 4
+    );
+    assert!(after_phase_only_frames.uploaded_bytes > immutable_uploads.uploaded_bytes);
+    assert!(Arc::ptr_eq(&layers, candidate.layers_arc()));
+    (map_paused, map_animated, globe_paused, globe_animated)
+}
+
 fn render_packet(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    packet: &SphericalGpuPacket,
+    packet: &sekai::gpu::spherical::SphericalGpuPacket,
     map_camera: MapCamera,
     mode: SphericalRenderMode,
     globe_camera: GlobeCamera,

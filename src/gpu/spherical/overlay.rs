@@ -285,8 +285,23 @@ fn scalar_edge_width(value: f32, range: ResolvedDisplayRange) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{scalar_edge_style, scalar_edge_width};
-    use crate::view::{built_in_palette, PaletteId, ResolvedDisplayRange};
+    use super::{
+        prepare_globe_overlay_instances, prepare_map_overlay_instances, scalar_edge_style,
+        scalar_edge_width, EDGE_KIND, VECTOR_KIND,
+    };
+    use crate::app::{build_spherical_presentation_candidate, SphericalPresentationCandidate};
+    use crate::engine::MemoryStageCache;
+    use crate::view::{
+        built_in_palette, category_color, sample_palette, scalar_color, DisplayRevisionClock,
+        PaletteId, PreparedEdgeField, PreparedFieldKind, PreparedSphericalOverlay,
+        PreparedVectorGlyphs, ResolvedDisplayRange, SphericalFieldDisplayState,
+    };
+    use crate::world::natural::{
+        boundary_kind_field_id, boundary_strength_field_id,
+        preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
+        TectonicSpec, WorldFormationSpec,
+    };
+    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     #[test]
     fn negative_only_scalar_edges_get_wider_with_absolute_magnitude() {
@@ -319,5 +334,221 @@ mod tests {
 
         assert_eq!(negative.0, positive.0);
         assert_ne!(negative.1, positive.1);
+    }
+
+    #[test]
+    fn formal_edge_and_vector_gpu_instances_exhaustively_preserve_prepared_semantics() {
+        let mut cache = MemoryStageCache::new();
+        for overlay in [boundary_strength_field_id(), boundary_kind_field_id()] {
+            let candidate = formal_candidate(overlay, &mut cache);
+            let field = match candidate.layers().overlay().unwrap() {
+                PreparedSphericalOverlay::Edge(field) => field,
+                PreparedSphericalOverlay::Vector(_) => panic!("expected a formal edge field"),
+            };
+            assert_formal_edge_instances(&candidate, field);
+        }
+
+        let candidate = formal_candidate(preliminary_prevailing_wind_m_s_field_id(), &mut cache);
+        assert_formal_vector_instances(&candidate);
+    }
+
+    fn formal_candidate(
+        overlay: crate::world::fields::FieldId,
+        cache: &mut MemoryStageCache,
+    ) -> SphericalPresentationCandidate {
+        let mut state = SphericalFieldDisplayState::default();
+        state.select_fill(surface_elevation_m_field_id());
+        state.select_overlay(Some(overlay));
+        build_spherical_presentation_candidate(
+            RootSeed::new(0x60_01),
+            &SphericalSpaceSpec {
+                radius: Meters::new(6_371_000.0).unwrap(),
+                target_cell_count: 162,
+            },
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &GeologicSpec::default(),
+            cache,
+            &state,
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap()
+    }
+
+    fn assert_formal_edge_instances(
+        candidate: &SphericalPresentationCandidate,
+        field: &PreparedEdgeField,
+    ) {
+        let palette = candidate.layers().overlay_palette().unwrap();
+        let expected_map = candidate
+            .map()
+            .edge_segments()
+            .iter()
+            .filter_map(|segment| {
+                expected_edge_style(field, segment.edge().raw() as usize, palette)
+                    .map(|style| (segment, style))
+            })
+            .collect::<Vec<_>>();
+        let actual_map =
+            prepare_map_overlay_instances(candidate.map(), candidate.globe(), candidate.layers())
+                .unwrap();
+        assert!(actual_map.vector_diagnostics().is_empty());
+        assert_eq!(actual_map.instances.len(), expected_map.len());
+        for (actual, (segment, (width, color))) in actual_map.instances.iter().zip(expected_map) {
+            assert_eq!(
+                actual.start.map(f32::to_bits),
+                [
+                    (segment.start().x() as f32).to_bits(),
+                    (segment.start().y() as f32).to_bits(),
+                ]
+            );
+            assert_eq!(
+                actual.end.map(f32::to_bits),
+                [
+                    (segment.end().x() as f32).to_bits(),
+                    (segment.end().y() as f32).to_bits(),
+                ]
+            );
+            assert_eq!(actual.color.map(f32::to_bits), color.map(f32::to_bits));
+            assert_eq!(actual.width.to_bits(), width.to_bits());
+            assert_eq!(actual.kind, EDGE_KIND);
+            assert_eq!(actual.padding, [0; 2]);
+        }
+
+        let expected_globe = candidate
+            .globe()
+            .edge_segments()
+            .iter()
+            .filter_map(|segment| {
+                expected_edge_style(field, segment.edge().raw() as usize, palette)
+                    .map(|style| (segment, style))
+            })
+            .collect::<Vec<_>>();
+        let actual_globe =
+            prepare_globe_overlay_instances(candidate.globe(), candidate.layers()).unwrap();
+        assert_eq!(actual_globe.instances.len(), expected_globe.len());
+        for (actual, (segment, (width, color))) in actual_globe.instances.iter().zip(expected_globe)
+        {
+            assert_eq!(
+                actual.start.map(f32::to_bits),
+                segment.start().map(f32::to_bits)
+            );
+            assert_eq!(
+                actual.end_or_direction.map(f32::to_bits),
+                segment.end().map(f32::to_bits)
+            );
+            assert_eq!(actual.color.map(f32::to_bits), color.map(f32::to_bits));
+            assert_eq!(actual.width.to_bits(), width.to_bits());
+            assert_eq!(actual.length.to_bits(), 0.0_f32.to_bits());
+            assert_eq!(actual.kind, EDGE_KIND);
+            assert_eq!(actual.padding, [0; 3]);
+        }
+    }
+
+    fn expected_edge_style(
+        field: &PreparedEdgeField,
+        edge: usize,
+        palette: &[crate::view::LinearRgba],
+    ) -> Option<(f32, [f32; 4])> {
+        let raw = field.raw_values()[edge];
+        match field.kind() {
+            PreparedFieldKind::Scalar => {
+                let value = f32::from_bits(raw);
+                if value == 0.0 {
+                    return None;
+                }
+                let range = field.display_range().unwrap();
+                let (min, max) = range.bounds();
+                let max_magnitude = min.abs().max(max.abs());
+                let min_magnitude = if min <= 0.0 && max >= 0.0 {
+                    0.0
+                } else {
+                    min.abs().min(max.abs())
+                };
+                let normalized = if max_magnitude == min_magnitude {
+                    0.5
+                } else {
+                    ((value.abs() - min_magnitude) / (max_magnitude - min_magnitude))
+                        .clamp(0.0, 1.0)
+                };
+                Some((
+                    1.0 + 3.0 * normalized,
+                    scalar_color(value, range, palette).components(),
+                ))
+            }
+            PreparedFieldKind::Category => (field.category_keys()[raw as usize] != 0)
+                .then(|| (2.0, category_color(raw, palette).components())),
+        }
+    }
+
+    fn assert_formal_vector_instances(candidate: &SphericalPresentationCandidate) {
+        let field = match candidate.layers().overlay().unwrap() {
+            PreparedSphericalOverlay::Vector(field) => field,
+            PreparedSphericalOverlay::Edge(_) => panic!("expected a formal vector field"),
+        };
+        let glyphs = PreparedVectorGlyphs::build(
+            candidate.source(),
+            candidate.map(),
+            candidate.globe(),
+            field,
+            candidate.layers().selected_vector_cell(),
+            candidate.layers().glyph_lod_key(),
+        )
+        .unwrap();
+        let palette = candidate.layers().overlay_palette().unwrap();
+
+        let actual_map =
+            prepare_map_overlay_instances(candidate.map(), candidate.globe(), candidate.layers())
+                .unwrap();
+        assert!(actual_map.vector_diagnostics().is_empty());
+        assert_eq!(actual_map.instances.len(), glyphs.map().len());
+        for (actual, glyph) in actual_map.instances.iter().zip(glyphs.map()) {
+            let origin = glyph.origin();
+            let direction = glyph.direction();
+            assert_eq!(actual.start.map(f32::to_bits), origin.map(f32::to_bits));
+            assert_eq!(
+                actual.end.map(f32::to_bits),
+                [
+                    (origin[0] + direction[0] * glyph.length()).to_bits(),
+                    (origin[1] + direction[1] * glyph.length()).to_bits(),
+                ]
+            );
+            assert_eq!(
+                actual.color.map(f32::to_bits),
+                sample_palette(palette, glyph.color_position())
+                    .components()
+                    .map(f32::to_bits)
+            );
+            assert_eq!(actual.width.to_bits(), 2.0_f32.to_bits());
+            assert_eq!(actual.kind, VECTOR_KIND);
+            assert_eq!(actual.padding, [0; 2]);
+        }
+
+        let actual_globe =
+            prepare_globe_overlay_instances(candidate.globe(), candidate.layers()).unwrap();
+        assert_eq!(actual_globe.instances.len(), glyphs.globe().len());
+        for (actual, glyph) in actual_globe.instances.iter().zip(glyphs.globe()) {
+            assert_eq!(
+                actual.start.map(f32::to_bits),
+                glyph
+                    .radial()
+                    .components()
+                    .map(|value| (value as f32).to_bits())
+            );
+            assert_eq!(
+                actual.end_or_direction.map(f32::to_bits),
+                glyph.direction().map(f32::to_bits)
+            );
+            assert_eq!(actual.length.to_bits(), glyph.length().to_bits());
+            assert_eq!(
+                actual.color.map(f32::to_bits),
+                sample_palette(palette, glyph.color_position())
+                    .components()
+                    .map(f32::to_bits)
+            );
+            assert_eq!(actual.width.to_bits(), 2.0_f32.to_bits());
+            assert_eq!(actual.kind, VECTOR_KIND);
+            assert_eq!(actual.padding, [0; 3]);
+        }
     }
 }

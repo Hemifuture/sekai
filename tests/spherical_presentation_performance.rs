@@ -2,18 +2,23 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::wgpu;
-use sekai::app::build_spherical_presentation_candidate;
+use sekai::app::{
+    build_spherical_presentation_candidate, default_spherical_space_spec,
+    PRODUCT_DEFAULT_WORLD_SEED,
+};
 use sekai::engine::MemoryStageCache;
 use sekai::gpu::spherical::{SphericalFieldRenderer, SphericalUploadCounters};
 use sekai::view::{
     prepare_spherical_field_layers, DisplayRevisionClock, GlyphLodKey, PreparedGlobeMesh,
     PreparedProjectedMap, PreparedSphericalOverlay, PreparedVectorGlyphs, SphericalEntityLocator,
     SphericalFieldDisplayState, SphericalMeshBudgets, SphericalProjection, SphericalProjectionKind,
+    VectorGlyphLod,
 };
 use sekai::world::natural::{
-    preliminary_prevailing_wind_m_s_field_id, GeologicSpec, TectonicSpec, WorldFormationSpec,
+    preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
+    TectonicSpec, WorldFormationSpec,
 };
-use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
+use sekai::world::Meters;
 
 const PRODUCT_CELL_COUNT: u32 = 20_000;
 const MAX_PRESENTATION_BYTES: usize = 128 * 1024 * 1024;
@@ -26,15 +31,16 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
         panic!("run this acceptance gate with cargo test --release");
     }
 
-    let space = SphericalSpaceSpec {
-        radius: Meters::new(6_371_000.0).unwrap(),
-        target_cell_count: PRODUCT_CELL_COUNT,
-    };
+    let space = default_spherical_space_spec();
+    assert_eq!(space.radius, Meters::new(6_371_000.0).unwrap());
+    assert_eq!(space.target_cell_count, PRODUCT_CELL_COUNT);
     let mut requested_state = SphericalFieldDisplayState::default();
+    requested_state.select_fill(surface_elevation_m_field_id());
     requested_state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+    requested_state.set_vector_lod(VectorGlyphLod::Medium);
     let mut cache = MemoryStageCache::new();
     let candidate = build_spherical_presentation_candidate(
-        RootSeed::new(0x0005_ea12_0000),
+        PRODUCT_DEFAULT_WORLD_SEED,
         &space,
         &WorldFormationSpec::default(),
         &TectonicSpec::default(),
@@ -47,8 +53,8 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
     let document = candidate.document();
     let surface = document.surface();
     let actual_cell_count = surface.cells().len();
-    assert!(actual_cell_count >= PRODUCT_CELL_COUNT as usize);
-    assert!(actual_cell_count <= PRODUCT_CELL_COUNT as usize * 102 / 100);
+    assert_eq!(candidate.source().root_seed(), PRODUCT_DEFAULT_WORLD_SEED);
+    assert_eq!(actual_cell_count, 20_252);
 
     let source = candidate.source().clone();
     let projection = SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0).unwrap();
@@ -88,6 +94,12 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
         PreparedSphericalOverlay::Vector(vector) => vector,
         PreparedSphericalOverlay::Edge(_) => panic!("medium wind must be a cell vector overlay"),
     };
+    assert_eq!(layers.fill().field_id(), &surface_elevation_m_field_id());
+    assert_eq!(
+        vector.field_id(),
+        &preliminary_prevailing_wind_m_s_field_id()
+    );
+    assert_eq!(layers.glyph_lod_key(), GlyphLodKey::Medium);
     let (glyph_time, glyphs) = timed(|| {
         PreparedVectorGlyphs::build(&source, &map, &globe, vector, None, GlyphLodKey::Medium)
             .unwrap()

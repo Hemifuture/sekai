@@ -81,6 +81,8 @@ use crate::{
 const DEFAULT_WORLD_WIDTH_M: f64 = 20_000_000.0;
 const DEFAULT_WORLD_HEIGHT_M: f64 = 10_000_000.0;
 const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
+/// Root seed used by a newly authored product world.
+pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 const CURRENT_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
@@ -114,7 +116,8 @@ enum MigrationFailurePoint {
     GpuPrepare,
 }
 
-fn default_spherical_space_spec() -> crate::world::SphericalSpaceSpec {
+/// Returns the spherical space specification used by a newly authored product world.
+pub fn default_spherical_space_spec() -> crate::world::SphericalSpaceSpec {
     crate::world::SphericalSpaceSpec {
         radius: Meters::new(6_371_000.0).expect("the Earth-like default radius is valid"),
         target_cell_count: DEFAULT_TARGET_CELL_COUNT,
@@ -257,7 +260,7 @@ impl Default for TemplateApp {
             world_origin: PersistedWorldOrigin::SphericalV1,
             spherical_space_spec: default_spherical_space_spec(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
-            world_seed: 42,
+            world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
             formation_spec: WorldFormationSpec::default(),
             tectonic_spec: TectonicSpec::default(),
             geologic_spec: GeologicSpec::default(),

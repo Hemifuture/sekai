@@ -384,23 +384,6 @@ impl SphericalGpuPacket {
     pub const fn layers_arc(&self) -> &Arc<PreparedFieldLayers> {
         &self.layers
     }
-
-    /// Returns a validated packet that reuses this packet's exact geometry and revisions.
-    ///
-    /// This is the narrow composition boundary for callers that prepare a new source-bound field
-    /// layer packet without rebuilding either spherical geometry allocation.
-    pub fn try_with_layers(
-        &self,
-        layers: Arc<PreparedFieldLayers>,
-    ) -> Result<Self, SphericalRenderError> {
-        Self::try_new(
-            Arc::clone(&self.map),
-            self.map_geometry_revision,
-            Arc::clone(&self.globe),
-            self.globe_geometry_revision,
-            layers,
-        )
-    }
 }
 
 /// The independent geometry pipeline selected for one spherical paint.
@@ -468,6 +451,18 @@ pub enum SphericalRenderError {
     /// A fixed-size frame uniform named a packet that is not currently installed.
     #[error("spherical frame packet is not the currently installed GPU packet")]
     FramePacketNotInstalled,
+    /// One changed packet component reused or regressed its installed revision.
+    #[error(
+        "{resource} changed without a newer spherical display revision (installed {installed}, candidate {candidate})"
+    )]
+    RevisionNotAdvanced {
+        /// Stable name of the changed component.
+        resource: &'static str,
+        /// Revision currently installed for that component.
+        installed: u64,
+        /// Revision supplied by the rejected candidate.
+        candidate: u64,
+    },
     /// Prepared geometry violated an indexed GPU layout invariant.
     #[error("{resource} contains invalid spherical GPU geometry")]
     InvalidGeometry {
@@ -556,6 +551,124 @@ impl InstalledPacketKey {
             && Arc::ptr_eq(&self.globe, &packet.globe)
             && Arc::ptr_eq(&self.layers, &packet.layers)
     }
+
+    fn validate_revision_progress(
+        &self,
+        packet: &SphericalGpuPacket,
+    ) -> Result<(), SphericalRenderError> {
+        if self.source != *packet.source() {
+            return Ok(());
+        }
+        let next = InstalledRevisions::from(packet);
+        for (resource, changed, installed, candidate) in [
+            (
+                "projected map",
+                !Arc::ptr_eq(&self.map, &packet.map),
+                self.revisions.map_geometry,
+                next.map_geometry,
+            ),
+            (
+                "unit globe",
+                !Arc::ptr_eq(&self.globe, &packet.globe),
+                self.revisions.globe_geometry,
+                next.globe_geometry,
+            ),
+            (
+                "fill field",
+                !Arc::ptr_eq(self.layers.fill_arc(), packet.layers.fill_arc()),
+                self.revisions.fill,
+                next.fill,
+            ),
+            (
+                "diagnostics",
+                !Arc::ptr_eq(
+                    self.layers.diagnostics_arc(),
+                    packet.layers.diagnostics_arc(),
+                ),
+                self.revisions.diagnostics,
+                next.diagnostics,
+            ),
+            (
+                "fill palette",
+                !Arc::ptr_eq(
+                    self.layers.fill_palette_arc(),
+                    packet.layers.fill_palette_arc(),
+                ),
+                self.revisions.palette,
+                next.palette,
+            ),
+            (
+                "overlay field",
+                !same_overlay_arc(self.layers.overlay(), packet.layers.overlay()),
+                self.revisions.overlay,
+                next.overlay,
+            ),
+            (
+                "overlay palette",
+                !same_optional_arc(
+                    self.layers.overlay_palette_arc(),
+                    packet.layers.overlay_palette_arc(),
+                ),
+                self.revisions.overlay_palette,
+                next.overlay_palette,
+            ),
+            (
+                "vector glyphs",
+                vector_glyph_inputs_changed(&self.layers, packet.layers()),
+                self.revisions.vector_glyphs,
+                next.vector_glyphs,
+            ),
+        ] {
+            if candidate < installed || (changed && candidate == installed) {
+                return Err(SphericalRenderError::RevisionNotAdvanced {
+                    resource,
+                    installed: installed.get(),
+                    candidate: candidate.get(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn same_optional_arc<T>(left: Option<&Arc<T>>, right: Option<&Arc<T>>) -> bool
+where
+    T: ?Sized,
+{
+    match (left, right) {
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn same_overlay_arc(
+    left: Option<&PreparedSphericalOverlay>,
+    right: Option<&PreparedSphericalOverlay>,
+) -> bool {
+    match (left, right) {
+        (
+            Some(PreparedSphericalOverlay::Edge(left)),
+            Some(PreparedSphericalOverlay::Edge(right)),
+        ) => Arc::ptr_eq(left, right),
+        (
+            Some(PreparedSphericalOverlay::Vector(left)),
+            Some(PreparedSphericalOverlay::Vector(right)),
+        ) => Arc::ptr_eq(left, right),
+        (None, None) => true,
+        (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn vector_glyph_inputs_changed(
+    installed: &PreparedFieldLayers,
+    candidate: &PreparedFieldLayers,
+) -> bool {
+    let candidate_is_vector =
+        candidate.overlay_kind() == Some(crate::view::PreparedOverlayKind::CellVector);
+    candidate_is_vector
+        && (installed.selected_vector_cell() != candidate.selected_vector_cell()
+            || installed.glyph_lod_key() != candidate.glyph_lod_key())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -886,6 +999,9 @@ impl SphericalFieldRenderer {
             return Ok(());
         }
         validate_packet(packet)?;
+        if let Some(installed) = &self.installed_packet_key {
+            installed.validate_revision_progress(packet)?;
+        }
         let plan = UploadPlan::between(
             self.installed_source.as_ref(),
             self.installed_revisions,
@@ -2044,6 +2160,110 @@ mod tests {
     }
 
     #[test]
+    fn changed_layers_cannot_reuse_installed_revisions_or_replace_the_cpu_packet_key() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = packet_fixture(TestFieldKind::Scalar, 107);
+        let changed_layers = layers_for_count(
+            fixture.packet.source().clone(),
+            fixture.surface.cells().len(),
+            fixture.surface.edges().len(),
+            TestFieldKind::Category,
+        );
+        assert_eq!(
+            changed_layers.revisions(),
+            fixture.packet.layers().revisions(),
+            "independent clocks reproduce the revision collision"
+        );
+        assert_ne!(
+            changed_layers.fill().kind(),
+            fixture.packet.layers().fill().kind(),
+            "the colliding packet must carry observably different data"
+        );
+        let changed = SphericalGpuPacket::new(
+            Arc::clone(&fixture.packet.map),
+            fixture.packet.map_geometry_revision,
+            Arc::clone(&fixture.packet.globe),
+            fixture.packet.globe_geometry_revision,
+            changed_layers,
+        );
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        let before = renderer.upload_counters();
+
+        let result = renderer.prepare_packet(&device, &queue, &changed);
+
+        assert_eq!(
+            result,
+            Err(SphericalRenderError::RevisionNotAdvanced {
+                resource: "fill field",
+                installed: fixture.packet.layers().revisions().fill.get(),
+                candidate: changed.layers().revisions().fill.get(),
+            })
+        );
+        assert_eq!(renderer.upload_counters(), before);
+        assert!(renderer.callback_packet_is_current(&fixture.packet));
+        assert!(!renderer.callback_packet_is_current(&changed));
+    }
+
+    #[test]
+    fn changed_layers_cannot_regress_installed_revisions() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = packet_fixture(TestFieldKind::Scalar, 108);
+        let installed_layers = layers_for_count_after_issues(
+            fixture.packet.source().clone(),
+            fixture.surface.cells().len(),
+            fixture.surface.edges().len(),
+            TestFieldKind::Scalar,
+            20,
+        );
+        let installed = SphericalGpuPacket::new(
+            Arc::clone(&fixture.packet.map),
+            fixture.packet.map_geometry_revision,
+            Arc::clone(&fixture.packet.globe),
+            fixture.packet.globe_geometry_revision,
+            installed_layers,
+        );
+        let regressed_layers = layers_for_count(
+            fixture.packet.source().clone(),
+            fixture.surface.cells().len(),
+            fixture.surface.edges().len(),
+            TestFieldKind::Category,
+        );
+        let regressed = SphericalGpuPacket::new(
+            Arc::clone(&fixture.packet.map),
+            fixture.packet.map_geometry_revision,
+            Arc::clone(&fixture.packet.globe),
+            fixture.packet.globe_geometry_revision,
+            regressed_layers,
+        );
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_packet(&device, &queue, &installed)
+            .unwrap();
+        let before = renderer.upload_counters();
+
+        assert_eq!(
+            renderer.prepare_packet(&device, &queue, &regressed),
+            Err(SphericalRenderError::RevisionNotAdvanced {
+                resource: "fill field",
+                installed: installed.layers().revisions().fill.get(),
+                candidate: regressed.layers().revisions().fill.get(),
+            })
+        );
+        assert_eq!(renderer.upload_counters(), before);
+        assert!(renderer.callback_packet_is_current(&installed));
+        assert!(!renderer.callback_packet_is_current(&regressed));
+    }
+
+    #[test]
     fn static_frames_and_camera_or_mode_changes_upload_only_fixed_uniforms() {
         let Some((device, queue)) = request_test_device() else {
             return;
@@ -2823,19 +3043,42 @@ mod tests {
     }
 
     #[test]
-    fn offscreen_diagnostic_overlay_replaces_fill_color_in_both_modes() {
-        let Some((device, queue)) = request_test_device() else {
+    fn offscreen_diagnostic_overlay_is_source_bound_semantic_and_portable() {
+        let Some((adapter, device, queue)) = request_test_device_with_info() else {
             return;
         };
         let fixture = packet_fixture_with_diagnostic(TestFieldKind::Scalar, 11, true);
         let cell = fixture
             .diagnostic_cell
             .expect("diagnostic fixture selects a front-facing cell");
+        assert_eq!(fixture.packet.source(), fixture.layers.source());
+        assert_eq!(fixture.packet.map().source(), fixture.packet.source());
+        assert_eq!(fixture.packet.globe().source(), fixture.packet.source());
+        assert_eq!(fixture.layers.fill().len(), fixture.surface.cells().len());
+        assert_eq!(
+            fixture.layers.diagnostics().len(),
+            fixture.surface.cells().len()
+        );
+        assert_eq!(fixture.diagnostics.len(), 1);
+        assert_eq!(
+            fixture.diagnostics[0].severity,
+            ViewDiagnosticSeverity::Error
+        );
+        assert_eq!(
+            fixture.diagnostics[0].cell_id,
+            Some(CellId::from_raw(cell as u32))
+        );
+        assert_eq!(
+            fixture.diagnostics[0].field_id.as_ref(),
+            Some(fixture.layers.fill().field_id())
+        );
+        let mut expected_mask = vec![0_u32; fixture.surface.cells().len()];
+        expected_mask[cell] = 3;
+        assert_eq!(fixture.layers.diagnostics().cells(), expected_mask);
         let expected = linear_to_srgba8(DIAGNOSTIC_ERROR_COLOR);
-        for (mode, viewport) in [
-            (SphericalRenderMode::Map, [256, 128]),
-            (SphericalRenderMode::Globe, [128, 128]),
-        ] {
+        let mut rendered = Vec::new();
+        for mode in [SphericalRenderMode::Map, SphericalRenderMode::Globe] {
+            let viewport = [192, 96];
             let (rgba8, uniform) =
                 render_offscreen(&device, &queue, &fixture.packet, mode, viewport);
             let position = match mode {
@@ -2858,6 +3101,32 @@ mod tests {
             };
             let pixel = transformed_pixel(uniform.transform, position, viewport);
             assert_pixel_near(&rgba8, viewport, pixel, expected, 2);
+            rendered.push((mode, rgba8));
+        }
+
+        let audited = matches!(
+            (adapter.name.as_str(), adapter.backend),
+            ("NVIDIA GeForce RTX 4080 SUPER", wgpu::Backend::Vulkan)
+                | ("NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2", wgpu::Backend::Gl)
+        );
+        for ((mode, pixels), expected_hash) in rendered.into_iter().zip([
+            "dff1205540d94745dbb36fd43f64f882afdfec43385f1c4dd6d53fe10791662c",
+            "55136898b70af3a770a973686f0a7bc500cd57bc1f10c97af4916f43d07e6574",
+        ]) {
+            let hash = blake3::hash(&pixels).to_hex().to_string();
+            eprintln!(
+                "diagnostic golden {mode:?}: adapter={:?}/{:?} blake3={hash} policy={}",
+                adapter.name,
+                adapter.backend,
+                if audited {
+                    "audited-exact"
+                } else {
+                    "semantic-only-unaudited"
+                }
+            );
+            if audited {
+                assert_eq!(hash, expected_hash);
+            }
         }
     }
 
@@ -2866,6 +3135,7 @@ mod tests {
         layers: Arc<crate::view::PreparedFieldLayers>,
         surface: SphericalSurfaceSnapshot,
         diagnostic_cell: Option<usize>,
+        diagnostics: Vec<OwnedViewDiagnostic>,
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -2894,6 +3164,10 @@ mod tests {
     }
 
     fn request_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        request_test_device_with_info().map(|(_, device, queue)| (device, queue))
+    }
+
+    fn request_test_device_with_info() -> Option<(wgpu::AdapterInfo, wgpu::Device, wgpu::Queue)> {
         pollster::block_on(async {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
             let adapter = instance
@@ -2919,6 +3193,7 @@ mod tests {
                     adapter
                 }
             };
+            let info = adapter.get_info();
             match adapter
                 .request_device(
                     &wgpu::DeviceDescriptor {
@@ -2930,7 +3205,7 @@ mod tests {
                 )
                 .await
             {
-                Ok(device) => Some(device),
+                Ok((device, queue)) => Some((info, device, queue)),
                 Err(error) => gpu_unavailable(&format!("fallback device request failed: {error}")),
             }
         })
@@ -3040,6 +3315,7 @@ mod tests {
             layers,
             surface,
             diagnostic_cell,
+            diagnostics,
         }
     }
 
@@ -3339,6 +3615,7 @@ mod tests {
             layers,
             surface,
             diagnostic_cell: None,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -3354,6 +3631,16 @@ mod tests {
         cell_count: usize,
         edge_count: usize,
         kind: TestFieldKind,
+    ) -> Arc<crate::view::PreparedFieldLayers> {
+        layers_for_count_after_issues(source, cell_count, edge_count, kind, 0)
+    }
+
+    fn layers_for_count_after_issues(
+        source: SphericalPresentationSource,
+        cell_count: usize,
+        edge_count: usize,
+        kind: TestFieldKind,
+        issues_before_preparation: usize,
     ) -> Arc<crate::view::PreparedFieldLayers> {
         let (schema, data, _palette) = test_field(kind, cell_count);
         let field_id = schema.id.clone();
@@ -3372,6 +3659,9 @@ mod tests {
         let catalog = FieldCatalog::from_extension_fields(&registry, &fields).unwrap();
         let mut state = SphericalFieldDisplayState::default();
         let mut clock = DisplayRevisionClock::default();
+        for _ in 0..issues_before_preparation {
+            clock.issue().unwrap();
+        }
         Arc::new(
             prepare_spherical_field_layers(
                 source,
