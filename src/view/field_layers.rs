@@ -264,6 +264,18 @@ impl PreparedEdgeField {
     pub fn category_keys(&self) -> &[u32] {
         &self.category_keys
     }
+
+    /// Returns owned heap bytes using vector and field-ID string capacities.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared edge field";
+        let total = self
+            .field_id
+            .resident_bytes()
+            .ok_or(super::ResidentBytesError { context })?;
+        let total =
+            super::resident::add_capacity::<u32>(total, self.raw_values.capacity(), context)?;
+        super::resident::add_capacity::<u32>(total, self.category_keys.capacity(), context)
+    }
 }
 
 /// A prepared per-cell local east/north vector field.
@@ -304,6 +316,18 @@ impl PreparedVectorField {
     /// Returns whether this field contains no authoritative cell vectors.
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
+    }
+
+    /// Returns owned heap bytes using vector and field-ID string capacities.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared vector field";
+        let total = self
+            .field_id
+            .resident_bytes()
+            .ok_or(super::ResidentBytesError { context })?;
+        let total =
+            super::resident::add_capacity::<[f32; 2]>(total, self.components.capacity(), context)?;
+        super::resident::add_capacity::<f32>(total, self.magnitudes.capacity(), context)
     }
 }
 
@@ -548,6 +572,35 @@ impl PreparedVectorGlyphs {
     /// Returns display-only diagnostics for map Jacobian omissions.
     pub fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
         &self.diagnostics
+    }
+
+    /// Returns owned heap bytes for medium/low/high glyph instances using exact slice lengths.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared vector glyphs";
+        let total = super::resident::capacity_bytes::<CellId>(self.sampled_cells.len(), context)?;
+        let total =
+            super::resident::add_capacity::<MapVectorGlyph>(total, self.map.len(), context)?;
+        let total =
+            super::resident::add_capacity::<GlobeVectorGlyph>(total, self.globe.len(), context)?;
+        let mut total = super::resident::add_capacity::<OwnedViewDiagnostic>(
+            total,
+            self.diagnostics.len(),
+            context,
+        )?;
+        for diagnostic in self.diagnostics.iter() {
+            total = super::resident::add_bytes(total, diagnostic.code.capacity(), context)?;
+            total = super::resident::add_bytes(total, diagnostic.message.capacity(), context)?;
+            if let Some(field) = &diagnostic.field_id {
+                total = super::resident::add_bytes(
+                    total,
+                    field
+                        .resident_bytes()
+                        .ok_or(super::ResidentBytesError { context })?,
+                    context,
+                )?;
+            }
+        }
+        Ok(total)
     }
 }
 
@@ -993,6 +1046,62 @@ impl PreparedFieldLayers {
     /// Returns the discrete key controlling cached vector-glyph identities.
     pub const fn glyph_lod_key(&self) -> GlyphLodKey {
         self.prepared_state.glyph_lod_key
+    }
+
+    /// Returns owned field/diagnostic/palette heap bytes using checked capacities.
+    ///
+    /// Vector glyph instances are excluded because [`PreparedVectorGlyphs::resident_bytes`]
+    /// accounts for that independently measured presentation stage.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared spherical field layers";
+        let mut total = std::mem::size_of::<PreparedCellField>();
+        total = super::resident::add_bytes(total, self.fill.resident_bytes()?, context)?;
+        if let Some(overlay) = &self.overlay {
+            total = match overlay {
+                PreparedSphericalOverlay::Edge(field) => super::resident::add_bytes(
+                    total,
+                    std::mem::size_of::<PreparedEdgeField>()
+                        .checked_add(field.resident_bytes()?)
+                        .ok_or(super::ResidentBytesError { context })?,
+                    context,
+                )?,
+                PreparedSphericalOverlay::Vector(field) => super::resident::add_bytes(
+                    total,
+                    std::mem::size_of::<PreparedVectorField>()
+                        .checked_add(field.resident_bytes()?)
+                        .ok_or(super::ResidentBytesError { context })?,
+                    context,
+                )?,
+            };
+        }
+        total = super::resident::add_bytes(
+            total,
+            std::mem::size_of::<PreparedDiagnosticMask>()
+                .checked_add(self.diagnostics.resident_bytes()?)
+                .ok_or(super::ResidentBytesError { context })?,
+            context,
+        )?;
+        total =
+            super::resident::add_capacity::<LinearRgba>(total, self.fill_palette.len(), context)?;
+        if let Some(palette) = &self.overlay_palette {
+            total = super::resident::add_capacity::<LinearRgba>(total, palette.len(), context)?;
+        }
+        for field in [
+            self.prepared_state.fill_field.as_ref(),
+            self.prepared_state.overlay_field.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            total = super::resident::add_bytes(
+                total,
+                field
+                    .resident_bytes()
+                    .ok_or(super::ResidentBytesError { context })?,
+                context,
+            )?;
+        }
+        Ok(total)
     }
 
     /// Returns whether every layer-bearing state input already matches this packet.

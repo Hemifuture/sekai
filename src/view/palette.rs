@@ -152,6 +152,18 @@ impl PreparedCellField {
     pub fn category_keys(&self) -> &[u32] {
         &self.category_keys
     }
+
+    /// Returns owned heap bytes using vector and string capacities with checked arithmetic.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared cell field";
+        let total = self
+            .field_id
+            .resident_bytes()
+            .ok_or(super::ResidentBytesError { context })?;
+        let total =
+            super::resident::add_capacity::<u32>(total, self.raw_values.capacity(), context)?;
+        super::resident::add_capacity::<u32>(total, self.category_keys.capacity(), context)
+    }
 }
 
 /// Failures returned while preparing renderer-neutral display data.

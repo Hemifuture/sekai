@@ -38,6 +38,15 @@ fn ray_sphere_preserves_roundoff_tangents_without_accepting_nearby_true_misses()
 }
 
 #[test]
+fn exact_tangent_reports_the_hand_derived_distance_and_direction() {
+    let hit =
+        intersect_unit_sphere(UnitRay::new([1.0, -2.0, 0.0], [0.0, 1.0, 0.0]).unwrap()).unwrap();
+
+    assert_eq!(hit.distance(), 2.0);
+    assert_eq!(hit.direction().components(), [1.0, 0.0, 0.0]);
+}
+
+#[test]
 fn ray_construction_normalizes_directions_and_rejects_invalid_components() {
     let ray = UnitRay::new([0.0, 0.0, 3.0], [0.0, 0.0, -4.0]).unwrap();
     assert_eq!(ray.direction().components(), [0.0, 0.0, -1.0]);

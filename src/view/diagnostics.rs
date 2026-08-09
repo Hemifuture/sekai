@@ -143,4 +143,9 @@ impl PreparedDiagnosticMask {
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
+
+    /// Returns owned heap bytes using the diagnostic vector capacity.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        super::resident::capacity_bytes::<u32>(self.cells.capacity(), "prepared diagnostic mask")
+    }
 }

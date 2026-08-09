@@ -19,6 +19,7 @@ const TRIANGLE_VERTEX_COUNT: usize = 3;
 const MAX_PROJECTED_FRAGMENT_VERTICES: usize = 5;
 const ARC_BISECTION_ITERATIONS: usize = 64;
 const POLE_HORIZONTAL_EPSILON: f64 = 32.0 * f64::EPSILON;
+const SEAM_SNAP_EPSILON: f64 = 64.0 * f64::EPSILON * PI;
 const SPAN_EPSILON: f64 = 2.0e-12;
 const GLOBE_RADIUS_EPSILON: f32 = 2.0e-6;
 
@@ -366,6 +367,25 @@ impl PreparedGlobeMesh {
         &self.indices
     }
 
+    /// Returns owned heap bytes for undeformed geometry using collection capacities.
+    ///
+    /// Allocator bookkeeping and the inline `Self` value are intentionally excluded.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared unit globe";
+        let total = super::resident::capacity_bytes::<UnitVector3>(
+            self.cell_centroids.capacity(),
+            context,
+        )?;
+        let total = super::resident::add_capacity::<GlobeEdgeSegment>(
+            total,
+            self.edge_segments.capacity(),
+            context,
+        )?;
+        let total =
+            super::resident::add_capacity::<GlobeVertex>(total, self.vertices.capacity(), context)?;
+        super::resident::add_capacity::<u32>(total, self.indices.capacity(), context)
+    }
+
     pub(crate) fn cell_centroids(&self) -> &[UnitVector3] {
         &self.cell_centroids
     }
@@ -509,6 +529,23 @@ impl PreparedProjectedMap {
     /// Returns triangle indices in stable cell/fan/fragment order.
     pub fn indices(&self) -> &[u32] {
         &self.indices
+    }
+
+    /// Returns owned heap bytes for projected geometry using collection capacities.
+    ///
+    /// Allocator bookkeeping and the inline `Self` value are intentionally excluded.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared projected map";
+        let total = super::resident::capacity_bytes::<ProjectedMapVertex>(
+            self.vertices.capacity(),
+            context,
+        )?;
+        let total = super::resident::add_capacity::<u32>(total, self.indices.capacity(), context)?;
+        super::resident::add_capacity::<ProjectedEdgeSegment>(
+            total,
+            self.edge_segments.capacity(),
+            context,
+        )
     }
 
     /// Returns seam-safe projected fragments in stable authoritative edge order.
@@ -724,16 +761,23 @@ fn split_polygon_at_seam(
     central_meridian: f64,
     cell: CellId,
 ) -> Result<Vec<Vec<AngularVertex>>, SphericalMeshError> {
-    let min = polygon
+    let mut snapped = polygon.to_vec();
+    for vertex in &mut snapped {
+        let seam_distance = (vertex.longitude.abs() - PI).abs();
+        if seam_distance <= SEAM_SNAP_EPSILON {
+            vertex.longitude = vertex.longitude.signum() * PI;
+        }
+    }
+    let min = snapped
         .iter()
         .map(|vertex| vertex.longitude)
         .fold(f64::INFINITY, f64::min);
-    let max = polygon
+    let max = snapped
         .iter()
         .map(|vertex| vertex.longitude)
         .fold(f64::NEG_INFINITY, f64::max);
     if min >= -PI && max <= PI {
-        return Ok(vec![polygon.to_vec()]);
+        return Ok(vec![snapped]);
     }
 
     let (seam, first_keeps_less, second_shift) = if max > PI {
@@ -743,8 +787,8 @@ fn split_polygon_at_seam(
     } else {
         return Err(SphericalMeshError::InvalidCellGeometry { cell });
     };
-    let first = clip_polygon(polygon, seam, first_keeps_less, central_meridian, cell)?;
-    let mut second = clip_polygon(polygon, seam, !first_keeps_less, central_meridian, cell)?;
+    let first = clip_polygon(&snapped, seam, first_keeps_less, central_meridian, cell)?;
+    let mut second = clip_polygon(&snapped, seam, !first_keeps_less, central_meridian, cell)?;
     for vertex in &mut second {
         vertex.longitude += second_shift;
     }
@@ -1288,6 +1332,50 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn seam_roundoff_does_not_create_a_degenerate_duplicate_fragment() {
+        let polygon = [
+            AngularVertex {
+                direction: UnitVector3::new(
+                    -0.779_856_009_277_915_4,
+                    -0.012_682_137_155_643_595,
+                    0.625_830_462_817_438_5,
+                )
+                .unwrap(),
+                latitude: 0.676_195_830_414_554_3,
+                longitude: -3.125_331_934_662_663,
+            },
+            AngularVertex {
+                direction: UnitVector3::new(
+                    -0.776_630_775_524_748,
+                    3.398_588_507_649_087_4e-15,
+                    0.629_956_060_775_534_2,
+                )
+                .unwrap(),
+                latitude: 0.681_496_633_541_563_4,
+                longitude: -3.141_592_653_589_797_6,
+            },
+            AngularVertex {
+                direction: UnitVector3::new(
+                    -0.783_185_232_425_882_7,
+                    3.427_271_251_882_377e-15,
+                    0.621_788_462_187_918_3,
+                )
+                .unwrap(),
+                latitude: 0.671_024_213_846_250_6,
+                longitude: -3.141_592_653_589_797_6,
+            },
+        ];
+
+        let fragments = split_polygon_at_seam(&polygon, 0.0, CellId::from_raw(7130)).unwrap();
+
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].len(), 3);
+        assert!(fragments[0]
+            .iter()
+            .all(|vertex| (-PI..=PI).contains(&vertex.longitude)));
+    }
+
     fn relative_longitude(direction: UnitVector3, central_meridian: f64) -> f64 {
         let [x, y, _] = direction.components();
         (y.atan2(x) - central_meridian + PI).rem_euclid(2.0 * PI) - PI
@@ -1710,11 +1798,17 @@ mod tests {
 
                 let near_pole = direction(-1.0, latitude_sign * (FRAC_PI_2 - 1.0e-8));
                 let expected = projection.forward(near_pole).unwrap();
-                let angular =
-                    angular_edge([near_pole, incident], projection.central_meridian()).unwrap();
-                let actual = project_angular(angular[0], projection).unwrap();
-                assert!((actual.x() - expected.x()).abs() <= 2.0e-12);
-                assert!((actual.y() - expected.y()).abs() <= 2.0e-12);
+                for endpoints in [[near_pole, incident], [incident, near_pole]] {
+                    let angular = angular_edge(endpoints, projection.central_meridian()).unwrap();
+                    let near_pole_vertex = if endpoints[0] == near_pole {
+                        angular[0]
+                    } else {
+                        angular[1]
+                    };
+                    let actual = project_angular(near_pole_vertex, projection).unwrap();
+                    assert!((actual.x() - expected.x()).abs() <= 2.0e-12);
+                    assert!((actual.y() - expected.y()).abs() <= 2.0e-12);
+                }
             }
 
             let mut segments = Vec::new();

@@ -4,6 +4,7 @@ use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
 mod field_document;
+mod frame_stats;
 #[cfg_attr(not(test), allow(dead_code))]
 mod legacy_display;
 mod natural_display;
@@ -22,6 +23,7 @@ pub use spherical_presentation::{
 };
 
 use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
+use frame_stats::{emit_runtime_line, FrameSampler};
 use natural_display::{LegacyPlanarNaturalFieldDocument, NaturalDisplayError};
 
 use crate::world::spatial::Topology;
@@ -58,10 +60,14 @@ use crate::{
             SphericalCanvasAction, SphericalInspectorCache,
         },
     },
-    view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
+    view::{
+        DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay,
+        VectorGlyphLod,
+    },
     world::{
         natural::{
-            ClimateSpec, GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
+            preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, ClimateSpec,
+            GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
             ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
             WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
             MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
@@ -113,6 +119,15 @@ fn default_spherical_space_spec() -> crate::world::SphericalSpaceSpec {
         radius: Meters::new(6_371_000.0).expect("the Earth-like default radius is valid"),
         target_cell_count: DEFAULT_TARGET_CELL_COUNT,
     }
+}
+
+fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCanvasState) {
+    let mut state = canvas.field_state().clone();
+    state.select_fill(surface_elevation_m_field_id());
+    state.select_overlay(Some(preliminary_prevailing_wind_m_s_field_id()));
+    state.set_vector_lod(VectorGlyphLod::Medium);
+    state.select_entity(None);
+    canvas.replace_field_state(state);
 }
 
 mod spherical_space_spec_serde {
@@ -227,6 +242,10 @@ pub struct TemplateApp {
     display_revision_clock: DisplayRevisionClock,
     #[serde(skip)]
     rule_build_summary: RuleBuildSummary,
+    #[serde(skip, default = "frame_stats::runtime_frame_sampler")]
+    frame_sampler: FrameSampler,
+    #[serde(skip)]
+    frame_stats_persisted_canvas_state: Option<crate::ui::spherical::SphericalCanvasState>,
 }
 
 impl Default for TemplateApp {
@@ -260,6 +279,8 @@ impl Default for TemplateApp {
             stage_cache: MemoryStageCache::new(),
             display_revision_clock: DisplayRevisionClock::default(),
             rule_build_summary: RuleBuildSummary::default(),
+            frame_sampler: frame_stats::runtime_frame_sampler(),
+            frame_stats_persisted_canvas_state: None,
         }
     }
 }
@@ -348,7 +369,29 @@ impl TemplateApp {
             Self::default()
         };
 
+        if app.frame_sampler.is_requested_or_enabled()
+            && frame_stats::runtime_medium_wind_scenario_requested()
+        {
+            app.frame_stats_persisted_canvas_state = Some(app.spherical_canvas_state.clone());
+            configure_frame_stats_scenario(&mut app.spherical_canvas_state);
+        }
+
         app.render_state = cc.wgpu_render_state.clone();
+        if app.frame_sampler.is_requested_or_enabled() {
+            let adapter = cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|render_state| format!("{:?}", render_state.adapter.get_info()))
+                .unwrap_or_else(|| "unavailable".to_owned());
+            emit_runtime_line(&format!(
+                "SEKAI_FRAME_STATS adapter={adapter} window=10s source=egui_input_time scenario={}",
+                if app.frame_stats_persisted_canvas_state.is_some() {
+                    "elevation+medium_wind"
+                } else {
+                    "current"
+                }
+            ));
+        }
         match (app.world_origin, cc.wgpu_render_state.as_ref()) {
             (PersistedWorldOrigin::LegacyPlanarV1, render_state) => {
                 if let Some(render_state) = render_state {
@@ -812,10 +855,54 @@ impl TemplateApp {
 
 impl eframe::App for TemplateApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
+        if let Some(mut persisted) = self.frame_stats_persisted_canvas_state.take() {
+            std::mem::swap(&mut self.spherical_canvas_state, &mut persisted);
+            eframe::set_value(storage, eframe::APP_KEY, self);
+            std::mem::swap(&mut self.spherical_canvas_state, &mut persisted);
+            self.frame_stats_persisted_canvas_state = Some(persisted);
+        } else {
+            eframe::set_value(storage, eframe::APP_KEY, self);
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let update_time_seconds = ctx.input(|input| input.time);
+        let toggle_frame_sampler = ctx.input(|input| {
+            input.modifiers.ctrl && input.modifiers.alt && input.key_pressed(egui::Key::F)
+        });
+        if toggle_frame_sampler {
+            if self.frame_sampler.is_enabled() {
+                self.frame_sampler.disable();
+            } else {
+                self.frame_sampler.start(update_time_seconds);
+            }
+        }
+        self.frame_sampler.observe_update(update_time_seconds);
+        if self.frame_sampler.take_viewport_report_request() {
+            let viewport_size = ctx.input(|input| {
+                input
+                    .viewport()
+                    .inner_rect
+                    .unwrap_or_else(|| input.screen_rect())
+                    .size()
+            });
+            emit_runtime_line(&format!(
+                "SEKAI_FRAME_STATS logical_viewport={:.0}x{:.0}",
+                viewport_size.x, viewport_size.y
+            ));
+        }
+        if let Some(stats) = self.frame_sampler.take_unreported_completed() {
+            emit_runtime_line(&format!(
+                "SEKAI_FRAME_STATS average_fps={:.3} one_percent_low_fps={:.3} samples={} window=10s",
+                stats.average_fps(),
+                stats.one_percent_low_fps(),
+                stats.sample_count()
+            ));
+        }
+        if self.frame_sampler.is_sampling() {
+            ctx.request_repaint();
+        }
+
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 if !cfg!(target_arch = "wasm32") {
@@ -827,6 +914,19 @@ impl eframe::App for TemplateApp {
                     ui.add_space(16.0);
                 }
                 egui::widgets::global_theme_preference_buttons(ui);
+                if self.frame_sampler.is_enabled() {
+                    ui.separator();
+                    if let Some(stats) = self.frame_sampler.completed() {
+                        ui.label(format!(
+                            "10s updates: {:.1} FPS | 1% low {:.1} FPS | {} samples",
+                            stats.average_fps(),
+                            stats.one_percent_low_fps(),
+                            stats.sample_count()
+                        ));
+                    } else {
+                        ui.label("10s update sampling…");
+                    }
+                }
             });
         });
 
@@ -1302,10 +1402,10 @@ mod natural_app_tests {
 
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
-        default_world_spec, formation_provenance_label, AppRuntimeError, AppRuntimeGraph,
-        MigrationFailurePoint, NaturalWorldBuildError, PersistedWorldOrigin,
-        PublishedSphericalPresentation, TemplateApp, CURRENT_SLICE_STATUS_TEXT,
-        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        configure_frame_stats_scenario, default_world_spec, formation_provenance_label,
+        AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint, NaturalWorldBuildError,
+        PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -1320,7 +1420,9 @@ mod natural_app_tests {
         RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion,
         TectonicConstraintClause, AUTHOR_CONSTRAINTS_SCHEMA_V1,
     };
-    use crate::ui::spherical::{SphericalCanvasAction, SphericalInspectorCache};
+    use crate::ui::spherical::{
+        SphericalCanvasAction, SphericalCanvasState, SphericalInspectorCache,
+    };
     use crate::view::{
         FieldDisplayResourceState, OwnedViewDiagnostic, PreparedSphericalOverlay,
         SphericalProjectionKind, SphericalViewMode, VectorGlyphLod, ViewDiagnosticSeverity,
@@ -1394,6 +1496,39 @@ mod natural_app_tests {
         }
 
         fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn opt_in_frame_scenario_is_elevation_medium_wind_and_never_persists() {
+        let mut original = SphericalCanvasState::default();
+        original
+            .apply(SphericalCanvasAction::SelectOverlay(Some(
+                boundary_strength_field_id(),
+            )))
+            .unwrap();
+        let mut measured = original.clone();
+        configure_frame_stats_scenario(&mut measured);
+        assert_eq!(
+            measured.field_state().fill_field(),
+            Some(&surface_elevation_m_field_id())
+        );
+        assert_eq!(
+            measured.field_state().overlay_field(),
+            Some(&preliminary_prevailing_wind_m_s_field_id())
+        );
+        assert_eq!(measured.field_state().vector_lod(), VectorGlyphLod::Medium);
+
+        let mut app = TemplateApp {
+            spherical_canvas_state: measured.clone(),
+            frame_stats_persisted_canvas_state: Some(original.clone()),
+            ..TemplateApp::default()
+        };
+        let mut storage = TestStorage::default();
+        eframe::App::save(&mut app, &mut storage);
+
+        let saved: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
+        assert_eq!(saved.spherical_canvas_state, original);
+        assert_eq!(app.spherical_canvas_state, measured);
     }
 
     fn create_from_persisted(

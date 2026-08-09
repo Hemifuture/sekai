@@ -115,6 +115,10 @@ impl FieldId {
         self.version
     }
 
+    pub(crate) fn resident_bytes(&self) -> Option<usize> {
+        self.namespace.capacity().checked_add(self.name.capacity())
+    }
+
     fn validate(&self) -> Result<(), FieldSchemaError> {
         validate_component(&self.namespace, "field namespace")?;
         validate_component(&self.name, "field name")?;

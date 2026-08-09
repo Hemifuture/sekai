@@ -131,6 +131,71 @@ fn local_vector_mapping_rejects_zero_and_normalizes_finite_results() {
 }
 
 #[test]
+fn local_east_north_and_seam_sides_have_explicit_direction_oracles() {
+    for kind in [
+        SphericalProjectionKind::EqualEarth,
+        SphericalProjectionKind::Equirectangular,
+    ] {
+        let projection = SphericalProjection::new(kind, 33.0_f64.to_radians()).unwrap();
+        let radial = direction(33.0, 28.0);
+        let east = projection
+            .map_local_vector(radial, [1.0, 0.0])
+            .unwrap()
+            .unwrap();
+        let north = projection
+            .map_local_vector(radial, [0.0, 1.0])
+            .unwrap()
+            .unwrap();
+        assert!(east.x() > 1.0 - 1.0e-10, "{kind:?} east={east:?}");
+        assert!(east.y().abs() < 1.0e-8, "{kind:?} east={east:?}");
+        assert!(north.x().abs() < 1.0e-8, "{kind:?} north={north:?}");
+        assert!(north.y() > 1.0 - 1.0e-8, "{kind:?} north={north:?}");
+
+        let west_side = direction(33.0 - 180.0 + 1.0e-6, 28.0);
+        let east_side = direction(33.0 + 180.0 - 1.0e-6, 28.0);
+        let west_east = projection
+            .map_local_vector(west_side, [1.0, 0.0])
+            .unwrap()
+            .unwrap();
+        let east_east = projection
+            .map_local_vector(east_side, [1.0, 0.0])
+            .unwrap()
+            .unwrap();
+        assert!(west_east.x() > 0.0 && east_east.x() > 0.0);
+        assert!((west_east.x() - east_east.x()).abs() < 1.0e-8);
+        assert!((west_east.y() - east_east.y()).abs() < 1.0e-8);
+
+        let west_north = projection
+            .map_local_vector(west_side, [0.0, 1.0])
+            .unwrap()
+            .unwrap();
+        let east_north = projection
+            .map_local_vector(east_side, [0.0, 1.0])
+            .unwrap()
+            .unwrap();
+        assert!((west_north.x() + east_north.x()).abs() < 1.0e-7);
+        assert!((west_north.y() - east_north.y()).abs() < 1.0e-7);
+        assert!(west_north.y() > 0.0 && east_north.y() > 0.0);
+    }
+}
+
+#[test]
+fn both_projection_poles_preserve_north_and_south_sign() {
+    for kind in [
+        SphericalProjectionKind::EqualEarth,
+        SphericalProjectionKind::Equirectangular,
+    ] {
+        let projection = SphericalProjection::new(kind, 0.0).unwrap();
+        let north_point = projection.forward(direction(0.0, 90.0)).unwrap();
+        let south_point = projection.forward(direction(0.0, -90.0)).unwrap();
+        let north = projection.inverse(north_point).unwrap();
+        let south = projection.inverse(south_point).unwrap();
+        assert!(north.components()[2] > 1.0 - EPS);
+        assert!(south.components()[2] < -1.0 + EPS);
+    }
+}
+
+#[test]
 fn outline_excludes_equirectangular_points_beyond_normalized_edges() {
     let projection =
         SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.0).unwrap();

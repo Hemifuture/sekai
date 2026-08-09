@@ -7,6 +7,7 @@ mod mesh;
 mod palette;
 mod prepared;
 mod reference;
+mod resident;
 mod spherical_camera;
 mod spherical_mesh;
 mod spherical_picking;
@@ -51,6 +52,7 @@ pub use prepared::{
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use reference::{rasterize_reference, ReferenceImage};
+pub use resident::ResidentBytesError;
 pub use spherical_camera::{
     GlobeCamera, MapCamera, SphericalPresentationViewState, SphericalViewMode,
 };

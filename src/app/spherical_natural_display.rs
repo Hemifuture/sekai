@@ -281,19 +281,44 @@ impl SphericalNaturalFieldDocument {
         )
     }
 
+    /// Borrows the sole authoritative topology used by every presentation derivative.
+    pub fn surface(&self) -> &crate::world::spatial::SphericalSurfaceSnapshot {
+        self.surface.snapshot()
+    }
+
+    /// Borrows the validated catalog used to prepare fill and annotation layers.
+    pub fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
+        <Self as FieldDocument>::catalog(self)
+    }
+
+    /// Borrows immutable document diagnostics used to prepare the shared mask.
+    pub fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Returns the product-preferred initial fill field.
+    pub fn preferred_field(&self) -> Option<FieldId> {
+        <Self as FieldDocument>::preferred_field(self)
+    }
+
+    /// Returns the document-authoritative preferred range for a field.
+    pub fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
+        <Self as FieldDocument>::preferred_range(self, field)
+    }
+
     /// Borrows the validated field catalog for crate-internal product UI.
     pub(crate) fn catalog_for_ui(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
-        <Self as FieldDocument>::catalog(self)
+        self.catalog()
     }
 
     /// Borrows document-owned diagnostics for crate-internal product UI.
     pub(crate) fn diagnostics_for_ui(&self) -> &[OwnedViewDiagnostic] {
-        &self.diagnostics
+        self.diagnostics()
     }
 
     /// Borrows the sole authoritative spherical topology for crate-internal product UI.
     pub(crate) fn surface_for_ui(&self) -> &crate::world::spatial::SphericalSurfaceSnapshot {
-        self.surface.snapshot()
+        self.surface()
     }
 }
 

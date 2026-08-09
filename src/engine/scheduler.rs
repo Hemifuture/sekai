@@ -1,4 +1,7 @@
-use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant as StageTimer;
 
 use thiserror::Error;
 
@@ -11,6 +14,29 @@ use crate::engine::graph::StageGraph;
 use crate::engine::random::{derive_stage_seed, StageIdentity, StageRng};
 use crate::engine::stage::{ErasedStageError, StageDescriptor};
 use crate::world::RootSeed;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Copy)]
+struct StageTimer(f64);
+
+#[cfg(target_arch = "wasm32")]
+impl StageTimer {
+    fn now() -> Self {
+        Self(browser_milliseconds())
+    }
+
+    fn elapsed(self) -> Duration {
+        let elapsed_milliseconds = (browser_milliseconds() - self.0).max(0.0);
+        Duration::from_secs_f64(elapsed_milliseconds / 1_000.0)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_milliseconds() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or(0.0, |performance| performance.now())
+}
 
 /// Typed external artifacts supplied to one build attempt.
 #[derive(Debug, Default)]
@@ -94,7 +120,7 @@ impl BuildEngine {
 
         let mut artifacts = external.artifacts;
         for (descriptor, stage) in self.graph.execution_stages() {
-            let started = Instant::now();
+            let started = StageTimer::now();
             let dependency_hashes = match self.graph.dependency_hashes(descriptor, &artifacts) {
                 Ok(hashes) => hashes,
                 Err(error) => {

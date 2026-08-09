@@ -84,6 +84,23 @@ impl SphericalEntityLocator {
         &self.source
     }
 
+    /// Returns owned heap bytes for cached cells and incident edges using capacities.
+    ///
+    /// Allocator bookkeeping and the inline `Self` value are intentionally excluded.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "spherical entity locator";
+        let mut total =
+            super::resident::capacity_bytes::<CachedCell>(self.cells.capacity(), context)?;
+        for cell in &self.cells {
+            total = super::resident::add_capacity::<CachedEdge>(
+                total,
+                cell.incident_edges.capacity(),
+                context,
+            )?;
+        }
+        Ok(total)
+    }
+
     /// Finds the nearest authoritative Voronoi site by maximum dot product.
     ///
     /// This performs an O(cell-count) scan and is intended for discrete picking,
@@ -296,7 +313,8 @@ mod tests {
 
     use crate::engine::{BuildEngine, BuildResultHash, ExternalArtifacts, MemoryStageCache};
     use crate::generators::spatial::{
-        spherical_foundation_graph, SphericalSpaceArtifact, SphericalSurfaceArtifact,
+        spherical_foundation_graph, GeodesicVoronoiBuilder, SphericalSpaceArtifact,
+        SphericalSurfaceArtifact,
     };
     use crate::view::{
         ProjectionPoint, SphericalPresentationSource, SphericalProjection,
@@ -350,6 +368,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn locator_rejects_a_valid_snapshot_that_does_not_match_its_source() {
+        let source_surface = surface();
+        let foreign_surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 42,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            SphericalEntityLocator::new(source(&source_surface), &foreign_surface),
+            Err(super::SphericalPickingError::SourceSurfaceMismatch { .. })
+        ));
     }
 
     #[test]

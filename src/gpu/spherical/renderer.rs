@@ -384,6 +384,23 @@ impl SphericalGpuPacket {
     pub const fn layers_arc(&self) -> &Arc<PreparedFieldLayers> {
         &self.layers
     }
+
+    /// Returns a validated packet that reuses this packet's exact geometry and revisions.
+    ///
+    /// This is the narrow composition boundary for callers that prepare a new source-bound field
+    /// layer packet without rebuilding either spherical geometry allocation.
+    pub fn try_with_layers(
+        &self,
+        layers: Arc<PreparedFieldLayers>,
+    ) -> Result<Self, SphericalRenderError> {
+        Self::try_new(
+            Arc::clone(&self.map),
+            self.map_geometry_revision,
+            Arc::clone(&self.globe),
+            self.globe_geometry_revision,
+            layers,
+        )
+    }
 }
 
 /// The independent geometry pipeline selected for one spherical paint.
@@ -448,6 +465,9 @@ pub enum SphericalRenderError {
     /// A camera transform was non-finite after checked conversion.
     #[error("spherical GPU camera transform must be finite")]
     InvalidCamera,
+    /// A fixed-size frame uniform named a packet that is not currently installed.
+    #[error("spherical frame packet is not the currently installed GPU packet")]
+    FramePacketNotInstalled,
     /// Prepared geometry violated an indexed GPU layout invariant.
     #[error("{resource} contains invalid spherical GPU geometry")]
     InvalidGeometry {
@@ -815,6 +835,40 @@ impl SphericalFieldRenderer {
     #[cfg(test)]
     pub(crate) const fn frame_uniform_size_for_test() -> u64 {
         std::mem::size_of::<SphericalFrameUniform>() as u64
+    }
+
+    /// Prepares one fixed-size projected-map frame without rebuilding immutable resources.
+    pub fn prepare_map_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+        camera: MapCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
+    ) -> Result<u64, SphericalRenderError> {
+        if !self.callback_packet_is_current(packet) {
+            return Err(SphericalRenderError::FramePacketNotInstalled);
+        }
+        let uniform =
+            SphericalFrameUniform::for_map_with_animation(packet, camera, viewport, animation)?;
+        self.prepare_frame(queue, SphericalRenderMode::Map, &uniform)
+    }
+
+    /// Prepares one fixed-size unit-globe frame without rebuilding immutable resources.
+    pub fn prepare_globe_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+        packet: &SphericalGpuPacket,
+        camera: GlobeCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
+    ) -> Result<u64, SphericalRenderError> {
+        if !self.callback_packet_is_current(packet) {
+            return Err(SphericalRenderError::FramePacketNotInstalled);
+        }
+        let uniform =
+            SphericalFrameUniform::for_globe_with_animation(packet, camera, viewport, animation)?;
+        self.prepare_frame(queue, SphericalRenderMode::Globe, &uniform)
     }
 
     fn prepare_packet_with_limits(

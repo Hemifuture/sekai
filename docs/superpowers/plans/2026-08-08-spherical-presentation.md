@@ -825,15 +825,29 @@ git commit -m "feat: make spherical world the default canvas"
 **Interfaces:**
 - Produces reproducible CPU/GPU measurement evidence, upload counters, stable offscreen fixture hashes, wasm compile evidence, and a complete acceptance audit.
 
-- [ ] **Step 1: Add ignored Release 20k performance and memory test**
+- [x] **Step 1: Add ignored Release 20k performance and memory test**
 
 The ignored test must separately time/map byte-account these stages: Equal Earth geometry, globe geometry, locator, field layers, and medium wind glyph instances. Use public `resident_bytes()` methods that sum capacities with checked arithmetic. Assert combined bytes `<= 128 * 1024 * 1024` and combined CPU preparation `<= 1 second`; print each component and reference-machine metadata. It must also assert static second-frame large-upload deltas are zero.
 
-- [ ] **Step 2: Freeze complete offscreen and invalidation goldens**
+Evidence (2026-08-09, final fresh Release run, requested 20,000 / resolved 20,252 cells): Windows x86_64, Intel64 Family 6 Model 183 Stepping 1, rustc 1.97.1, NVIDIA GeForce RTX 4080 SUPER via Vulkan. Equal Earth was 94.7999 ms / 17,301,504 B; unit globe 41.4427 ms / 12,672,808 B; locator 38.6569 ms / 10,854,112 B; field layers 179.8 us / 405,644 B; medium wind 3.2359 ms / 279,664 B; combined 178.3152 ms / 41,513,732 B. Initial GPU upload was 13,568,240 B and the static second-frame large-upload delta was exactly zero.
+
+- [x] **Step 2: Freeze complete offscreen and invalidation goldens**
 
 Cover map/globe scalar/category fills, edge scalar/category, vector paused/animated, seam fragments, poles, front/back visibility, and diagnostics. Hash RGBA8 fixtures with BLAKE3, store expected hashes in the test with width/height/pixel format, and keep CPU semantic assertions so a reviewed visual update cannot mask a wrong ID/value.
 
-- [ ] **Step 3: Run automated acceptance gates from a clean status**
+Evidence: the required-GPU 192x96 `Rgba8UnormSrgb` suite passed twice before freezing and passed again in the fresh required-GPU workspace run. CPU oracles independently lock source values/IDs, edge and vector direction/magnitude, unit radius, seam span/boundary, pole signs, front/back camera semantics, and the exact diagnostic mask. BLAKE3 hashes are:
+
+- map/globe scalar: `4667a5c864059ab62930c13605afd450bcda223de278189901bb3e3f961ea7f6` / `e5b6c940e404da9e14d3bb361d95ddddc769f456a3cccc9401489629ef0afd8e`
+- map/globe category: `a54bc080f98a1286447c4c9f6ac0fc2a6787d7ef39397e182178bd1652be3176` / `b98ab1546e04231e33e6c1a8ab3642276c19b38a2b01e69640c0d389770a2dfa`
+- map/globe edge scalar: `7e1339526012b1b482aec63b338e2125ddf322a3a26a1e5d2a4a87e2f247fa66` / `1917b2f73a66fae3055df45e7645b7cb60a6d8be2228d3aa0899121325fcad65`
+- map/globe edge category: `fb98595b43bce82fe8f8cc03a6d6689a1e8be3bcc58b553797f31c661b2e3006` / `34a9d6b98423f73322b93cd542cf220a577dbb6838964e623b0424646546f682`
+- map vector paused/animated: `854a0c5de26a53f327b99468135228ab62fbd9d13adb681734a7ce4824d519ea` / `2f771a691b94e21376bc6c0afb0b18192445135b5bd6dfaf3a0133970ec553c0`
+- globe vector paused/animated: `7bfa53f3a3994b8b09f944b2811a34b1df175b061d1aeaf2cafd2469d3472945` / `bfa2a2187339088821a9de44765714bbb5b7c086cd86b8008e27bdde61ee6e13`
+- seam / poles: `c3fd61ab59518de6aa58d7ac2d8932c4d0fb9041829d45620aaf793c0f09cb7b` / `a05e4d4b9999272069f2f59b663dbb5207e43d21212ebec96b560f1338fdb367`
+- globe front/back: `b98ab1546e04231e33e6c1a8ab3642276c19b38a2b01e69640c0d389770a2dfa` / `517ed29b500712fe7ff712e6eaa65d839c1e5a158da55e07597b2681532fe34c`
+- map/globe diagnostics: `a150adb60c1432bb1876bd80148ef7c9f3b2fad4e6db6d06cef2aef9df77df39` / `119bd962b7a3b682dcf277d46e7e094344c384da7f4012d1c0f72e872917d500`
+
+- [x] **Step 3: Run automated acceptance gates from a clean status**
 
 Run exactly:
 
@@ -849,20 +863,30 @@ git diff --check
 git status --short
 ```
 
-- [ ] **Step 4: Perform native and browser interaction smoke tests**
+Evidence: the exact fmt/check/clippy/workspace-all-targets-and-features/doc/Release-performance/wasm commands above passed fresh on 2026-08-09; the final workspace run exited 0 in 194.6 s. A supplemental fresh full run with `SEKAI_REQUIRE_SPHERICAL_GPU=1` exited 0 in 170.3 s (332 library tests plus every workspace target), proving the GPU target did not skip. `git diff --check` passed; the pre-commit non-clean status contained only the intentional Task 11 patch and staged removal of accidentally tracked ignored SDD reports.
+
+- [x] **Step 4: Perform native and browser interaction smoke tests**
 
 Use the same 1280×720, 20k-cell, elevation-fill, medium-wind-overlay scenario for 10 seconds. On native, verify map pan/zoom, Equal Earth/equirectangular switch, central-meridian seam, globe rotate/zoom, same-entity pick, edge pick, arrow pause/play, and no geometry deformation. On wasm in a real browser, repeat and record browser/version, hardware, average FPS, 1% low, and any GPU validation messages. Require native target 60 FPS and browser at least 30 FPS; if manual measurement infrastructure cannot calculate 1% low, do not claim this gate complete.
 
-- [ ] **Step 5: Audit boundaries and update plan evidence**
+Evidence (2026-08-09): the explicit, non-persisted sampler used consecutive real `egui::InputState.time` values for one 10 s window, reported average FPS and inverse-average slowest-ceil-1% FPS, requested repaint only while sampling, and remained zero-UI/zero-allocation when disabled. In a visible native Release window, computer-use confirmed exactly 1280×720 logical/window pixels, 20,252 cells, elevation fill, preliminary prevailing wind at Medium glyph LOD, and an undeformed round unit globe. During the measured window it performed map pan/zoom, switched to the globe, and rotated it; adjacent interaction in the same session covered globe zoom, Cell 7551 persistence across map/globe, Equal Earth/equirectangular switching, central meridian 140 degrees, Edge 21164 picking, and arrow pause/play. The RTX 4080 SUPER Vulkan adapter (driver 591.86) produced 1,201 samples at 120.097 average FPS and 57.193 1% low, with no stderr, wgpu validation error, panic, or app error.
+
+The same Release wasm scenario ran in visible Google Chrome 150.0.7871.187 at an app-reported logical viewport of exactly 1280×720. During its measured window computer-use performed map pan/zoom, globe switching, and globe rotation; adjacent same-session interaction covered globe zoom, Cell 15900 persistence across map/globe, Equal Earth/equirectangular switching, central meridian 135 degrees, Edge 59227 picking, and arrow pause/play. The `BrowserWebGpu` backend produced 1,200 samples at 119.910 average FPS and 90.430 1% low. Browser privacy exposed empty adapter name/vendor/device/driver strings, so no hardware identity is claimed for wasm. There was no wgpu validation error or panic; the only console diagnostics were Chrome's Windows `powerPreference` warning and unrelated extension message-port errors. Native exceeded its 60 FPS target and browser exceeded 30 FPS.
+
+- [x] **Step 5: Audit boundaries and update plan evidence**
 
 Use `rg` to prove spherical presenters do not import legacy mesh/renderer or planar graph; globe mesh code does not mention elevation/relief/height; animation tick does not invoke geometry/glyph builders; and there is one spherical graph call path. Record RED/GREEN commands, commit IDs, byte/time measurements, smoke-test environment, golden hashes, and any intentional deviations under each task.
 
-- [ ] **Step 6: Commit final gates**
+Evidence: boundary `rg` scans found no legacy mesh/renderer/planar-graph imports in `src/app/spherical_presentation.rs` or `src/ui/spherical.rs`; no elevation/relief field argument or displacement path in production globe geometry or GPU code (the spherical-mesh mentions are an exclusion comment and negative no-deformation tests); no builder/preparer/locator call in the extracted phase-action branch; and exactly one production `spherical_natural_foundation_graph()` call in `src/app/spherical_presentation.rs`. Static camera/mode tests showed only three fixed uniform uploads (+336 B) with all immutable upload and validation-scan counts unchanged; phase/camera tests preserved both overlay-instance counters. Deferred Task 3 east/north, seam continuity, and north/south pole-sign oracles; Task 4 source/snapshot negative and exact tangent-distance/direction regressions; and Task 5 reversed near-pole endpoint coverage all pass. The private Task 5 partial-append helper remains intentionally unchanged because failed builds expose no partial map. Accidentally tracked ignored Task 2/4/5/6/7 reports were removed from the index; `git ls-files .superpowers/sdd` is empty while local ignored reports remain available.
+
+- [x] **Step 6: Commit final gates**
 
 ```powershell
 git add tests/spherical_presentation_gpu.rs tests/spherical_presentation_performance.rs tests/spherical_presentation_integration.rs docs/superpowers/plans/2026-08-08-spherical-presentation.md
 git commit -m "test: lock spherical presentation acceptance"
 ```
+
+Evidence: Step 4 has valid visible native and browser measurements, the final exact automated gates and boundary audit pass, and this plan update is included in the exact planned Task 11 commit.
 
 ---
 
