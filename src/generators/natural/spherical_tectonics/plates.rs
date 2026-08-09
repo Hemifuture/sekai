@@ -21,32 +21,16 @@ use crate::generators::natural::random::{
 };
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{PlateIdField, TectonicSpec};
-use crate::world::spatial::SphericalSurfaceSnapshot;
+use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, PlateId};
 
 pub(super) const AREA_WEIGHT_TOTAL: u64 = 1_000_000_000;
 const MAXIMUM_CALIBRATION_ROUNDS: usize = 6;
 const MINIMUM_SEPARATION_SCORE: f64 = 0.20;
+const SEED_CANDIDATE_DIRECTION_COUNT: usize = 1_024;
 const TOP_CANDIDATE_DIVISOR: usize = 20;
 const FIELD_CLAMP_SIGMA_MILLI: u16 = 3_000;
-const METRIC_DISTANCE_SCALE: f64 = 1_000_000.0;
 
-const SEED_PREFERENCE_BANDS: [FieldBand; 2] = [
-    FieldBand {
-        angular_scale_rad: 120.0_f64.to_radians(),
-        weight_milli: 700,
-        shape: FieldShape::Smooth,
-    },
-    FieldBand {
-        angular_scale_rad: 55.0_f64.to_radians(),
-        weight_milli: 300,
-        shape: FieldShape::Smooth,
-    },
-];
-const SEED_PREFERENCE_RECIPE: FieldRecipe = FieldRecipe {
-    bands: &SEED_PREFERENCE_BANDS,
-    clamp_sigma_milli: FIELD_CLAMP_SIGMA_MILLI,
-};
 const PLATE_RESISTANCE_BANDS: [FieldBand; 3] = [
     FieldBand {
         angular_scale_rad: 100.0_f64.to_radians(),
@@ -68,7 +52,7 @@ const PLATE_RESISTANCE_RECIPE: FieldRecipe = FieldRecipe {
     bands: &PLATE_RESISTANCE_BANDS,
     clamp_sigma_milli: FIELD_CLAMP_SIGMA_MILLI,
 };
-const PLATE_FABRIC_BANDS: [FieldBand; 2] = [
+const PLATE_FABRIC_BANDS: [FieldBand; 3] = [
     FieldBand {
         angular_scale_rad: 75.0_f64.to_radians(),
         weight_milli: 650,
@@ -77,6 +61,11 @@ const PLATE_FABRIC_BANDS: [FieldBand; 2] = [
     FieldBand {
         angular_scale_rad: 28.0_f64.to_radians(),
         weight_milli: 350,
+        shape: FieldShape::Smooth,
+    },
+    FieldBand {
+        angular_scale_rad: 8.0_f64.to_radians(),
+        weight_milli: 600,
         shape: FieldShape::Smooth,
     },
 ];
@@ -163,24 +152,13 @@ fn generate_plate_partition_observed(
     let targets = generate_target_area_weights(plate_count, &mut target_rng)?;
 
     let mut placement_rng = streams.stream(PLATE_SEED_PLACEMENT_LABEL);
-    let seed_preference = sample_spherical_field_or_neutral(
-        surface,
-        SEED_PREFERENCE_RECIPE,
-        placement_rng.next_u32(),
-    )?;
     let resistance_seed = streams.stream(PLATE_RESISTANCE_FIELD_LABEL).next_u32();
     let resistance =
         sample_spherical_field_or_neutral(surface, PLATE_RESISTANCE_RECIPE, resistance_seed)?;
     let fabric = sample_plate_fabric(surface, streams)?;
     let metric = build_plate_metric(topology, &resistance, &fabric)?;
 
-    let placed = place_plate_seeds(
-        topology,
-        &metric,
-        &seed_preference,
-        &targets,
-        &mut placement_rng,
-    )?;
+    let placed = place_plate_seeds(surface, topology, &metric, &targets, &mut placement_rng)?;
     calibrate_partition_observed(
         topology,
         &metric,
@@ -265,9 +243,9 @@ fn generate_target_area_weights(
 }
 
 fn place_plate_seeds(
+    surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     metric: &PositiveEdgeMetric,
-    preference: &QuantizedScalarField,
     targets: &[u64],
     rng: &mut impl RngCore,
 ) -> Result<PlacedSeeds, PlateMorphologyError> {
@@ -282,33 +260,31 @@ fn place_plate_seeds(
     let mut distance_by_plate: Vec<Option<Box<[u64]>>> = vec![None; plate_count];
     let mut selected = vec![false; topology.cell_count()];
     let mut selected_plates: Vec<usize> = Vec::with_capacity(plate_count);
+    let mut seed_directions = vec![None; plate_count];
     let mut workspace = ArrivalWorkspace::default();
+    let candidate_directions = sample_seed_directions(SEED_CANDIDATE_DIRECTION_COUNT, rng);
+    let mut used_candidates = vec![false; candidate_directions.len()];
 
     for &plate in &order {
-        let mut candidates = Vec::with_capacity(topology.cell_count() - selected_plates.len());
-        for (index, &is_selected) in selected.iter().enumerate() {
-            if is_selected {
+        let mut candidates = Vec::with_capacity(candidate_directions.len() - selected_plates.len());
+        for (candidate_rank, &direction) in candidate_directions.iter().enumerate() {
+            if used_candidates[candidate_rank] {
                 continue;
             }
-            let cell = CellId::from_raw(index as u32);
             let separation = if selected_plates.is_empty() {
                 1.0
             } else {
                 selected_plates
                     .iter()
                     .map(|&other| {
-                        let distance = distance_by_plate[other]
-                            .as_ref()
-                            .expect("selected plates have source distances")[index]
-                            as f64
-                            / METRIC_DISTANCE_SCALE;
-                        distance / (radii[plate] + radii[other])
+                        let other_direction =
+                            seed_directions[other].expect("selected plates have directions");
+                        central_angle(direction, other_direction) / (radii[plate] + radii[other])
                     })
                     .fold(f64::INFINITY, f64::min)
             };
             if selected_plates.is_empty() || separation >= MINIMUM_SEPARATION_SCORE {
-                let score = separation + preference.normalized_f64(cell) * 0.12;
-                candidates.push((score, cell));
+                candidates.push((separation, candidate_rank));
             }
         }
         if candidates.is_empty() {
@@ -323,9 +299,27 @@ fn place_plate_seeds(
                 .then_with(|| first.1.cmp(&second.1))
         });
         let shortlist = candidates.len().div_ceil(TOP_CANDIDATE_DIVISOR).max(1);
-        let chosen = candidates[(rng.next_u64() % shortlist as u64) as usize].1;
+        let chosen_candidate = candidates[(rng.next_u64() % shortlist as u64) as usize].1;
+        let chosen_direction = candidate_directions[chosen_candidate];
+        let chosen = surface
+            .cells()
+            .iter()
+            .filter(|cell| !selected[cell.id.raw() as usize])
+            .max_by(|first, second| {
+                first
+                    .centroid
+                    .dot(chosen_direction)
+                    .total_cmp(&second.centroid.dot(chosen_direction))
+                    .then_with(|| second.id.cmp(&first.id))
+            })
+            .ok_or(PlateMorphologyError::SeedPlacementExhausted {
+                plate: PlateId::from_raw(plate as u32),
+            })?
+            .id;
+        used_candidates[chosen_candidate] = true;
         selected[chosen.raw() as usize] = true;
         seeds[plate] = Some(chosen);
+        seed_directions[plate] = Some(chosen_direction);
         selected_plates.push(plate);
 
         let assignment = assign_arrivals(
@@ -351,6 +345,22 @@ fn place_plate_seeds(
             .map(|distances| distances.expect("every plate was placed"))
             .collect(),
     })
+}
+
+fn sample_seed_directions(count: usize, rng: &mut impl RngCore) -> Vec<UnitVector3> {
+    (0..count)
+        .map(|_| {
+            let z = unit_f64(rng) * 2.0 - 1.0;
+            let azimuth = unit_f64(rng) * std::f64::consts::TAU;
+            let radial = (1.0 - z * z).max(0.0).sqrt();
+            UnitVector3::new(radial * azimuth.cos(), radial * azimuth.sin(), z)
+                .expect("finite spherical plate-seed direction")
+        })
+        .collect()
+}
+
+fn unit_f64(rng: &mut impl RngCore) -> f64 {
+    (rng.next_u64() >> 11) as f64 / (1_u64 << 53) as f64
 }
 
 fn calibrate_partition(
@@ -556,7 +566,7 @@ mod tests {
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{TectonicActivity, TectonicSpec};
-    use crate::world::spatial::SphericalNaturalSurface;
+    use crate::world::spatial::{central_angle, SphericalNaturalSurface};
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     fn stage_rng(seed: u64) -> StageRng {
@@ -593,6 +603,45 @@ mod tests {
             .sum::<f64>()
             / values.len() as f64;
         variance.sqrt() / mean
+    }
+
+    fn median_cell_diameter(surface: &crate::world::spatial::SphericalSurfaceSnapshot) -> f64 {
+        let radius_squared = surface.radius().get().powi(2);
+        let mut diameters = surface
+            .cells()
+            .iter()
+            .map(|cell| {
+                let unit_area = cell.area.get() / radius_squared;
+                2.0 * (1.0 - unit_area / (2.0 * PI)).clamp(-1.0, 1.0).acos()
+            })
+            .collect::<Vec<_>>();
+        diameters.sort_by(f64::total_cmp);
+        diameters[diameters.len() / 2]
+    }
+
+    #[test]
+    fn plate_seed_directions_are_stable_across_resolution() {
+        let (coarse_surface, coarse_topology, coarse_streams) = fixture(642, 42);
+        let (fine_surface, fine_topology, fine_streams) = fixture(2_562, 42);
+        let spec = TectonicSpec::default();
+        let coarse =
+            generate_plate_partition(&coarse_surface, &coarse_topology, &spec, &coarse_streams)
+                .unwrap();
+        let fine =
+            generate_plate_partition(&fine_surface, &fine_topology, &spec, &fine_streams).unwrap();
+        let tolerance = median_cell_diameter(&coarse_surface) * 1.5;
+
+        for (plate, (&coarse_seed, &fine_seed)) in coarse.seeds.iter().zip(&fine.seeds).enumerate()
+        {
+            let angle = central_angle(
+                coarse_surface.cell(coarse_seed).unwrap().centroid,
+                fine_surface.cell(fine_seed).unwrap().centroid,
+            );
+            assert!(
+                angle <= tolerance,
+                "plate {plate}: seed directions differ by {angle}, tolerance={tolerance}"
+            );
+        }
     }
 
     fn median_normalized_perimeter(

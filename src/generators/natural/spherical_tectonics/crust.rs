@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::plates::{sample_plate_fabric, PlatePartition, AREA_WEIGHT_TOTAL};
 use crate::generators::natural::morphology::area::{
-    build_area_constrained_mask, AreaSelectionError, ProtectedRegionSeed,
+    build_component_budgeted_area_mask, AreaSelectionError, ProtectedRegionSeed,
 };
 use crate::generators::natural::morphology::field::{
     sample_spherical_field, sample_spherical_field_or_neutral, FieldBand, FieldRecipe, FieldShape,
@@ -20,7 +20,7 @@ use crate::world::natural::{
     CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
     OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
-use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot};
+use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::CellId;
 
 const FIELD_CLAMP_SIGMA_MILLI: u16 = 3_000;
@@ -227,7 +227,6 @@ fn generate_crust_observed(
         .iter()
         .map(|&value| (i64::from(value) * i64::from(SCORE_SCALE) / i64::from(i16::MAX)) as i32)
         .collect::<Vec<_>>();
-    let median_cell_diameter = median_equivalent_cell_diameter(surface);
     let primary_share = if profile.primary_clusters == 0 {
         0.0
     } else {
@@ -242,7 +241,7 @@ fn generate_crust_observed(
         &base_scores,
         profile.primary_clusters,
         &[],
-        (median_cell_diameter * 1.5).max(primary_radius * 2.0 + median_cell_diameter * 0.5),
+        primary_radius * 2.0,
         &mut anchor_rng,
     );
     let lobe_influence = clustered_lobe_influence(
@@ -266,17 +265,15 @@ fn generate_crust_observed(
         / 1_000.0
         / profile.island_components.max(1) as f64;
     let island_radius = equivalent_cap_radius(island_share);
-    let island_separation = (median_cell_diameter * 1.5)
-        .max(island_radius * 2.0 + median_cell_diameter * 0.5)
-        .max(if primary.is_empty() {
-            0.0
-        } else {
-            primary_radius + island_radius + median_cell_diameter * 0.75
-        });
+    let island_separation = (island_radius * 2.0).max(if primary.is_empty() {
+        0.0
+    } else {
+        primary_radius + island_radius
+    });
     let islands = select_spread_anchors(
         surface,
         topology,
-        &pre_plate_scores,
+        &base_scores,
         profile.island_components,
         &primary,
         island_separation,
@@ -301,7 +298,7 @@ fn generate_crust_observed(
         (total_weight * u128::from(profile.minimum_component_millionths) / 1_000_000)
             .max(minimum_cell)
     };
-    let mask = build_area_constrained_mask(
+    let mask = build_component_budgeted_area_mask(
         topology,
         &final_scores,
         &protected,
@@ -377,92 +374,46 @@ fn select_spread_anchors(
     minimum_separation_rad: f64,
     rng: &mut impl RngCore,
 ) -> Vec<CellId> {
+    const CANDIDATE_DIRECTION_COUNT: usize = 256;
+
     if count == 0 {
         return Vec::new();
     }
+    let sampled = sample_anchor_candidates(surface, CANDIDATE_DIRECTION_COUNT, rng);
+    let mut peaks = sampled
+        .iter()
+        .copied()
+        .map(|cell| climb_to_local_maximum(topology, scores, cell))
+        .collect::<Vec<_>>();
+    peaks.sort_unstable();
+    peaks.dedup();
     let mut selected = fixed.to_vec();
     let mut added = Vec::with_capacity(count);
     while added.len() < count {
-        let mut candidates = (0..topology.cell_count())
-            .filter(|&index| {
-                let cell = CellId::from_raw(index as u32);
-                !selected.contains(&cell)
-                    && selected.iter().all(|&other| {
-                        central_angle(
-                            surface.cells()[index].centroid,
-                            surface.cells()[other.raw() as usize].centroid,
-                        ) >= minimum_separation_rad
-                    })
-                    && topology.arcs()[index]
-                        .iter()
-                        .all(|arc| scores[index] >= scores[arc.neighbor.raw() as usize])
-            })
-            .map(|index| {
-                let cell = CellId::from_raw(index as u32);
-                let separation = selected
-                    .iter()
-                    .map(|&other| {
-                        central_angle(
-                            surface.cells()[index].centroid,
-                            surface.cells()[other.raw() as usize].centroid,
-                        )
-                    })
-                    .fold(std::f64::consts::PI, f64::min);
-                let merit = i64::from(scores[index])
-                    + (separation / std::f64::consts::PI * 1_200_000.0).round() as i64;
-                (merit, scores[index], cell)
-            })
-            .collect::<Vec<_>>();
+        let mut candidates = anchor_candidates(
+            surface,
+            scores,
+            &peaks,
+            &selected,
+            Some(minimum_separation_rad),
+        );
         if candidates.is_empty() {
-            candidates = (0..topology.cell_count())
-                .filter(|&index| {
-                    let cell = CellId::from_raw(index as u32);
-                    !selected.contains(&cell)
-                        && selected.iter().all(|&other| {
-                            central_angle(
-                                surface.cells()[index].centroid,
-                                surface.cells()[other.raw() as usize].centroid,
-                            ) >= minimum_separation_rad
-                        })
-                })
-                .map(|index| {
-                    let cell = CellId::from_raw(index as u32);
-                    let separation = selected
-                        .iter()
-                        .map(|&other| {
-                            central_angle(
-                                surface.cells()[index].centroid,
-                                surface.cells()[other.raw() as usize].centroid,
-                            )
-                        })
-                        .fold(std::f64::consts::PI, f64::min);
-                    let merit = i64::from(scores[index])
-                        + (separation / std::f64::consts::PI * 1_200_000.0).round() as i64;
-                    (merit, scores[index], cell)
-                })
-                .collect();
+            candidates = anchor_candidates(
+                surface,
+                scores,
+                &sampled,
+                &selected,
+                Some(minimum_separation_rad),
+            );
         }
         if candidates.is_empty() {
-            candidates = (0..topology.cell_count())
-                .filter(|&index| !selected.contains(&CellId::from_raw(index as u32)))
-                .map(|index| {
-                    let cell = CellId::from_raw(index as u32);
-                    let separation = selected
-                        .iter()
-                        .map(|&other| {
-                            central_angle(
-                                surface.cells()[index].centroid,
-                                surface.cells()[other.raw() as usize].centroid,
-                            )
-                        })
-                        .fold(std::f64::consts::PI, f64::min);
-                    (
-                        (separation * 1_200_000.0).round() as i64 + i64::from(scores[index]),
-                        scores[index],
-                        cell,
-                    )
-                })
-                .collect();
+            candidates = anchor_candidates(surface, scores, &sampled, &selected, None);
+        }
+        if candidates.is_empty() {
+            let all_cells = (0..topology.cell_count())
+                .map(|index| CellId::from_raw(index as u32))
+                .collect::<Vec<_>>();
+            candidates = anchor_candidates(surface, scores, &all_cells, &selected, None);
         }
         candidates.sort_by(|first, second| {
             second
@@ -471,13 +422,100 @@ fn select_spread_anchors(
                 .then_with(|| second.1.cmp(&first.1))
                 .then_with(|| first.2.cmp(&second.2))
         });
-        let top = (candidates.len() / 20).max(1).min(candidates.len());
-        let choice = (rng.next_u64() % top as u64) as usize;
-        let cell = candidates[choice].2;
+        // The affinity field already carries the labeled random variation. Picking an index from
+        // a resolution-dependent shortlist makes the same continuous maximum jump to an unrelated
+        // part of the sphere when the tessellation changes. Consume the layout draw so later lobe
+        // parameters keep their independent stream position, but anchor the component at the best
+        // geometrically separated maximum.
+        let _layout_draw = rng.next_u64();
+        let cell = candidates[0].2;
         selected.push(cell);
         added.push(cell);
     }
     added
+}
+
+fn sample_anchor_candidates(
+    surface: &SphericalSurfaceSnapshot,
+    count: usize,
+    rng: &mut impl RngCore,
+) -> Vec<CellId> {
+    let mut cells = Vec::with_capacity(count);
+    for _ in 0..count {
+        let z = unit_f64(rng) * 2.0 - 1.0;
+        let azimuth = unit_f64(rng) * std::f64::consts::TAU;
+        let radial = (1.0 - z * z).max(0.0).sqrt();
+        let direction = UnitVector3::new(radial * azimuth.cos(), radial * azimuth.sin(), z)
+            .expect("finite spherical anchor direction");
+        let nearest = surface
+            .cells()
+            .iter()
+            .max_by(|first, second| {
+                first
+                    .centroid
+                    .dot(direction)
+                    .total_cmp(&second.centroid.dot(direction))
+                    .then_with(|| second.id.cmp(&first.id))
+            })
+            .expect("validated spherical surfaces contain cells")
+            .id;
+        cells.push(nearest);
+    }
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+fn climb_to_local_maximum(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    start: CellId,
+) -> CellId {
+    let mut current = start;
+    loop {
+        let current_score = scores[current.raw() as usize];
+        let next = topology.arcs()[current.raw() as usize]
+            .iter()
+            .map(|arc| arc.neighbor)
+            .filter(|&neighbor| scores[neighbor.raw() as usize] > current_score)
+            .max_by_key(|&neighbor| (scores[neighbor.raw() as usize], std::cmp::Reverse(neighbor)));
+        let Some(next) = next else {
+            return current;
+        };
+        current = next;
+    }
+}
+
+fn anchor_candidates(
+    surface: &SphericalSurfaceSnapshot,
+    scores: &[i32],
+    pool: &[CellId],
+    selected: &[CellId],
+    minimum_separation_rad: Option<f64>,
+) -> Vec<(i64, i32, CellId)> {
+    pool.iter()
+        .copied()
+        .filter(|cell| !selected.contains(cell))
+        .filter_map(|cell| {
+            let separation = selected
+                .iter()
+                .map(|&other| {
+                    central_angle(
+                        surface.cell(cell).unwrap().centroid,
+                        surface.cell(other).unwrap().centroid,
+                    )
+                })
+                .fold(std::f64::consts::PI, f64::min);
+            minimum_separation_rad
+                .is_none_or(|minimum| separation >= minimum)
+                .then(|| {
+                    let score = scores[cell.raw() as usize];
+                    let merit = i64::from(score)
+                        + (separation / std::f64::consts::PI * 1_200_000.0).round() as i64;
+                    (merit, score, cell)
+                })
+        })
+        .collect()
 }
 
 fn median_equivalent_cell_diameter(surface: &SphericalSurfaceSnapshot) -> f64 {
@@ -519,9 +557,12 @@ fn clustered_lobe_influence(
         let lobe_span = profile.lobe_max - profile.lobe_min + 1;
         let lobe_count = profile.lobe_min + (rng.next_u64() as usize % lobe_span);
         kernels.push((anchor, cap_radius * 0.90));
-        for lobe_index in 0..lobe_count {
-            let center = walk_along_fabric(topology, fabric, anchor, 2 + lobe_index * 2, rng);
+        for _ in 0..lobe_count {
+            let path_selector = rng.next_u64();
+            let offset = cap_radius * (0.25 + 0.65 * unit_f64(rng));
             let support = cap_radius * (0.55 + 0.35 * unit_f64(rng));
+            let center =
+                walk_along_fabric(surface, topology, fabric, anchor, offset, path_selector);
             kernels.push((center, support));
         }
     }
@@ -552,36 +593,114 @@ fn clustered_lobe_influence(
 }
 
 fn walk_along_fabric(
+    surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     fabric: &QuantizedScalarField,
     start: CellId,
-    steps: usize,
-    rng: &mut impl RngCore,
+    target_angle: f64,
+    path_selector: u64,
 ) -> CellId {
-    let mut previous = None;
+    let start_vector = surface.cell(start).unwrap().centroid;
+    let mut initial = topology.arcs()[start.raw() as usize]
+        .iter()
+        .map(|arc| {
+            (
+                i32::from(fabric.get(start).unwrap())
+                    .abs_diff(i32::from(fabric.get(arc.neighbor).unwrap())),
+                arc.neighbor,
+            )
+        })
+        .collect::<Vec<_>>();
+    initial.sort_unstable();
+    let initial_count = initial.len().min(3);
+    if initial_count == 0 {
+        return start;
+    }
+    let heading_cell = initial[path_selector as usize % initial_count].1;
+    let destination = great_circle_destination(
+        start_vector,
+        surface.cell(heading_cell).unwrap().centroid,
+        target_angle,
+    );
+
+    let mut path = vec![start];
     let mut current = start;
-    for _ in 0..steps {
+    let mut best = start;
+    let mut best_error = target_angle;
+    for _ in 0..topology.cell_count() {
         let current_value = i32::from(fabric.get(current).unwrap());
         let mut candidates = topology.arcs()[current.raw() as usize]
             .iter()
-            .filter(|arc| Some(arc.neighbor) != previous)
+            .filter(|arc| !path.contains(&arc.neighbor))
             .map(|arc| {
                 (
                     current_value.abs_diff(i32::from(fabric.get(arc.neighbor).unwrap())),
+                    central_angle(surface.cell(arc.neighbor).unwrap().centroid, destination),
                     arc.neighbor,
                 )
             })
             .collect::<Vec<_>>();
-        candidates.sort_unstable();
+        candidates.sort_by(|first, second| {
+            first
+                .0
+                .cmp(&second.0)
+                .then_with(|| first.1.total_cmp(&second.1))
+                .then_with(|| first.2.cmp(&second.2))
+        });
         let top = candidates.len().min(3);
         if top == 0 {
             break;
         }
-        let next = candidates[(rng.next_u64() % top as u64) as usize].1;
-        previous = Some(current);
+        let next = candidates[..top]
+            .iter()
+            .min_by(|first, second| {
+                first
+                    .1
+                    .total_cmp(&second.1)
+                    .then_with(|| first.0.cmp(&second.0))
+                    .then_with(|| first.2.cmp(&second.2))
+            })
+            .unwrap()
+            .2;
+        path.push(next);
         current = next;
+        let angle = central_angle(start_vector, surface.cell(current).unwrap().centroid);
+        let error = (angle - target_angle).abs();
+        if error < best_error {
+            best = current;
+            best_error = error;
+        }
+        if angle >= target_angle {
+            break;
+        }
     }
-    current
+    best
+}
+
+fn great_circle_destination(
+    start: crate::world::spatial::UnitVector3,
+    heading: crate::world::spatial::UnitVector3,
+    angle: f64,
+) -> crate::world::spatial::UnitVector3 {
+    let start_components = start.components();
+    let heading_components = heading.components();
+    let cosine = start.dot(heading).clamp(-1.0, 1.0);
+    let tangent = std::array::from_fn::<_, 3, _>(|axis| {
+        heading_components[axis] - start_components[axis] * cosine
+    });
+    let tangent_length = tangent
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    let cosine_angle = angle.cos();
+    let sine_angle = angle.sin();
+    crate::world::spatial::UnitVector3::new(
+        start_components[0] * cosine_angle + tangent[0] / tangent_length * sine_angle,
+        start_components[1] * cosine_angle + tangent[1] / tangent_length * sine_angle,
+        start_components[2] * cosine_angle + tangent[2] / tangent_length * sine_angle,
+    )
+    .expect("a distinct neighboring cell defines a finite great-circle heading")
 }
 
 fn plate_interior_preference(
@@ -624,8 +743,11 @@ fn component_budgets(
     target_weight: u128,
     minimum_cell_weight: u128,
 ) -> Vec<ProtectedRegionSeed> {
-    let island_total = target_weight * u128::from(profile.island_budget_milli) / 1_000;
-    let primary_total = target_weight - island_total;
+    const PROTECTED_CORE_BUDGET_MILLI: u128 = 1_000;
+
+    let protected_total = target_weight * PROTECTED_CORE_BUDGET_MILLI / 1_000;
+    let island_total = protected_total * u128::from(profile.island_budget_milli) / 1_000;
+    let primary_total = protected_total - island_total;
     let mut seeds = Vec::with_capacity(primary.len() + islands.len());
     append_equal_budgets(&mut seeds, primary, primary_total);
     let coarse_volcanic = primary.is_empty()
@@ -744,7 +866,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::ops::RangeInclusive;
 
-    use super::{generate_crust, generate_crust_observed};
+    use super::{
+        generate_crust, generate_crust_observed, median_equivalent_cell_diameter, walk_along_fabric,
+    };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::spherical_tectonics::plates::{
@@ -757,11 +881,14 @@ mod tests {
         CONTINENTAL_CRUST_MIN_THICKNESS_KM, OCEANIC_CRUST_MAX_THICKNESS_KM,
         OCEANIC_CRUST_MIN_THICKNESS_KM,
     };
-    use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot};
+    use crate::world::spatial::{
+        central_angle, SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3,
+    };
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     #[derive(Debug)]
     struct ObservedCrust {
+        surface: SphericalSurfaceSnapshot,
         morphology: super::CrustMorphology,
         base_affinity: Vec<i16>,
         anchor_layout: Vec<CellId>,
@@ -783,6 +910,48 @@ mod tests {
             target_cell_count,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn fabric_walk_uses_angular_distance_instead_of_cell_steps() {
+        const TARGET_ANGLE: f64 = 0.45;
+        let reference = UnitVector3::new(1.0, 0.0, 0.0).unwrap();
+        for target_cell_count in [642, 2_562] {
+            let surface = fixture_surface(target_cell_count);
+            let view = SphericalNaturalSurface::new(&surface).unwrap();
+            let topology = NaturalTopologyIndex::from_surface(&view);
+            let streams = LabeledSubstreams::capture(&mut stage_rng(42));
+            let fabric = super::sample_plate_fabric(&surface, &streams).unwrap();
+            let start = surface
+                .cells()
+                .iter()
+                .max_by(|first, second| {
+                    first
+                        .centroid
+                        .dot(reference)
+                        .total_cmp(&second.centroid.dot(reference))
+                })
+                .unwrap()
+                .id;
+            let end = walk_along_fabric(
+                &surface,
+                &topology,
+                &fabric,
+                start,
+                TARGET_ANGLE,
+                0xD1CE_FAB1_CAFE_BEEFu64,
+            );
+            let actual = central_angle(
+                surface.cell(start).unwrap().centroid,
+                surface.cell(end).unwrap().centroid,
+            );
+            let tolerance = median_equivalent_cell_diameter(&surface) * 1.5;
+            assert!(
+                (actual - TARGET_ANGLE).abs() <= tolerance,
+                "target={target_cell_count} cells={} actual={actual} tolerance={tolerance}",
+                surface.cells().len()
+            );
+        }
     }
 
     fn fixture_crust_components(
@@ -833,6 +1002,7 @@ mod tests {
             generate_crust(&surface, &topology, &plates, &spec, preset, &streams,).unwrap()
         );
         ObservedCrust {
+            surface,
             morphology,
             base_affinity,
             anchor_layout,
@@ -840,6 +1010,122 @@ mod tests {
             plates,
             topology,
         }
+    }
+
+    #[test]
+    fn continental_anchor_directions_are_stable_across_resolution() {
+        let coarse = fixture_crust_components_at(
+            642,
+            12,
+            ResolvedWorldFormationPreset::Continents,
+            0.38,
+            42,
+        );
+        let fine = fixture_crust_components_at(
+            2_562,
+            12,
+            ResolvedWorldFormationPreset::Continents,
+            0.38,
+            42,
+        );
+        assert_eq!(coarse.anchor_layout.len(), fine.anchor_layout.len());
+        let tolerance = median_equivalent_cell_diameter(&coarse.surface) * 1.5;
+        for (name, range) in [("primary", 0..4), ("island", 4..8)] {
+            let mut unmatched = fine.anchor_layout[range.clone()].to_vec();
+            for &coarse_anchor in &coarse.anchor_layout[range] {
+                let (nearest_index, angle) = unmatched
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &fine_anchor)| {
+                        (
+                            index,
+                            central_angle(
+                                coarse.surface.cell(coarse_anchor).unwrap().centroid,
+                                fine.surface.cell(fine_anchor).unwrap().centroid,
+                            ),
+                        )
+                    })
+                    .min_by(|first, second| first.1.total_cmp(&second.1))
+                    .unwrap();
+                let fine_anchor = unmatched.remove(nearest_index);
+                assert!(
+                    angle <= tolerance,
+                    "{name} anchor: angle={angle} tolerance={tolerance} coarse={coarse_anchor:?} fine={fine_anchor:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "release-only continuous-field resolution diagnostic"]
+    fn continental_affinity_quantile_is_stable_across_resolution() {
+        fn quantile_mask(case: &ObservedCrust, fraction: f64) -> Vec<bool> {
+            let target = (case
+                .topology
+                .area_weights()
+                .iter()
+                .copied()
+                .map(u128::from)
+                .sum::<u128>() as f64
+                * fraction)
+                .round() as u128;
+            let mut order = (0..case.surface.cells().len()).collect::<Vec<_>>();
+            order.sort_by_key(|&index| (std::cmp::Reverse(case.final_affinity[index]), index));
+            let mut mask = vec![false; order.len()];
+            let mut area = 0_u128;
+            for index in order {
+                let next = area + u128::from(case.topology.area_weights()[index]);
+                if next.abs_diff(target) <= area.abs_diff(target) {
+                    mask[index] = true;
+                    area = next;
+                }
+            }
+            mask
+        }
+
+        let coarse = fixture_crust_components_at(
+            5_000,
+            12,
+            ResolvedWorldFormationPreset::Continents,
+            0.38,
+            42,
+        );
+        let fine = fixture_crust_components_at(
+            20_000,
+            12,
+            ResolvedWorldFormationPreset::Continents,
+            0.38,
+            42,
+        );
+        let coarse_mask = quantile_mask(&coarse, 0.38);
+        let fine_mask = quantile_mask(&fine, 0.38);
+        let mut intersection = 0_u128;
+        let mut union = 0_u128;
+        for (index, cell) in coarse.surface.cells().iter().enumerate() {
+            let nearest = fine
+                .surface
+                .cells()
+                .iter()
+                .max_by(|first, second| {
+                    first
+                        .centroid
+                        .dot(cell.centroid)
+                        .total_cmp(&second.centroid.dot(cell.centroid))
+                })
+                .unwrap()
+                .id
+                .raw() as usize;
+            if coarse_mask[index] || fine_mask[nearest] {
+                let area = u128::from(coarse.topology.area_weights()[index]);
+                union += area;
+                if coarse_mask[index] && fine_mask[nearest] {
+                    intersection += area;
+                }
+            }
+        }
+        let jaccard = intersection as f64 / union as f64;
+        eprintln!("continental affinity quantile jaccard={jaccard:.4}");
+        assert!(jaccard >= 0.75);
     }
 
     #[test]

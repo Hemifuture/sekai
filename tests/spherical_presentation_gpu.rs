@@ -23,7 +23,7 @@ use sekai::world::natural::{
     TectonicSpec, WorldFormationSpec,
 };
 use sekai::world::spatial::{canonical_east_north_basis, UnitVector3};
-use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
+use sekai::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
 const GOLDEN_WIDTH: u32 = 192;
 const GOLDEN_HEIGHT: u32 = 96;
@@ -376,82 +376,82 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "4667a5c864059ab62930c13605afd450bcda223de278189901bb3e3f961ea7f6",
+            "0c3a81cc4ef437d61d02994a63f2896e77bd4f1fcf42faf87927c068053408d8",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "e5b6c940e404da9e14d3bb361d95ddddc769f456a3cccc9401489629ef0afd8e",
+            "87e9b2c31d51b0a2d4c1a29c8ab93762186c922d60bd42f3e7a4ec3631d90e99",
         ),
         (
             "map_category_fill",
             &map_category,
-            "a54bc080f98a1286447c4c9f6ac0fc2a6787d7ef39397e182178bd1652be3176",
+            "4f4665f97468abb52e943f4ff726c42989993eb4551a0dd73ad0134181ce7566",
         ),
         (
             "globe_category_fill",
             &globe_category,
-            "b98ab1546e04231e33e6c1a8ab3642276c19b38a2b01e69640c0d389770a2dfa",
+            "cce67a5df29b3fb408bfdac09d4ad391ba96938b4fe2fb957ad6a5e6ec1803d7",
         ),
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "7e1339526012b1b482aec63b338e2125ddf322a3a26a1e5d2a4a87e2f247fa66",
+            "9e92d5cd16718cbc554265c25604e149bfd3c314a9e0df68f3873f4fa3fe20af",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "1917b2f73a66fae3055df45e7645b7cb60a6d8be2228d3aa0899121325fcad65",
+            "b04fd2fff93d14ecaddde08374f74038ff7aa71bb643dcd19aa2c4609b1d0012",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "fb98595b43bce82fe8f8cc03a6d6689a1e8be3bcc58b553797f31c661b2e3006",
+            "68625b8ababdcd3a9f3cfedc7e22a0c6751a9c8c62f36618328d76c1a161148f",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "34a9d6b98423f73322b93cd542cf220a577dbb6838964e623b0424646546f682",
+            "2cccb646a5191c3cee78c1be6897dda97cb8d1554b3ffd4cac40aec98c40e784",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "854a0c5de26a53f327b99468135228ab62fbd9d13adb681734a7ce4824d519ea",
+            "fdc52eb8618cae6282966b247482bd6722a321cb2e8ed2ba0727ec444a66f178",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "2f771a691b94e21376bc6c0afb0b18192445135b5bd6dfaf3a0133970ec553c0",
+            "b465643ec928d0794a80f174aa753a0b36678e0ccab141bb5853fc844b624890",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "7bfa53f3a3994b8b09f944b2811a34b1df175b061d1aeaf2cafd2469d3472945",
+            "e1e1c4c3cd5b2a91c3e1ec078732224ed5f19cf108c7f6e3ec433c1049a5dfef",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "bfa2a2187339088821a9de44765714bbb5b7c086cd86b8008e27bdde61ee6e13",
+            "59ecf310bee9b74da4f8283c80c149201c537fe569e5511d8f6e35224ed456f7",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "c3fd61ab59518de6aa58d7ac2d8932c4d0fb9041829d45620aaf793c0f09cb7b",
+            "374596b644c43f7b7a8e8d137ccf06849752f4f9eaa0766615a2d15db6b1eedd",
         ),
         (
             "map_poles",
             &map_poles,
-            "a05e4d4b9999272069f2f59b663dbb5207e43d21212ebec96b560f1338fdb367",
+            "8ae583130cc90977b102ab70636d80125361d14db3d60bb065d869b4e989f2b3",
         ),
         (
             "globe_front_visibility",
             &globe_front,
-            "b98ab1546e04231e33e6c1a8ab3642276c19b38a2b01e69640c0d389770a2dfa",
+            "cce67a5df29b3fb408bfdac09d4ad391ba96938b4fe2fb957ad6a5e6ec1803d7",
         ),
         (
             "globe_back_visibility",
             &globe_back,
-            "517ed29b500712fe7ff712e6eaa65d839c1e5a158da55e07597b2681532fe34c",
+            "93957150faf8509dd9c90e14cc12c488134afda94202442e8914291b479adff2",
         ),
     ]
     .into_iter()
@@ -674,7 +674,9 @@ fn assert_vector_glyph_semantics(
     candidate: &SphericalPresentationCandidate,
     glyphs: &PreparedVectorGlyphs,
 ) {
-    const EXPECTED_SAMPLED_IDS: &[u32] = &[9, 15, 27, 39, 102, 110, 122, 131, 136, 150, 152, 160];
+    const EXPECTED_SAMPLED_IDS: &[u32] = &[
+        3, 14, 16, 30, 36, 54, 64, 79, 80, 83, 87, 90, 108, 110, 115, 127, 129, 134, 139, 145, 155,
+    ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());
     assert_eq!(
@@ -697,15 +699,21 @@ fn assert_vector_glyph_semantics(
         .map(|glyph| glyph.cell())
         .collect::<Vec<_>>();
     assert_eq!(map_ids, globe_ids);
-    assert_eq!(
-        map_ids.iter().map(|cell| cell.raw()).collect::<Vec<_>>(),
-        EXPECTED_SAMPLED_IDS
-    );
-
     let field = match candidate.layers().overlay().unwrap() {
         PreparedSphericalOverlay::Vector(field) => field,
         PreparedSphericalOverlay::Edge(_) => unreachable!(),
     };
+    let expected_rendered_ids = glyphs
+        .sampled_cells()
+        .iter()
+        .copied()
+        .filter(|cell| field.components()[cell.raw() as usize] != [0.0, 0.0])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        map_ids, expected_rendered_ids,
+        "sampled zero vectors are intentionally omitted from rendered instances"
+    );
+
     let palette = candidate.layers().overlay_palette().unwrap();
     let (display_min, display_max) = field.display_range().bounds();
     for (map, globe) in glyphs.map().iter().zip(glyphs.globe()) {
@@ -765,9 +773,12 @@ fn assert_vector_glyph_semantics(
             .sqrt();
         let expected_globe = tangent.map(|value| (value / tangent_length) as f32);
         assert_direction3(globe.direction(), expected_globe, 3.0e-6);
-        let expected_map =
-            finite_difference_map_direction(candidate.map().projection(), radial, tangent);
-        assert_direction2(map.direction(), expected_map, 2.0e-4);
+        let expected_map = finite_difference_map_direction(
+            candidate.map().projection(),
+            radial,
+            authoritative.map(f64::from),
+        );
+        assert_direction2(map.cell(), map.direction(), expected_map, 2.0e-4);
         let origin = candidate.map().projection().forward(radial).unwrap();
         assert_close(map.origin()[0], origin.x() as f32, 2.0e-6);
         assert_close(map.origin()[1], origin.y() as f32, 2.0e-6);
@@ -777,15 +788,25 @@ fn assert_vector_glyph_semantics(
 fn finite_difference_map_direction(
     projection: SphericalProjection,
     radial: UnitVector3,
-    tangent: [f64; 3],
+    components: [f64; 2],
 ) -> [f32; 2] {
-    const STEP: f64 = 1.0e-5;
-    let tangent_length = tangent
-        .into_iter()
-        .map(|value| value * value)
-        .sum::<f64>()
-        .sqrt();
-    let tangent = tangent.map(|value| value / tangent_length);
+    let (east, north) = canonical_east_north_basis(radial);
+    let east_difference = finite_projection_difference(projection, radial, east);
+    let north_difference = finite_projection_difference(projection, radial, north);
+    let delta = [
+        components[0] * east_difference[0] + components[1] * north_difference[0],
+        components[0] * east_difference[1] + components[1] * north_difference[1],
+    ];
+    let length = delta[0].hypot(delta[1]);
+    [(delta[0] / length) as f32, (delta[1] / length) as f32]
+}
+
+fn finite_projection_difference(
+    projection: SphericalProjection,
+    radial: UnitVector3,
+    tangent: [f64; 3],
+) -> [f64; 2] {
+    const STEP: f64 = 1.0e-7;
     let radial_components = radial.components();
     let positive = UnitVector3::new(
         radial_components[0] * STEP.cos() + tangent[0] * STEP.sin(),
@@ -801,14 +822,38 @@ fn finite_difference_map_direction(
     .unwrap();
     let positive = projection.forward(positive).unwrap();
     let negative = projection.forward(negative).unwrap();
-    let delta = [positive.x() - negative.x(), positive.y() - negative.y()];
-    let length = delta[0].hypot(delta[1]);
-    [(delta[0] / length) as f32, (delta[1] / length) as f32]
+    let period = match projection.kind() {
+        SphericalProjectionKind::Equirectangular => 2.0,
+        SphericalProjectionKind::EqualEarth => {
+            const A1: f64 = 1.340_264;
+            const A2: f64 = -0.081_106;
+            const A3: f64 = 0.000_893;
+            const A4: f64 = 0.003_796;
+            let latitude = radial.components()[2].asin();
+            let m = 3.0_f64.sqrt() / 2.0;
+            let theta = (m * latitude.sin()).asin();
+            let theta2 = theta * theta;
+            let theta6 = theta2 * theta2 * theta2;
+            let derivative = A1 + 3.0 * A2 * theta2 + theta6 * (7.0 * A3 + 9.0 * A4 * theta2);
+            2.0 * std::f64::consts::PI * theta.cos() / (m * derivative)
+        }
+    };
+    let raw_delta_x = positive.x() - negative.x();
+    let delta_x = raw_delta_x - (raw_delta_x / period).round() * period;
+    [
+        delta_x / (2.0 * STEP),
+        (positive.y() - negative.y()) / (2.0 * STEP),
+    ]
 }
 
-fn assert_direction2(actual: [f32; 2], expected: [f32; 2], tolerance: f32) {
-    assert_close(actual[0], expected[0], tolerance);
-    assert_close(actual[1], expected[1], tolerance);
+fn assert_direction2(cell: CellId, actual: [f32; 2], expected: [f32; 2], tolerance: f32) {
+    assert!(
+        actual
+            .into_iter()
+            .zip(expected)
+            .all(|(actual, expected)| (actual - expected).abs() <= tolerance),
+        "cell {cell:?}: expected {expected:?}, got {actual:?}, tolerance {tolerance}"
+    );
     assert_close(actual[0].hypot(actual[1]), 1.0, tolerance);
 }
 

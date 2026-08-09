@@ -8,8 +8,6 @@ use thiserror::Error;
 use crate::generators::natural::topology::{multi_source_distance, NaturalTopologyIndex};
 use crate::world::CellId;
 
-const PROTECTED_GROWTH_ROUNDS: u128 = 8;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::generators::natural) struct AreaMask {
     selected: Box<[bool]>,
@@ -103,34 +101,65 @@ pub(in crate::generators::natural) fn build_area_constrained_mask(
     minimum_component_weight: u128,
     maximum_hole_weight: u128,
 ) -> Result<AreaMask, AreaSelectionError> {
-    validate_inputs(topology, scores, protected, target_weight)?;
-
-    let mut selected = vec![false; topology.cell_count()];
-    let mut labels = vec![usize::MAX; topology.cell_count()];
-    let mut component_area = vec![0_u128; protected.len()];
-    let mut total_area = 0_u128;
-    for (component, seed) in protected.iter().enumerate() {
-        let index = seed.cell.raw() as usize;
-        selected[index] = true;
-        labels[index] = component;
-        let area = u128::from(topology.area_weights()[index]);
-        component_area[component] += area;
-        total_area += area;
-    }
-
-    let mut frontier = BinaryHeap::new();
-    grow_protected_budgets(
+    build_area_constrained_mask_impl(
         topology,
         scores,
         protected,
-        &mut selected,
-        &mut labels,
-        &mut component_area,
-        &mut total_area,
-        &mut frontier,
-    )?;
+        target_weight,
+        minimum_component_weight,
+        maximum_hole_weight,
+        false,
+    )
+}
 
-    frontier.clear();
+pub(in crate::generators::natural) fn build_component_budgeted_area_mask(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    protected: &[ProtectedRegionSeed],
+    target_weight: u128,
+    minimum_component_weight: u128,
+    maximum_hole_weight: u128,
+) -> Result<AreaMask, AreaSelectionError> {
+    build_area_constrained_mask_impl(
+        topology,
+        scores,
+        protected,
+        target_weight,
+        minimum_component_weight,
+        maximum_hole_weight,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_area_constrained_mask_impl(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    protected: &[ProtectedRegionSeed],
+    target_weight: u128,
+    minimum_component_weight: u128,
+    maximum_hole_weight: u128,
+    enforce_component_budgets: bool,
+) -> Result<AreaMask, AreaSelectionError> {
+    validate_inputs(topology, scores, protected, target_weight)?;
+
+    let mut selected = vec![false; topology.cell_count()];
+    grow_protected_regions_independently(topology, scores, protected, &mut selected)?;
+    let (mut labels, mut component_area) = label_selected_components(topology, &selected);
+    let component_budgets = enforce_component_budgets.then(|| {
+        let mut budgets = vec![0_u128; component_area.len()];
+        for seed in protected {
+            budgets[labels[seed.cell.raw() as usize]] += seed.budget_weight;
+        }
+        budgets
+    });
+    let mut total_area = selected
+        .iter()
+        .zip(topology.area_weights())
+        .filter_map(|(&is_selected, &area)| is_selected.then_some(u128::from(area)))
+        .sum::<u128>();
+
+    let mut frontier = BinaryHeap::new();
     for (index, &is_selected) in selected.iter().enumerate() {
         if is_selected {
             push_neighbors(
@@ -152,6 +181,7 @@ pub(in crate::generators::natural) fn build_area_constrained_mask(
         &mut component_area,
         &mut total_area,
         &mut frontier,
+        component_budgets.as_deref(),
     );
 
     fill_small_holes_when_closer(
@@ -162,6 +192,7 @@ pub(in crate::generators::natural) fn build_area_constrained_mask(
         &mut labels,
         &mut component_area,
         &mut total_area,
+        component_budgets.as_deref(),
     );
 
     remove_unprotected_speckles(
@@ -384,79 +415,96 @@ fn has_component_neighbor(
     has_own_neighbor
 }
 
-#[allow(clippy::too_many_arguments)]
-fn grow_protected_budgets(
+fn grow_protected_regions_independently(
     topology: &NaturalTopologyIndex,
     scores: &[i32],
     protected: &[ProtectedRegionSeed],
     selected: &mut [bool],
-    labels: &mut [usize],
-    component_area: &mut [u128],
-    total_area: &mut u128,
-    frontier: &mut BinaryHeap<GrowthCandidate>,
 ) -> Result<(), AreaSelectionError> {
-    let initial_area = component_area.to_vec();
+    // Each seed first establishes a non-overlapping identity-bearing core. The shared frontier
+    // below then grows those cores to the requested total area. Growing every seed to its full
+    // budget independently makes neighboring lobes overlap before they have labels, which merges
+    // otherwise distinct continents; growing only tiny seed cells makes the final frontier overly
+    // sensitive to tessellation resolution. A fixed fraction of physical area is the stable middle
+    // ground, and contains no cell-count threshold.
+    const PROTECTED_CORE_BUDGET_MILLI: u128 = 600;
+
     let growth_scores = protected
         .iter()
         .map(|seed| compact_growth_scores(topology, scores, seed.cell, seed.budget_weight))
         .collect::<Vec<_>>();
-    for round in 1..=PROTECTED_GROWTH_ROUNDS {
-        let round_targets = initial_area
-            .iter()
-            .zip(protected)
-            .map(|(&initial, seed)| {
-                let remaining = seed.budget_weight.saturating_sub(initial);
-                initial + remaining * round / PROTECTED_GROWTH_ROUNDS
-            })
-            .collect::<Vec<_>>();
+    let mut local = vec![false; topology.cell_count()];
+    let mut frontier = BinaryHeap::new();
+    for (component, seed) in protected.iter().enumerate() {
+        local.fill(false);
         frontier.clear();
-        for (index, &is_selected) in selected.iter().enumerate() {
-            if is_selected && component_area[labels[index]] < round_targets[labels[index]] {
-                let component = labels[index];
-                push_neighbors(
-                    topology,
-                    &growth_scores[component],
-                    selected,
-                    component,
-                    CellId::from_raw(index as u32),
-                    frontier,
-                );
-            }
-        }
-        while component_area
-            .iter()
-            .zip(&round_targets)
-            .any(|(&area, &target)| area < target)
-        {
+        local[seed.cell.raw() as usize] = true;
+        let mut area = u128::from(topology.area_weights()[seed.cell.raw() as usize]);
+        let core_budget = (seed.budget_weight * PROTECTED_CORE_BUDGET_MILLI / 1_000).max(area);
+        push_neighbors(
+            topology,
+            &growth_scores[component],
+            &local,
+            component,
+            seed.cell,
+            &mut frontier,
+        );
+        while area < core_budget {
             let Some(candidate) = frontier.pop() else {
-                let component = component_area
-                    .iter()
-                    .zip(&round_targets)
-                    .position(|(&area, &target)| area < target)
-                    .expect("one protected round target is unmet");
                 return Err(AreaSelectionError::ProtectedGrowthExhausted {
                     component: component as u16,
                 });
             };
-            if selected[candidate.cell.raw() as usize]
-                || component_area[candidate.component] >= round_targets[candidate.component]
-                || !has_component_neighbor(topology, selected, labels, candidate)
-            {
+            let index = candidate.cell.raw() as usize;
+            if local[index] {
                 continue;
             }
-            select_candidate(
+            local[index] = true;
+            area += u128::from(topology.area_weights()[index]);
+            push_neighbors(
                 topology,
-                &growth_scores[candidate.component],
-                selected,
-                labels,
-                component_area,
-                total_area,
-                candidate,
-                frontier,
+                &growth_scores[component],
+                &local,
+                component,
+                candidate.cell,
+                &mut frontier,
             );
+        }
+        for (target, &source) in selected.iter_mut().zip(&local) {
+            *target |= source;
         }
     }
     Ok(())
+}
+
+fn label_selected_components(
+    topology: &NaturalTopologyIndex,
+    selected: &[bool],
+) -> (Vec<usize>, Vec<u128>) {
+    let mut labels = vec![usize::MAX; topology.cell_count()];
+    let mut areas = Vec::new();
+    for start in 0..topology.cell_count() {
+        if !selected[start] || labels[start] != usize::MAX {
+            continue;
+        }
+        let component = areas.len();
+        labels[start] = component;
+        let mut area = 0_u128;
+        let mut queue = VecDeque::from([CellId::from_raw(start as u32)]);
+        while let Some(cell) = queue.pop_front() {
+            let index = cell.raw() as usize;
+            area += u128::from(topology.area_weights()[index]);
+            for arc in &topology.arcs()[index] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if selected[neighbor] && labels[neighbor] == usize::MAX {
+                    labels[neighbor] = component;
+                    queue.push_back(arc.neighbor);
+                }
+            }
+        }
+        areas.push(area);
+    }
+    (labels, areas)
 }
 
 fn compact_growth_scores(
@@ -465,7 +513,7 @@ fn compact_growth_scores(
     seed: CellId,
     budget_weight: u128,
 ) -> Vec<i32> {
-    const RADIAL_PENALTY_AT_BUDGET_RADIUS: u128 = 2_000_000;
+    const RADIAL_PENALTY_AT_BUDGET_RADIUS: u128 = 500_000;
 
     let distances = multi_source_distance(topology, &[seed], None);
     let mut by_distance = (0..topology.cell_count()).collect::<Vec<_>>();
@@ -551,6 +599,7 @@ fn grow_toward_target(
     component_area: &mut [u128],
     total_area: &mut u128,
     frontier: &mut BinaryHeap<GrowthCandidate>,
+    component_budgets: Option<&[u128]>,
 ) {
     while let Some(candidate) = frontier.pop() {
         let index = candidate.cell.raw() as usize;
@@ -560,6 +609,14 @@ fn grow_toward_target(
         let next = *total_area + u128::from(topology.area_weights()[index]);
         if next.abs_diff(target_weight) > total_area.abs_diff(target_weight) {
             continue;
+        }
+        if let Some(budgets) = component_budgets {
+            let area = u128::from(topology.area_weights()[index]);
+            let current = component_area[candidate.component];
+            let budget = budgets[candidate.component];
+            if (current + area).abs_diff(budget) > current.abs_diff(budget) {
+                continue;
+            }
         }
         select_candidate(
             topology,
@@ -586,6 +643,7 @@ fn fill_small_holes_when_closer(
     labels: &mut [usize],
     component_area: &mut [u128],
     total_area: &mut u128,
+    component_budgets: Option<&[u128]>,
 ) {
     if maximum_hole_weight == 0 {
         return;
@@ -619,6 +677,13 @@ fn fill_small_holes_when_closer(
         let next = *total_area + weight;
         if next.abs_diff(target_weight) > total_area.abs_diff(target_weight) {
             continue;
+        }
+        if let Some(budgets) = component_budgets {
+            let current = component_area[neighboring_component];
+            let budget = budgets[neighboring_component];
+            if (current + weight).abs_diff(budget) > current.abs_diff(budget) {
+                continue;
+            }
         }
         for cell in cells {
             let index = cell.raw() as usize;
