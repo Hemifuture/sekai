@@ -59,6 +59,10 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
             log::error!("spherical field renderer is not registered in callback resources");
             return Vec::new();
         };
+        if !renderer.callback_packet_is_current(&self.packet) {
+            self.prepared_generation.store(0, Ordering::Release);
+            return Vec::new();
+        }
         let uniform = match self.mode {
             SphericalRenderMode::Map => SphericalFrameUniform::for_map_with_animation(
                 &self.packet,

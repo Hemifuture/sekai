@@ -1246,6 +1246,13 @@ impl SphericalFieldRenderer {
         self.installed_source.as_ref()
     }
 
+    /// Returns whether a deferred egui callback still names the synchronously published packet.
+    pub(super) fn callback_packet_is_current(&self, packet: &SphericalGpuPacket) -> bool {
+        self.installed_packet_key
+            .as_ref()
+            .is_some_and(|key| key.exactly_matches(packet))
+    }
+
     pub(super) const fn is_frame_current(&self, generation: u64) -> bool {
         generation != 0 && self.frame_generation == generation
     }

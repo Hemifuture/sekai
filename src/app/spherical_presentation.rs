@@ -5,7 +5,10 @@ use std::sync::Arc;
 use eframe::egui_wgpu::wgpu;
 use thiserror::Error;
 
-use super::field_document::{prepare_spherical_document_layers, update_spherical_document_layers};
+use super::field_document::{
+    prepare_spherical_document_layers, reconcile_spherical_document_camera,
+    update_spherical_document_layers,
+};
 use super::spherical_natural_display::{
     SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
 };
@@ -25,8 +28,8 @@ use crate::view::{
     DisplayPrepareError, DisplayRevision, DisplayRevisionClock, FieldLayerRevisions, GlobeCamera,
     MapCamera, PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap,
     SphericalEntityLocator, SphericalFieldDisplayState, SphericalMeshBudgets, SphericalMeshError,
-    SphericalPickingError, SphericalPresentationSource, SphericalProjection,
-    SphericalProjectionError, SphericalProjectionKind, SphericalViewMode,
+    SphericalPickingError, SphericalPresentationSource, SphericalPresentationViewState,
+    SphericalProjection, SphericalProjectionError, SphericalViewMode,
 };
 use crate::world::natural::{
     GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicSpec, WorldFormationSpec,
@@ -153,7 +156,31 @@ impl SphericalGlobePresenter {
 }
 
 /// One fully prepared world that is safe to publish as a single value.
-#[derive(Clone)]
+///
+/// A complete world candidate is a consume-once publication capability. It cannot be cloned into
+/// two independent first publications with the same source, revisions, and clock.
+///
+/// ```compile_fail
+/// fn fork_candidate(
+///     candidate: sekai::app::SphericalPresentationCandidate,
+///     first_gpu: &mut sekai::app::SphericalRendererPreparer<'_>,
+///     second_gpu: &mut sekai::app::SphericalRendererPreparer<'_>,
+/// ) {
+///     let duplicate = candidate.clone();
+///     let _ = sekai::app::PublishedSphericalPresentation::try_new(candidate, first_gpu);
+///     let _ = sekai::app::PublishedSphericalPresentation::try_new(duplicate, second_gpu);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn publish_candidate_twice(
+///     candidate: sekai::app::SphericalPresentationCandidate,
+///     gpu: &mut sekai::app::SphericalRendererPreparer<'_>,
+/// ) {
+///     let _ = sekai::app::PublishedSphericalPresentation::try_new(candidate, gpu);
+///     let _ = sekai::app::PublishedSphericalPresentation::try_new(candidate, gpu);
+/// }
+/// ```
 pub struct SphericalPresentationCandidate {
     lineage: WorldCandidateLineage,
     document: Arc<SphericalNaturalFieldDocument>,
@@ -163,6 +190,7 @@ pub struct SphericalPresentationCandidate {
     globe_presenter: SphericalGlobePresenter,
     layers: Arc<PreparedFieldLayers>,
     gpu_packet: Arc<SphericalGpuPacket>,
+    view_state: SphericalPresentationViewState,
     state: SphericalFieldDisplayState,
     clock: DisplayRevisionClock,
     report: BuildReport,
@@ -184,6 +212,11 @@ impl SphericalPresentationCandidate {
             || !Arc::ptr_eq(self.gpu_packet.layers_arc(), &self.layers)
         {
             return Err(SphericalPresentationError::FieldLayersNotShared);
+        }
+        if self.map().projection() != self.view_state.projection()
+            || self.state.vector_view_zoom() != self.view_state.active_zoom()
+        {
+            return Err(SphericalPresentationError::ViewStateMismatch);
         }
         Ok(())
     }
@@ -268,6 +301,11 @@ impl SphericalPresentationCandidate {
         &self.state
     }
 
+    /// Returns the complete renderer-neutral view bound to this candidate.
+    pub const fn view_state(&self) -> &SphericalPresentationViewState {
+        &self.view_state
+    }
+
     /// Returns the candidate revision clock.
     pub const fn clock(&self) -> &DisplayRevisionClock {
         &self.clock
@@ -285,6 +323,23 @@ impl SphericalPresentationCandidate {
             self.gpu_packet.globe_geometry_revision(),
             self.layers.revisions(),
         )
+    }
+
+    fn snapshot_for_update(&self) -> Self {
+        Self {
+            lineage: WorldCandidateLineage::NoBase,
+            document: Arc::clone(&self.document),
+            source: self.source.clone(),
+            locator: Arc::clone(&self.locator),
+            map_presenter: self.map_presenter.clone(),
+            globe_presenter: self.globe_presenter.clone(),
+            layers: Arc::clone(&self.layers),
+            gpu_packet: Arc::clone(&self.gpu_packet),
+            view_state: self.view_state,
+            state: self.state.clone(),
+            clock: self.clock.clone(),
+            report: self.report.clone(),
+        }
     }
 }
 
@@ -332,19 +387,46 @@ impl PublishedSphericalPresentation {
         cache: &mut MemoryStageCache,
         requested_state: &SphericalFieldDisplayState,
     ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
-        self.prepare_replacement_candidate_impl(
+        self.prepare_replacement_candidate_for_view(
             root_seed,
             space,
             formation,
             tectonic,
             geologic,
             cache,
+            *self.view_state(),
+            requested_state,
+        )
+    }
+
+    /// Builds a whole-world candidate bound to an explicit complete view and this lineage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_replacement_candidate_for_view(
+        &self,
+        root_seed: RootSeed,
+        space: &SphericalSpaceSpec,
+        formation: &WorldFormationSpec,
+        tectonic: &TectonicSpec,
+        geologic: &GeologicSpec,
+        cache: &mut MemoryStageCache,
+        requested_view: SphericalPresentationViewState,
+        requested_state: &SphericalFieldDisplayState,
+    ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+        self.prepare_replacement_candidate_for_view_impl(
+            root_seed,
+            space,
+            formation,
+            tectonic,
+            geologic,
+            cache,
+            requested_view,
             requested_state,
             FailureInjector::NONE,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     fn prepare_replacement_candidate_impl(
         &self,
         root_seed: RootSeed,
@@ -356,6 +438,32 @@ impl PublishedSphericalPresentation {
         requested_state: &SphericalFieldDisplayState,
         failure: FailureInjector,
     ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+        self.prepare_replacement_candidate_for_view_impl(
+            root_seed,
+            space,
+            formation,
+            tectonic,
+            geologic,
+            cache,
+            *self.view_state(),
+            requested_state,
+            failure,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_replacement_candidate_for_view_impl(
+        &self,
+        root_seed: RootSeed,
+        space: &SphericalSpaceSpec,
+        formation: &WorldFormationSpec,
+        tectonic: &TectonicSpec,
+        geologic: &GeologicSpec,
+        cache: &mut MemoryStageCache,
+        requested_view: SphericalPresentationViewState,
+        requested_state: &SphericalFieldDisplayState,
+        failure: FailureInjector,
+    ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
         build_spherical_presentation_candidate_impl_with_lineage(
             root_seed,
             space,
@@ -363,6 +471,7 @@ impl PublishedSphericalPresentation {
             tectonic,
             geologic,
             cache,
+            requested_view,
             requested_state,
             self.clock(),
             failure,
@@ -403,15 +512,44 @@ impl PublishedSphericalPresentation {
         projection: SphericalProjection,
         budgets: SphericalMeshBudgets,
     ) -> Result<SphericalProjectionCandidate, SphericalPresentationError> {
+        let current = *self.view_state();
+        self.prepare_projection_candidate_for_view(
+            SphericalPresentationViewState::new(
+                current.mode(),
+                projection,
+                current.map_camera(),
+                current.globe_camera(),
+            ),
+            budgets,
+        )
+    }
+
+    /// Builds a projected-map candidate bound to the complete requested view.
+    pub fn prepare_projection_candidate_for_view(
+        &self,
+        view_state: SphericalPresentationViewState,
+        budgets: SphericalMeshBudgets,
+    ) -> Result<SphericalProjectionCandidate, SphericalPresentationError> {
         let map = Arc::new(PreparedProjectedMap::build(
             self.source().clone(),
             self.document().surface.snapshot(),
-            projection,
+            view_state.projection(),
             budgets,
         )?);
         let mut clock = self.clock().clone();
         let revision = clock.issue()?;
-        SphericalProjectionCandidate::try_new(self, map, revision, clock)
+        let mut state = self.state().clone();
+        let layers = reconcile_spherical_document_camera(
+            self.document(),
+            self.layers_arc(),
+            view_state.mode(),
+            view_state.projection().kind(),
+            view_state.map_camera(),
+            view_state.globe_camera(),
+            &mut state,
+            &mut clock,
+        )?;
+        SphericalProjectionCandidate::try_new(self, map, layers, view_state, state, revision, clock)
     }
 
     /// Replaces only the projected-map sub-cache after candidate validation succeeds.
@@ -430,9 +568,27 @@ impl PublishedSphericalPresentation {
     ) -> Result<(), SphericalPresentationError> {
         candidate.base.validate_current(self, "projection")?;
         candidate.validate(self)?;
-        let mut next = self.current.clone();
+        let mut state = candidate.state;
+        state.set_vector_paused(self.state().vector_paused());
+        state
+            .set_vector_display_speed(self.state().vector_display_speed())
+            .map_err(|_| SphericalPresentationError::FieldStateMismatch)?;
+        if !matches!(
+            state.selected_entity(),
+            Some(crate::view::SelectedSurfaceEntity::Cell(_))
+        ) && !matches!(
+            self.state().selected_entity(),
+            Some(crate::view::SelectedSurfaceEntity::Cell(_))
+        ) {
+            state.select_entity(self.state().selected_entity());
+        }
+        let mut next = self.current.snapshot_for_update();
         next.map_presenter = candidate.map_presenter;
+        next.globe_presenter = candidate.globe_presenter;
+        next.layers = candidate.layers;
         next.gpu_packet = candidate.gpu_packet;
+        next.view_state = candidate.view_state;
+        next.state = state;
         next.clock = candidate.clock;
         next.validate()?;
         gpu.prepare(next.gpu_packet())?;
@@ -448,19 +604,36 @@ impl PublishedSphericalPresentation {
         map_camera: MapCamera,
         globe_camera: GlobeCamera,
     ) -> Result<SphericalFieldCandidate, SphericalPresentationError> {
+        self.prepare_field_candidate_for_view(
+            requested_state,
+            SphericalPresentationViewState::new(
+                mode,
+                self.map().projection(),
+                map_camera,
+                globe_camera,
+            ),
+        )
+    }
+
+    /// Builds a field-layer candidate bound to the complete requested view.
+    pub fn prepare_field_candidate_for_view(
+        &self,
+        requested_state: SphericalFieldDisplayState,
+        view_state: SphericalPresentationViewState,
+    ) -> Result<SphericalFieldCandidate, SphericalPresentationError> {
         let mut state = requested_state;
         let mut clock = self.clock().clone();
         let layers = Arc::new(update_spherical_document_layers(
             self.document(),
             self.layers(),
-            mode,
-            self.map().projection().kind(),
-            map_camera,
-            globe_camera,
+            view_state.mode(),
+            view_state.projection().kind(),
+            view_state.map_camera(),
+            view_state.globe_camera(),
             &mut state,
             &mut clock,
         )?);
-        SphericalFieldCandidate::try_new(self, layers, state, clock)
+        SphericalFieldCandidate::try_new_for_view(self, layers, view_state, state, clock)
     }
 
     /// Replaces only field-bound presenter and packet caches after validation succeeds.
@@ -479,11 +652,12 @@ impl PublishedSphericalPresentation {
     ) -> Result<(), SphericalPresentationError> {
         candidate.base.validate_current(self, "field")?;
         candidate.validate(self)?;
-        let mut next = self.current.clone();
+        let mut next = self.current.snapshot_for_update();
         next.map_presenter = candidate.map_presenter;
         next.globe_presenter = candidate.globe_presenter;
         next.layers = candidate.layers;
         next.gpu_packet = candidate.gpu_packet;
+        next.view_state = candidate.view_state;
         next.state = candidate.state;
         next.clock = candidate.clock;
         next.validate()?;
@@ -562,6 +736,11 @@ impl PublishedSphericalPresentation {
         self.current.state()
     }
 
+    /// Returns the complete renderer-neutral view bound to the current publication.
+    pub const fn view_state(&self) -> &SphericalPresentationViewState {
+        self.current.view_state()
+    }
+
     /// Reconciles state that is already represented by the current layers or fixed uniforms.
     ///
     /// This is the O(1) path for camera, view, animation controls, and edge/none selection. It
@@ -569,11 +748,16 @@ impl PublishedSphericalPresentation {
     pub(crate) fn reconcile_uniform_only_state(
         &mut self,
         state: SphericalFieldDisplayState,
+        view_state: SphericalPresentationViewState,
     ) -> Result<(), SphericalPresentationError> {
-        if !self.current.layers.matches_camera_only_state(&state) {
+        if !self.current.layers.matches_camera_only_state(&state)
+            || self.current.map().projection() != view_state.projection()
+            || state.vector_view_zoom() != view_state.active_zoom()
+        {
             return Err(SphericalPresentationError::FieldStateMismatch);
         }
         self.current.state = state;
+        self.current.view_state = view_state;
         Ok(())
     }
 
@@ -598,6 +782,7 @@ struct CandidateBase {
     packet: Arc<SphericalGpuPacket>,
     revisions: (DisplayRevision, DisplayRevision, FieldLayerRevisions),
     clock: DisplayRevisionClock,
+    view_state: SphericalPresentationViewState,
 }
 
 impl CandidateBase {
@@ -606,6 +791,7 @@ impl CandidateBase {
             packet: Arc::clone(published.gpu_packet_arc()),
             revisions: published.revisions(),
             clock: published.clock().clone(),
+            view_state: *published.view_state(),
         }
     }
 
@@ -618,6 +804,7 @@ impl CandidateBase {
         let mut current_clock = published.clock().clone();
         if !Arc::ptr_eq(&self.packet, published.gpu_packet_arc())
             || self.revisions != published.revisions()
+            || self.view_state != *published.view_state()
             || base_clock.issue().ok() != current_clock.issue().ok()
         {
             return Err(SphericalPresentationError::StaleCandidate { candidate });
@@ -680,7 +867,11 @@ pub struct SphericalProjectionCandidate {
     base: CandidateBase,
     source: SphericalPresentationSource,
     map_presenter: SphericalMapPresenter,
+    globe_presenter: SphericalGlobePresenter,
+    layers: Arc<PreparedFieldLayers>,
     gpu_packet: Arc<SphericalGpuPacket>,
+    view_state: SphericalPresentationViewState,
+    state: SphericalFieldDisplayState,
     clock: DisplayRevisionClock,
 }
 
@@ -688,6 +879,9 @@ impl SphericalProjectionCandidate {
     fn try_new(
         published: &PublishedSphericalPresentation,
         map: Arc<PreparedProjectedMap>,
+        layers: Arc<PreparedFieldLayers>,
+        view_state: SphericalPresentationViewState,
+        state: SphericalFieldDisplayState,
         revision: DisplayRevision,
         clock: DisplayRevisionClock,
     ) -> Result<Self, SphericalPresentationError> {
@@ -698,20 +892,27 @@ impl SphericalProjectionCandidate {
                 resource: "projected map",
             });
         }
-        let map_presenter =
-            SphericalMapPresenter::try_new(Arc::clone(&map), Arc::clone(published.layers_arc()))?;
+        let map_presenter = SphericalMapPresenter::try_new(Arc::clone(&map), Arc::clone(&layers))?;
+        let globe_presenter = SphericalGlobePresenter::try_new(
+            Arc::clone(published.globe_arc()),
+            Arc::clone(&layers),
+        )?;
         let gpu_packet = Arc::new(SphericalGpuPacket::try_new(
             map,
             revision,
             Arc::clone(published.globe_arc()),
             published.gpu_packet().globe_geometry_revision(),
-            Arc::clone(published.layers_arc()),
+            Arc::clone(&layers),
         )?);
         Ok(Self {
             base,
             source,
             map_presenter,
+            globe_presenter,
+            layers,
             gpu_packet,
+            view_state,
+            state,
             clock,
         })
     }
@@ -725,17 +926,27 @@ impl SphericalProjectionCandidate {
                 resource: "projection candidate",
             });
         }
+        if self.map_presenter.map_arc().projection() != self.view_state.projection() {
+            return Err(SphericalPresentationError::ViewStateMismatch);
+        }
         if self.map_presenter.map_arc().source() != &self.source
+            || self.layers.source() != &self.source
             || self.gpu_packet.source() != &self.source
         {
             return Err(SphericalPresentationError::SourceMismatch {
                 resource: "projection candidate",
             });
         }
-        if !Arc::ptr_eq(self.map_presenter.layers_arc(), published.layers_arc())
-            || !Arc::ptr_eq(self.gpu_packet.layers_arc(), published.layers_arc())
+        if !Arc::ptr_eq(self.map_presenter.layers_arc(), &self.layers)
+            || !Arc::ptr_eq(self.globe_presenter.layers_arc(), &self.layers)
+            || !Arc::ptr_eq(self.gpu_packet.layers_arc(), &self.layers)
         {
             return Err(SphericalPresentationError::FieldLayersNotShared);
+        }
+        if !self.layers.matches_camera_only_state(&self.state)
+            || self.state.vector_view_zoom() != self.view_state.active_zoom()
+        {
+            return Err(SphericalPresentationError::ViewStateMismatch);
         }
         Ok(())
     }
@@ -749,14 +960,26 @@ pub struct SphericalFieldCandidate {
     globe_presenter: SphericalGlobePresenter,
     layers: Arc<PreparedFieldLayers>,
     gpu_packet: Arc<SphericalGpuPacket>,
+    view_state: SphericalPresentationViewState,
     state: SphericalFieldDisplayState,
     clock: DisplayRevisionClock,
 }
 
 impl SphericalFieldCandidate {
+    #[cfg(test)]
     fn try_new(
         published: &PublishedSphericalPresentation,
         layers: Arc<PreparedFieldLayers>,
+        state: SphericalFieldDisplayState,
+        clock: DisplayRevisionClock,
+    ) -> Result<Self, SphericalPresentationError> {
+        Self::try_new_for_view(published, layers, *published.view_state(), state, clock)
+    }
+
+    fn try_new_for_view(
+        published: &PublishedSphericalPresentation,
+        layers: Arc<PreparedFieldLayers>,
+        view_state: SphericalPresentationViewState,
         state: SphericalFieldDisplayState,
         clock: DisplayRevisionClock,
     ) -> Result<Self, SphericalPresentationError> {
@@ -789,6 +1012,7 @@ impl SphericalFieldCandidate {
             globe_presenter,
             layers,
             gpu_packet,
+            view_state,
             state,
             clock,
         })
@@ -811,6 +1035,11 @@ impl SphericalFieldCandidate {
             || !Arc::ptr_eq(self.gpu_packet.layers_arc(), &self.layers)
         {
             return Err(SphericalPresentationError::FieldLayersNotShared);
+        }
+        if self.map_presenter.map_arc().projection() != self.view_state.projection()
+            || self.state.vector_view_zoom() != self.view_state.active_zoom()
+        {
+            return Err(SphericalPresentationError::ViewStateMismatch);
         }
         Ok(())
     }
@@ -855,6 +1084,32 @@ pub fn build_spherical_presentation_candidate(
     current_state: &SphericalFieldDisplayState,
     clock: &DisplayRevisionClock,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    build_spherical_presentation_candidate_for_view(
+        root_seed,
+        space,
+        formation,
+        tectonic,
+        geologic,
+        cache,
+        SphericalPresentationViewState::default(),
+        current_state,
+        clock,
+    )
+}
+
+/// Runs the formal graph and binds every derivative to an explicit complete view snapshot.
+#[allow(clippy::too_many_arguments)]
+pub fn build_spherical_presentation_candidate_for_view(
+    root_seed: RootSeed,
+    space: &SphericalSpaceSpec,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
+    cache: &mut MemoryStageCache,
+    view_state: SphericalPresentationViewState,
+    current_state: &SphericalFieldDisplayState,
+    clock: &DisplayRevisionClock,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     build_spherical_presentation_candidate_impl(
         root_seed,
         space,
@@ -862,6 +1117,7 @@ pub fn build_spherical_presentation_candidate(
         tectonic,
         geologic,
         cache,
+        view_state,
         current_state,
         clock,
         FailureInjector::NONE,
@@ -876,6 +1132,7 @@ fn build_spherical_presentation_candidate_impl(
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
+    view_state: SphericalPresentationViewState,
     current_state: &SphericalFieldDisplayState,
     clock: &DisplayRevisionClock,
     failure: FailureInjector,
@@ -887,6 +1144,7 @@ fn build_spherical_presentation_candidate_impl(
         tectonic,
         geologic,
         cache,
+        view_state,
         current_state,
         clock,
         failure,
@@ -902,6 +1160,7 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     tectonic: &TectonicSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
+    view_state: SphericalPresentationViewState,
     current_state: &SphericalFieldDisplayState,
     clock: &DisplayRevisionClock,
     failure: FailureInjector,
@@ -921,7 +1180,7 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     )?);
 
     failure.check("map")?;
-    let projection = SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0)?;
+    let projection = view_state.projection();
     let map = Arc::new(PreparedProjectedMap::build(
         source.clone(),
         document.surface.snapshot(),
@@ -943,10 +1202,10 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     failure.check("layers")?;
     let layers = Arc::new(prepare_spherical_document_layers(
         document.as_ref(),
-        SphericalViewMode::Map,
-        SphericalProjectionKind::EqualEarth,
-        MapCamera::default(),
-        GlobeCamera::default(),
+        view_state.mode(),
+        view_state.projection().kind(),
+        view_state.map_camera(),
+        view_state.globe_camera(),
         &mut next_state,
         &mut next_clock,
     )?);
@@ -972,6 +1231,7 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
         globe_presenter,
         layers,
         gpu_packet,
+        view_state,
         state: next_state,
         clock: next_clock,
         report: outcome.report,
@@ -1129,6 +1389,8 @@ pub enum SphericalPresentationError {
     FieldLayersNotShared,
     #[error("field candidate state does not match its prepared field layers")]
     FieldStateMismatch,
+    #[error("spherical candidate view does not match its geometry, cameras, or active LOD")]
+    ViewStateMismatch,
     #[error("{candidate} candidate was prepared from a stale spherical publication")]
     StaleCandidate { candidate: &'static str },
     #[cfg(test)]

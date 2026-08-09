@@ -15,9 +15,10 @@ mod spherical_presentation;
 pub use spherical_natural_display::{SphericalNaturalDisplayError, SphericalNaturalFieldDocument};
 pub use spherical_presentation::{
     build_spherical_external_artifacts, build_spherical_presentation_candidate,
-    PublishedSphericalPresentation, SphericalFieldCandidate, SphericalGlobePresenter,
-    SphericalMapPresenter, SphericalPresentationCandidate, SphericalPresentationError,
-    SphericalProjectionCandidate, SphericalRendererPreparer,
+    build_spherical_presentation_candidate_for_view, PublishedSphericalPresentation,
+    SphericalFieldCandidate, SphericalGlobePresenter, SphericalMapPresenter,
+    SphericalPresentationCandidate, SphericalPresentationError, SphericalProjectionCandidate,
+    SphericalRendererPreparer,
 };
 
 use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
@@ -52,9 +53,9 @@ use crate::{
         canvas::canvas::Canvas,
         field::{show_field_controls, show_field_inspector, FieldControlAction},
         spherical::{
-            apply_spherical_canvas_action, build_spherical_inspector_model,
-            legacy_compatibility_ui, show_spherical_canvas, show_spherical_controls,
-            show_spherical_inspector, SphericalCanvasAction,
+            apply_spherical_canvas_action, interact_spherical_canvas, legacy_compatibility_ui,
+            queue_spherical_canvas_callback, show_spherical_controls, show_spherical_inspector,
+            SphericalCanvasAction, SphericalInspectorCache,
         },
     },
     view::{DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay},
@@ -213,6 +214,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     spherical_runtime_error: Option<String>,
     #[serde(skip)]
+    spherical_inspector_cache: SphericalInspectorCache,
+    #[serde(skip)]
     field_display: FieldDisplayResource,
     #[serde(skip)]
     field_viewer_state: FieldViewerStateResource,
@@ -250,6 +253,7 @@ impl Default for TemplateApp {
             active_runtime_graph: None,
             active_runtime_stage_ids: Vec::new(),
             spherical_runtime_error: None,
+            spherical_inspector_cache: SphericalInspectorCache::default(),
             field_display,
             field_viewer_state,
             legacy_planar_document: None,
@@ -311,14 +315,34 @@ impl TemplateApp {
         Self::setup_fonts(&cc.egui_ctx);
 
         let mut app = if let Some(storage) = cc.storage {
-            let mut app: TemplateApp =
-                eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+            let (mut app, persisted_state_error) = match eframe::Storage::get_string(
+                storage,
+                eframe::APP_KEY,
+            ) {
+                None => (Self::default(), None),
+                Some(_) => match eframe::get_value(storage, eframe::APP_KEY) {
+                    Some(app) => (app, None),
+                    None => {
+                        let fallback = Self {
+                            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
+                            ..Self::default()
+                        };
+                        (
+                                fallback,
+                                Some(
+                                    "persisted application state is invalid; opened in legacy compatibility mode"
+                                        .to_owned(),
+                                ),
+                            )
+                    }
+                },
+            };
             app.field_renderer = None;
             app.render_state = None;
             app.spherical_presentation = SphericalPresentationResource::default();
             app.active_runtime_graph = None;
             app.active_runtime_stage_ids.clear();
-            app.spherical_runtime_error = None;
+            app.spherical_runtime_error = persisted_state_error;
             app
         } else {
             Self::default()
@@ -334,13 +358,15 @@ impl TemplateApp {
             }
             (PersistedWorldOrigin::SphericalV1, Some(render_state)) => {
                 if let Err(error) =
-                    app.try_initialize_spherical_world(render_state, MigrationFailurePoint::None)
+                    app.try_start_spherical_world(render_state, MigrationFailurePoint::None)
                 {
                     log::error!("spherical natural world build failed: {error}");
                 }
             }
             (PersistedWorldOrigin::SphericalV1, None) => {
                 log::error!("spherical world requires the wgpu render state");
+                app.spherical_runtime_error =
+                    Some("spherical world requires the wgpu render state".to_owned());
             }
         }
         app
@@ -382,13 +408,14 @@ impl TemplateApp {
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let requested_state = self.spherical_canvas_state.field_state().clone();
-        let candidate = build_spherical_presentation_candidate(
+        let candidate = build_spherical_presentation_candidate_for_view(
             RootSeed::new(self.world_seed),
             &self.spherical_space_spec,
             &self.formation_spec,
             &self.tectonic_spec,
             &self.geologic_spec,
             &mut self.stage_cache,
+            self.spherical_canvas_state.presentation_view_state(),
             &requested_state,
             &DisplayRevisionClock::default(),
         )?;
@@ -444,6 +471,23 @@ impl TemplateApp {
         Ok(())
     }
 
+    fn try_start_spherical_world(
+        &mut self,
+        render_state: &RenderState,
+        failure: MigrationFailurePoint,
+    ) -> Result<(), AppRuntimeError> {
+        match self.try_initialize_spherical_world(render_state, failure) {
+            Ok(()) => {
+                self.spherical_runtime_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.spherical_runtime_error = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
     fn try_rebuild_spherical_world(
         &mut self,
         render_state: &RenderState,
@@ -452,13 +496,14 @@ impl TemplateApp {
             current
                 .as_ref()
                 .ok_or(AppRuntimeError::MissingSphericalPublication)?
-                .prepare_replacement_candidate(
+                .prepare_replacement_candidate_for_view(
                     RootSeed::new(self.world_seed),
                     &self.spherical_space_spec,
                     &self.formation_spec,
                     &self.tectonic_spec,
                     &self.geologic_spec,
                     &mut self.stage_cache,
+                    self.spherical_canvas_state.presentation_view_state(),
                     self.spherical_canvas_state.field_state(),
                 )
                 .map_err(AppRuntimeError::from)
@@ -501,7 +546,11 @@ impl TemplateApp {
                     self.try_regenerate_as_spherical(&render_state)
                 }
                 PersistedWorldOrigin::SphericalV1 => {
-                    self.try_rebuild_spherical_world(&render_state)
+                    if self.spherical_presentation.read_resource(Option::is_some) {
+                        self.try_rebuild_spherical_world(&render_state)
+                    } else {
+                        self.try_start_spherical_world(&render_state, MigrationFailurePoint::None)
+                    }
                 }
             };
             self.spherical_runtime_error = result.err().map(|error| error.to_string());
@@ -532,6 +581,56 @@ impl TemplateApp {
             .map_err(|error| error.to_string())
         });
         self.spherical_runtime_error = result.err();
+    }
+
+    fn show_active_canvas_after_actions(
+        &mut self,
+        ctx: &egui::Context,
+        actions: Vec<SphericalCanvasAction>,
+    ) {
+        for action in actions {
+            self.apply_spherical_action(action);
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.world_origin {
+            PersistedWorldOrigin::LegacyPlanarV1 => {
+                ui.add(&mut self.canvas_widget);
+            }
+            PersistedWorldOrigin::SphericalV1 => {
+                let canvas_state = &mut self.spherical_canvas_state;
+                let output = self.spherical_presentation.read_resource(|current| {
+                    current.as_ref().map(|presentation| {
+                        interact_spherical_canvas(ui, presentation, canvas_state)
+                    })
+                });
+                let Some(output) = output else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("球面世界尚未发布");
+                    });
+                    return;
+                };
+                let rect = output.response().rect;
+                for action in output.into_actions() {
+                    self.apply_spherical_action(action);
+                }
+                let queued = self.spherical_presentation.read_resource(|current| {
+                    current.as_ref().is_some_and(|presentation| {
+                        queue_spherical_canvas_callback(
+                            ui,
+                            presentation,
+                            &self.spherical_canvas_state,
+                            rect,
+                        );
+                        true
+                    })
+                });
+                if !queued {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("球面世界尚未发布");
+                    });
+                }
+            }
+        });
     }
 
     fn setup_fonts(ctx: &egui::Context) {
@@ -879,12 +978,12 @@ impl eframe::App for TemplateApp {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                                 }
                             }
-                            match build_spherical_inspector_model(
+                            match self.spherical_inspector_cache.model(
                                 presentation,
                                 self.spherical_canvas_state.field_state(),
                                 self.spherical_canvas_state.view_mode(),
                             ) {
-                                Ok(model) => show_spherical_inspector(ui, &model),
+                                Ok(model) => show_spherical_inspector(ui, model),
                                 Err(error) => {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                                 }
@@ -924,32 +1023,7 @@ impl eframe::App for TemplateApp {
             }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.world_origin {
-            PersistedWorldOrigin::LegacyPlanarV1 => {
-                ui.add(&mut self.canvas_widget);
-            }
-            PersistedWorldOrigin::SphericalV1 => {
-                let canvas_state = &mut self.spherical_canvas_state;
-                let was_published = self.spherical_presentation.read_resource(|current| {
-                    let Some(presentation) = current.as_ref() else {
-                        return false;
-                    };
-                    spherical_actions.extend(
-                        show_spherical_canvas(ui, presentation, canvas_state).into_actions(),
-                    );
-                    true
-                });
-                if !was_published {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("球面世界尚未发布");
-                    });
-                }
-            }
-        });
-
-        for action in spherical_actions {
-            self.apply_spherical_action(action);
-        }
+        self.show_active_canvas_after_actions(ctx, std::mem::take(&mut spherical_actions));
     }
 }
 
@@ -1229,8 +1303,9 @@ mod natural_app_tests {
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
         default_world_spec, formation_provenance_label, AppRuntimeError, AppRuntimeGraph,
-        MigrationFailurePoint, NaturalWorldBuildError, PersistedWorldOrigin, TemplateApp,
-        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        MigrationFailurePoint, NaturalWorldBuildError, PersistedWorldOrigin,
+        PublishedSphericalPresentation, TemplateApp, CURRENT_SLICE_STATUS_TEXT,
+        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -1245,11 +1320,17 @@ mod natural_app_tests {
         RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion,
         TectonicConstraintClause, AUTHOR_CONSTRAINTS_SCHEMA_V1,
     };
-    use crate::view::FieldDisplayResourceState;
+    use crate::ui::spherical::{SphericalCanvasAction, SphericalInspectorCache};
+    use crate::view::{
+        FieldDisplayResourceState, OwnedViewDiagnostic, PreparedSphericalOverlay,
+        SphericalProjectionKind, SphericalViewMode, VectorGlyphLod, ViewDiagnosticSeverity,
+    };
     use crate::world::natural::{
-        preliminary_mean_air_temperature_c_field_id, surface_elevation_m_field_id, ClimateSpec,
-        GeologicSpec, HydroErosionSpec, MantleActivity, ResolvedWorldFormationPreset,
-        TectonicActivity, TectonicSpec, WorldFormationPreset, WorldFormationSpec,
+        boundary_strength_field_id, land_ocean_field_id,
+        preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
+        surface_elevation_m_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity,
+        ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
+        WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -1389,6 +1470,43 @@ mod natural_app_tests {
     }
 
     #[test]
+    fn corrupt_present_storage_recovers_visibly_to_legacy_without_implicit_spherical_build() {
+        let render_state = request_test_render_state();
+        let mut valid = TemplateApp::default();
+        valid.spherical_space_spec.target_cell_count = 162;
+        let mut valid_storage = TestStorage::default();
+        eframe::set_value(&mut valid_storage, eframe::APP_KEY, &valid);
+        let valid_wire = eframe::Storage::get_string(&valid_storage, eframe::APP_KEY).unwrap();
+
+        for (from, to) in [
+            ("equal_earth_zoom:1.0", "equal_earth_zoom:-1.0"),
+            ("vector_display_speed:1.0", "vector_display_speed:9.0"),
+            ("radius:6371000.0", "radius:-1.0"),
+            ("world_origin:SphericalV1", "world_origin:FutureSphericalV2"),
+        ] {
+            let corrupt = valid_wire.replacen(from, to, 1);
+            assert_ne!(corrupt, valid_wire, "fixture must corrupt `{from}`");
+            let mut storage = TestStorage::default();
+            eframe::Storage::set_string(&mut storage, eframe::APP_KEY, corrupt);
+            let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+            cc.storage = Some(&storage);
+            cc.wgpu_render_state = Some(render_state.clone());
+            let app = TemplateApp::new(&cc);
+            assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
+            assert_eq!(
+                app.active_runtime_graph(),
+                Some(AppRuntimeGraph::LegacyPlanarFoundation)
+            );
+            assert!(app.legacy_planar_document.is_some());
+            assert!(app.spherical_presentation.read_resource(Option::is_none));
+            assert!(app
+                .spherical_runtime_error
+                .as_deref()
+                .is_some_and(|message| message.contains("persisted")));
+        }
+    }
+
+    #[test]
     fn explicit_legacy_regeneration_is_atomic_across_build_gpu_failure_and_success() {
         let render_state = request_test_render_state();
         let persisted = TemplateApp {
@@ -1519,6 +1637,724 @@ mod natural_app_tests {
             assert_eq!(source_after, *current.source());
         });
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+    }
+
+    #[test]
+    fn failed_spherical_startup_is_visible_and_retries_standalone_without_planar_fallback() {
+        let render_state = request_test_render_state();
+        let mut persisted = TemplateApp::default();
+        persisted.spherical_space_spec.target_cell_count = 162;
+        persisted.tectonic_spec.plate_count = 0;
+        let mut app = create_from_persisted(persisted, &render_state);
+
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(app.legacy_planar_document.is_none());
+        assert_eq!(app.active_runtime_graph(), None);
+        assert!(app.spherical_runtime_error.as_deref().is_some());
+
+        app.tectonic_spec.plate_count = TectonicSpec::default().plate_count;
+        app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
+        assert!(app.spherical_runtime_error.is_none());
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert_eq!(
+            app.active_runtime_graph(),
+            Some(AppRuntimeGraph::SphericalNaturalFoundation)
+        );
+        assert!(app.spherical_presentation.read_resource(Option::is_some));
+        assert!(app.legacy_planar_document.is_none());
+        assert!(render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .is_some());
+    }
+
+    #[test]
+    fn gpu_failed_spherical_startup_is_visible_and_retry_publishes_once() {
+        let render_state = request_test_render_state();
+        let mut app = TemplateApp::default();
+        app.spherical_space_spec.target_cell_count = 162;
+        app.render_state = Some(render_state.clone());
+
+        assert!(app
+            .try_start_spherical_world(&render_state, MigrationFailurePoint::GpuPrepare)
+            .is_err());
+        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+        assert!(app.spherical_runtime_error.as_deref().is_some());
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(app.legacy_planar_document.is_none());
+        assert!(render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .is_none());
+
+        app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
+        assert!(app.spherical_runtime_error.is_none());
+        assert!(app.spherical_presentation.read_resource(Option::is_some));
+        assert!(render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .is_some());
+    }
+
+    #[test]
+    fn packet_changing_app_actions_queue_only_the_current_callback_in_the_same_frame() {
+        for (origin, action) in [
+            (
+                PersistedWorldOrigin::SphericalV1,
+                SphericalCanvasAction::SelectFill(land_ocean_field_id()),
+            ),
+            (
+                PersistedWorldOrigin::SphericalV1,
+                SphericalCanvasAction::SetCentralMeridianRadians(0.75),
+            ),
+            (
+                PersistedWorldOrigin::SphericalV1,
+                SphericalCanvasAction::RegenerateAsSpherical,
+            ),
+            (
+                PersistedWorldOrigin::LegacyPlanarV1,
+                SphericalCanvasAction::RegenerateAsSpherical,
+            ),
+        ] {
+            let render_state = request_test_render_state();
+            let persisted = TemplateApp {
+                world_origin: origin,
+                ..TemplateApp::default()
+            };
+            let mut app = create_from_persisted(persisted, &render_state);
+            let context = egui::Context::default();
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.show_active_canvas_after_actions(context, vec![action.clone()]),
+            );
+            assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+            assert_eq!(
+                output
+                    .shapes
+                    .iter()
+                    .filter(|shape| matches!(shape.shape, egui::epaint::Shape::Callback(_)))
+                    .count(),
+                1,
+                "{origin:?} action frame must queue one spherical callback"
+            );
+            let expected_source = app
+                .spherical_presentation
+                .read_resource(|current| current.as_ref().unwrap().source().clone());
+            let immutable_before = app_spherical_immutable_upload_counts(&render_state);
+            let jobs = context.tessellate(output.shapes, 1.0);
+            render_app_callbacks(&render_state, &jobs);
+            let renderer = render_state.renderer.read();
+            let spherical = renderer
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap();
+            assert_eq!(spherical.installed_source(), Some(&expected_source));
+            assert_eq!(
+                app_spherical_immutable_upload_counts(&render_state),
+                immutable_before,
+                "same-frame callback must reuse the action's current packet"
+            );
+        }
+    }
+
+    #[test]
+    fn spherical_inspector_cache_skips_static_camera_view_phase_scans_and_retires_old_sources() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let diagnostics: Vec<_> = (0..10_000)
+            .map(|index| OwnedViewDiagnostic {
+                severity: ViewDiagnosticSeverity::Info,
+                code: format!("test.inspector-cache.{index}"),
+                field_id: None,
+                cell_id: Some(crate::world::CellId::from_raw(0)),
+                message: "large diagnostic scan fixture".to_owned(),
+            })
+            .collect();
+        let mut cache = SphericalInspectorCache::default();
+
+        let inspect =
+            |app: &TemplateApp, cache: &mut SphericalInspectorCache, mode: SphericalViewMode| {
+                app.spherical_presentation.read_resource(|current| {
+                    cache
+                        .model_with_diagnostics_for_test(
+                            current.as_ref().unwrap(),
+                            app.spherical_canvas_state.field_state(),
+                            mode,
+                            &diagnostics,
+                        )
+                        .unwrap();
+                });
+            };
+
+        inspect(&app, &mut cache, SphericalViewMode::Map);
+        assert_eq!(cache.probe_for_test(), (1, diagnostics.len()));
+        inspect(&app, &mut cache, SphericalViewMode::Map);
+        assert_eq!(cache.probe_for_test(), (1, diagnostics.len()));
+
+        app.apply_spherical_action(SphericalCanvasAction::PanMap {
+            delta: [0.125, -0.25],
+        });
+        inspect(&app, &mut cache, SphericalViewMode::Map);
+        app.apply_spherical_action(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe));
+        inspect(&app, &mut cache, SphericalViewMode::Globe);
+        app.apply_spherical_action(SphericalCanvasAction::AdvanceVectorPhase {
+            frame_delta_seconds: 0.25,
+        });
+        inspect(&app, &mut cache, SphericalViewMode::Globe);
+        assert_eq!(
+            cache.probe_for_test(),
+            (1, diagnostics.len()),
+            "camera, view, and phase-only frames must not rebuild or scan"
+        );
+
+        app.apply_spherical_action(SphericalCanvasAction::SelectEntity(Some(
+            crate::view::SelectedSurfaceEntity::Cell(crate::world::CellId::from_raw(0)),
+        )));
+        inspect(&app, &mut cache, SphericalViewMode::Globe);
+        assert_eq!(cache.probe_for_test(), (2, diagnostics.len() * 2));
+
+        let (old_document, old_layers) = app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            (
+                Arc::downgrade(current.document_arc()),
+                Arc::downgrade(current.layers_arc()),
+            )
+        });
+        app.world_seed = app.world_seed.wrapping_add(1);
+        app.try_rebuild_spherical_world(&render_state).unwrap();
+        inspect(&app, &mut cache, SphericalViewMode::Globe);
+        assert_eq!(cache.probe_for_test(), (3, diagnostics.len() * 3));
+        assert!(old_document.upgrade().is_none());
+        assert!(old_layers.upgrade().is_none());
+    }
+
+    #[test]
+    fn edge_picking_uses_an_exact_logical_pixel_circle_for_maps_and_the_globe_limb() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        app.apply_spherical_action(SphericalCanvasAction::SelectOverlay(Some(
+            boundary_strength_field_id(),
+        )));
+        let canvas_size = [1000.0, 600.0];
+
+        for (kind, zoom) in [
+            (SphericalProjectionKind::EqualEarth, 1.0),
+            (SphericalProjectionKind::EqualEarth, 3.0),
+            (SphericalProjectionKind::Equirectangular, 1.0),
+            (SphericalProjectionKind::Equirectangular, 3.0),
+        ] {
+            app.apply_spherical_action(SphericalCanvasAction::SetViewMode(SphericalViewMode::Map));
+            app.apply_spherical_action(SphericalCanvasAction::SetProjectionKind(kind));
+            app.apply_spherical_action(SphericalCanvasAction::ResetMap);
+            if zoom != 1.0 {
+                app.apply_spherical_action(SphericalCanvasAction::ZoomMap { factor: zoom });
+            }
+            let (edge, base, normal) = app.spherical_presentation.read_resource(|current| {
+                map_edge_pick_fixture(
+                    current.as_ref().unwrap(),
+                    &app.spherical_canvas_state,
+                    canvas_size,
+                )
+            });
+            assert_exact_edge_pick_circle(
+                &app,
+                Some(edge),
+                base,
+                normal,
+                canvas_size,
+                &format!("{kind:?} zoom {zoom}"),
+            );
+        }
+
+        app.apply_spherical_action(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe));
+        app.apply_spherical_action(SphericalCanvasAction::ResetGlobe);
+        app.apply_spherical_action(SphericalCanvasAction::TrackballGlobe {
+            start: [500.0, 300.0],
+            end: [537.0, 323.0],
+            canvas_size,
+        });
+        let (edge, base, normal) = app.spherical_presentation.read_resource(|current| {
+            globe_limb_edge_pick_fixture(
+                current.as_ref().unwrap(),
+                app.spherical_canvas_state.globe_camera(),
+                canvas_size,
+            )
+        });
+        assert_exact_edge_pick_circle(&app, Some(edge), base, normal, canvas_size, "globe limb");
+    }
+
+    fn assert_exact_edge_pick_circle(
+        app: &TemplateApp,
+        expected_edge: Option<crate::world::EdgeId>,
+        base: [f64; 2],
+        normal: [f64; 2],
+        canvas_size: [f64; 2],
+        context: &str,
+    ) {
+        for pixels_per_point in [1.0, 2.5] {
+            app.spherical_presentation.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                let offset = |distance: f64| {
+                    [
+                        base[0] + normal[0] * distance,
+                        base[1] + normal[1] * distance,
+                    ]
+                };
+                let near = app.spherical_canvas_state.pick_screen(
+                    current,
+                    offset(7.9),
+                    canvas_size,
+                    pixels_per_point,
+                );
+                if let Some(edge) = expected_edge {
+                    assert_eq!(
+                        near,
+                        Some(crate::view::SelectedSurfaceEntity::Edge(edge)),
+                        "7.9 logical pixels must hit: {context}, DPR {pixels_per_point}",
+                    );
+                } else {
+                    assert!(
+                        matches!(near, Some(crate::view::SelectedSurfaceEntity::Edge(_))),
+                        "7.9 logical pixels must hit an incident limb edge: {context}, DPR {pixels_per_point}",
+                    );
+                }
+                assert!(
+                    matches!(
+                        app.spherical_canvas_state.pick_screen(
+                            current,
+                            offset(8.1),
+                            canvas_size,
+                            pixels_per_point,
+                        ),
+                        Some(crate::view::SelectedSurfaceEntity::Cell(_))
+                    ),
+                    "8.1 logical pixels must fall back to a cell: {context}, DPR {pixels_per_point}",
+                );
+            });
+        }
+    }
+
+    fn map_edge_pick_fixture(
+        presentation: &PublishedSphericalPresentation,
+        state: &crate::ui::spherical::SphericalCanvasState,
+        canvas_size: [f64; 2],
+    ) -> (crate::world::EdgeId, [f64; 2], [f64; 2]) {
+        let PreparedSphericalOverlay::Edge(field) = presentation.layers().overlay().unwrap() else {
+            panic!("edge picking fixture requires an edge overlay");
+        };
+        presentation
+            .map()
+            .edge_segments()
+            .iter()
+            .filter(|segment| field.raw_values()[segment.edge().raw() as usize] != 0)
+            .find_map(|segment| {
+                let start = map_point_to_screen(state, segment.start(), canvas_size);
+                let end = map_point_to_screen(state, segment.end(), canvas_size);
+                let (edge, base, normal) =
+                    edge_pick_fixture_from_segment(segment.edge(), start, end, canvas_size, 80.0)?;
+                [normal, [-normal[0], -normal[1]]]
+                    .into_iter()
+                    .find(|normal| {
+                        [7.9, 8.1].into_iter().all(|distance| {
+                            let screen = [
+                                base[0] + normal[0] * distance,
+                                base[1] + normal[1] * distance,
+                            ];
+                            map_screen_direction(state, screen, canvas_size)
+                                .and_then(|direction| presentation.locator().locate_cell(direction))
+                                .and_then(|cell| {
+                                    presentation.document().surface_for_ui().cell_edges(cell)
+                                })
+                                .is_some_and(|edges| edges.contains(&edge))
+                        })
+                    })
+                    .map(|normal| (edge, base, normal))
+            })
+            .expect("map fixture must contain a long visible non-zero edge")
+    }
+
+    fn map_point_to_screen(
+        state: &crate::ui::spherical::SphericalCanvasState,
+        point: crate::view::ProjectionPoint,
+        canvas_size: [f64; 2],
+    ) -> [f64; 2] {
+        let projection = state.projection();
+        let bounds = projection.bounds();
+        let bounds_width = bounds.max_x() - bounds.min_x();
+        let bounds_height = bounds.max_y() - bounds.min_y();
+        let aspect = canvas_size[0] / canvas_size[1];
+        let map_aspect = bounds_width / bounds_height;
+        let (fit_x, fit_y) = if aspect >= map_aspect {
+            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
+        } else {
+            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
+        };
+        let zoom = state.map_camera().zoom(projection.kind());
+        let pan = state.map_camera().pan(projection.kind());
+        let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
+        let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
+        let ndc = [
+            (point.x() - center_x) * fit_x * zoom + pan[0] * 2.0,
+            (point.y() - center_y) * fit_y * zoom + pan[1] * 2.0,
+        ];
+        [
+            (ndc[0] + 1.0) * canvas_size[0] * 0.5,
+            (1.0 - ndc[1]) * canvas_size[1] * 0.5,
+        ]
+    }
+
+    fn map_screen_direction(
+        state: &crate::ui::spherical::SphericalCanvasState,
+        screen: [f64; 2],
+        canvas_size: [f64; 2],
+    ) -> Option<crate::world::spatial::UnitVector3> {
+        let projection = state.projection();
+        let bounds = projection.bounds();
+        let bounds_width = bounds.max_x() - bounds.min_x();
+        let bounds_height = bounds.max_y() - bounds.min_y();
+        let aspect = canvas_size[0] / canvas_size[1];
+        let map_aspect = bounds_width / bounds_height;
+        let (fit_x, fit_y) = if aspect >= map_aspect {
+            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
+        } else {
+            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
+        };
+        let zoom = state.map_camera().zoom(projection.kind());
+        let pan = state.map_camera().pan(projection.kind());
+        let ndc = [
+            2.0 * screen[0] / canvas_size[0] - 1.0,
+            1.0 - 2.0 * screen[1] / canvas_size[1],
+        ];
+        let point = crate::view::ProjectionPoint::new(
+            (ndc[0] - 2.0 * pan[0]) / (fit_x * zoom) + (bounds.min_x() + bounds.max_x()) * 0.5,
+            (ndc[1] - 2.0 * pan[1]) / (fit_y * zoom) + (bounds.min_y() + bounds.max_y()) * 0.5,
+        );
+        projection.inverse(point).ok()
+    }
+
+    fn globe_limb_edge_pick_fixture(
+        presentation: &PublishedSphericalPresentation,
+        camera: crate::view::GlobeCamera,
+        canvas_size: [f64; 2],
+    ) -> (crate::world::EdgeId, [f64; 2], [f64; 2]) {
+        let PreparedSphericalOverlay::Edge(_field) = presentation.layers().overlay().unwrap()
+        else {
+            panic!("globe picking fixture requires an edge overlay");
+        };
+        let visible: Vec<_> = presentation
+            .globe()
+            .edge_segments()
+            .iter()
+            .filter_map(|segment| {
+                camera
+                    .project_visible_segment_to_screen(segment.start(), segment.end(), canvas_size)
+                    .map(|[start, end]| (segment.edge(), start, end))
+            })
+            .collect();
+        presentation
+            .globe()
+            .edge_segments()
+            .iter()
+            .filter_map(|segment| {
+                let start = crate::world::spatial::UnitVector3::new(
+                    f64::from(segment.start()[0]),
+                    f64::from(segment.start()[1]),
+                    f64::from(segment.start()[2]),
+                )
+                .ok()?;
+                let end = crate::world::spatial::UnitVector3::new(
+                    f64::from(segment.end()[0]),
+                    f64::from(segment.end()[1]),
+                    f64::from(segment.end()[2]),
+                )
+                .ok()?;
+                if camera.is_front_facing(start) == camera.is_front_facing(end) {
+                    return None;
+                }
+                let [start, end] = camera.project_visible_segment_to_screen(
+                    segment.start(),
+                    segment.end(),
+                    canvas_size,
+                )?;
+                let delta = [end[0] - start[0], end[1] - start[1]];
+                let length = delta[0].hypot(delta[1]);
+                if length < 20.0 {
+                    return None;
+                }
+                let normal = [-delta[1] / length, delta[0] / length];
+                [0.2, 0.35, 0.5, 0.65, 0.8].into_iter().find_map(|along| {
+                    let base = [start[0] + delta[0] * along, start[1] + delta[1] * along];
+                    [normal, [-normal[0], -normal[1]]]
+                        .into_iter()
+                        .find_map(|normal| {
+                            let nearest = |distance| {
+                                let screen = [
+                                    base[0] + normal[0] * distance,
+                                    base[1] + normal[1] * distance,
+                                ];
+                                let cell = camera
+                                    .screen_to_ray(screen, canvas_size)
+                                    .and_then(crate::view::intersect_unit_sphere)
+                                    .and_then(|hit| {
+                                        presentation.locator().locate_cell(hit.direction())
+                                    })?;
+                                let incident =
+                                    presentation.document().surface_for_ui().cell_edges(cell)?;
+                                visible
+                                    .iter()
+                                    .filter(|(edge, _, _)| incident.contains(edge))
+                                    .map(|(edge, start, end)| {
+                                        (*edge, test_point_segment_distance(screen, *start, *end))
+                                    })
+                                    .min_by(|left, right| {
+                                        left.1
+                                            .total_cmp(&right.1)
+                                            .then_with(|| left.0.cmp(&right.0))
+                                    })
+                            };
+                            let near = nearest(7.9)?;
+                            let far = nearest(8.1)?;
+                            ((near.1 - 7.9).abs() < 1.0e-6 && far.1 > 8.0)
+                                .then_some((near.0, base, normal))
+                        })
+                })
+            })
+            .next()
+            .expect("globe limb fixture must isolate one exact 8px incident-edge boundary")
+    }
+
+    fn test_point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = delta[0].mul_add(delta[0], delta[1] * delta[1]);
+        let along = (((point[0] - start[0]) * delta[0] + (point[1] - start[1]) * delta[1])
+            / length_squared)
+            .clamp(0.0, 1.0);
+        let closest = [start[0] + along * delta[0], start[1] + along * delta[1]];
+        (point[0] - closest[0]).hypot(point[1] - closest[1])
+    }
+
+    fn edge_pick_fixture_from_segment(
+        edge: crate::world::EdgeId,
+        start: [f64; 2],
+        end: [f64; 2],
+        canvas_size: [f64; 2],
+        minimum_length: f64,
+    ) -> Option<(crate::world::EdgeId, [f64; 2], [f64; 2])> {
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        let length = delta[0].hypot(delta[1]);
+        let base = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
+        let margin = 10.0;
+        if length < minimum_length
+            || base[0] < margin
+            || base[0] > canvas_size[0] - margin
+            || base[1] < margin
+            || base[1] > canvas_size[1] - margin
+        {
+            return None;
+        }
+        Some((edge, base, [-delta[1] / length, delta[0] / length]))
+    }
+
+    fn app_spherical_immutable_upload_counts(
+        render_state: &eframe::egui_wgpu::RenderState,
+    ) -> [u64; 7] {
+        let renderer = render_state.renderer.read();
+        let counters = renderer
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        [
+            counters.map_geometry,
+            counters.globe_geometry,
+            counters.fill_field,
+            counters.diagnostics,
+            counters.palettes,
+            counters.map_overlay_instances,
+            counters.globe_overlay_instances,
+        ]
+    }
+
+    fn render_app_callbacks(
+        render_state: &eframe::egui_wgpu::RenderState,
+        jobs: &[egui::ClippedPrimitive],
+    ) {
+        use eframe::egui_wgpu::wgpu;
+
+        let descriptor = eframe::egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [800, 600],
+            pixels_per_point: 1.0,
+        };
+        let target = render_state
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Task 10 app callback lifecycle target"),
+                size: wgpu::Extent3d {
+                    width: 800,
+                    height: 600,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: render_state.target_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder =
+            render_state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Task 10 app callback lifecycle encoder"),
+                });
+        let mut renderer = render_state.renderer.write();
+        renderer.update_buffers(
+            &render_state.device,
+            &render_state.queue,
+            &mut encoder,
+            jobs,
+            &descriptor,
+        );
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Task 10 app callback lifecycle pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                })
+                .forget_lifetime();
+            renderer.render(&mut pass, jobs, &descriptor);
+        }
+        drop(renderer);
+        render_state.queue.submit([encoder.finish()]);
+    }
+
+    #[test]
+    fn persisted_non_default_view_is_bound_to_initial_and_rebuilt_whole_publications() {
+        let render_state = request_test_render_state();
+        let mut persisted = TemplateApp::default();
+        let state = &mut persisted.spherical_canvas_state;
+        state
+            .apply(SphericalCanvasAction::PanMap {
+                delta: [0.125, -0.25],
+            })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::ZoomMap { factor: 1.5 })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::SetProjectionKind(
+                SphericalProjectionKind::Equirectangular,
+            ))
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::SetCentralMeridianRadians(0.75))
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::PanMap {
+                delta: [-0.5, 0.375],
+            })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::ZoomMap { factor: 2.5 })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::TrackballGlobe {
+                start: [400.0, 300.0],
+                end: [460.0, 260.0],
+                canvas_size: [800.0, 600.0],
+            })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::ZoomGlobe { factor: 3.0 })
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::SelectOverlay(Some(
+                preliminary_prevailing_wind_m_s_field_id(),
+            )))
+            .unwrap();
+        state
+            .apply(SphericalCanvasAction::SetVectorLod(VectorGlyphLod::Low))
+            .unwrap();
+        let expected_view = state.presentation_view_state();
+
+        let mut app = create_from_persisted(persisted, &render_state);
+        let pick_before = app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            assert_eq!(current.view_state(), &expected_view);
+            assert_eq!(current.map().projection(), expected_view.projection());
+            assert_eq!(current.state().vector_view_zoom(), 3.0);
+            assert_eq!(
+                current.layers().glyph_lod_key(),
+                crate::view::GlyphLodKey::Medium
+            );
+            assert!(Arc::ptr_eq(
+                current.gpu_packet().layers_arc(),
+                current.layers_arc()
+            ));
+            assert_eq!(
+                app.spherical_canvas_state.presentation_view_state(),
+                expected_view
+            );
+            app.spherical_canvas_state
+                .pick_screen(current, [400.0, 300.0], [800.0, 600.0], 1.0)
+        });
+        assert!(pick_before.is_some());
+
+        app.try_rebuild_spherical_world(&render_state).unwrap();
+        app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            assert_eq!(current.view_state(), &expected_view);
+            assert_eq!(current.map().projection(), expected_view.projection());
+            assert_eq!(current.state().vector_view_zoom(), 3.0);
+            assert_eq!(
+                current.layers().glyph_lod_key(),
+                crate::view::GlyphLodKey::Medium
+            );
+            assert!(Arc::ptr_eq(
+                current.gpu_packet().layers_arc(),
+                current.layers_arc()
+            ));
+            assert_eq!(
+                app.spherical_canvas_state.presentation_view_state(),
+                expected_view
+            );
+            assert_eq!(
+                app.spherical_canvas_state.pick_screen(
+                    current,
+                    [400.0, 300.0],
+                    [800.0, 600.0],
+                    1.0
+                ),
+                pick_before
+            );
+        });
     }
 
     #[test]

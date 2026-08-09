@@ -1,5 +1,7 @@
 //! Single-canvas controls and renderer-neutral inspection for spherical worlds.
 
+use std::sync::{Arc, Weak};
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -7,8 +9,9 @@ use crate::app::{PublishedSphericalPresentation, SphericalPresentationError};
 use crate::gpu::spherical::{SphericalFieldRenderer, SphericalPaintCallback, SphericalRenderMode};
 use crate::view::{
     classify_spherical_channel, format_field_value, DiagnosticScope, DisplayRangeMode, FieldValue,
-    GlobeCamera, MapCamera, PaletteId, SelectedSurfaceEntity, SphericalFieldChannel,
-    SphericalFieldDisplayState, SphericalProjection, SphericalProjectionError,
+    GlobeCamera, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedFieldLayers,
+    SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
+    SphericalPresentationViewState, SphericalProjection, SphericalProjectionError,
     SphericalProjectionKind, SphericalViewMode, VectorAnimationUniform, VectorGlyphLod,
     ViewDiagnosticSeverity,
 };
@@ -87,6 +90,7 @@ impl SphericalCanvasInvalidation {
     pub const ACTIVE_PRESENTER_UNIFORM: Self = Self::new(false, false, false, true, false, false);
     /// Replaces only projected map geometry and its associated uniforms.
     pub const MAP_GEOMETRY: Self = Self::new(true, false, true, true, false, false);
+    const MAP_GEOMETRY_AND_FIELD_LAYERS: Self = Self::new(true, true, true, true, false, false);
     /// Reconciles the shared field packet and any dependent glyph instances.
     pub const FIELD_LAYERS: Self = Self::new(false, true, true, true, false, false);
     /// Updates only the display animation phase uniform.
@@ -180,7 +184,7 @@ impl SphericalCanvasState {
                     return Ok(SphericalCanvasInvalidation::NONE);
                 }
                 self.view_mode = mode;
-                Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
+                Ok(self.camera_invalidation())
             }
             SphericalCanvasAction::SetProjectionKind(kind) => {
                 if self.projection.kind() == kind {
@@ -188,7 +192,11 @@ impl SphericalCanvasState {
                 }
                 self.projection =
                     SphericalProjection::new(kind, self.projection.central_meridian())?;
-                Ok(SphericalCanvasInvalidation::MAP_GEOMETRY)
+                Ok(if self.camera_invalidation().field_layers() {
+                    SphericalCanvasInvalidation::MAP_GEOMETRY_AND_FIELD_LAYERS
+                } else {
+                    SphericalCanvasInvalidation::MAP_GEOMETRY
+                })
             }
             SphericalCanvasAction::SetCentralMeridianRadians(central_meridian) => {
                 let next = SphericalProjection::new(self.projection.kind(), central_meridian)?;
@@ -340,6 +348,16 @@ impl SphericalCanvasState {
         &self.field_state
     }
 
+    /// Returns the complete renderer-neutral view bound to a whole-world publication.
+    pub const fn presentation_view_state(&self) -> SphericalPresentationViewState {
+        SphericalPresentationViewState::new(
+            self.view_mode,
+            self.projection,
+            self.map_camera,
+            self.globe_camera,
+        )
+    }
+
     /// Returns the fixed-size display-only vector animation state.
     pub const fn vector_animation(&self) -> VectorAnimationUniform {
         self.vector_animation
@@ -365,13 +383,10 @@ impl SphericalCanvasState {
         let direction = self.screen_direction(screen, canvas_size)?;
         let cell = presentation.locator().locate_cell(direction)?;
         if self.active_overlay_is_edge(presentation) {
-            if let Some(tolerance) = self.local_edge_tolerance(screen, canvas_size, direction) {
-                if let Some(edge) = presentation
-                    .locator()
-                    .locate_incident_edge(cell, direction, tolerance)
-                {
-                    return Some(SelectedSurfaceEntity::Edge(edge));
-                }
+            if let Some(edge) =
+                self.pick_incident_edge_in_screen_space(presentation, cell, screen, canvas_size)
+            {
+                return Some(SelectedSurfaceEntity::Edge(edge));
             }
         }
         Some(SelectedSurfaceEntity::Cell(cell))
@@ -448,29 +463,119 @@ impl SphericalCanvasState {
             == Some(SphericalFieldChannel::EdgeOverlay)
     }
 
-    fn local_edge_tolerance(
+    fn pick_incident_edge_in_screen_space(
         &self,
+        presentation: &PublishedSphericalPresentation,
+        cell: CellId,
         screen: [f64; 2],
         canvas_size: [f64; 2],
-        center: crate::world::spatial::UnitVector3,
-    ) -> Option<f64> {
-        let mut tolerance = 0.0_f64;
-        for offset in [
-            [EDGE_PICK_TOLERANCE_LOGICAL_PIXELS, 0.0],
-            [-EDGE_PICK_TOLERANCE_LOGICAL_PIXELS, 0.0],
-            [0.0, EDGE_PICK_TOLERANCE_LOGICAL_PIXELS],
-            [0.0, -EDGE_PICK_TOLERANCE_LOGICAL_PIXELS],
-        ] {
-            let neighbor = [screen[0] + offset[0], screen[1] + offset[1]];
-            if let Some(direction) = self.screen_direction(neighbor, canvas_size) {
-                tolerance = tolerance.max(center.dot(direction).clamp(-1.0, 1.0).acos());
+    ) -> Option<crate::world::EdgeId> {
+        let incident = presentation.document().surface_for_ui().cell_edges(cell)?;
+        let mut closest: Option<(crate::world::EdgeId, f64)> = None;
+        match self.view_mode {
+            SphericalViewMode::Map => {
+                for segment in presentation
+                    .map()
+                    .edge_segments()
+                    .iter()
+                    .filter(|segment| incident.contains(&segment.edge()))
+                {
+                    let start = self.map_projection_point_to_screen(segment.start(), canvas_size);
+                    let end = self.map_projection_point_to_screen(segment.end(), canvas_size);
+                    retain_closest_screen_edge(
+                        &mut closest,
+                        segment.edge(),
+                        point_segment_distance(screen, start, end),
+                    );
+                }
+            }
+            SphericalViewMode::Globe => {
+                for segment in presentation
+                    .globe()
+                    .edge_segments()
+                    .iter()
+                    .filter(|segment| incident.contains(&segment.edge()))
+                {
+                    let Some([start, end]) = self.globe_camera.project_visible_segment_to_screen(
+                        segment.start(),
+                        segment.end(),
+                        canvas_size,
+                    ) else {
+                        continue;
+                    };
+                    retain_closest_screen_edge(
+                        &mut closest,
+                        segment.edge(),
+                        point_segment_distance(screen, start, end),
+                    );
+                }
             }
         }
-        (tolerance > 0.0 && tolerance.is_finite()).then_some(tolerance)
+        closest
+            .filter(|(_, distance)| *distance <= EDGE_PICK_TOLERANCE_LOGICAL_PIXELS)
+            .map(|(edge, _)| edge)
+    }
+
+    fn map_projection_point_to_screen(
+        &self,
+        point: crate::view::ProjectionPoint,
+        canvas_size: [f64; 2],
+    ) -> [f64; 2] {
+        let bounds = self.projection.bounds();
+        let bounds_width = bounds.max_x() - bounds.min_x();
+        let bounds_height = bounds.max_y() - bounds.min_y();
+        let aspect = canvas_size[0] / canvas_size[1];
+        let map_aspect = bounds_width / bounds_height;
+        let (fit_x, fit_y) = if aspect >= map_aspect {
+            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
+        } else {
+            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
+        };
+        let zoom = self.map_camera.zoom(self.projection.kind());
+        let pan = self.map_camera.pan(self.projection.kind());
+        let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
+        let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
+        let ndc = [
+            (point.x() - center_x) * fit_x * zoom + pan[0] * 2.0,
+            (point.y() - center_y) * fit_y * zoom + pan[1] * 2.0,
+        ];
+        [
+            (ndc[0] + 1.0) * canvas_size[0] * 0.5,
+            (1.0 - ndc[1]) * canvas_size[1] * 0.5,
+        ]
     }
 
     pub(crate) fn replace_field_state(&mut self, state: SphericalFieldDisplayState) {
         self.field_state = state;
+    }
+}
+
+fn point_segment_distance(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let delta = [end[0] - start[0], end[1] - start[1]];
+    let length_squared = delta[0].mul_add(delta[0], delta[1] * delta[1]);
+    if !length_squared.is_finite() || length_squared <= 0.0 {
+        return (point[0] - start[0]).hypot(point[1] - start[1]);
+    }
+    let from_start = [point[0] - start[0], point[1] - start[1]];
+    let along =
+        ((from_start[0] * delta[0] + from_start[1] * delta[1]) / length_squared).clamp(0.0, 1.0);
+    let closest = [start[0] + along * delta[0], start[1] + along * delta[1]];
+    (point[0] - closest[0]).hypot(point[1] - closest[1])
+}
+
+fn retain_closest_screen_edge(
+    closest: &mut Option<(crate::world::EdgeId, f64)>,
+    edge: crate::world::EdgeId,
+    distance: f64,
+) {
+    if !distance.is_finite() {
+        return;
+    }
+    let replace = closest.is_none_or(|(current_edge, current_distance)| {
+        distance < current_distance || (distance == current_distance && edge < current_edge)
+    });
+    if replace {
+        *closest = Some((edge, distance));
     }
 }
 
@@ -814,31 +919,68 @@ pub fn apply_spherical_canvas_action(
     state: &mut SphericalCanvasState,
     action: SphericalCanvasAction,
 ) -> Result<SphericalCanvasInvalidation, SphericalUiError> {
+    if let SphericalCanvasAction::SelectEntity(Some(SelectedSurfaceEntity::Edge(edge))) = &action {
+        if presentation
+            .document()
+            .surface_for_ui()
+            .edge(*edge)
+            .is_none()
+        {
+            return Err(SphericalUiError::EntityValueMissing);
+        }
+        if !inspector_overlay_field_is_edge(presentation, state.field_state().overlay_field())? {
+            return Err(SphericalUiError::UnsupportedInspectorEntity);
+        }
+    }
+
     let mut candidate_state = state.clone();
+    if let SphericalCanvasAction::SelectOverlay(field) = &action {
+        if matches!(
+            candidate_state.field_state().selected_entity(),
+            Some(SelectedSurfaceEntity::Edge(_))
+        ) && !inspector_overlay_field_is_edge(presentation, field.as_ref())?
+        {
+            candidate_state.apply(SphericalCanvasAction::SelectEntity(None))?;
+        }
+    }
     let invalidation = candidate_state.apply(action)?;
     if invalidation.map_geometry() {
-        let candidate = presentation.prepare_projection_candidate(
-            candidate_state.projection(),
+        let candidate = presentation.prepare_projection_candidate_for_view(
+            candidate_state.presentation_view_state(),
             crate::view::SphericalMeshBudgets::DEFAULT,
         )?;
         let mut gpu = crate::app::SphericalRendererPreparer::new(renderer, device, queue);
         presentation.try_replace_projection_candidate(candidate, &mut gpu)?;
-    }
-    if invalidation.field_layers() {
-        let candidate = presentation.prepare_field_candidate(
+        candidate_state.replace_field_state(presentation.state().clone());
+    } else if invalidation.field_layers() {
+        let candidate = presentation.prepare_field_candidate_for_view(
             candidate_state.field_state().clone(),
-            candidate_state.view_mode(),
-            candidate_state.map_camera(),
-            candidate_state.globe_camera(),
+            candidate_state.presentation_view_state(),
         )?;
         let mut gpu = crate::app::SphericalRendererPreparer::new(renderer, device, queue);
         presentation.try_replace_field_candidate(candidate, &mut gpu)?;
         candidate_state.replace_field_state(presentation.state().clone());
     } else {
-        presentation.reconcile_uniform_only_state(candidate_state.field_state().clone())?;
+        presentation.reconcile_uniform_only_state(
+            candidate_state.field_state().clone(),
+            candidate_state.presentation_view_state(),
+        )?;
     }
     *state = candidate_state;
     Ok(invalidation)
+}
+
+fn inspector_overlay_field_is_edge(
+    presentation: &PublishedSphericalPresentation,
+    field: Option<&FieldId>,
+) -> Result<bool, SphericalUiError> {
+    let Some(field) = field else {
+        return Ok(false);
+    };
+    let catalog = presentation.document().catalog_for_ui()?;
+    Ok(catalog
+        .get(field)
+        .is_some_and(|entry| entry.schema().domain == FieldDomain::Edges))
 }
 
 /// The response and deferred product actions produced by one canvas frame.
@@ -861,6 +1003,17 @@ impl SphericalCanvasOutput {
 
 /// Draws the single active spherical presenter and emits exactly one egui-wgpu callback.
 pub fn show_spherical_canvas(
+    ui: &mut egui::Ui,
+    presentation: &PublishedSphericalPresentation,
+    state: &mut SphericalCanvasState,
+) -> SphericalCanvasOutput {
+    let output = interact_spherical_canvas(ui, presentation, state);
+    queue_spherical_canvas_callback(ui, presentation, state, output.response.rect);
+    output
+}
+
+/// Allocates the canvas and collects input without capturing a deferred GPU packet yet.
+pub(crate) fn interact_spherical_canvas(
     ui: &mut egui::Ui,
     presentation: &PublishedSphericalPresentation,
     state: &mut SphericalCanvasState,
@@ -940,6 +1093,17 @@ pub fn show_spherical_canvas(
         ui.ctx().request_repaint();
     }
 
+    SphericalCanvasOutput { response, actions }
+}
+
+/// Queues exactly one callback after the app has published all actions from this frame.
+pub(crate) fn queue_spherical_canvas_callback(
+    ui: &mut egui::Ui,
+    presentation: &PublishedSphericalPresentation,
+    state: &SphericalCanvasState,
+    rect: egui::Rect,
+) {
+    let pixels_per_point = f64::from(ui.ctx().pixels_per_point());
     let viewport = [
         (f64::from(rect.width()) * pixels_per_point)
             .round()
@@ -964,8 +1128,6 @@ pub fn show_spherical_canvas(
         .add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect, callback,
         ));
-
-    SphericalCanvasOutput { response, actions }
 }
 
 /// Draws projection, field, overlay, diagnostic, and vector controls for the single canvas.
@@ -1238,14 +1400,127 @@ impl SphericalInspectorModel {
     }
 }
 
+/// Per-application inspector cache keyed only by authoritative model inputs.
+///
+/// Camera, presenter mode, and animation phase do not participate. Source allocations are held
+/// weakly so replacing a whole publication cannot retain obsolete documents or field layers.
+#[derive(Default)]
+pub(crate) struct SphericalInspectorCache {
+    entry: Option<SphericalInspectorCacheEntry>,
+    model_rebuilds: usize,
+    diagnostic_values_scanned: usize,
+}
+
+struct SphericalInspectorCacheEntry {
+    source: crate::view::SphericalPresentationSource,
+    document: Weak<crate::app::SphericalNaturalFieldDocument>,
+    layers: Weak<PreparedFieldLayers>,
+    fill_field: Option<FieldId>,
+    overlay_field: Option<FieldId>,
+    selected_entity: Option<SelectedSurfaceEntity>,
+    model: SphericalInspectorModel,
+}
+
+impl SphericalInspectorCacheEntry {
+    fn matches(
+        &self,
+        presentation: &PublishedSphericalPresentation,
+        state: &SphericalFieldDisplayState,
+    ) -> bool {
+        self.source == *presentation.source()
+            && self.document.as_ptr() == Arc::as_ptr(presentation.document_arc())
+            && self.layers.as_ptr() == Arc::as_ptr(presentation.layers_arc())
+            && self.fill_field.as_ref() == state.fill_field()
+            && self.overlay_field.as_ref() == state.overlay_field()
+            && self.selected_entity == state.selected_entity()
+    }
+}
+
+impl SphericalInspectorCache {
+    /// Returns a borrowed stable model, rebuilding only when authoritative inspector inputs change.
+    pub(crate) fn model(
+        &mut self,
+        presentation: &PublishedSphericalPresentation,
+        state: &SphericalFieldDisplayState,
+        mode: SphericalViewMode,
+    ) -> Result<&SphericalInspectorModel, SphericalUiError> {
+        self.model_with_diagnostics(
+            presentation,
+            state,
+            mode,
+            presentation.document().diagnostics_for_ui(),
+        )
+    }
+
+    fn model_with_diagnostics(
+        &mut self,
+        presentation: &PublishedSphericalPresentation,
+        state: &SphericalFieldDisplayState,
+        mode: SphericalViewMode,
+        diagnostics: &[OwnedViewDiagnostic],
+    ) -> Result<&SphericalInspectorModel, SphericalUiError> {
+        if self
+            .entry
+            .as_ref()
+            .is_some_and(|entry| entry.matches(presentation, state))
+        {
+            return Ok(&self.entry.as_ref().expect("cache hit").model);
+        }
+
+        self.diagnostic_values_scanned += diagnostics.len();
+        let model = build_spherical_inspector_model_with_diagnostics(
+            presentation,
+            state,
+            mode,
+            diagnostics,
+        )?;
+        self.model_rebuilds += 1;
+        self.entry = Some(SphericalInspectorCacheEntry {
+            source: presentation.source().clone(),
+            document: Arc::downgrade(presentation.document_arc()),
+            layers: Arc::downgrade(presentation.layers_arc()),
+            fill_field: state.fill_field().cloned(),
+            overlay_field: state.overlay_field().cloned(),
+            selected_entity: state.selected_entity(),
+            model,
+        });
+        Ok(&self.entry.as_ref().expect("cache was installed").model)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_with_diagnostics_for_test(
+        &mut self,
+        presentation: &PublishedSphericalPresentation,
+        state: &SphericalFieldDisplayState,
+        mode: SphericalViewMode,
+        diagnostics: &[OwnedViewDiagnostic],
+    ) -> Result<&SphericalInspectorModel, SphericalUiError> {
+        self.model_with_diagnostics(presentation, state, mode, diagnostics)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn probe_for_test(&self) -> (usize, usize) {
+        (self.model_rebuilds, self.diagnostic_values_scanned)
+    }
+}
+
 /// Formats the same authoritative inspector model for map and globe presentation.
 pub fn build_spherical_inspector_model(
     presentation: &PublishedSphericalPresentation,
     state: &SphericalFieldDisplayState,
     _mode: SphericalViewMode,
 ) -> Result<SphericalInspectorModel, SphericalUiError> {
-    let catalog = presentation.document().catalog_for_ui()?;
     let diagnostics = presentation.document().diagnostics_for_ui();
+    build_spherical_inspector_model_with_diagnostics(presentation, state, _mode, diagnostics)
+}
+
+fn build_spherical_inspector_model_with_diagnostics(
+    presentation: &PublishedSphericalPresentation,
+    state: &SphericalFieldDisplayState,
+    _mode: SphericalViewMode,
+    diagnostics: &[OwnedViewDiagnostic],
+) -> Result<SphericalInspectorModel, SphericalUiError> {
+    let catalog = presentation.document().catalog_for_ui()?;
     let surface = presentation.document().surface_for_ui();
     let entity = state.selected_entity();
     let mut rows = Vec::new();
@@ -1265,11 +1540,11 @@ pub fn build_spherical_inspector_model(
                     value: value.text,
                 });
                 rows.push(SphericalInspectorRow {
-                    label: "单位",
+                    label: "填色单位",
                     value: value.unit,
                 });
                 rows.push(SphericalInspectorRow {
-                    label: "字段来源",
+                    label: "填色字段来源",
                     value: format_field_id(&fill.schema().id),
                 });
             }
@@ -1295,8 +1570,12 @@ pub fn build_spherical_inspector_model(
                     value: format!("{:.3}°", angle.rem_euclid(360.0)),
                 });
                 rows.push(SphericalInspectorRow {
-                    label: "单位",
+                    label: "向量单位",
                     value: schema.unit.symbol().to_owned(),
+                });
+                rows.push(SphericalInspectorRow {
+                    label: "向量字段来源",
+                    value: format_field_id(&schema.id),
                 });
             }
         }

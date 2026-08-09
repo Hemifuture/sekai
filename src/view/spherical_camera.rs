@@ -7,7 +7,7 @@
 //! visibility use this same orientation, and rays transform back to world space
 //! through its inverse.
 
-use super::{SphericalProjectionKind, UnitRay};
+use super::{SphericalProjection, SphericalProjectionKind, UnitRay};
 use crate::world::spatial::UnitVector3;
 
 const IDENTITY_ORIENTATION: Quaternion = Quaternion {
@@ -25,6 +25,75 @@ pub enum SphericalViewMode {
     Map,
     /// The undeformed three-dimensional unit globe.
     Globe,
+}
+
+/// One validated renderer-neutral snapshot of the complete spherical presentation view.
+///
+/// Whole-world candidates bind this value together with their projected geometry and prepared
+/// field LOD so persisted cameras cannot drift from the publication they drive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphericalPresentationViewState {
+    mode: SphericalViewMode,
+    projection: SphericalProjection,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+}
+
+impl Default for SphericalPresentationViewState {
+    fn default() -> Self {
+        Self {
+            mode: SphericalViewMode::Map,
+            projection: SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0)
+                .expect("the canonical Equal Earth projection is valid"),
+            map_camera: MapCamera::default(),
+            globe_camera: GlobeCamera::default(),
+        }
+    }
+}
+
+impl SphericalPresentationViewState {
+    /// Binds an active mode, projection, both retained map cameras, and the globe camera.
+    pub const fn new(
+        mode: SphericalViewMode,
+        projection: SphericalProjection,
+        map_camera: MapCamera,
+        globe_camera: GlobeCamera,
+    ) -> Self {
+        Self {
+            mode,
+            projection,
+            map_camera,
+            globe_camera,
+        }
+    }
+
+    /// Returns the active presenter family.
+    pub const fn mode(self) -> SphericalViewMode {
+        self.mode
+    }
+
+    /// Returns the exact active map projection.
+    pub const fn projection(self) -> SphericalProjection {
+        self.projection
+    }
+
+    /// Returns both retained projection-specific map cameras.
+    pub const fn map_camera(self) -> MapCamera {
+        self.map_camera
+    }
+
+    /// Returns the retained undeformed-globe camera.
+    pub const fn globe_camera(self) -> GlobeCamera {
+        self.globe_camera
+    }
+
+    /// Returns the active camera zoom that selects the discrete vector-glyph LOD.
+    pub const fn active_zoom(self) -> f64 {
+        match self.mode {
+            SphericalViewMode::Map => self.map_camera.zoom(self.projection.kind()),
+            SphericalViewMode::Globe => self.globe_camera.orthographic_scale(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,6 +119,13 @@ pub struct MapCamera {
 }
 
 impl MapCamera {
+    /// Largest retained normalized pan magnitude on either screen axis.
+    pub const MAX_ABS_PAN: f64 = 4.0;
+    /// Smallest supported map zoom.
+    pub const MIN_ZOOM: f64 = 0.125;
+    /// Largest supported map zoom.
+    pub const MAX_ZOOM: f64 = 64.0;
+
     /// Returns the retained normalized pan for `projection`.
     pub const fn pan(self, projection: SphericalProjectionKind) -> [f64; 2] {
         self.state(projection).pan
@@ -67,7 +143,10 @@ impl MapCamera {
         }
         let state = self.state_mut(projection);
         let next = [state.pan[0] + delta[0], state.pan[1] + delta[1]];
-        if next.into_iter().any(|component| !component.is_finite()) {
+        if next
+            .into_iter()
+            .any(|component| !component.is_finite() || component.abs() > Self::MAX_ABS_PAN)
+        {
             return false;
         }
         state.pan = next;
@@ -81,7 +160,7 @@ impl MapCamera {
         }
         let state = self.state_mut(projection);
         let next = state.zoom * factor;
-        if !next.is_finite() || next <= 0.0 {
+        if !next.is_finite() || !(Self::MIN_ZOOM..=Self::MAX_ZOOM).contains(&next) {
             return false;
         }
         state.zoom = next;
@@ -236,6 +315,51 @@ impl GlobeCamera {
         let origin = inverse.rotate([camera_x, camera_y, 2.0]);
         let direction = inverse.rotate([0.0, 0.0, -1.0]);
         UnitRay::new(origin, direction).ok()
+    }
+
+    /// Projects and horizon-clips one renderer unit-sphere segment into logical screen pixels.
+    ///
+    /// This mirrors the fixed globe uniform and overlay horizon clipping used by the GPU, so
+    /// discrete picking can measure its circular logical-pixel tolerance in display space.
+    pub(crate) fn project_visible_segment_to_screen(
+        self,
+        start: [f32; 3],
+        end: [f32; 3],
+        canvas_size: [f64; 2],
+    ) -> Option<[[f64; 2]; 2]> {
+        if canvas_size
+            .into_iter()
+            .any(|component| !component.is_finite() || component <= 0.0)
+        {
+            return None;
+        }
+        let mut start = self.orientation.rotate(start.map(f64::from));
+        let mut end = self.orientation.rotate(end.map(f64::from));
+        if start
+            .into_iter()
+            .chain(end)
+            .any(|component| !component.is_finite())
+        {
+            return None;
+        }
+        if start[2] < 0.0 && end[2] < 0.0 {
+            return None;
+        }
+        if start[2] < 0.0 {
+            std::mem::swap(&mut start, &mut end);
+        }
+        if end[2] < 0.0 {
+            let crossing = start[2] / (start[2] - end[2]);
+            end = std::array::from_fn(|axis| start[axis] + (end[axis] - start[axis]) * crossing);
+        }
+        let diameter = canvas_size[0].min(canvas_size[1]);
+        let project = |point: [f64; 3]| {
+            [
+                canvas_size[0] * 0.5 + point[0] * self.orthographic_scale * diameter * 0.5,
+                canvas_size[1] * 0.5 - point[1] * self.orthographic_scale * diameter * 0.5,
+            ]
+        };
+        Some([project(start), project(end)])
     }
 }
 

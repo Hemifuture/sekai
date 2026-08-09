@@ -51,7 +51,9 @@ pub use prepared::{
     FieldDisplayResourceState, PreparedFieldDisplay,
 };
 pub use reference::{rasterize_reference, ReferenceImage};
-pub use spherical_camera::{GlobeCamera, MapCamera, SphericalViewMode};
+pub use spherical_camera::{
+    GlobeCamera, MapCamera, SphericalPresentationViewState, SphericalViewMode,
+};
 pub use spherical_mesh::{
     GlobeVertex, PreparedGlobeMesh, PreparedProjectedMap, ProjectedEdgeSegment, ProjectedMapVertex,
     SphericalMeshBudgets, SphericalMeshError,
