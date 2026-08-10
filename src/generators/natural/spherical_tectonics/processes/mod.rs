@@ -20,6 +20,7 @@ use crate::world::{CellId, EdgeId};
 
 pub(super) mod constants {
     pub(super) const DEFAULT_DELTA_MYR: f64 = 2.0;
+    pub(super) const OCEANIC_RIDGE_ELEVATION_M: f32 = -1_000.0;
     pub(super) const OCEANIC_TRENCH_ELEVATION_M: f32 = -10_000.0;
     pub(super) const HIGHEST_CONTINENTAL_ELEVATION_M: f32 = 10_000.0;
     pub(super) const ABYSSAL_PLAIN_ELEVATION_M: f32 = -6_000.0;
@@ -29,6 +30,9 @@ pub(super) mod constants {
     pub(super) const COLLISION_COEFFICIENT_PER_KM: f64 = 1.3e-5;
     pub(super) const REFERENCE_PLATE_SPEED_MM_PER_YEAR: f64 = 100.0;
     pub(super) const BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR: f64 = 0.6;
+    pub(super) const OCEANIC_ELEVATION_DAMPING_MM_PER_YEAR: f64 = 0.04;
+    pub(super) const CONTINENTAL_EROSION_MM_PER_YEAR: f64 = 0.03;
+    pub(super) const TRENCH_SEDIMENT_MM_PER_YEAR: f64 = 0.3;
     pub(super) const FORCED_SUBDUCTION_TERRANE_AREA_FRACTION: f64 = 0.2;
     pub(super) const COLLISION_TRANSFER_OVERLAP_DEPTH: u32 = 1;
 }
@@ -120,6 +124,10 @@ pub(super) struct ProcessStats {
     pub(super) affected_samples: u32,
     pub(super) removed_samples: u32,
     pub(super) transferred_samples: u32,
+    pub(super) spawned_samples: u32,
+    pub(super) rift_events: u32,
+    pub(super) spawned_lineages: u32,
+    pub(super) relaxed_samples: u32,
 }
 
 pub(super) fn commit_process_actions(
@@ -253,6 +261,24 @@ pub(super) enum ProcessError {
     NonContinentalCollision,
     #[error("terrane rooted at sample {sample} has no represented area")]
     EmptyTerrane { sample: usize },
+    #[error("process requires a dense current sample for cell {cell:?}")]
+    MissingDenseCurrentSample { cell: CellId },
+    #[error("process references missing lineage {lineage:?}")]
+    UnknownLineage { lineage: LineageId },
+    #[error("process sample {sample} anchor {anchor:?} is outside {cells} cells")]
+    InvalidAnchor {
+        sample: usize,
+        anchor: CellId,
+        cells: usize,
+    },
+    #[error("process delta must be finite and non-negative, got {found}")]
+    InvalidDeltaMyr { found: f32 },
+    #[error("the transient lineage counter is exhausted")]
+    LineageExhausted,
+    #[error("rift rotation is invalid: {0}")]
+    InvalidRotation(#[from] crate::world::natural::SphericalTectonicValidationError),
+    #[error("rift direction is invalid: {0}")]
+    InvalidDirection(#[from] crate::world::spatial::SphereGeometryError),
 }
 
 #[cfg(test)]
@@ -313,4 +339,7 @@ mod tests {
 }
 
 mod collision;
+mod relaxation;
+mod rifting;
+mod spreading;
 mod subduction;

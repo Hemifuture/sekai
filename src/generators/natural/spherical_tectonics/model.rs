@@ -147,6 +147,12 @@ impl TectonicState {
         self.plates.extend_from_slice(&current.plates);
         self.next_lineage_raw = current.next_lineage_raw;
     }
+
+    pub(super) fn allocate_lineage(&mut self) -> Option<LineageId> {
+        let lineage = LineageId::from_raw(self.next_lineage_raw);
+        self.next_lineage_raw = self.next_lineage_raw.checked_add(1)?;
+        Some(lineage)
+    }
 }
 
 /// Capacity-reused double buffer. It deliberately contains no history collection.
