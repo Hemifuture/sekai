@@ -16,6 +16,7 @@ use crate::world::spatial::{
 use crate::world::{EdgeId, PlateId};
 
 mod boundaries;
+mod contacts;
 mod crust;
 mod initial_state;
 mod kinematics;

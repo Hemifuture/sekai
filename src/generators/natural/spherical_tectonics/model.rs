@@ -14,6 +14,8 @@ use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 use thiserror::Error;
 
+use super::contacts::{ContactEvent, CoverageScratch};
+
 /// Stable identity of one transient plate lineage during the bounded evolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LineageId(u32);
@@ -151,6 +153,8 @@ impl TectonicState {
 pub(super) struct TectonicWorkspace {
     pub(super) current: TectonicState,
     pub(super) next: TectonicState,
+    pub(super) coverage: CoverageScratch,
+    pub(super) events: Vec<ContactEvent>,
 }
 
 impl TectonicWorkspace {
@@ -165,6 +169,8 @@ impl TectonicWorkspace {
                 plates: Vec::with_capacity(plate_capacity),
                 next_lineage_raw,
             },
+            coverage: CoverageScratch::with_cell_capacity(sample_capacity),
+            events: Vec::with_capacity(sample_capacity),
         }
     }
 }
@@ -270,6 +276,8 @@ mod state_tests {
         assert_eq!(workspace.current.samples.len(), 1);
         assert!(workspace.next.samples.is_empty());
         assert!(workspace.next.samples.capacity() >= 1);
+        assert_eq!(workspace.coverage.count(CellId::from_raw(0)), 0);
+        assert!(workspace.events.is_empty());
         assert_eq!(workspace.current.next_lineage_raw(), 8);
         assert_eq!(workspace.current.initial_owners(), vec![lineage]);
         assert_eq!(
