@@ -332,7 +332,8 @@ fn relief_generation_failure(error: SphericalReliefGenerationError) -> StageErro
         SphericalReliefGenerationError::InvalidSurface(_)
         | SphericalReliefGenerationError::InvalidSurfaceIdentity(_)
         | SphericalReliefGenerationError::InvalidTectonics(_)
-        | SphericalReliefGenerationError::InvalidMantle(_) => {
+        | SphericalReliefGenerationError::InvalidMantle(_)
+        | SphericalReliefGenerationError::InvalidHeightmap { .. } => {
             invalid_relief_input(error.to_string())
         }
         SphericalReliefGenerationError::InvalidReliefField(_) => {

@@ -3,7 +3,6 @@ use std::array;
 use noise::{NoiseFn, Perlin};
 
 use super::fractal::{FractalProfile, MAX_FRACTAL_OCTAVES};
-use super::morphology::noise::SphericalNoise3d;
 
 const OCTAVE_ROTATION_COS: f64 = 0.819_152_044_288_991_8;
 const OCTAVE_ROTATION_SIN: f64 = 0.573_576_436_351_046;
@@ -82,34 +81,9 @@ impl ReliefNoise2d {
     }
 }
 
-/// Deterministic coherent noise sampled directly in three-dimensional space.
-///
-/// Unit radial vectors can be sampled without choosing longitude, a map seam,
-/// or a privileged pole. The type is deliberately separate from the frozen 2D
-/// implementation so spherical work cannot perturb planar morphology.
-pub(super) struct ReliefNoise3d {
-    noise: SphericalNoise3d,
-}
-
-impl ReliefNoise3d {
-    pub(super) fn new(seed: u32) -> Self {
-        Self {
-            noise: SphericalNoise3d::new(seed),
-        }
-    }
-
-    pub(super) fn fbm(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
-        self.noise.fbm_coordinate(point, profile)
-    }
-
-    pub(super) fn ridged(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
-        self.noise.ridged_coordinate(point, profile)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{FractalProfile, ReliefNoise2d, ReliefNoise3d};
+    use super::{FractalProfile, ReliefNoise2d};
 
     const PROFILE: FractalProfile = FractalProfile {
         octaves: 5,
@@ -157,31 +131,5 @@ mod tests {
     #[test]
     fn octave_limit_preserves_the_profile_when_all_scales_are_resolvable() {
         assert_eq!(PROFILE.limited_to_resolution(100.0, 1.0).octaves, 5);
-    }
-
-    #[test]
-    fn spherical_noise_is_seeded_finite_bounded_and_coordinate_seam_free() {
-        let first = ReliefNoise3d::new(71);
-        let repeated = ReliefNoise3d::new(71);
-        let changed = ReliefNoise3d::new(72);
-        let points = [
-            [1.0, 0.0, 0.0],
-            [-1.0, 1.0e-12, 0.0],
-            [-1.0, -1.0e-12, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, -1.0],
-        ];
-        let actual = points.map(|point| first.fbm(point, PROFILE));
-
-        assert_eq!(actual, points.map(|point| repeated.fbm(point, PROFILE)));
-        assert_ne!(actual, points.map(|point| changed.fbm(point, PROFILE)));
-        assert!(actual
-            .iter()
-            .all(|value| value.is_finite() && (-1.0..=1.0).contains(value)));
-        assert!((actual[1] - actual[2]).abs() < 1.0e-9);
-        assert!(points
-            .map(|point| first.ridged(point, PROFILE))
-            .iter()
-            .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
     }
 }

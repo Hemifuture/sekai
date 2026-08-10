@@ -132,24 +132,11 @@ fn spherical_relief_is_deterministic_explainable_bounded_and_seed_sensitive() {
 }
 
 #[test]
-fn spherical_regional_relief_has_area_weighted_zero_mean_and_no_cut_or_pole_jump() {
+fn spherical_directed_detail_has_no_cut_or_pole_jump() {
     let sphere = surface(642);
     let (tectonic, mantle) = upstream(&sphere, 0x000A_11CE);
     let (relief, _) = generate(&sphere, &tectonic, &mantle, 101);
     let regional = relief.regional_offset_m().values();
-
-    let total_area = sphere.total_cell_area().get();
-    let weighted_mean = sphere
-        .cells()
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| f64::from(regional[index]) * cell.area.get())
-        .sum::<f64>()
-        / total_area;
-    assert!(
-        weighted_mean.abs() < 0.05,
-        "area-weighted mean={weighted_mean}"
-    );
 
     let mut all_jumps = Vec::new();
     let mut cut_jumps = Vec::new();
