@@ -12,7 +12,7 @@ use crate::generators::natural::spherical_tectonics::model::{
 use crate::world::natural::{CrustKind, SphericalOrogenyKind, MAX_CRUST_AGE_MYR};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
-pub(super) fn relax_current_crust(
+pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     next: &mut TectonicState,

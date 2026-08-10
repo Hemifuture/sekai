@@ -164,8 +164,7 @@ impl<'de> Deserialize<'de> for SphericalPlateRotation {
                 "Euler pole must be a unit vector, got norm {norm}"
             )));
         }
-        let pole =
-            UnitVector3::new(wire.pole[0], wire.pole[1], wire.pole[2]).map_err(D::Error::custom)?;
+        let pole = UnitVector3::from_verified_unit_components(wire.pole);
         Self::new(pole, wire.angular_rate_prad_per_year).map_err(D::Error::custom)
     }
 }
@@ -429,35 +428,6 @@ impl SphericalCrustState {
         };
         state.validate()?;
         Ok(state)
-    }
-
-    /// Temporary bridge for the pre-evolution generator; removed with the Task 9 switchover.
-    pub(crate) fn from_pre_evolution_fields(
-        kinds: CrustKindField,
-        thickness_km: Vec<f32>,
-    ) -> Result<Self, SphericalTectonicValidationError> {
-        let cell_count = kinds.len();
-        let age_myr = kinds
-            .raw_values()
-            .iter()
-            .map(|&raw| {
-                if raw == CrustKind::Continental.raw() {
-                    CONTINENTAL_CRUST_AGE_SENTINEL_MYR
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        Self::new(
-            kinds,
-            thickness_km,
-            age_myr,
-            vec![0.0; cell_count],
-            vec![0.0; cell_count],
-            vec![0.0; cell_count],
-            vec![SphericalOrogenyKind::None; cell_count],
-            vec![NO_OROGENY_AGE_SENTINEL_MYR; cell_count],
-        )
     }
 
     /// Rechecks dense lengths and all material-state invariants.

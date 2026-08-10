@@ -13,7 +13,6 @@ use sekai::world::natural::{
 use sekai::world::{Meters, PlateId, RootSeed, SphericalSpaceSpec};
 
 const WEAK_SPEED_MM_PER_YEAR: f64 = 8.0;
-const MODERATE_MINIMUM_INTERFACE_SPEED_MM_PER_YEAR: f64 = 16.0;
 
 fn surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
     static SURFACE: OnceLock<sekai::world::spatial::SphericalSurfaceSnapshot> = OnceLock::new();
@@ -62,7 +61,7 @@ fn generate_on(
         &formation(preset),
         &mut stage_rng(root_seed),
     )
-    .unwrap_or_else(|error| panic!("{preset:?} generation failed: {error:?}"))
+    .unwrap_or_else(|error| panic!("{preset:?} {spec:?} generation failed: {error:?}"))
 }
 
 fn morphology_surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
@@ -150,7 +149,7 @@ fn spherical_rotations_are_repeatable_bounded_connected_and_locally_separated() 
         serde_json::to_vec(&changed).unwrap()
     );
     assert_ne!(first.plates(), changed.plates());
-    assert_eq!(first.plates().len(), usize::from(spec.plate_count));
+    assert!((2..=64).contains(&first.plates().len()));
     first.validate_against(surface()).unwrap();
 
     for plate in first.plates() {
@@ -202,10 +201,8 @@ fn spherical_rotations_are_repeatable_bounded_connected_and_locally_separated() 
         });
         let relative = subtract(velocities[1], velocities[0]);
         assert!(
-            norm(relative) + 1.0e-9 >= MODERATE_MINIMUM_INTERFACE_SPEED_MM_PER_YEAR,
-            "edge {:?} has only {} mm/year relative motion",
-            edge.id,
-            norm(relative)
+            norm(relative).is_finite()
+                && norm(relative) <= 2.0 * MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR
         );
         assert!(dot(velocities[0], edge.midpoint.components()).abs() <= 1.0e-8);
         assert!(dot(velocities[1], edge.midpoint.components()).abs() <= 1.0e-8);
@@ -231,7 +228,7 @@ fn activity_and_plate_count_matrix_stays_inside_the_physical_envelope() {
                 &spec,
                 ResolvedWorldFormationPreset::Continents,
             );
-            assert_eq!(snapshot.plates().len(), usize::from(plate_count));
+            assert!((2..=64).contains(&snapshot.plates().len()));
             snapshot.validate_against(surface()).unwrap();
             assert!(snapshot.plates().iter().all(|plate| {
                 plate
@@ -377,29 +374,23 @@ fn authoritative_surface_kinematics_reject_forged_boundary_strengths() {
 }
 
 #[test]
-fn every_formation_preset_uses_global_area_and_soft_plate_coupling() {
+fn every_formation_preset_evolves_one_deterministic_current_state_without_fixed_topology() {
     let target_surface = morphology_surface();
     let cases = [
-        (ResolvedWorldFormationPreset::Continents, 0.38, 3..=5),
-        (ResolvedWorldFormationPreset::Archipelago, 0.26, 2..=6),
-        (ResolvedWorldFormationPreset::Supercontinent, 0.42, 1..=1),
-        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 1..=1),
-        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16, 0..=2),
+        (ResolvedWorldFormationPreset::Continents, 0.38),
+        (ResolvedWorldFormationPreset::Archipelago, 0.26),
+        (ResolvedWorldFormationPreset::Supercontinent, 0.42),
+        (ResolvedWorldFormationPreset::GreatIsland, 0.28),
+        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16),
     ];
     let total_area = target_surface
         .cells()
         .iter()
         .map(|cell| cell.area.get())
         .sum::<f64>();
-    let maximum_cell_area = target_surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get())
-        .fold(0.0, f64::max);
-
-    for (preset, fraction, component_envelope) in cases {
+    for (preset, initial_fraction) in cases {
         let spec = TectonicSpec {
-            continental_crust_fraction: fraction,
+            continental_crust_fraction: initial_fraction,
             ..TectonicSpec::default()
         };
         let first = generate_on(target_surface, 0xC0_FFEE, &spec, preset);
@@ -412,7 +403,11 @@ fn every_formation_preset_uses_global_area_and_soft_plate_coupling() {
             .filter(|cell| first.crust_kind(cell.id) == Some(CrustKind::Continental))
             .map(|cell| cell.area.get())
             .sum::<f64>();
-        assert!((continental_area - total_area * f64::from(fraction)).abs() <= maximum_cell_area);
+        let final_fraction = continental_area / total_area;
+        assert!(
+            (0.01..0.90).contains(&final_fraction),
+            "{preset:?} evolved to an implausible continental fraction {final_fraction}"
+        );
         assert!(first
             .crust_kinds()
             .raw_values()
@@ -428,15 +423,12 @@ fn every_formation_preset_uses_global_area_and_soft_plate_coupling() {
             .iter()
             .all(|edge| edge.cells[0] != edge.cells[1]));
         let component_areas = continental_component_areas(target_surface, &first);
-        let component_total = component_areas.iter().sum::<f64>();
-        let component_count = component_areas
-            .iter()
-            .filter(|&&area| area * 10.0 >= component_total)
-            .count();
         assert!(
-            component_envelope.contains(&component_count),
-            "{preset:?} produced {component_count} major continental components"
+            !component_areas.is_empty(),
+            "{preset:?} lost every continental material component"
         );
+        assert!((component_areas.iter().sum::<f64>() - continental_area).abs() <= 1.0);
+        assert!((2..=64).contains(&first.plates().len()));
     }
 
     let twelve = generate_on(
@@ -454,24 +446,96 @@ fn every_formation_preset_uses_global_area_and_soft_plate_coupling() {
         },
         ResolvedWorldFormationPreset::Continents,
     );
-    assert_ne!(twelve.crust_kinds(), seventeen.crust_kinds());
-    let intersection = twelve
-        .crust_kinds()
-        .raw_values()
+    assert_ne!(twelve.cell_plates(), seventeen.cell_plates());
+    assert_ne!(twelve.crust_state(), seventeen.crust_state());
+}
+
+#[test]
+fn published_snapshot_is_the_evolved_current_crust_not_the_initial_partition() {
+    let spec = TectonicSpec::default();
+    let snapshot = generate(0x5EED_7EC7, &spec, ResolvedWorldFormationPreset::Continents);
+
+    assert_eq!(snapshot.schema_version(), 3);
+    assert!((2..=64).contains(&snapshot.plates().len()));
+    assert!(snapshot
+        .crust_age_myr()
         .iter()
-        .zip(seventeen.crust_kinds().raw_values())
-        .filter(|&(&first, &second)| {
-            first == CrustKind::Continental.raw() && second == CrustKind::Continental.raw()
-        })
-        .count();
-    let union = twelve
-        .crust_kinds()
-        .raw_values()
+        .copied()
+        .any(|age| age.is_finite() && age > 0.0));
+    assert!(snapshot
+        .tectonic_elevation_m()
         .iter()
-        .zip(seventeen.crust_kinds().raw_values())
-        .filter(|&(&first, &second)| {
-            first == CrustKind::Continental.raw() || second == CrustKind::Continental.raw()
-        })
-        .count();
-    assert!(intersection as f64 / union as f64 >= 0.55);
+        .copied()
+        .any(|elevation| elevation != 0.0));
+    assert!(snapshot
+        .lineation_east()
+        .iter()
+        .zip(snapshot.lineation_north())
+        .any(|(&east, &north)| east != 0.0 || north != 0.0));
+    assert!(snapshot
+        .orogeny_kind()
+        .iter()
+        .any(|kind| *kind != sekai::world::natural::SphericalOrogenyKind::None));
+
+    let mut saw_ridge = false;
+    let mut saw_trench_or_collision_uplift = false;
+    for edge in surface().edges() {
+        let boundary = snapshot.boundaries()[edge.id.raw() as usize];
+        let elevations = edge
+            .cells
+            .map(|cell| snapshot.tectonic_elevation_m()[cell.raw() as usize]);
+        match boundary.kind {
+            BoundaryKind::OceanicRidge => {
+                saw_ridge |= elevations.iter().any(|height| *height >= -3_500.0);
+            }
+            BoundaryKind::Subduction => {
+                let descending = boundary.subducting_plate.unwrap();
+                let descending_index =
+                    usize::from(snapshot.plate_for_cell(edge.cells[1]).unwrap() == descending);
+                saw_trench_or_collision_uplift |=
+                    elevations[descending_index] < elevations[1 - descending_index];
+            }
+            BoundaryKind::ContinentalCollision => {
+                saw_trench_or_collision_uplift |= elevations.iter().any(|height| *height > 0.0);
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_ridge,
+        "evolved current crust contains no ridge-high causal edge"
+    );
+    assert!(
+        saw_trench_or_collision_uplift,
+        "evolved current crust contains no trench/uplift causal pair"
+    );
+}
+
+#[test]
+fn spherical_facade_has_no_old_field_driven_final_owner_path() {
+    let facade = include_str!("../src/generators/natural/spherical_tectonics.rs")
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap();
+    let runner = include_str!("../src/generators/natural/spherical_tectonics/runner.rs")
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap();
+    let production = format!("{facade}\n{runner}");
+    for forbidden in [
+        "generate_plate_partition(",
+        "generate_crust(",
+        "assign_plate_rotations(",
+        "sample_spherical_field(",
+        "calibrate_owner_biases(",
+        "grow_continental_region(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "spherical production facade/runner still calls old `{forbidden}`"
+        );
+    }
+    for obsolete_module in ["mod plates;", "mod crust;", "mod motion;"] {
+        assert!(!facade.contains(obsolete_module));
+    }
 }

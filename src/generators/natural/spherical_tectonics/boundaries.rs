@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use super::crust::CrustMorphology;
 use crate::generators::natural::connectivity::{normalized_plate_pair, StableUnionFind};
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     classify_spherical_boundary_kinematics, BoundaryKind, BoundaryRecord, PlateIdField,
-    SphericalBoundarySegment, SphericalPlate,
+    SphericalBoundarySegment, SphericalCrustState, SphericalPlate,
+    SphericalTectonicValidationError,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::{BoundarySegmentId, EdgeId, PlateId, SurfaceVertexId};
@@ -25,8 +25,9 @@ pub(super) fn classify_and_aggregate_boundaries(
     topology: &NaturalTopologyIndex,
     plates: &[SphericalPlate],
     owners: &PlateIdField,
-    crust: &CrustMorphology,
-) -> (Vec<BoundaryRecord>, Vec<SphericalBoundarySegment>) {
+    crust: &SphericalCrustState,
+) -> Result<(Vec<BoundaryRecord>, Vec<SphericalBoundarySegment>), SphericalTectonicValidationError>
+{
     debug_assert_eq!(topology.cell_count(), surface.cells().len());
     debug_assert_eq!(topology.edge_count(), surface.edges().len());
     let mut events = Vec::new();
@@ -47,13 +48,12 @@ pub(super) fn classify_and_aggregate_boundaries(
             edge,
             indices.map(|index| {
                 crust
-                    .kinds
+                    .kinds()
                     .get(index)
                     .expect("crust field is aligned with the validated surface")
             }),
-            indices.map(|index| crust.thickness_km[index]),
-        )
-        .expect("generated plate rotations are valid for the authoritative sphere");
+            indices.map(|index| crust.thickness_km()[index]),
+        )?;
         events.push(BoundaryEventDraft {
             edge: edge.id,
             vertices: edge.vertices,
@@ -63,7 +63,7 @@ pub(super) fn classify_and_aggregate_boundaries(
             subducting_plate: classification.subducting_plate,
         });
     }
-    aggregate_boundary_events(surface.edges().len(), &events)
+    Ok(aggregate_boundary_events(surface.edges().len(), &events))
 }
 
 fn aggregate_boundary_events(

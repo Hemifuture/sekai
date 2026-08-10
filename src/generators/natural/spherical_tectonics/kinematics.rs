@@ -113,11 +113,8 @@ pub(super) fn advance_samples(
     if !delta_myr.is_finite() || delta_myr < 0.0 {
         return Err(KinematicsError::InvalidDeltaMyr { found: delta_myr });
     }
-    if current.samples.len() != surface.cells().len()
-        || topology.cell_count() != surface.cells().len()
-    {
-        return Err(KinematicsError::StateCardinalityMismatch {
-            samples: current.samples.len(),
+    if topology.cell_count() != surface.cells().len() {
+        return Err(KinematicsError::CardinalityMismatch {
             surface_cells: surface.cells().len(),
             topology_cells: topology.cell_count(),
         });
@@ -156,14 +153,6 @@ pub(super) enum KinematicsError {
     RotationAngleOverflow { delta_myr: f64 },
     #[error("surface has {surface_cells} cells but topology has {topology_cells}")]
     CardinalityMismatch {
-        surface_cells: usize,
-        topology_cells: usize,
-    },
-    #[error(
-        "moving state has {samples} samples, surface has {surface_cells} cells and topology has {topology_cells}"
-    )]
-    StateCardinalityMismatch {
-        samples: usize,
         surface_cells: usize,
         topology_cells: usize,
     },
@@ -353,6 +342,36 @@ mod tests {
             restored.anchor = before.anchor;
             assert_eq!(&restored, before);
         }
+    }
+
+    #[test]
+    fn advance_samples_accepts_transient_extra_crust_between_global_resamples() {
+        let (surface, topology) = fixture(42);
+        let mut state = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+            &streams(91),
+        )
+        .unwrap();
+        let mut spreading_sample = state.samples[0];
+        spreading_sample.anchor = state.samples[1].anchor;
+        spreading_sample.position = state.samples[1].position;
+        state.samples.push(spreading_sample);
+        let mut workspace = TectonicWorkspace::from_initial(state);
+
+        advance_samples(
+            &surface,
+            &topology,
+            &workspace.current,
+            &mut workspace.next,
+            2.0,
+        )
+        .unwrap();
+
+        assert_eq!(workspace.next.samples.len(), surface.cells().len() + 1);
+        assert_eq!(workspace.next.plates, workspace.current.plates);
     }
 
     #[test]

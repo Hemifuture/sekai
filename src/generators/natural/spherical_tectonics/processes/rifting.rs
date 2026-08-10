@@ -20,6 +20,10 @@ use crate::world::spatial::{
 pub(super) const MAX_RIFT_RATE_PPM_PER_MYR: u32 = 10_000;
 const BASE_RIFT_RATE_PPM_PER_MYR: f64 = 4_000.0;
 const RIFT_WARP_AMPLITUDE: f64 = 0.025;
+const MINIMUM_SAMPLES_PER_RIFT_CHILD: usize = 4;
+// Disconnected accreted terranes become separate published plates. Keep half
+// of the schema capacity in reserve for that final, factual split.
+const MAXIMUM_RIFTED_LINEAGES: usize = MAX_PLATE_COUNT as usize;
 
 pub(super) fn rate_q32_from_ppm(parts_per_million: u32) -> u64 {
     let numerator = u128::from(parts_per_million) * (1_u128 << 32) + 500_000;
@@ -110,7 +114,7 @@ pub(super) fn rift_rate_q32(
     Ok(rate_q32_from_ppm(ppm))
 }
 
-pub(super) fn maybe_rift_plates(
+pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
     step: u16,
     surface: &SphericalSurfaceSnapshot,
     current: &TectonicState,
@@ -126,15 +130,18 @@ pub(super) fn maybe_rift_plates(
         });
     }
     actions.validate_for(next.samples.len())?;
-    if next.plates.len() >= usize::from(MAX_PLATE_COUNT) {
+    if next.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
         return Ok(ProcessStats::default());
     }
 
     let mut stats = ProcessStats::default();
     let parents = current.plates.clone();
     for parent in parents {
-        if next.plates.len() >= usize::from(MAX_PLATE_COUNT) {
+        if next.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
             break;
+        }
+        if actions.lineage_has_pending_changes(&current.samples, parent.lineage) {
+            continue;
         }
         let rate = rift_rate_q32(surface, current, parent.lineage, recipe)?;
         let draw = streams.counter_u64(
@@ -151,7 +158,7 @@ pub(super) fn maybe_rift_plates(
             .filter(|(_, sample)| sample.owner == parent.lineage)
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        if sample_indices.len() < 2 {
+        if sample_indices.len() < 2 * MINIMUM_SAMPLES_PER_RIFT_CHILD {
             continue;
         }
         let desired_children = 2
@@ -159,14 +166,14 @@ pub(super) fn maybe_rift_plates(
                 RIFT_EVENTS_V3_LABEL,
                 &[u64::from(step), u64::from(parent.lineage.raw()), 1],
             ) % 3) as usize;
-        let capacity_children = usize::from(MAX_PLATE_COUNT) - next.plates.len() + 1;
+        let capacity_children = MAXIMUM_RIFTED_LINEAGES - next.plates.len() + 1;
         let child_count = desired_children
-            .min(sample_indices.len())
+            .min(sample_indices.len() / MINIMUM_SAMPLES_PER_RIFT_CHILD)
             .min(capacity_children);
         if child_count < 2 {
             continue;
         }
-        split_plate(
+        if !split_plate(
             step,
             surface,
             current,
@@ -177,7 +184,9 @@ pub(super) fn maybe_rift_plates(
             parent,
             &sample_indices,
             child_count,
-        )?;
+        )? {
+            continue;
+        }
         stats.rift_events += 1;
         stats.spawned_lineages += child_count as u32;
         stats.transferred_samples += sample_indices.len() as u32;
@@ -197,7 +206,7 @@ fn split_plate(
     parent: ActivePlate,
     sample_indices: &[usize],
     child_count: usize,
-) -> Result<(), ProcessError> {
+) -> Result<bool, ProcessError> {
     let seed_indices = farthest_sample_seeds(
         current,
         sample_indices,
@@ -207,13 +216,6 @@ fn split_plate(
             &[u64::from(step), u64::from(parent.lineage.raw()), 2],
         ),
     );
-    let mut lineages = Vec::with_capacity(child_count);
-    for _ in 0..child_count {
-        lineages.push(
-            next.allocate_lineage()
-                .ok_or(ProcessError::LineageExhausted)?,
-        );
-    }
     let profile = FractalProfile {
         octaves: 2,
         frequency: recipe.base_scale_rad.recip(),
@@ -232,6 +234,8 @@ fn split_plate(
             ) as u32)
         })
         .collect::<Vec<_>>();
+    let mut assignments = Vec::with_capacity(sample_indices.len());
+    let mut child_sizes = vec![0_usize; child_count];
     for &sample_index in sample_indices {
         let position = current.samples[sample_index].position;
         let forced_child = seed_indices.iter().position(|&seed| seed == sample_index);
@@ -254,6 +258,24 @@ fn split_plate(
                 .expect("a rift has at least two child seeds")
                 .0
         });
+        assignments.push(child);
+        child_sizes[child] += 1;
+    }
+    if child_sizes
+        .iter()
+        .any(|&size| size < MINIMUM_SAMPLES_PER_RIFT_CHILD)
+    {
+        return Ok(false);
+    }
+
+    let mut lineages = Vec::with_capacity(child_count);
+    for _ in 0..child_count {
+        lineages.push(
+            next.allocate_lineage()
+                .ok_or(ProcessError::LineageExhausted)?,
+        );
+    }
+    for (&sample_index, child) in sample_indices.iter().zip(assignments) {
         actions.mark_transfer(sample_index, lineages[child])?;
     }
 
@@ -266,7 +288,7 @@ fn split_plate(
             .push(ActivePlate::new(lineage, seed.anchor, rotation));
     }
     next.plates.sort_by_key(|plate| plate.lineage);
-    Ok(())
+    Ok(true)
 }
 
 fn farthest_sample_seeds(
@@ -564,5 +586,134 @@ mod tests {
         assert_eq!(next.plates, before_plates);
         assert_eq!(next.next_lineage_raw(), before_lineage);
         assert_eq!(next.plates.len(), usize::from(MAX_PLATE_COUNT));
+    }
+
+    #[test]
+    fn rifting_may_use_capacity_above_half_of_the_global_plate_cap() {
+        let surface = surface(162);
+        let current = state(&surface, usize::from(MAX_PLATE_COUNT) / 2 + 1);
+        let mut next = copy_state(&current);
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Archipelago);
+        let streams = streams();
+        let rate = rift_rate_q32(&surface, &current, current.plates[0].lineage, recipe).unwrap();
+        let step = (0..=u16::MAX)
+            .find(|&step| {
+                poisson_event(
+                    streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[u64::from(step), 0]),
+                    rate,
+                    2,
+                )
+            })
+            .expect("the capacity fixture must exercise a rift above the half-cap");
+
+        let stats = maybe_rift_plates(
+            step,
+            &surface,
+            &current,
+            &mut next,
+            &mut actions,
+            recipe,
+            &streams,
+        )
+        .unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+
+        assert_eq!(stats.rift_events, 1);
+        assert!(next.plates.len() > current.plates.len());
+        assert!(next.plates.len() <= usize::from(MAX_PLATE_COUNT));
+    }
+
+    #[test]
+    fn rifting_requires_enough_area_for_every_child_plate() {
+        let surface = surface(42);
+        let mut current = state(&surface, 1);
+        current.samples.truncate(7);
+        let mut next = copy_state(&current);
+        let before = next.samples.clone();
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let streams = streams();
+        let rate = rift_rate_q32(&surface, &current, current.plates[0].lineage, recipe).unwrap();
+        let step = (0..=u16::MAX)
+            .find(|&step| {
+                poisson_event(
+                    streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[u64::from(step), 0]),
+                    rate,
+                    2,
+                )
+            })
+            .unwrap();
+
+        let stats = maybe_rift_plates(
+            step,
+            &surface,
+            &current,
+            &mut next,
+            &mut actions,
+            recipe,
+            &streams,
+        )
+        .unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+
+        assert_eq!(stats.rift_events, 0);
+        assert_eq!(next.samples, before);
+        assert_eq!(next.plates.len(), 1);
+    }
+
+    #[test]
+    fn rifting_does_not_delete_a_lineage_with_pending_process_actions() {
+        let surface = surface(162);
+        let current = state(&surface, 2);
+        let mut next = copy_state(&current);
+        let parent = current.plates[0].lineage;
+        let incoming = current
+            .samples
+            .iter()
+            .position(|sample| sample.owner != parent)
+            .unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+        actions.mark_transfer(incoming, parent).unwrap();
+        let mut spawned = next.samples[0];
+        spawned.anchor = next.samples[incoming].anchor;
+        actions.push_spawned(spawned);
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let streams = streams();
+        let rate = rift_rate_q32(&surface, &current, parent, recipe).unwrap();
+        let step = (0..=u16::MAX)
+            .find(|&step| {
+                poisson_event(
+                    streams.counter_u64(
+                        RIFT_EVENTS_V3_LABEL,
+                        &[u64::from(step), u64::from(parent.raw())],
+                    ),
+                    rate,
+                    2,
+                )
+            })
+            .unwrap();
+
+        let stats = maybe_rift_plates(
+            step,
+            &surface,
+            &current,
+            &mut next,
+            &mut actions,
+            recipe,
+            &streams,
+        )
+        .unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+
+        assert_eq!(stats.rift_events, 0);
+        assert!(next.plate(parent).is_some());
+        assert!(next
+            .samples
+            .iter()
+            .all(|sample| next.plate(sample.owner).is_some()));
     }
 }

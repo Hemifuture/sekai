@@ -310,9 +310,7 @@ fn generation_failure(error: SphericalTectonicGenerationError) -> StageError {
         | SphericalTectonicGenerationError::PlateCountExceedsCells { .. } => {
             invalid_input(error.to_string())
         }
-        SphericalTectonicGenerationError::Morphology { .. }
-        | SphericalTectonicGenerationError::InsufficientCrustFormationArea { .. }
-        | SphericalTectonicGenerationError::UnsatisfiedRelativeMotion { .. } => {
+        SphericalTectonicGenerationError::Morphology { .. } => {
             StageError::new(BUILD_FAILED_CODE, error.to_string())
         }
         SphericalTectonicGenerationError::InvalidSnapshot(_) => {

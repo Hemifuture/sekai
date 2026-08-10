@@ -105,6 +105,21 @@ impl ProcessActions {
         self.dispositions.is_empty() && self.spawned.is_empty()
     }
 
+    pub(super) fn lineage_has_pending_changes(
+        &self,
+        samples: &[CrustSample],
+        lineage: LineageId,
+    ) -> bool {
+        self.dispositions
+            .iter()
+            .zip(samples)
+            .any(|(disposition, sample)| {
+                (sample.owner == lineage && *disposition != SampleDisposition::Keep)
+                    || matches!(disposition, SampleDisposition::Transfer(owner) if *owner == lineage)
+            })
+            || self.spawned.iter().any(|sample| sample.owner == lineage)
+    }
+
     fn validate_for(&self, sample_count: usize) -> Result<(), ProcessError> {
         if self.dispositions.len() != sample_count {
             return Err(ProcessError::ActionCardinalityMismatch {
@@ -343,3 +358,9 @@ mod relaxation;
 mod rifting;
 mod spreading;
 mod subduction;
+
+pub(super) use collision::apply_collision;
+pub(super) use relaxation::relax_current_crust;
+pub(super) use rifting::maybe_rift_plates;
+pub(super) use spreading::fill_spreading_gaps;
+pub(super) use subduction::apply_subduction;

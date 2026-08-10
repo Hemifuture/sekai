@@ -114,25 +114,6 @@ pub(in crate::generators::natural) fn build_area_constrained_mask(
     )
 }
 
-pub(in crate::generators::natural) fn build_component_budgeted_area_mask(
-    topology: &NaturalTopologyIndex,
-    scores: &[i32],
-    protected: &[ProtectedRegionSeed],
-    target_weight: u128,
-    minimum_component_weight: u128,
-    maximum_hole_weight: u128,
-) -> Result<AreaMask, AreaSelectionError> {
-    build_area_constrained_mask_impl(
-        topology,
-        scores,
-        protected,
-        target_weight,
-        minimum_component_weight,
-        maximum_hole_weight,
-        true,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn build_area_constrained_mask_impl(
     topology: &NaturalTopologyIndex,

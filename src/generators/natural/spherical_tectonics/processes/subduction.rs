@@ -47,7 +47,7 @@ pub(super) fn subduction_profile(distance_m: f64, speed_mm_per_year: f64, gain: 
     )
 }
 
-pub(super) fn apply_subduction(
+pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     current: &TectonicState,

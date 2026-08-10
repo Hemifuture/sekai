@@ -2,7 +2,8 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 
 use thiserror::Error;
 
@@ -23,6 +24,7 @@ const MINIMUM_RESAMPLE_INTERVAL: u16 = 10;
 const MAXIMUM_RESAMPLE_INTERVAL: u16 = 60;
 const MAXIMUM_TRIANGLE_CANDIDATES: usize = 12;
 const TRIANGLE_AREA_EPSILON: f64 = 1.0e-14;
+const DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION: f64 = 1.0;
 
 #[derive(Debug)]
 pub(super) struct CanonicalTectonicState {
@@ -63,6 +65,14 @@ pub(super) enum ResampleError {
         min: usize,
         max: usize,
     },
+    #[error("moving crust has no live lineage with material samples")]
+    NoLiveLineages,
+    #[error(
+        "cannot place unique markers for {lineages} live lineages on {cells} authoritative cells"
+    )]
+    DomainMarkerCapacityExceeded { lineages: usize, cells: usize },
+    #[error("evidence-guided domain reconstruction did not reach {cell:?}")]
+    UnassignedDomainCell { cell: CellId },
 }
 
 pub(super) fn resampling_interval_steps(state: &TectonicState) -> u16 {
@@ -113,11 +123,200 @@ pub(super) fn resample_current_state(
         workspace.next.samples.push(sample);
     }
 
+    reconstruct_connected_plate_domains(
+        surface,
+        topology,
+        &workspace.current.samples,
+        &workspace.coverage,
+        &mut workspace.next,
+        &mut local_candidates,
+    )?;
+
     std::mem::swap(&mut workspace.current, &mut workspace.next);
     workspace.next.samples.clear();
     workspace.next.plates.clear();
     workspace.events.clear();
+    workspace.mark_resampled();
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DomainMarker {
+    lineage: LineageId,
+    cell: CellId,
+}
+
+/// Reconstructs one connected material domain per live lineage using a
+/// marker-based watershed on the authoritative spherical adjacency graph.
+///
+/// The per-cell resampling above remains the data term: crossing into a cell
+/// whose locally strongest moved sample belongs to another lineage pays one
+/// short-cell penalty.  A single reliable marker per lineage supplies the
+/// topological constraint.  This is the graph analogue of marker-controlled
+/// watershed/Potts regularization, and avoids turning the result back into a
+/// fresh geometric Voronoi partition.
+fn reconstruct_connected_plate_domains(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source_samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    next: &mut TectonicState,
+    local_candidates: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    let provisional = next
+        .samples
+        .iter()
+        .map(|sample| sample.owner)
+        .collect::<Vec<_>>();
+    let markers = select_domain_markers(surface, source_samples, &mut next.plates)?;
+    if markers.is_empty() {
+        return Err(ResampleError::NoLiveLineages);
+    }
+
+    let owners = evidence_guided_watershed(topology, &provisional, &markers)?;
+    for (cell_index, owner) in owners.into_iter().enumerate() {
+        if provisional[cell_index] == owner {
+            continue;
+        }
+        let cell = CellId::from_raw(cell_index as u32);
+        next.samples[cell_index] = resample_cell_for_owner(
+            surface,
+            topology,
+            source_samples,
+            coverage,
+            cell,
+            owner,
+            local_candidates,
+        )?;
+    }
+    Ok(())
+}
+
+fn select_domain_markers(
+    surface: &SphericalSurfaceSnapshot,
+    samples: &[CrustSample],
+    plates: &mut Vec<super::model::ActivePlate>,
+) -> Result<Vec<DomainMarker>, ResampleError> {
+    let live_lineages = plates
+        .iter()
+        .filter(|plate| samples.iter().any(|sample| sample.owner == plate.lineage))
+        .count();
+    if live_lineages > surface.cells().len() {
+        return Err(ResampleError::DomainMarkerCapacityExceeded {
+            lineages: live_lineages,
+            cells: surface.cells().len(),
+        });
+    }
+    let mut used_cells = vec![false; surface.cells().len()];
+    let mut markers = Vec::with_capacity(plates.len());
+    plates.retain_mut(|plate| {
+        let mut candidates = samples
+            .iter()
+            .enumerate()
+            .filter(|(_, sample)| sample.owner == plate.lineage)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return false;
+        }
+        candidates.sort_by(|(first_index, first), (second_index, second)| {
+            let first_target = surface.cells()[first.anchor.raw() as usize].centroid;
+            let second_target = surface.cells()[second.anchor.raw() as usize].centroid;
+            second
+                .position
+                .dot(second_target)
+                .total_cmp(&first.position.dot(first_target))
+                .then_with(|| first.anchor.cmp(&second.anchor))
+                .then_with(|| first_index.cmp(second_index))
+        });
+
+        let preferred = candidates
+            .iter()
+            .find(|(_, sample)| !used_cells[sample.anchor.raw() as usize])
+            .map(|(_, sample)| sample.anchor);
+        let cell = preferred.unwrap_or_else(|| {
+            let direction = candidates[0].1.position;
+            surface
+                .cells()
+                .iter()
+                .filter(|cell| !used_cells[cell.id.raw() as usize])
+                .max_by(|first, second| {
+                    first
+                        .centroid
+                        .dot(direction)
+                        .total_cmp(&second.centroid.dot(direction))
+                        .then_with(|| second.id.cmp(&first.id))
+                })
+                .expect("live lineages cannot outnumber material cells")
+                .id
+        });
+        used_cells[cell.raw() as usize] = true;
+        plate.representative = cell;
+        markers.push(DomainMarker {
+            lineage: plate.lineage,
+            cell,
+        });
+        true
+    });
+    Ok(markers)
+}
+
+fn evidence_guided_watershed(
+    topology: &NaturalTopologyIndex,
+    provisional: &[LineageId],
+    markers: &[DomainMarker],
+) -> Result<Vec<LineageId>, ResampleError> {
+    let cell_count = topology.cell_count();
+    let mut costs = vec![u64::MAX; cell_count];
+    let mut owners = vec![None; cell_count];
+    let mut pending = BinaryHeap::new();
+    for marker in markers {
+        let index = marker.cell.raw() as usize;
+        costs[index] = 0;
+        owners[index] = Some(marker.lineage);
+        pending.push(Reverse((0_u64, marker.lineage.raw(), marker.cell.raw())));
+    }
+    let mismatch_penalty = topology
+        .quantized_short_side_fraction(DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION)
+        .max(1);
+
+    while let Some(Reverse((cost, raw_lineage, raw_cell))) = pending.pop() {
+        let cell_index = raw_cell as usize;
+        let lineage = LineageId::from_raw(raw_lineage);
+        if costs[cell_index] != cost || owners[cell_index] != Some(lineage) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell_index] {
+            let neighbor = arc.neighbor.raw() as usize;
+            let data_cost = if provisional[neighbor] == lineage {
+                0
+            } else {
+                mismatch_penalty
+            };
+            let candidate_cost = cost
+                .saturating_add(arc.traversal_cost)
+                .saturating_add(data_cost);
+            let candidate_key = (candidate_cost, raw_lineage);
+            let current_key = (
+                costs[neighbor],
+                owners[neighbor].map_or(u32::MAX, LineageId::raw),
+            );
+            if candidate_key < current_key {
+                costs[neighbor] = candidate_cost;
+                owners[neighbor] = Some(lineage);
+                pending.push(Reverse((candidate_cost, raw_lineage, arc.neighbor.raw())));
+            }
+        }
+    }
+
+    owners
+        .into_iter()
+        .enumerate()
+        .map(|(index, owner)| {
+            owner.ok_or(ResampleError::UnassignedDomainCell {
+                cell: CellId::from_raw(index as u32),
+            })
+        })
+        .collect()
 }
 
 fn resample_cell(
@@ -148,7 +347,85 @@ fn resample_cell(
     }
     let winner = samples[winner_index];
 
+    resample_cell_from_winner(
+        surface,
+        topology,
+        samples,
+        coverage,
+        cell,
+        winner_index,
+        winner,
+        local_candidates,
+    )
+}
+
+fn resample_cell_for_owner(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    owner: LineageId,
+    local_candidates: &mut Vec<usize>,
+) -> Result<CrustSample, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
     local_candidates.clear();
+    append_owner_candidates(coverage, samples, cell, owner, local_candidates)?;
+    for arc in &topology.arcs()[cell.raw() as usize] {
+        append_owner_candidates(coverage, samples, arc.neighbor, owner, local_candidates)?;
+    }
+    if local_candidates.is_empty() {
+        for (index, sample) in samples.iter().enumerate() {
+            if sample.owner == owner {
+                local_candidates.push(index);
+            }
+        }
+    }
+    let winner_index = local_candidates
+        .iter()
+        .copied()
+        .max_by(|&first, &second| {
+            samples[first]
+                .position
+                .dot(target)
+                .total_cmp(&samples[second].position.dot(target))
+                .then_with(|| second.cmp(&first))
+        })
+        .expect("every watershed lineage has at least one source sample");
+    let winner = samples[winner_index];
+    resample_cell_from_winner(
+        surface,
+        topology,
+        samples,
+        coverage,
+        cell,
+        winner_index,
+        winner,
+        local_candidates,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resample_cell_from_winner(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    winner_index: usize,
+    winner: CrustSample,
+    local_candidates: &mut Vec<usize>,
+) -> Result<CrustSample, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
+
+    local_candidates.clear();
+    local_candidates.push(winner_index);
     append_compatible_candidates(coverage, samples, cell, winner, local_candidates)?;
     for arc in &topology.arcs()[cell.raw() as usize] {
         append_compatible_candidates(coverage, samples, arc.neighbor, winner, local_candidates)?;
@@ -184,6 +461,28 @@ fn resample_cell(
     result.position = target;
     result.anchor = cell;
     Ok(result)
+}
+
+fn append_owner_candidates(
+    coverage: &super::contacts::CoverageScratch,
+    samples: &[CrustSample],
+    cell: CellId,
+    owner: LineageId,
+    output: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    for &raw_index in coverage.sample_indices(cell) {
+        let index = raw_index as usize;
+        let sample = samples
+            .get(index)
+            .ok_or(ResampleError::InvalidCoverageSample {
+                sample: index,
+                samples: samples.len(),
+            })?;
+        if sample.owner == owner && !output.contains(&index) {
+            output.push(index);
+        }
+    }
+    Ok(())
 }
 
 fn sample_score(
@@ -768,6 +1067,96 @@ mod tests {
         assert!(matches!(
             resample_current_state(&surface, &wrong_topology, &mut workspace),
             Err(ResampleError::CardinalityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn resampling_reconstructs_each_active_plate_as_one_evidence_guided_domain() {
+        let (surface, topology) = fixture(42);
+        let lineages = [LineageId::from_raw(0), LineageId::from_raw(1)];
+        let mut owners = surface
+            .cells()
+            .iter()
+            .map(|_| lineages[1])
+            .collect::<Vec<_>>();
+        owners[0] = lineages[0];
+        let remote = surface
+            .cells()
+            .iter()
+            .filter(|cell| {
+                cell.id != CellId::from_raw(0)
+                    && !topology.arcs()[0].iter().any(|arc| arc.neighbor == cell.id)
+            })
+            .min_by(|first, second| {
+                first
+                    .centroid
+                    .dot(surface.cells()[0].centroid)
+                    .total_cmp(&second.centroid.dot(surface.cells()[0].centroid))
+            })
+            .unwrap()
+            .id;
+        owners[remote.raw() as usize] = lineages[0];
+        let state = state_from_owners(&surface, &owners, &lineages);
+        let mut workspace = TectonicWorkspace::from_initial(state);
+
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+
+        for lineage in lineages {
+            let owned = workspace
+                .current
+                .samples
+                .iter()
+                .filter(|sample| sample.owner == lineage)
+                .count();
+            assert!(owned > 0);
+            let start = workspace
+                .current
+                .samples
+                .iter()
+                .position(|sample| sample.owner == lineage)
+                .unwrap();
+            let mut reached = vec![false; surface.cells().len()];
+            let mut pending = vec![start];
+            reached[start] = true;
+            let mut count = 0;
+            while let Some(cell) = pending.pop() {
+                count += 1;
+                for arc in &topology.arcs()[cell] {
+                    let neighbor = arc.neighbor.raw() as usize;
+                    if !reached[neighbor] && workspace.current.samples[neighbor].owner == lineage {
+                        reached[neighbor] = true;
+                        pending.push(neighbor);
+                    }
+                }
+            }
+            assert_eq!(count, owned, "lineage {lineage:?} remained fragmented");
+        }
+    }
+
+    #[test]
+    fn resampling_rejects_more_live_lineages_than_authoritative_cells() {
+        let (surface, topology) = fixture(42);
+        let owners = (0..surface.cells().len() as u32)
+            .map(LineageId::from_raw)
+            .collect::<Vec<_>>();
+        let lineages = (0..=surface.cells().len() as u32)
+            .map(LineageId::from_raw)
+            .collect::<Vec<_>>();
+        let mut state = state_from_owners(&surface, &owners, &lineages);
+        state.samples.push(sample(
+            CellId::from_raw(0),
+            surface.cells()[0].centroid,
+            *lineages.last().unwrap(),
+            99,
+        ));
+        let mut workspace = TectonicWorkspace::from_initial(state);
+
+        assert!(matches!(
+            resample_current_state(&surface, &topology, &mut workspace),
+            Err(ResampleError::DomainMarkerCapacityExceeded {
+                lineages: 43,
+                cells: 42
+            })
         ));
     }
 

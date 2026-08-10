@@ -52,7 +52,7 @@ pub(super) fn should_force_terrane_subduction(
             < average_plate_area_m2 * constants::FORCED_SUBDUCTION_TERRANE_AREA_FRACTION
 }
 
-pub(super) fn apply_collision(
+pub(in crate::generators::natural::spherical_tectonics) fn apply_collision(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     current: &TectonicState,

@@ -189,6 +189,26 @@ fn stages_forward_the_frozen_scientific_streams_and_use_strict_wires() {
     let tectonic_json = serde_json::to_value(tectonic.as_ref()).unwrap();
     let decoded_tectonic: SphericalTectonicArtifact =
         serde_json::from_value(tectonic_json.clone()).unwrap();
+    assert_eq!(
+        decoded_tectonic.snapshot().plates(),
+        tectonic.snapshot().plates()
+    );
+    assert_eq!(
+        decoded_tectonic.snapshot().cell_plates(),
+        tectonic.snapshot().cell_plates()
+    );
+    assert_eq!(
+        decoded_tectonic.snapshot().crust_state(),
+        tectonic.snapshot().crust_state()
+    );
+    assert_eq!(
+        decoded_tectonic.snapshot().boundaries(),
+        tectonic.snapshot().boundaries()
+    );
+    assert_eq!(
+        decoded_tectonic.snapshot().boundary_segments(),
+        tectonic.snapshot().boundary_segments()
+    );
     assert_eq!(&decoded_tectonic, tectonic.as_ref());
     let mut unknown_tectonic = tectonic_json;
     unknown_tectonic["unknown"] = serde_json::json!(true);

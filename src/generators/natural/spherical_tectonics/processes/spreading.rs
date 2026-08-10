@@ -13,7 +13,7 @@ use crate::generators::natural::spherical_tectonics::model::{
 use crate::world::natural::{CrustKind, SphericalOrogenyKind, NO_OROGENY_AGE_SENTINEL_MYR};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
-pub(super) fn fill_spreading_gaps(
+pub(in crate::generators::natural::spherical_tectonics) fn fill_spreading_gaps(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     current: &TectonicState,
@@ -37,12 +37,7 @@ pub(super) fn fill_spreading_gaps(
         });
         let owner = divergence
             .and_then(|event| closest_participant_owner(event, next, cell.centroid))
-            .or_else(|| {
-                current
-                    .samples
-                    .get(gap.cell.raw() as usize)
-                    .map(|sample| sample.owner)
-            })
+            .or_else(|| closest_state_owner(current, cell.centroid))
             .ok_or(ProcessError::MissingDenseCurrentSample { cell: gap.cell })?;
         if next.plate(owner).is_none() {
             return Err(ProcessError::UnknownLineage { lineage: owner });
@@ -70,19 +65,38 @@ fn closest_participant_owner(
     state: &TectonicState,
     direction: crate::world::spatial::UnitVector3,
 ) -> Option<crate::generators::natural::spherical_tectonics::model::LineageId> {
-    event
-        .sample_indices
-        .iter()
-        .flatten()
-        .filter_map(|&index| state.samples.get(index as usize))
-        .max_by(|first, second| {
+    closest_owner(
+        event.sample_indices.iter().flatten().filter_map(|&index| {
+            state
+                .samples
+                .get(index as usize)
+                .map(|sample| (index as usize, sample))
+        }),
+        direction,
+    )
+}
+
+fn closest_state_owner(
+    state: &TectonicState,
+    direction: crate::world::spatial::UnitVector3,
+) -> Option<crate::generators::natural::spherical_tectonics::model::LineageId> {
+    closest_owner(state.samples.iter().enumerate(), direction)
+}
+
+fn closest_owner<'a>(
+    samples: impl Iterator<Item = (usize, &'a CrustSample)>,
+    direction: crate::world::spatial::UnitVector3,
+) -> Option<crate::generators::natural::spherical_tectonics::model::LineageId> {
+    samples
+        .max_by(|(first_index, first), (second_index, second)| {
             first
                 .position
                 .dot(direction)
                 .total_cmp(&second.position.dot(direction))
                 .then_with(|| second.owner.cmp(&first.owner))
+                .then_with(|| second_index.cmp(first_index))
         })
-        .map(|sample| sample.owner)
+        .map(|(_, sample)| sample.owner)
 }
 
 #[cfg(test)]
@@ -175,5 +189,61 @@ mod tests {
         );
         assert!((created.lineation[0].hypot(created.lineation[1]) - 1.0).abs() <= 1.0e-5);
         assert_eq!(stats.spawned_samples, 1);
+    }
+
+    #[test]
+    fn gap_fallback_uses_nearest_moving_material_not_a_dense_cell_index() {
+        let (surface, topology) = fixture();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let mut current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            recipe,
+            &streams(),
+        )
+        .unwrap();
+        let gap_cell = CellId::from_raw(3);
+        let target = surface.cell(gap_cell).unwrap().centroid;
+        let expected = current
+            .samples
+            .iter()
+            .enumerate()
+            .max_by(|(first_index, first), (second_index, second)| {
+                first
+                    .position
+                    .dot(target)
+                    .total_cmp(&second.position.dot(target))
+                    .then_with(|| second.owner.cmp(&first.owner))
+                    .then_with(|| second_index.cmp(first_index))
+            })
+            .unwrap()
+            .1
+            .owner;
+        let wrong_index = current
+            .samples
+            .iter()
+            .position(|sample| sample.owner != expected)
+            .expect("the fixture has more than one lineage");
+        current.samples.swap(gap_cell.raw() as usize, wrong_index);
+        assert_ne!(current.samples[gap_cell.raw() as usize].owner, expected);
+        let mut next = copy_state(&current);
+        let gap = ContactEvent {
+            cell: gap_cell,
+            edge: None,
+            sample_indices: [None, None],
+            lineages: [None, None],
+            kind: ContactKind::Gap,
+            signed_normal_speed_mm_per_year: 0.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+
+        fill_spreading_gaps(&surface, &[gap], &current, &mut next, &mut actions, recipe).unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+
+        assert_eq!(next.samples.last().unwrap().owner, expected);
     }
 }

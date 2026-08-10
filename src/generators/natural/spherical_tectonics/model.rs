@@ -167,6 +167,7 @@ pub(super) struct TectonicWorkspace {
     pub(super) coverage: CoverageScratch,
     pub(super) events: Vec<ContactEvent>,
     pub(super) actions: ProcessActions,
+    steps_since_resample: u16,
 }
 
 impl TectonicWorkspace {
@@ -184,6 +185,7 @@ impl TectonicWorkspace {
             coverage: CoverageScratch::with_cell_capacity(sample_capacity),
             events: Vec::with_capacity(sample_capacity),
             actions: ProcessActions::with_sample_capacity(sample_capacity),
+            steps_since_resample: 0,
         }
     }
 
@@ -203,6 +205,25 @@ impl TectonicWorkspace {
             &mut self.events,
             &mut self.actions,
         )
+    }
+
+    pub(super) fn swap_current_next(&mut self) {
+        std::mem::swap(&mut self.current, &mut self.next);
+        self.next.samples.clear();
+        self.next.plates.clear();
+        self.steps_since_resample = self.steps_since_resample.saturating_add(1);
+    }
+
+    pub(super) const fn steps_since_resample(&self) -> u16 {
+        self.steps_since_resample
+    }
+
+    pub(super) const fn requires_resample(&self) -> bool {
+        self.steps_since_resample != 0
+    }
+
+    pub(super) fn mark_resampled(&mut self) {
+        self.steps_since_resample = 0;
     }
 }
 
