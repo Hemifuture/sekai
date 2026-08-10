@@ -17,6 +17,7 @@ use crate::world::{EdgeId, PlateId};
 
 mod boundaries;
 mod crust;
+mod model;
 mod motion;
 mod plates;
 
@@ -193,6 +194,9 @@ pub enum SphericalTectonicGenerationError {
 
 #[cfg(test)]
 mod tests {
+    use super::model::FormationTectonicRecipe;
+    use crate::world::natural::ResolvedWorldFormationPreset;
+
     #[test]
     fn facade_keeps_domain_modules_orthogonal() {
         let source = include_str!("spherical_tectonics.rs");
@@ -211,6 +215,36 @@ mod tests {
                 !facade.contains(forbidden),
                 "spherical tectonic facade still owns `{forbidden}`"
             );
+        }
+    }
+
+    #[test]
+    fn formation_recipes_select_spectra_and_bounded_process_multipliers() {
+        use ResolvedWorldFormationPreset::{
+            Archipelago, Continents, GreatIsland, Supercontinent, VolcanicIslands,
+        };
+
+        let supercontinent = FormationTectonicRecipe::for_preset(Supercontinent);
+        let archipelago = FormationTectonicRecipe::for_preset(Archipelago);
+        let continents = FormationTectonicRecipe::for_preset(Continents);
+        let great_island = FormationTectonicRecipe::for_preset(GreatIsland);
+        let volcanic = FormationTectonicRecipe::for_preset(VolcanicIslands);
+
+        assert!(supercontinent.base_scale_rad > archipelago.base_scale_rad);
+        assert!(great_island.rift_rate_permille < continents.rift_rate_permille);
+        assert!(volcanic.island_arc_gain_permille > continents.island_arc_gain_permille);
+        for recipe in [
+            supercontinent,
+            archipelago,
+            continents,
+            great_island,
+            volcanic,
+        ] {
+            recipe.initial_crust_profile.assert_valid();
+            assert!(recipe.base_scale_rad.is_finite() && recipe.base_scale_rad > 0.0);
+            assert!((500..=1_500).contains(&recipe.rift_rate_permille));
+            assert!((500..=1_500).contains(&recipe.subduction_gain_permille));
+            assert!((500..=1_500).contains(&recipe.island_arc_gain_permille));
         }
     }
 }

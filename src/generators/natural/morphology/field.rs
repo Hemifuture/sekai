@@ -1,17 +1,14 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::array;
 use std::f64::consts::PI;
 
-use noise::{NoiseFn, OpenSimplex};
 use thiserror::Error;
 
-use crate::generators::natural::fractal::{FractalProfile, MAX_FRACTAL_OCTAVES};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
-const OCTAVE_SEED_STEP: u32 = 0x9E37_79B9;
-const OCTAVE_ROTATION_3D: [[f64; 3]; 3] = [[0.36, 0.48, -0.8], [-0.8, 0.6, 0.0], [0.48, 0.64, 0.6]];
+use super::noise::SphericalNoise3d;
+
 const MIN_CELL_DIAMETERS_PER_BAND: f64 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,70 +89,6 @@ pub(in crate::generators::natural) enum MorphologyFieldError {
     DegenerateVariance,
 }
 
-/// The one deterministic coherent three-dimensional noise core shared by
-/// spherical morphology and the existing spherical relief implementation.
-pub(in crate::generators::natural) struct CoherentNoise3d {
-    octaves: [OpenSimplex; MAX_FRACTAL_OCTAVES],
-}
-
-impl CoherentNoise3d {
-    pub(in crate::generators::natural) fn new(seed: u32) -> Self {
-        Self {
-            octaves: array::from_fn(|index| {
-                OpenSimplex::new(seed.wrapping_add(OCTAVE_SEED_STEP.wrapping_mul(index as u32 + 1)))
-            }),
-        }
-    }
-
-    pub(super) fn sample(&self, point: [f64; 3]) -> f64 {
-        self.octaves[0].get(point)
-    }
-
-    pub(in crate::generators::natural) fn fbm(
-        &self,
-        point: [f64; 3],
-        profile: FractalProfile,
-    ) -> f64 {
-        self.fractal_sum(point, profile, |signal| signal)
-            .clamp(-1.0, 1.0)
-    }
-
-    pub(in crate::generators::natural) fn ridged(
-        &self,
-        point: [f64; 3],
-        profile: FractalProfile,
-    ) -> f64 {
-        self.fractal_sum(point, profile, |signal| {
-            let ridge = 1.0 - signal.abs().clamp(0.0, 1.0);
-            ridge * ridge
-        })
-        .clamp(0.0, 1.0)
-    }
-
-    fn fractal_sum(
-        &self,
-        point: [f64; 3],
-        profile: FractalProfile,
-        shape: impl Fn(f64) -> f64,
-    ) -> f64 {
-        profile.assert_valid();
-        let mut coordinate = point.map(|component| component * profile.frequency);
-        let mut amplitude = 1.0;
-        let mut amplitude_sum = 0.0;
-        let mut result = 0.0;
-        for source in self.octaves.iter().take(profile.octaves) {
-            result += shape(source.get(coordinate)) * amplitude;
-            amplitude_sum += amplitude;
-            amplitude *= profile.persistence;
-            let rotated = OCTAVE_ROTATION_3D.map(|row| {
-                row[0] * coordinate[0] + row[1] * coordinate[1] + row[2] * coordinate[2]
-            });
-            coordinate = rotated.map(|component| component * profile.lacunarity);
-        }
-        result / amplitude_sum
-    }
-}
-
 pub(in crate::generators::natural) fn sample_spherical_field(
     surface: &SphericalSurfaceSnapshot,
     recipe: FieldRecipe,
@@ -207,7 +140,7 @@ pub(in crate::generators::natural) fn sample_spherical_field(
         .map(|(index, band)| {
             let band_seed = derive_band_seed(seed, *index, *band);
             let offset = seed_offset(band_seed);
-            (*band, CoherentNoise3d::new(band_seed), offset)
+            (*band, SphericalNoise3d::new(band_seed), offset)
         })
         .collect::<Vec<_>>();
     let weight_sum = retained
@@ -222,7 +155,7 @@ pub(in crate::generators::natural) fn sample_spherical_field(
         for (band, sampler, offset) in &samplers {
             let coordinate =
                 std::array::from_fn(|axis| point[axis] / band.angular_scale_rad + offset[axis]);
-            let raw = sampler.sample(coordinate);
+            let raw = sampler.sample_coordinate(coordinate);
             let shaped = match band.shape {
                 FieldShape::Smooth => raw,
                 FieldShape::Ridged => {

@@ -24,6 +24,13 @@ pub(super) const PLATE_FABRIC_FIELD_LABEL: &str = "plate-fabric-field-v2";
 pub(super) const CRUST_ANCHOR_LAYOUT_LABEL: &str = "crust-anchor-layout-v2";
 pub(super) const CRUST_AFFINITY_FIELD_LABEL: &str = "crust-affinity-field-v2";
 pub(super) const CRUST_THICKNESS_FIELD_LABEL: &str = "crust-thickness-field-v2";
+pub(super) const INITIAL_PLATES_V3_LABEL: &str = "initial-plates-v3";
+pub(super) const INITIAL_CRUST_V3_LABEL: &str = "initial-crust-v3";
+pub(super) const PLATE_MOTION_V3_LABEL: &str = "plate-motion-v3";
+pub(super) const RIFT_EVENTS_V3_LABEL: &str = "rift-events-v3";
+pub(super) const PROCESS_VARIATION_V3_LABEL: &str = "process-variation-v3";
+pub(super) const OROGENIC_DETAIL_V3_LABEL: &str = "orogenic-detail-v3";
+pub(super) const OCEANIC_DETAIL_V3_LABEL: &str = "oceanic-detail-v3";
 pub(super) const SPHERICAL_MORPHOLOGY_LABELS: [&str; 7] = [
     PLATE_TARGET_AREA_LABEL,
     PLATE_SEED_PLACEMENT_LABEL,
@@ -32,6 +39,15 @@ pub(super) const SPHERICAL_MORPHOLOGY_LABELS: [&str; 7] = [
     CRUST_ANCHOR_LAYOUT_LABEL,
     CRUST_AFFINITY_FIELD_LABEL,
     CRUST_THICKNESS_FIELD_LABEL,
+];
+pub(super) const SPHERICAL_TECTONIC_V3_LABELS: [&str; 7] = [
+    INITIAL_PLATES_V3_LABEL,
+    INITIAL_CRUST_V3_LABEL,
+    PLATE_MOTION_V3_LABEL,
+    RIFT_EVENTS_V3_LABEL,
+    PROCESS_VARIATION_V3_LABEL,
+    OROGENIC_DETAIL_V3_LABEL,
+    OCEANIC_DETAIL_V3_LABEL,
 ];
 
 pub(super) struct LabeledSubstreams {
@@ -59,6 +75,26 @@ impl LabeledSubstreams {
         hasher.update(label.as_bytes());
         ChaCha8Rng::from_seed(*hasher.finalize().as_bytes())
     }
+
+    /// Returns a deterministic event value without consuming any mutable stream.
+    pub(super) fn counter_u64(&self, label: &'static str, coordinates: &[u64]) -> u64 {
+        debug_assert!(
+            !label.is_empty()
+                && label.is_ascii()
+                && label.bytes().all(|byte| byte.is_ascii_graphic()),
+            "natural RNG labels must be non-empty printable ASCII constants"
+        );
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai-natural-counter-v1\0");
+        hasher.update(&self.root);
+        hasher.update(&(label.len() as u64).to_le_bytes());
+        hasher.update(label.as_bytes());
+        hasher.update(&(coordinates.len() as u64).to_le_bytes());
+        for coordinate in coordinates {
+            hasher.update(&coordinate.to_le_bytes());
+        }
+        u64::from_le_bytes(hasher.finalize().as_bytes()[..8].try_into().unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -67,9 +103,12 @@ mod tests {
 
     use super::{
         LabeledSubstreams, BEDROCK_PROVINCE_LABEL, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL,
-        HOTSPOT_STRENGTH_LABEL, PLATE_MOTION_LABEL, PLATE_SEEDS_LABEL,
+        HOTSPOT_STRENGTH_LABEL, INITIAL_CRUST_V3_LABEL, INITIAL_PLATES_V3_LABEL,
+        OCEANIC_DETAIL_V3_LABEL, OROGENIC_DETAIL_V3_LABEL, PLATE_MOTION_LABEL,
+        PLATE_MOTION_V3_LABEL, PLATE_SEEDS_LABEL, PROCESS_VARIATION_V3_LABEL,
         RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL, RELIEF_REGIONAL_LABEL,
-        RELIEF_TECTONIC_DETAIL_LABEL, SPHERICAL_MORPHOLOGY_LABELS,
+        RELIEF_TECTONIC_DETAIL_LABEL, RIFT_EVENTS_V3_LABEL, SPHERICAL_MORPHOLOGY_LABELS,
+        SPHERICAL_TECTONIC_V3_LABELS,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::world::RootSeed;
@@ -250,5 +289,67 @@ mod tests {
             expected,
             (0..8).map(|_| motion.next_u64()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn evolved_tectonic_substreams_are_pairwise_orthogonal() {
+        let streams = LabeledSubstreams::capture(&mut stage_rng());
+        let expected = SPHERICAL_TECTONIC_V3_LABELS.map(|label| {
+            let mut stream = streams.stream(label);
+            (0..8).map(|_| stream.next_u64()).collect::<Vec<_>>()
+        });
+
+        for consumed in SPHERICAL_TECTONIC_V3_LABELS {
+            let mut stream = streams.stream(consumed);
+            for _ in 0..100 {
+                stream.next_u64();
+            }
+        }
+
+        for (label, expected) in SPHERICAL_TECTONIC_V3_LABELS.into_iter().zip(expected) {
+            let mut stream = streams.stream(label);
+            assert_eq!(
+                expected,
+                (0..8).map(|_| stream.next_u64()).collect::<Vec<_>>()
+            );
+        }
+
+        assert_eq!(
+            SPHERICAL_TECTONIC_V3_LABELS,
+            [
+                INITIAL_PLATES_V3_LABEL,
+                INITIAL_CRUST_V3_LABEL,
+                PLATE_MOTION_V3_LABEL,
+                RIFT_EVENTS_V3_LABEL,
+                PROCESS_VARIATION_V3_LABEL,
+                OROGENIC_DETAIL_V3_LABEL,
+                OCEANIC_DETAIL_V3_LABEL,
+            ]
+        );
+    }
+
+    #[test]
+    fn counter_values_repeat_without_consuming_or_aliasing_coordinates() {
+        let streams = LabeledSubstreams::capture(&mut stage_rng());
+        let before = {
+            let mut stream = streams.stream(PLATE_MOTION_V3_LABEL);
+            (0..8).map(|_| stream.next_u64()).collect::<Vec<_>>()
+        };
+        let value = streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[17, 3, 9]);
+
+        assert_eq!(
+            value,
+            streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[17, 3, 9])
+        );
+        assert_ne!(
+            value,
+            streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[17, 3, 10])
+        );
+        assert_ne!(
+            value,
+            streams.counter_u64(PROCESS_VARIATION_V3_LABEL, &[17, 3, 9])
+        );
+        let mut after = streams.stream(PLATE_MOTION_V3_LABEL);
+        assert_eq!(before, (0..8).map(|_| after.next_u64()).collect::<Vec<_>>());
     }
 }

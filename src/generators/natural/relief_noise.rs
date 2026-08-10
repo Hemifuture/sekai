@@ -3,7 +3,7 @@ use std::array;
 use noise::{NoiseFn, Perlin};
 
 use super::fractal::{FractalProfile, MAX_FRACTAL_OCTAVES};
-use super::morphology::field::CoherentNoise3d;
+use super::morphology::noise::SphericalNoise3d;
 
 const OCTAVE_ROTATION_COS: f64 = 0.819_152_044_288_991_8;
 const OCTAVE_ROTATION_SIN: f64 = 0.573_576_436_351_046;
@@ -88,22 +88,22 @@ impl ReliefNoise2d {
 /// or a privileged pole. The type is deliberately separate from the frozen 2D
 /// implementation so spherical work cannot perturb planar morphology.
 pub(super) struct ReliefNoise3d {
-    noise: CoherentNoise3d,
+    noise: SphericalNoise3d,
 }
 
 impl ReliefNoise3d {
     pub(super) fn new(seed: u32) -> Self {
         Self {
-            noise: CoherentNoise3d::new(seed),
+            noise: SphericalNoise3d::new(seed),
         }
     }
 
     pub(super) fn fbm(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
-        self.noise.fbm(point, profile)
+        self.noise.fbm_coordinate(point, profile)
     }
 
     pub(super) fn ridged(&self, point: [f64; 3], profile: FractalProfile) -> f64 {
-        self.noise.ridged(point, profile)
+        self.noise.ridged_coordinate(point, profile)
     }
 }
 
