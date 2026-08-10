@@ -18,6 +18,7 @@ use crate::world::{EdgeId, PlateId};
 mod boundaries;
 mod crust;
 mod initial_state;
+mod kinematics;
 mod model;
 mod motion;
 mod plates;

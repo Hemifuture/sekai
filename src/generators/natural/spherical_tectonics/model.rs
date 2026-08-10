@@ -136,6 +136,14 @@ impl TectonicState {
             .ok()
             .map(|index| &self.plates[index])
     }
+
+    pub(super) fn copy_current_into_reusable_next(&mut self, current: &Self) {
+        self.samples.clear();
+        self.samples.extend_from_slice(&current.samples);
+        self.plates.clear();
+        self.plates.extend_from_slice(&current.plates);
+        self.next_lineage_raw = current.next_lineage_raw;
+    }
 }
 
 /// Capacity-reused double buffer. It deliberately contains no history collection.
