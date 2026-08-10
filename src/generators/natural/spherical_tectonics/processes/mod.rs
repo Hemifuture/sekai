@@ -10,7 +10,7 @@
 use thiserror::Error;
 
 use super::contacts::ContactEvent;
-use super::model::{CrustSample, LineageId, TectonicState};
+use super::model::{ActivePlate, CrustSample, LineageId, TectonicState};
 use crate::world::natural::{ELEVATION_MAX_M, ELEVATION_MIN_M};
 use crate::world::spatial::{
     canonical_east_north_basis, central_angle, project_tangent, SphericalSurfaceSnapshot,
@@ -129,6 +129,109 @@ impl ProcessActions {
         }
         Ok(())
     }
+
+    /// Prevents a batch of transfer/removal actions from violating the global
+    /// minimum live-lineage contract.
+    ///
+    /// Physical effects have already been applied to the crust samples; only
+    /// the ownership/removal actions for a deterministically chosen extinct
+    /// lineage are cancelled. This keeps the invariant orthogonal to the
+    /// individual subduction and collision recipes.
+    pub(super) fn preserve_minimum_live_lineages(
+        &mut self,
+        samples: &[CrustSample],
+        current_plates: &[ActivePlate],
+        next_plates: &[ActivePlate],
+        minimum: usize,
+    ) -> Result<(), ProcessError> {
+        self.validate_for(samples.len())?;
+        let mut lineages = current_plates
+            .iter()
+            .chain(next_plates)
+            .map(|plate| plate.lineage)
+            .collect::<Vec<_>>();
+        lineages.sort_unstable();
+        lineages.dedup();
+        let current_counts = lineage_counts(samples.iter().map(|sample| sample.owner), &lineages)?;
+        let mut projected_counts = self.projected_lineage_counts(samples, &lineages)?;
+        if live_lineage_count(&projected_counts) >= minimum {
+            return Ok(());
+        }
+
+        let mut extinct = current_counts
+            .iter()
+            .enumerate()
+            .filter(|(index, count)| {
+                **count > 0
+                    && projected_counts[*index] == 0
+                    && next_plates
+                        .binary_search_by_key(&lineages[*index], |plate| plate.lineage)
+                        .is_ok()
+            })
+            .map(|(index, &count)| (index, count))
+            .collect::<Vec<_>>();
+        extinct.sort_by(|(first_index, first_count), (second_index, second_count)| {
+            second_count
+                .cmp(first_count)
+                .then_with(|| lineages[*first_index].cmp(&lineages[*second_index]))
+        });
+
+        for (plate_index, _) in extinct {
+            let protected = lineages[plate_index];
+            for (sample, disposition) in samples.iter().zip(&mut self.dispositions) {
+                if sample.owner == protected {
+                    *disposition = SampleDisposition::Keep;
+                }
+            }
+            projected_counts = self.projected_lineage_counts(samples, &lineages)?;
+            if live_lineage_count(&projected_counts) >= minimum {
+                return Ok(());
+            }
+        }
+
+        Err(ProcessError::MinimumLiveLineagesUnavailable {
+            found: live_lineage_count(&projected_counts),
+            minimum,
+        })
+    }
+
+    fn projected_lineage_counts(
+        &self,
+        samples: &[CrustSample],
+        lineages: &[LineageId],
+    ) -> Result<Vec<usize>, ProcessError> {
+        let retained =
+            samples
+                .iter()
+                .zip(&self.dispositions)
+                .filter_map(|(sample, disposition)| match disposition {
+                    SampleDisposition::Keep => Some(sample.owner),
+                    SampleDisposition::Remove => None,
+                    SampleDisposition::Transfer(owner) => Some(*owner),
+                });
+        lineage_counts(
+            retained.chain(self.spawned.iter().map(|sample| sample.owner)),
+            lineages,
+        )
+    }
+}
+
+fn lineage_counts(
+    owners: impl Iterator<Item = LineageId>,
+    lineages: &[LineageId],
+) -> Result<Vec<usize>, ProcessError> {
+    let mut counts = vec![0; lineages.len()];
+    for owner in owners {
+        let index = lineages
+            .binary_search(&owner)
+            .map_err(|_| ProcessError::UnknownLineage { lineage: owner })?;
+        counts[index] += 1;
+    }
+    Ok(counts)
+}
+
+fn live_lineage_count(counts: &[usize]) -> usize {
+    counts.iter().filter(|&&count| count > 0).count()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -290,6 +393,8 @@ pub(super) enum ProcessError {
     InvalidDeltaMyr { found: f32 },
     #[error("the transient lineage counter is exhausted")]
     LineageExhausted,
+    #[error("process actions retain only {found} live lineages, below required minimum {minimum}")]
+    MinimumLiveLineagesUnavailable { found: usize, minimum: usize },
     #[error("rift rotation is invalid: {0}")]
     InvalidRotation(#[from] crate::world::natural::SphericalTectonicValidationError),
     #[error("rift direction is invalid: {0}")]

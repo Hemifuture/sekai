@@ -22,7 +22,7 @@ use super::resample::{
 };
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
-use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec};
+use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec, MIN_PLATE_COUNT};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 pub(super) const EVOLUTION_STEP_COUNT: u16 = 128;
@@ -49,6 +49,12 @@ pub(super) fn run_tectonic_evolution(
         fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
         maybe_rift_plates(step, surface, current, next, actions, recipe, streams)?;
         relax_current_crust(surface, events, next, recipe, EVOLUTION_DELTA_MYR as f32)?;
+        actions.preserve_minimum_live_lineages(
+            &next.samples,
+            &current.plates,
+            &next.plates,
+            usize::from(MIN_PLATE_COUNT),
+        )?;
         commit_process_actions(next, actions)?;
         workspace.swap_current_next();
         if resample_due(&workspace) {
@@ -88,7 +94,7 @@ mod tests {
     use crate::generators::natural::spherical_tectonics::model::FormationTectonicRecipe;
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec};
+    use crate::world::natural::{ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec};
     use crate::world::spatial::SphericalNaturalSurface;
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -125,6 +131,39 @@ mod tests {
 
         assert_ne!(final_state.cell_plates.raw_values(), initial);
         assert_eq!(final_state.samples.len(), surface.cells().len());
+        assert!((2..=64).contains(&final_state.plates.len()));
+    }
+
+    #[test]
+    fn minimum_supported_plate_count_cannot_collapse_during_collision() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(1.0).unwrap(),
+            target_cell_count: 42,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(1),
+            StageIdentity::new("matrix.tectonic", 1, "sekai.matrix"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let spec = TectonicSpec {
+            plate_count: 2,
+            activity: TectonicActivity::Quiet,
+            continental_crust_fraction: 0.42,
+            ..TectonicSpec::default()
+        };
+
+        let final_state = run_tectonic_evolution(
+            &surface,
+            &topology,
+            &spec,
+            ResolvedWorldFormationPreset::Supercontinent,
+            &streams,
+        )
+        .expect("the minimum supported plate configuration must remain publishable");
+
         assert!((2..=64).contains(&final_state.plates.len()));
     }
 }
