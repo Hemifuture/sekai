@@ -1166,12 +1166,12 @@ Expected:
 
 Append exact commits, RED failures, mutation failures, focused counts, new sphere hashes, Release timings, memory, visual seed review, GPU adapter/backend, wasm result, and full-suite elapsed times to this plan. Do not claim an unobserved result.
 
-- [ ] **Step 8: Commit final acceptance**
+- [x] **Step 8: Commit final acceptance**
 
     git add tests/spherical_natural_graph_performance.rs tests/spherical_natural_stage_graph.rs tests/spherical_natural_matrix.rs tests/spherical_relief_geology_matrix.rs tests/spherical_relief_geologic_stage.rs src/app/spherical_natural_display.rs docs/superpowers/plans/2026-08-10-field-driven-spherical-terrain.md
     git commit -m "test: lock field-driven spherical terrain"
 
-- [ ] **Step 9: Verify clean completion**
+- [x] **Step 9: Verify clean completion**
 
 Run:
 
@@ -1254,6 +1254,7 @@ Observed evidence is appended here during execution: exact RED/GREEN commands, m
 
 ### Task 8 — Performance and Whole-Graph Acceptance
 
+- Final implementation and acceptance fix commit: `b2b17786f654b10da0cad172a7427e6ac02c7f30` (`fix: harden field-driven spherical terrain`). The tracked worktree was clean immediately after this commit; the follow-up documentation commit records that observed state.
 - Performance-contract RED: the ignored Release target failed to compile on the deliberately missing `collect_morphology_performance_evidence`, proving the new stage/full-graph/memory assertions preceded their implementation.
 - Memory evidence is isolated in a child process selected only by exact sentinel value `SEKAI_MORPHOLOGY_PROBE_CHILD=1`; it measures the morphology build against its immediate resident baseline so allocator reuse from an earlier planar graph cannot hide temporary allocations. The untouched baseline remains an environment-supplied `1418.187 ms`, never a reusable hard-coded machine assertion.
 - Final Release GREEN: 20,252 cells, 12 plates, 16 stages; planar graph `1886.178 ms`, spherical graph `1446.765 ms`, spherical tectonics `228.008 ms`, isolated morphology peak delta `8,605,696 bytes`, and persistent spherical artifacts `22,653,084 bytes`. These are below the fixed `1772.734 ms`, `300 ms`, and `64 MiB` budgets without lowering resolution or retaining build intermediates.
