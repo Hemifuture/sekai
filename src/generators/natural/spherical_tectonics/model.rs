@@ -15,6 +15,7 @@ use crate::world::CellId;
 use thiserror::Error;
 
 use super::contacts::{ContactEvent, CoverageScratch};
+use super::processes::ProcessActions;
 
 /// Stable identity of one transient plate lineage during the bounded evolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -155,6 +156,7 @@ pub(super) struct TectonicWorkspace {
     pub(super) next: TectonicState,
     pub(super) coverage: CoverageScratch,
     pub(super) events: Vec<ContactEvent>,
+    pub(super) actions: ProcessActions,
 }
 
 impl TectonicWorkspace {
@@ -171,7 +173,26 @@ impl TectonicWorkspace {
             },
             coverage: CoverageScratch::with_cell_capacity(sample_capacity),
             events: Vec::with_capacity(sample_capacity),
+            actions: ProcessActions::with_sample_capacity(sample_capacity),
         }
+    }
+
+    pub(super) fn step_parts(
+        &mut self,
+    ) -> (
+        &TectonicState,
+        &mut TectonicState,
+        &mut CoverageScratch,
+        &mut Vec<ContactEvent>,
+        &mut ProcessActions,
+    ) {
+        (
+            &self.current,
+            &mut self.next,
+            &mut self.coverage,
+            &mut self.events,
+            &mut self.actions,
+        )
     }
 }
 
@@ -271,13 +292,19 @@ mod state_tests {
             8,
         )
         .unwrap();
-        let workspace = TectonicWorkspace::from_initial(state);
+        let mut workspace = TectonicWorkspace::from_initial(state);
 
         assert_eq!(workspace.current.samples.len(), 1);
         assert!(workspace.next.samples.is_empty());
         assert!(workspace.next.samples.capacity() >= 1);
         assert_eq!(workspace.coverage.count(CellId::from_raw(0)), 0);
         assert!(workspace.events.is_empty());
+        assert!(workspace.actions.is_clear());
+        let (_current, next, coverage, events, actions) = workspace.step_parts();
+        assert!(next.samples.is_empty());
+        assert_eq!(coverage.count(CellId::from_raw(0)), 0);
+        assert!(events.is_empty());
+        assert!(actions.is_clear());
         assert_eq!(workspace.current.next_lineage_raw(), 8);
         assert_eq!(workspace.current.initial_owners(), vec![lineage]);
         assert_eq!(
