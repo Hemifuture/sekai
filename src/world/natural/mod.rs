@@ -121,9 +121,11 @@ pub use spherical_surface_process::{
 };
 pub(crate) use spherical_tectonics::classify_spherical_boundary_kinematics;
 pub use spherical_tectonics::{
-    SphericalBoundarySegment, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
-    SphericalTectonicValidationError, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
-    MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, TECTONIC_SNAPSHOT_SCHEMA_V2,
+    SphericalBoundarySegment, SphericalCrustState, SphericalOrogenyKind, SphericalPlate,
+    SphericalPlateRotation, SphericalTectonicSnapshot, SphericalTectonicValidationError,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_CRUST_AGE_MYR,
+    MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR, MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
+    NO_OROGENY_AGE_SENTINEL_MYR, TECTONIC_SNAPSHOT_SCHEMA_V3,
 };
 pub use surface_process::{
     SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,

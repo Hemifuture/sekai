@@ -5,9 +5,9 @@ use super::tectonics::TectonicGenerator;
 use super::topology::NaturalTopologyIndex;
 use crate::engine::StageRng;
 use crate::world::natural::{
-    NaturalSpecError, ResolvedWorldFormation, SphericalTectonicSnapshot,
+    NaturalSpecError, ResolvedWorldFormation, SphericalCrustState, SphericalTectonicSnapshot,
     SphericalTectonicValidationError, TectonicSpec, WorldFormationSpecError,
-    TECTONIC_SNAPSHOT_SCHEMA_V2,
+    TECTONIC_SNAPSHOT_SCHEMA_V3,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -26,7 +26,7 @@ use motion::{assign_plate_rotations, PlateMotionError};
 use plates::{generate_plate_partition, PlateMorphologyError};
 
 impl TectonicGenerator {
-    /// Generates a surface-bound V2 snapshot on a validated closed spherical world.
+    /// Generates a surface-bound current snapshot on a validated closed spherical world.
     ///
     /// Plate motion is stored as one rigid Euler rotation per plate. Boundary
     /// kinematics are evaluated in each authoritative edge's local tangent frame.
@@ -71,12 +71,11 @@ impl TectonicGenerator {
             &crust,
         );
         let snapshot = SphericalTectonicSnapshot::new(
-            TECTONIC_SNAPSHOT_SCHEMA_V2,
+            TECTONIC_SNAPSHOT_SCHEMA_V3,
             view.surface_ref(),
             plates,
             partition.owners,
-            crust.kinds,
-            crust.thickness_km,
+            SphericalCrustState::from_pre_evolution_fields(crust.kinds, crust.thickness_km)?,
             boundaries,
             boundary_segments,
         )?;
