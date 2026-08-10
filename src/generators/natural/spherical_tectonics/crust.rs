@@ -26,14 +26,14 @@ use crate::world::CellId;
 const FIELD_CLAMP_SIGMA_MILLI: u16 = 3_000;
 const SCORE_SCALE: i32 = 1_000_000;
 const LOBE_WEIGHT_MILLI: i64 = 350;
-const PLATE_INTERIOR_WEIGHT_MILLI: i64 = 150;
+const PLATE_INTERIOR_WEIGHT_MILLI: i64 = 100;
 
 const CONTINENTS_BANDS: [FieldBand; 3] = affinity_bands(500, 320, 180);
 const SUPERCONTINENT_BANDS: [FieldBand; 3] = affinity_bands(650, 250, 100);
 const ARCHIPELAGO_BANDS: [FieldBand; 3] = affinity_bands(250, 450, 300);
 const GREAT_ISLAND_BANDS: [FieldBand; 3] = affinity_bands(550, 300, 150);
 const VOLCANIC_ISLANDS_BANDS: [FieldBand; 3] = affinity_bands(100, 400, 500);
-const THICKNESS_BANDS: [FieldBand; 2] = [
+const CONTINENTAL_THICKNESS_BANDS: [FieldBand; 2] = [
     FieldBand {
         angular_scale_rad: 36.0_f64.to_radians(),
         weight_milli: 700,
@@ -45,8 +45,17 @@ const THICKNESS_BANDS: [FieldBand; 2] = [
         shape: FieldShape::Smooth,
     },
 ];
-const THICKNESS_RECIPE: FieldRecipe = FieldRecipe {
-    bands: &THICKNESS_BANDS,
+const CONTINENTAL_THICKNESS_RECIPE: FieldRecipe = FieldRecipe {
+    bands: &CONTINENTAL_THICKNESS_BANDS,
+    clamp_sigma_milli: FIELD_CLAMP_SIGMA_MILLI,
+};
+const OCEANIC_THICKNESS_BANDS: [FieldBand; 1] = [FieldBand {
+    angular_scale_rad: 14.0_f64.to_radians(),
+    weight_milli: 1_000,
+    shape: FieldShape::Smooth,
+}];
+const OCEANIC_THICKNESS_RECIPE: FieldRecipe = FieldRecipe {
+    bands: &OCEANIC_THICKNESS_BANDS,
     clamp_sigma_milli: FIELD_CLAMP_SIGMA_MILLI,
 };
 
@@ -208,7 +217,10 @@ fn generate_crust_observed(
         .map(u128::from)
         .unwrap_or(1);
     let mut profile = PresetProfile::for_preset(preset);
-    if preset != ResolvedWorldFormationPreset::VolcanicIslands {
+    if preset == ResolvedWorldFormationPreset::VolcanicIslands {
+        let resolvable_islands = (target_weight / minimum_cell).max(1) as usize;
+        profile.island_components = profile.island_components.min(resolvable_islands);
+    } else {
         let island_total = target_weight * u128::from(profile.island_budget_milli) / 1_000;
         let primary_total = target_weight - island_total;
         let resolvable_primary = (primary_total / (minimum_cell * 8)).max(1) as usize;
@@ -792,12 +804,39 @@ fn generate_thickness(
     kinds: &[CrustKind],
     streams: &crate::generators::natural::random::LabeledSubstreams,
 ) -> Result<Vec<f32>, MorphologyFieldError> {
-    let seed = streams.stream(CRUST_THICKNESS_FIELD_LABEL).next_u32();
-    let field = match sample_spherical_field(surface, THICKNESS_RECIPE, seed) {
-        Ok(field) => Some(field),
-        Err(MorphologyFieldError::NoResolvableBand { .. }) => None,
-        Err(error) => return Err(error),
-    };
+    generate_thickness_with_recipes(
+        surface,
+        topology,
+        kinds,
+        streams,
+        CONTINENTAL_THICKNESS_RECIPE,
+        OCEANIC_THICKNESS_RECIPE,
+    )
+}
+
+fn optional_thickness_field(
+    surface: &SphericalSurfaceSnapshot,
+    recipe: FieldRecipe,
+    seed: u32,
+) -> Result<Option<QuantizedScalarField>, MorphologyFieldError> {
+    match sample_spherical_field(surface, recipe, seed) {
+        Ok(field) => Ok(Some(field)),
+        Err(MorphologyFieldError::NoResolvableBand { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn generate_thickness_with_recipes(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    kinds: &[CrustKind],
+    streams: &crate::generators::natural::random::LabeledSubstreams,
+    continental_recipe: FieldRecipe,
+    oceanic_recipe: FieldRecipe,
+) -> Result<Vec<f32>, MorphologyFieldError> {
+    let mut rng = streams.stream(CRUST_THICKNESS_FIELD_LABEL);
+    let continental_field = optional_thickness_field(surface, continental_recipe, rng.next_u32())?;
+    let oceanic_field = optional_thickness_field(surface, oceanic_recipe, rng.next_u32())?;
     let coast_cells = topology
         .arcs()
         .iter()
@@ -823,7 +862,11 @@ fn generate_thickness(
         .iter()
         .enumerate()
         .map(|(index, &kind)| {
-            let signal = field.as_ref().map_or(0.0, |field| {
+            let field = match kind {
+                CrustKind::Oceanic => oceanic_field.as_ref(),
+                CrustKind::Continental => continental_field.as_ref(),
+            };
+            let signal = field.map_or(0.0, |field| {
                 f64::from(field.values()[index]) / f64::from(i16::MAX)
             });
             let unit_signal = (signal * 0.5 + 0.5).clamp(0.0, 1.0) as f32;
@@ -1149,6 +1192,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn minimum_sphere_supports_recommended_and_minimum_volcanic_land_fraction() {
+        for fraction in [0.16, 0.10] {
+            let case = fixture_crust_components_at(
+                42,
+                12,
+                ResolvedWorldFormationPreset::VolcanicIslands,
+                fraction,
+                0xC0_FFEE,
+            );
+            assert_eq!(case.morphology.kinds.len(), 42);
+            assert!(case
+                .morphology
+                .kinds
+                .raw_values()
+                .iter()
+                .any(|&kind| kind == CrustKind::Continental.raw()));
+            let total_weight = case
+                .topology
+                .area_weights()
+                .iter()
+                .copied()
+                .map(u128::from)
+                .sum::<u128>();
+            let continental_weight = case
+                .morphology
+                .kinds
+                .raw_values()
+                .iter()
+                .zip(case.topology.area_weights())
+                .filter_map(|(&kind, &weight)| {
+                    (kind == CrustKind::Continental.raw()).then_some(u128::from(weight))
+                })
+                .sum::<u128>();
+            let actual_fraction = continental_weight as f64 / total_weight as f64;
+            let maximum_cell_fraction = case
+                .topology
+                .area_weights()
+                .iter()
+                .copied()
+                .max()
+                .map(|weight| weight as f64)
+                .unwrap()
+                / total_weight as f64;
+            assert!(
+                (actual_fraction - f64::from(fraction)).abs() <= maximum_cell_fraction,
+                "fraction={fraction} actual={actual_fraction} tolerance={maximum_cell_fraction}"
+            );
+        }
+    }
+
     fn continental_components(case: &ObservedCrust) -> Vec<u128> {
         let selected = case
             .morphology
@@ -1315,5 +1409,78 @@ mod tests {
                 .then_with(|| first.cmp(&second))
         });
         assert_ne!(ocean_affinity_order, ocean_thickness_order);
+    }
+
+    #[test]
+    fn oceanic_thickness_is_orthogonal_to_continental_low_frequency_recipe() {
+        use crate::generators::natural::morphology::field::{FieldBand, FieldRecipe, FieldShape};
+
+        const ALTERED_CONTINENTAL_BANDS: [FieldBand; 2] = [
+            FieldBand {
+                angular_scale_rad: 72.0_f64.to_radians(),
+                weight_milli: 850,
+                shape: FieldShape::Ridged,
+            },
+            FieldBand {
+                angular_scale_rad: 14.0_f64.to_radians(),
+                weight_milli: 150,
+                shape: FieldShape::Smooth,
+            },
+        ];
+        const ALTERED_CONTINENTAL_RECIPE: FieldRecipe = FieldRecipe {
+            bands: &ALTERED_CONTINENTAL_BANDS,
+            clamp_sigma_milli: super::FIELD_CLAMP_SIGMA_MILLI,
+        };
+
+        let case =
+            fixture_crust_components(12, ResolvedWorldFormationPreset::Continents, 0.38, 113);
+        let streams = LabeledSubstreams::capture(&mut stage_rng(113));
+        let baseline = super::generate_thickness_with_recipes(
+            &case.surface,
+            &case.topology,
+            &case
+                .morphology
+                .kinds
+                .raw_values()
+                .iter()
+                .map(|&raw| CrustKind::try_from_raw(raw).unwrap())
+                .collect::<Vec<_>>(),
+            &streams,
+            super::CONTINENTAL_THICKNESS_RECIPE,
+            super::OCEANIC_THICKNESS_RECIPE,
+        )
+        .unwrap();
+        let altered = super::generate_thickness_with_recipes(
+            &case.surface,
+            &case.topology,
+            &case
+                .morphology
+                .kinds
+                .raw_values()
+                .iter()
+                .map(|&raw| CrustKind::try_from_raw(raw).unwrap())
+                .collect::<Vec<_>>(),
+            &streams,
+            ALTERED_CONTINENTAL_RECIPE,
+            super::OCEANIC_THICKNESS_RECIPE,
+        )
+        .unwrap();
+
+        assert!(case
+            .morphology
+            .kinds
+            .raw_values()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &kind)| kind == CrustKind::Oceanic.raw())
+            .all(|(index, _)| baseline[index].to_bits() == altered[index].to_bits()));
+        assert!(case
+            .morphology
+            .kinds
+            .raw_values()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &kind)| kind == CrustKind::Continental.raw())
+            .any(|(index, _)| baseline[index].to_bits() != altered[index].to_bits()));
     }
 }

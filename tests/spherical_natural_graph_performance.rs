@@ -1,22 +1,30 @@
 use std::mem::size_of_val;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache};
+use sekai::engine::{
+    derive_stage_seed, BuildEngine, BuildReport, ExternalArtifacts, MemoryStageCache,
+    StageIdentity, StageRng,
+};
 use sekai::generators::natural::{
     legacy_planar_natural_foundation_graph, spherical_natural_foundation_graph,
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
     ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
     SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
-    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
+    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicGenerator, TectonicSpecArtifact,
     WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
-    PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
+    GeodesicVoronoiBuilder, PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    spherical_natural_field_registry, ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec,
-    WorldFormationSpec,
+    spherical_natural_field_registry, ClimateSpec, GeologicSpec, HydroErosionSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    WorldFormationSpec, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
 use serde::Serialize;
@@ -27,6 +35,31 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const SPHERE_TIME_BUDGET: Duration = Duration::from_secs(5);
 const SPHERE_TO_PLANAR_TIME_RATIO_BUDGET: f64 = 2.5;
 const ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const MORPHOLOGY_TO_BASELINE_TIME_RATIO_BUDGET: f64 = 1.25;
+const TECTONIC_TIME_BUDGET: Duration = Duration::from_millis(300);
+const MORPHOLOGY_PEAK_WORKING_SET_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+const BASELINE_DURATION_ENV: &str = "SEKAI_SPHERICAL_BASELINE_MS";
+const MORPHOLOGY_PROBE_CHILD_ENV: &str = "SEKAI_MORPHOLOGY_PROBE_CHILD";
+const MORPHOLOGY_PROBE_PREFIX: &str = "sekai_morphology_probe";
+
+fn morphology_probe_child_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MorphologyPerformanceEvidence {
+    tectonic_elapsed: Duration,
+    full_graph_elapsed: Duration,
+    morphology_peak_delta_bytes: u64,
+    cell_count: usize,
+    plate_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MorphologyChildProbe {
+    elapsed: Duration,
+    peak_delta_bytes: u64,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ArtifactBytes {
@@ -45,25 +78,35 @@ impl ArtifactBytes {
 
 #[cfg(windows)]
 fn process_working_set_bytes() -> Option<u64> {
-    windows_process_memory_property("WorkingSet64")
+    windows_process_memory_counters().map(|counters| counters.WorkingSetSize as u64)
 }
 
 #[cfg(windows)]
 fn process_peak_working_set_bytes() -> Option<u64> {
-    windows_process_memory_property("PeakWorkingSet64")
+    windows_process_memory_counters().map(|counters| counters.PeakWorkingSetSize as u64)
 }
 
 #[cfg(windows)]
-fn windows_process_memory_property(property: &str) -> Option<u64> {
-    use std::process::Command;
+fn windows_process_memory_counters(
+) -> Option<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    let script = format!("(Get-Process -Id {}).{property}", std::process::id());
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .ok()?;
-    output.status.success().then_some(())?;
-    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // Both calls target this test process and write exactly the declared C layout.
+    let succeeded = unsafe {
+        K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+    };
+    (succeeded != 0).then_some(counters)
 }
 
 #[cfg(target_os = "linux")]
@@ -99,9 +142,144 @@ fn process_peak_working_set_bytes() -> Option<u64> {
     None
 }
 
+fn collect_morphology_performance_evidence(
+    report: &BuildReport,
+    full_graph_elapsed: Duration,
+    child_probe: MorphologyChildProbe,
+    cell_count: usize,
+    plate_count: usize,
+) -> MorphologyPerformanceEvidence {
+    let formal_tectonic_elapsed = report
+        .stages()
+        .iter()
+        .find(|stage| stage.stage_id() == "natural.spherical-tectonics")
+        .expect("formal spherical graph reports its tectonic stage")
+        .duration();
+    MorphologyPerformanceEvidence {
+        tectonic_elapsed: formal_tectonic_elapsed.max(child_probe.elapsed),
+        full_graph_elapsed,
+        morphology_peak_delta_bytes: child_probe.peak_delta_bytes,
+        cell_count,
+        plate_count,
+    }
+}
+
+fn recorded_baseline_duration() -> Duration {
+    let raw = std::env::var(BASELINE_DURATION_ENV).unwrap_or_else(|_| {
+        panic!(
+            "ignored Release acceptance requires {BASELINE_DURATION_ENV}=1418.187 from the untouched f00466ce baseline"
+        )
+    });
+    let milliseconds = raw
+        .parse::<f64>()
+        .unwrap_or_else(|_| panic!("{BASELINE_DURATION_ENV} must be finite milliseconds"));
+    assert!(milliseconds.is_finite() && milliseconds > 0.0);
+    Duration::from_secs_f64(milliseconds / 1_000.0)
+}
+
+fn run_morphology_probe_child() -> MorphologyChildProbe {
+    let output = Command::new(std::env::current_exe().expect("test executable path is available"))
+        .args([
+            "--exact",
+            "release_spherical_natural_full_graph_budget",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(MORPHOLOGY_PROBE_CHILD_ENV, "1")
+        .output()
+        .expect("morphology performance child starts");
+    assert!(
+        output.status.success(),
+        "morphology performance child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("child output is UTF-8");
+    let line = stdout
+        .lines()
+        .find_map(|line| {
+            line.find(MORPHOLOGY_PROBE_PREFIX)
+                .map(|start| &line[start..])
+        })
+        .expect("child emitted morphology evidence");
+    let value = |name: &str| {
+        line.split_ascii_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("child evidence omitted {name}"))
+            .parse::<u64>()
+            .unwrap_or_else(|_| panic!("child evidence {name} is not u64"))
+    };
+    MorphologyChildProbe {
+        elapsed: Duration::from_micros(value("elapsed_us")),
+        peak_delta_bytes: value("peak_delta_bytes"),
+    }
+}
+
+fn emit_morphology_probe_child() {
+    let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+        radius: Meters::new(EARTH_RADIUS_M).unwrap(),
+        target_cell_count: TARGET_CELL_COUNT,
+    })
+    .unwrap();
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Continents,
+    )
+    .unwrap();
+    let mut rng = StageRng::from_seed(derive_stage_seed(
+        ROOT_SEED,
+        StageIdentity::new("natural.spherical-tectonics", 2, "sekai.core"),
+    ));
+    let baseline = process_working_set_bytes()
+        .expect("morphology memory probe requires Windows or Linux process metrics");
+    let running = Arc::new(AtomicBool::new(true));
+    let maximum = Arc::new(AtomicU64::new(baseline));
+    let sampler = {
+        let running = Arc::clone(&running);
+        let maximum = Arc::clone(&maximum);
+        thread::spawn(move || {
+            while running.load(Ordering::Acquire) {
+                if let Some(bytes) = process_working_set_bytes() {
+                    maximum.fetch_max(bytes, Ordering::Relaxed);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    let started = Instant::now();
+    let snapshot = TectonicGenerator::generate_spherical(
+        &surface,
+        &TectonicSpec::default(),
+        &formation,
+        &mut rng,
+    )
+    .unwrap();
+    let elapsed = started.elapsed();
+    if let Some(bytes) = process_working_set_bytes() {
+        maximum.fetch_max(bytes, Ordering::Relaxed);
+    }
+    running.store(false, Ordering::Release);
+    sampler.join().unwrap();
+    let peak_delta_bytes = maximum.load(Ordering::Relaxed).saturating_sub(baseline);
+    println!(
+        "{MORPHOLOGY_PROBE_PREFIX} elapsed_us={} peak_delta_bytes={peak_delta_bytes} cells={} plates={}",
+        elapsed.as_micros(),
+        surface.cells().len(),
+        snapshot.plates().len()
+    );
+}
+
 #[test]
 #[ignore = "release-only 20,000-cell planar/spherical full-graph acceptance"]
 fn release_spherical_natural_full_graph_budget() {
+    if morphology_probe_child_requested(std::env::var_os(MORPHOLOGY_PROBE_CHILD_ENV).as_deref()) {
+        emit_morphology_probe_child();
+        return;
+    }
+    let child_probe = run_morphology_probe_child();
+    let baseline_duration = recorded_baseline_duration();
     let planar_engine = BuildEngine::new(legacy_planar_natural_foundation_graph().unwrap());
     let planar_external = planar_external_artifacts();
     let mut planar_cache = MemoryStageCache::new();
@@ -176,6 +354,25 @@ fn release_spherical_natural_full_graph_budget() {
     let additional_peak_working_set_bytes = planar_peak_working_set
         .zip(sphere_peak_working_set)
         .map(|(planar_peak, sphere_peak)| sphere_peak.saturating_sub(planar_peak));
+    let morphology_evidence = collect_morphology_performance_evidence(
+        &sphere_outcome.report,
+        sphere_elapsed,
+        child_probe,
+        surface.snapshot().cells().len(),
+        tectonic.snapshot().plates().len(),
+    );
+
+    assert_eq!(morphology_evidence.cell_count, 20_252);
+    assert_eq!(morphology_evidence.plate_count, 12);
+    assert!(morphology_evidence.tectonic_elapsed <= TECTONIC_TIME_BUDGET);
+    assert!(morphology_evidence.full_graph_elapsed <= SPHERE_TIME_BUDGET);
+    assert!(
+        morphology_evidence.full_graph_elapsed.as_secs_f64()
+            <= baseline_duration.as_secs_f64() * MORPHOLOGY_TO_BASELINE_TIME_RATIO_BUDGET
+    );
+    assert!(
+        morphology_evidence.morphology_peak_delta_bytes <= MORPHOLOGY_PEAK_WORKING_SET_BUDGET_BYTES
+    );
 
     let surface_bytes = ArtifactBytes::measure(
         surface.as_ref(),
@@ -245,9 +442,12 @@ fn release_spherical_natural_full_graph_budget() {
     let hydro_snapshot = hydro.snapshot().hydrology();
 
     eprintln!(
-        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
+        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} baseline_ms={:.3} morphology_tectonic_ms={:.3} morphology_peak_delta_bytes={} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
         planar_elapsed.as_secs_f64() * 1_000.0,
         sphere_elapsed.as_secs_f64() * 1_000.0,
+        baseline_duration.as_secs_f64() * 1_000.0,
+        morphology_evidence.tectonic_elapsed.as_secs_f64() * 1_000.0,
+        morphology_evidence.morphology_peak_delta_bytes,
         sphere_outcome.report.stages().len(),
         surface_snapshot.cells().len(),
         surface_snapshot.vertices().len(),
@@ -296,6 +496,16 @@ fn release_spherical_natural_full_graph_budget() {
             "spherical graph added {additional_peak_working_set_bytes} peak working-set bytes above the planar peak; budget is {ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES}"
         );
     }
+}
+
+#[test]
+fn morphology_probe_child_sentinel_requires_exact_one() {
+    use std::ffi::OsStr;
+
+    assert!(morphology_probe_child_requested(Some(OsStr::new("1"))));
+    assert!(!morphology_probe_child_requested(None));
+    assert!(!morphology_probe_child_requested(Some(OsStr::new("0"))));
+    assert!(!morphology_probe_child_requested(Some(OsStr::new("true"))));
 }
 
 fn planar_external_artifacts() -> ExternalArtifacts {

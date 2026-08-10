@@ -1,6 +1,7 @@
 use rand::RngCore;
 use thiserror::Error;
 
+use super::fractal::FractalProfile;
 use super::random::{
     LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL,
     RELIEF_REGIONAL_LABEL,
@@ -9,7 +10,7 @@ use super::relief::{
     reconcile_final_safety, synthesize_crust_base, synthesize_tectonic_offset_core,
     ReliefGenerator, SEA_LEVEL_M,
 };
-use super::relief_noise::{FractalProfile, ReliefNoise3d};
+use super::relief_noise::ReliefNoise3d;
 use super::spherical_island_relief::{
     synthesize_spherical_hotspot_offset, synthesize_spherical_oceanic_arc_peaks,
 };

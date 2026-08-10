@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::crust::CrustMorphology;
-use crate::generators::natural::tectonics::{normalized_plate_pair, StableUnionFind};
+use crate::generators::natural::connectivity::{normalized_plate_pair, StableUnionFind};
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     classify_spherical_boundary_kinematics, BoundaryKind, BoundaryRecord, PlateIdField,

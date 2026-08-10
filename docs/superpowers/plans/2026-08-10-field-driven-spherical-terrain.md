@@ -349,7 +349,7 @@ For each EdgeId, read its two owners and base traversal length. Compute resistan
 
 Use fixed-point multiplication for:
 
-    multiplier = clamp(1 + 0.45 * resistance + 0.35 * fabric_crossing, 0.45, 2.20)
+    multiplier = clamp(1 + 0.45 * resistance + 1.50 * fabric_crossing, 0.45, 2.20)
     cost = max(1, round(base_cost * multiplier))
 
 Store one cost per EdgeId. Validate field and edge cardinality before allocation.
@@ -460,7 +460,7 @@ Expected: compilation fails because the plates submodule and PlatePartition cont
 
 - [x] **Step 3: Implement target weights and non-uniform seed placement**
 
-Generate a stable rank profile from 0.55 to 1.90 for plate_count >= 8, apply bounded ±20% random perturbations, shuffle the target values using the same target-area stream, and renormalize to the existing total area-weight quantization.
+Generate a stable rank profile from 0.55 to 1.90 for plate_count >= 8, apply bounded ±10% random perturbations, deterministically expand only relative-mean deviations when the discrete target CV is below 0.36, shuffle the target values using the same target-area stream, and renormalize to the existing total area-weight quantization. Verify the CV postcondition after bounded floating-point calibration and again after integer normalization; reject an impossible candidate instead of publishing a below-floor target vector.
 
 Place targets largest first. For each candidate cell calculate:
 
@@ -575,7 +575,7 @@ Use a small deterministic graph fixture and assert:
     }
 
     #[test]
-    fn coast_rebalance_never_removes_a_protected_articulation_cell() {
+    fn coast_rebalance_never_breaks_a_protected_narrow_neck() {
         let mask = build_narrow_neck_fixture();
         assert!(mask.is_selected(NECK_CELL));
         assert_eq!(connected_major_components(&mask), EXPECTED_COMPONENTS);
@@ -593,7 +593,7 @@ Expected: compilation fails because area.rs and its types do not exist.
 
 Use one max-heap keyed by score descending, component ID, then CellId. A cell can enter a protected component only from an already selected neighbor of that component. Grow protected budgets first, then island seeds.
 
-Label selected and unselected components with iterative queues. Remove undersized unprotected selected components. Fill enclosed unselected components below maximum_hole_weight. Before each coast-shrink batch, compute articulation points for each protected component with iterative Tarjan discovery/low-link arrays; only remove non-articulation shore cells. Recompute after each batch, and stop at the closest achievable area prefix.
+Label selected and unselected components with iterative queues. Remove undersized unprotected selected components. Fill enclosed unselected components below maximum_hole_weight. For coast shrink, build one inward-rooted spanning forest, anchor protected cells and one deep root per component, and remove only current coastal leaves through a stable priority queue. Update only the removed leaf's parent and graph neighbors; stop at the closest achievable area prefix. This preserves connectivity while keeping the callback at `O(E log V)` instead of recomputing full-graph articulation points per removed cell.
 
 - [x] **Step 4: Write crust RED tests**
 
@@ -1042,7 +1042,7 @@ Run:
 
 Expected: all pass.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
     git add tests/spherical_morphology_quality.rs tests/spherical_tectonic_generation.rs tests/spherical_presentation_gpu.rs src/generators/natural/morphology src/generators/natural/spherical_tectonics
     git commit -m "test: gate spherical morphology quality"
@@ -1056,6 +1056,11 @@ Only include production files if bounded tuning changed them.
 **Files:**
 
 - Modify: tests/spherical_natural_graph_performance.rs
+- Modify: tests/spherical_natural_stage_graph.rs
+- Modify: tests/spherical_natural_matrix.rs
+- Modify: tests/spherical_relief_geology_matrix.rs
+- Modify: tests/spherical_relief_geologic_stage.rs
+- Modify: src/app/spherical_natural_display.rs (test-only frozen field hash)
 - Modify: docs/superpowers/plans/2026-08-10-field-driven-spherical-terrain.md
 
 **Interfaces:**
@@ -1063,7 +1068,7 @@ Only include production files if bounded tuning changed them.
 - Consumes the formal spherical_natural_foundation_graph and existing product default inputs.
 - Produces release timing/memory evidence and final verification evidence only.
 
-- [ ] **Step 1: Add per-stage morphology timing and memory RED**
+- [x] **Step 1: Add per-stage morphology timing and memory RED**
 
 Extend the ignored Release test to record:
 
@@ -1086,7 +1091,7 @@ Assert:
 
 Use the untouched same-machine baseline captured in Task 1 Step 2 from commit f00466ce with the exact same Release configuration, seed 42, and inputs. Do not recapture it after production code has changed and do not hard-code its machine-specific duration into a reusable assertion; pass/read the recorded value in the ignored acceptance harness.
 
-- [ ] **Step 2: Run Release RED or confirm budget**
+- [x] **Step 2: Run Release RED or confirm budget**
 
 Run:
 
@@ -1094,7 +1099,7 @@ Run:
 
 Expected: compilation fails until evidence fields are added, then the new implementation must satisfy the budgets. A budget failure requires profiling and algorithmic correction; do not delete the gate.
 
-- [ ] **Step 3: Optimize only measured hotspots**
+- [x] **Step 3: Optimize only measured hotspots**
 
 Allowed optimizations:
 
@@ -1112,7 +1117,7 @@ Forbidden optimizations:
 - caching build intermediates in the published document;
 - changing visual LOD to hide scientific defects.
 
-- [ ] **Step 4: Run focused compatibility and source-identity gates**
+- [x] **Step 4: Run focused compatibility and source-identity gates**
 
 Run:
 
@@ -1125,7 +1130,7 @@ Run:
 
 Expected: all pass; planar hashes remain frozen, sphere stage version/cache hashes are intentionally updated.
 
-- [ ] **Step 5: Run engineering gates**
+- [x] **Step 5: Run engineering gates**
 
 Run serially:
 
@@ -1140,7 +1145,7 @@ Run serially:
 
 Expected: every command exits 0. GPU-required tests must not report a skip.
 
-- [ ] **Step 6: Perform final boundary audit**
+- [x] **Step 6: Perform final boundary audit**
 
 Run:
 
@@ -1157,13 +1162,13 @@ Expected:
 - no historical state;
 - only approved pub(super) domain interfaces.
 
-- [ ] **Step 7: Append Execution Evidence**
+- [x] **Step 7: Append Execution Evidence**
 
 Append exact commits, RED failures, mutation failures, focused counts, new sphere hashes, Release timings, memory, visual seed review, GPU adapter/backend, wasm result, and full-suite elapsed times to this plan. Do not claim an unobserved result.
 
 - [ ] **Step 8: Commit final acceptance**
 
-    git add tests/spherical_natural_graph_performance.rs docs/superpowers/plans/2026-08-10-field-driven-spherical-terrain.md
+    git add tests/spherical_natural_graph_performance.rs tests/spherical_natural_stage_graph.rs tests/spherical_natural_matrix.rs tests/spherical_relief_geology_matrix.rs tests/spherical_relief_geologic_stage.rs src/app/spherical_natural_display.rs docs/superpowers/plans/2026-08-10-field-driven-spherical-terrain.md
     git commit -m "test: lock field-driven spherical terrain"
 
 - [ ] **Step 9: Verify clean completion**
@@ -1202,7 +1207,7 @@ Observed evidence is appended here during execution: exact RED/GREEN commands, m
 
 - RED: metric and arrival focused commands each exited 1 on missing `PositiveEdgeMetric`, `ArrivalSource`, `ArrivalWorkspace`, `assign_arrivals`, field test construction, and dense topology edge-cost access.
 - GREEN: morphology 7/7 and topology 9/9; `legacy_planar_boundary` 2/2; `natural_display_golden` 2 passed/1 expected ignored; library strict Clippy, fmt, and diff checks exited 0.
-- Mutation: setting the fabric coefficient to zero made the independent fabric assertion fail; restored to `0.35`.
+- Mutation: setting the fabric coefficient to zero made the independent fabric assertion fail; the initial implementation restored `0.35`, and Task 7's unchanged quality gates later bounded-calibrated it to `1.50`.
 - Mutation: changing only heap order did not change ownership because the authoritative tie-break is the relaxation tuple. Reversing that actual owner comparison changed the frozen square from `[0,0,0,1]` to `[0,1,1,1]` and failed the test; restored to lower-owner-first.
 
 ### Task 3 — Field-Driven Plate Partition
@@ -1218,7 +1223,7 @@ Observed evidence is appended here during execution: exact RED/GREEN commands, m
 - RED: the area-mask target first failed to compile on missing `build_area_constrained_mask` and `ProtectedRegionSeed`; the protected-neck regression then failed on the missing coast-shrink boundary. The crust target failed to compile on missing `CrustMorphology` and `generate_crust_observed`.
 - GREEN: area 4/4 and crust 4/4. The five formation presets meet the one-authoritative-cell area tolerance and their major-component ranges at 642 cells. The fixed Continents case keeps coast/plate overlap inside 10%-55%, retains identical base affinity and anchor layout across 12/17 plates, changes only the soft-coupled final affinity/mask, and keeps independent thickness inside existing physical bounds.
 - Root-cause correction: the first GREEN attempt overflowed `i32` while scaling quantized affinity; widening the multiplication to `i64` fixed the exact failing boundary. The next run showed protected island components could be surrounded by an earlier component; preventing different protected growth fronts from entering each other's immediate neighborhood preserved their budgets without weakening morphology gates.
-- Mutation: setting the plate-interior coefficient from 0.15 to zero made the 12/17-plate soft-coupling oracle fail with identical final affinity. Reusing the Continents affinity recipe and affinity seed for oceanic thickness made the independent oceanic rank-order assertion fail. Both mutations were restored.
+- Mutation: setting the initial plate-interior coefficient from 0.15 to zero made the 12/17-plate soft-coupling oracle fail with identical final affinity; Task 7's resolution gate later bounded-calibrated it to `0.10`. Reusing the Continents affinity recipe and affinity seed for oceanic thickness made the independent oceanic rank-order assertion fail. Both dependency mutations were restored.
 - Adjacency and engineering evidence: the pre-integration global spherical-area formation test remained GREEN; fresh area/crust tests, library strict Clippy, fmt, and diff checks exited 0.
 
 ### Task 5 — Orthogonal Tectonic Integration
@@ -1237,10 +1242,23 @@ Observed evidence is appended here during execution: exact RED/GREEN commands, m
 
 ### Task 7 — Morphology, Resolution, GPU, and Visual Quality
 
+- Commit: `26f3699 test: gate spherical morphology quality`.
 - RED evidence: the old resolution-dependent seed shortlist moved a fixed plate direction by about `1.57 rad` between 642 and 2,562 cells. After continuous direction placement, the no-detail 5k/20k partition had `fine_scale_gain=-0.0059`, proving that the 20k mesh exposed no additional field morphology. A temporary 6% visual threshold then correctly rejected the best bounded calibration at 4.55%, forcing direct image review rather than silent acceptance.
-- Final bounded calibration: 1,024 continuous candidate directions with top-5% stochastic choice, snap-to-authoritative-cell only after selection; plate fabric bands `75°/0.65 + 28°/0.35 + 8°/0.60`; normalized fabric-crossing coefficient `1.00`; independent physical-angle crust anchors/lobes and component-budgeted area growth. All remain crate-private and reuse the shared field/metric/arrival/area primitives.
-- Multi-seed GREEN: `spherical_morphology_quality` passed 3/3 with one expected Release-only ignore across seeds 0–15 and all five formation presets. Default plate max/min area ratios were `2.55..4.03`, per-seed area CV `0.277..0.387`, no plate fell below 1%, and direct coast/plate overlap was `0.140..0.231`; preset component/perimeter/radial-variation gates all passed.
-- Release resolution GREEN: 4,842 versus 20,252 cells; normalized perimeter `1.3978 -> 1.4613` (`+4.55%` bounded detail), optimal owner agreement `0.9440`, continental-mask Jaccard `0.6562`, and major continental components `3/3`.
-- Focused GREEN: plate unit tests 7/7; crust 7 passed/1 expected ignored; spherical tectonic generation 5/5; full required-GPU presentation target 5/5.
-- GPU semantics were checked before hashes. RTX 4080 SUPER Vulkan produced the same 16 RGBA8 hashes twice; audited OpenGL produced the identical set once. Map/globe scalar, category, edge scalar/category, paused/animated vector, seam, poles, and front/back cases all passed their CPU/source/cardinality/direction oracles.
-- Visual acceptance used the Release app at exact logical/window `1280x720`, 20,252 cells. Seed 42 was checked in plate ownership and current elevation; seeds 1–11 were each rebuilt and inspected in Equal Earth current elevation; seed 11 was also checked on the globe. Observed results include distinct compound continents, island chains, variable ocean basins, ridges, trenches, and boundary mountain belts without antimeridian seams, pole concentration, one-cell checkerboard noise, or a fixed template. The globe remained a perfectly round unit sphere; elevation remained annotation data.
+- Review-driven calibration kept every frozen quality threshold and changed only bounded recipe constants. Plate target jitter is `±10%`; for counts of at least eight, the deterministic target-CV floor is `0.36`. Fabric crossing is `1.50` inside the unchanged positive-cost clamp; soft plate-interior affinity is `0.10`; local frontier cohesion scales with physical feature radius at `80,000`. Mutations to the superseded values failed the existing seed or 5k/20k gates: fabric `1.00` left only `4/12`, `5/12`, and `5/12` elongated plates for seeds 0, 10, and 15; interior `0.15` produced `15.04%` coast-resolution drift; cohesion zero produced `23.32%`; target `±20%` failed seed 4 area variation and seed 9 elongation. A review RED found `plate_count=8, seed=166` at CV `0.359986` after the old eight-pass cap; the production path now allows at most 16 bounded passes and verifies both floating and integer-normalized postconditions. `[8,12,32,64] × 1024 seeds` is GREEN. A second RED proved that applying this large-count floor to supported counts `2..7` changed their intended recipe; calibration is now gated at the call site, and all six small counts retain at least one sub-`0.36` deterministic case.
+- The coast shrink hotspot was replaced with one inward-rooted spanning forest and a stable coastal-leaf priority queue. It builds connectivity once, removes only leaves, and updates only the parent and graph neighbors, giving `O(E log V)` behavior while preserving protected seeds and narrow necks. A mutation that rebuilt connectivity per deletion was caught by the exact scan-count regression. Full builders also prove all remaining enclosed holes exceed the preset physical hole limit.
+- DRY boundaries are explicit: common fractal-band data and the single shared octave capacity live in `natural/fractal.rs`; stable union-find and canonical plate pairs live in `natural/connectivity.rs`; spherical field, plate, crust, motion, boundary, and relief modules depend one way on those neutral primitives. No generator publishes or serializes morphology intermediates.
+- Multi-seed GREEN: plate tests 10/10 and `spherical_morphology_quality` 3 passed/1 expected Release ignore. Seeds 0–15 plus 42 have max/min plate area ratios `3.23..4.66`, achieved area CV `0.3386..0.3907`, target CV at least `0.36`, `6..11` elongated plates out of 12, no plate below 1%, and buffered coast/plate overlap `0.2381..0.4014`. All five formation presets pass component, area, perimeter, radial-variation, no-speckle, and no-small-hole gates; the 42-cell VolcanicIslands case remains within one authoritative cell of its requested land fraction.
+- Release resolution GREEN: 4,842 versus 20,252 cells; normalized plate perimeter `1.4021 -> 1.4739` (`+5.13%` bounded detail), total normalized coast drift `13.01%`, plate-area total variation `0.0023`, optimal owner agreement `0.9323`, continental-mask Jaccard `0.6658`, exact land fraction `0.3800/0.3800`, and major continental components `3/3`.
+- GPU semantics were checked before hashes. The source-keyed Medium glyph IDs intentionally changed to `[4,11,14,26,28,38,79,97,108,115,119,131,133,144,150]`; all fill, edge, vector, seam, pole, and front/back CPU oracles passed before accepting pixel changes. RTX 4080 SUPER Vulkan and audited OpenGL then produced identical 16 RGBA8 hashes. In order: map/globe scalar `fea586c9…aa5f` / `4d338ddb…f6eb`; category `416d14cb…9f0b` / `b52256cc…3d97`; edge scalar `3a8b6843…9507` / `f608f893…611b`; edge category `72e3f45c…6b25` / `62f302d7…8f7d`; vector paused map/globe `69a650e8…5850` / `29b572ac…5c55`; vector animated `7e5659ad…e4f1` / `29c8dcdd…fadd`; seam `3c040b4a…f7f6`; poles `47865d0f…9bc0`; globe front/back `b52256cc…3d97` / `cd11c5b2…0629`.
+- Visual acceptance covered the complete matrix, not a seed shortcut: seeds 1–11 plus 42 × plate ownership, crust kind, crust thickness, current elevation, and boundary kind × Equal Earth and globe = `120/120` Release views at 20,252 cells. The views show distinct connected plate fabrics, compound continents, bays/necks/islands, independently varying thickness, ridges, trenches, arcs, and boundary mountain belts without antimeridian breaks, pole concentration, one-cell checkerboards, or a reused template. Both views consume the same scalar heightmap; the globe remained a perfectly round unit sphere and dynamic arrows remained annotations.
+
+### Task 8 — Performance and Whole-Graph Acceptance
+
+- Performance-contract RED: the ignored Release target failed to compile on the deliberately missing `collect_morphology_performance_evidence`, proving the new stage/full-graph/memory assertions preceded their implementation.
+- Memory evidence is isolated in a child process selected only by exact sentinel value `SEKAI_MORPHOLOGY_PROBE_CHILD=1`; it measures the morphology build against its immediate resident baseline so allocator reuse from an earlier planar graph cannot hide temporary allocations. The untouched baseline remains an environment-supplied `1418.187 ms`, never a reusable hard-coded machine assertion.
+- Final Release GREEN: 20,252 cells, 12 plates, 16 stages; planar graph `1886.178 ms`, spherical graph `1446.765 ms`, spherical tectonics `228.008 ms`, isolated morphology peak delta `8,605,696 bytes`, and persistent spherical artifacts `22,653,084 bytes`. These are below the fixed `1772.734 ms`, `300 ms`, and `64 MiB` budgets without lowering resolution or retaining build intermediates.
+- Compatibility RED/GREEN refreshed only values causally downstream of the new current-state morphology after semantic checks. The formal stage hashes are surface `213c897c…00ec`, tectonic `36b99b6e…b972`, mantle `c0213d96…39e`, relief `5f0f0e64…1ba4`, geology `04bd2c7e…06e8`, climate `c7c000a8…f82b`, hydrology `7053d125…2538`, result `dd47d161…9452`; stage graph 5/5 and all four tectonic and relief/geology matrix cases pass. The 2- and 7-plate matrix hashes were refreshed only after their scientific assertions passed; 12- and 64-plate hashes stayed unchanged. The 36-field catalog/payload freeze passes at `8b0c948c2ac7c5961c9af0a417fffb434abf9cbd42eef9195850affaaff84e85`, and the real diagnostic-forwarding fixture remains fixed at seed 542.
+- Focused final results: area 6/6, plate 10/10, crust 9 passed/1 expected ignored, morphology quality 3 passed/1 expected ignored, stage graph 5/5, natural matrix 1/1, relief/geology matrix 1/1, relief/geologic stage 3/3, spherical document 24/24, and both audited GPU backends 5/5.
+- Final engineering gates all exited 0: fmt, workspace/all-target/all-feature check, strict Clippy with `-D warnings`, wasm32 all-features check, workspace/all-target/all-feature tests, workspace docs, required-GPU full tests, and diff check. The final workspace/all-target/all-feature rerun finished in `236.2 s`; docs passed 5 with 8 expected ignores; `$env:SEKAI_REQUIRE_SPHERICAL_GPU='1'; cargo test` finished in `177.3 s` with 373 library tests and no GPU skip.
+- Final boundary audit found no public/serialized morphology intermediate, planar fallback, historical state, or time slice in the new generator modules. Globe `height/elevation/displace` matches are viewport dimensions, exclusion documentation, and the negative geometry-invariance test; no scalar elevation enters unit-sphere vertex construction. The authoritative application still publishes one current snapshot through the single spherical stage graph.
+- Full-suite diagnostic: the first all-target run reached only the old source-keyed glyph-ID and RGBA8 expectations after every CPU semantic oracle had passed. Updating those intentional presentation freezes, then rerunning Vulkan, OpenGL, the complete workspace, and the required-GPU suite produced the clean results above; no production rendering change was needed.

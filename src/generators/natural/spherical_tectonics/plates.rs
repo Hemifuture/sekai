@@ -30,6 +30,7 @@ const MINIMUM_SEPARATION_SCORE: f64 = 0.20;
 const SEED_CANDIDATE_DIRECTION_COUNT: usize = 1_024;
 const TOP_CANDIDATE_DIVISOR: usize = 20;
 const FIELD_CLAMP_SIGMA_MILLI: u16 = 3_000;
+const MINIMUM_TARGET_AREA_CV: f64 = 0.36;
 
 const PLATE_RESISTANCE_BANDS: [FieldBand; 3] = [
     FieldBand {
@@ -195,13 +196,17 @@ fn generate_target_area_weights(
                 0.70 + 0.70 * rank as f64 / denominator
             };
             let unit = (rng.next_u64() >> 11) as f64 / (1_u64 << 53) as f64;
-            let perturbation = 0.90 + 0.20 * unit;
-            (profile * perturbation).clamp(0.45, 2.40)
+            (profile * (0.90 + 0.20 * unit)).clamp(0.45, 2.40)
         })
         .collect::<Vec<_>>();
     for index in (1..raw.len()).rev() {
         let swap = (rng.next_u64() % (index as u64 + 1)) as usize;
         raw.swap(index, swap);
+    }
+    if plate_count >= 8 && !enforce_minimum_target_variation(&mut raw, MINIMUM_TARGET_AREA_CV) {
+        return Err(PlateMorphologyError::InvalidTargetWeights {
+            plates: plate_count,
+        });
     }
 
     let raw_total = raw.iter().sum::<f64>();
@@ -234,12 +239,61 @@ fn generate_target_area_weights(
     for &(_, index) in fractional_order.iter().take(remainder) {
         weights[index] += 1;
     }
-    if weights.contains(&0) || weights.iter().sum::<u64>() != AREA_WEIGHT_TOTAL {
+    let normalized_cv = coefficient_of_variation_by(&weights, |value| *value as f64);
+    if weights.contains(&0)
+        || weights.iter().sum::<u64>() != AREA_WEIGHT_TOTAL
+        || (plate_count >= 8
+            && normalized_cv.is_none_or(|cv| cv + f64::EPSILON < MINIMUM_TARGET_AREA_CV))
+    {
         return Err(PlateMorphologyError::InvalidTargetWeights {
             plates: plate_count,
         });
     }
     Ok(weights.into_boxed_slice())
+}
+
+fn coefficient_of_variation_by<T>(values: &[T], as_f64: impl Copy + Fn(&T) -> f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mean = values.iter().map(as_f64).sum::<f64>() / values.len() as f64;
+    if !mean.is_finite() || mean <= 0.0 {
+        return None;
+    }
+    let variance = values
+        .iter()
+        .map(|value| (as_f64(value) - mean).powi(2))
+        .sum::<f64>()
+        / values.len() as f64;
+    let cv = variance.sqrt() / mean;
+    cv.is_finite().then_some(cv)
+}
+
+fn enforce_minimum_target_variation(values: &mut [f64], minimum_cv: f64) -> bool {
+    if values.len() < 2 {
+        return true;
+    }
+    const MAXIMUM_CALIBRATION_PASSES: usize = 16;
+    const CV_MARGIN: f64 = 1.0e-5;
+
+    for _ in 0..MAXIMUM_CALIBRATION_PASSES {
+        let Some(current_cv) = coefficient_of_variation_by(values, |value| *value) else {
+            return false;
+        };
+        if current_cv + f64::EPSILON >= minimum_cv {
+            return true;
+        }
+        if current_cv <= f64::EPSILON {
+            return false;
+        }
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let scale = (minimum_cv + CV_MARGIN) / current_cv;
+        for value in &mut *values {
+            *value = (mean + (*value - mean) * scale).clamp(0.45, 2.40);
+        }
+    }
+    coefficient_of_variation_by(values, |value| *value)
+        .is_some_and(|cv| cv + f64::EPSILON >= minimum_cv)
 }
 
 fn place_plate_seeds(
@@ -555,6 +609,7 @@ mod tests {
     use super::{
         calibrate_partition, generate_plate_partition, generate_plate_partition_observed,
         generate_target_area_weights, maximum_relative_error, AREA_WEIGHT_TOTAL,
+        MINIMUM_TARGET_AREA_CV,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::morphology::arrival::{
@@ -573,6 +628,13 @@ mod tests {
         StageRng::from_seed(derive_stage_seed(
             RootSeed::new(seed),
             StageIdentity::new("spherical-plate-morphology-test", 2, "sekai.test"),
+        ))
+    }
+
+    fn production_stage_rng(seed: u64) -> StageRng {
+        StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(seed),
+            StageIdentity::new("natural.spherical-tectonics", 2, "sekai.core"),
         ))
     }
 
@@ -596,13 +658,7 @@ mod tests {
     }
 
     fn area_coefficient_of_variation(values: &[u64]) -> f64 {
-        let mean = values.iter().map(|&value| value as f64).sum::<f64>() / values.len() as f64;
-        let variance = values
-            .iter()
-            .map(|&value| (value as f64 - mean).powi(2))
-            .sum::<f64>()
-            / values.len() as f64;
-        variance.sqrt() / mean
+        super::coefficient_of_variation_by(values, |value| *value as f64).unwrap()
     }
 
     fn median_cell_diameter(surface: &crate::world::spatial::SphericalSurfaceSnapshot) -> f64 {
@@ -727,6 +783,39 @@ mod tests {
     }
 
     #[test]
+    fn target_variation_floor_survives_clamping_and_integer_normalization() {
+        for plate_count in [8, 12, 32, 64] {
+            for seed in 0..1_024 {
+                let mut rng = ChaCha8Rng::seed_from_u64(seed);
+                let targets = generate_target_area_weights(plate_count, &mut rng).unwrap();
+                let variation = area_coefficient_of_variation(&targets);
+                assert!(
+                    variation + 1.0e-9 >= MINIMUM_TARGET_AREA_CV,
+                    "plate_count={plate_count} seed={seed}: target CV {variation} fell below {MINIMUM_TARGET_AREA_CV}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_plate_counts_do_not_receive_the_large_count_cv_floor() {
+        for plate_count in 2..8 {
+            let minimum_variation = (0..1_024)
+                .map(|seed| {
+                    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+                    let targets = generate_target_area_weights(plate_count, &mut rng).unwrap();
+                    area_coefficient_of_variation(&targets)
+                })
+                .min_by(f64::total_cmp)
+                .unwrap();
+            assert!(
+                minimum_variation < MINIMUM_TARGET_AREA_CV,
+                "plate_count={plate_count}: small-count recipe was forced to the large-count CV floor ({minimum_variation})"
+            );
+        }
+    }
+
+    #[test]
     fn field_driven_partition_is_connected_and_not_uniform_voronoi() {
         let (surface, topology, streams) = fixture(642, 42);
         let spec = TectonicSpec::default();
@@ -757,6 +846,36 @@ mod tests {
             "maximum error was {maximum_relative_error}"
         );
         assert_all_plates_connected_and_contain_seed(&topology, &partition);
+    }
+
+    #[test]
+    fn default_seed_matrix_hits_target_area_fit_and_variation() {
+        let (surface, topology, _) = fixture(642, 0);
+        let mut failures = Vec::new();
+        for seed in 0..16 {
+            let streams = LabeledSubstreams::capture(&mut production_stage_rng(seed));
+            let partition =
+                generate_plate_partition(&surface, &topology, &TectonicSpec::default(), &streams)
+                    .unwrap();
+            let error = maximum_relative_error(
+                &partition.achieved_area_weights,
+                &partition.target_area_weights,
+            );
+            let variation = area_coefficient_of_variation(&partition.achieved_area_weights);
+            let target_variation = area_coefficient_of_variation(&partition.target_area_weights);
+            eprintln!(
+                "seed {seed}: maximum_target_error={error:.4} area_cv={variation:.4} target_cv={target_variation:.4}"
+            );
+            if error > 0.35
+                || !(0.30..=0.75).contains(&variation)
+                || target_variation + 1.0e-9 < MINIMUM_TARGET_AREA_CV
+            {
+                failures.push(format!(
+                    "seed {seed}: target-area error {error}, area coefficient of variation {variation}, target coefficient of variation {target_variation}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]

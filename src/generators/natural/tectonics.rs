@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rand::RngCore;
 use thiserror::Error;
 
+use super::connectivity::{normalized_plate_pair, StableUnionFind};
 use super::random::{
     LabeledSubstreams, CRUST_SEEDS_LABEL, CRUST_SHAPE_LABEL, CRUST_THICKNESS_LABEL,
     PLATE_MOTION_LABEL, PLATE_SEEDS_LABEL,
@@ -956,48 +957,6 @@ fn aggregate_direction(component: &[usize], events: &[BoundaryEventDraft]) -> [f
         ]
     } else {
         [(x as f64 / length) as f32, (y as f64 / length) as f32]
-    }
-}
-
-pub(super) struct StableUnionFind {
-    parent: Vec<usize>,
-}
-
-impl StableUnionFind {
-    pub(super) fn new(count: usize) -> Self {
-        Self {
-            parent: (0..count).collect(),
-        }
-    }
-
-    pub(super) fn find(&mut self, index: usize) -> usize {
-        let parent = self.parent[index];
-        if parent != index {
-            self.parent[index] = self.find(parent);
-        }
-        self.parent[index]
-    }
-
-    pub(super) fn union(&mut self, first: usize, second: usize) {
-        let first = self.find(first);
-        let second = self.find(second);
-        if first == second {
-            return;
-        }
-        let (root, child) = if first < second {
-            (first, second)
-        } else {
-            (second, first)
-        };
-        self.parent[child] = root;
-    }
-}
-
-pub(super) fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
-    if first < second {
-        [first, second]
-    } else {
-        [second, first]
     }
 }
 

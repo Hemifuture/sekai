@@ -6,11 +6,10 @@ use std::f64::consts::PI;
 use noise::{NoiseFn, OpenSimplex};
 use thiserror::Error;
 
-use crate::generators::natural::relief_noise::FractalProfile;
+use crate::generators::natural::fractal::{FractalProfile, MAX_FRACTAL_OCTAVES};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
-const MAX_OCTAVES: usize = 6;
 const OCTAVE_SEED_STEP: u32 = 0x9E37_79B9;
 const OCTAVE_ROTATION_3D: [[f64; 3]; 3] = [[0.36, 0.48, -0.8], [-0.8, 0.6, 0.0], [0.48, 0.64, 0.6]];
 const MIN_CELL_DIAMETERS_PER_BAND: f64 = 4.0;
@@ -96,7 +95,7 @@ pub(in crate::generators::natural) enum MorphologyFieldError {
 /// The one deterministic coherent three-dimensional noise core shared by
 /// spherical morphology and the existing spherical relief implementation.
 pub(in crate::generators::natural) struct CoherentNoise3d {
-    octaves: [OpenSimplex; MAX_OCTAVES],
+    octaves: [OpenSimplex; MAX_FRACTAL_OCTAVES],
 }
 
 impl CoherentNoise3d {

@@ -2,6 +2,7 @@ use rand::RngCore;
 use thiserror::Error;
 
 use super::plates::PlatePartition;
+use crate::generators::natural::connectivity::normalized_plate_pair;
 use crate::generators::natural::random::{LabeledSubstreams, PLATE_MOTION_LABEL};
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
@@ -257,12 +258,4 @@ fn quantized_relative_speed_energy(
         .into_iter()
         .map(|component| (component * component) as u128)
         .sum()
-}
-
-fn normalized_plate_pair(first: PlateId, second: PlateId) -> [PlateId; 2] {
-    if first < second {
-        [first, second]
-    } else {
-        [second, first]
-    }
 }

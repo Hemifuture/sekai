@@ -1473,6 +1473,12 @@ where
         &preferred_range,
         &mut candidate_state,
     );
+    if current.prepared_state.fill_field.as_ref() != candidate_state.fill_field() {
+        candidate_state.range_mode = candidate_state
+            .fill_field()
+            .and_then(&preferred_range)
+            .unwrap_or(DisplayRangeMode::Data);
+    }
     validate_diagnostics(diagnostics, cell_count)?;
     let next_diagnostics_fingerprint = diagnostics_fingerprint(diagnostics);
     let next_state = PreparedLayerState::from(&candidate_state);

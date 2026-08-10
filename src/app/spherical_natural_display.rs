@@ -461,18 +461,18 @@ mod tests {
     };
     use crate::world::fields::{FieldDomain, FieldValueType};
     use crate::world::natural::{
-        boundary_kind_field_id, boundary_strength_field_id, elevation_field_id, plate_id_field_id,
-        plate_velocity_field_id, preliminary_mean_air_temperature_c_field_id,
-        preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id,
-        surface_water_kind_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec,
-        WorldFormationSpec,
+        boundary_kind_field_id, boundary_strength_field_id, crust_thickness_field_id,
+        elevation_field_id, plate_id_field_id, plate_velocity_field_id,
+        preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
+        surface_elevation_m_field_id, surface_water_kind_field_id, ClimateSpec, GeologicSpec,
+        HydroErosionSpec, TectonicSpec, WorldFormationSpec,
     };
     use crate::world::spatial::{canonical_east_north_basis, SurfaceRef};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
-        "937bb06d57650e7f501fbc05fef9736a824aa41f7ce0f24d8b207cbe5afb7a66";
+        "8b0c948c2ac7c5961c9af0a417fffb434abf9cbd42eef9195850affaaff84e85";
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,
@@ -1814,6 +1814,48 @@ mod tests {
                 diagnostic_fingerprint_values_scanned: 0,
             }
         );
+    }
+
+    #[test]
+    fn switching_fill_reconciles_range_against_the_published_field() {
+        let outcome = build_outcome(6_371_000.0);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let mut state = SphericalFieldDisplayState::default();
+        let mut clock = DisplayRevisionClock::default();
+        let initial = prepare_spherical_document_layers(
+            &document,
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        let elevation_range = initial.fill().display_range().unwrap().bounds();
+
+        state.select_fill(crust_thickness_field_id());
+        let switched = update_spherical_document_layers(
+            &document,
+            &initial,
+            SphericalViewMode::Map,
+            SphericalProjectionKind::EqualEarth,
+            MapCamera::default(),
+            GlobeCamera::default(),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+
+        let thickness = document.tectonic.snapshot().crust_thickness_km();
+        let expected = (
+            thickness.iter().copied().fold(f32::INFINITY, f32::min),
+            thickness.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        );
+        assert_eq!(state.range_mode(), DisplayRangeMode::Data);
+        assert_eq!(switched.fill().field_id(), &crust_thickness_field_id());
+        assert_eq!(switched.fill().display_range().unwrap().bounds(), expected);
+        assert_ne!(expected, elevation_range);
     }
 
     #[test]

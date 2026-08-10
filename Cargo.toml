@@ -52,6 +52,12 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
 [profile.release]
 opt-level = 2 # fast and small wasm
 

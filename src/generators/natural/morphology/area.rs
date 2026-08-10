@@ -8,6 +8,8 @@ use thiserror::Error;
 use crate::generators::natural::topology::{multi_source_distance, NaturalTopologyIndex};
 use crate::world::CellId;
 
+const LOCAL_COHESION_PER_FEATURE_RADIUS: f64 = 80_000.0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::generators::natural) struct AreaMask {
     selected: Box<[bool]>,
@@ -142,9 +144,16 @@ fn build_area_constrained_mask_impl(
     enforce_component_budgets: bool,
 ) -> Result<AreaMask, AreaSelectionError> {
     validate_inputs(topology, scores, protected, target_weight)?;
+    let cohesion_weight = local_cohesion_weight(topology, maximum_hole_weight);
 
     let mut selected = vec![false; topology.cell_count()];
-    grow_protected_regions_independently(topology, scores, protected, &mut selected)?;
+    grow_protected_regions_independently(
+        topology,
+        scores,
+        protected,
+        cohesion_weight,
+        &mut selected,
+    )?;
     let (mut labels, mut component_area) = label_selected_components(topology, &selected);
     let component_budgets = enforce_component_budgets.then(|| {
         let mut budgets = vec![0_u128; component_area.len()];
@@ -168,6 +177,7 @@ fn build_area_constrained_mask_impl(
                 &selected,
                 labels[index],
                 CellId::from_raw(index as u32),
+                cohesion_weight,
                 &mut frontier,
             );
         }
@@ -182,19 +192,15 @@ fn build_area_constrained_mask_impl(
         &mut total_area,
         &mut frontier,
         component_budgets.as_deref(),
+        cohesion_weight,
     );
 
-    fill_small_holes_when_closer(
+    fill_small_holes(
         topology,
-        target_weight,
         maximum_hole_weight,
         &mut selected,
-        &mut labels,
-        &mut component_area,
         &mut total_area,
-        component_budgets.as_deref(),
     );
-
     remove_unprotected_speckles(
         topology,
         protected,
@@ -226,110 +232,221 @@ fn shrink_coast_toward_target(
     target_weight: u128,
     selected: &mut [bool],
     selected_area_weight: &mut u128,
-) {
+) -> CoastShrinkStats {
     let mut protected = vec![false; topology.cell_count()];
     for &cell in protected_cells {
         protected[cell.raw() as usize] = true;
     }
 
+    let (parent, mut child_count, anchored) =
+        selected_spanning_forest(topology, selected, &protected);
+    let mut stats = CoastShrinkStats {
+        full_graph_connectivity_builds: 1,
+        ..CoastShrinkStats::default()
+    };
+    let mut frontier = BinaryHeap::new();
+    for index in 0..topology.cell_count() {
+        push_coast_leaf_candidate(
+            topology,
+            scores,
+            selected,
+            &anchored,
+            &child_count,
+            index,
+            &mut frontier,
+        );
+    }
+
     while *selected_area_weight > target_weight {
-        let articulation = selected_articulation_points(topology, selected);
-        let current_error = selected_area_weight.abs_diff(target_weight);
-        let candidate = selected
-            .iter()
-            .enumerate()
-            .filter(|&(index, &is_selected)| {
-                is_selected
-                    && !protected[index]
-                    && !articulation[index]
-                    && topology.arcs()[index]
-                        .iter()
-                        .any(|arc| !selected[arc.neighbor.raw() as usize])
-            })
-            .filter_map(|(index, _)| {
-                let area = u128::from(topology.area_weights()[index]);
-                let next = selected_area_weight.saturating_sub(area);
-                (next.abs_diff(target_weight) <= current_error).then_some((
-                    scores[index],
-                    CellId::from_raw(index as u32),
-                    area,
-                ))
-            })
-            .min_by_key(|&(score, cell, _)| (score, cell));
-        let Some((_, cell, area)) = candidate else {
+        let Some(candidate) = frontier.pop() else {
             break;
         };
-        selected[cell.raw() as usize] = false;
+        stats.candidate_evaluations += 1;
+        let index = candidate.cell.raw() as usize;
+        let Some(current) =
+            coast_leaf_candidate(topology, scores, selected, &anchored, &child_count, index)
+        else {
+            continue;
+        };
+        if current != candidate {
+            frontier.push(current);
+            continue;
+        }
+
+        let area = u128::from(topology.area_weights()[index]);
+        let current_error = selected_area_weight.abs_diff(target_weight);
+        let next = selected_area_weight.saturating_sub(area);
+        if next.abs_diff(target_weight) > current_error {
+            continue;
+        }
+
+        selected[index] = false;
         *selected_area_weight -= area;
+        stats.removed_cells += 1;
+        let parent_index = parent[index];
+        if parent_index != index && parent_index != usize::MAX {
+            child_count[parent_index] -= 1;
+        }
+        for arc in &topology.arcs()[index] {
+            push_coast_leaf_candidate(
+                topology,
+                scores,
+                selected,
+                &anchored,
+                &child_count,
+                arc.neighbor.raw() as usize,
+                &mut frontier,
+            );
+        }
+    }
+    stats
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CoastShrinkStats {
+    full_graph_connectivity_builds: usize,
+    removed_cells: usize,
+    candidate_evaluations: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoastLeafCandidate {
+    perimeter_delta: i128,
+    score: i32,
+    cell: CellId,
+}
+
+impl Ord for CoastLeafCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .perimeter_delta
+            .cmp(&self.perimeter_delta)
+            .then_with(|| other.score.cmp(&self.score))
+            .then_with(|| other.cell.cmp(&self.cell))
     }
 }
 
-fn selected_articulation_points(topology: &NaturalTopologyIndex, selected: &[bool]) -> Vec<bool> {
-    #[derive(Clone, Copy)]
-    struct Frame {
-        cell: usize,
-        next_arc: usize,
+impl PartialOrd for CoastLeafCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn selected_spanning_forest(
+    topology: &NaturalTopologyIndex,
+    selected: &[bool],
+    protected: &[bool],
+) -> (Vec<usize>, Vec<usize>, Vec<bool>) {
+    let mut distance_to_ocean = vec![usize::MAX; topology.cell_count()];
+    let mut queue = VecDeque::new();
+    for (index, &is_selected) in selected.iter().enumerate() {
+        if !is_selected {
+            distance_to_ocean[index] = 0;
+            queue.push_back(index);
+        }
+    }
+    while let Some(cell) = queue.pop_front() {
+        let next_distance = distance_to_ocean[cell].saturating_add(1);
+        for arc in &topology.arcs()[cell] {
+            let neighbor = arc.neighbor.raw() as usize;
+            if distance_to_ocean[neighbor] == usize::MAX {
+                distance_to_ocean[neighbor] = next_distance;
+                queue.push_back(neighbor);
+            }
+        }
     }
 
-    let cell_count = topology.cell_count();
-    let unvisited = usize::MAX;
-    let mut discovery = vec![unvisited; cell_count];
-    let mut low = vec![0; cell_count];
-    let mut parent = vec![unvisited; cell_count];
-    let mut child_count = vec![0_usize; cell_count];
-    let mut articulation = vec![false; cell_count];
-    let mut clock = 0_usize;
-    let mut stack = Vec::new();
-
-    for root in 0..cell_count {
-        if !selected[root] || discovery[root] != unvisited {
+    let mut parent = vec![usize::MAX; topology.cell_count()];
+    let mut child_count = vec![0_usize; topology.cell_count()];
+    let mut anchored = protected.to_vec();
+    let mut component_seen = vec![false; topology.cell_count()];
+    for start in 0..topology.cell_count() {
+        if !selected[start] || component_seen[start] {
             continue;
         }
-        discovery[root] = clock;
-        low[root] = clock;
-        clock += 1;
-        stack.push(Frame {
-            cell: root,
-            next_arc: 0,
-        });
-
-        while let Some(frame) = stack.last_mut() {
-            let cell = frame.cell;
-            if frame.next_arc < topology.arcs()[cell].len() {
-                let neighbor = topology.arcs()[cell][frame.next_arc].neighbor.raw() as usize;
-                frame.next_arc += 1;
-                if !selected[neighbor] {
-                    continue;
+        component_seen[start] = true;
+        queue.push_back(start);
+        let mut cells = Vec::new();
+        while let Some(cell) = queue.pop_front() {
+            cells.push(cell);
+            for arc in &topology.arcs()[cell] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if selected[neighbor] && !component_seen[neighbor] {
+                    component_seen[neighbor] = true;
+                    queue.push_back(neighbor);
                 }
-                if discovery[neighbor] == unvisited {
+            }
+        }
+        let root = *cells
+            .iter()
+            .max_by_key(|&&index| {
+                (
+                    distance_to_ocean[index],
+                    protected[index],
+                    usize::MAX - index,
+                )
+            })
+            .expect("selected component contains its start cell");
+        anchored[root] = true;
+        parent[root] = root;
+        queue.push_back(root);
+        while let Some(cell) = queue.pop_front() {
+            for arc in &topology.arcs()[cell] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if selected[neighbor] && parent[neighbor] == usize::MAX {
                     parent[neighbor] = cell;
                     child_count[cell] += 1;
-                    discovery[neighbor] = clock;
-                    low[neighbor] = clock;
-                    clock += 1;
-                    stack.push(Frame {
-                        cell: neighbor,
-                        next_arc: 0,
-                    });
-                } else if parent[cell] != neighbor {
-                    low[cell] = low[cell].min(discovery[neighbor]);
+                    queue.push_back(neighbor);
                 }
-                continue;
-            }
-
-            stack.pop();
-            let parent_cell = parent[cell];
-            if parent_cell == unvisited {
-                articulation[cell] = child_count[cell] > 1;
-                continue;
-            }
-            low[parent_cell] = low[parent_cell].min(low[cell]);
-            if parent[parent_cell] != unvisited && low[cell] >= discovery[parent_cell] {
-                articulation[parent_cell] = true;
             }
         }
     }
-    articulation
+    (parent, child_count, anchored)
+}
+
+fn push_coast_leaf_candidate(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    selected: &[bool],
+    protected: &[bool],
+    child_count: &[usize],
+    index: usize,
+    frontier: &mut BinaryHeap<CoastLeafCandidate>,
+) {
+    if let Some(candidate) =
+        coast_leaf_candidate(topology, scores, selected, protected, child_count, index)
+    {
+        frontier.push(candidate);
+    }
+}
+
+fn coast_leaf_candidate(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    selected: &[bool],
+    protected: &[bool],
+    child_count: &[usize],
+    index: usize,
+) -> Option<CoastLeafCandidate> {
+    if !selected[index] || protected[index] || child_count[index] != 0 {
+        return None;
+    }
+    let mut touches_ocean = false;
+    let mut perimeter_delta = 0_i128;
+    for arc in &topology.arcs()[index] {
+        let length = topology.edge_traversal_costs()[arc.edge.raw() as usize];
+        if selected[arc.neighbor.raw() as usize] {
+            perimeter_delta += i128::from(length);
+        } else {
+            perimeter_delta -= i128::from(length);
+            touches_ocean = true;
+        }
+    }
+    touches_ocean.then_some(CoastLeafCandidate {
+        perimeter_delta,
+        score: scores[index],
+        cell: CellId::from_raw(index as u32),
+    })
 }
 
 fn validate_inputs(
@@ -419,6 +536,7 @@ fn grow_protected_regions_independently(
     topology: &NaturalTopologyIndex,
     scores: &[i32],
     protected: &[ProtectedRegionSeed],
+    cohesion_weight: i64,
     selected: &mut [bool],
 ) -> Result<(), AreaSelectionError> {
     // Each seed first establishes a non-overlapping identity-bearing core. The shared frontier
@@ -447,6 +565,7 @@ fn grow_protected_regions_independently(
             &local,
             component,
             seed.cell,
+            cohesion_weight,
             &mut frontier,
         );
         while area < core_budget {
@@ -459,6 +578,20 @@ fn grow_protected_regions_independently(
             if local[index] {
                 continue;
             }
+            let current_score = cohesive_growth_score(
+                topology,
+                &growth_scores[component],
+                &local,
+                index,
+                cohesion_weight,
+            );
+            if candidate.score != current_score {
+                frontier.push(GrowthCandidate {
+                    score: current_score,
+                    ..candidate
+                });
+                continue;
+            }
             local[index] = true;
             area += u128::from(topology.area_weights()[index]);
             push_neighbors(
@@ -467,6 +600,7 @@ fn grow_protected_regions_independently(
                 &local,
                 component,
                 candidate.cell,
+                cohesion_weight,
                 &mut frontier,
             );
         }
@@ -542,6 +676,17 @@ fn i64_to_i32(value: i64) -> i32 {
     value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+fn local_cohesion_weight(topology: &NaturalTopologyIndex, feature_weight: u128) -> i64 {
+    if feature_weight == 0 || topology.area_weights().is_empty() {
+        return 0;
+    }
+    let mut cell_weights = topology.area_weights().to_vec();
+    cell_weights.sort_unstable();
+    let median_cell_weight = (cell_weights[cell_weights.len() / 2] as f64).max(1.0);
+    let feature_radius_in_cells = (feature_weight as f64 / median_cell_weight).sqrt();
+    (feature_radius_in_cells * LOCAL_COHESION_PER_FEATURE_RADIUS).round() as i64
+}
+
 #[allow(clippy::too_many_arguments)]
 fn select_candidate(
     topology: &NaturalTopologyIndex,
@@ -551,6 +696,7 @@ fn select_candidate(
     component_area: &mut [u128],
     total_area: &mut u128,
     candidate: GrowthCandidate,
+    cohesion_weight: i64,
     frontier: &mut BinaryHeap<GrowthCandidate>,
 ) {
     let index = candidate.cell.raw() as usize;
@@ -565,6 +711,7 @@ fn select_candidate(
         selected,
         candidate.component,
         candidate.cell,
+        cohesion_weight,
         frontier,
     );
 }
@@ -575,18 +722,41 @@ fn push_neighbors(
     selected: &[bool],
     component: usize,
     cell: CellId,
+    cohesion_weight: i64,
     frontier: &mut BinaryHeap<GrowthCandidate>,
 ) {
     for arc in &topology.arcs()[cell.raw() as usize] {
         let index = arc.neighbor.raw() as usize;
         if !selected[index] {
             frontier.push(GrowthCandidate {
-                score: scores[index],
+                score: cohesive_growth_score(topology, scores, selected, index, cohesion_weight),
                 component,
                 cell: arc.neighbor,
             });
         }
     }
+}
+
+fn cohesive_growth_score(
+    topology: &NaturalTopologyIndex,
+    scores: &[i32],
+    selected: &[bool],
+    index: usize,
+    cohesion_weight: i64,
+) -> i32 {
+    let mut selected_length = 0_u128;
+    let mut total_length = 0_u128;
+    for arc in &topology.arcs()[index] {
+        let length = u128::from(topology.edge_traversal_costs()[arc.edge.raw() as usize]);
+        total_length += length;
+        if selected[arc.neighbor.raw() as usize] {
+            selected_length += length;
+        }
+    }
+    let cohesion = (selected_length * cohesion_weight as u128)
+        .checked_div(total_length)
+        .unwrap_or(0) as i64;
+    i64_to_i32(i64::from(scores[index]) + cohesion)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -600,10 +770,20 @@ fn grow_toward_target(
     total_area: &mut u128,
     frontier: &mut BinaryHeap<GrowthCandidate>,
     component_budgets: Option<&[u128]>,
+    cohesion_weight: i64,
 ) {
     while let Some(candidate) = frontier.pop() {
         let index = candidate.cell.raw() as usize;
         if selected[index] || !has_component_neighbor(topology, selected, labels, candidate) {
+            continue;
+        }
+        let current_score =
+            cohesive_growth_score(topology, scores, selected, index, cohesion_weight);
+        if candidate.score != current_score {
+            frontier.push(GrowthCandidate {
+                score: current_score,
+                ..candidate
+            });
             continue;
         }
         let next = *total_area + u128::from(topology.area_weights()[index]);
@@ -626,6 +806,7 @@ fn grow_toward_target(
             component_area,
             total_area,
             candidate,
+            cohesion_weight,
             frontier,
         );
         if *total_area == target_weight {
@@ -635,15 +816,11 @@ fn grow_toward_target(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fill_small_holes_when_closer(
+fn fill_small_holes(
     topology: &NaturalTopologyIndex,
-    target_weight: u128,
     maximum_hole_weight: u128,
     selected: &mut [bool],
-    labels: &mut [usize],
-    component_area: &mut [u128],
     total_area: &mut u128,
-    component_budgets: Option<&[u128]>,
 ) {
     if maximum_hole_weight == 0 {
         return;
@@ -657,41 +834,24 @@ fn fill_small_holes_when_closer(
         let mut queue = VecDeque::from([CellId::from_raw(start as u32)]);
         let mut cells = Vec::new();
         let mut weight = 0_u128;
-        let mut neighboring_component = usize::MAX;
         while let Some(cell) = queue.pop_front() {
             cells.push(cell);
             weight += u128::from(topology.area_weights()[cell.raw() as usize]);
             for arc in &topology.arcs()[cell.raw() as usize] {
                 let index = arc.neighbor.raw() as usize;
-                if selected[index] {
-                    neighboring_component = neighboring_component.min(labels[index]);
-                } else if !visited[index] {
+                if !selected[index] && !visited[index] {
                     visited[index] = true;
                     queue.push_back(arc.neighbor);
                 }
             }
         }
-        if weight > maximum_hole_weight || neighboring_component == usize::MAX {
+        if weight > maximum_hole_weight {
             continue;
-        }
-        let next = *total_area + weight;
-        if next.abs_diff(target_weight) > total_area.abs_diff(target_weight) {
-            continue;
-        }
-        if let Some(budgets) = component_budgets {
-            let current = component_area[neighboring_component];
-            let budget = budgets[neighboring_component];
-            if (current + weight).abs_diff(budget) > current.abs_diff(budget) {
-                continue;
-            }
         }
         for cell in cells {
-            let index = cell.raw() as usize;
-            selected[index] = true;
-            labels[index] = neighboring_component;
+            selected[cell.raw() as usize] = true;
         }
-        component_area[neighboring_component] += weight;
-        *total_area = next;
+        *total_area += weight;
     }
 }
 
@@ -768,7 +928,10 @@ fn count_selected_components(topology: &NaturalTopologyIndex, selected: &[bool])
 mod tests {
     use std::collections::{BTreeSet, VecDeque};
 
-    use super::{build_area_constrained_mask, shrink_coast_toward_target, ProtectedRegionSeed};
+    use super::{
+        build_area_constrained_mask, fill_small_holes, shrink_coast_toward_target,
+        ProtectedRegionSeed,
+    };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::spatial::SphericalNaturalSurface;
@@ -842,6 +1005,35 @@ mod tests {
         components
     }
 
+    fn unselected_component_weights(
+        topology: &NaturalTopologyIndex,
+        selected: &[bool],
+    ) -> Vec<u128> {
+        let mut visited = vec![false; topology.cell_count()];
+        let mut weights = Vec::new();
+        for start in 0..topology.cell_count() {
+            if visited[start] || selected[start] {
+                continue;
+            }
+            visited[start] = true;
+            let mut queue = VecDeque::from([CellId::from_raw(start as u32)]);
+            let mut weight = 0_u128;
+            while let Some(cell) = queue.pop_front() {
+                let index = cell.raw() as usize;
+                weight += u128::from(topology.area_weights()[index]);
+                for arc in &topology.arcs()[index] {
+                    let neighbor = arc.neighbor.raw() as usize;
+                    if !selected[neighbor] && !visited[neighbor] {
+                        visited[neighbor] = true;
+                        queue.push_back(arc.neighbor);
+                    }
+                }
+            }
+            weights.push(weight);
+        }
+        weights
+    }
+
     #[test]
     fn protected_growth_is_connected_area_bounded_and_deterministic() {
         let topology = fixture();
@@ -880,13 +1072,14 @@ mod tests {
     #[test]
     fn cleanup_keeps_protected_seeds_and_has_no_unprotected_speckles() {
         let topology = fixture();
+        let maximum_hole_weight = 16_000_000;
         let mask = build_area_constrained_mask(
             &topology,
             &scores(&topology),
             &protected(),
             420_000_000,
             8_000_000,
-            16_000_000,
+            maximum_hole_weight,
         )
         .unwrap();
         let protected_cells = protected()
@@ -898,10 +1091,54 @@ mod tests {
         for component in selected_components(&topology, mask.selected()) {
             assert!(component.iter().any(|cell| protected_cells.contains(cell)));
         }
+        assert!(
+            unselected_component_weights(&topology, mask.selected())
+                .into_iter()
+                .all(|weight| weight > maximum_hole_weight),
+            "the complete area builder must not leave a fillable enclosed hole"
+        );
     }
 
     #[test]
-    fn coast_rebalance_never_removes_a_protected_articulation_cell() {
+    fn small_enclosed_holes_fill_even_when_that_temporarily_worsens_area_error() {
+        let topology = fixture();
+        let hole = CellId::from_raw(0);
+        let ocean_root = (1..topology.cell_count())
+            .map(|index| CellId::from_raw(index as u32))
+            .find(|&candidate| {
+                topology.edge_between(hole, candidate).is_none()
+                    && topology.arcs()[candidate.raw() as usize].iter().all(|arc| {
+                        arc.neighbor != hole && topology.edge_between(hole, arc.neighbor).is_none()
+                    })
+            })
+            .expect("fixture has a cell separated from the enclosed hole");
+        let mut selected = vec![true; topology.cell_count()];
+        selected[hole.raw() as usize] = false;
+        selected[ocean_root.raw() as usize] = false;
+        for arc in &topology.arcs()[ocean_root.raw() as usize] {
+            selected[arc.neighbor.raw() as usize] = false;
+        }
+        let mut total_area = selected
+            .iter()
+            .zip(topology.area_weights())
+            .filter_map(|(&selected, &area)| selected.then_some(u128::from(area)))
+            .sum::<u128>();
+        let target_area = total_area;
+        let maximum_hole_weight = u128::from(topology.area_weights()[hole.raw() as usize]);
+
+        fill_small_holes(
+            &topology,
+            maximum_hole_weight,
+            &mut selected,
+            &mut total_area,
+        );
+
+        assert!(selected[hole.raw() as usize]);
+        assert!(total_area > target_area);
+    }
+
+    #[test]
+    fn coast_rebalance_never_breaks_a_protected_narrow_neck() {
         let topology = fixture();
         let root = CellId::from_raw(0);
         let neck = topology.arcs()[root.raw() as usize][0].neighbor;
@@ -951,6 +1188,96 @@ mod tests {
         assert_eq!(component.len(), 1);
         assert!(component[0].contains(&root));
         assert!(component[0].contains(&far));
+    }
+
+    #[test]
+    fn many_filled_holes_rebalance_without_per_cell_connectivity_rescans() {
+        let topology = fixture();
+        let ocean_root = CellId::from_raw(0);
+        let mut ocean = BTreeSet::from([ocean_root]);
+        ocean.extend(
+            topology.arcs()[ocean_root.raw() as usize]
+                .iter()
+                .map(|arc| arc.neighbor),
+        );
+        let mut holes = Vec::new();
+        for index in 1..topology.cell_count() {
+            let cell = CellId::from_raw(index as u32);
+            if ocean.contains(&cell)
+                || topology.arcs()[index]
+                    .iter()
+                    .any(|arc| ocean.contains(&arc.neighbor))
+                || holes.iter().any(|&hole| {
+                    topology.edge_between(cell, hole).is_some()
+                        || topology.arcs()[hole.raw() as usize]
+                            .iter()
+                            .any(|arc| topology.edge_between(cell, arc.neighbor).is_some())
+                })
+            {
+                continue;
+            }
+            holes.push(cell);
+            if holes.len() == 8 {
+                break;
+            }
+        }
+        assert_eq!(
+            holes.len(),
+            8,
+            "fixture needs many separated one-cell holes"
+        );
+
+        let mut selected = vec![true; topology.cell_count()];
+        for &cell in ocean.iter().chain(&holes) {
+            selected[cell.raw() as usize] = false;
+        }
+        let target_weight = selected
+            .iter()
+            .zip(topology.area_weights())
+            .filter_map(|(&selected, &area)| selected.then_some(u128::from(area)))
+            .sum::<u128>();
+        let mut selected_area_weight = target_weight;
+        let maximum_hole_weight = topology
+            .area_weights()
+            .iter()
+            .copied()
+            .map(u128::from)
+            .max()
+            .unwrap();
+        fill_small_holes(
+            &topology,
+            maximum_hole_weight,
+            &mut selected,
+            &mut selected_area_weight,
+        );
+        assert!(holes.iter().all(|&cell| selected[cell.raw() as usize]));
+
+        let protected_cells = [CellId::from_raw(20), CellId::from_raw(80)]
+            .into_iter()
+            .filter(|cell| selected[cell.raw() as usize])
+            .collect::<Vec<_>>();
+        assert_eq!(protected_cells.len(), 2);
+        let stats = shrink_coast_toward_target(
+            &topology,
+            &scores(&topology),
+            &protected_cells,
+            target_weight,
+            &mut selected,
+            &mut selected_area_weight,
+        );
+
+        let maximum_cell_weight = maximum_hole_weight;
+        assert!(selected_area_weight.abs_diff(target_weight) <= maximum_cell_weight);
+        assert!(protected_cells
+            .iter()
+            .all(|&cell| selected[cell.raw() as usize]));
+        assert_eq!(selected_components(&topology, &selected).len(), 1);
+        assert_eq!(stats.full_graph_connectivity_builds, 1);
+        assert!(stats.removed_cells >= 4);
+        assert!(
+            stats.candidate_evaluations <= topology.edge_traversal_costs().len().saturating_mul(8),
+            "candidate work must stay edge-linear: {stats:?}"
+        );
     }
 
     #[test]

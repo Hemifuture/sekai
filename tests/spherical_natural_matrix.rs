@@ -39,7 +39,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "4388270b96e047a3662feab4575a200b3bc29353edc3e6f6601332224e75ff0f",
+        expected_tectonic_hash: "bc4b529c0537bf9626ce497404faf38b3265979b28b01dc91807cdf047092441",
         expected_mantle_hash: "3f7b966c4918d1d4a3edf0c94990c2ab1f0870e209e1803fd7e36378a2eda77d",
     },
     MatrixCase {
@@ -53,7 +53,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "72e3196a0469a1a8fc0fd268b9a8630427f27a1c40fff3d058004d586610f0d2",
+        expected_tectonic_hash: "4b1d93335ae47c2e787e98e330ce48490814d73c247cba95379f9723c0faf48a",
         expected_mantle_hash: "6235cfbdb57d1bfbce12fa426916b7e4376191da13f80efeb2750e5802b047db",
     },
     MatrixCase {
@@ -67,7 +67,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "ebe4095a2de5e8ec8cd75aa667b7891b1ec0d7f6321011f488f1cff58d99b8ad",
+        expected_tectonic_hash: "6d40a6b7fc39388dff393bf111728256af21192f0b689149766be7a1458f2f3f",
         expected_mantle_hash: "03a432dafeead07521176d659a29f904ef52efe34e239389adbb6602682e5cfa",
     },
     MatrixCase {
@@ -81,7 +81,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_tectonic_hash: "5b566d6d29f79b74cd4100efe1752ca695a31bd43b82fa33119de955b4216fd2",
+        expected_tectonic_hash: "3f347846f21c67acf6daa07e5f02ee58003d53f3ac38a91078821d69daa0d1fa",
         expected_mantle_hash: "6e5def0d9603031ce138043672e45f8487e7779e92ec5b8c5f0d62c2c118f673",
     },
 ];
@@ -105,6 +105,7 @@ fn stage_rng(seed: u64, name: &'static str) -> StageRng {
 
 #[test]
 fn spherical_natural_scientific_and_deterministic_matrix() {
+    let mut actual_hashes = Vec::with_capacity(CASES.len());
     for case in CASES {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
             radius: Meters::new(case.radius_m).unwrap(),
@@ -236,6 +237,10 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
             tectonic_hash,
             mantle_hash
         );
+        actual_hashes.push((case, tectonic_hash, mantle_hash));
+    }
+
+    for (case, tectonic_hash, mantle_hash) in actual_hashes {
         assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);
         assert_eq!(mantle_hash, case.expected_mantle_hash, "{}", case.name);
     }

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use super::relief_noise::{FractalProfile, ReliefNoise3d};
+use super::fractal::FractalProfile;
+use super::relief_noise::ReliefNoise3d;
 use super::topology::{NaturalTopologyIndex, NeighborArc};
 use crate::world::natural::{
     BoundaryKind, CrustKind, SphericalMantleSnapshot, SphericalTectonicSnapshot,

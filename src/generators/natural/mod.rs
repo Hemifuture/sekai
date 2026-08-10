@@ -3,9 +3,11 @@
 mod climate;
 mod climate_rule_input;
 mod climate_stage;
+mod connectivity;
 mod erosion;
 mod formation;
 mod formation_stage;
+mod fractal;
 mod geologic_rule_input;
 mod geologic_stage;
 mod geology;

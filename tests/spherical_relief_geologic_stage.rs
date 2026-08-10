@@ -160,7 +160,9 @@ fn stages_publish_exact_identities_and_dependencies() {
 
 #[test]
 fn stages_forward_science_diagnostics_and_strict_surface_bound_wires() {
-    let root_seed = RootSeed::new(49);
+    // This fixed seed intentionally exercises bounded-elevation reconciliation so the stage
+    // contract proves that non-empty scientific diagnostics are forwarded unchanged.
+    let root_seed = RootSeed::new(542);
     let surface = surface(6_371_000.0);
     let outcome = BuildEngine::new(graph())
         .build(root_seed, external(&surface), &mut MemoryStageCache::new())
