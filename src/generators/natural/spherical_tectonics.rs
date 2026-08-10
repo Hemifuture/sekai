@@ -24,6 +24,7 @@ mod model;
 mod motion;
 mod plates;
 mod processes;
+mod resample;
 
 use boundaries::classify_and_aggregate_boundaries;
 use crust::{generate_crust, CrustMorphologyError};

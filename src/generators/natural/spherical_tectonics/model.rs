@@ -143,6 +143,10 @@ impl TectonicState {
     pub(super) fn copy_current_into_reusable_next(&mut self, current: &Self) {
         self.samples.clear();
         self.samples.extend_from_slice(&current.samples);
+        self.copy_plate_table_into_reusable_next(current);
+    }
+
+    pub(super) fn copy_plate_table_into_reusable_next(&mut self, current: &Self) {
         self.plates.clear();
         self.plates.extend_from_slice(&current.plates);
         self.next_lineage_raw = current.next_lineage_raw;

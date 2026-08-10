@@ -37,7 +37,11 @@ impl CoverageScratch {
         }
     }
 
-    fn rebuild(&mut self, cell_count: usize, samples: &[CrustSample]) -> Result<(), ContactError> {
+    pub(super) fn rebuild(
+        &mut self,
+        cell_count: usize,
+        samples: &[CrustSample],
+    ) -> Result<(), ContactError> {
         self.counts.clear();
         self.counts.resize(cell_count, 0);
         for (sample_index, sample) in samples.iter().enumerate() {
