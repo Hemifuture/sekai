@@ -56,7 +56,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "tectonic",
-        "36b99b6e4aa060c7d2cb1f2ebd904be16d378275a9c9419fd26ffade41d3b972",
+        "802555285055b7045ad5c69fa47e7f3ef1e39be408200263e89de980865c0054",
     ),
     (
         "mantle",
@@ -64,23 +64,23 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "relief",
-        "5f0f0e644616c8281d39e0313fe05bc668418541ca9e33e8771ba4a98bd11ba4",
+        "7614aeae2aeca7e15245a9d0fc45db6f4b17b2265b26ee54c4c132dd6469aced",
     ),
     (
         "geology",
-        "04bd2c7e7ef3ab6f38e7ab7c8da9c14c135cd3344a4365f7af83d08ceb0b06e8",
+        "84c26ab35474312d6e56e5be484bd084ace227abb0175c2719378ecf5c7cfd77",
     ),
     (
         "climate",
-        "c7c000a858b8cfa96eb9e00e2f6da878744ec4418ea94539e198de091130f82b",
+        "8e760e975137b72850ff0d838fe255d38c4079d4905e69388ea636587cabb9dc",
     ),
     (
         "hydro",
-        "7053d1259a37ba66286b5df943006499b6b630f394c90d7c89fac9d460522538",
+        "a540eb0d1c7d9cf677178da0bba3b2b1c1395ac8a9a6c85ad4ae7406a871dd98",
     ),
     (
         "result",
-        "dd47d1619ee159dfc7a7f76bb285f35a84117091cf47325dc5bfddf6d7b79452",
+        "a585ebed0e7a27f2d16e1ea2d5b889283972fbc298ece1ef72dae28e5e451fb7",
     ),
 ];
 
@@ -260,16 +260,9 @@ fn graph_requires_exactly_the_eight_approved_external_artifacts() {
 
 #[test]
 fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
-    let first = build(
-        RootSeed::new(42),
-        &Inputs::default(),
-        &mut MemoryStageCache::new(),
-    );
-    let repeated = build(
-        RootSeed::new(42),
-        &Inputs::default(),
-        &mut MemoryStageCache::new(),
-    );
+    let inputs = Inputs::default();
+    let first = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
+    let repeated = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
 
     let surface = first.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
     let formation = first
@@ -436,6 +429,34 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .chain(std::iter::once(("result", result_hash.as_str())))
         .collect::<Vec<_>>();
     assert_eq!(actual, EXPECTED_GRAPH_HASHES);
+}
+
+#[test]
+fn whole_graph_accepts_an_evolved_final_plate_count() {
+    let mut inputs = Inputs::default();
+    inputs.tectonic.plate_count = 7;
+    inputs.tectonic.continental_crust_fraction = 0.28;
+    inputs.formation = WorldFormationSpec {
+        preset: WorldFormationPreset::GreatIsland,
+        ..WorldFormationSpec::default()
+    };
+
+    let outcome = build(
+        RootSeed::new(0x0BAD_5EED),
+        &inputs,
+        &mut MemoryStageCache::new(),
+    );
+    let tectonic = outcome
+        .artifacts
+        .get::<SphericalTectonicArtifact>()
+        .unwrap();
+
+    assert_ne!(
+        tectonic.snapshot().plates().len(),
+        usize::from(inputs.tectonic.plate_count),
+        "this graph fixture must exercise an evolved final plate count"
+    );
+    assert_eq!(outcome.report.stage_ids(), ALL_STAGE_IDS);
 }
 
 #[test]

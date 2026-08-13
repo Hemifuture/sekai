@@ -25,7 +25,11 @@ struct Upstream {
 }
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
-    let version = u32::from(stage_id == "natural.spherical-tectonics") + 1;
+    let version = match stage_id {
+        "natural.spherical-tectonics" => 3,
+        "natural.spherical-relief" => 2,
+        _ => 1,
+    };
     StageRng::from_seed(derive_stage_seed(
         root_seed,
         StageIdentity::new(stage_id, version, "sekai.core"),

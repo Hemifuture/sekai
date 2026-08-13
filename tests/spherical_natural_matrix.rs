@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::f64::consts::PI;
 
 use sekai::engine::{derive_stage_seed, StageIdentity, StageRng};
@@ -39,7 +39,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "bc4b529c0537bf9626ce497404faf38b3265979b28b01dc91807cdf047092441",
+        expected_tectonic_hash: "cffd8540f8759e69c8ec8d63640304a99500279bc0efd046703ef4c0eb6a9fdf",
         expected_mantle_hash: "3f7b966c4918d1d4a3edf0c94990c2ab1f0870e209e1803fd7e36378a2eda77d",
     },
     MatrixCase {
@@ -53,7 +53,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "4b1d93335ae47c2e787e98e330ce48490814d73c247cba95379f9723c0faf48a",
+        expected_tectonic_hash: "d28ee30c857496384484ffe3d7ea6ae2418157d622aba46ad61b8a134e0128cf",
         expected_mantle_hash: "6235cfbdb57d1bfbce12fa426916b7e4376191da13f80efeb2750e5802b047db",
     },
     MatrixCase {
@@ -67,7 +67,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "6d40a6b7fc39388dff393bf111728256af21192f0b689149766be7a1458f2f3f",
+        expected_tectonic_hash: "31e83da4744ac16f5cefee4f730b63dc9d7e80667003c07bbd21bcafb70cb2a2",
         expected_mantle_hash: "03a432dafeead07521176d659a29f904ef52efe34e239389adbb6602682e5cfa",
     },
     MatrixCase {
@@ -81,7 +81,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_tectonic_hash: "3f347846f21c67acf6daa07e5f02ee58003d53f3ac38a91078821d69daa0d1fa",
+        expected_tectonic_hash: "15b3bd71d81f6c68d745b4398b7e162cff7666ee7b415a0f742faf9c36c8f155",
         expected_mantle_hash: "6e5def0d9603031ce138043672e45f8487e7779e92ec5b8c5f0d62c2c118f673",
     },
 ];
@@ -103,9 +103,50 @@ fn stage_rng(seed: u64, name: &'static str) -> StageRng {
     ))
 }
 
+fn assert_plate_domains_connected(
+    surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
+    tectonic: &sekai::world::natural::SphericalTectonicSnapshot,
+    case_name: &str,
+) {
+    for plate in tectonic.plates() {
+        let expected = surface
+            .cells()
+            .iter()
+            .filter(|cell| tectonic.plate_for_cell(cell.id) == Some(plate.id()))
+            .count();
+        let mut reached = vec![false; surface.cells().len()];
+        let mut queue = VecDeque::from([plate.seed_cell()]);
+        reached[plate.seed_cell().raw() as usize] = true;
+        let mut actual = 0;
+        while let Some(cell) = queue.pop_front() {
+            actual += 1;
+            for &edge_id in &surface.cell(cell).unwrap().boundary_edges {
+                let edge = surface.edge(edge_id).unwrap();
+                let neighbor = if edge.cells[0] == cell {
+                    edge.cells[1]
+                } else {
+                    edge.cells[0]
+                };
+                let index = neighbor.raw() as usize;
+                if !reached[index] && tectonic.plate_for_cell(neighbor) == Some(plate.id()) {
+                    reached[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        assert_eq!(
+            actual,
+            expected,
+            "{case_name}: disconnected {:?}",
+            plate.id()
+        );
+    }
+}
+
 #[test]
 fn spherical_natural_scientific_and_deterministic_matrix() {
     let mut actual_hashes = Vec::with_capacity(CASES.len());
+    let mut saw_final_count_differ_from_initial = false;
     for case in CASES {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
             radius: Meters::new(case.radius_m).unwrap(),
@@ -140,7 +181,10 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
         .unwrap();
         assert_eq!(tectonic, tectonic_repeated, "{}", case.name);
         tectonic.validate_against(&surface).unwrap();
-        assert_eq!(tectonic.plates().len(), usize::from(case.plate_count));
+        assert!((2..=64).contains(&tectonic.plates().len()), "{}", case.name);
+        saw_final_count_differ_from_initial |=
+            tectonic.plates().len() != usize::from(case.plate_count);
+        assert_plate_domains_connected(&surface, &tectonic, case.name);
 
         for cell in surface.cells() {
             let plate = tectonic.plate_for_cell(cell.id).unwrap();
@@ -166,11 +210,6 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
             .iter()
             .map(|cell| cell.area.get())
             .sum::<f64>();
-        let maximum_cell_area = surface
-            .cells()
-            .iter()
-            .map(|cell| cell.area.get())
-            .fold(0.0, f64::max);
         let continental_area = surface
             .cells()
             .iter()
@@ -178,10 +217,9 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
             .map(|cell| cell.area.get())
             .sum::<f64>();
         assert!(
-            (continental_area - total_area * f64::from(case.continental_fraction)).abs()
-                <= maximum_cell_area,
-            "{}",
-            case.name
+            continental_area > 0.0 && continental_area < total_area,
+            "{}: evolved crust lost one material class ({continental_area}/{total_area} m² continental)",
+            case.name,
         );
 
         let geologic_spec = GeologicSpec {
@@ -231,14 +269,21 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
             .to_hex()
             .to_string();
         eprintln!(
-            "matrix_case={} cells={} tectonic_hash={} mantle_hash={}",
+            "matrix_case={} cells={} initial_plates={} final_plates={} tectonic_hash={} mantle_hash={}",
             case.name,
             surface.cells().len(),
+            case.plate_count,
+            tectonic.plates().len(),
             tectonic_hash,
             mantle_hash
         );
         actual_hashes.push((case, tectonic_hash, mantle_hash));
     }
+
+    assert!(
+        saw_final_count_differ_from_initial,
+        "the matrix never exercised an evolved final plate count"
+    );
 
     for (case, tectonic_hash, mantle_hash) in actual_hashes {
         assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);

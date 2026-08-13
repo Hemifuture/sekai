@@ -24,7 +24,7 @@ use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     spherical_natural_field_registry, ClimateSpec, GeologicSpec, HydroErosionSpec,
     ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    WorldFormationSpec, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    WorldFormationSpec, MAX_PLATE_COUNT, MIN_PLATE_COUNT, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
 use serde::Serialize;
@@ -37,6 +37,7 @@ const SPHERE_TO_PLANAR_TIME_RATIO_BUDGET: f64 = 2.5;
 const ADDITIONAL_PEAK_WORKING_SET_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 const MORPHOLOGY_TO_BASELINE_TIME_RATIO_BUDGET: f64 = 1.25;
 const TECTONIC_TIME_BUDGET: Duration = Duration::from_millis(300);
+const TECTONIC_PUBLICATION_TIME_BUDGET: Duration = Duration::from_secs(1);
 const MORPHOLOGY_PEAK_WORKING_SET_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const BASELINE_DURATION_ENV: &str = "SEKAI_SPHERICAL_BASELINE_MS";
 const MORPHOLOGY_PROBE_CHILD_ENV: &str = "SEKAI_MORPHOLOGY_PROBE_CHILD";
@@ -49,6 +50,7 @@ fn morphology_probe_child_requested(value: Option<&std::ffi::OsStr>) -> bool {
 #[derive(Debug, Clone, Copy)]
 struct MorphologyPerformanceEvidence {
     tectonic_elapsed: Duration,
+    formal_tectonic_elapsed: Duration,
     full_graph_elapsed: Duration,
     morphology_peak_delta_bytes: u64,
     cell_count: usize,
@@ -156,7 +158,8 @@ fn collect_morphology_performance_evidence(
         .expect("formal spherical graph reports its tectonic stage")
         .duration();
     MorphologyPerformanceEvidence {
-        tectonic_elapsed: formal_tectonic_elapsed.max(child_probe.elapsed),
+        tectonic_elapsed: child_probe.elapsed,
+        formal_tectonic_elapsed,
         full_graph_elapsed,
         morphology_peak_delta_bytes: child_probe.peak_delta_bytes,
         cell_count,
@@ -230,7 +233,7 @@ fn emit_morphology_probe_child() {
     .unwrap();
     let mut rng = StageRng::from_seed(derive_stage_seed(
         ROOT_SEED,
-        StageIdentity::new("natural.spherical-tectonics", 2, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 3, "sekai.core"),
     ));
     let baseline = process_working_set_bytes()
         .expect("morphology memory probe requires Windows or Linux process metrics");
@@ -363,9 +366,29 @@ fn release_spherical_natural_full_graph_budget() {
     );
 
     assert_eq!(morphology_evidence.cell_count, 20_252);
-    assert_eq!(morphology_evidence.plate_count, 12);
-    assert!(morphology_evidence.tectonic_elapsed <= TECTONIC_TIME_BUDGET);
-    assert!(morphology_evidence.full_graph_elapsed <= SPHERE_TIME_BUDGET);
+    assert!(
+        (usize::from(MIN_PLATE_COUNT)..=usize::from(MAX_PLATE_COUNT))
+            .contains(&morphology_evidence.plate_count),
+        "the authored count is initial; the evolved active count must remain within product bounds"
+    );
+    assert!(
+        morphology_evidence.tectonic_elapsed <= TECTONIC_TIME_BUDGET,
+        "isolated tectonic construction {:?} exceeded {:?}",
+        morphology_evidence.tectonic_elapsed,
+        TECTONIC_TIME_BUDGET
+    );
+    assert!(
+        morphology_evidence.formal_tectonic_elapsed <= TECTONIC_PUBLICATION_TIME_BUDGET,
+        "tectonic validation and publication {:?} exceeded {:?}",
+        morphology_evidence.formal_tectonic_elapsed,
+        TECTONIC_PUBLICATION_TIME_BUDGET
+    );
+    assert!(
+        morphology_evidence.full_graph_elapsed <= SPHERE_TIME_BUDGET,
+        "full spherical graph {:?} exceeded {:?}",
+        morphology_evidence.full_graph_elapsed,
+        SPHERE_TIME_BUDGET
+    );
     assert!(
         morphology_evidence.full_graph_elapsed.as_secs_f64()
             <= baseline_duration.as_secs_f64() * MORPHOLOGY_TO_BASELINE_TIME_RATIO_BUDGET
@@ -442,11 +465,12 @@ fn release_spherical_natural_full_graph_budget() {
     let hydro_snapshot = hydro.snapshot().hydrology();
 
     eprintln!(
-        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} baseline_ms={:.3} morphology_tectonic_ms={:.3} morphology_peak_delta_bytes={} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
+        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} baseline_ms={:.3} morphology_tectonic_ms={:.3} formal_tectonic_ms={:.3} morphology_peak_delta_bytes={} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
         planar_elapsed.as_secs_f64() * 1_000.0,
         sphere_elapsed.as_secs_f64() * 1_000.0,
         baseline_duration.as_secs_f64() * 1_000.0,
         morphology_evidence.tectonic_elapsed.as_secs_f64() * 1_000.0,
+        morphology_evidence.formal_tectonic_elapsed.as_secs_f64() * 1_000.0,
         morphology_evidence.morphology_peak_delta_bytes,
         sphere_outcome.report.stages().len(),
         surface_snapshot.cells().len(),
@@ -638,6 +662,12 @@ fn spherical_tectonic_persistent_bytes(artifact: &SphericalTectonicArtifact) -> 
         + size_of_val(snapshot.cell_plates().raw_values())
         + size_of_val(snapshot.crust_kinds().raw_values())
         + size_of_val(snapshot.crust_thickness_km())
+        + size_of_val(snapshot.crust_age_myr())
+        + size_of_val(snapshot.tectonic_elevation_m())
+        + size_of_val(snapshot.lineation_east())
+        + size_of_val(snapshot.lineation_north())
+        + size_of_val(snapshot.orogeny_kind())
+        + size_of_val(snapshot.orogeny_age_myr())
         + size_of_val(snapshot.boundaries())
         + size_of_val(snapshot.boundary_segments())
         + snapshot

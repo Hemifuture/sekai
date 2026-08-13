@@ -52,7 +52,12 @@ fn formation() -> ResolvedWorldFormation {
 }
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
-    let version = u32::from(stage_id == "natural.spherical-tectonics") + 1;
+    let version = match stage_id {
+        "natural.spherical-tectonics" => 3,
+        "natural.spherical-relief" => 2,
+        "natural.spherical-mantle" | "natural.spherical-geology" => 1,
+        _ => panic!("unexpected spherical stage {stage_id}"),
+    };
     StageRng::from_seed(derive_stage_seed(
         root_seed,
         StageIdentity::new(stage_id, version, "sekai.core"),
@@ -112,7 +117,7 @@ fn stages_publish_exact_identities_and_dependencies() {
         SphericalGeologicStage.id().as_str(),
         "natural.spherical-geology"
     );
-    assert_eq!(SphericalReliefStage.version(), 1);
+    assert_eq!(SphericalReliefStage.version(), 2);
     assert_eq!(SphericalGeologicStage.version(), 1);
     assert_eq!(SphericalReliefStage.namespace(), "sekai.core");
     assert_eq!(SphericalGeologicStage.namespace(), "sekai.core");
