@@ -472,7 +472,7 @@ mod tests {
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
-        "8b0c948c2ac7c5961c9af0a417fffb434abf9cbd42eef9195850affaaff84e85";
+        "16222dfe070c570311ff692be6496d3de2d738a65f73add2d4ba046abebf9c6c";
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,
@@ -1987,6 +1987,16 @@ mod tests {
         let edge_count = document.surface.snapshot().edges().len();
 
         assert_eq!(catalog.entries().len(), 36);
+        assert_eq!(
+            catalog
+                .get(&plate_id_field_id())
+                .unwrap()
+                .schema()
+                .category_labels
+                .len(),
+            document.tectonic.snapshot().plates().len(),
+            "the display registry must describe the evolved final plate table"
+        );
         for entry in catalog.entries() {
             let expected_len = match entry.schema().domain {
                 FieldDomain::Cells => cell_count,

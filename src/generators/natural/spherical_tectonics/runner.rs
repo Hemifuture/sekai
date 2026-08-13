@@ -11,15 +11,16 @@ use thiserror::Error;
 use super::contacts::{build_contacts, ContactError};
 use super::initial_state::{build_initial_state, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
-use super::model::{FormationTectonicRecipe, TectonicWorkspace};
+use super::model::{FormationTectonicRecipe, TectonicState};
 use super::processes::{
-    apply_collision, apply_subduction, commit_process_actions, fill_spreading_gaps,
-    maybe_rift_plates, relax_current_crust, ProcessError,
+    apply_collision, apply_divergent_extension, apply_subduction, commit_process_actions,
+    fill_spreading_gaps, maybe_rift_plates, relax_current_crust, ProcessError,
 };
 use super::resample::{
     canonicalize_final_plates, resample_current_state, resampling_interval_steps,
     CanonicalTectonicState, ResampleError,
 };
+use super::workspace::TectonicWorkspace;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec, MIN_PLATE_COUNT};
@@ -35,6 +36,17 @@ pub(super) fn run_tectonic_evolution(
     formation: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
 ) -> Result<CanonicalTectonicState, RunnerError> {
+    let current = evolve_current_state(surface, topology, spec, formation, streams)?;
+    canonicalize_evolved_state(surface, current)
+}
+
+pub(super) fn evolve_current_state(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    spec: &TectonicSpec,
+    formation: ResolvedWorldFormationPreset,
+    streams: &LabeledSubstreams,
+) -> Result<TectonicState, RunnerError> {
     let recipe = FormationTectonicRecipe::for_preset(formation);
     let initial = build_initial_state(surface, topology, spec, recipe, streams)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
@@ -46,9 +58,17 @@ pub(super) fn run_tectonic_evolution(
         actions.begin_step(next.samples.len());
         apply_subduction(surface, events, current, next, actions, recipe)?;
         apply_collision(surface, events, current, next, actions, recipe)?;
+        apply_divergent_extension(surface, events, next, actions, EVOLUTION_DELTA_MYR as f32)?;
         fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
         maybe_rift_plates(step, surface, current, next, actions, recipe, streams)?;
-        relax_current_crust(surface, events, next, recipe, EVOLUTION_DELTA_MYR as f32)?;
+        relax_current_crust(
+            surface,
+            events,
+            next,
+            actions,
+            recipe,
+            EVOLUTION_DELTA_MYR as f32,
+        )?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
             &current.plates,
@@ -64,7 +84,14 @@ pub(super) fn run_tectonic_evolution(
     if workspace.requires_resample() {
         resample_current_state(surface, topology, &mut workspace)?;
     }
-    canonicalize_final_plates(surface, workspace.current).map_err(Into::into)
+    Ok(workspace.current)
+}
+
+pub(super) fn canonicalize_evolved_state(
+    surface: &SphericalSurfaceSnapshot,
+    current: TectonicState,
+) -> Result<CanonicalTectonicState, RunnerError> {
+    canonicalize_final_plates(surface, current).map_err(Into::into)
 }
 
 fn resample_due(workspace: &TectonicWorkspace) -> bool {

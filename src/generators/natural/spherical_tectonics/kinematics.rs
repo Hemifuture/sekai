@@ -174,8 +174,9 @@ mod tests {
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::spherical_tectonics::initial_state::build_initial_state;
     use crate::generators::natural::spherical_tectonics::model::{
-        FormationTectonicRecipe, LineageId, TectonicWorkspace,
+        FormationTectonicRecipe, LineageId,
     };
+    use crate::generators::natural::spherical_tectonics::workspace::TectonicWorkspace;
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{

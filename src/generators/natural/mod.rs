@@ -24,6 +24,7 @@ mod relief_noise;
 mod rule_input;
 mod spherical_climate;
 mod spherical_climate_stage;
+mod spherical_crust_physics;
 mod spherical_erosion;
 mod spherical_geologic_stage;
 mod spherical_geology;

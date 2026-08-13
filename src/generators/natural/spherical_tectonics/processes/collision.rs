@@ -5,8 +5,6 @@
 //! one-shot action only after actual overlap, matching the paper's slab-break
 //! and suturing event without retaining a transfer history.
 
-use std::collections::VecDeque;
-
 use super::{
     bounded_elevation, constants, event_lineation, event_speed, ProcessActions, ProcessError,
     ProcessStats,
@@ -74,29 +72,55 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision(
         if event.kind != ContactKind::ContinentalCollision {
             continue;
         }
+        // Cortial collision is a discrete slab-break/suture event. A mere
+        // convergent boundary may persist for many steps, but must not add the
+        // same terrane-area surge every two million years before overlap.
+        if event.overlap_depth < constants::COLLISION_TRANSFER_OVERLAP_DEPTH {
+            continue;
+        }
         let [first, second] = participant_indices(event, next.samples.len())?;
         if next.samples[first].kind != CrustKind::Continental
             || next.samples[second].kind != CrustKind::Continental
         {
             return Err(ProcessError::NonContinentalCollision);
         }
-        let first_terrane = terrane_members(surface, next, first)?;
-        let second_terrane = terrane_members(surface, next, second)?;
-        let (moving, receiving) = if first_terrane.area_m2 < second_terrane.area_m2
-            || (first_terrane.area_m2 == second_terrane.area_m2
+        let (first_area_m2, second_area_m2) = {
+            let scratch = actions.terrane_scratch(surface.cells().len());
+            let first_area_m2 = terrane_members(
+                surface,
+                next,
+                first,
+                &mut *scratch.represented,
+                &mut *scratch.reached,
+                &mut *scratch.stack,
+                &mut *scratch.first_samples,
+            )?;
+            let second_area_m2 = terrane_members(
+                surface,
+                next,
+                second,
+                &mut *scratch.represented,
+                &mut *scratch.reached,
+                &mut *scratch.stack,
+                &mut *scratch.second_samples,
+            )?;
+            (first_area_m2, second_area_m2)
+        };
+        let (moving_is_first, moving_area_m2, receiving) = if first_area_m2 < second_area_m2
+            || (first_area_m2 == second_area_m2
                 && next.samples[first].owner < next.samples[second].owner)
         {
-            (&first_terrane, next.samples[second].owner)
+            (true, first_area_m2, next.samples[second].owner)
         } else {
-            (&second_terrane, next.samples[first].owner)
+            (false, second_area_m2, next.samples[first].owner)
         };
-        let forced = should_force_terrane_subduction(moving.area_m2, average_plate_area);
+        let forced = should_force_terrane_subduction(moving_area_m2, average_plate_area);
         let overlap = if event.overlap_depth == 0 {
             0.35
         } else {
             (0.35 + 0.25 * f64::from(event.overlap_depth)).min(1.0)
         };
-        let uplift = collision_uplift_m(moving.area_m2, event_speed(event), overlap) * gain as f32;
+        let uplift = collision_uplift_m(moving_area_m2, event_speed(event), overlap) * gain as f32;
         let first_lineation = event_lineation(surface, event, next.samples[first].position)?;
         let second_lineation = event_lineation(surface, event, next.samples[second].position)?;
         for (sample_index, lineation) in [(first, first_lineation), (second, second_lineation)] {
@@ -106,12 +130,8 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision(
             next.samples[sample_index].orogeny_age_myr = 0.0;
             next.samples[sample_index].lineation = lineation;
         }
-        if event.overlap_depth >= constants::COLLISION_TRANSFER_OVERLAP_DEPTH {
-            for &sample_index in &moving.sample_indices {
-                actions.mark_transfer(sample_index, receiving)?;
-                stats.transferred_samples += 1;
-            }
-        }
+        stats.transferred_samples +=
+            actions.mark_terrane_transfer(moving_is_first, receiving)? as u32;
         stats.collision_events += 1;
         stats.affected_samples += 2;
         stats.forced_subductions += u32::from(forced);
@@ -119,16 +139,15 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision(
     Ok(stats)
 }
 
-struct Terrane {
-    sample_indices: Vec<usize>,
-    area_m2: f64,
-}
-
 fn terrane_members(
     surface: &SphericalSurfaceSnapshot,
     state: &TectonicState,
     root_sample: usize,
-) -> Result<Terrane, ProcessError> {
+    represented: &mut [u8],
+    reached: &mut [u8],
+    stack: &mut Vec<crate::world::CellId>,
+    sample_indices: &mut Vec<usize>,
+) -> Result<f64, ProcessError> {
     let root = state
         .samples
         .get(root_sample)
@@ -139,7 +158,12 @@ fn terrane_members(
     if root.kind != CrustKind::Continental {
         return Err(ProcessError::NonContinentalCollision);
     }
-    let mut represented = vec![false; surface.cells().len()];
+    debug_assert_eq!(represented.len(), surface.cells().len());
+    debug_assert_eq!(reached.len(), surface.cells().len());
+    represented.fill(0);
+    reached.fill(0);
+    stack.clear();
+    sample_indices.clear();
     for sample in &state.samples {
         if sample.owner == root.owner && sample.kind == CrustKind::Continental {
             let anchor = sample.anchor.raw() as usize;
@@ -148,19 +172,18 @@ fn terrane_members(
                     cell: sample.anchor,
                 });
             }
-            represented[anchor] = true;
+            represented[anchor] = 1;
         }
     }
     let root_cell = root.anchor.raw() as usize;
-    if root_cell >= represented.len() || !represented[root_cell] {
+    if root_cell >= represented.len() || represented[root_cell] == 0 {
         return Err(ProcessError::EmptyTerrane {
             sample: root_sample,
         });
     }
-    let mut reached = vec![false; represented.len()];
-    let mut queue = VecDeque::from([root.anchor]);
-    reached[root_cell] = true;
-    while let Some(cell_id) = queue.pop_front() {
+    stack.push(root.anchor);
+    reached[root_cell] = 1;
+    while let Some(cell_id) = stack.pop() {
         let cell = surface
             .cell(cell_id)
             .ok_or(ProcessError::UnknownCell { cell: cell_id })?;
@@ -174,38 +197,36 @@ fn terrane_members(
                 edge.cells[0]
             };
             let index = neighbor.raw() as usize;
-            if represented[index] && !reached[index] {
-                reached[index] = true;
-                queue.push_back(neighbor);
+            if represented[index] != 0 && reached[index] == 0 {
+                reached[index] = 1;
+                stack.push(neighbor);
             }
         }
     }
     let area_m2 = reached
         .iter()
         .enumerate()
-        .filter(|(_, is_reached)| **is_reached)
+        .filter(|(_, is_reached)| **is_reached != 0)
         .map(|(index, _)| surface.cells()[index].area.get())
         .sum();
-    let sample_indices = state
-        .samples
-        .iter()
-        .enumerate()
-        .filter(|(_, sample)| {
-            sample.owner == root.owner
-                && sample.kind == CrustKind::Continental
-                && reached[sample.anchor.raw() as usize]
-        })
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
+    sample_indices.extend(
+        state
+            .samples
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sample)| {
+                (sample.owner == root.owner
+                    && sample.kind == CrustKind::Continental
+                    && reached[sample.anchor.raw() as usize] != 0)
+                    .then_some(index)
+            }),
+    );
     if sample_indices.is_empty() || area_m2 <= 0.0 {
         return Err(ProcessError::EmptyTerrane {
             sample: root_sample,
         });
     }
-    Ok(Terrane {
-        sample_indices,
-        area_m2,
-    })
+    Ok(area_m2)
 }
 
 fn participant_indices(
@@ -332,12 +353,12 @@ mod tests {
         )
         .unwrap();
         assert!(next.samples.iter().all(|sample| {
-            sample.tectonic_elevation_m > 700.0
-                && sample.orogeny == SphericalOrogenyKind::Himalayan
-                && sample.orogeny_age_myr == 0.0
-                && (sample.lineation[0].hypot(sample.lineation[1]) - 1.0).abs() <= 1.0e-5
+            sample.tectonic_elevation_m == 700.0
+                && sample.orogeny == SphericalOrogenyKind::None
+                && sample.lineation == [0.0; 2]
         }));
-        assert_eq!(stats.forced_subductions, 1);
+        assert_eq!(stats.collision_events, 0);
+        assert_eq!(stats.forced_subductions, 0);
         commit_process_actions(&mut next, &mut actions).unwrap();
         assert_eq!(
             next.samples[0].owner, small,
@@ -355,7 +376,7 @@ mod tests {
         overlap_event.overlap_depth = 1;
         let mut actions = ProcessActions::with_sample_capacity(2);
         actions.begin_step(2);
-        apply_collision(
+        let stats = apply_collision(
             &surface,
             &[overlap_event],
             &current,
@@ -364,6 +385,14 @@ mod tests {
             recipe,
         )
         .unwrap();
+        assert!(overlapped.samples.iter().all(|sample| {
+            sample.tectonic_elevation_m > 700.0
+                && sample.orogeny == SphericalOrogenyKind::Himalayan
+                && sample.orogeny_age_myr == 0.0
+                && (sample.lineation[0].hypot(sample.lineation[1]) - 1.0).abs() <= 1.0e-5
+        }));
+        assert_eq!(stats.collision_events, 1);
+        assert_eq!(stats.forced_subductions, 1);
         commit_process_actions(&mut overlapped, &mut actions).unwrap();
         assert_eq!(overlapped.samples[0].owner, large);
         assert_eq!(overlapped.samples[1].owner, large);

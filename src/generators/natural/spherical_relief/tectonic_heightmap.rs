@@ -2,6 +2,9 @@ use thiserror::Error;
 
 use super::directed_noise::DirectedDetailNoise;
 use crate::generators::natural::random::LabeledSubstreams;
+use crate::generators::natural::spherical_crust_physics::{
+    continental_isostatic_elevation_m, oceanic_plate_cooling_elevation_m,
+};
 use crate::world::natural::{
     CrustKind, SphericalTectonicSnapshot, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
     REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
@@ -10,15 +13,6 @@ use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 const HEIGHT_QUANTUM_M: f32 = 0.25;
-const CONTINENTAL_REFERENCE_THICKNESS_KM: f32 = 35.0;
-const CONTINENTAL_REFERENCE_FREEBOARD_M: f32 = 300.0;
-// Airy isostasy with a deliberately conservative effective density contrast.
-const CONTINENTAL_ISOSTATIC_RESPONSE_M_PER_KM: f32 = 135.0;
-const OCEANIC_RIDGE_DEPTH_M: f32 = -2_600.0;
-// Plate-cooling bathymetry approximation: depth grows with sqrt(age).
-const OCEANIC_COOLING_M_PER_SQRT_MYR: f32 = 350.0;
-const OCEANIC_REFERENCE_THICKNESS_KM: f32 = 7.0;
-const OCEANIC_THICKNESS_RESPONSE_M_PER_KM: f32 = 90.0;
 
 pub(super) struct TectonicHeightComponents {
     pub(super) crust_base_m: Vec<f32>,
@@ -55,16 +49,8 @@ pub(super) fn build_tectonic_heightmap(
         let age_myr = tectonic.crust_age_myr()[index];
         let coarse_height_m = tectonic.tectonic_elevation_m()[index];
         let physical_base_m = match kind {
-            CrustKind::Continental => {
-                CONTINENTAL_REFERENCE_FREEBOARD_M
-                    + (thickness_km - CONTINENTAL_REFERENCE_THICKNESS_KM)
-                        * CONTINENTAL_ISOSTATIC_RESPONSE_M_PER_KM
-            }
-            CrustKind::Oceanic => {
-                OCEANIC_RIDGE_DEPTH_M - OCEANIC_COOLING_M_PER_SQRT_MYR * age_myr.sqrt()
-                    + (thickness_km - OCEANIC_REFERENCE_THICKNESS_KM)
-                        * OCEANIC_THICKNESS_RESPONSE_M_PER_KM
-            }
+            CrustKind::Continental => continental_isostatic_elevation_m(thickness_km),
+            CrustKind::Oceanic => oceanic_plate_cooling_elevation_m(age_myr, thickness_km),
         };
         let feasible_min = CRUST_BASE_ELEVATION_MIN_M.max(coarse_height_m - TECTONIC_OFFSET_MAX_M);
         let feasible_max = CRUST_BASE_ELEVATION_MAX_M.min(coarse_height_m - TECTONIC_OFFSET_MIN_M);

@@ -95,21 +95,27 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction(
         let uplift = raw_uplift * normalized_height * normalized_height;
         let lineation = event_lineation(surface, event, next.samples[overriding_index].position)?;
 
-        next.samples[descending_index].tectonic_elevation_m =
-            bounded_elevation(next.samples[descending_index].tectonic_elevation_m + trench);
-        next.samples[overriding_index].tectonic_elevation_m =
-            bounded_elevation(next.samples[overriding_index].tectonic_elevation_m + uplift);
-        if next.samples[overriding_index].kind == CrustKind::Continental {
-            next.samples[overriding_index].orogeny = SphericalOrogenyKind::Andean;
-            next.samples[overriding_index].orogeny_age_myr = 0.0;
-            next.samples[overriding_index].lineation = lineation;
-        }
+        actions.record_subduction_trench(descending_index, trench)?;
+        actions.record_subduction_uplift(overriding_index, uplift, lineation)?;
         if event.overlap_depth > 0 {
             actions.mark_remove(descending_index)?;
             stats.removed_samples += 1;
         }
         stats.subduction_events += 1;
-        stats.affected_samples += 2;
+    }
+    for (index, effect) in actions.subduction_effects().iter().copied().enumerate() {
+        if effect.trench_m == 0.0 && effect.uplift_m == 0.0 {
+            continue;
+        }
+        let sample = &mut next.samples[index];
+        sample.tectonic_elevation_m =
+            bounded_elevation(sample.tectonic_elevation_m + effect.trench_m + effect.uplift_m);
+        if effect.uplift_m > 0.0 && sample.kind == CrustKind::Continental {
+            sample.orogeny = SphericalOrogenyKind::Andean;
+            sample.orogeny_age_myr = 0.0;
+            sample.lineation = effect.uplift_lineation;
+        }
+        stats.affected_samples += 1;
     }
     Ok(stats)
 }
@@ -269,5 +275,43 @@ mod tests {
         );
         assert_eq!(stats.subduction_events, 1);
         assert_eq!(stats.removed_samples, 1);
+    }
+
+    #[test]
+    fn one_sample_receives_one_strongest_subduction_response_per_step() {
+        let surface = surface();
+        let (current, mut once, mut event) = state_and_event(&surface, 120.0);
+        let (_, mut repeated, _) = state_and_event(&surface, 120.0);
+        event.overlap_depth = 0;
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+
+        let mut once_actions = ProcessActions::with_sample_capacity(2);
+        once_actions.begin_step(2);
+        apply_subduction(
+            &surface,
+            std::slice::from_ref(&event),
+            &current,
+            &mut once,
+            &mut once_actions,
+            recipe,
+        )
+        .unwrap();
+
+        let mut repeated_actions = ProcessActions::with_sample_capacity(2);
+        repeated_actions.begin_step(2);
+        apply_subduction(
+            &surface,
+            &[event.clone(), event],
+            &current,
+            &mut repeated,
+            &mut repeated_actions,
+            recipe,
+        )
+        .unwrap();
+
+        assert_eq!(
+            repeated.samples, once.samples,
+            "sampling the same continuous front twice doubled its elevation response"
+        );
     }
 }

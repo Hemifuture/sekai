@@ -4,7 +4,7 @@
 //! and continental linear erosion, and fills only active trenches. Transform
 //! contacts are deliberately absent from the uplift mask.
 
-use super::{bounded_elevation, constants, ProcessError, ProcessStats};
+use super::{bounded_elevation, constants, ProcessActions, ProcessError, ProcessStats};
 use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
 use crate::generators::natural::spherical_tectonics::model::{
     FormationTectonicRecipe, TectonicState,
@@ -16,13 +16,15 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     next: &mut TectonicState,
+    actions: &mut ProcessActions,
     recipe: FormationTectonicRecipe,
     delta_myr: f32,
 ) -> Result<ProcessStats, ProcessError> {
     if !delta_myr.is_finite() || delta_myr < 0.0 {
         return Err(ProcessError::InvalidDeltaMyr { found: delta_myr });
     }
-    let mut trenches = vec![false; next.samples.len()];
+    actions.validate_for(next.samples.len())?;
+    let trenches = actions.trench_scratch(next.samples.len());
     for event in events {
         let ContactKind::OceanicSubduction { descending } = event.kind else {
             continue;
@@ -37,7 +39,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
                         samples: next.samples.len(),
                     })?;
             if sample.owner == descending {
-                trenches[sample_index] = true;
+                trenches[sample_index] = 1;
                 break;
             }
         }
@@ -67,7 +69,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
                 sample.tectonic_elevation_m = bounded_elevation(
                     sample.tectonic_elevation_m - (ocean_damping_m * depth_factor) as f32,
                 );
-                if trenches[index] {
+                if trenches[index] != 0 {
                     sample.tectonic_elevation_m =
                         bounded_elevation(sample.tectonic_elevation_m + trench_sediment_m as f32);
                 }
@@ -98,7 +100,7 @@ mod tests {
     use crate::generators::natural::spherical_tectonics::model::{
         ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicState,
     };
-    use crate::generators::natural::spherical_tectonics::processes::constants;
+    use crate::generators::natural::spherical_tectonics::processes::{constants, ProcessActions};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
         CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
@@ -179,9 +181,17 @@ mod tests {
             overlap_depth: 0,
         };
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
-        let stats =
-            relax_current_crust(&surface, &[subduction, transform], &mut state, recipe, 2.0)
-                .unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(state.samples.len());
+        actions.begin_step(state.samples.len());
+        let stats = relax_current_crust(
+            &surface,
+            &[subduction, transform],
+            &mut state,
+            &mut actions,
+            recipe,
+            2.0,
+        )
+        .unwrap();
 
         assert_eq!(state.samples[0].age_myr, 22.0);
         assert_eq!(state.samples[1].age_myr, 82.0);

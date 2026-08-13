@@ -64,16 +64,18 @@ fn ratio_to_q64(numerator: u128, denominator: u128) -> u128 {
     quotient
 }
 
-pub(super) fn rift_rate_q32(
+fn rift_rate_q32_with_scratch(
     surface: &SphericalSurfaceSnapshot,
     state: &TectonicState,
     lineage: LineageId,
     recipe: FormationTectonicRecipe,
+    represented: &mut [u8],
 ) -> Result<u64, ProcessError> {
     if state.plate(lineage).is_none() {
         return Err(ProcessError::UnknownLineage { lineage });
     }
-    let mut represented = vec![false; surface.cells().len()];
+    debug_assert_eq!(represented.len(), surface.cells().len());
+    represented.fill(0);
     let mut area = 0.0;
     let mut continental_area = 0.0;
     for (sample_index, sample) in state.samples.iter().enumerate() {
@@ -88,8 +90,8 @@ pub(super) fn rift_rate_q32(
                 cells: represented.len(),
             });
         }
-        if !represented[cell_index] {
-            represented[cell_index] = true;
+        if represented[cell_index] == 0 {
+            represented[cell_index] = 1;
             let cell_area = surface.cells()[cell_index].area.get();
             area += cell_area;
             if sample.kind == CrustKind::Continental {
@@ -112,6 +114,17 @@ pub(super) fn rift_rate_q32(
         .round()
         .clamp(0.0, f64::from(MAX_RIFT_RATE_PPM_PER_MYR)) as u32;
     Ok(rate_q32_from_ppm(ppm))
+}
+
+#[cfg(test)]
+pub(super) fn rift_rate_q32(
+    surface: &SphericalSurfaceSnapshot,
+    state: &TectonicState,
+    lineage: LineageId,
+    recipe: FormationTectonicRecipe,
+) -> Result<u64, ProcessError> {
+    let mut represented = vec![0; surface.cells().len()];
+    rift_rate_q32_with_scratch(surface, state, lineage, recipe, &mut represented)
 }
 
 pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
@@ -143,7 +156,10 @@ pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
         if actions.lineage_has_pending_changes(&current.samples, parent.lineage) {
             continue;
         }
-        let rate = rift_rate_q32(surface, current, parent.lineage, recipe)?;
+        let rate = {
+            let represented = actions.rift_scratch(surface.cells().len());
+            rift_rate_q32_with_scratch(surface, current, parent.lineage, recipe, represented)?
+        };
         let draw = streams.counter_u64(
             RIFT_EVENTS_V3_LABEL,
             &[u64::from(step), u64::from(parent.lineage.raw())],

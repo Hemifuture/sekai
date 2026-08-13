@@ -20,6 +20,9 @@ use crate::generators::natural::morphology::noise::SphericalNoise3d;
 use crate::generators::natural::random::{
     LabeledSubstreams, INITIAL_CRUST_V3_LABEL, INITIAL_PLATES_V3_LABEL, PLATE_MOTION_V3_LABEL,
 };
+use crate::generators::natural::spherical_crust_physics::{
+    continental_isostatic_elevation_m, oceanic_plate_cooling_elevation_m,
+};
 use crate::generators::natural::topology::{farthest_point_seeds, NaturalTopologyIndex};
 use crate::world::natural::{
     CrustKind, NaturalSpecError, SphericalOrogenyKind, SphericalPlateRotation,
@@ -30,8 +33,9 @@ use crate::world::spatial::{project_tangent, SphericalSurfaceSnapshot, UnitVecto
 use crate::world::CellId;
 
 const MAXIMUM_SEED_WARP_RAD: f64 = 0.07;
-const CONTINENTAL_THICKNESS_BASE_KM: f64 = 32.0;
-const CONTINENTAL_THICKNESS_SPAN_KM: f64 = 24.0;
+// Includes thinned passive-margin crust as well as stable continental interiors.
+const CONTINENTAL_THICKNESS_BASE_KM: f64 = 24.0;
+const CONTINENTAL_THICKNESS_SPAN_KM: f64 = 28.0;
 const OCEANIC_THICKNESS_BASE_KM: f64 = 5.0;
 const OCEANIC_THICKNESS_SPAN_KM: f64 = 5.0;
 const INITIAL_OCEANIC_AGE_MIN_MYR: f64 = 8.0;
@@ -255,22 +259,25 @@ fn initial_crust_samples(
             let age_signal =
                 normalized_signal(age_noise.fbm(cell.centroid, recipe.initial_crust_profile));
             let (kind, thickness_km, age_myr, tectonic_elevation_m) = if continental[index] {
+                let thickness_km = (CONTINENTAL_THICKNESS_BASE_KM
+                    + CONTINENTAL_THICKNESS_SPAN_KM * thickness_signal)
+                    as f32;
                 (
                     CrustKind::Continental,
-                    (CONTINENTAL_THICKNESS_BASE_KM
-                        + CONTINENTAL_THICKNESS_SPAN_KM * thickness_signal)
-                        as f32,
+                    thickness_km,
                     CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
-                    (250.0 + 750.0 * normalized_signal(scores[index])) as f32,
+                    continental_isostatic_elevation_m(thickness_km),
                 )
             } else {
                 let age = INITIAL_OCEANIC_AGE_MIN_MYR + INITIAL_OCEANIC_AGE_SPAN_MYR * age_signal;
+                let thickness_km = (OCEANIC_THICKNESS_BASE_KM
+                    + OCEANIC_THICKNESS_SPAN_KM * thickness_signal)
+                    as f32;
                 (
                     CrustKind::Oceanic,
-                    (OCEANIC_THICKNESS_BASE_KM + OCEANIC_THICKNESS_SPAN_KM * thickness_signal)
-                        as f32,
+                    thickness_km,
                     age.min(f64::from(MAX_CRUST_AGE_MYR)) as f32,
-                    (-2_800.0 - 2_200.0 * (age / 180.0) + 160.0 * (thickness_signal - 0.5)) as f32,
+                    oceanic_plate_cooling_elevation_m(age as f32, thickness_km),
                 )
             };
             CrustSample {
@@ -380,7 +387,7 @@ pub(super) enum InitialStateError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
 
     use super::build_initial_state;
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
@@ -579,5 +586,91 @@ mod tests {
                 cross_kind as f64 / surface.edges().len() as f64
             };
         assert!(boundary_fraction(&supercontinent) < boundary_fraction(&archipelago));
+    }
+
+    #[test]
+    fn initial_formation_matrix_preserves_area_and_orders_coherent_scale() {
+        use ResolvedWorldFormationPreset::{
+            Archipelago, Continents, GreatIsland, Supercontinent, VolcanicIslands,
+        };
+
+        let (surface, topology) = fixture(642);
+        let seeds = [
+            42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
+        ];
+        let cases = [
+            (Continents, 0.38_f32),
+            (Archipelago, 0.26),
+            (Supercontinent, 0.42),
+            (GreatIsland, 0.28),
+            (VolcanicIslands, 0.16),
+        ];
+        let maximum_cell_area = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .fold(0.0, f64::max);
+        let total_edge_length = surface
+            .edges()
+            .iter()
+            .map(|edge| edge.length.get())
+            .sum::<f64>();
+        let mut boundary_fractions = BTreeMap::<_, Vec<f64>>::new();
+
+        for seed in seeds {
+            for (preset, target_fraction) in cases {
+                let spec = TectonicSpec {
+                    continental_crust_fraction: target_fraction,
+                    ..TectonicSpec::default()
+                };
+                let state = build_initial_state(
+                    &surface,
+                    &topology,
+                    &spec,
+                    FormationTectonicRecipe::for_preset(preset),
+                    &streams(seed),
+                )
+                .unwrap();
+                let continental_area = surface
+                    .cells()
+                    .iter()
+                    .zip(&state.samples)
+                    .filter(|(_, sample)| sample.kind == CrustKind::Continental)
+                    .map(|(cell, _)| cell.area.get())
+                    .sum::<f64>();
+                let target_area = surface.total_cell_area().get() * f64::from(target_fraction);
+                assert!(
+                    (continental_area - target_area).abs() <= maximum_cell_area,
+                    "seed {seed}, {preset:?}: {continental_area} vs {target_area}"
+                );
+                let cross_kind_length = surface
+                    .edges()
+                    .iter()
+                    .filter(|edge| {
+                        let [first, second] = edge
+                            .cells
+                            .map(|cell| state.samples[cell.raw() as usize].kind);
+                        first != second
+                    })
+                    .map(|edge| edge.length.get())
+                    .sum::<f64>();
+                boundary_fractions
+                    .entry(preset)
+                    .or_default()
+                    .push(cross_kind_length / total_edge_length);
+            }
+        }
+
+        let mean = |preset| {
+            let values = &boundary_fractions[&preset];
+            values.iter().sum::<f64>() / values.len() as f64
+        };
+        let large_scale = (mean(Supercontinent) + mean(GreatIsland)) * 0.5;
+        let island_scale = (mean(Archipelago) + mean(VolcanicIslands)) * 0.5;
+        assert!(large_scale < island_scale, "{boundary_fractions:?}");
+        assert!(
+            mean(Continents) < mean(Archipelago),
+            "{boundary_fractions:?}"
+        );
     }
 }

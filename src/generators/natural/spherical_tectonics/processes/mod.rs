@@ -44,10 +44,36 @@ enum SampleDisposition {
     Transfer(LineageId),
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct SubductionEffect {
+    pub(super) trench_m: f32,
+    pub(super) uplift_m: f32,
+    pub(super) uplift_lineation: [f32; 2],
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ProcessActions {
     dispositions: Vec<SampleDisposition>,
     spawned: Vec<CrustSample>,
+    subduction_effects: Vec<SubductionEffect>,
+    extensional_speeds_mm_per_year: Vec<f32>,
+    spreading_divergence_by_cell: Vec<Option<usize>>,
+    spreading_current_sample_by_cell: Vec<Option<usize>>,
+    terrane_represented: Vec<u8>,
+    terrane_reached: Vec<u8>,
+    terrane_stack: Vec<CellId>,
+    first_terrane_samples: Vec<usize>,
+    second_terrane_samples: Vec<usize>,
+    trench_flags: Vec<u8>,
+    rift_represented: Vec<u8>,
+}
+
+pub(super) struct TerraneScratch<'a> {
+    pub(super) represented: &'a mut [u8],
+    pub(super) reached: &'a mut [u8],
+    pub(super) stack: &'a mut Vec<CellId>,
+    pub(super) first_samples: &'a mut Vec<usize>,
+    pub(super) second_samples: &'a mut Vec<usize>,
 }
 
 impl ProcessActions {
@@ -55,6 +81,17 @@ impl ProcessActions {
         Self {
             dispositions: Vec::with_capacity(sample_count),
             spawned: Vec::with_capacity(sample_count / 16 + 1),
+            subduction_effects: Vec::with_capacity(sample_count),
+            extensional_speeds_mm_per_year: Vec::with_capacity(sample_count),
+            spreading_divergence_by_cell: Vec::with_capacity(sample_count),
+            spreading_current_sample_by_cell: Vec::with_capacity(sample_count),
+            terrane_represented: Vec::with_capacity(sample_count),
+            terrane_reached: Vec::with_capacity(sample_count),
+            terrane_stack: Vec::with_capacity(sample_count),
+            first_terrane_samples: Vec::with_capacity(sample_count),
+            second_terrane_samples: Vec::with_capacity(sample_count),
+            trench_flags: Vec::with_capacity(sample_count),
+            rift_represented: Vec::with_capacity(sample_count),
         }
     }
 
@@ -63,6 +100,180 @@ impl ProcessActions {
         self.dispositions
             .resize(sample_count, SampleDisposition::Keep);
         self.spawned.clear();
+        self.subduction_effects.clear();
+        self.subduction_effects
+            .resize(sample_count, SubductionEffect::default());
+        self.extensional_speeds_mm_per_year.clear();
+        self.extensional_speeds_mm_per_year
+            .resize(sample_count, 0.0);
+    }
+
+    pub(super) fn record_subduction_trench(
+        &mut self,
+        sample: usize,
+        trench_m: f32,
+    ) -> Result<(), ProcessError> {
+        let sample_count = self.subduction_effects.len();
+        let effect = self.subduction_effects.get_mut(sample).ok_or(
+            ProcessError::ActionIndexOutOfBounds {
+                sample,
+                actions: sample_count,
+            },
+        )?;
+        effect.trench_m = effect.trench_m.min(trench_m);
+        Ok(())
+    }
+
+    pub(super) fn record_subduction_uplift(
+        &mut self,
+        sample: usize,
+        uplift_m: f32,
+        lineation: [f32; 2],
+    ) -> Result<(), ProcessError> {
+        let sample_count = self.subduction_effects.len();
+        let effect = self.subduction_effects.get_mut(sample).ok_or(
+            ProcessError::ActionIndexOutOfBounds {
+                sample,
+                actions: sample_count,
+            },
+        )?;
+        if uplift_m > effect.uplift_m {
+            effect.uplift_m = uplift_m;
+            effect.uplift_lineation = lineation;
+        }
+        Ok(())
+    }
+
+    pub(super) fn subduction_effects(&self) -> &[SubductionEffect] {
+        &self.subduction_effects
+    }
+
+    pub(super) fn record_extensional_speed(
+        &mut self,
+        sample: usize,
+        speed_mm_per_year: f32,
+    ) -> Result<(), ProcessError> {
+        let sample_count = self.extensional_speeds_mm_per_year.len();
+        let speed = self.extensional_speeds_mm_per_year.get_mut(sample).ok_or(
+            ProcessError::ActionIndexOutOfBounds {
+                sample,
+                actions: sample_count,
+            },
+        )?;
+        *speed = speed.max(speed_mm_per_year);
+        Ok(())
+    }
+
+    pub(super) fn extensional_speeds_mm_per_year(&self) -> &[f32] {
+        &self.extensional_speeds_mm_per_year
+    }
+
+    pub(super) fn spreading_scratch(
+        &mut self,
+        cell_count: usize,
+    ) -> (
+        &mut [Option<usize>],
+        &mut [Option<usize>],
+        &mut Vec<CrustSample>,
+    ) {
+        self.spreading_divergence_by_cell.clear();
+        self.spreading_divergence_by_cell.resize(cell_count, None);
+        self.spreading_current_sample_by_cell.clear();
+        self.spreading_current_sample_by_cell
+            .resize(cell_count, None);
+        (
+            &mut self.spreading_divergence_by_cell,
+            &mut self.spreading_current_sample_by_cell,
+            &mut self.spawned,
+        )
+    }
+
+    pub(super) fn prepare_dense_process_scratch(&mut self, cell_count: usize) {
+        reset_u8_scratch(&mut self.terrane_represented, cell_count);
+        reset_u8_scratch(&mut self.terrane_reached, cell_count);
+        self.terrane_stack.clear();
+        self.first_terrane_samples.clear();
+        self.second_terrane_samples.clear();
+        reset_u8_scratch(&mut self.trench_flags, cell_count);
+        reset_u8_scratch(&mut self.rift_represented, cell_count);
+    }
+
+    pub(super) fn terrane_scratch(&mut self, cell_count: usize) -> TerraneScratch<'_> {
+        reset_u8_scratch(&mut self.terrane_represented, cell_count);
+        reset_u8_scratch(&mut self.terrane_reached, cell_count);
+        self.terrane_stack.clear();
+        self.first_terrane_samples.clear();
+        self.second_terrane_samples.clear();
+        TerraneScratch {
+            represented: &mut self.terrane_represented,
+            reached: &mut self.terrane_reached,
+            stack: &mut self.terrane_stack,
+            first_samples: &mut self.first_terrane_samples,
+            second_samples: &mut self.second_terrane_samples,
+        }
+    }
+
+    pub(super) fn mark_terrane_transfer(
+        &mut self,
+        first: bool,
+        owner: LineageId,
+    ) -> Result<usize, ProcessError> {
+        let indices = if first {
+            &self.first_terrane_samples
+        } else {
+            &self.second_terrane_samples
+        };
+        let action_count = self.dispositions.len();
+        for &sample in indices {
+            let disposition =
+                self.dispositions
+                    .get_mut(sample)
+                    .ok_or(ProcessError::ActionIndexOutOfBounds {
+                        sample,
+                        actions: action_count,
+                    })?;
+            if *disposition == SampleDisposition::Keep {
+                *disposition = SampleDisposition::Transfer(owner);
+            }
+        }
+        Ok(indices.len())
+    }
+
+    pub(super) fn trench_scratch(&mut self, sample_count: usize) -> &mut [u8] {
+        reset_u8_scratch(&mut self.trench_flags, sample_count);
+        &mut self.trench_flags
+    }
+
+    pub(super) fn rift_scratch(&mut self, cell_count: usize) -> &mut [u8] {
+        reset_u8_scratch(&mut self.rift_represented, cell_count);
+        &mut self.rift_represented
+    }
+
+    #[cfg(test)]
+    pub(super) fn spreading_index_storage(&self) -> [(usize, usize); 2] {
+        [
+            (
+                self.spreading_divergence_by_cell.as_ptr() as usize,
+                self.spreading_divergence_by_cell.capacity(),
+            ),
+            (
+                self.spreading_current_sample_by_cell.as_ptr() as usize,
+                self.spreading_current_sample_by_cell.capacity(),
+            ),
+        ]
+    }
+
+    #[cfg(test)]
+    pub(super) fn dense_process_scratch_storage(&self) -> [(usize, usize); 7] {
+        [
+            storage(&self.terrane_represented),
+            storage(&self.terrane_reached),
+            storage(&self.terrane_stack),
+            storage(&self.first_terrane_samples),
+            storage(&self.second_terrane_samples),
+            storage(&self.trench_flags),
+            storage(&self.rift_represented),
+        ]
     }
 
     pub(super) fn mark_remove(&mut self, sample: usize) -> Result<(), ProcessError> {
@@ -214,6 +425,16 @@ impl ProcessActions {
             lineages,
         )
     }
+}
+
+fn reset_u8_scratch(scratch: &mut Vec<u8>, len: usize) {
+    scratch.clear();
+    scratch.resize(len, 0);
+}
+
+#[cfg(test)]
+fn storage<T>(values: &Vec<T>) -> (usize, usize) {
+    (values.as_ptr() as usize, values.capacity())
 }
 
 fn lineage_counts(
@@ -415,6 +636,18 @@ mod tests {
     use crate::world::CellId;
 
     #[test]
+    fn dense_process_scratch_reuses_allocations_between_steps() {
+        let mut actions = ProcessActions::with_sample_capacity(42);
+        actions.begin_step(42);
+        actions.prepare_dense_process_scratch(42);
+        let first = actions.dense_process_scratch_storage();
+
+        actions.begin_step(42);
+        actions.prepare_dense_process_scratch(42);
+        assert_eq!(actions.dense_process_scratch_storage(), first);
+    }
+
+    #[test]
     fn actions_commit_once_with_stable_compaction_transfer_and_spawn_order() {
         let first = LineageId::from_raw(0);
         let second = LineageId::from_raw(1);
@@ -467,5 +700,5 @@ mod subduction;
 pub(super) use collision::apply_collision;
 pub(super) use relaxation::relax_current_crust;
 pub(super) use rifting::maybe_rift_plates;
-pub(super) use spreading::fill_spreading_gaps;
+pub(super) use spreading::{apply_divergent_extension, fill_spreading_gaps};
 pub(super) use subduction::apply_subduction;

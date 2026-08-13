@@ -16,16 +16,20 @@ use crate::world::spatial::{
 
 mod boundaries;
 mod contacts;
+mod control_surface;
 mod initial_state;
 mod kinematics;
 mod model;
+mod passive_margin;
 mod processes;
 mod resample;
 mod runner;
+mod workspace;
 
 use boundaries::classify_and_aggregate_boundaries;
+use control_surface::{build_control_surface, project_current_state, requires_control_surface};
 use model::CrustSample;
-use runner::run_tectonic_evolution;
+use runner::{canonicalize_evolved_state, evolve_current_state, run_tectonic_evolution};
 
 impl TectonicGenerator {
     /// Generates a surface-bound current snapshot on a validated closed spherical world.
@@ -51,12 +55,50 @@ impl TectonicGenerator {
         let view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&view);
         let streams = LabeledSubstreams::capture(rng);
-        let current =
+        let current = if requires_control_surface(surface.cells().len()) {
+            let control = build_control_surface(surface).map_err(|error| {
+                SphericalTectonicGenerationError::Morphology {
+                    domain: "tectonic control surface",
+                    message: error.to_string(),
+                }
+            })?;
+            let control_view = SphericalNaturalSurface::from_validated(&control)?;
+            let control_topology = NaturalTopologyIndex::from_surface(&control_view);
+            let control_current = evolve_current_state(
+                &control,
+                &control_topology,
+                spec,
+                formation.resolved(),
+                &streams,
+            )
+            .map_err(|error| SphericalTectonicGenerationError::Morphology {
+                domain: "tectonic control evolution",
+                message: error.to_string(),
+            })?;
+            let projected = project_current_state(
+                &control,
+                &control_topology,
+                surface,
+                &topology,
+                control_current,
+            )
+            .map_err(|error| SphericalTectonicGenerationError::Morphology {
+                domain: "tectonic authoritative projection",
+                message: error.to_string(),
+            })?;
+            canonicalize_evolved_state(surface, projected).map_err(|error| {
+                SphericalTectonicGenerationError::Morphology {
+                    domain: "tectonic authoritative canonicalization",
+                    message: error.to_string(),
+                }
+            })?
+        } else {
             run_tectonic_evolution(surface, &topology, spec, formation.resolved(), &streams)
                 .map_err(|error| SphericalTectonicGenerationError::Morphology {
                     domain: "tectonic evolution",
                     message: error.to_string(),
-                })?;
+                })?
+        };
         let crust = crust_state_from_samples(&current.samples)?;
         let (boundaries, boundary_segments) = classify_and_aggregate_boundaries(
             surface,
@@ -172,6 +214,19 @@ mod tests {
                 "spherical tectonic facade still owns `{forbidden}`"
             );
         }
+    }
+
+    #[test]
+    fn transient_model_does_not_depend_on_process_modules() {
+        let source = include_str!("spherical_tectonics/model.rs");
+        let model = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the model source precedes its tests");
+        assert!(
+            !model.contains("super::processes"),
+            "the transient data model must not depend on process implementations"
+        );
     }
 
     #[test]

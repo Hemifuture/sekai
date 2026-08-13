@@ -14,9 +14,6 @@ use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 use thiserror::Error;
 
-use super::contacts::{ContactEvent, CoverageScratch};
-use super::processes::ProcessActions;
-
 /// Stable identity of one transient plate lineage during the bounded evolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LineageId(u32);
@@ -125,6 +122,18 @@ impl TectonicState {
         })
     }
 
+    pub(super) fn empty_with_capacity(
+        sample_capacity: usize,
+        plate_capacity: usize,
+        next_lineage_raw: u32,
+    ) -> Self {
+        Self {
+            samples: Vec::with_capacity(sample_capacity),
+            plates: Vec::with_capacity(plate_capacity),
+            next_lineage_raw,
+        }
+    }
+
     pub(super) fn initial_owners(&self) -> Vec<LineageId> {
         self.samples.iter().map(|sample| sample.owner).collect()
     }
@@ -156,74 +165,6 @@ impl TectonicState {
         let lineage = LineageId::from_raw(self.next_lineage_raw);
         self.next_lineage_raw = self.next_lineage_raw.checked_add(1)?;
         Some(lineage)
-    }
-}
-
-/// Capacity-reused double buffer. It deliberately contains no history collection.
-#[derive(Debug)]
-pub(super) struct TectonicWorkspace {
-    pub(super) current: TectonicState,
-    pub(super) next: TectonicState,
-    pub(super) coverage: CoverageScratch,
-    pub(super) events: Vec<ContactEvent>,
-    pub(super) actions: ProcessActions,
-    steps_since_resample: u16,
-}
-
-impl TectonicWorkspace {
-    pub(super) fn from_initial(current: TectonicState) -> Self {
-        let sample_capacity = current.samples.len();
-        let plate_capacity = current.plates.len();
-        let next_lineage_raw = current.next_lineage_raw;
-        Self {
-            current,
-            next: TectonicState {
-                samples: Vec::with_capacity(sample_capacity),
-                plates: Vec::with_capacity(plate_capacity),
-                next_lineage_raw,
-            },
-            coverage: CoverageScratch::with_cell_capacity(sample_capacity),
-            events: Vec::with_capacity(sample_capacity),
-            actions: ProcessActions::with_sample_capacity(sample_capacity),
-            steps_since_resample: 0,
-        }
-    }
-
-    pub(super) fn step_parts(
-        &mut self,
-    ) -> (
-        &TectonicState,
-        &mut TectonicState,
-        &mut CoverageScratch,
-        &mut Vec<ContactEvent>,
-        &mut ProcessActions,
-    ) {
-        (
-            &self.current,
-            &mut self.next,
-            &mut self.coverage,
-            &mut self.events,
-            &mut self.actions,
-        )
-    }
-
-    pub(super) fn swap_current_next(&mut self) {
-        std::mem::swap(&mut self.current, &mut self.next);
-        self.next.samples.clear();
-        self.next.plates.clear();
-        self.steps_since_resample = self.steps_since_resample.saturating_add(1);
-    }
-
-    pub(super) const fn steps_since_resample(&self) -> u16 {
-        self.steps_since_resample
-    }
-
-    pub(super) const fn requires_resample(&self) -> bool {
-        self.steps_since_resample != 0
-    }
-
-    pub(super) fn mark_resampled(&mut self) {
-        self.steps_since_resample = 0;
     }
 }
 
@@ -287,60 +228,5 @@ impl FormationTectonicRecipe {
             subduction_gain_permille,
             island_arc_gain_permille,
         }
-    }
-}
-
-#[cfg(test)]
-mod state_tests {
-    use super::{ActivePlate, CrustSample, LineageId, TectonicState, TectonicWorkspace};
-    use crate::world::natural::{
-        CrustKind, SphericalOrogenyKind, SphericalPlateRotation,
-        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
-    };
-    use crate::world::spatial::UnitVector3;
-    use crate::world::CellId;
-
-    #[test]
-    fn workspace_keeps_only_current_and_reusable_next_state() {
-        let lineage = LineageId::from_raw(7);
-        let rotation =
-            SphericalPlateRotation::new(UnitVector3::new(0.0, 0.0, 1.0).unwrap(), 10_000).unwrap();
-        let sample = CrustSample {
-            position: UnitVector3::new(1.0, 0.0, 0.0).unwrap(),
-            anchor: CellId::from_raw(0),
-            owner: lineage,
-            kind: CrustKind::Continental,
-            thickness_km: 35.0,
-            age_myr: CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
-            tectonic_elevation_m: 800.0,
-            lineation: [0.0; 2],
-            orogeny: SphericalOrogenyKind::None,
-            orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
-        };
-        let state = TectonicState::new(
-            vec![sample],
-            vec![ActivePlate::new(lineage, CellId::from_raw(0), rotation)],
-            8,
-        )
-        .unwrap();
-        let mut workspace = TectonicWorkspace::from_initial(state);
-
-        assert_eq!(workspace.current.samples.len(), 1);
-        assert!(workspace.next.samples.is_empty());
-        assert!(workspace.next.samples.capacity() >= 1);
-        assert_eq!(workspace.coverage.count(CellId::from_raw(0)), 0);
-        assert!(workspace.events.is_empty());
-        assert!(workspace.actions.is_clear());
-        let (_current, next, coverage, events, actions) = workspace.step_parts();
-        assert!(next.samples.is_empty());
-        assert_eq!(coverage.count(CellId::from_raw(0)), 0);
-        assert!(events.is_empty());
-        assert!(actions.is_clear());
-        assert_eq!(workspace.current.next_lineage_raw(), 8);
-        assert_eq!(workspace.current.initial_owners(), vec![lineage]);
-        assert_eq!(
-            workspace.current.plate(lineage),
-            Some(&workspace.current.plates[0])
-        );
     }
 }

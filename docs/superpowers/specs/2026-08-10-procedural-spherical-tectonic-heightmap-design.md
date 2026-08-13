@@ -149,8 +149,8 @@ Power Watershed 是成熟的图分割方法，可用于静态区域分区，但�
 
 ### 6.1 初始采样与板块
 
-1. 直接复用权威球面 cell centers 和 Delaunay 三角／邻接作为论文中的低分辨率地壳采样；当前约 20k 单元对应论文允许的粗地壳尺度，不建立第二份持久地表。
-2. 按 `plate_count` 选择初始球面质心并构造球面 Voronoi 初始板块。
+1. 权威球面始终是唯一发布的地表。权威表面不高于 5,000 cells 时直接作为演化采样；更大表面使用目标 5,000、当前实际 4,842 cells 的瞬态 geodesic control surface。该控制球面只服务一次构造，既不发布、序列化、缓存，也不形成历史切片。
+2. 按 `plate_count` 在演化球面选择初始球面质心并构造球面 Voronoi 初始板块。Voronoi 只提供初始材料分区，不是最终板块形状。
 3. 按论文使用低频球面连续噪声有界扰动到质心的测地距离，使初始边界不完全规则。
 4. 初始化大陆地块和洋壳。这里采用 PlaTec 已验证的 coherent-noise 初始岩石圈与 sea-level quantile 配方，把原平面周期坐标采样改为单位球方向上的 3D OpenSimplex 采样；`ResolvedWorldFormation` 只选择上一节定义的频谱、quantile 和有界过程倍率。该场只决定初始大陆性，不直接定义最终陆地，也不按连通块数量修剪结果。
 5. 为每个板块生成一个球心旋转轴和角速度；速度满足 `s(p) = omega * (w × p)`。
@@ -162,11 +162,15 @@ Power Watershed 是成熟的图分割方法，可用于静态区域分区，但�
 每个离散步使用论文默认 `delta_t = 2 My`：
 
 1. 用板块四元数旋转其带属性样本；
-2. 检测移动三角／样本对权威球面控制体的覆盖；
+2. 检测移动三角／样本对当前演化球面控制体的覆盖；
 3. 将多重覆盖记录为接触候选，将未覆盖记录为张裂空隙；
 4. 按论文以最大板块位移决定全局重采样间隔，限制在 10–60 步；
 5. 重采样只由 `resample` 模块执行，使用球面重心插值和稳定最近实体 tie-break；
-6. 所有位置重新归一化到单位球面，不携带高度位移。
+6. 每次中间重采样后使用 volume-preserving graph MBO：固定三次有界 Jacobi graph-heat，再按原占据球面面积阈值化材料类型。它只清除网格尺度混叠，不保留材料历史，也不把 owner 恢复成新 Voronoi；
+7. owner 使用移动样本证据项加 marker-controlled watershed／Potts 正则重建连通域；张裂填隙按 incident divergence 和当前 anchor 建 O(cells + events) 索引，正常路径不做 gap × world 全局扫描；
+8. 若使用瞬态控制球面，只在 128 步全部结束后把最终当前状态一次投影到权威球面：owner、crust kind、orogeny 使用稳定最近样本，厚度、年龄、高程和 lineation 等连续量仅在兼容 owner/kind/orogeny 内做球面三角面积重心插值；
+9. 最终在权威邻接图上规范化 plate lineage，并用多源 graph distance 生成被动大陆边缘的 shelf/slope 剖面；
+10. 所有位置重新归一化到单位球面，不携带高度位移。
 
 默认运行 128 步，即 256 My 的生成期演化。该常量是产品默认，不进入存档；未来如需质量档位必须另行设计，第一版只有一个正式路径。
 
@@ -227,6 +231,16 @@ Power Watershed 是成熟的图分割方法，可用于静态区域分区，但�
 - 裂谷线使用论文的扰动 Voronoi fracture；
 - 子板块获得发散旋转；
 - 达到 `MAX_SPHERICAL_PLATES` 时停止触发新裂谷，不覆盖或复用活动 ID。
+
+裂谷发生后的大陆伸展使用 McKenzie (1978) 均匀纯剪切模型的有界工程近似，而不是在最终高度图上直接绘制低地：
+
+- 每个 2 Myr 步长只记录每个当前地壳样本最强的发散法向速度；
+- 以 400 km 有效裂谷带宽把本步伸展位移换算为 `β = 1 + extension / width`，并把单步 `β` 限制在 `1.0..=1.2`；
+- 大陆地壳厚度更新为 `thickness / β`，再受公开的最小大陆地壳厚度约束；
+- 高程只写回当前地壳构造状态，变化量由共享 Airy 均衡函数对新旧厚度求差；
+- 重复张裂可以继续变薄和沉降，但不保存每步历史，也不在 relief 阶段追加裂谷形状。
+
+400 km 和单步上限是面向地图设计工具的稳定、高效近似参数：它保留“张裂 → 变薄 → 均衡沉降”的成熟因果链，同时避免短时间步把大陆壳一次耗尽。
 
 内部 lineage ID 可稀疏；发布前按稳定来源顺序和最终连通分量的代表 cell 重编号为连续 `PlateId`。最终连通化只在候选装配阶段执行一次，不能在每个时间步反复拆分 identity。
 
@@ -293,11 +307,14 @@ generators/natural/
     noise.rs              published coherent/Gabor noise primitives
 
   spherical_tectonics/
-    model.rs              transient attributed crust/plate/workspace types
+    model.rs              pure transient attributed crust/plate state types
+    workspace.rs          current/next plus contact/process reusable scratch assembly
     initial_state.rs      initial spherical Voronoi and crust conditions
     kinematics.rs         rigid geodetic rotations and relative velocity
     contacts.rs           overlap/gap/contact classification only
     resample.rs           moving samples -> authoritative sphere
+    control_surface.rs    transient coarse evolution -> one final projection
+    passive_margin.rs     final graph-distance shelf/slope profile
     processes/
       subduction.rs
       collision.rs
@@ -320,7 +337,7 @@ model ← initial_state / kinematics / contacts / resample
               ↓
           processes
               ↓
-           runner
+          workspace / runner / transient control_surface
               ↓
 world/natural SphericalTectonicSnapshot V3
               ↓
@@ -332,11 +349,14 @@ world/natural SphericalReliefSnapshot
 约束：
 
 - `model` 不依赖任何 process；
+- `workspace` 是唯一同时依赖 model、contacts 与 process scratch 的装配层；
 - process 之间不得互相调用，只通过 runner 定序；
 - `contacts` 不写地壳；
 - `spherical_relief` 不反写 tectonic state；
 - `noise` 不依赖 tectonics 或 relief；
 - `runner` 是唯一构造迭代入口；
+- `control_surface` 只组合既有 runner、球面 locator 和 `resample` 的共享插值原语，不复制过程公式；
+- 瞬态控制表不得越过 facade，也不得进入 artifact、stage cache、UI 或 GPU；
 - Stage、UI、GPU 不访问 workspace；
 - 旧 `arrival.rs`／`area.rs` 若无其他生产调用则删除，否则保留为其实际消费者的通用原语，但球面 tectonics 不得引用。
 
@@ -409,6 +429,8 @@ Stage returns artifacts; graph publishes atomically
 
 不得先减少构造现象、恢复 Voronoi 最短路或降低验收质量。
 
+正式 20k 路径已经采用第 3、4 项：spreading 以 cell 索引替代逐 gap 全局重扫；128 步 Cortial-style 演化运行在有界瞬态控制球面，最终当前状态只投影一次。Release 验收分别限制纯 tectonic construction 不高于 300 ms、包含 artifact validation 和确定性 semantic hash 的正式 tectonic stage 不高于 1 s；完整正式图仍必须满足上述 2 s 目标／5 s 硬上限及冻结基线 1.25 倍相对门槛。分项计时的目的仅是区分算法成本与发布验证成本，不允许跳过正式 stage。
+
 ## 13. 验证与测试
 
 ### 13.1 论文公式单元测试
@@ -421,6 +443,7 @@ Stage returns artifacts; graph publishes atomically
 - oceanic elevation 随年龄非增；
 - erosion、damping 和 sediment 项与论文 Appendix A 一致；
 - rifting 的 Poisson 决策、2–4 子板块与容量上限确定性。
+- 大陆张裂的 McKenzie `β` 纯剪切变薄与共享 Airy 均衡沉降单调且有界。
 
 ### 13.2 球面与状态不变量
 
@@ -538,6 +561,7 @@ Stage returns artifacts; graph publishes atomically
 ## 17. 参考资料
 
 - Y. Cortial, A. Peytavie, E. Galin, E. Guérin. *Procedural Tectonic Planets*. Computer Graphics Forum 38(2), 2019. DOI: <https://doi.org/10.1111/cgf.13614>
+- D. McKenzie. *Some Remarks on the Development of Sedimentary Basins*. Earth and Planetary Science Letters 40(1), 1978. DOI: <https://doi.org/10.1016/0012-821X(78)90071-7>
 - G. Cordonnier et al. *Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion*. Computer Graphics Forum 35(2), 2016. DOI: <https://doi.org/10.1111/cgf.12820>
 - A. Lagae et al. *Procedural Noise using Sparse Gabor Convolution*. ACM Transactions on Graphics 28(3), 2009. DOI: <https://doi.org/10.1145/1531326.1531360>
 - L. Viitanen. *Physically Based Terrain Generation: Procedural Heightmap Generation Using Plate Tectonics*, 2012. <https://urn.fi/URN:NBN:fi:amk-201204023993>

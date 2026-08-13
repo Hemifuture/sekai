@@ -86,6 +86,7 @@ pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 const CURRENT_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
+const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
 
 /// Persisted provenance of the currently authored world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -992,7 +993,7 @@ impl eframe::App for TemplateApp {
                         );
                     }
                     ui.horizontal(|ui| {
-                        ui.label("板块数量");
+                        ui.label(INITIAL_PLATE_COUNT_LABEL);
                         ui.add(
                             egui::DragValue::new(&mut self.tectonic_spec.plate_count)
                                 .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT),
@@ -1409,6 +1410,7 @@ mod natural_app_tests {
         AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint, NaturalWorldBuildError,
         PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
         CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -1484,6 +1486,11 @@ mod natural_app_tests {
                 renderer: Arc::new(egui::mutex::RwLock::new(renderer)),
             }
         })
+    }
+
+    #[test]
+    fn spherical_authoring_names_the_parameter_as_an_initial_plate_count() {
+        assert_eq!(INITIAL_PLATE_COUNT_LABEL, "初始板块数");
     }
 
     #[derive(Default)]
