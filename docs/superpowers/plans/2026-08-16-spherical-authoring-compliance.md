@@ -156,29 +156,29 @@ Commit: `feat: bind land target to spherical relief`
 - Produces immutable `SphericalNaturalAreaSummary` with requested initial crust, evolved crust, target land, actual land, and sea level getters.
 - `SphericalNaturalFieldDocument::area_summary()` returns `&SphericalNaturalAreaSummary` in O(1).
 
-- [ ] **Step 1: Write document-summary RED**
+- [x] **Step 1: Write document-summary RED**
 
 Build a real outcome and independently recompute both area fractions from authoritative cells. Assert exact agreement, finite values, matching sea level/target, different source rebuild replacing the summary, and repeated reads causing zero catalog/diagnostic/field scans.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `cargo test --lib spherical_natural_display::tests::document_caches_authoritative_area_compliance -- --nocapture`
 
 Expected: missing summary API.
 
-- [ ] **Step 3: Implement cached summary**
+- [x] **Step 3: Implement cached summary**
 
 Read resolved tectonic input and relief spec from the verified BuildOutcome only while constructing the document; store five scalars, not extra large Artifact Arcs.
 
-- [ ] **Step 4: Write UI-copy RED**
+- [x] **Step 4: Write UI-copy RED**
 
 Exercise an egui frame and require “面积依从性”, requested/evolved crust, target/actual land, signed pp delta, and sea level. Ensure no value is derived from screen pixels or raw cell count.
 
-- [ ] **Step 5: Implement and verify GREEN**
+- [x] **Step 5: Implement and verify GREEN**
 
 Show one-decimal percentages and signed one-decimal percentage-point error below the spherical controls. Run document, app, and integration suites.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit: `feat: report spherical area compliance`
 

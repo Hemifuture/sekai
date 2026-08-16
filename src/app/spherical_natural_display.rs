@@ -9,9 +9,9 @@ use crate::engine::{
     BuildResultHash,
 };
 use crate::generators::natural::{
-    ResolvedWorldFormationArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
-    SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
-    SphericalTectonicArtifact,
+    ReliefSpecArtifact, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
+    SphericalGeologicArtifact, SphericalHydroErosionArtifact, SphericalMantleArtifact,
+    SphericalPreliminaryClimateArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::view::{
@@ -20,8 +20,8 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldRegistry};
 use crate::world::natural::{
-    spherical_natural_field_registry, surface_elevation_m_field_id, NaturalFieldRegistryError,
-    SphericalClimateValidationError, SphericalGeologicValidationError,
+    spherical_natural_field_registry, surface_elevation_m_field_id, CrustKind,
+    NaturalFieldRegistryError, SphericalClimateValidationError, SphericalGeologicValidationError,
     SphericalHydroErosionValidationError, SphericalMantleValidationError,
     SphericalReliefValidationError, SphericalTectonicValidationError, WorldFormationSpecError,
 };
@@ -154,6 +154,78 @@ fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
+/// Immutable author-target and authoritative-area measurements for one current world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphericalNaturalAreaSummary {
+    requested_initial_continental_crust_fraction: f64,
+    evolved_continental_crust_fraction: f64,
+    target_land_fraction: f64,
+    actual_land_fraction: f64,
+    sea_level_m: f32,
+}
+
+impl SphericalNaturalAreaSummary {
+    fn build(
+        surface: &SphericalSurfaceArtifact,
+        resolved_tectonic: &ResolvedTectonicInputArtifact,
+        tectonic: &SphericalTectonicArtifact,
+        relief_spec: &ReliefSpecArtifact,
+        relief: &SphericalReliefArtifact,
+    ) -> Self {
+        let total_area = surface.snapshot().total_cell_area().get();
+        let evolved_continental_area = surface
+            .snapshot()
+            .cells()
+            .iter()
+            .zip(tectonic.snapshot().crust_kinds().raw_values())
+            .filter_map(|(cell, &kind)| {
+                (kind == CrustKind::Continental.raw()).then_some(cell.area.get())
+            })
+            .sum::<f64>();
+        let actual_land_area = surface
+            .snapshot()
+            .cells()
+            .iter()
+            .zip(relief.snapshot().land_ocean().raw_values())
+            .filter_map(|(cell, &kind)| (kind == 1).then_some(cell.area.get()))
+            .sum::<f64>();
+        Self {
+            requested_initial_continental_crust_fraction: f64::from(
+                resolved_tectonic.input().spec().continental_crust_fraction,
+            ),
+            evolved_continental_crust_fraction: evolved_continental_area / total_area,
+            target_land_fraction: f64::from(relief_spec.spec().target_land_fraction),
+            actual_land_fraction: actual_land_area / total_area,
+            sea_level_m: relief.snapshot().sea_level_m(),
+        }
+    }
+
+    /// Returns the resolved initial continental-crust share requested by the author.
+    pub const fn requested_initial_continental_crust_fraction(self) -> f64 {
+        self.requested_initial_continental_crust_fraction
+    }
+
+    /// Returns the current continental-crust share after bounded crust evolution.
+    pub const fn evolved_continental_crust_fraction(self) -> f64 {
+        self.evolved_continental_crust_fraction
+    }
+
+    /// Returns the authored target share of emergent land.
+    pub const fn target_land_fraction(self) -> f64 {
+        self.target_land_fraction
+    }
+
+    /// Returns the authoritative area share classified as land.
+    pub const fn actual_land_fraction(self) -> f64 {
+        self.actual_land_fraction
+    }
+
+    /// Returns the selected finite sea level in meters.
+    pub const fn sea_level_m(self) -> f32 {
+        self.sea_level_m
+    }
+}
+
 /// Projection-free, immutable document for one complete spherical natural world.
 pub struct SphericalNaturalFieldDocument {
     pub(super) surface: Arc<SphericalSurfaceArtifact>,
@@ -167,6 +239,7 @@ pub struct SphericalNaturalFieldDocument {
     registry: FieldRegistry,
     diagnostics: Vec<OwnedViewDiagnostic>,
     display_cache: SphericalNaturalDisplayCache,
+    area_summary: SphericalNaturalAreaSummary,
     identity: SphericalNaturalBuildIdentity,
 }
 
@@ -186,9 +259,11 @@ impl SphericalNaturalFieldDocument {
             provenance,
             outcome.artifacts.get::<SphericalSurfaceArtifact>()?,
             outcome.artifacts.get::<ResolvedWorldFormationArtifact>()?,
+            outcome.artifacts.get::<ResolvedTectonicInputArtifact>()?,
             outcome.artifacts.get::<SphericalTectonicArtifact>()?,
             outcome.artifacts.get::<SphericalMantleArtifact>()?,
             outcome.artifacts.get::<SphericalReliefArtifact>()?,
+            outcome.artifacts.get::<ReliefSpecArtifact>()?,
             outcome.artifacts.get::<SphericalGeologicArtifact>()?,
             outcome
                 .artifacts
@@ -203,9 +278,11 @@ impl SphericalNaturalFieldDocument {
         provenance: BuildProvenance,
         surface: Arc<SphericalSurfaceArtifact>,
         formation: Arc<ResolvedWorldFormationArtifact>,
+        resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
         tectonic: Arc<SphericalTectonicArtifact>,
         mantle: Arc<SphericalMantleArtifact>,
         relief: Arc<SphericalReliefArtifact>,
+        relief_spec: Arc<ReliefSpecArtifact>,
         geology: Arc<SphericalGeologicArtifact>,
         climate: Arc<SphericalPreliminaryClimateArtifact>,
         hydro_erosion: Arc<SphericalHydroErosionArtifact>,
@@ -243,6 +320,13 @@ impl SphericalNaturalFieldDocument {
             surface.snapshot().total_cell_area().get(),
         )?;
         let display_cache = SphericalNaturalDisplayCache::build(&surface, &tectonic, &climate)?;
+        let area_summary = SphericalNaturalAreaSummary::build(
+            &surface,
+            &resolved_tectonic,
+            &tectonic,
+            &relief_spec,
+            &relief,
+        );
         let identity = SphericalNaturalBuildIdentity::new(
             &provenance,
             SurfaceRef::for_spherical(surface.snapshot()),
@@ -259,6 +343,7 @@ impl SphericalNaturalFieldDocument {
             registry,
             diagnostics: owned_view_diagnostics(report),
             display_cache,
+            area_summary,
             identity,
         };
         document.catalog()?;
@@ -294,6 +379,11 @@ impl SphericalNaturalFieldDocument {
     /// Borrows immutable document diagnostics used to prepare the shared mask.
     pub fn diagnostics(&self) -> &[OwnedViewDiagnostic] {
         &self.diagnostics
+    }
+
+    /// Borrows the build-time cached authoring-compliance measurements in O(1).
+    pub const fn area_summary(&self) -> &SphericalNaturalAreaSummary {
+        &self.area_summary
     }
 
     /// Returns the product-preferred initial fill field.
@@ -439,10 +529,11 @@ mod tests {
     };
     use crate::generators::natural::{
         spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-        GeologicSpecArtifact, HydroErosionSpecArtifact, ResolvedWorldFormationArtifact,
-        RulePackSetArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
-        SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
-        SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
+        GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact,
+        ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact, RulePackSetArtifact,
+        SphericalGeologicArtifact, SphericalHydroErosionArtifact, SphericalMantleArtifact,
+        SphericalPreliminaryClimateArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
+        TectonicSpecArtifact, WorldFormationSpecArtifact,
     };
     use crate::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
     use crate::gpu::spherical::{
@@ -464,15 +555,15 @@ mod tests {
         boundary_kind_field_id, boundary_strength_field_id, crust_thickness_field_id,
         elevation_field_id, plate_id_field_id, plate_velocity_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
-        surface_elevation_m_field_id, surface_water_kind_field_id, ClimateSpec, GeologicSpec,
-        HydroErosionSpec, TectonicSpec, WorldFormationSpec,
+        surface_elevation_m_field_id, surface_water_kind_field_id, ClimateSpec, CrustKind,
+        GeologicSpec, HydroErosionSpec, ReliefSpec, TectonicSpec, WorldFormationSpec,
     };
     use crate::world::spatial::{canonical_east_north_basis, SurfaceRef};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
-        "16222dfe070c570311ff692be6496d3de2d738a65f73add2d4ba046abebf9c6c";
+        "cef80959ebe7906dd275634bd5a493711fb1fde958ae51f6b901ac698b3f375f";
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,
@@ -532,7 +623,12 @@ mod tests {
         }
     }
 
-    fn build_outcome_with_seed(root_seed: RootSeed, radius_m: f64) -> BuildOutcome {
+    fn build_outcome_with_specs(
+        root_seed: RootSeed,
+        radius_m: f64,
+        tectonic_spec: TectonicSpec,
+        relief_spec: ReliefSpec,
+    ) -> BuildOutcome {
         let mut external = ExternalArtifacts::new();
         external
             .insert(SphericalSpaceArtifact::new(SphericalSpaceSpec {
@@ -541,7 +637,10 @@ mod tests {
             }))
             .unwrap();
         external
-            .insert(TectonicSpecArtifact::new(TectonicSpec::default()))
+            .insert(TectonicSpecArtifact::new(tectonic_spec))
+            .unwrap();
+        external
+            .insert(ReliefSpecArtifact::new(relief_spec))
             .unwrap();
         external
             .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
@@ -567,6 +666,15 @@ mod tests {
         BuildEngine::new(spherical_natural_foundation_graph().unwrap())
             .build(root_seed, external, &mut MemoryStageCache::new())
             .unwrap()
+    }
+
+    fn build_outcome_with_seed(root_seed: RootSeed, radius_m: f64) -> BuildOutcome {
+        build_outcome_with_specs(
+            root_seed,
+            radius_m,
+            TectonicSpec::default(),
+            ReliefSpec::default(),
+        )
     }
 
     fn build_outcome(radius_m: f64) -> BuildOutcome {
@@ -728,9 +836,11 @@ mod tests {
     struct TestArtifacts {
         surface: Arc<SphericalSurfaceArtifact>,
         formation: Arc<ResolvedWorldFormationArtifact>,
+        resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
         tectonic: Arc<SphericalTectonicArtifact>,
         mantle: Arc<SphericalMantleArtifact>,
         relief: Arc<SphericalReliefArtifact>,
+        relief_spec: Arc<ReliefSpecArtifact>,
         geology: Arc<SphericalGeologicArtifact>,
         hydro_erosion: Arc<SphericalHydroErosionArtifact>,
     }
@@ -742,12 +852,17 @@ mod tests {
                 .artifacts
                 .get::<ResolvedWorldFormationArtifact>()
                 .unwrap(),
+            resolved_tectonic: outcome
+                .artifacts
+                .get::<ResolvedTectonicInputArtifact>()
+                .unwrap(),
             tectonic: outcome
                 .artifacts
                 .get::<SphericalTectonicArtifact>()
                 .unwrap(),
             mantle: outcome.artifacts.get::<SphericalMantleArtifact>().unwrap(),
             relief: outcome.artifacts.get::<SphericalReliefArtifact>().unwrap(),
+            relief_spec: outcome.artifacts.get::<ReliefSpecArtifact>().unwrap(),
             geology: outcome
                 .artifacts
                 .get::<SphericalGeologicArtifact>()
@@ -776,6 +891,102 @@ mod tests {
         assert_eq!(document.identity().root_seed(), ROOT_SEED);
         assert_eq!(document.identity().graph_contract_version(), 1);
         assert_eq!(document.catalog().unwrap().entries().len(), 36);
+    }
+
+    #[test]
+    fn document_caches_authoritative_area_compliance() {
+        fn independently_measure(outcome: &BuildOutcome) -> (f64, f64) {
+            let surface = outcome.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
+            let tectonic = outcome
+                .artifacts
+                .get::<SphericalTectonicArtifact>()
+                .unwrap();
+            let relief = outcome.artifacts.get::<SphericalReliefArtifact>().unwrap();
+            let total_area = surface.snapshot().total_cell_area().get();
+            let evolved_continental_area = surface
+                .snapshot()
+                .cells()
+                .iter()
+                .zip(tectonic.snapshot().crust_kinds().raw_values())
+                .filter_map(|(cell, &kind)| {
+                    (kind == CrustKind::Continental.raw()).then_some(cell.area.get())
+                })
+                .sum::<f64>();
+            let actual_land_area = surface
+                .snapshot()
+                .cells()
+                .iter()
+                .zip(relief.snapshot().land_ocean().raw_values())
+                .filter_map(|(cell, &kind)| (kind == 1).then_some(cell.area.get()))
+                .sum::<f64>();
+            (
+                evolved_continental_area / total_area,
+                actual_land_area / total_area,
+            )
+        }
+
+        let mut tectonic_spec = TectonicSpec::default();
+        tectonic_spec.continental_crust_fraction = 0.44;
+        let relief_spec = ReliefSpec {
+            target_land_fraction: 0.57,
+            ..ReliefSpec::default()
+        };
+        let outcome =
+            build_outcome_with_specs(ROOT_SEED, 6_371_000.0, tectonic_spec, relief_spec.clone());
+        let resolved = outcome
+            .artifacts
+            .get::<ResolvedTectonicInputArtifact>()
+            .unwrap();
+        let (expected_evolved, expected_land) = independently_measure(&outcome);
+        let document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
+        let summary = document.area_summary();
+
+        assert_eq!(
+            summary.requested_initial_continental_crust_fraction(),
+            f64::from(resolved.input().spec().continental_crust_fraction)
+        );
+        assert_eq!(
+            summary.evolved_continental_crust_fraction(),
+            expected_evolved
+        );
+        assert_eq!(
+            summary.target_land_fraction(),
+            f64::from(relief_spec.target_land_fraction)
+        );
+        assert_eq!(summary.actual_land_fraction(), expected_land);
+        assert_eq!(
+            summary.sea_level_m(),
+            outcome
+                .artifacts
+                .get::<SphericalReliefArtifact>()
+                .unwrap()
+                .snapshot()
+                .sea_level_m()
+        );
+
+        let summary_address = std::ptr::from_ref(summary);
+        let preparation_before = field_layer_preparation_counts();
+        for _ in 0..20_000 {
+            assert_eq!(summary_address, std::ptr::from_ref(document.area_summary()));
+        }
+        assert_eq!(field_layer_preparation_counts(), preparation_before);
+
+        let replacement = build_outcome_with_specs(
+            RootSeed::new(43),
+            6_371_000.0,
+            TectonicSpec::default(),
+            ReliefSpec {
+                target_land_fraction: 0.25,
+                ..ReliefSpec::default()
+            },
+        );
+        let mut published = Arc::new(document);
+        try_replace_spherical_natural_document(&mut published, &replacement).unwrap();
+        assert_ne!(
+            summary_address,
+            std::ptr::from_ref(published.area_summary())
+        );
+        assert_eq!(published.area_summary().target_land_fraction(), 0.25);
     }
 
     #[test]
@@ -2161,9 +2372,11 @@ mod tests {
             *first.verified_provenance().unwrap(),
             artifacts.surface,
             artifacts.formation,
+            artifacts.resolved_tectonic,
             artifacts.tectonic,
             artifacts.mantle,
             artifacts.relief,
+            artifacts.relief_spec,
             artifacts.geology,
             foreign_climate,
             artifacts.hydro_erosion,

@@ -13,7 +13,9 @@ mod natural_field_payloads;
 mod spherical_natural_display;
 mod spherical_presentation;
 
-pub use spherical_natural_display::{SphericalNaturalDisplayError, SphericalNaturalFieldDocument};
+pub use spherical_natural_display::{
+    SphericalNaturalAreaSummary, SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
+};
 pub use spherical_presentation::{
     build_spherical_external_artifacts, build_spherical_presentation_candidate,
     build_spherical_presentation_candidate_for_view, PublishedSphericalPresentation,
@@ -1087,6 +1089,10 @@ impl eframe::App for TemplateApp {
                                 "{} 个球面单元｜单位球呈现",
                                 presentation.globe().cell_count()
                             ));
+                            show_spherical_area_summary(
+                                ui,
+                                *presentation.document().area_summary(),
+                            );
                             match show_spherical_controls(
                                 ui,
                                 presentation,
@@ -1152,6 +1158,24 @@ fn activity_label(activity: TectonicActivity) -> &'static str {
         TectonicActivity::Moderate => "适中",
         TectonicActivity::Active => "活跃",
     }
+}
+
+fn show_spherical_area_summary(ui: &mut egui::Ui, summary: SphericalNaturalAreaSummary) {
+    ui.group(|ui| {
+        ui.strong("面积依从性");
+        ui.label(format!(
+            "初始大陆地壳面积：作者 {:.1}%｜演化后 {:.1}%",
+            summary.requested_initial_continental_crust_fraction() * 100.0,
+            summary.evolved_continental_crust_fraction() * 100.0,
+        ));
+        ui.label(format!(
+            "陆地面积：目标 {:.1}%｜实际 {:.1}%｜偏差 {:+.1} 个百分点",
+            summary.target_land_fraction() * 100.0,
+            summary.actual_land_fraction() * 100.0,
+            (summary.actual_land_fraction() - summary.target_land_fraction()) * 100.0,
+        ));
+        ui.label(format!("海平面：{:.1} m", summary.sea_level_m()));
+    });
 }
 
 fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
@@ -1424,8 +1448,8 @@ mod natural_app_tests {
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
         configure_frame_stats_scenario, default_world_spec, formation_provenance_label,
-        AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint, NaturalWorldBuildError,
-        PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
+        show_spherical_area_summary, AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint,
+        NaturalWorldBuildError, PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
         CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
         INITIAL_PLATE_COUNT_LABEL,
     };
@@ -2777,6 +2801,57 @@ mod natural_app_tests {
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
 
         assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
+    }
+
+    #[test]
+    fn spherical_author_ui_reports_requested_evolved_target_actual_delta_and_sea_level() {
+        fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect_text(shape, output);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let render_state = request_test_render_state();
+        let app = create_from_persisted(TemplateApp::default(), &render_state);
+        let summary = app
+            .spherical_presentation
+            .read_resource(|current| *current.as_ref().unwrap().document().area_summary());
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                show_spherical_area_summary(ui, summary);
+            });
+        });
+        let mut texts = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut texts);
+        }
+
+        assert!(texts.iter().any(|text| text == "面积依从性"));
+        assert!(texts.iter().any(|text| {
+            text == &format!(
+                "初始大陆地壳面积：作者 {:.1}%｜演化后 {:.1}%",
+                summary.requested_initial_continental_crust_fraction() * 100.0,
+                summary.evolved_continental_crust_fraction() * 100.0,
+            )
+        }));
+        assert!(texts.iter().any(|text| {
+            text == &format!(
+                "陆地面积：目标 {:.1}%｜实际 {:.1}%｜偏差 {:+.1} 个百分点",
+                summary.target_land_fraction() * 100.0,
+                summary.actual_land_fraction() * 100.0,
+                (summary.actual_land_fraction() - summary.target_land_fraction()) * 100.0,
+            )
+        }));
+        assert!(texts
+            .iter()
+            .any(|text| { text == &format!("海平面：{:.1} m", summary.sea_level_m()) }));
     }
 
     #[test]
