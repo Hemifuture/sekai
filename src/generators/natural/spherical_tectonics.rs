@@ -193,7 +193,14 @@ pub enum SphericalTectonicGenerationError {
 #[cfg(test)]
 mod tests {
     use super::model::FormationTectonicRecipe;
-    use crate::world::natural::ResolvedWorldFormationPreset;
+    use super::runner::evolve_current_state;
+    use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
+    use crate::generators::natural::random::LabeledSubstreams;
+    use crate::generators::natural::topology::NaturalTopologyIndex;
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec};
+    use crate::world::spatial::SphericalNaturalSurface;
+    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     #[test]
     fn facade_keeps_domain_modules_orthogonal() {
@@ -256,6 +263,52 @@ mod tests {
             assert!((500..=1_500).contains(&recipe.rift_rate_permille));
             assert!((500..=1_500).contains(&recipe.subduction_gain_permille));
             assert!((500..=1_500).contains(&recipe.island_arc_gain_permille));
+        }
+    }
+
+    #[test]
+    fn high_supported_continental_fraction_keeps_live_plate_rotations_distinct() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 642,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(0),
+            StageIdentity::new("natural.spherical-tectonics", 3, "sekai.core"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let state = evolve_current_state(
+            &surface,
+            &topology,
+            &TectonicSpec {
+                continental_crust_fraction: 0.55,
+                ..TectonicSpec::default()
+            },
+            ResolvedWorldFormationPreset::Continents,
+            &streams,
+        )
+        .unwrap();
+        let live = state
+            .plates
+            .iter()
+            .filter(|plate| {
+                state
+                    .samples
+                    .iter()
+                    .any(|sample| sample.owner == plate.lineage)
+            })
+            .collect::<Vec<_>>();
+        for (index, first) in live.iter().enumerate() {
+            for second in &live[index + 1..] {
+                assert_ne!(
+                    first.rotation, second.rotation,
+                    "live lineages {:?}/{:?} share {:?}",
+                    first.lineage, second.lineage, first.rotation
+                );
+            }
         }
     }
 }

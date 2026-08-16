@@ -296,9 +296,13 @@ fn split_plate(
     }
 
     next.plates.retain(|plate| plate.lineage != parent.lineage);
+    // A rift is one fracture event, so every sibling must be expressed in the
+    // same local frame.  Using each child's (often opposite) seed tangent here
+    // can cancel the opposite centered angles and create co-moving siblings.
+    let fracture_axis_seed = current.samples[seed_indices[0]].position;
     for (child, (&lineage, &seed_index)) in lineages.iter().zip(&seed_indices).enumerate() {
         let seed = current.samples[seed_index];
-        let rotation = divergent_rotation(parent.rotation, seed.position, child, child_count)?;
+        let rotation = divergent_rotation(parent.rotation, fracture_axis_seed, child, child_count)?;
         rotation.validate_for_radius(surface.radius())?;
         next.plates
             .push(ActivePlate::new(lineage, seed.anchor, rotation));
@@ -552,9 +556,15 @@ mod tests {
         assert!(children
             .windows(2)
             .all(|pair| pair[0].lineage < pair[1].lineage));
-        assert!(children
-            .windows(2)
-            .any(|pair| pair[0].rotation != pair[1].rotation));
+        for (index, first) in children.iter().enumerate() {
+            for second in &children[index + 1..] {
+                assert_ne!(
+                    first.rotation, second.rotation,
+                    "rift siblings {:?}/{:?} must not co-move",
+                    first.lineage, second.lineage
+                );
+            }
+        }
         assert!(first
             .samples
             .iter()
