@@ -16,11 +16,13 @@ mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;
 mod hydrology;
 mod island_relief;
+mod land_fraction;
 mod mantle;
 mod morphology;
 mod random;
 mod relief;
 mod relief_noise;
+mod relief_spec;
 mod rule_input;
 mod spherical_climate;
 mod spherical_climate_stage;
@@ -79,6 +81,7 @@ pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroEros
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
+pub use relief_spec::ReliefSpecArtifact;
 pub use rule_input::{
     AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
     ResolvedTectonicInputStage, ResolvedTectonicInputStageInputs, RulePackSetArtifact,

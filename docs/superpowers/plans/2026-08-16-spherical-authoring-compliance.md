@@ -30,6 +30,7 @@
 - Create: `src/generators/natural/relief_spec.rs`
 - Create: `src/generators/natural/land_fraction.rs`
 - Modify: `src/world/natural/mod.rs`
+- Modify: `src/world/natural/relief.rs`
 - Modify: `src/generators/natural/mod.rs`
 - Test: `tests/natural_spec.rs`
 - Test: `src/generators/natural/land_fraction.rs` module tests
@@ -38,35 +39,35 @@
 - Produces: `ReliefSpec { schema_version: u16, target_land_fraction: f32 }`.
 - Produces: `RELIEF_SPEC_SCHEMA_V1`, `MIN_TARGET_LAND_FRACTION`, `MAX_TARGET_LAND_FRACTION`.
 - Produces: `ReliefSpecArtifact::new(ReliefSpec)` and `ReliefSpecArtifact::spec()`.
-- Produces crate-private `select_area_weighted_sea_level(surface, elevation, target) -> Result<LandFractionSelection, LandFractionError>` where selection exposes `sea_level_m`, `actual_land_fraction`, and `target_land_fraction`.
+- Produces crate-private `select_area_weighted_sea_level(cell_areas, elevation, target) -> Result<LandFractionSelection, LandFractionError>` where selection exposes `sea_level_m`, `actual_land_fraction`, and `target_land_fraction`.
 
-- [ ] **Step 1: Write failing spec tests**
+- [x] **Step 1: Write failing spec tests**
 
 Add tests that require V1 default `0.38`, valid inclusive bounds `0.05..=0.75`, rejection of NaN/out-of-range/schema, strict serde roundtrip, and artifact validation.
 
-- [ ] **Step 2: Run the spec RED**
+- [x] **Step 2: Run the spec RED**
 
 Run: `cargo test --test natural_spec relief_spec -- --nocapture`
 
 Expected: compile failure because `ReliefSpec` and its constants do not exist.
 
-- [ ] **Step 3: Implement the minimal validated spec and artifact**
+- [x] **Step 3: Implement the minimal validated spec and artifact**
 
 Use a dedicated `ReliefSpecError`; do not reuse tectonic `NaturalSpecError`. `Deserialize` must validate before returning the value.
 
-- [ ] **Step 4: Write failing weighted-quantile tests**
+- [x] **Step 4: Write failing weighted-quantile tests**
 
 Use a small synthetic surface/elevation fixture with unequal cell areas. Assert that a cell-count median gives the wrong result while the wished production selector chooses the closest real-area prefix, uses stable `CellId` ties, returns finite sea level, and keeps the input elevation bits unchanged.
 
-- [ ] **Step 5: Run the quantile RED**
+- [x] **Step 5: Run the quantile RED**
 
 Run: `cargo test --lib land_fraction::tests -- --nocapture`
 
 Expected: compile failure on the missing selector or test-only public facade.
 
-- [ ] **Step 6: Implement and verify GREEN**
+- [x] **Step 6: Implement and verify GREEN**
 
-Implement one stable `O(N log N)` sort over indices. Classify through the existing `LandOceanField::classify` and recompute actual area from the resulting mask rather than trusting prefix arithmetic.
+Implement one stable `O(N log N)` sort over cell-index ties. Reuse the existing centimeter-quantized `LandOceanKind::classify` semantics and recompute actual area from the resulting mask rather than trusting prefix arithmetic.
 
 Run:
 
@@ -78,7 +79,7 @@ cargo fmt --all -- --check
 
 Expected: all exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add src/world/natural/relief_spec.rs src/world/natural/mod.rs src/generators/natural/relief_spec.rs src/generators/natural/land_fraction.rs src/generators/natural/mod.rs tests/natural_spec.rs

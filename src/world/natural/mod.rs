@@ -12,6 +12,7 @@ mod hydro_erosion_spec;
 mod hydrology;
 mod mantle;
 mod relief;
+mod relief_spec;
 mod spec;
 mod spherical_climate;
 mod spherical_geology;
@@ -98,6 +99,10 @@ pub use relief::{
     ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
     RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V3, RELIEF_SCHEMA_V4, TECTONIC_OFFSET_MAX_M,
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+};
+pub use relief_spec::{
+    ReliefSpec, ReliefSpecError, MAX_TARGET_LAND_FRACTION, MIN_TARGET_LAND_FRACTION,
+    RELIEF_SPEC_SCHEMA_V1,
 };
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,

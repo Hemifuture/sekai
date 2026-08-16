@@ -1,9 +1,15 @@
-use sekai::world::{
-    natural::{
-        NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
-        MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, TECTONIC_SPEC_SCHEMA_V1,
+use sekai::{
+    engine::Artifact,
+    generators::natural::ReliefSpecArtifact,
+    world::{
+        natural::{
+            NaturalSpecError, ReliefSpec, ReliefSpecError, TectonicActivity, TectonicSpec,
+            MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MAX_TARGET_LAND_FRACTION,
+            MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, MIN_TARGET_LAND_FRACTION,
+            RELIEF_SPEC_SCHEMA_V1, TECTONIC_SPEC_SCHEMA_V1,
+        },
+        BoundarySegmentId, PlateId,
     },
-    BoundarySegmentId, PlateId,
 };
 
 #[test]
@@ -117,4 +123,72 @@ fn tectonic_spec_has_a_deterministic_json_round_trip() {
 
     assert_eq!(decoded, spec);
     assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+}
+
+#[test]
+fn default_relief_spec_is_a_valid_explicit_land_area_target() {
+    let spec = ReliefSpec::default();
+
+    assert_eq!(spec.schema_version, RELIEF_SPEC_SCHEMA_V1);
+    assert_eq!(spec.target_land_fraction, 0.38);
+    assert_eq!(spec.validate(), Ok(()));
+    assert!(ReliefSpecArtifact::new(spec).validate().is_ok());
+}
+
+#[test]
+fn relief_spec_accepts_only_finite_inclusive_land_area_bounds() {
+    for target_land_fraction in [MIN_TARGET_LAND_FRACTION, MAX_TARGET_LAND_FRACTION] {
+        assert_eq!(
+            ReliefSpec {
+                target_land_fraction,
+                ..ReliefSpec::default()
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    for target_land_fraction in [
+        f32::NAN,
+        f32::INFINITY,
+        MIN_TARGET_LAND_FRACTION - 0.01,
+        MAX_TARGET_LAND_FRACTION + 0.01,
+    ] {
+        assert!(matches!(
+            ReliefSpec {
+                target_land_fraction,
+                ..ReliefSpec::default()
+            }
+            .validate(),
+            Err(ReliefSpecError::TargetLandFractionOutOfRange { .. })
+        ));
+    }
+
+    assert_eq!(
+        ReliefSpec {
+            schema_version: RELIEF_SPEC_SCHEMA_V1 + 1,
+            ..ReliefSpec::default()
+        }
+        .validate(),
+        Err(ReliefSpecError::UnsupportedSchema {
+            found: RELIEF_SPEC_SCHEMA_V1 + 1,
+            supported: RELIEF_SPEC_SCHEMA_V1,
+        })
+    );
+}
+
+#[test]
+fn relief_spec_deserialization_validates_before_returning_a_value() {
+    let spec = ReliefSpec {
+        target_land_fraction: 0.55,
+        ..ReliefSpec::default()
+    };
+    let encoded = serde_json::to_string(&spec).unwrap();
+    assert_eq!(serde_json::from_str::<ReliefSpec>(&encoded).unwrap(), spec);
+
+    let invalid = format!(
+        r#"{{"schema_version":{},"target_land_fraction":0.38}}"#,
+        RELIEF_SPEC_SCHEMA_V1 + 1
+    );
+    assert!(serde_json::from_str::<ReliefSpec>(&invalid).is_err());
 }
