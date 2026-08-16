@@ -339,4 +339,4 @@ Commit: `test: lock spherical authoring compliance`
 
 Run `git status --short` and `git log -12 --oneline`; tracked worktree must be clean and this plan must contain exact RED/GREEN, hash, performance, UI, GPU, and commit evidence.
 
-Completed commits: `96a63ea feat: render independent spherical layer visibility`; `ea0bddb fix: keep spherical rift siblings divergent`; `1879c11 fix: refresh spherical web releases`; `0a0a28e test: lock spherical authoring compliance`. `git status --short` was empty immediately after the acceptance commit.
+Completed commits: `96a63ea feat: render independent spherical layer visibility`; `ea0bddb fix: keep spherical rift siblings divergent`; `1879c11 fix: refresh spherical web releases`; `0a0a28e test: lock spherical authoring compliance`; `3cba05d docs: record spherical authoring acceptance`; `0bfd9e4 fix: version spherical terrain release`. The scientific/web review fixes are independently committed and the final tracked worktree is clean.
