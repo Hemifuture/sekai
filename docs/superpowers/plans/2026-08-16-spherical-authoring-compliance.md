@@ -332,8 +332,10 @@ Confirm no planar graph imports in spherical relief, no elevation in unit-globe 
 - Fresh gates after the final code delta: fmt, workspace check, strict all-target/all-feature Clippy, wasm32 all-features, Web Release build, and diff check exit 0; workspace all-target/all-feature tests exit 0 in `329.5 s`; doctests `5 passed/8 ignored`; required-GPU full suite exits 0 in `333.9 s` with no GPU skip; Vulkan and GL public golden suites are each `5/5`.
 - Boundary audit: the sole production land selection call is `spherical_relief.rs -> land_fraction.rs`; unit-globe mesh construction accepts only authoritative surface directions and enforces radius 1; the tectonic workspace retains only reusable current/next buffers; spherical relief/tectonics have no planar imports or planar fallback; area compliance is built once into the document and read by const reference; visibility lives only in the fixed frame uniform and does not alter prepared-layer identity or immutable uploads.
 
-- [ ] **Step 7: Commit acceptance and verify clean completion**
+- [x] **Step 7: Commit acceptance and verify clean completion**
 
 Commit: `test: lock spherical authoring compliance`
 
 Run `git status --short` and `git log -12 --oneline`; tracked worktree must be clean and this plan must contain exact RED/GREEN, hash, performance, UI, GPU, and commit evidence.
+
+Completed commits: `96a63ea feat: render independent spherical layer visibility`; `ea0bddb fix: keep spherical rift siblings divergent`; `1879c11 fix: refresh spherical web releases`; `0a0a28e test: lock spherical authoring compliance`. `git status --short` was empty immediately after the acceptance commit.
