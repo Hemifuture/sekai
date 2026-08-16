@@ -13,8 +13,8 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{PlanarSpaceArtifact, SphericalSpaceArtifact};
 use sekai::view::{
     DisplayRevisionClock, GlobeCamera, MapCamera, SelectedSurfaceEntity,
-    SphericalFieldDisplayState, SphericalMeshBudgets, SphericalProjection, SphericalProjectionKind,
-    SphericalViewMode, VectorGlyphLod,
+    SphericalFieldDisplayState, SphericalLayerVisibility, SphericalMeshBudgets,
+    SphericalProjection, SphericalProjectionKind, SphericalViewMode, VectorGlyphLod,
 };
 use sekai::world::fields::FieldId;
 use sekai::world::natural::{
@@ -27,9 +27,9 @@ use sekai::{
     ui::spherical::{
         apply_spherical_canvas_action, build_spherical_control_catalog,
         build_spherical_inspector_model, interact_spherical_canvas, legacy_compatibility_ui,
-        queue_spherical_canvas_callback, SphericalCanvasAction, SphericalCanvasInvalidation,
-        SphericalCanvasState, SphericalOverlayControlKind, SphericalUiError, GLYPH_DENSITY_LABELS,
-        VECTOR_DISPLAY_SPEED_LABEL,
+        queue_spherical_canvas_callback, show_spherical_controls, SphericalCanvasAction,
+        SphericalCanvasInvalidation, SphericalCanvasState, SphericalOverlayControlKind,
+        SphericalUiError, GLYPH_DENSITY_LABELS, VECTOR_DISPLAY_SPEED_LABEL,
     },
     TemplateApp,
 };
@@ -861,6 +861,135 @@ fn spherical_canvas_state_round_trips_and_rejects_invalid_runtime_numbers() {
 }
 
 #[test]
+fn layer_visibility_defaults_migrates_round_trips_and_invalidates_only_uniforms() {
+    let mut state = SphericalCanvasState::default();
+    assert_eq!(
+        state.field_state().layer_visibility(),
+        SphericalLayerVisibility {
+            fill: true,
+            overlay: true,
+        }
+    );
+
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetFillVisible(false))
+            .unwrap(),
+        SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+    );
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetFillVisible(false))
+            .unwrap(),
+        SphericalCanvasInvalidation::NONE
+    );
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetOverlayVisible(false))
+            .unwrap(),
+        SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+    );
+    assert_eq!(
+        state
+            .apply(SphericalCanvasAction::SetOverlayVisible(false))
+            .unwrap(),
+        SphericalCanvasInvalidation::NONE
+    );
+
+    let encoded = serde_json::to_value(&state).unwrap();
+    assert_eq!(encoded["field_state"]["fill_visible"], false);
+    assert_eq!(encoded["field_state"]["overlay_visible"], false);
+    let restored: SphericalCanvasState = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(restored, state);
+
+    let mut old_wire = encoded;
+    old_wire["field_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fill_visible");
+    old_wire["field_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("overlay_visible");
+    let migrated: SphericalCanvasState = serde_json::from_value(old_wire).unwrap();
+    assert_eq!(
+        migrated.field_state().layer_visibility(),
+        SphericalLayerVisibility {
+            fill: true,
+            overlay: true,
+        }
+    );
+}
+
+#[test]
+fn layer_visibility_preserves_the_exact_published_packet_and_immutable_uploads() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(403, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let mut published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    drop(gpu);
+    let mut encoded = serde_json::to_value(SphericalCanvasState::default()).unwrap();
+    let field_wire = encoded["field_state"].as_object_mut().unwrap();
+    field_wire.insert(
+        "fill_field".into(),
+        serde_json::to_value(published.state().fill_field()).unwrap(),
+    );
+    field_wire.insert(
+        "overlay_field".into(),
+        serde_json::to_value(published.state().overlay_field()).unwrap(),
+    );
+    field_wire.insert(
+        "range_mode".into(),
+        serde_json::to_value(published.state().range_mode()).unwrap(),
+    );
+    let mut state: SphericalCanvasState = serde_json::from_value(encoded).unwrap();
+    assert_eq!(state.field_state(), published.state());
+
+    let packet = Arc::clone(published.gpu_packet_arc());
+    let layers = Arc::clone(published.layers_arc());
+    let source = published.source().clone();
+    let revisions = published.revisions();
+    let counters = renderer.upload_counters();
+
+    for action in [
+        SphericalCanvasAction::SetFillVisible(false),
+        SphericalCanvasAction::SetOverlayVisible(false),
+    ] {
+        assert_eq!(
+            apply_spherical_canvas_action(
+                &mut published,
+                &mut renderer,
+                &device,
+                &queue,
+                &mut state,
+                action,
+            )
+            .unwrap(),
+            SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+        );
+    }
+
+    assert_eq!(
+        state.field_state().layer_visibility(),
+        SphericalLayerVisibility {
+            fill: false,
+            overlay: false,
+        }
+    );
+    assert_eq!(published.state(), state.field_state());
+    assert!(Arc::ptr_eq(&packet, published.gpu_packet_arc()));
+    assert!(Arc::ptr_eq(&layers, published.layers_arc()));
+    assert_eq!(published.source(), &source);
+    assert_eq!(published.revisions(), revisions);
+    assert_eq!(renderer.upload_counters(), counters);
+}
+
+#[test]
 fn map_camera_rejects_gpu_unrenderable_and_out_of_product_bounds_atomically() {
     let projection = SphericalProjectionKind::EqualEarth;
     let mut camera = MapCamera::default();
@@ -1291,6 +1420,99 @@ fn spherical_controls_expose_exact_channels_and_non_physical_vector_labels() {
     assert_eq!(VECTOR_DISPLAY_SPEED_LABEL, "显示速度（非物理时间）");
     assert_eq!(GLYPH_DENSITY_LABELS, ["Low", "Medium", "High"]);
     assert_eq!(VectorGlyphLod::default(), VectorGlyphLod::Medium);
+}
+
+#[test]
+fn spherical_layer_visibility_controls_are_formal_and_emit_exact_actions() {
+    let mut cache = MemoryStageCache::new();
+    let candidate = candidate(419, &mut cache);
+    let (device, queue) = request_test_device();
+    let mut renderer = sekai::gpu::spherical::SphericalFieldRenderer::new(
+        &device,
+        eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+    let published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
+    let context = egui::Context::default();
+    let mut state = SphericalCanvasState::default();
+
+    let (layout_actions, layout) = run_spherical_controls_frame(
+        &context,
+        spherical_raw_input(Vec::new()),
+        &published,
+        &state,
+    );
+    assert!(layout_actions.is_empty());
+    for label in ["显示图层", "显示填色", "显示叠加", "显示诊断"] {
+        assert!(
+            layout
+                .shapes
+                .iter()
+                .any(|shape| find_text_center(&shape.shape, label).is_some()),
+            "missing formal layer control {label}"
+        );
+    }
+
+    let overlay_center = layout
+        .shapes
+        .iter()
+        .find_map(|shape| find_text_center(&shape.shape, "显示叠加"))
+        .unwrap();
+    let disabled = click_spherical_control(&context, overlay_center, &published, &state);
+    assert!(
+        disabled.is_empty(),
+        "no selected overlay keeps the checkbox disabled"
+    );
+    assert!(state.field_state().overlay_visible());
+
+    let fill_center = layout
+        .shapes
+        .iter()
+        .find_map(|shape| find_text_center(&shape.shape, "显示填色"))
+        .unwrap();
+    let fill = click_spherical_control(&context, fill_center, &published, &state);
+    assert_eq!(fill, vec![SphericalCanvasAction::SetFillVisible(false)]);
+    state.apply(fill.into_iter().next().unwrap()).unwrap();
+
+    state
+        .apply(SphericalCanvasAction::SelectOverlay(Some(
+            preliminary_prevailing_wind_m_s_field_id(),
+        )))
+        .unwrap();
+    let (_, overlay_layout) = run_spherical_controls_frame(
+        &context,
+        spherical_raw_input(Vec::new()),
+        &published,
+        &state,
+    );
+    let overlay_center = overlay_layout
+        .shapes
+        .iter()
+        .find_map(|shape| find_text_center(&shape.shape, "显示叠加"))
+        .unwrap();
+    let overlay = click_spherical_control(&context, overlay_center, &published, &state);
+    assert_eq!(
+        overlay,
+        vec![SphericalCanvasAction::SetOverlayVisible(false)]
+    );
+    state.apply(overlay.into_iter().next().unwrap()).unwrap();
+
+    let (_, diagnostic_layout) = run_spherical_controls_frame(
+        &context,
+        spherical_raw_input(Vec::new()),
+        &published,
+        &state,
+    );
+    let diagnostic_center = diagnostic_layout
+        .shapes
+        .iter()
+        .find_map(|shape| find_text_center(&shape.shape, "显示诊断"))
+        .unwrap();
+    let diagnostics = click_spherical_control(&context, diagnostic_center, &published, &state);
+    assert_eq!(
+        diagnostics,
+        vec![SphericalCanvasAction::SetDiagnosticsEnabled(false)]
+    );
 }
 
 #[test]
@@ -2745,6 +2967,56 @@ fn spherical_raw_input(events: Vec<egui::Event>) -> egui::RawInput {
         events,
         ..egui::RawInput::default()
     }
+}
+
+fn run_spherical_controls_frame(
+    context: &egui::Context,
+    input: egui::RawInput,
+    presentation: &PublishedSphericalPresentation,
+    state: &SphericalCanvasState,
+) -> (Vec<SphericalCanvasAction>, egui::FullOutput) {
+    let mut actions = Vec::new();
+    let output = context.run(input, |context| {
+        egui::SidePanel::left("spherical-layer-controls-test").show(context, |ui| {
+            actions = show_spherical_controls(ui, presentation, state).unwrap();
+        });
+    });
+    (actions, output)
+}
+
+fn click_spherical_control(
+    context: &egui::Context,
+    position: egui::Pos2,
+    presentation: &PublishedSphericalPresentation,
+    state: &SphericalCanvasState,
+) -> Vec<SphericalCanvasAction> {
+    let (pressed, _) = run_spherical_controls_frame(
+        context,
+        spherical_raw_input(vec![
+            egui::Event::PointerMoved(position),
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]),
+        presentation,
+        state,
+    );
+    assert!(pressed.is_empty());
+    run_spherical_controls_frame(
+        context,
+        spherical_raw_input(vec![egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]),
+        presentation,
+        state,
+    )
+    .0
 }
 
 fn discover_public_canvas_layout(

@@ -195,11 +195,11 @@ Commit: `feat: report spherical area compliance`
 - `SphericalLayerVisibility { fill: bool, overlay: bool }` returned by state.
 - `SphericalCanvasAction::{SetFillVisible(bool), SetOverlayVisible(bool)}`.
 
-- [ ] **Step 1: Write state/action/persistence RED**
+- [x] **Step 1: Write state/action/persistence RED**
 
 Assert defaults are visible, old wire data defaults to visible, roundtrip preserves both flags, changed actions return only presenter-uniform invalidation, identical actions return `NONE`, and packet/layer source/revisions/Arcs remain exact.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -210,19 +210,19 @@ cargo test --test spherical_presentation_integration layer_visibility -- --nocap
 
 Expected: missing methods/actions and missing persisted fields.
 
-- [ ] **Step 3: Implement state and declarative actions**
+- [x] **Step 3: Implement state and declarative actions**
 
 Visibility must not enter `PreparedLayerState`, layer matching, diagnostic fingerprints, revision clocks, or packet keys.
 
-- [ ] **Step 4: Write UI RED**
+- [x] **Step 4: Write UI RED**
 
 Run a real egui controls frame and require the “显示图层” group with three checkboxes. Toggling each emits exactly one corresponding action; overlay visibility is disabled when no overlay is selected but its stored preference is retained.
 
-- [ ] **Step 5: Implement controls and verify GREEN**
+- [x] **Step 5: Implement controls and verify GREEN**
 
 Keep fill/overlay field ComboBoxes; place the new group immediately after them. Run UI and presentation integration suites.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit: `feat: restore spherical layer visibility controls`
 

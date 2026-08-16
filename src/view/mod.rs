@@ -29,7 +29,7 @@ pub use field_layers::{
     GlobeVectorGlyph, GlyphLodKey, MapVectorGlyph, PreparedEdgeField, PreparedFieldLayers,
     PreparedOverlayKind, PreparedSphericalOverlay, PreparedVectorField, PreparedVectorGlyphs,
     SelectedSurfaceEntity, SphericalFieldChannel, SphericalFieldDisplayState,
-    VectorAnimationUniform, VectorGlyphLod,
+    SphericalLayerVisibility, VectorAnimationUniform, VectorGlyphLod,
 };
 #[cfg(test)]
 pub(crate) use field_layers::{

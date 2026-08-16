@@ -1125,11 +1125,31 @@ impl PreparedFieldLayers {
     }
 }
 
+/// Independent fixed-frame visibility of the two formal spherical data layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SphericalLayerVisibility {
+    /// Whether the single cell-fill layer is visible.
+    pub fill: bool,
+    /// Whether the selected edge/vector overlay layer is visible.
+    pub overlay: bool,
+}
+
+impl Default for SphericalLayerVisibility {
+    fn default() -> Self {
+        Self {
+            fill: true,
+            overlay: true,
+        }
+    }
+}
+
 /// UI-independent selection and preferences for spherical field presentation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SphericalFieldDisplayState {
     fill_field: Option<FieldId>,
     overlay_field: Option<FieldId>,
+    fill_visible: bool,
+    overlay_visible: bool,
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostics_enabled: bool,
@@ -1146,6 +1166,8 @@ impl Default for SphericalFieldDisplayState {
         Self {
             fill_field: None,
             overlay_field: None,
+            fill_visible: true,
+            overlay_visible: true,
             range_mode: DisplayRangeMode::Data,
             palette_override: None,
             diagnostics_enabled: true,
@@ -1178,6 +1200,34 @@ impl SphericalFieldDisplayState {
     /// Returns the field selected for the overlay channel.
     pub fn overlay_field(&self) -> Option<&FieldId> {
         self.overlay_field.as_ref()
+    }
+
+    /// Shows or hides the cell-fill layer without rebuilding its prepared data.
+    pub fn set_fill_visible(&mut self, visible: bool) {
+        self.fill_visible = visible;
+    }
+
+    /// Returns whether the cell-fill layer is visible.
+    pub const fn fill_visible(&self) -> bool {
+        self.fill_visible
+    }
+
+    /// Shows or hides the selected edge/vector overlay without rebuilding it.
+    pub fn set_overlay_visible(&mut self, visible: bool) {
+        self.overlay_visible = visible;
+    }
+
+    /// Returns whether the selected edge/vector overlay is visible.
+    pub const fn overlay_visible(&self) -> bool {
+        self.overlay_visible
+    }
+
+    /// Returns the fixed-frame visibility flags for the two formal data layers.
+    pub const fn layer_visibility(&self) -> SphericalLayerVisibility {
+        SphericalLayerVisibility {
+            fill: self.fill_visible,
+            overlay: self.overlay_visible,
+        }
     }
 
     /// Sets the active scalar range mode.
@@ -2042,6 +2092,37 @@ mod vector_glyph_tests {
     };
     use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
+
+    #[test]
+    fn layer_visibility_defaults_visible_and_is_not_layer_bearing_state() {
+        let mut state = super::SphericalFieldDisplayState::default();
+        assert_eq!(
+            state.layer_visibility(),
+            super::SphericalLayerVisibility {
+                fill: true,
+                overlay: true,
+            }
+        );
+        let prepared_before = super::PreparedLayerState::from(&state);
+
+        state.set_fill_visible(false);
+        state.set_overlay_visible(false);
+
+        assert!(!state.fill_visible());
+        assert!(!state.overlay_visible());
+        assert_eq!(
+            state.layer_visibility(),
+            super::SphericalLayerVisibility {
+                fill: false,
+                overlay: false,
+            }
+        );
+        assert_eq!(
+            super::PreparedLayerState::from(&state),
+            prepared_before,
+            "visibility is fixed-frame presentation state, not a layer preparation key"
+        );
+    }
 
     fn glyph_fixture(seed: u64, selected: CellId, lod: GlyphLodKey) -> PreparedVectorGlyphs {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {

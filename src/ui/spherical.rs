@@ -56,6 +56,10 @@ pub enum SphericalCanvasAction {
     SelectFill(FieldId),
     /// Selects or clears the sole edge/vector overlay.
     SelectOverlay(Option<FieldId>),
+    /// Shows or hides the selected cell-fill layer.
+    SetFillVisible(bool),
+    /// Shows or hides the selected edge/vector overlay layer.
+    SetOverlayVisible(bool),
     /// Shows or hides diagnostics.
     SetDiagnosticsEnabled(bool),
     /// Selects one authoritative surface entity.
@@ -249,6 +253,20 @@ impl SphericalCanvasState {
             SphericalCanvasAction::SelectOverlay(field) => {
                 self.field_state.select_overlay(field);
                 Ok(SphericalCanvasInvalidation::FIELD_LAYERS)
+            }
+            SphericalCanvasAction::SetFillVisible(visible) => {
+                if self.field_state.fill_visible() == visible {
+                    return Ok(SphericalCanvasInvalidation::NONE);
+                }
+                self.field_state.set_fill_visible(visible);
+                Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
+            }
+            SphericalCanvasAction::SetOverlayVisible(visible) => {
+                if self.field_state.overlay_visible() == visible {
+                    return Ok(SphericalCanvasInvalidation::NONE);
+                }
+                self.field_state.set_overlay_visible(visible);
+                Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
             }
             SphericalCanvasAction::SetDiagnosticsEnabled(enabled) => {
                 self.field_state.set_diagnostics_enabled(enabled);
@@ -724,6 +742,8 @@ impl GlobeCameraWire {
 struct SphericalFieldStateWire {
     fill_field: Option<FieldId>,
     overlay_field: Option<FieldId>,
+    fill_visible: bool,
+    overlay_visible: bool,
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostics_enabled: bool,
@@ -746,6 +766,8 @@ impl SphericalFieldStateWire {
         Self {
             fill_field: state.fill_field().cloned(),
             overlay_field: state.overlay_field().cloned(),
+            fill_visible: state.fill_visible(),
+            overlay_visible: state.overlay_visible(),
             range_mode: state.range_mode(),
             palette_override: state.palette_override(),
             diagnostics_enabled: state.diagnostics_enabled(),
@@ -764,6 +786,8 @@ impl SphericalFieldStateWire {
             state.select_fill(field);
         }
         state.select_overlay(self.overlay_field);
+        state.set_fill_visible(self.fill_visible);
+        state.set_overlay_visible(self.overlay_visible);
         state.set_range_mode(self.range_mode);
         state.set_palette_override(self.palette_override);
         state.set_diagnostics_enabled(self.diagnostics_enabled);
@@ -1223,12 +1247,32 @@ pub fn show_spherical_controls(
             }
         });
 
-    let mut diagnostics_enabled = state.field_state().diagnostics_enabled();
-    if ui.checkbox(&mut diagnostics_enabled, "显示诊断").changed() {
-        actions.push(SphericalCanvasAction::SetDiagnosticsEnabled(
-            diagnostics_enabled,
-        ));
-    }
+    ui.group(|ui| {
+        ui.label("显示图层");
+
+        let mut fill_visible = state.field_state().fill_visible();
+        if ui.checkbox(&mut fill_visible, "显示填色").changed() {
+            actions.push(SphericalCanvasAction::SetFillVisible(fill_visible));
+        }
+
+        let mut overlay_visible = state.field_state().overlay_visible();
+        if ui
+            .add_enabled(
+                selected_overlay.is_some(),
+                egui::Checkbox::new(&mut overlay_visible, "显示叠加"),
+            )
+            .changed()
+        {
+            actions.push(SphericalCanvasAction::SetOverlayVisible(overlay_visible));
+        }
+
+        let mut diagnostics_enabled = state.field_state().diagnostics_enabled();
+        if ui.checkbox(&mut diagnostics_enabled, "显示诊断").changed() {
+            actions.push(SphericalCanvasAction::SetDiagnosticsEnabled(
+                diagnostics_enabled,
+            ));
+        }
+    });
 
     let vector_active = controls.overlay_fields().iter().any(|control| {
         control.field() == selected_overlay && control.kind() == SphericalOverlayControlKind::Vector
