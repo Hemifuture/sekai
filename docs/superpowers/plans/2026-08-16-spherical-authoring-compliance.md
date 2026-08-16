@@ -240,21 +240,21 @@ Commit: `feat: restore spherical layer visibility controls`
 - `SphericalPaintCallback::with_layer_visibility(SphericalLayerVisibility)`.
 - `SphericalFrameUniform` adds aligned `fill_visible` and `overlay_visible` u32 flags.
 
-- [ ] **Step 1: Write real offscreen RED**
+- [x] **Step 1: Write real offscreen RED**
 
 For map and globe, render one source-bound packet into RGBA8 with: all visible; fill hidden/diagnostics off; fill hidden/diagnostics on with a known diagnostic cell; overlay hidden. Assert semantic foreground masks and unchanged immutable upload counters/installed key.
 
-- [ ] **Step 2: Run required-GPU RED**
+- [x] **Step 2: Run required-GPU RED**
 
 Run: `$env:SEKAI_REQUIRE_SPHERICAL_GPU='1'; cargo test --lib gpu::spherical::renderer::tests::layer_visibility -- --nocapture`
 
 Expected: visible output is unchanged because the flags do not exist.
 
-- [ ] **Step 3: Implement uniform/shader plumbing**
+- [x] **Step 3: Implement uniform/shader plumbing**
 
 Transparent base fill uses alpha blending; diagnostics can still replace transparent base. Overlay fragment discards when hidden. Keep geometry, palette, diagnostics, and instance buffers installed.
 
-- [ ] **Step 4: Add same-frame callback integration RED/GREEN**
+- [x] **Step 4: Add same-frame callback integration RED/GREEN**
 
 Use the public two-phase interact → publish → queue API and real renderer readback. Verify visibility captures the current persisted state and cannot use a stale callback packet.
 

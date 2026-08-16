@@ -1822,6 +1822,7 @@ fn public_canvas_uniform_actions_paint_current_pan_and_view_in_the_same_frame() 
             delta: [0.25, -0.125],
         },
         SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe),
+        SphericalCanvasAction::SetFillVisible(false),
     ] {
         let mut cache = MemoryStageCache::new();
         let initial = candidate(745, &mut cache);
@@ -1921,6 +1922,10 @@ fn public_canvas_uniform_actions_paint_current_pan_and_view_in_the_same_frame() 
                 assert_eq!(state.map_camera().pan(state.projection().kind()), delta);
             }
             SphericalCanvasAction::SetViewMode(mode) => assert_eq!(state.view_mode(), mode),
+            SphericalCanvasAction::SetFillVisible(visible) => {
+                assert_eq!(state.field_state().fill_visible(), visible);
+                assert_eq!(published.state().fill_visible(), visible);
+            }
             _ => unreachable!(),
         }
     }

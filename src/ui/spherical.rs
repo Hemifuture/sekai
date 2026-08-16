@@ -1147,7 +1147,8 @@ pub fn queue_spherical_canvas_callback(
         state.globe_camera(),
         viewport,
     )
-    .with_vector_animation(state.vector_animation());
+    .with_vector_animation(state.vector_animation())
+    .with_layer_visibility(state.field_state().layer_visibility());
     ui.painter()
         .add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect, callback,

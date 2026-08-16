@@ -11,6 +11,9 @@ struct SphericalFrameUniform {
     viewport_pixels: vec2<f32>,
     vector_phase: f32,
     globe_silhouette_clip: u32,
+    fill_visible: u32,
+    overlay_visible: u32,
+    _padding: vec2<u32>,
 }
 
 struct VertexOutput {
@@ -82,7 +85,11 @@ fn apply_diagnostic_overlay(base: vec4<f32>, cell: u32) -> vec4<f32> {
 fn vertex_output(position: vec4<f32>, cell: u32) -> VertexOutput {
     var output: VertexOutput;
     output.position = frame.transform * position;
-    output.color = apply_diagnostic_overlay(decode_fill_color(cell), cell);
+    var base = vec4<f32>(0.0);
+    if frame.fill_visible != 0u {
+        base = decode_fill_color(cell);
+    }
+    output.color = apply_diagnostic_overlay(base, cell);
     return output;
 }
 
@@ -235,6 +242,9 @@ fn vs_globe_overlay(
 
 @fragment
 fn fs_overlay(input: OverlayOutput) -> @location(0) vec4<f32> {
+    if frame.overlay_visible == 0u {
+        discard;
+    }
     if frame.globe_silhouette_clip != 0u {
         let radius = vec2<f32>(
             length(vec3<f32>(frame.transform[0].x, frame.transform[1].x, frame.transform[2].x)),

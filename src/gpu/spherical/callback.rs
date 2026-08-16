@@ -5,7 +5,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use super::renderer::{SphericalFrameUniform, SphericalGpuPacket};
 use super::{SphericalFieldRenderer, SphericalRenderMode};
-use crate::view::{GlobeCamera, MapCamera, VectorAnimationUniform};
+use crate::view::{GlobeCamera, MapCamera, SphericalLayerVisibility, VectorAnimationUniform};
 
 /// Egui-wgpu callback for one source-bound spherical fill packet and active camera.
 pub struct SphericalPaintCallback {
@@ -15,6 +15,7 @@ pub struct SphericalPaintCallback {
     globe_camera: GlobeCamera,
     viewport_pixels: [u32; 2],
     vector_animation: VectorAnimationUniform,
+    layer_visibility: SphericalLayerVisibility,
     prepared_generation: AtomicU64,
 }
 
@@ -34,6 +35,7 @@ impl SphericalPaintCallback {
             globe_camera,
             viewport_pixels,
             vector_animation: VectorAnimationUniform::default(),
+            layer_visibility: SphericalLayerVisibility::default(),
             prepared_generation: AtomicU64::new(0),
         }
     }
@@ -41,6 +43,12 @@ impl SphericalPaintCallback {
     /// Replaces the display-only vector highlight phase captured for this paint.
     pub fn with_vector_animation(mut self, animation: VectorAnimationUniform) -> Self {
         self.vector_animation = animation;
+        self
+    }
+
+    /// Replaces the independently persisted fill/overlay visibility captured for this paint.
+    pub fn with_layer_visibility(mut self, visibility: SphericalLayerVisibility) -> Self {
+        self.layer_visibility = visibility;
         self
     }
 }
@@ -64,18 +72,24 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
             return Vec::new();
         }
         let uniform = match self.mode {
-            SphericalRenderMode::Map => SphericalFrameUniform::for_map_with_animation(
-                &self.packet,
-                self.map_camera,
-                self.viewport_pixels,
-                self.vector_animation,
-            ),
-            SphericalRenderMode::Globe => SphericalFrameUniform::for_globe_with_animation(
-                &self.packet,
-                self.globe_camera,
-                self.viewport_pixels,
-                self.vector_animation,
-            ),
+            SphericalRenderMode::Map => {
+                SphericalFrameUniform::for_map_with_animation_and_visibility(
+                    &self.packet,
+                    self.map_camera,
+                    self.viewport_pixels,
+                    self.vector_animation,
+                    self.layer_visibility,
+                )
+            }
+            SphericalRenderMode::Globe => {
+                SphericalFrameUniform::for_globe_with_animation_and_visibility(
+                    &self.packet,
+                    self.globe_camera,
+                    self.viewport_pixels,
+                    self.vector_animation,
+                    self.layer_visibility,
+                )
+            }
         };
         let result = uniform.and_then(|uniform| renderer.prepare_frame(queue, self.mode, &uniform));
         match result {

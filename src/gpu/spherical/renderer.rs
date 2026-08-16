@@ -10,8 +10,8 @@ use super::overlay::{
 use crate::view::{
     DisplayRevision, GlobeCamera, LinearRgba, MapCamera, OwnedViewDiagnostic, PreparedFieldKind,
     PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap, PreparedSphericalOverlay,
-    SphericalPresentationSource, VectorAnimationUniform, DIAGNOSTIC_ERROR_COLOR,
-    DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
+    SphericalLayerVisibility, SphericalPresentationSource, VectorAnimationUniform,
+    DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
 };
 
 const MIN_BUFFER_BYTES: u64 = 16;
@@ -103,6 +103,9 @@ pub(super) struct SphericalFrameUniform {
     viewport_pixels: [f32; 2],
     vector_phase: f32,
     globe_silhouette_clip: u32,
+    fill_visible: u32,
+    overlay_visible: u32,
+    _padding: [u32; 2],
 }
 
 impl SphericalFrameUniform {
@@ -120,6 +123,38 @@ impl SphericalFrameUniform {
         camera: MapCamera,
         viewport: [u32; 2],
         animation: VectorAnimationUniform,
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_map_with_animation_and_visibility(
+            packet,
+            camera,
+            viewport,
+            animation,
+            SphericalLayerVisibility::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_map_with_visibility(
+        packet: &SphericalGpuPacket,
+        camera: MapCamera,
+        viewport: [u32; 2],
+        visibility: SphericalLayerVisibility,
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_map_with_animation_and_visibility(
+            packet,
+            camera,
+            viewport,
+            VectorAnimationUniform::default(),
+            visibility,
+        )
+    }
+
+    pub(super) fn for_map_with_animation_and_visibility(
+        packet: &SphericalGpuPacket,
+        camera: MapCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
+        visibility: SphericalLayerVisibility,
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let bounds = packet.map().bounds();
@@ -161,6 +196,7 @@ impl SphericalFrameUniform {
             [width as f32, height as f32],
             animation,
             false,
+            visibility,
         )
     }
 
@@ -178,6 +214,38 @@ impl SphericalFrameUniform {
         camera: GlobeCamera,
         viewport: [u32; 2],
         animation: VectorAnimationUniform,
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_globe_with_animation_and_visibility(
+            packet,
+            camera,
+            viewport,
+            animation,
+            SphericalLayerVisibility::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_globe_with_visibility(
+        packet: &SphericalGpuPacket,
+        camera: GlobeCamera,
+        viewport: [u32; 2],
+        visibility: SphericalLayerVisibility,
+    ) -> Result<Self, SphericalRenderError> {
+        Self::for_globe_with_animation_and_visibility(
+            packet,
+            camera,
+            viewport,
+            VectorAnimationUniform::default(),
+            visibility,
+        )
+    }
+
+    pub(super) fn for_globe_with_animation_and_visibility(
+        packet: &SphericalGpuPacket,
+        camera: GlobeCamera,
+        viewport: [u32; 2],
+        animation: VectorAnimationUniform,
+        visibility: SphericalLayerVisibility,
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let aspect = width / height;
@@ -232,6 +300,7 @@ impl SphericalFrameUniform {
             [width as f32, height as f32],
             animation,
             true,
+            visibility,
         )
     }
 
@@ -241,6 +310,7 @@ impl SphericalFrameUniform {
         viewport_pixels: [f32; 2],
         animation: VectorAnimationUniform,
         globe_silhouette_clip: bool,
+        visibility: SphericalLayerVisibility,
     ) -> Result<Self, SphericalRenderError> {
         let palette_len = u32::try_from(packet.layers().fill_palette().len()).map_err(|_| {
             SphericalRenderError::IntegerOverflow {
@@ -277,6 +347,9 @@ impl SphericalFrameUniform {
             viewport_pixels,
             vector_phase: animation.phase(),
             globe_silhouette_clip: u32::from(globe_silhouette_clip),
+            fill_visible: u32::from(visibility.fill),
+            overlay_visible: u32::from(visibility.overlay),
+            _padding: [0; 2],
         })
     }
 }
@@ -2184,9 +2257,10 @@ mod tests {
         category_color, prepare_spherical_field_layers, scalar_color, DisplayRangeMode,
         DisplayRevision, DisplayRevisionClock, FieldCatalog, GlobeCamera, LinearRgba, MapCamera,
         OwnedViewDiagnostic, PaletteId, PreparedFieldKind, PreparedGlobeMesh, PreparedProjectedMap,
-        SelectedSurfaceEntity, SphericalFieldDisplayState, SphericalMeshBudgets,
-        SphericalPresentationSource, SphericalProjection, SphericalProjectionKind,
-        VectorAnimationUniform, VectorGlyphLod, ViewDiagnosticSeverity, DIAGNOSTIC_ERROR_COLOR,
+        SelectedSurfaceEntity, SphericalFieldDisplayState, SphericalLayerVisibility,
+        SphericalMeshBudgets, SphericalPresentationSource, SphericalProjection,
+        SphericalProjectionKind, VectorAnimationUniform, VectorGlyphLod, ViewDiagnosticSeverity,
+        DIAGNOSTIC_ERROR_COLOR,
     };
     use crate::world::fields::{
         DomainSizes, ExtensionFieldSet, FieldData, FieldDisplayMetadata, FieldDomain, FieldId,
@@ -2202,7 +2276,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuGlobeVertex>(), 16);
         assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
         assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);
-        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 112);
+        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 128);
     }
 
     #[test]
@@ -2696,6 +2770,145 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn layer_visibility_is_independent_for_fill_overlay_and_diagnostics_in_map_and_globe() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = overlay_diagnostic_packet_fixture(211);
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        let installed = renderer.upload_counters();
+
+        for (mode, viewport) in [
+            (SphericalRenderMode::Map, [256, 128]),
+            (SphericalRenderMode::Globe, [128, 128]),
+        ] {
+            let make_uniform = |visibility| match mode {
+                SphericalRenderMode::Map => SphericalFrameUniform::for_map_with_visibility(
+                    &fixture.packet,
+                    MapCamera::default(),
+                    viewport,
+                    visibility,
+                ),
+                SphericalRenderMode::Globe => SphericalFrameUniform::for_globe_with_visibility(
+                    &fixture.packet,
+                    GlobeCamera::default(),
+                    viewport,
+                    visibility,
+                ),
+            };
+            let render = |renderer: &mut SphericalFieldRenderer,
+                          uniform: &SphericalFrameUniform| {
+                renderer.prepare_frame(&queue, mode, uniform).unwrap();
+                readback_renderer(&device, &queue, renderer, mode, viewport)
+            };
+
+            let all = render(
+                &mut renderer,
+                &make_uniform(SphericalLayerVisibility::default()).unwrap(),
+            );
+
+            let mut overlay_only = make_uniform(SphericalLayerVisibility {
+                fill: false,
+                overlay: true,
+            })
+            .unwrap();
+            overlay_only.diagnostics_enabled = 0;
+            let overlay_only = render(&mut renderer, &overlay_only);
+
+            let mut transparent = make_uniform(SphericalLayerVisibility {
+                fill: false,
+                overlay: false,
+            })
+            .unwrap();
+            transparent.diagnostics_enabled = 0;
+            let transparent = render(&mut renderer, &transparent);
+
+            let diagnostic_only = render(
+                &mut renderer,
+                &make_uniform(SphericalLayerVisibility {
+                    fill: false,
+                    overlay: false,
+                })
+                .unwrap(),
+            );
+
+            let mut fill_only = make_uniform(SphericalLayerVisibility {
+                fill: true,
+                overlay: false,
+            })
+            .unwrap();
+            fill_only.diagnostics_enabled = 0;
+            let fill_only = render(&mut renderer, &fill_only);
+
+            let opaque =
+                |pixels: &[u8]| pixels.chunks_exact(4).filter(|pixel| pixel[3] != 0).count();
+            assert_eq!(opaque(&transparent), 0, "{mode:?}: both layers hidden");
+            assert!(
+                opaque(&overlay_only) > 0,
+                "{mode:?}: overlay remains visible"
+            );
+            assert!(
+                opaque(&diagnostic_only) > 0,
+                "{mode:?}: diagnostic remains visible"
+            );
+            assert!(
+                opaque(&diagnostic_only) < opaque(&fill_only),
+                "{mode:?}: diagnostic-only output must not restore the hidden fill"
+            );
+            assert_ne!(all, fill_only, "{mode:?}: hiding overlay changes pixels");
+            let cell = fixture.diagnostic_cell.unwrap();
+            let position = match mode {
+                SphericalRenderMode::Map => {
+                    let point = fixture
+                        .packet
+                        .map()
+                        .projection()
+                        .forward(fixture.surface.cells()[cell].centroid)
+                        .unwrap();
+                    [point.x() as f32, point.y() as f32, 0.0, 1.0]
+                }
+                SphericalRenderMode::Globe => {
+                    let [x, y, z] = fixture.surface.cells()[cell]
+                        .centroid
+                        .components()
+                        .map(|value| value as f32);
+                    [x, y, z, 1.0]
+                }
+            };
+            let uniform = make_uniform(SphericalLayerVisibility {
+                fill: false,
+                overlay: false,
+            })
+            .unwrap();
+            assert_pixel_near(
+                &diagnostic_only,
+                viewport,
+                transformed_pixel(uniform.transform, position, viewport),
+                linear_to_srgba8(DIAGNOSTIC_ERROR_COLOR),
+                2,
+            );
+        }
+
+        let after = renderer.upload_counters();
+        assert_eq!(after.map_geometry, installed.map_geometry);
+        assert_eq!(after.globe_geometry, installed.globe_geometry);
+        assert_eq!(after.fill_field, installed.fill_field);
+        assert_eq!(after.diagnostics, installed.diagnostics);
+        assert_eq!(after.palettes, installed.palettes);
+        assert_eq!(after.map_overlay_instances, installed.map_overlay_instances);
+        assert_eq!(
+            after.globe_overlay_instances,
+            installed.globe_overlay_instances
+        );
+        assert_eq!(after.uniforms, installed.uniforms + 10);
+        assert!(renderer.callback_packet_is_current(&fixture.packet));
     }
 
     #[test]
@@ -3527,7 +3740,11 @@ mod tests {
     }
 
     fn overlay_packet_fixture(kind: OverlayTestKind, seed: u64) -> PacketFixture {
-        overlay_packet_fixture_inner(kind, seed, None, None)
+        overlay_packet_fixture_inner(kind, seed, None, None, false)
+    }
+
+    fn overlay_diagnostic_packet_fixture(seed: u64) -> PacketFixture {
+        overlay_packet_fixture_inner(OverlayTestKind::EdgeScalar, seed, None, None, true)
     }
 
     fn vector_packet_fixture(seed: u64, front: bool) -> PacketFixture {
@@ -3536,6 +3753,7 @@ mod tests {
             seed,
             Some(VectorFixturePlacement::Hemisphere(front)),
             None,
+            false,
         )
     }
 
@@ -3545,6 +3763,7 @@ mod tests {
             seed,
             Some(VectorFixturePlacement::ProjectionPole),
             None,
+            false,
         )
     }
 
@@ -3554,6 +3773,7 @@ mod tests {
             seed,
             None,
             Some(EdgeFixturePlacement::Hemisphere(front)),
+            false,
         )
     }
 
@@ -3563,6 +3783,7 @@ mod tests {
             seed,
             Some(VectorFixturePlacement::HorizonCrossing),
             None,
+            false,
         )
     }
 
@@ -3572,6 +3793,7 @@ mod tests {
             seed,
             None,
             Some(EdgeFixturePlacement::HorizonCrossing),
+            false,
         )
     }
 
@@ -3580,6 +3802,7 @@ mod tests {
         seed: u64,
         vector_placement: Option<VectorFixturePlacement>,
         edge_placement: Option<EdgeFixturePlacement>,
+        with_diagnostic: bool,
     ) -> PacketFixture {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
             radius: Meters::new(6_371_000.0).unwrap(),
@@ -3795,6 +4018,23 @@ mod tests {
         state.select_overlay(Some(overlay_id));
         state.set_vector_lod(VectorGlyphLod::High);
         state.select_entity(selected_cell.map(SelectedSurfaceEntity::Cell));
+        let diagnostic_cell = with_diagnostic.then(|| {
+            surface
+                .cells()
+                .iter()
+                .position(|cell| cell.centroid.components()[2] > 0.5)
+                .expect("fixture has a front-facing cell")
+        });
+        let diagnostics = diagnostic_cell
+            .map(|cell| OwnedViewDiagnostic {
+                severity: ViewDiagnosticSeverity::Error,
+                code: "test.spherical.visibility".into(),
+                field_id: Some(fill_id.clone()),
+                cell_id: Some(CellId::from_raw(cell as u32)),
+                message: "visibility diagnostic".into(),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         let mut clock = DisplayRevisionClock::default();
         let layers = Arc::new(
             prepare_spherical_field_layers(
@@ -3802,7 +4042,7 @@ mod tests {
                 &catalog,
                 cell_count,
                 edge_count,
-                &[],
+                &diagnostics,
                 Some(fill_id),
                 |_| Some(DisplayRangeMode::Data),
                 &mut state,
@@ -3821,8 +4061,8 @@ mod tests {
             packet,
             layers,
             surface,
-            diagnostic_cell: None,
-            diagnostics: Vec::new(),
+            diagnostic_cell,
+            diagnostics,
         }
     }
 
