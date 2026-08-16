@@ -376,82 +376,82 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "7508bb5c153d3c230186d59aadea74be14e8c3d9ef210feb34928e2211e2bf99",
+            "ba9a9ffaac37104c19835948185f7fb5105af88b7c0df39369619f1898ffb8c9",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "5e6fdc5bd162d7ac05672795c3b6a1d0c7d946bae45d9c38459c31ecb7b3505b",
+            "11db743dde5068afc35b77781e19f9f56970f06b61e45a7357b8f576f0d47559",
         ),
         (
             "map_category_fill",
             &map_category,
-            "63f8bd1f588e2064a46b8271161d3cb8acbbb2d7574e7f2a68f96bbacb1374e4",
+            "be02bbbebf1aec22600262092c536cd4865149d26b343e96afbb00f0b44f2288",
         ),
         (
             "globe_category_fill",
             &globe_category,
-            "ccf9c78d28707961f14d909e8f608a0f5c518c9a3c2ca1bb36931f2cdd414a3f",
+            "83f1ed379ee7841397b8e43c5c252679f94d9b6182641caca1cfd4db7d98d060",
         ),
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "7e68aac10d6b3255b85f824964870bd3e8ebc9b4bbf09efd8889bc773ebf2f2a",
+            "c675a6900adc2131b1ccac489c97faf92d2101843de2701e5364ab3799ce8ad2",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "8f35eeb4f0e52c7dfa5558bbcd40c22f7785c71500e9f8f43c176134bd72057d",
+            "c36ab5872b28a6019bb328b8fc3b2dbad87b00b7ceda2e7210840122d4df664b",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "9b7263a4e957f70cffa631f1b932f0c06ef09515c48ae66221b198eba554d98e",
+            "7a73e83168600192e50434c86318dfd957346231a0b997ea0139620187386954",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "12bc7215befe5a4e0c7a3363c84c048dc053b6b5c2b5a932e3c1eaa937b54351",
+            "2f75ab877dfc01989462407b8a2647cea9bee15df370a11c7d8cf3f3ab0d9fe9",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "150910e0b2c537b37922fe800e50fc03150f9eea154b9598103295e604d83d21",
+            "e57496e9a1e9f073ab6e755afe401ae913ef9f5836fcf1559d4da5ca1f20f668",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "0be079c450796a6b6a190caa012b63b47e29438576512a12224e6ecfd0f1dd8d",
+            "2f8607949439ac3e022a3138cd9d9d536e56368058536855122c061621b23a69",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "a04765aaf99c621aba2ecea8386df3ff32b39525c325c4121cfecaf3bd14f8a9",
+            "c29e422f3dd01157a5b389e506f4ca09a32519005e0a468c74ff17ec84280a82",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "ca99cdf2b0c1dcc51012e5e63625e3d3e20ea6249205c8eb6dcf6f3499226ef6",
+            "baa1a0b615519d68396b23d715c433c92adcbafaaeceebff2d92cd8e32f7caa1",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "eb61d5ead1c227dbf8d3b5654351b7e7ed118820504cfca8ce5c13e8757299d1",
+            "0296847b4db9a43b87adf19ec0da8a37e561af31c22fe32ad7c7945b9a8cd9e7",
         ),
         (
             "map_poles",
             &map_poles,
-            "c4de496f5c1ecc5a71b3c638edc5ad0bb94ea945b56b9dbd6d92406c5265aacf",
+            "45954cc3f27db3141a2722d3354f0bc931af4d3108b0707512fb9a0de66b5dab",
         ),
         (
             "globe_front_visibility",
             &globe_front,
-            "ccf9c78d28707961f14d909e8f608a0f5c518c9a3c2ca1bb36931f2cdd414a3f",
+            "83f1ed379ee7841397b8e43c5c252679f94d9b6182641caca1cfd4db7d98d060",
         ),
         (
             "globe_back_visibility",
             &globe_back,
-            "f540b5ff5c677a33af013ee91be9a704b0810866303c5ac353bb7102f394d9e7",
+            "3cd1ed9ed98772ebdf8ca6bf63c4d383730c51043eadaed0d8ee659bf7978e91",
         ),
     ]
     .into_iter()
@@ -676,8 +676,7 @@ fn assert_vector_glyph_semantics(
     glyphs: &PreparedVectorGlyphs,
 ) {
     const EXPECTED_SAMPLED_IDS: &[u32] = &[
-        1, 2, 3, 17, 30, 42, 52, 54, 66, 73, 76, 77, 89, 98, 101, 112, 114, 115, 124, 127, 132,
-        134, 135, 136, 141, 148, 152, 155,
+        16, 18, 27, 28, 45, 68, 77, 84, 99, 101, 111, 112, 117, 124, 127, 136, 137, 143, 148,
     ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());

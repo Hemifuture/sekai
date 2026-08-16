@@ -161,6 +161,12 @@ UI 使用一位小数百分比和带符号百分点差值：
 - 单位球顶点不读取 elevation；
 - 无历史切片、第二套海岸算法、投影物理或公开 morphology 中间态。
 
-## 8. 完成定义
+## 8. 科学阶段身份与 Web 缓存隔离
+
+共享断裂坐标系改变了球面板块构造的科学输出，因此 `SphericalTectonicStage` 必须使用版本 `4`。该版本是 RNG 派生、StageCache 键和可复现性标签的一部分；球面构造语义发生变化时不得沿用版本 `3`，也不得以更新金图代替缓存身份升级。`SphericalTectonicSnapshot` 的数据布局未变，所以 wire schema 不随算法版本无意义递增。
+
+Service Worker 只拥有 `sekai-pwa-*` 缓存以及明确列出的历史 Sekai 缓存 `egui-template-pwa`。激活时不得删除同源其他应用的 CacheStorage 条目；离线回退也必须从当前 `cacheName` 打开的命名缓存读取，禁止使用 origin-wide `caches.match(...)`。
+
+## 9. 完成定义
 
 只有在正式图层开关、两个独立参数、实际面积摘要、面积加权目标、原子错误路径、多 seed/20k/GPU/UI 验收和完整工程门禁全部通过，且工作树以独立实现和验收提交保持干净时完成。本切片不留下待实现项。

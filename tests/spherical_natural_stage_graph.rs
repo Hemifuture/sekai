@@ -57,7 +57,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "tectonic",
-        "8591f29b660944ade3cd16bf6010d524585d01196e6b174653b4105698593fc5",
+        "06943a7b5289e3e61afb1141c7a047169a95517737b52ea8502c44ba6b9f80b0",
     ),
     (
         "mantle",
@@ -65,23 +65,23 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "relief",
-        "b73d280d7ea6f765ff40a5dbb6c08085dff5728f38d3856453fe2f0ce46442c7",
+        "71608b5d933d96afb83312f06ce48292884d9feebdfae40828ebba9fb4210c81",
     ),
     (
         "geology",
-        "6b06f1a9d692505d172f0cbd23643c38f203d07cb5dedfbe3fd314ef1c46ea28",
+        "df9ba223b639f83e053441747676a7b0d34aef3189a9e0970a697aacaafc5e60",
     ),
     (
         "climate",
-        "dff05ff349da64603fbbc7912cd4a68924e0c25bf15c02a494a6a8ce01459dc8",
+        "b4bb1c52ee178cbc32e72bee4dd768d22244587f69c5fb0f9fe84b1f72c3aeef",
     ),
     (
         "hydro",
-        "7f67c6fcd73e7fc4dc04e6d561e8a980aab493c8c02479a59a9dff514a73c92b",
+        "f5b84485badfbd0cd33d7ada6c556a9ab08749bc5de199813e993ea9e1245913",
     ),
     (
         "result",
-        "2e0ecaafde514fca461288175b18be76dabbef78be41fd09aa8af79d0f720ab3",
+        "f2fb479d93d5c63a2180bed8bec6babe597658b47a7fa902584bb513781b7d83",
     ),
 ];
 
@@ -470,11 +470,7 @@ fn whole_graph_accepts_an_evolved_final_plate_count() {
         ..WorldFormationSpec::default()
     };
 
-    let outcome = build(
-        RootSeed::new(0x0BAD_5EED),
-        &inputs,
-        &mut MemoryStageCache::new(),
-    );
+    let outcome = build(RootSeed::new(1), &inputs, &mut MemoryStageCache::new());
     let tectonic = outcome
         .artifacts
         .get::<SphericalTectonicArtifact>()

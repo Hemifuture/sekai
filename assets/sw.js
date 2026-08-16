@@ -1,4 +1,6 @@
-const cacheName = 'sekai-pwa-network-first-v2';
+const cachePrefix = 'sekai-pwa-';
+const cacheName = `${cachePrefix}network-first-v2`;
+const legacyCacheNames = new Set(['egui-template-pwa']);
 const filesToCache = [
   './',
   './index.html',
@@ -20,7 +22,7 @@ self.addEventListener('install', function (e) {
   );
 });
 
-/* Retire every cache owned by an older release before taking control. */
+/* Retire only Sekai caches owned by an older release before taking control. */
 self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches
@@ -29,7 +31,10 @@ self.addEventListener('activate', function (e) {
         return Promise.all(
           names
             .filter(function (name) {
-              return name !== cacheName;
+              return (
+                name !== cacheName &&
+                (name.startsWith(cachePrefix) || legacyCacheNames.has(name))
+              );
             })
             .map(function (name) {
               return caches.delete(name);
@@ -66,14 +71,16 @@ self.addEventListener('fetch', function (e) {
         });
       })
       .catch(function () {
-        return caches.match(e.request).then(function (cached) {
-          if (cached) {
-            return cached;
-          }
-          if (e.request.mode === 'navigate') {
-            return caches.match('./index.html');
-          }
-          return undefined;
+        return caches.open(cacheName).then(function (cache) {
+          return cache.match(e.request).then(function (cached) {
+            if (cached) {
+              return cached;
+            }
+            if (e.request.mode === 'navigate') {
+              return cache.match('./index.html');
+            }
+            return undefined;
+          });
         });
       })
   );

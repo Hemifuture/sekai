@@ -29,7 +29,7 @@ fn service_worker_fetches_current_assets_before_offline_fallback() {
         .find("fetch(e.request")
         .expect("the worker must try the network for the current release");
     let fallback = worker
-        .find("caches.match(e.request)")
+        .find("cache.match(e.request)")
         .expect("the worker must retain an offline cache fallback");
 
     assert!(worker.contains("'./sekai.js'"));
@@ -52,4 +52,21 @@ fn page_forces_service_worker_update_and_reloads_on_controller_change() {
     assert!(index.contains("registration.update()"));
     assert!(index.contains("controllerchange"));
     assert!(index.contains("window.location.reload()"));
+}
+
+#[test]
+fn service_worker_only_retires_sekai_owned_caches() {
+    let worker = workspace_file("assets/sw.js");
+
+    assert!(worker.contains("const cachePrefix = 'sekai-pwa-';"));
+    assert!(worker.contains("name.startsWith(cachePrefix)"));
+    assert!(worker.contains("'egui-template-pwa'"));
+    assert!(
+        worker.contains("caches.open(cacheName)"),
+        "offline fallback must read from Sekai's named cache"
+    );
+    assert!(
+        !worker.contains("caches.match("),
+        "an origin-wide fallback could return another application's cached response"
+    );
 }

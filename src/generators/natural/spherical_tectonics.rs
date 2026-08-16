@@ -277,7 +277,7 @@ mod tests {
         let topology = NaturalTopologyIndex::from_surface(&view);
         let mut rng = StageRng::from_seed(derive_stage_seed(
             RootSeed::new(0),
-            StageIdentity::new("natural.spherical-tectonics", 3, "sekai.core"),
+            StageIdentity::new("natural.spherical-tectonics", 4, "sekai.core"),
         ));
         let streams = LabeledSubstreams::capture(&mut rng);
         let state = evolve_current_state(
