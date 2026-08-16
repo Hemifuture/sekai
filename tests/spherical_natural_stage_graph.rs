@@ -57,7 +57,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "tectonic",
-        "802555285055b7045ad5c69fa47e7f3ef1e39be408200263e89de980865c0054",
+        "8591f29b660944ade3cd16bf6010d524585d01196e6b174653b4105698593fc5",
     ),
     (
         "mantle",
@@ -65,23 +65,23 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "relief",
-        "e52b670b1a61f658a1928b77c6771275e9389d6f270aa6f241145a60e92813a1",
+        "b73d280d7ea6f765ff40a5dbb6c08085dff5728f38d3856453fe2f0ce46442c7",
     ),
     (
         "geology",
-        "f987d18c42ab451b6ca03c2e7aad9b97cdb76e0c9a15c2b2d733544d8c061838",
+        "6b06f1a9d692505d172f0cbd23643c38f203d07cb5dedfbe3fd314ef1c46ea28",
     ),
     (
         "climate",
-        "f3a93da9fe01db3fa9ba76a948ee9b8bb790208342fee36ece5d33ff1d38b62e",
+        "dff05ff349da64603fbbc7912cd4a68924e0c25bf15c02a494a6a8ce01459dc8",
     ),
     (
         "hydro",
-        "e3d5a1e3d89e3ad243328cdedea08bfc209e9a1a8e4611fb41cafa0704367bc1",
+        "7f67c6fcd73e7fc4dc04e6d561e8a980aab493c8c02479a59a9dff514a73c92b",
     ),
     (
         "result",
-        "779b762ac084099deff67a3c9e1aa2b65457100e5efd73b14518b4ddde6af03a",
+        "2e0ecaafde514fca461288175b18be76dabbef78be41fd09aa8af79d0f720ab3",
     ),
 ];
 
@@ -276,8 +276,10 @@ fn graph_requires_exactly_the_nine_approved_external_artifacts() {
 
 #[test]
 fn invalid_land_target_is_rejected_before_any_stage_runs() {
-    let mut invalid = ReliefSpec::default();
-    invalid.target_land_fraction = f32::NAN;
+    let invalid = ReliefSpec {
+        target_land_fraction: f32::NAN,
+        ..ReliefSpec::default()
+    };
     let error = ExternalArtifacts::new()
         .insert(ReliefSpecArtifact::new(invalid))
         .unwrap_err();

@@ -4,7 +4,7 @@
 
 日期：2026-08-16
 
-范围：修正球面正式应用的图层可见性、初始大陆壳语义、目标陆地面积、实际面积反馈与参数验收；不改变程序化板块构造、单位球几何、单一当前态或 LegacyPlanarV1。
+范围：修正球面正式应用的图层可见性、初始大陆壳语义、目标陆地面积、实际面积反馈、参数验收与 Web 发行新鲜度；不改变程序化板块构造、单位球几何、单一当前态或 LegacyPlanarV1。
 
 ## 1. 决策摘要
 
@@ -13,6 +13,7 @@
 3. 正式文档在一次构建时缓存面积摘要：解析后的初始大陆壳请求、演化后大陆壳面积、目标陆地面积、实际陆地面积与选定海平面。UI 每帧只读常数大小摘要，禁止重新扫描单元。
 4. 左侧恢复正式的“显示图层”区域，包含“填色”“叠加”“诊断”三个独立复选框。字段选择仍由一个填色槽位和一个可选边／向量槽位承担，不恢复旧 Voronoi、Delaunay 和点调试渲染。
 5. 填色与叠加可见性是 renderer-neutral 持久化显示状态，只更新固定大小帧 uniform；不得重建世界、字段层、几何、glyph 或上传大缓冲。
+6. Web 发行必须优先取得当前 `sekai.js`/`sekai_bg.wasm`，旧 Service Worker cache 不得长期遮蔽新 UI 或算法。构建显式禁用本机不稳定的外部 Binaryen `wasm-opt` pass；Rust release profile 和浏览器运行语义保持不变。
 6. 默认和具名 formation 选择会可见地把“初始大陆地壳比例”和“目标陆地面积比例”同时填入对应推荐值；选择 Random 保留作者已填写的两个数值。
 
 ## 2. 参数契约
@@ -24,7 +25,7 @@
 构造演化允许碰撞压缩、地块转移、裂谷伸展和洋壳扩张改变最终表面覆盖。最终大陆壳不得被事后阈值或海岸算法强行改回输入比例。验收改为：
 
 - 初始面积命中请求；
-- 在相同 seed/formation/activity 下，提高初始比例不得降低最终大陆壳面积；
+- 在相同 seed/formation/activity 下，初始大陆壳掩膜必须随请求比例严格嵌套；Cortial 裂谷率会读取当前板块的大陆壳占比并可形成新海，因此不虚构逐个 seed 的最终单调保证。最终响应以固定配对多种子矩阵的均值与中位变化均为正来验收；
 - 支持范围内的最终大陆壳必须同时保留大陆壳和洋壳，并满足冻结的有界保有率；
 - UI 明确同时显示请求值和演化后实际值。
 
@@ -141,7 +142,7 @@ UI 使用一位小数百分比和带符号百分点差值：
 - 5 个 formation × 17 seeds 的实际陆地面积误差不超过 cutoff plateau 面积，并在正式连续高程 fixture 上不超过一个最大 cell 面积；
 - 20,252-cell seeds `[3, 7, 11, 19, 42]` 的实际陆地与目标差不超过 `0.01`；
 - 同 seed 的目标陆地 `0.20 < 0.38 < 0.55` 产生单调实际面积，而高度字段 bits 完全相同、只允许 sea level/land mask 改变；
-- 同 seed 的初始大陆壳 `0.20 < 0.38 < 0.55` 产生单调演化后大陆壳面积；
+- 同 seed 的初始大陆壳 `0.20 < 0.38 < 0.55` 在初始状态中逐 cell 嵌套并各自在一个最大 cell 面积内命中请求；17 个固定配对 seed 的演化后大陆壳面积，其相邻档位均值差和中位差必须为正；
 - 不允许最终 land mask 与 crust-kind mask 退化为恒等。
 
 ### 7.2 UI 与 GPU
@@ -150,10 +151,12 @@ UI 使用一位小数百分比和带符号百分点差值：
 - 填色／叠加开关保持 exact packet/layers/map/globe Arc、所有 immutable upload counters 和 revisions；
 - map/globe offscreen readback 分别证明填色、叠加和诊断独立可见；
 - 左侧真实 UI smoke 能看到“显示图层”和“面积依从性”，重建后数值与权威 Artifact 相同。
+- Service Worker 使用同源 GET network-first、离线 cache fallback，激活时清理旧 cache 并立即接管；页面禁止从 HTTP cache 更新 worker，controller 更新后只重载一次。
+- `trunk build --release` 必须从当前源码成功产生 `sekai.js`、`sekai_bg.wasm` 和当前 worker；不得静默复用旧 `dist`。
 
 ### 7.3 工程门禁
 
-- 所有 stage graph、artifact hash、source identity、atomic publication、WASM、strict Clippy、格式、required-GPU、Release 20k 性能和完整 workspace 测试通过；
+- 所有 stage graph、artifact hash、source identity、atomic publication、WASM、Web release build、strict Clippy、格式、required-GPU、Release 20k 性能和完整 workspace 测试通过；
 - LegacyPlanarV1 hashes 不变；
 - 单位球顶点不读取 elevation；
 - 无历史切片、第二套海岸算法、投影物理或公开 morphology 中间态。

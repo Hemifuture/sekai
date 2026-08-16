@@ -114,7 +114,7 @@ fn tectonic_fixture(
     set_continental(
         SUBMERGED_CONTINENT_CELL,
         35.0,
-        -1_200.0,
+        -8_000.0,
         &mut kinds,
         &mut thickness_km,
         &mut age_myr,
@@ -210,7 +210,24 @@ fn current_crust_state_drives_coarse_height_and_not_a_kind_mask() {
     assert!(relief.elevation_m().values()[TRENCH_CELL] < 0.0);
     assert!(relief.elevation_m().values()[UPLIFT_CELL] > 0.0);
     assert!(relief.regional_offset_m().values()[OROGEN_CELL] > 0.0);
-    assert_eq!(relief.sea_level_m().to_bits(), 0.0_f32.to_bits());
+    assert!(relief.sea_level_m().is_finite());
+    let actual_land_fraction = surface
+        .cells()
+        .iter()
+        .filter(|cell| relief.land_ocean_kind(cell.id) == Some(LandOceanKind::Land))
+        .map(|cell| cell.area.get())
+        .sum::<f64>()
+        / surface.total_cell_area().get();
+    let maximum_cell_area_fraction = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .fold(0.0, f64::max)
+        / surface.total_cell_area().get();
+    assert!(
+        (actual_land_fraction - f64::from(ReliefSpec::default().target_land_fraction)).abs()
+            <= maximum_cell_area_fraction
+    );
     assert_eq!(
         relief.land_ocean_kind(CellId::from_raw(SUBMERGED_CONTINENT_CELL as u32)),
         Some(LandOceanKind::Ocean)

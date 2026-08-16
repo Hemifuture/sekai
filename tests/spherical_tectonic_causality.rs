@@ -183,8 +183,11 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
     let mut transform_endpoint_count = 0_usize;
     let mut land_continental_intersection_m2 = 0.0;
     let mut land_continental_union_m2 = 0.0;
+    let mut land_area_m2 = 0.0;
     let mut continental_area_m2 = 0.0;
     let mut continental_land_area_m2 = 0.0;
+    let mut oceanic_area_m2 = 0.0;
+    let mut oceanic_land_area_m2 = 0.0;
     let mut continental_coarse_elevations = Vec::new();
     let mut continental_final_elevations = Vec::new();
     let mut continental_coarse_by_orogeny = [Vec::new(), Vec::new(), Vec::new()];
@@ -219,6 +222,9 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
             let index = cell.id.raw() as usize;
             let continental = tectonic.crust_kind(cell.id) == Some(CrustKind::Continental);
             let land = relief.land_ocean_kind(cell.id) == Some(LandOceanKind::Land);
+            if land {
+                land_area_m2 += cell.area.get();
+            }
             if continental && land {
                 land_continental_intersection_m2 += cell.area.get();
                 continental_land_area_m2 += cell.area.get();
@@ -238,6 +244,11 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
                 if orogeny_index != 0 {
                     continental_age_by_orogeny[orogeny_index]
                         .push(f64::from(tectonic.orogeny_age_myr()[index]));
+                }
+            } else {
+                oceanic_area_m2 += cell.area.get();
+                if land {
+                    oceanic_land_area_m2 += cell.area.get();
                 }
             }
             if continental || land {
@@ -358,7 +369,10 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
     let convergent_offset_median = median(&mut convergent_offsets);
     let convergent_signed_median = median(&mut convergent_signed_offsets);
     let land_crust_jaccard = land_continental_intersection_m2 / land_continental_union_m2;
+    let actual_land_fraction =
+        land_area_m2 / (surface.total_cell_area().get() * CAUSALITY_SEEDS.len() as f64);
     let continental_land_fraction = continental_land_area_m2 / continental_area_m2;
+    let oceanic_land_fraction = oceanic_land_area_m2 / oceanic_area_m2;
     let continental_coarse_median = median(&mut continental_coarse_elevations);
     let continental_final_median = median(&mut continental_final_elevations);
     let continental_orogeny_summary = continental_coarse_by_orogeny
@@ -374,7 +388,7 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
     let transform_active_fraction =
         transform_active_orogenic as f64 / transform_endpoint_count as f64;
     eprintln!(
-        "causality aggregate: subduction={} correct={subduction_correct_fraction:.4} median_delta={subduction_difference_median:.1}m andean_override={andean_overriding} andean_descend={andean_descending}; ridge={} age={ridge_age_median:.2}mya elev={ridge_elevation_median:.1}m; old_ocean={} age={old_ocean_age_median:.2}mya elev={old_ocean_elevation_median:.1}m; collision={} offset={collision_offset_median:.1}m himalayan={himalayan_collision}; transform={} abs_offset={transform_offset_median:.1}m signed={transform_signed_median:.1}m active={transform_active_fraction:.4} convergent_abs={convergent_offset_median:.1}m signed={convergent_signed_median:.1}m active={convergent_active_fraction:.4}; continental land={continental_land_fraction:.4} coarse_median={continental_coarse_median:.1}m final_median={continental_final_median:.1}m by_orogeny={continental_orogeny_summary:?} ages={continental_orogeny_age_summary:?}; land/crust_jaccard={land_crust_jaccard:.4}",
+        "causality aggregate: subduction={} correct={subduction_correct_fraction:.4} median_delta={subduction_difference_median:.1}m andean_override={andean_overriding} andean_descend={andean_descending}; ridge={} age={ridge_age_median:.2}mya elev={ridge_elevation_median:.1}m; old_ocean={} age={old_ocean_age_median:.2}mya elev={old_ocean_elevation_median:.1}m; collision={} offset={collision_offset_median:.1}m himalayan={himalayan_collision}; transform={} abs_offset={transform_offset_median:.1}m signed={transform_signed_median:.1}m active={transform_active_fraction:.4} convergent_abs={convergent_offset_median:.1}m signed={convergent_signed_median:.1}m active={convergent_active_fraction:.4}; actual land={actual_land_fraction:.4} continental land={continental_land_fraction:.4} oceanic land={oceanic_land_fraction:.4} coarse_median={continental_coarse_median:.1}m final_median={continental_final_median:.1}m by_orogeny={continental_orogeny_summary:?} ages={continental_orogeny_age_summary:?}; land/crust_jaccard={land_crust_jaccard:.4}",
         subduction_relief_difference.len(),
         ridge_elevations.len(),
         old_ocean_elevations.len(),
@@ -395,6 +409,16 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
     assert!(ridge_elevation_median > old_ocean_elevation_median);
     assert!(collision_offset_median > 0.0);
     assert!(transform_active_fraction < convergent_active_fraction * 0.5);
-    assert!((0.55..=0.85).contains(&continental_land_fraction));
+    let maximum_cell_area_fraction = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .fold(0.0, f64::max)
+        / surface.total_cell_area().get();
+    assert!(
+        (actual_land_fraction - f64::from(ReliefSpec::default().target_land_fraction)).abs()
+            <= maximum_cell_area_fraction
+    );
+    assert!(continental_land_fraction > oceanic_land_fraction);
     assert!((0.45..=0.85).contains(&land_crust_jaccard));
 }

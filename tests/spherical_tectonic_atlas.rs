@@ -6,7 +6,8 @@ use image::{imageops, Rgba, RgbaImage};
 use sekai::app::{build_spherical_external_artifacts, build_spherical_presentation_candidate};
 use sekai::engine::{BuildEngine, MemoryStageCache};
 use sekai::generators::natural::{
-    spherical_natural_foundation_graph, SphericalHydroErosionArtifact, SphericalTectonicArtifact,
+    spherical_natural_foundation_graph, SphericalHydroErosionArtifact, SphericalReliefArtifact,
+    SphericalTectonicArtifact,
 };
 use sekai::generators::spatial::SphericalSurfaceArtifact;
 use sekai::view::{
@@ -14,8 +15,8 @@ use sekai::view::{
     SphericalFieldDisplayState,
 };
 use sekai::world::natural::{
-    BoundaryKind, CrustKind, GeologicSpec, ReliefSpec, SphericalTectonicSnapshot, TectonicSpec,
-    WorldFormationSpec,
+    BoundaryKind, CrustKind, GeologicSpec, LandOceanKind, ReliefSpec, SphericalReliefSnapshot,
+    SphericalTectonicSnapshot, TectonicSpec, WorldFormationSpec,
 };
 use sekai::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
@@ -214,10 +215,24 @@ fn render_atlas(config: AtlasConfig, output: &Path) -> Result<(), AtlasError> {
             .artifacts
             .get::<SphericalTectonicArtifact>()
             .map_err(atlas_error)?;
+        let relief = outcome
+            .artifacts
+            .get::<SphericalReliefArtifact>()
+            .map_err(atlas_error)?;
         let final_surface = outcome
             .artifacts
             .get::<SphericalHydroErosionArtifact>()
             .map_err(atlas_error)?;
+        let actual_land_fraction = weighted_land_fraction(surface.snapshot(), relief.snapshot());
+        std::fs::write(
+            seed_dir.join("area-compliance.txt"),
+            area_compliance_metadata(
+                f64::from(relief_spec.target_land_fraction),
+                actual_land_fraction,
+                relief.snapshot().sea_level_m(),
+            ),
+        )
+        .map_err(atlas_error)?;
         let candidate = build_spherical_presentation_candidate(
             RootSeed::new(seed),
             &space,
@@ -310,6 +325,26 @@ fn render_atlas(config: AtlasConfig, output: &Path) -> Result<(), AtlasError> {
         );
     }
     Ok(())
+}
+
+fn weighted_land_fraction(
+    surface: &SphericalSurfaceSnapshot,
+    relief: &SphericalReliefSnapshot,
+) -> f64 {
+    let land_area = surface
+        .cells()
+        .iter()
+        .zip(relief.land_ocean().raw_values())
+        .filter(|(_, kind)| **kind == LandOceanKind::Land.raw())
+        .map(|(cell, _)| cell.area.get())
+        .sum::<f64>();
+    land_area / surface.total_cell_area().get()
+}
+
+fn area_compliance_metadata(target: f64, actual: f64, sea_level_m: f32) -> String {
+    format!(
+        "target_land_fraction={target:.9}\nactual_land_fraction={actual:.9}\nsea_level_m={sea_level_m:.3}\n"
+    )
 }
 
 fn rasterize_map(map: &PreparedProjectedMap, width: u32, height: u32) -> CellRaster {
@@ -863,5 +898,13 @@ fn lineation_evidence_uses_a_stable_readable_sample() {
         (130..=190).contains(&first.len()),
         "expected roughly one readable glyph per sixty-four cells, got {}",
         first.len()
+    );
+}
+
+#[test]
+fn atlas_area_metadata_is_stable_and_explicit() {
+    assert_eq!(
+        area_compliance_metadata(0.38, 0.379_75, -1_234.5),
+        "target_land_fraction=0.380000000\nactual_land_fraction=0.379750000\nsea_level_m=-1234.500\n"
     );
 }

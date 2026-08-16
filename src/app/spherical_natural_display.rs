@@ -563,7 +563,7 @@ mod tests {
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
-        "cef80959ebe7906dd275634bd5a493711fb1fde958ae51f6b901ac698b3f375f";
+        "6459f8178bb3c34531a5f9139c1fa59b69591af5e61ee0f1ce15ab0aa22c5d54";
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,
@@ -925,8 +925,10 @@ mod tests {
             )
         }
 
-        let mut tectonic_spec = TectonicSpec::default();
-        tectonic_spec.continental_crust_fraction = 0.44;
+        let tectonic_spec = TectonicSpec {
+            continental_crust_fraction: 0.44,
+            ..TectonicSpec::default()
+        };
         let relief_spec = ReliefSpec {
             target_land_fraction: 0.57,
             ..ReliefSpec::default()
@@ -1241,6 +1243,7 @@ mod tests {
             cell_id: Some(CellId::from_raw(0)),
             message: "nonempty diagnostic fingerprint fixture".into(),
         });
+        let expected_diagnostic_scans = document.diagnostics.len();
         let document = CountingSphericalLayerDocument::new(&document);
         let mut state = SphericalFieldDisplayState::default();
         state.select_overlay(Some(plate_velocity_field_id()));
@@ -1283,11 +1286,11 @@ mod tests {
         assert_eq!(document.catalog_calls(), 1);
         assert_eq!(
             field_layer_preparation_counts().diagnostic_validation_values_scanned,
-            1
+            expected_diagnostic_scans
         );
         assert_eq!(
             field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
-            1
+            expected_diagnostic_scans
         );
 
         document.reset_catalog_calls();
@@ -1353,11 +1356,11 @@ mod tests {
         assert_eq!(document.catalog_calls(), 1);
         assert_eq!(
             field_layer_preparation_counts().diagnostic_validation_values_scanned,
-            1
+            expected_diagnostic_scans
         );
         assert_eq!(
             field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
-            1
+            expected_diagnostic_scans
         );
 
         document.reset_catalog_calls();
@@ -1497,6 +1500,7 @@ mod tests {
             cell_id: Some(CellId::from_raw(0)),
             message: "renderer fast-path keeps this diagnostic unscanned".into(),
         });
+        let expected_diagnostic_scans = document.diagnostics.len();
         let document = CountingSphericalLayerDocument::new(&document);
         let mut state = SphericalFieldDisplayState::default();
         state.select_overlay(Some(plate_velocity_field_id()));
@@ -1584,11 +1588,11 @@ mod tests {
         assert_eq!(document.catalog_calls(), 1);
         assert_eq!(
             field_layer_preparation_counts().diagnostic_validation_values_scanned,
-            1
+            expected_diagnostic_scans
         );
         assert_eq!(
             field_layer_preparation_counts().diagnostic_fingerprint_values_scanned,
-            1
+            expected_diagnostic_scans
         );
         let medium_overlay_arcs = installed_overlay_arc_ids(&renderer).unwrap();
         assert_ne!(medium_overlay_arcs, installed_overlay_arcs);
@@ -1957,6 +1961,7 @@ mod tests {
         let catalog = payload_catalog(&document);
         let cell_count = document.surface.snapshot().cells().len();
         let edge_count = document.surface.snapshot().edges().len();
+        let expected_diagnostic_scans = document.diagnostics().len();
         let mut state = SphericalFieldDisplayState::default();
         state.select_fill(surface_elevation_m_field_id());
         state.select_overlay(Some(boundary_kind_field_id()));
@@ -1995,8 +2000,8 @@ mod tests {
                 fill: 1,
                 overlay: 0,
                 diagnostics: 1,
-                diagnostic_validation_values_scanned: 0,
-                diagnostic_fingerprint_values_scanned: 0,
+                diagnostic_validation_values_scanned: expected_diagnostic_scans,
+                diagnostic_fingerprint_values_scanned: expected_diagnostic_scans,
             }
         );
 
@@ -2021,8 +2026,8 @@ mod tests {
                 fill: 0,
                 overlay: 1,
                 diagnostics: 0,
-                diagnostic_validation_values_scanned: 0,
-                diagnostic_fingerprint_values_scanned: 0,
+                diagnostic_validation_values_scanned: expected_diagnostic_scans,
+                diagnostic_fingerprint_values_scanned: expected_diagnostic_scans,
             }
         );
     }

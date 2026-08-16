@@ -67,8 +67,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "073606a7ab2cdf726279796ead4cd8df70b02c9769535cd4553b717624684f5d",
-        expected_geology_hash: "2b93538e11dea0c7b9bd271392adb5d5f6f5f18597daf6b41104b2ceca1ab412",
+        expected_relief_hash: "6bfcb5bf6ed744a78e35e81bfd46972ddae24a61eed38ce5c907b31cd1f5d833",
+        expected_geology_hash: "a9ec78a29218bd1ff4ff4033e16b72ed189ff74a20fea098d336d0555be628d5",
     },
     MatrixCase {
         name: "maximum-radius-volcanic",

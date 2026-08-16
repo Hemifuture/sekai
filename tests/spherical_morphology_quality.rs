@@ -6,9 +6,9 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    CrustKind, GeologicSpec, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    SphericalReliefSnapshot, SphericalTectonicSnapshot, TectonicSpec, WorldFormationPreset,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    CrustKind, GeologicSpec, LandOceanKind, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, SphericalReliefSnapshot, SphericalTectonicSnapshot, TectonicSpec,
+    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::{
     central_angle, project_tangent, SphericalSurfaceSnapshot, UnitVector3,
@@ -73,6 +73,15 @@ fn generate(
     seed: u64,
     preset: ResolvedWorldFormationPreset,
 ) -> SphericalTectonicSnapshot {
+    generate_with_continental_fraction(surface, seed, preset, preset_fraction(preset))
+}
+
+fn generate_with_continental_fraction(
+    surface: &SphericalSurfaceSnapshot,
+    seed: u64,
+    preset: ResolvedWorldFormationPreset,
+    continental_crust_fraction: f32,
+) -> SphericalTectonicSnapshot {
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
         requested_preset(preset),
@@ -80,14 +89,20 @@ fn generate(
     )
     .unwrap();
     let spec = TectonicSpec {
-        continental_crust_fraction: preset_fraction(preset),
+        continental_crust_fraction,
         ..TectonicSpec::default()
     };
     let mut rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
         StageIdentity::new("natural.spherical-tectonics", 3, "sekai.core"),
     ));
-    TectonicGenerator::generate_spherical(surface, &spec, &formation, &mut rng).unwrap()
+    TectonicGenerator::generate_spherical(surface, &spec, &formation, &mut rng).unwrap_or_else(
+        |error| {
+            panic!(
+                "tectonic generation failed: seed={seed}, preset={preset:?}, continental={continental_crust_fraction}: {error:?}"
+            )
+        },
+    )
 }
 
 fn generate_relief(
@@ -95,6 +110,22 @@ fn generate_relief(
     seed: u64,
     preset: ResolvedWorldFormationPreset,
     tectonic: &SphericalTectonicSnapshot,
+) -> SphericalReliefSnapshot {
+    generate_relief_with_target(
+        surface,
+        seed,
+        preset,
+        tectonic,
+        ReliefSpec::default().target_land_fraction,
+    )
+}
+
+fn generate_relief_with_target(
+    surface: &SphericalSurfaceSnapshot,
+    seed: u64,
+    preset: ResolvedWorldFormationPreset,
+    tectonic: &SphericalTectonicSnapshot,
+    target_land_fraction: f32,
 ) -> SphericalReliefSnapshot {
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -121,7 +152,10 @@ fn generate_relief(
         surface,
         tectonic,
         &mantle,
-        &ReliefSpec::default(),
+        &ReliefSpec {
+            target_land_fraction,
+            ..ReliefSpec::default()
+        },
         &mut relief_rng,
         &mut Vec::<Diagnostic>::new(),
     )
@@ -621,18 +655,38 @@ fn formation_presets_preserve_statistical_intent_without_fixed_final_topology() 
         ResolvedWorldFormationPreset::VolcanicIslands,
     ];
     let mut continental_fractions = BTreeMap::new();
+    let mut land_fraction_errors = BTreeMap::new();
     let mut final_counts = BTreeMap::new();
     for preset in presets {
         continental_fractions.insert(preset, Vec::new());
+        land_fraction_errors.insert(preset, Vec::new());
         final_counts.insert(preset, BTreeSet::new());
     }
     for seed in QUALITY_SEEDS {
         for preset in presets {
             let snapshot = generate(surface, seed, preset);
+            let target = preset.recommended_land_fraction();
+            let relief = generate_relief_with_target(surface, seed, preset, &snapshot, target);
+            let actual = land_area_fraction(surface, &relief);
+            let error = (actual - f64::from(target)).abs();
+            let cutoff_plateau = cutoff_plateau_area_fraction(surface, &relief);
+            assert!(
+                error <= cutoff_plateau + 1.0e-12,
+                "{preset:?}/{seed}: target={target}, actual={actual}, cutoff={cutoff_plateau}"
+            );
+            assert!(
+                surface.cells().iter().any(|cell| {
+                    let crust_land = snapshot.crust_kind(cell.id) == Some(CrustKind::Continental);
+                    let emergent = relief.land_ocean_kind(cell.id) == Some(LandOceanKind::Land);
+                    crust_land != emergent
+                }),
+                "{preset:?}/{seed}: emergent land must not collapse to crust-kind identity"
+            );
             continental_fractions
                 .get_mut(&preset)
                 .unwrap()
                 .push(continental_area_fraction(surface, &snapshot));
+            land_fraction_errors.get_mut(&preset).unwrap().push(error);
             final_counts
                 .get_mut(&preset)
                 .unwrap()
@@ -645,7 +699,9 @@ fn formation_presets_preserve_statistical_intent_without_fixed_final_topology() 
         .map(|preset| (preset, mean(&continental_fractions[&preset])))
         .into_iter()
         .collect::<BTreeMap<_, _>>();
-    eprintln!("formation aggregate continental={continental_mean:?} final_counts={final_counts:?}");
+    eprintln!(
+        "formation aggregate continental={continental_mean:?} land_errors={land_fraction_errors:?} final_counts={final_counts:?}"
+    );
 
     use ResolvedWorldFormationPreset::{
         Archipelago, Continents, GreatIsland, Supercontinent, VolcanicIslands,
@@ -657,6 +713,106 @@ fn formation_presets_preserve_statistical_intent_without_fixed_final_topology() 
     assert!(final_counts.values().all(|counts| !counts.is_empty()));
 }
 
+#[test]
+fn authored_initial_continental_fraction_is_statistically_monotonic_after_evolution() {
+    let surface = quality_surface();
+    let mut outcomes = Vec::with_capacity(QUALITY_SEEDS.len());
+    for seed in QUALITY_SEEDS {
+        let actual = [0.20_f32, 0.38, 0.55].map(|requested| {
+            let snapshot = generate_with_continental_fraction(
+                surface,
+                seed,
+                ResolvedWorldFormationPreset::Continents,
+                requested,
+            );
+            let fraction = continental_area_fraction(surface, &snapshot);
+            assert!(
+                fraction > 0.0 && fraction < 1.0,
+                "seed {seed}, request {requested}: both crust classes must survive"
+            );
+            fraction
+        });
+        outcomes.push(actual);
+    }
+
+    let mean = std::array::from_fn::<_, 3, _>(|band| {
+        outcomes.iter().map(|actual| actual[band]).sum::<f64>() / outcomes.len() as f64
+    });
+    let median_delta = |lower: usize, upper: usize| {
+        let mut deltas = outcomes
+            .iter()
+            .map(|actual| actual[upper] - actual[lower])
+            .collect::<Vec<_>>();
+        deltas.sort_by(f64::total_cmp);
+        deltas[deltas.len() / 2]
+    };
+    let paired_medians = [median_delta(0, 1), median_delta(1, 2)];
+    assert!(
+        mean[0] < mean[1] && mean[1] < mean[2],
+        "evolved continental ensemble means were not monotonic: means={mean:?}, outcomes={outcomes:?}"
+    );
+    assert!(
+        paired_medians.into_iter().all(|delta| delta > 0.0),
+        "the typical paired response must increase: medians={paired_medians:?}, outcomes={outcomes:?}"
+    );
+    eprintln!("initial-crust response means={mean:?}, paired median deltas={paired_medians:?}");
+}
+
+#[test]
+fn authored_land_target_changes_only_sea_level_and_mask_for_17_seeds() {
+    let surface = quality_surface();
+    for seed in QUALITY_SEEDS {
+        let tectonic = generate(surface, seed, ResolvedWorldFormationPreset::Continents);
+        let reliefs = [0.20_f32, 0.38, 0.55].map(|target| {
+            generate_relief_with_target(
+                surface,
+                seed,
+                ResolvedWorldFormationPreset::Continents,
+                &tectonic,
+                target,
+            )
+        });
+        let baseline_bits = reliefs[0]
+            .elevation_m()
+            .values()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        let actual = reliefs.each_ref().map(|relief| {
+            assert_eq!(
+                relief
+                    .elevation_m()
+                    .values()
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                baseline_bits,
+                "seed {seed}: target land fraction changed height data"
+            );
+            land_area_fraction(surface, relief)
+        });
+        assert!(
+            actual[0] <= actual[1] && actual[1] <= actual[2],
+            "seed {seed}: actual land fraction was not monotonic: {actual:?}"
+        );
+        assert!(
+            reliefs[0].sea_level_m() >= reliefs[1].sea_level_m()
+                && reliefs[1].sea_level_m() >= reliefs[2].sea_level_m(),
+            "seed {seed}: sea level must fall as requested land grows"
+        );
+        for (target, (relief, actual)) in [0.20_f32, 0.38, 0.55]
+            .into_iter()
+            .zip(reliefs.iter().zip(actual))
+        {
+            let error = (actual - f64::from(target)).abs();
+            assert!(
+                error <= cutoff_plateau_area_fraction(surface, relief) + 1.0e-12,
+                "seed {seed}: target={target}, actual={actual}"
+            );
+        }
+    }
+}
+
 fn continental_area_fraction(
     surface: &SphericalSurfaceSnapshot,
     snapshot: &SphericalTectonicSnapshot,
@@ -666,6 +822,33 @@ fn continental_area_fraction(
         .iter()
         .filter(|cell| snapshot.crust_kind(cell.id) == Some(CrustKind::Continental))
         .map(|cell| cell.area.get())
+        .sum::<f64>()
+        / surface.total_cell_area().get()
+}
+
+fn land_area_fraction(surface: &SphericalSurfaceSnapshot, relief: &SphericalReliefSnapshot) -> f64 {
+    surface
+        .cells()
+        .iter()
+        .filter(|cell| relief.land_ocean_kind(cell.id) == Some(LandOceanKind::Land))
+        .map(|cell| cell.area.get())
+        .sum::<f64>()
+        / surface.total_cell_area().get()
+}
+
+fn cutoff_plateau_area_fraction(
+    surface: &SphericalSurfaceSnapshot,
+    relief: &SphericalReliefSnapshot,
+) -> f64 {
+    let quantized_sea_level = (f64::from(relief.sea_level_m()) * 100.0).round() as i64;
+    surface
+        .cells()
+        .iter()
+        .zip(relief.elevation_m().values())
+        .filter(|(_, elevation)| {
+            (f64::from(**elevation) * 100.0).round() as i64 == quantized_sea_level
+        })
+        .map(|(cell, _)| cell.area.get())
         .sum::<f64>()
         / surface.total_cell_area().get()
 }

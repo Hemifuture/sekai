@@ -258,7 +258,7 @@ Transparent base fill uses alpha blending; diagnostics can still replace transpa
 
 Use the public two-phase interact → publish → queue API and real renderer readback. Verify visibility captures the current persisted state and cannot use a stale callback packet.
 
-- [ ] **Step 5: Verify affected GPU suites and commit**
+- [x] **Step 5: Verify affected GPU suites and commit**
 
 Run renderer, callback adjacency, public GPU integration, Vulkan/GL audited goldens, and nonzero viewport tests. Existing all-visible hashes must remain byte-identical.
 
@@ -271,30 +271,32 @@ Commit: `feat: render independent spherical layer visibility`
 - Modify: `tests/spherical_natural_graph_performance.rs`
 - Modify: `tests/spherical_natural_matrix.rs`
 - Modify: `tests/spherical_tectonic_atlas.rs` to record the selected sea level and target/actual land fractions in atlas metadata
+- Modify: `index.html` and `assets/sw.js` to guarantee a current Web release instead of a stale cached wasm bundle
+- Test: `tests/web_distribution_contract.rs`
 - Modify: this plan to append exact execution evidence
 
 **Interfaces:**
 - No new production interface; this task freezes cross-module acceptance.
 
-- [ ] **Step 1: Write multi-seed compliance RED**
+- [x] **Step 1: Write multi-seed compliance RED**
 
-Add 17-seed 642-cell formation coverage, direct initial-crust monotonicity at `0.20/0.38/0.55`, land-target monotonicity at the same values with identical elevation bits, and five 20,252-cell Release cases with absolute target error `<=0.01`.
+Add 17-seed 642-cell formation coverage; direct initial-crust area accuracy and nested masks at `0.20/0.38/0.55`; paired post-evolution mean/median monotonicity at those values (individual seeds may create extra Cortial rifts); land-target monotonicity at the same values with identical elevation bits; and five 20,252-cell Release cases with absolute target error `<=0.01`.
 
-- [ ] **Step 2: Run RED then GREEN**
+- [x] **Step 2: Run RED then GREEN**
 
 First run each focused test before refreshing hashes. Any scientific assertion must pass before changing downstream snapshot/GPU hashes.
 
-- [ ] **Step 3: Release performance and memory**
+- [x] **Step 3: Release performance and memory**
 
 Run: `cargo test --release --test spherical_natural_graph_performance -- --ignored --nocapture`
 
 Require the existing 20k full-graph, tectonic, memory, upload, and static-frame budgets. Record added relief quantile duration separately; do not weaken frozen limits.
 
-- [ ] **Step 4: Native and browser UI smoke**
+- [x] **Step 4: Native and browser UI smoke**
 
-At exact logical 1280×720, confirm the left panel shows both author sliders, actual four percentages, sea level, and the three layer checkboxes. Rebuild at target 20%, 38%, and 55%; inspect Equal Earth and globe; confirm area changes without unit-sphere deformation and edge/vector overlays remain independent.
+At exact logical 1280×720, confirm the left panel shows both author sliders, actual four percentages, sea level, and the three layer checkboxes. Rebuild at target 20%, 38%, and 55%; inspect Equal Earth and globe; confirm area changes without unit-sphere deformation and edge/vector overlays remain independent. In Chrome, first prove a fresh `trunk build --release` is served, an obsolete worker/cache is retired, and the same current UI and data appear after controller takeover.
 
-- [ ] **Step 5: Run full engineering gates**
+- [x] **Step 5: Run full engineering gates**
 
 Run serially:
 
@@ -303,6 +305,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check --target wasm32-unknown-unknown --workspace --all-features
+trunk build --release --no-sri true
 cargo test --workspace --all-targets --all-features
 cargo test --workspace --doc
 $env:SEKAI_REQUIRE_SPHERICAL_GPU='1'; cargo test
@@ -311,9 +314,23 @@ git diff --check
 
 Every command must exit 0; required GPU tests must not skip.
 
-- [ ] **Step 6: Boundary audit**
+- [x] **Step 6: Boundary audit**
 
 Confirm no planar graph imports in spherical relief, no elevation in unit-globe vertex construction, no history state, no second land-mask implementation, no per-frame area scan, and no immutable upload on layer visibility.
+
+**Execution evidence (2026-08-16/17):**
+
+- RED/GREEN: seed 0 at initial continental fraction `0.55` reproduced co-moving rift siblings; expressing every child in the fracture event's shared tangent frame made every live sibling rotation distinct. The exact regression and all 49 spherical-tectonic module tests pass.
+- Initial-crust compliance: 17 seeds × `[0.20, 0.38, 0.55]` hit the requested area within one maximum cell and preserve nested masks. Post-evolution paired means are `[0.1055808796, 0.1990275364, 0.2977530265]`; adjacent paired median deltas are `[0.0956818230, 0.1053491760]`.
+- Formation matrix: 5 formations × 17 seeds pass all morphology/scientific assertions before hash comparison; largest land-target error is `0.001408183`. Target `[0.20, 0.38, 0.55]` changes only sea level and land mask; elevation bits are identical.
+- Release 20,252-cell land compliance: seed 3 `0.380069/-1606.25 m`; seed 7 `0.379987/-1387.75 m`; seed 11 `0.380007/-1465.00 m`; seed 19 `0.379999/-1673.50 m`; seed 42 `0.379998/-1299.25 m`.
+- Release performance against the frozen untouched baseline `1418.187 ms`: planar `1964.750 ms`, spherical `1592.517 ms`, isolated morphology tectonics `246.915 ms`, formal tectonic stage `331.816 ms`, relief quantile stage `244.530 ms`, morphology peak delta `12,013,568 B`, persistent spherical artifacts `23,121,732 B`, sphere/planar ratio `0.810544`. All frozen budgets pass. The independent 4,842/20,252-cell morphology-resolution gate also passes.
+- Native smoke at logical `1280×720`: target/actual `20.0/20.0`, `38.0/38.0`, `55.0/55.0`; sea level moves downward monotonically (`-1017.0`, `-1701.8`, `-2295.2 m`). Initial crust `38.0%` evolves to `18.5%`; `55.0%` evolves to `29.2%` while target land remains independently `55.0%`. Fill, overlay, and diagnostics toggle independently; globe remains a round undeformed unit sphere.
+- Chrome 150 fresh-release smoke at logical `1280×720`: the old worker/cache was replaced; current target/actual summary and all three layer controls appeared. Target `20.0/20.0` and `55.0/55.0` rebuilt correctly; map/globe and independent fill/overlay toggles matched native. Web distribution contract is 3/3 and `trunk build --release --no-sri true` succeeds from current source with `data-wasm-opt=0`.
+- Frozen field hash: `6459f8178bb3c34531a5f9139c1fa59b69591af5e61ee0f1ce15ab0aa22c5d54`. Frozen full-graph result hash: `2e0ecaafde514fca461288175b18be76dabbef78be41fd09aa8af79d0f720ab3`; exact repeated artifact hashes are stored in `spherical_natural_stage_graph.rs` and pass twice consecutively.
+- Audited RTX 4080 SUPER Vulkan and GL RGBA8 hashes are byte-identical: scalar map/globe `7508bb5c…bf99`/`5e6fdc5b…505b`; category `63f8bd1f…374e4`/`ccf9c78d…14a3f`; edge scalar `7e68aac1…2f2a`/`8f35eeb4…057d`; edge category `9b7263a4…d98e`/`12bc7215…4351`; vector paused map/globe `150910e0…3d21`/`a04765aa…f8a9`; animated `0be079c4…dd8d`/`ca99cdf2…6ef6`; seam `eb61d5ea…99d1`; poles `c4de496f…aacf`; front/back `ccf9c78d…14a3f`/`f540b5ff…d9e7`. CPU semantic oracles run before every hash assertion.
+- Fresh gates after the final code delta: fmt, workspace check, strict all-target/all-feature Clippy, wasm32 all-features, Web Release build, and diff check exit 0; workspace all-target/all-feature tests exit 0 in `329.5 s`; doctests `5 passed/8 ignored`; required-GPU full suite exits 0 in `333.9 s` with no GPU skip; Vulkan and GL public golden suites are each `5/5`.
+- Boundary audit: the sole production land selection call is `spherical_relief.rs -> land_fraction.rs`; unit-globe mesh construction accepts only authoritative surface directions and enforces radius 1; the tectonic workspace retains only reusable current/next buffers; spherical relief/tectonics have no planar imports or planar fallback; area compliance is built once into the document and read by const reference; visibility lives only in the fixed frame uniform and does not alter prepared-layer identity or immutable uploads.
 
 - [ ] **Step 7: Commit acceptance and verify clean completion**
 

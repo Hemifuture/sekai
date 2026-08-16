@@ -673,4 +673,61 @@ mod tests {
             "{boundary_fractions:?}"
         );
     }
+
+    #[test]
+    fn authored_continental_fraction_hits_area_and_nests_masks_for_17_seeds() {
+        let (surface, topology) = fixture(642);
+        let seeds = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 42];
+        let fractions = [0.20_f32, 0.38, 0.55];
+        let maximum_cell_area = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .fold(0.0, f64::max);
+
+        for seed in seeds {
+            let masks = fractions.map(|requested| {
+                let state = build_initial_state(
+                    &surface,
+                    &topology,
+                    &TectonicSpec {
+                        continental_crust_fraction: requested,
+                        ..TectonicSpec::default()
+                    },
+                    FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+                    &streams(seed),
+                )
+                .unwrap();
+                let actual_area = surface
+                    .cells()
+                    .iter()
+                    .zip(&state.samples)
+                    .filter(|(_, sample)| sample.kind == CrustKind::Continental)
+                    .map(|(cell, _)| cell.area.get())
+                    .sum::<f64>();
+                let target_area = surface.total_cell_area().get() * f64::from(requested);
+                assert!(
+                    (actual_area - target_area).abs() <= maximum_cell_area,
+                    "seed {seed}, request {requested}: {actual_area} vs {target_area}"
+                );
+                state
+                    .samples
+                    .iter()
+                    .map(|sample| sample.kind == CrustKind::Continental)
+                    .collect::<Vec<_>>()
+            });
+            for (index, ((low, middle), high)) in
+                masks[0].iter().zip(&masks[1]).zip(&masks[2]).enumerate()
+            {
+                assert!(
+                    !*low || *middle,
+                    "seed {seed}: 20% continental cell {index} disappeared at 38%"
+                );
+                assert!(
+                    !*middle || *high,
+                    "seed {seed}: 38% continental cell {index} disappeared at 55%"
+                );
+            }
+        }
+    }
 }

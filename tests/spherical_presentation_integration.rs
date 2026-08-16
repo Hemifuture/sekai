@@ -930,9 +930,10 @@ fn layer_visibility_preserves_the_exact_published_packet_and_immutable_uploads()
         &device,
         eframe::egui_wgpu::wgpu::TextureFormat::Rgba8UnormSrgb,
     );
-    let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
-    let mut published = PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap();
-    drop(gpu);
+    let mut published = {
+        let mut gpu = SphericalRendererPreparer::new(&mut renderer, &device, &queue);
+        PublishedSphericalPresentation::try_new(candidate, &mut gpu).unwrap()
+    };
     let mut encoded = serde_json::to_value(SphericalCanvasState::default()).unwrap();
     let field_wire = encoded["field_state"].as_object_mut().unwrap();
     field_wire.insert(

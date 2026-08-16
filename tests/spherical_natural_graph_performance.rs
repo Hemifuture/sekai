@@ -12,24 +12,32 @@ use sekai::engine::{
 use sekai::generators::natural::{
     legacy_planar_natural_foundation_graph, spherical_natural_foundation_graph,
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
-    SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
-    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicGenerator, TectonicSpecArtifact,
-    WorldFormationSpecArtifact,
+    ReliefSpecArtifact, ResolvedWorldFormationArtifact, RulePackSetArtifact,
+    SphericalGeologicArtifact, SphericalHydroErosionArtifact, SphericalMantleArtifact,
+    SphericalPreliminaryClimateArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
+    TectonicGenerator, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
     GeodesicVoronoiBuilder, PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    spherical_natural_field_registry, ClimateSpec, GeologicSpec, HydroErosionSpec,
-    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    WorldFormationSpec, MAX_PLATE_COUNT, MIN_PLATE_COUNT, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    spherical_natural_field_registry, ClimateSpec, GeologicSpec, HydroErosionSpec, LandOceanKind,
+    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
+    WorldFormationPreset, WorldFormationSpec, MAX_PLATE_COUNT, MIN_PLATE_COUNT,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
 use serde::Serialize;
 
 const ROOT_SEED: RootSeed = RootSeed::new(42);
+const LAND_COMPLIANCE_SEEDS: [RootSeed; 5] = [
+    RootSeed::new(3),
+    RootSeed::new(7),
+    RootSeed::new(11),
+    RootSeed::new(19),
+    RootSeed::new(42),
+];
 const TARGET_CELL_COUNT: u32 = 20_000;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const SPHERE_TIME_BUDGET: Duration = Duration::from_secs(5);
@@ -532,6 +540,49 @@ fn morphology_probe_child_sentinel_requires_exact_one() {
     assert!(!morphology_probe_child_requested(Some(OsStr::new("true"))));
 }
 
+#[test]
+#[ignore = "release-only five-seed 20,252-cell land-area compliance"]
+fn release_spherical_land_fraction_compliance_for_five_seeds() {
+    let engine = BuildEngine::new(spherical_natural_foundation_graph().unwrap());
+    let target = f64::from(ReliefSpec::default().target_land_fraction);
+    for root_seed in LAND_COMPLIANCE_SEEDS {
+        let mut cache = MemoryStageCache::new();
+        let started = Instant::now();
+        let outcome = engine
+            .build(root_seed, spherical_external_artifacts(), &mut cache)
+            .unwrap();
+        let surface = outcome.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
+        let relief = outcome.artifacts.get::<SphericalReliefArtifact>().unwrap();
+        let actual = weighted_land_fraction(surface.snapshot(), relief.snapshot());
+        assert!(
+            (actual - target).abs() <= 0.01,
+            "seed {}: target {target:.6}, actual {actual:.6}",
+            root_seed.raw()
+        );
+        eprintln!(
+            "spherical_land_compliance seed={} cells={} target={target:.6} actual={actual:.6} sea_level_m={:.2} graph_ms={:.3}",
+            root_seed.raw(),
+            surface.snapshot().cells().len(),
+            relief.snapshot().sea_level_m(),
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+}
+
+fn weighted_land_fraction(
+    surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
+    relief: &sekai::world::natural::SphericalReliefSnapshot,
+) -> f64 {
+    let land_area = surface
+        .cells()
+        .iter()
+        .zip(relief.land_ocean().raw_values())
+        .filter(|(_, kind)| **kind == LandOceanKind::Land.raw())
+        .map(|(cell, _)| cell.area.get())
+        .sum::<f64>();
+    land_area / surface.total_cell_area().get()
+}
+
 fn planar_external_artifacts() -> ExternalArtifacts {
     let mut artifacts = common_external_artifacts();
     artifacts
@@ -547,6 +598,9 @@ fn planar_external_artifacts() -> ExternalArtifacts {
 
 fn spherical_external_artifacts() -> ExternalArtifacts {
     let mut artifacts = common_external_artifacts();
+    artifacts
+        .insert(ReliefSpecArtifact::new(ReliefSpec::default()))
+        .unwrap();
     artifacts
         .insert(SphericalSpaceArtifact::new(SphericalSpaceSpec {
             radius: Meters::new(EARTH_RADIUS_M).unwrap(),
