@@ -10,7 +10,7 @@
     <title>eframe template</title>
 
     <!-- config for our rust wasm binary. go to https://trunkrs.dev/assets/#rust for more customization -->
-    <link data-trunk rel="rust" data-bin="sekai" data-wasm-opt="2" />
+    <link data-trunk rel="rust" data-bin="sekai" data-wasm-opt="0" />
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
@@ -136,8 +136,23 @@
     <script>
         // We disable caching during development so that we always view the latest version.
         if ('serviceWorker' in navigator && window.location.hash !== "#dev") {
+            let reloadingForNewWorker = false;
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+                if (reloadingForNewWorker) {
+                    return;
+                }
+                reloadingForNewWorker = true;
+                window.location.reload();
+            });
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js');
+                navigator.serviceWorker
+                    .register('sw.js', { updateViaCache: 'none' })
+                    .then(function (registration) {
+                        return registration.update();
+                    })
+                    .catch(function (error) {
+                        console.error('service worker update failed', error);
+                    });
             });
         }
     </script>
