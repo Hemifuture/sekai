@@ -7,8 +7,9 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    GeologicSpec, MantleFormationBias, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    TectonicSpec, WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    GeologicSpec, MantleFormationBias, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -91,6 +92,7 @@ fn release_spherical_relief_and_geology_budget() {
         &surface,
         &tectonic,
         &mantle,
+        &ReliefSpec::default(),
         &mut stage_rng("performance.relief"),
         &mut diagnostics,
     )

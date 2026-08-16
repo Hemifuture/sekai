@@ -14,7 +14,7 @@ use sekai::view::{
     SphericalFieldDisplayState,
 };
 use sekai::world::natural::{
-    BoundaryKind, CrustKind, GeologicSpec, SphericalTectonicSnapshot, TectonicSpec,
+    BoundaryKind, CrustKind, GeologicSpec, ReliefSpec, SphericalTectonicSnapshot, TectonicSpec,
     WorldFormationSpec,
 };
 use sekai::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
@@ -193,10 +193,16 @@ fn render_atlas(config: AtlasConfig, output: &Path) -> Result<(), AtlasError> {
         };
         let formation = WorldFormationSpec::default();
         let tectonic_spec = TectonicSpec::default();
+        let relief_spec = ReliefSpec::default();
         let geologic = GeologicSpec::default();
-        let external =
-            build_spherical_external_artifacts(&space, &formation, &tectonic_spec, &geologic)
-                .map_err(atlas_error)?;
+        let external = build_spherical_external_artifacts(
+            &space,
+            &formation,
+            &tectonic_spec,
+            &relief_spec,
+            &geologic,
+        )
+        .map_err(atlas_error)?;
         let outcome = BuildEngine::new(spherical_natural_foundation_graph().map_err(atlas_error)?)
             .build(RootSeed::new(seed), external, &mut cache)
             .map_err(atlas_error)?;
@@ -217,6 +223,7 @@ fn render_atlas(config: AtlasConfig, output: &Path) -> Result<(), AtlasError> {
             &space,
             &formation,
             &tectonic_spec,
+            &relief_spec,
             &geologic,
             &mut cache,
             &SphericalFieldDisplayState::default(),

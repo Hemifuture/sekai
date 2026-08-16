@@ -20,7 +20,7 @@ use sekai::world::fields::{FieldDomain, FieldValueType};
 use sekai::world::natural::{
     boundary_kind_field_id, boundary_strength_field_id, land_ocean_field_id,
     preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
-    TectonicSpec, WorldFormationSpec,
+    ReliefSpec, TectonicSpec, WorldFormationSpec,
 };
 use sekai::world::spatial::{canonical_east_north_basis, UnitVector3};
 use sekai::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
@@ -492,6 +492,7 @@ fn candidate(
         },
         &WorldFormationSpec::default(),
         &TectonicSpec::default(),
+        &ReliefSpec::default(),
         &GeologicSpec::default(),
         cache,
         view,

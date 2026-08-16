@@ -6,7 +6,7 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    CrustKind, GeologicSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    CrustKind, GeologicSpec, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
     SphericalReliefSnapshot, SphericalTectonicSnapshot, TectonicSpec, WorldFormationPreset,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
@@ -115,12 +115,13 @@ fn generate_relief(
     .unwrap();
     let mut relief_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.spherical-relief", 2, "sekai.core"),
+        StageIdentity::new("natural.spherical-relief", 3, "sekai.core"),
     ));
     ReliefGenerator::generate_spherical(
         surface,
         tectonic,
         &mantle,
+        &ReliefSpec::default(),
         &mut relief_rng,
         &mut Vec::<Diagnostic>::new(),
     )

@@ -104,25 +104,25 @@ git commit -m "feat: define spherical land-area target"
 - `TemplateApp` persists `relief_spec: ReliefSpec` with field-level default migration.
 - `ResolvedWorldFormationPreset::recommended_land_fraction() -> f32` is the only preset mapping used by app selection.
 
-- [ ] **Step 1: Write graph and relief-stage RED**
+- [x] **Step 1: Write graph and relief-stage RED**
 
 Assert the spherical graph declares `ReliefSpecArtifact` as an external dependency, `SphericalReliefStage` reads it, invalid values fail before relief construction, and changing only target land invalidates relief and downstream artifacts but leaves surface/tectonic/mantle hashes unchanged.
 
-- [ ] **Step 2: Run graph RED**
+- [x] **Step 2: Run graph RED**
 
 Run: `cargo test --test spherical_natural_stage_graph -- --nocapture`
 
 Expected: missing artifact/dependency and unchanged relief output make the new assertions fail.
 
-- [ ] **Step 3: Implement stage integration**
+- [x] **Step 3: Implement stage integration**
 
 Advance only `SphericalReliefStage::version`. Replace fixed `SEA_LEVEL_M` in the spherical path with the selected finite sea level; leave planar `ReliefGenerator::generate` at 0 m.
 
-- [ ] **Step 4: Write app persistence/publication RED**
+- [x] **Step 4: Write app persistence/publication RED**
 
 Cover old serialized `TemplateApp` without `relief_spec`, roundtrip of a manual target, named preset updating both explicit fields, Random preserving both, initial startup/rebuild passing the exact target, and invalid candidate preserving publication address/source/revisions/renderer counters.
 
-- [ ] **Step 5: Run app RED**
+- [x] **Step 5: Run app RED**
 
 Run:
 
@@ -133,11 +133,11 @@ cargo test --test spherical_presentation_integration -- --nocapture
 
 Expected: failures on missing persisted field/signatures and unchanged output.
 
-- [ ] **Step 6: Implement app and publication plumbing**
+- [x] **Step 6: Implement app and publication plumbing**
 
 Add the relief spec to external-artifact composition and all whole-world builders. Do not add it to projection/field candidates. Keep the existing renderer preflight → graph build → GPU prepare → single CPU assignment order.
 
-- [ ] **Step 7: Verify GREEN and commit**
+- [x] **Step 7: Verify GREEN and commit**
 
 Run the three affected suites plus `cargo test --test legacy_planar_boundary -- --nocapture`; all must exit 0 and legacy hashes must be unchanged.
 

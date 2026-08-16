@@ -1,13 +1,15 @@
 use thiserror::Error;
 
+use super::land_fraction::{select_area_weighted_sea_level, LandFractionSelectionError};
 use super::random::{LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL};
-use super::relief::{reconcile_final_safety, ReliefGenerator, SEA_LEVEL_M};
+use super::relief::{reconcile_final_safety, ReliefGenerator};
 use super::spherical_island_relief::synthesize_spherical_hotspot_offset;
 use crate::engine::{Diagnostic, StageRng};
 use crate::world::natural::{
-    ElevationField, LandOceanField, ReliefValidationError, SphericalMantleSnapshot,
-    SphericalMantleValidationError, SphericalReliefSnapshot, SphericalReliefValidationError,
-    SphericalTectonicSnapshot, SphericalTectonicValidationError, RELIEF_SCHEMA_V4,
+    ElevationField, LandOceanField, ReliefSpec, ReliefSpecError, ReliefValidationError,
+    SphericalMantleSnapshot, SphericalMantleValidationError, SphericalReliefSnapshot,
+    SphericalReliefValidationError, SphericalTectonicSnapshot, SphericalTectonicValidationError,
+    RELIEF_SCHEMA_V4,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -25,12 +27,14 @@ impl ReliefGenerator {
         surface: &SphericalSurfaceSnapshot,
         tectonic: &SphericalTectonicSnapshot,
         mantle: &SphericalMantleSnapshot,
+        relief_spec: &ReliefSpec,
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<SphericalReliefSnapshot, SphericalReliefGenerationError> {
         surface.validate()?;
         tectonic.validate_against_validated_surface(surface)?;
         mantle.validate_against_validated_surface(surface)?;
+        relief_spec.validate()?;
 
         let view = SphericalNaturalSurface::from_validated(surface)?;
         let streams = LabeledSubstreams::capture(rng);
@@ -56,11 +60,32 @@ impl ReliefGenerator {
         let volcanic_offset = ElevationField::from_values(volcanic_offset)?;
         let regional_offset = ElevationField::from_values(regional_offset)?;
         let elevation = ElevationField::from_values(elevation)?;
-        let land_ocean = LandOceanField::classify(&elevation, SEA_LEVEL_M);
+        let cell_areas = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .collect::<Vec<_>>();
+        let selection = select_area_weighted_sea_level(
+            &cell_areas,
+            elevation.values(),
+            f64::from(relief_spec.target_land_fraction),
+        )?;
+        let land_ocean = LandOceanField::classify(&elevation, selection.sea_level_m);
+        debug_assert_eq!(
+            selection.target_land_fraction,
+            f64::from(relief_spec.target_land_fraction)
+        );
+        let classified_fraction = cell_areas
+            .iter()
+            .zip(land_ocean.raw_values())
+            .filter_map(|(&area, &kind)| (kind == 1).then_some(area))
+            .sum::<f64>()
+            / surface.total_cell_area().get();
+        debug_assert!((classified_fraction - selection.actual_land_fraction).abs() <= 1.0e-12);
         let snapshot = SphericalReliefSnapshot::new(
             RELIEF_SCHEMA_V4,
             view.surface_ref(),
-            SEA_LEVEL_M,
+            selection.sea_level_m,
             crust_base,
             tectonic_offset,
             volcanic_offset,
@@ -76,6 +101,9 @@ impl ReliefGenerator {
 /// Errors returned while generating surface-bound spherical relief.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalReliefGenerationError {
+    /// The authored target-land request is invalid.
+    #[error("invalid relief spec: {0}")]
+    InvalidSpec(#[from] ReliefSpecError),
     /// The authoritative spherical surface is invalid.
     #[error("invalid spherical surface: {0}")]
     InvalidSurface(#[from] SphericalSurfaceValidationError),
@@ -91,12 +119,23 @@ pub enum SphericalReliefGenerationError {
     /// Current crust attributes could not be converted into bounded height components.
     #[error("invalid tectonic heightmap input: {message}")]
     InvalidHeightmap { message: String },
+    /// The generated height field could not be classified by authoritative area.
+    #[error("invalid land-area selection: {message}")]
+    InvalidLandFraction { message: String },
     /// A generated dense field violated the shared relief semantics.
     #[error("invalid generated relief field: {0}")]
     InvalidReliefField(#[from] ReliefValidationError),
     /// The completed surface-bound snapshot violated its V4 contract.
     #[error("invalid generated spherical relief snapshot: {0}")]
     InvalidSnapshot(#[from] SphericalReliefValidationError),
+}
+
+impl From<LandFractionSelectionError> for SphericalReliefGenerationError {
+    fn from(error: LandFractionSelectionError) -> Self {
+        Self::InvalidLandFraction {
+            message: error.to_string(),
+        }
+    }
 }
 
 impl From<TectonicHeightmapError> for SphericalReliefGenerationError {

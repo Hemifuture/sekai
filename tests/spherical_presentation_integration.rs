@@ -8,7 +8,7 @@ use sekai::app::{
 use sekai::engine::{ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    RulePackSetArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
+    ReliefSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{PlanarSpaceArtifact, SphericalSpaceArtifact};
 use sekai::view::{
@@ -20,7 +20,7 @@ use sekai::world::fields::FieldId;
 use sekai::world::natural::{
     boundary_kind_field_id, boundary_strength_field_id, land_ocean_field_id,
     plate_velocity_field_id, preliminary_prevailing_wind_m_s_field_id,
-    surface_elevation_m_field_id, GeologicSpec, TectonicSpec, WorldFormationSpec,
+    surface_elevation_m_field_id, GeologicSpec, ReliefSpec, TectonicSpec, WorldFormationSpec,
 };
 use sekai::world::{CellId, EdgeId, Meters, RootSeed, SphericalSpaceSpec};
 use sekai::{
@@ -65,6 +65,7 @@ fn external() -> ExternalArtifacts {
         &space(),
         &WorldFormationSpec::default(),
         &TectonicSpec::default(),
+        &ReliefSpec::default(),
         &GeologicSpec::default(),
     )
     .unwrap()
@@ -79,6 +80,7 @@ fn candidate(
         &space(),
         &WorldFormationSpec::default(),
         &TectonicSpec::default(),
+        &ReliefSpec::default(),
         &GeologicSpec::default(),
         cache,
         &SphericalFieldDisplayState::default(),
@@ -128,9 +130,10 @@ fn request_test_device() -> (
 }
 
 fn assert_exact_spherical_external_set(external: &ExternalArtifacts) {
-    assert_eq!(external.len(), 8);
+    assert_eq!(external.len(), 9);
     assert!(external.hash::<SphericalSpaceArtifact>().is_ok());
     assert!(external.hash::<TectonicSpecArtifact>().is_ok());
+    assert!(external.hash::<ReliefSpecArtifact>().is_ok());
     assert!(external.hash::<GeologicSpecArtifact>().is_ok());
     assert!(external.hash::<ClimateSpecArtifact>().is_ok());
     assert!(external.hash::<HydroErosionSpecArtifact>().is_ok());
@@ -316,6 +319,7 @@ fn whole_world_and_smaller_candidates_publish_atomically() {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &replacement_state,
@@ -353,6 +357,7 @@ fn public_frame_paths_cannot_restore_a_retained_packet_after_source_replacement(
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             published.state(),
@@ -538,6 +543,7 @@ fn assert_wrong_renderer_replacement_is_inert(replacement: WrongRendererReplacem
                     &space(),
                     &WorldFormationSpec::default(),
                     &TectonicSpec::default(),
+                    &ReliefSpec::default(),
                     &GeologicSpec::default(),
                     &mut first_cache,
                     first_published.state(),
@@ -632,6 +638,7 @@ fn replacement_candidate_cannot_fork_a_second_initial_publication() {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             predecessor.state(),
@@ -684,6 +691,7 @@ fn standalone_and_replacement_builds_reconcile_edges_to_the_final_overlay_channe
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &requested,
@@ -728,6 +736,7 @@ fn standalone_and_replacement_builds_reconcile_edges_to_the_final_overlay_channe
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &replacement_state,
@@ -1963,6 +1972,7 @@ fn assert_queued_stale_callback_is_inert(change: PacketChange) {
                     &space(),
                     &WorldFormationSpec::default(),
                     &TectonicSpec::default(),
+                    &ReliefSpec::default(),
                     &GeologicSpec::default(),
                     &mut cache,
                     published.state(),

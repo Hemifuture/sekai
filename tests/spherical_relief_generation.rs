@@ -2,7 +2,7 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, CrustKind, GeologicSpec, MantleFormationBias, ResolvedWorldFormation,
+    BoundaryKind, CrustKind, GeologicSpec, MantleFormationBias, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, SphericalMantleSnapshot, SphericalReliefSnapshot,
     SphericalTectonicSnapshot, TectonicSpec, WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M,
     CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M,
@@ -68,6 +68,7 @@ fn generate(
         surface,
         tectonic,
         mantle,
+        &ReliefSpec::default(),
         &mut stage_rng("spherical-relief", seed),
         &mut diagnostics,
     )

@@ -30,7 +30,7 @@ pub struct TectonicSpec {
     pub schema_version: u16,
     /// The requested initial plate count before bounded evolution and rifting.
     pub plate_count: u16,
-    /// The target share of spatial cells assigned continental crust.
+    /// The requested initial share of authoritative area assigned continental crust.
     pub continental_crust_fraction: f32,
     /// The broad strength of generated plate motion.
     pub activity: TectonicActivity,

@@ -4,7 +4,7 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BedrockKind, CrustKind, GeologicSpec, MantleFormationBias, ResolvedWorldFormation,
+    BedrockKind, CrustKind, GeologicSpec, MantleFormationBias, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, SphericalGeologicSnapshot, SphericalMantleSnapshot,
     SphericalReliefSnapshot, SphericalTectonicSnapshot, TectonicSpec, WorldFormationPreset,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -65,6 +65,7 @@ fn upstream(
         surface,
         &tectonic,
         &mantle,
+        &ReliefSpec::default(),
         &mut stage_rng("spherical-geology-relief", seed),
         &mut diagnostics,
     )

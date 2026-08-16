@@ -12,7 +12,7 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceArtifact};
 use sekai::rules::{ClimateModel, HydroErosionModel};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, ResolvedWorldFormation,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, SphericalGeologicSnapshot, SphericalReliefSnapshot, TectonicSpec,
     WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
@@ -73,6 +73,7 @@ fn upstream(root_seed: RootSeed, radius_m: f64) -> Upstream {
         &surface,
         &tectonic,
         &mantle,
+        &ReliefSpec::default(),
         &mut rng(root_seed, "natural.spherical-relief"),
         &mut Vec::new(),
     )

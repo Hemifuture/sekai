@@ -5,7 +5,7 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, CrustKind, GeologicSpec, LandOceanKind, ResolvedWorldFormation,
+    BoundaryKind, CrustKind, GeologicSpec, LandOceanKind, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, SphericalOrogenyKind, TectonicSpec, WorldFormationPreset,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
@@ -209,6 +209,7 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
             surface,
             &tectonic,
             &mantle,
+            &ReliefSpec::default(),
             &mut rng(seed, "natural.spherical-relief", 2),
             &mut Vec::<Diagnostic>::new(),
         )

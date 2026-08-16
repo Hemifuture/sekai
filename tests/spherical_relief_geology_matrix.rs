@@ -4,9 +4,10 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BedrockKind, GeologicSpec, MantleActivity, MantleFormationBias, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
-    COMPONENT_IDENTITY_TOLERANCE_M, ELEVATION_MAX_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    BedrockKind, GeologicSpec, MantleActivity, MantleFormationBias, ReliefSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+    WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M, ELEVATION_MAX_M,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -38,7 +39,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "95663646e7796d57fbb8f44070f42a5e583ab4c2ca8847c4d13d22b628517b43",
+        expected_relief_hash: "fa85419891fe6f2f8c3c37b61da201b23886abbe2ec26368efc110c06b592d71",
         expected_geology_hash: "6aa14ee4096ac47d2e54811939a8f18fb47f792de4d5034af98a4870a4c90f76",
     },
     MatrixCase {
@@ -52,7 +53,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "f2099559b754d225cd6c0988e1d8f13a4e8199595d6fc3dfc61132cca84f552d",
+        expected_relief_hash: "f42e3a97cc75f11f4b6bf1f3f419974df454975238c9c8d11f439b0012934fed",
         expected_geology_hash: "d92f52b3f9150991ae39268ed6720b4726b6fe22146a0d13bba6aee634a7326a",
     },
     MatrixCase {
@@ -66,7 +67,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "a39be5450a60d1338084052d079e1d2e8268e050bed2566df6d27e38b89b1811",
+        expected_relief_hash: "073606a7ab2cdf726279796ead4cd8df70b02c9769535cd4553b717624684f5d",
         expected_geology_hash: "2b93538e11dea0c7b9bd271392adb5d5f6f5f18597daf6b41104b2ceca1ab412",
     },
     MatrixCase {
@@ -80,7 +81,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_relief_hash: "23241b65156c1c71b8adfbe0e1724e8c003a4b263dae1715f67de4d4f96bb1fe",
+        expected_relief_hash: "f2e2e0d681668a14cdb517ca6f1f056fbf097890ad64615bf1893586fab6d445",
         expected_geology_hash: "4ee3b4650a98d4983acd617f0b6bba621e2376c778e78242a4a4a1671e4728c8",
     },
 ];
@@ -148,6 +149,7 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
             &surface,
             &tectonic,
             &mantle,
+            &ReliefSpec::default(),
             &mut stage_rng(case.seed, "matrix.relief"),
             &mut diagnostics,
         )
@@ -157,6 +159,7 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
             &surface,
             &tectonic,
             &mantle,
+            &ReliefSpec::default(),
             &mut stage_rng(case.seed, "matrix.relief"),
             &mut repeated_diagnostics,
         )

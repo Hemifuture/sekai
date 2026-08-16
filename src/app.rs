@@ -67,7 +67,7 @@ use crate::{
     world::{
         natural::{
             preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, ClimateSpec,
-            GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError,
+            GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError, ReliefSpec,
             ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
             WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
             MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
@@ -217,6 +217,8 @@ pub struct TemplateApp {
     world_seed: u64,
     formation_spec: WorldFormationSpec,
     tectonic_spec: TectonicSpec,
+    #[serde(default)]
+    relief_spec: ReliefSpec,
     geologic_spec: GeologicSpec,
     #[serde(skip)]
     canvas_widget: Canvas,
@@ -264,6 +266,7 @@ impl Default for TemplateApp {
             world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
             formation_spec: WorldFormationSpec::default(),
             tectonic_spec: TectonicSpec::default(),
+            relief_spec: ReliefSpec::default(),
             geologic_spec: GeologicSpec::default(),
             canvas_widget: Canvas::new(
                 canvas_state,
@@ -460,6 +463,7 @@ impl TemplateApp {
             &self.spherical_space_spec,
             &self.formation_spec,
             &self.tectonic_spec,
+            &self.relief_spec,
             &self.geologic_spec,
             &mut self.stage_cache,
             self.spherical_canvas_state.presentation_view_state(),
@@ -548,6 +552,7 @@ impl TemplateApp {
                     &self.spherical_space_spec,
                     &self.formation_spec,
                     &self.tectonic_spec,
+                    &self.relief_spec,
                     &self.geologic_spec,
                     &mut self.stage_cache,
                     self.spherical_canvas_state.presentation_view_state(),
@@ -989,6 +994,7 @@ impl eframe::App for TemplateApp {
                         apply_formation_preset_selection(
                             &mut self.formation_spec,
                             &mut self.tectonic_spec,
+                            &mut self.relief_spec,
                             selected,
                         );
                     }
@@ -1004,7 +1010,16 @@ impl eframe::App for TemplateApp {
                             &mut self.tectonic_spec.continental_crust_fraction,
                             MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
                         )
-                        .text("大陆地壳比例")
+                        .text("初始大陆地壳比例")
+                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                    );
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.relief_spec.target_land_fraction,
+                            crate::world::natural::MIN_TARGET_LAND_FRACTION
+                                ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
+                        )
+                        .text("目标陆地面积比例")
                         .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                     );
                     egui::ComboBox::from_label("构造活动")
@@ -1178,6 +1193,7 @@ fn formation_provenance_label(formation: &ResolvedWorldFormation) -> String {
 fn apply_formation_preset_selection(
     formation: &mut WorldFormationSpec,
     tectonic: &mut TectonicSpec,
+    relief: &mut ReliefSpec,
     selected: WorldFormationPreset,
 ) {
     formation.preset = selected;
@@ -1193,6 +1209,7 @@ fn apply_formation_preset_selection(
     };
     if let Some(resolved) = resolved {
         tectonic.continental_crust_fraction = resolved.recommended_continental_crust_fraction();
+        relief.target_land_fraction = resolved.recommended_land_fraction();
     }
 }
 
@@ -1437,8 +1454,8 @@ mod natural_app_tests {
         boundary_strength_field_id, land_ocean_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
         surface_elevation_m_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity,
-        ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
-        WorldFormationSpec,
+        ReliefSpec, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+        WorldFormationPreset, WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
@@ -1870,6 +1887,81 @@ mod natural_app_tests {
             assert_eq!(source_after, *current.source());
         });
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
+
+        app.spherical_space_spec.target_cell_count = 162;
+        let revisions_before_invalid_relief = app
+            .spherical_presentation
+            .read_resource(|current| current.as_ref().unwrap().revisions());
+        let uploads_before_invalid_relief = render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        app.relief_spec.target_land_fraction = f32::NAN;
+        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        app.spherical_presentation.read_resource(|current| {
+            let current = current.as_ref().unwrap();
+            assert_eq!(publication_address, std::ptr::from_ref(current));
+            assert!(Arc::ptr_eq(&packet_after, current.gpu_packet_arc()));
+            assert_eq!(source_after, *current.source());
+            assert_eq!(revisions_before_invalid_relief, current.revisions());
+        });
+        assert_eq!(
+            uploads_before_invalid_relief,
+            render_state
+                .renderer
+                .read()
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap()
+                .upload_counters()
+        );
+    }
+
+    #[test]
+    fn persisted_and_rebuilt_land_targets_reach_the_current_spherical_publication() {
+        fn published_land_fraction(app: &TemplateApp) -> (f64, Vec<u32>, f32) {
+            app.spherical_presentation.read_resource(|current| {
+                let current = current.as_ref().unwrap();
+                let document = current.document();
+                let surface = document.surface.snapshot();
+                let relief = document.relief.snapshot();
+                let land_area = surface
+                    .cells()
+                    .iter()
+                    .zip(relief.land_ocean().raw_values())
+                    .filter_map(|(cell, &kind)| (kind == 1).then_some(cell.area.get()))
+                    .sum::<f64>();
+                (
+                    land_area / surface.total_cell_area().get(),
+                    relief
+                        .elevation_m()
+                        .values()
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect(),
+                    relief.sea_level_m(),
+                )
+            })
+        }
+
+        let render_state = request_test_render_state();
+        let mut persisted = TemplateApp::default();
+        persisted.spherical_space_spec.target_cell_count = 162;
+        persisted.relief_spec.target_land_fraction = 0.55;
+        let mut app = create_from_persisted(persisted, &render_state);
+
+        let (initial_actual, initial_elevation, initial_sea_level) = published_land_fraction(&app);
+        assert!((initial_actual - 0.55).abs() <= 0.02);
+
+        app.relief_spec.target_land_fraction = 0.25;
+        app.try_rebuild_spherical_world(&render_state).unwrap();
+        let (rebuilt_actual, rebuilt_elevation, rebuilt_sea_level) = published_land_fraction(&app);
+        assert!((rebuilt_actual - 0.25).abs() <= 0.02);
+        assert_eq!(initial_elevation, rebuilt_elevation);
+        assert!(initial_sea_level < rebuilt_sea_level);
     }
 
     #[test]
@@ -2663,20 +2755,35 @@ mod natural_app_tests {
     fn default_application_persists_continents_with_missing_field_compatibility() {
         let app = TemplateApp::default();
         assert_eq!(app.formation_spec.preset, WorldFormationPreset::Continents);
+        assert_eq!(app.relief_spec, ReliefSpec::default());
 
         let mut encoded = serde_json::to_value(&app).unwrap();
         encoded.as_object_mut().unwrap().remove("formation_spec");
+        encoded.as_object_mut().unwrap().remove("relief_spec");
         let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
         assert_eq!(
             restored.formation_spec.preset,
             WorldFormationPreset::Continents
         );
+        assert_eq!(restored.relief_spec, ReliefSpec::default());
+    }
+
+    #[test]
+    fn application_roundtrip_preserves_manual_land_target() {
+        let mut app = TemplateApp::default();
+        app.relief_spec.target_land_fraction = 0.55;
+
+        let restored: TemplateApp =
+            serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
+
+        assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
     }
 
     #[test]
     fn named_preset_applies_recommendation_while_random_preserves_author_value() {
         let mut formation = WorldFormationSpec::default();
         let mut tectonic = TectonicSpec::default();
+        let mut relief = ReliefSpec::default();
         for (preset, expected) in [
             (WorldFormationPreset::Continents, 0.38),
             (WorldFormationPreset::Archipelago, 0.26),
@@ -2684,19 +2791,23 @@ mod natural_app_tests {
             (WorldFormationPreset::GreatIsland, 0.28),
             (WorldFormationPreset::VolcanicIslands, 0.16),
         ] {
-            apply_formation_preset_selection(&mut formation, &mut tectonic, preset);
+            apply_formation_preset_selection(&mut formation, &mut tectonic, &mut relief, preset);
             assert_eq!(formation.preset, preset);
             assert_eq!(tectonic.continental_crust_fraction, expected);
+            assert_eq!(relief.target_land_fraction, expected);
         }
 
         tectonic.continental_crust_fraction = 0.33;
+        relief.target_land_fraction = 0.47;
         apply_formation_preset_selection(
             &mut formation,
             &mut tectonic,
+            &mut relief,
             WorldFormationPreset::Random,
         );
         assert_eq!(formation.preset, WorldFormationPreset::Random);
         assert_eq!(tectonic.continental_crust_fraction, 0.33);
+        assert_eq!(relief.target_land_fraction, 0.47);
     }
 
     #[test]

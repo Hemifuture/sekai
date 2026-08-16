@@ -18,8 +18,8 @@ use crate::engine::{
 };
 use crate::generators::natural::{
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
-    WorldFormationSpecArtifact,
+    GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact, RulePackSetArtifact,
+    TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use crate::generators::spatial::SphericalSpaceArtifact;
 use crate::gpu::spherical::{SphericalFieldRenderer, SphericalGpuPacket, SphericalRenderError};
@@ -32,8 +32,8 @@ use crate::view::{
     SphericalProjection, SphericalProjectionError, SphericalViewMode,
 };
 use crate::world::natural::{
-    GeologicSpec, GeologicSpecError, NaturalSpecError, TectonicSpec, WorldFormationSpec,
-    WorldFormationSpecError,
+    GeologicSpec, GeologicSpecError, NaturalSpecError, ReliefSpec, ReliefSpecError, TectonicSpec,
+    WorldFormationSpec, WorldFormationSpecError,
 };
 use crate::world::{RootSeed, SphericalSpaceSpec, SphericalSpecError};
 
@@ -428,6 +428,7 @@ impl PublishedSphericalPresentation {
         space: &SphericalSpaceSpec,
         formation: &WorldFormationSpec,
         tectonic: &TectonicSpec,
+        relief: &ReliefSpec,
         geologic: &GeologicSpec,
         cache: &mut MemoryStageCache,
         requested_state: &SphericalFieldDisplayState,
@@ -437,6 +438,7 @@ impl PublishedSphericalPresentation {
             space,
             formation,
             tectonic,
+            relief,
             geologic,
             cache,
             *self.view_state(),
@@ -452,6 +454,7 @@ impl PublishedSphericalPresentation {
         space: &SphericalSpaceSpec,
         formation: &WorldFormationSpec,
         tectonic: &TectonicSpec,
+        relief: &ReliefSpec,
         geologic: &GeologicSpec,
         cache: &mut MemoryStageCache,
         requested_view: SphericalPresentationViewState,
@@ -462,6 +465,7 @@ impl PublishedSphericalPresentation {
             space,
             formation,
             tectonic,
+            relief,
             geologic,
             cache,
             requested_view,
@@ -478,6 +482,7 @@ impl PublishedSphericalPresentation {
         space: &SphericalSpaceSpec,
         formation: &WorldFormationSpec,
         tectonic: &TectonicSpec,
+        relief: &ReliefSpec,
         geologic: &GeologicSpec,
         cache: &mut MemoryStageCache,
         requested_state: &SphericalFieldDisplayState,
@@ -488,6 +493,7 @@ impl PublishedSphericalPresentation {
             space,
             formation,
             tectonic,
+            relief,
             geologic,
             cache,
             *self.view_state(),
@@ -503,6 +509,7 @@ impl PublishedSphericalPresentation {
         space: &SphericalSpaceSpec,
         formation: &WorldFormationSpec,
         tectonic: &TectonicSpec,
+        relief: &ReliefSpec,
         geologic: &GeologicSpec,
         cache: &mut MemoryStageCache,
         requested_view: SphericalPresentationViewState,
@@ -514,6 +521,7 @@ impl PublishedSphericalPresentation {
             space,
             formation,
             tectonic,
+            relief,
             geologic,
             cache,
             requested_view,
@@ -1114,20 +1122,23 @@ impl SphericalFieldCandidate {
     }
 }
 
-/// Builds the exact eight external inputs accepted by the spherical natural graph.
+/// Builds the exact nine external inputs accepted by the spherical natural graph.
 pub fn build_spherical_external_artifacts(
     space: &SphericalSpaceSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
     geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, SphericalPresentationError> {
     space.validate()?;
     formation.validate()?;
     tectonic.validate()?;
+    relief.validate()?;
     geologic.validate()?;
     let mut external = ExternalArtifacts::new();
     external.insert(SphericalSpaceArtifact::new(space.clone()))?;
     external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
+    external.insert(ReliefSpecArtifact::new(relief.clone()))?;
     external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
     external.insert(ClimateSpecArtifact::new(Default::default()))?;
     external.insert(HydroErosionSpecArtifact::new(Default::default()))?;
@@ -1148,6 +1159,7 @@ pub fn build_spherical_presentation_candidate(
     space: &SphericalSpaceSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     current_state: &SphericalFieldDisplayState,
@@ -1158,6 +1170,7 @@ pub fn build_spherical_presentation_candidate(
         space,
         formation,
         tectonic,
+        relief,
         geologic,
         cache,
         SphericalPresentationViewState::default(),
@@ -1173,6 +1186,7 @@ pub fn build_spherical_presentation_candidate_for_view(
     space: &SphericalSpaceSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     view_state: SphericalPresentationViewState,
@@ -1184,6 +1198,7 @@ pub fn build_spherical_presentation_candidate_for_view(
         space,
         formation,
         tectonic,
+        relief,
         geologic,
         cache,
         view_state,
@@ -1199,6 +1214,7 @@ fn build_spherical_presentation_candidate_impl(
     space: &SphericalSpaceSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     view_state: SphericalPresentationViewState,
@@ -1211,6 +1227,7 @@ fn build_spherical_presentation_candidate_impl(
         space,
         formation,
         tectonic,
+        relief,
         geologic,
         cache,
         view_state,
@@ -1227,6 +1244,7 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     space: &SphericalSpaceSpec,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
     geologic: &GeologicSpec,
     cache: &mut MemoryStageCache,
     view_state: SphericalPresentationViewState,
@@ -1235,7 +1253,8 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     failure: FailureInjector,
     lineage: WorldCandidateLineage,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
-    let external = build_spherical_external_artifacts(space, formation, tectonic, geologic)?;
+    let external =
+        build_spherical_external_artifacts(space, formation, tectonic, relief, geologic)?;
     let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
         .build(root_seed, external, cache)?;
     failure.check("document")?;
@@ -1423,6 +1442,8 @@ pub enum SphericalPresentationError {
     #[error(transparent)]
     TectonicSpec(#[from] NaturalSpecError),
     #[error(transparent)]
+    ReliefSpec(#[from] ReliefSpecError),
+    #[error(transparent)]
     FormationSpec(#[from] WorldFormationSpecError),
     #[error(transparent)]
     GeologicSpec(#[from] GeologicSpecError),
@@ -1485,7 +1506,7 @@ mod tests {
     };
     use crate::world::natural::{
         plate_velocity_field_id, preliminary_prevailing_wind_m_s_field_id, GeologicSpec,
-        TectonicSpec, WorldFormationSpec,
+        ReliefSpec, TectonicSpec, WorldFormationSpec,
     };
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -1536,6 +1557,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1547,6 +1569,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1576,6 +1599,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1592,6 +1616,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 published.state(),
@@ -1617,6 +1642,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1649,6 +1675,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &requested_state,
@@ -1703,6 +1730,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1734,6 +1762,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1823,6 +1852,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1892,6 +1922,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -1975,6 +2006,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2037,6 +2069,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2102,6 +2135,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2121,6 +2155,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &state_a,
@@ -2132,6 +2167,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &state_b,
@@ -2167,6 +2203,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &state_a,
@@ -2200,6 +2237,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2247,6 +2285,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 published.state(),
@@ -2289,6 +2328,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2323,6 +2363,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2343,6 +2384,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &requested_state,
@@ -2375,6 +2417,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2395,6 +2438,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &requested_state,
@@ -2445,6 +2489,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2465,6 +2510,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &requested_state,
@@ -2506,6 +2552,7 @@ mod tests {
             &space(),
             &WorldFormationSpec::default(),
             &TectonicSpec::default(),
+            &ReliefSpec::default(),
             &GeologicSpec::default(),
             &mut cache,
             &SphericalFieldDisplayState::default(),
@@ -2526,6 +2573,7 @@ mod tests {
                 &space(),
                 &WorldFormationSpec::default(),
                 &TectonicSpec::default(),
+                &ReliefSpec::default(),
                 &GeologicSpec::default(),
                 &mut cache,
                 &requested_state,

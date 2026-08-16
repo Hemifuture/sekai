@@ -16,7 +16,7 @@ use sekai::view::{
 };
 use sekai::world::natural::{
     preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
-    TectonicSpec, WorldFormationSpec,
+    ReliefSpec, TectonicSpec, WorldFormationSpec,
 };
 use sekai::world::Meters;
 
@@ -44,6 +44,7 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
         &space,
         &WorldFormationSpec::default(),
         &TectonicSpec::default(),
+        &ReliefSpec::default(),
         &GeologicSpec::default(),
         &mut cache,
         &requested_state,

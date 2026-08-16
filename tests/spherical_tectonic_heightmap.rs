@@ -2,10 +2,11 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::ReliefGenerator;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryRecord, CrustKind, CrustKindField, LandOceanKind, PlateIdField, SphericalCrustState,
-    SphericalMantleSnapshot, SphericalOrogenyKind, SphericalPlate, SphericalPlateRotation,
-    SphericalReliefSnapshot, SphericalTectonicSnapshot, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
-    MANTLE_SNAPSHOT_SCHEMA_V2, NO_OROGENY_AGE_SENTINEL_MYR, TECTONIC_SNAPSHOT_SCHEMA_V3,
+    BoundaryRecord, CrustKind, CrustKindField, LandOceanKind, PlateIdField, ReliefSpec,
+    SphericalCrustState, SphericalMantleSnapshot, SphericalOrogenyKind, SphericalPlate,
+    SphericalPlateRotation, SphericalReliefSnapshot, SphericalTectonicSnapshot,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MANTLE_SNAPSHOT_SCHEMA_V2, NO_OROGENY_AGE_SENTINEL_MYR,
+    TECTONIC_SNAPSHOT_SCHEMA_V3,
 };
 use sekai::world::spatial::{SurfaceRef, UnitVector3};
 use sekai::world::{CellId, Meters, PlateId, RootSeed, SphericalSpaceSpec};
@@ -175,6 +176,7 @@ fn generate(
         surface,
         tectonic,
         mantle,
+        &ReliefSpec::default(),
         &mut stage_rng(seed),
         &mut diagnostics,
     )

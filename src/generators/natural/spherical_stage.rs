@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    ReliefGenerator, ResolvedClimateInputStage, ResolvedGeologicInputStage,
+    ReliefGenerator, ReliefSpecArtifact, ResolvedClimateInputStage, ResolvedGeologicInputStage,
     ResolvedHydroErosionInputStage, ResolvedTectonicInputArtifact, ResolvedTectonicInputStage,
     ResolvedWorldFormationArtifact, RuleClimateResolutionStage, RuleGeologicResolutionStage,
     RuleHydroErosionResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
@@ -176,6 +176,7 @@ impl Artifact for SphericalReliefArtifact {
 /// The exact typed inputs visible to [`SphericalReliefStage`].
 pub struct SphericalReliefStageInputs {
     mantle: Arc<SphericalMantleArtifact>,
+    relief_spec: Arc<ReliefSpecArtifact>,
     surface: Arc<SphericalSurfaceArtifact>,
     tectonic: Arc<SphericalTectonicArtifact>,
 }
@@ -184,6 +185,7 @@ impl StageInputs for SphericalReliefStageInputs {
     fn dependencies() -> &'static [ArtifactKey] {
         &[
             SphericalMantleArtifact::KEY,
+            ReliefSpecArtifact::KEY,
             SphericalSurfaceArtifact::KEY,
             SphericalTectonicArtifact::KEY,
         ]
@@ -192,6 +194,7 @@ impl StageInputs for SphericalReliefStageInputs {
     fn load(artifacts: &BuildArtifacts) -> Result<Self, ArtifactError> {
         Ok(Self {
             mantle: artifacts.get::<SphericalMantleArtifact>()?,
+            relief_spec: artifacts.get::<ReliefSpecArtifact>()?,
             surface: artifacts.get::<SphericalSurfaceArtifact>()?,
             tectonic: artifacts.get::<SphericalTectonicArtifact>()?,
         })
@@ -211,7 +214,7 @@ impl Stage for SphericalReliefStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {
@@ -239,11 +242,17 @@ impl Stage for SphericalReliefStage {
             .snapshot()
             .validate_against(inputs.surface.snapshot())
             .map_err(|error| invalid_relief_input(error.to_string()))?;
+        inputs
+            .relief_spec
+            .spec()
+            .validate()
+            .map_err(|error| invalid_relief_input(error.to_string()))?;
 
         let snapshot = ReliefGenerator::generate_spherical(
             inputs.surface.snapshot(),
             inputs.tectonic.snapshot(),
             inputs.mantle.snapshot(),
+            inputs.relief_spec.spec(),
             rng,
             diagnostics,
         )
@@ -275,6 +284,7 @@ pub fn spherical_natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .external::<GeologicSpecArtifact>()
         .external::<ClimateSpecArtifact>()
         .external::<HydroErosionSpecArtifact>()
+        .external::<ReliefSpecArtifact>()
         .external::<WorldFormationSpecArtifact>()
         .external::<RulePackSetArtifact>()
         .external::<AuthorConstraintsArtifact>()
@@ -333,10 +343,12 @@ fn relief_generation_failure(error: SphericalReliefGenerationError) -> StageErro
         | SphericalReliefGenerationError::InvalidSurfaceIdentity(_)
         | SphericalReliefGenerationError::InvalidTectonics(_)
         | SphericalReliefGenerationError::InvalidMantle(_)
+        | SphericalReliefGenerationError::InvalidSpec(_)
         | SphericalReliefGenerationError::InvalidHeightmap { .. } => {
             invalid_relief_input(error.to_string())
         }
-        SphericalReliefGenerationError::InvalidReliefField(_) => {
+        SphericalReliefGenerationError::InvalidLandFraction { .. }
+        | SphericalReliefGenerationError::InvalidReliefField(_) => {
             StageError::new(RELIEF_BUILD_FAILED_CODE, error.to_string())
         }
         SphericalReliefGenerationError::InvalidSnapshot(_) => invalid_relief(error.to_string()),
