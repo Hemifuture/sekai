@@ -172,8 +172,16 @@ blocks are inverted analytically. Eliminating momentum yields a matrix-free
 scalar/multilayer Helmholtz operator solved by bounded restarted GMRES with a
 declared diagonal preconditioner, tolerance, iteration count, and residual.
 
-Transport and nonlinear local sources use a monotone conservative step. A
-failed linear solve, non-positive layer thickness, or budget excess is a typed
+Transport and nonlinear local sources use one paired-edge, piecewise-linear
+finite-volume step. Green-Gauss gradients are limited with the
+Barth-Jespersen one-ring limiter; nonnegative tracers additionally scale each
+donor's outgoing fan to its available extensive amount. Because the sampled
+cell velocity is only discretely near-solenoidal, a final deterministic
+mass-conserving bound redistribution clips cell means to their original
+one-ring extrema and redistributes the clipped extensive residual according to
+remaining bound capacity. This projection is explicit, allocation-free in the
+supplied workspace, and never changes an edge flux asymmetrically. A failed
+linear solve, non-positive layer thickness, or budget excess is a typed
 failure; the solver cannot silently fall back to different physics.
 
 ### 6.3 Split-explicit candidate

@@ -69,12 +69,12 @@ Files:
 - Modify: `src/generators/natural/circulation/operators.rs`
 - Create: `tests/circulation_second_order_transport.rs`
 
-- [ ] Write RED tests for linear-field accuracy, extrema preservation,
+- [x] Write RED tests for linear-field accuracy, extrema preservation,
   positivity, paired flux closure, seam invariance, reversal symmetry, and
   zero per-step cell-sized allocation with a supplied workspace.
-- [ ] Implement piecewise-linear reconstruction, stable limiter, and outgoing
+- [x] Implement piecewise-linear reconstruction, stable limiter, and outgoing
   positivity scaling while retaining first-order reference APIs.
-- [ ] Run all existing operator/transient regressions; commit.
+- [x] Run all existing operator/transient regressions; commit.
 
 ## Task 6: Implement and compare RK3, IMEX, and split-explicit integrators
 

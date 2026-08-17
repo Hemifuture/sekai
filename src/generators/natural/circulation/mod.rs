@@ -21,8 +21,8 @@ pub use comparison::{
 pub use fixtures::{build_fixture, CirculationFixture, FixtureBuildError};
 pub use grid::{CubedSphereGrid, CubedSphereGridError, SphericalCell, SphericalEdge};
 pub use operators::{
-    CirculationOperatorError, CirculationOperators, ConservativeTransport, SteadyTransportSolve,
-    UpwindTracerTransport,
+    CirculationOperatorError, CirculationOperators, ConservativeTransport, SecondOrderTransport,
+    SecondOrderTransportWorkspace, SteadyTransportSolve, UpwindTracerTransport,
 };
 pub use solver::{CirculationSolveError, CirculationSolver};
 pub use steady::BalancedSteadySolver;

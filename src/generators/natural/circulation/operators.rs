@@ -364,6 +364,180 @@ impl<'grid> CirculationOperators<'grid> {
         })
     }
 
+    /// Advances a cell-mean scalar with monotone piecewise-linear donor
+    /// reconstruction and one paired flux per shared edge. A supplied
+    /// workspace owns every cell/edge-sized temporary allocation.
+    pub fn advect_scalar_monotone_second_order_into<'workspace>(
+        &self,
+        scalar: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        dt_seconds: f64,
+        enforce_nonnegative: bool,
+        workspace: &'workspace mut SecondOrderTransportWorkspace,
+    ) -> Result<SecondOrderTransport<'workspace>, CirculationOperatorError> {
+        validate_scalar_field("second_order_scalar", scalar, self.grid.cell_count())?;
+        validate_vector_field("second_order_velocity", velocity, self.grid.cell_count())?;
+        validate_permeability(edge_permeability, self.grid.edges().len())?;
+        if !dt_seconds.is_finite() || dt_seconds < 0.0 {
+            return Err(CirculationOperatorError::InvalidTimeStep { found: dt_seconds });
+        }
+        if enforce_nonnegative {
+            if let Some((index, found)) = scalar
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| *value < 0.0)
+            {
+                return Err(CirculationOperatorError::NegativePositiveTransportInput {
+                    index,
+                    found,
+                });
+            }
+        }
+        workspace.validate_for_grid(self.grid)?;
+        workspace.reset();
+
+        // The same Green-Gauss gradient used by the shared pressure operator,
+        // written directly into reusable f64 scratch storage.
+        for edge in self.grid.edges() {
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let first_value = f64::from(scalar[first]);
+            let second_value = f64::from(scalar[second]);
+            let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
+            accumulate_vector(
+                &mut workspace.gradients[first],
+                edge.normal_from_first(),
+                (edge_value - first_value) * edge.length_m(),
+            );
+            accumulate_vector(
+                &mut workspace.gradients[second],
+                edge.normal_from_first(),
+                -(edge_value - second_value) * edge.length_m(),
+            );
+        }
+        for (index, cell) in self.grid.cells().iter().enumerate() {
+            workspace.gradients[index] = project_tangent(
+                scale(workspace.gradients[index], cell.area_m2().recip()),
+                cell.center_unit(),
+            );
+            let mut minimum = scalar[index];
+            let mut maximum = scalar[index];
+            for neighbor in cell.neighbors() {
+                minimum = minimum.min(scalar[*neighbor as usize]);
+                maximum = maximum.max(scalar[*neighbor as usize]);
+            }
+            workspace.local_min[index] = f64::from(minimum);
+            workspace.local_max[index] = f64::from(maximum);
+        }
+
+        // Barth-Jespersen limiter: every owner-side edge reconstruction stays
+        // inside that cell's one-ring extrema before a donor is selected.
+        for edge in self.grid.edges() {
+            for owner in 0..2 {
+                let cell = edge.cells()[owner] as usize;
+                let displacement = edge_displacement_m(self.grid, edge, owner);
+                let increment = dot(workspace.gradients[cell], displacement);
+                let center = f64::from(scalar[cell]);
+                let ratio = if increment > 0.0 {
+                    (workspace.local_max[cell] - center) / increment
+                } else if increment < 0.0 {
+                    (workspace.local_min[cell] - center) / increment
+                } else {
+                    1.0
+                };
+                workspace.limiter[cell] = workspace.limiter[cell].min(ratio.clamp(0.0, 1.0));
+            }
+        }
+
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let signed_volume_flux = dot(
+                interpolate_vector(edge, velocity[first], velocity[second]),
+                edge.normal_from_first(),
+            ) * edge.length_m()
+                * f64::from(*permeability);
+            let (donor, owner) = if signed_volume_flux >= 0.0 {
+                (first, 0)
+            } else {
+                (second, 1)
+            };
+            let displacement = edge_displacement_m(self.grid, edge, owner);
+            let reconstructed = f64::from(scalar[donor])
+                + workspace.limiter[donor] * dot(workspace.gradients[donor], displacement);
+            let mut face_value =
+                reconstructed.clamp(workspace.local_min[donor], workspace.local_max[donor]);
+            if enforce_nonnegative {
+                face_value = face_value.max(0.0);
+            }
+            workspace.edge_volume_flux_m2_s[edge_index] = signed_volume_flux;
+            workspace.edge_face_value[edge_index] = face_value;
+            workspace.outgoing_amount[donor] +=
+                signed_volume_flux.abs() * face_value.abs() * dt_seconds;
+        }
+
+        let mut positivity_scaled_cells = 0_usize;
+        if enforce_nonnegative {
+            for (index, cell) in self.grid.cells().iter().enumerate() {
+                let available = cell.area_m2() * f64::from(scalar[index]);
+                let outgoing = workspace.outgoing_amount[index];
+                if outgoing > available && outgoing > 0.0 {
+                    workspace.outgoing_scale[index] = (available / outgoing).clamp(0.0, 1.0);
+                    positivity_scaled_cells += 1;
+                }
+            }
+        }
+
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+            let signed_flux = workspace.edge_volume_flux_m2_s[edge_index];
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let donor = if signed_flux >= 0.0 { first } else { second };
+            let transported = signed_flux
+                * workspace.edge_face_value[edge_index]
+                * workspace.outgoing_scale[donor]
+                * dt_seconds;
+            workspace.extensive_delta[first] -= transported;
+            workspace.extensive_delta[second] += transported;
+        }
+        for (index, cell) in self.grid.cells().iter().enumerate() {
+            let value =
+                f64::from(scalar[index]) + workspace.extensive_delta[index] / cell.area_m2();
+            if !value.is_finite() {
+                return Err(CirculationOperatorError::NumericalOverflow);
+            }
+            let lower = if enforce_nonnegative {
+                workspace.local_min[index].max(0.0)
+            } else {
+                workspace.local_min[index]
+            };
+            workspace.bounded_values[index] =
+                value.clamp(lower, workspace.local_max[index].max(lower));
+        }
+        let before = extensive_total(self.grid, scalar, false);
+        conservative_bound_redistribution(self.grid, before, enforce_nonnegative, workspace)?;
+        for (target, value) in workspace.output.iter_mut().zip(&workspace.bounded_values) {
+            if *value < f64::from(f32::MIN) || *value > f64::from(f32::MAX) {
+                return Err(CirculationOperatorError::NumericalOverflow);
+            }
+            *target = *value as f32;
+        }
+        let after = extensive_total(self.grid, &workspace.output, false);
+        let mass_scale = extensive_total(self.grid, scalar, true).max(f64::MIN_POSITIVE);
+        Ok(SecondOrderTransport {
+            values: &workspace.output,
+            relative_mass_error: (after - before).abs() / mass_scale,
+            positivity_scaled_cells,
+        })
+    }
+
     /// Advances an intensive scalar with constant-preserving upwind inflow.
     pub fn advect_scalar_upwind_tracer(
         &self,
@@ -724,6 +898,130 @@ pub struct ConservativeTransport {
     relative_mass_error: f64,
 }
 
+/// Reusable cell/edge scratch storage for monotone piecewise-linear transport.
+///
+/// The workspace is tied to one grid shape. Reusing it across time steps keeps
+/// the hot transport path allocation-free while still validating accidental
+/// use with a different grid.
+#[derive(Debug, Clone)]
+pub struct SecondOrderTransportWorkspace {
+    cell_count: usize,
+    edge_count: usize,
+    gradients: Vec<[f64; 3]>,
+    local_min: Vec<f64>,
+    local_max: Vec<f64>,
+    limiter: Vec<f64>,
+    edge_volume_flux_m2_s: Vec<f64>,
+    edge_face_value: Vec<f64>,
+    outgoing_amount: Vec<f64>,
+    outgoing_scale: Vec<f64>,
+    extensive_delta: Vec<f64>,
+    bounded_values: Vec<f64>,
+    output: Vec<f32>,
+}
+
+impl SecondOrderTransportWorkspace {
+    pub fn for_grid(grid: &CubedSphereGrid) -> Self {
+        let cell_count = grid.cell_count();
+        let edge_count = grid.edges().len();
+        Self {
+            cell_count,
+            edge_count,
+            gradients: vec![[0.0; 3]; cell_count],
+            local_min: vec![0.0; cell_count],
+            local_max: vec![0.0; cell_count],
+            limiter: vec![1.0; cell_count],
+            edge_volume_flux_m2_s: vec![0.0; edge_count],
+            edge_face_value: vec![0.0; edge_count],
+            outgoing_amount: vec![0.0; cell_count],
+            outgoing_scale: vec![1.0; cell_count],
+            extensive_delta: vec![0.0; cell_count],
+            bounded_values: vec![0.0; cell_count],
+            output: vec![0.0; cell_count],
+        }
+    }
+
+    /// Capacity fingerprint used by tests and diagnostics to prove reuse.
+    pub fn allocation_signature(&self) -> [usize; 11] {
+        [
+            self.gradients.capacity(),
+            self.local_min.capacity(),
+            self.local_max.capacity(),
+            self.limiter.capacity(),
+            self.edge_volume_flux_m2_s.capacity(),
+            self.edge_face_value.capacity(),
+            self.outgoing_amount.capacity(),
+            self.outgoing_scale.capacity(),
+            self.extensive_delta.capacity(),
+            self.bounded_values.capacity(),
+            self.output.capacity(),
+        ]
+    }
+
+    fn validate_for_grid(&self, grid: &CubedSphereGrid) -> Result<(), CirculationOperatorError> {
+        let expected_cells = grid.cell_count();
+        let expected_edges = grid.edges().len();
+        if self.cell_count != expected_cells
+            || self.edge_count != expected_edges
+            || self.gradients.len() != expected_cells
+            || self.local_min.len() != expected_cells
+            || self.local_max.len() != expected_cells
+            || self.limiter.len() != expected_cells
+            || self.edge_volume_flux_m2_s.len() != expected_edges
+            || self.edge_face_value.len() != expected_edges
+            || self.outgoing_amount.len() != expected_cells
+            || self.outgoing_scale.len() != expected_cells
+            || self.extensive_delta.len() != expected_cells
+            || self.bounded_values.len() != expected_cells
+            || self.output.len() != expected_cells
+        {
+            return Err(CirculationOperatorError::WorkspaceGridMismatch {
+                expected_cells,
+                found_cells: self.cell_count,
+                expected_edges,
+                found_edges: self.edge_count,
+            });
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.gradients.fill([0.0; 3]);
+        self.local_min.fill(0.0);
+        self.local_max.fill(0.0);
+        self.limiter.fill(1.0);
+        self.edge_volume_flux_m2_s.fill(0.0);
+        self.edge_face_value.fill(0.0);
+        self.outgoing_amount.fill(0.0);
+        self.outgoing_scale.fill(1.0);
+        self.extensive_delta.fill(0.0);
+        self.bounded_values.fill(0.0);
+        self.output.fill(0.0);
+    }
+}
+
+/// Borrowed result of a second-order update stored in its caller workspace.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SecondOrderTransport<'workspace> {
+    values: &'workspace [f32],
+    relative_mass_error: f64,
+    positivity_scaled_cells: usize,
+}
+
+impl SecondOrderTransport<'_> {
+    pub const fn values(&self) -> &[f32] {
+        self.values
+    }
+
+    pub const fn relative_mass_error(&self) -> f64 {
+        self.relative_mass_error
+    }
+
+    pub const fn positivity_scaled_cells(&self) -> usize {
+        self.positivity_scaled_cells
+    }
+}
+
 impl ConservativeTransport {
     pub fn values(&self) -> &[f32] {
         &self.values
@@ -874,6 +1172,22 @@ fn interpolate_scalar_f64(edge: &SphericalEdge, first: f64, second: f64) -> f64 
     (first * distances[1] + second * distances[0]) / (distances[0] + distances[1])
 }
 
+fn edge_displacement_m(grid: &CubedSphereGrid, edge: &SphericalEdge, owner: usize) -> [f64; 3] {
+    let cell = edge.cells()[owner] as usize;
+    let radial = grid.cells()[cell].center_unit();
+    let chord = add(edge.midpoint_unit(), scale(radial, -1.0));
+    let toward_midpoint = project_tangent(chord, radial);
+    let norm = dot(toward_midpoint, toward_midpoint).sqrt();
+    if norm <= f64::MIN_POSITIVE {
+        [0.0; 3]
+    } else {
+        scale(
+            toward_midpoint,
+            edge.center_distances_to_midpoint_m()[owner] / norm,
+        )
+    }
+}
+
 fn interpolate_vector(edge: &SphericalEdge, first: [f32; 3], second: [f32; 3]) -> [f64; 3] {
     interpolate_vector_f64(edge, to_f64_vector(first), to_f64_vector(second))
 }
@@ -965,6 +1279,104 @@ fn extensive_total(grid: &CubedSphereGrid, values: &[f32], absolute: bool) -> f6
     for (cell, value) in grid.cells().iter().zip(values) {
         let scalar = if absolute { value.abs() } else { *value };
         let term = cell.area_m2() * f64::from(scalar);
+        let adjusted = term - correction;
+        let next = sum + adjusted;
+        correction = (next - sum) - adjusted;
+        sum = next;
+    }
+    sum
+}
+
+fn conservative_bound_redistribution(
+    grid: &CubedSphereGrid,
+    target_total: f64,
+    enforce_nonnegative: bool,
+    workspace: &mut SecondOrderTransportWorkspace,
+) -> Result<(), CirculationOperatorError> {
+    let bounded_total = extensive_total_f64(grid, &workspace.bounded_values);
+    let correction = target_total - bounded_total;
+    let roundoff = 128.0 * f64::EPSILON * target_total.abs().max(bounded_total.abs()).max(1.0);
+    if correction.abs() <= roundoff {
+        return Ok(());
+    }
+
+    let adding = correction > 0.0;
+    let capacity = grid
+        .cells()
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let lower = if enforce_nonnegative {
+                workspace.local_min[index].max(0.0)
+            } else {
+                workspace.local_min[index]
+            };
+            let bound = if adding {
+                workspace.local_max[index].max(lower)
+            } else {
+                lower
+            };
+            cell.area_m2() * (bound - workspace.bounded_values[index]).abs()
+        })
+        .sum::<f64>();
+    if !capacity.is_finite() || capacity + roundoff < correction.abs() {
+        return Err(CirculationOperatorError::NumericalOverflow);
+    }
+    if capacity <= roundoff {
+        return Ok(());
+    }
+
+    let fraction = (correction.abs() / capacity).clamp(0.0, 1.0);
+    for (index, cell) in grid.cells().iter().enumerate() {
+        let lower = if enforce_nonnegative {
+            workspace.local_min[index].max(0.0)
+        } else {
+            workspace.local_min[index]
+        };
+        let bound = if adding {
+            workspace.local_max[index].max(lower)
+        } else {
+            lower
+        };
+        let extensive_capacity = cell.area_m2() * (bound - workspace.bounded_values[index]).abs();
+        let signed_adjustment = extensive_capacity * fraction * correction.signum();
+        workspace.bounded_values[index] += signed_adjustment / cell.area_m2();
+    }
+
+    // Remove the last few summation ulps without allocating or crossing a
+    // local bound. This deterministic cell-order sweep normally exits after
+    // one cell; it also covers nearly saturated bound sets.
+    let mut residual = target_total - extensive_total_f64(grid, &workspace.bounded_values);
+    for (index, cell) in grid.cells().iter().enumerate() {
+        if residual.abs() <= roundoff {
+            break;
+        }
+        let lower = if enforce_nonnegative {
+            workspace.local_min[index].max(0.0)
+        } else {
+            workspace.local_min[index]
+        };
+        let upper = workspace.local_max[index].max(lower);
+        let available = if residual > 0.0 {
+            cell.area_m2() * (upper - workspace.bounded_values[index])
+        } else {
+            cell.area_m2() * (workspace.bounded_values[index] - lower)
+        };
+        let adjustment = residual.abs().min(available.max(0.0)) * residual.signum();
+        workspace.bounded_values[index] += adjustment / cell.area_m2();
+        residual -= adjustment;
+    }
+    if residual.abs() > roundoff {
+        return Err(CirculationOperatorError::NumericalOverflow);
+    }
+    Ok(())
+}
+
+fn extensive_total_f64(grid: &CubedSphereGrid, values: &[f64]) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
+    for (cell, value) in grid.cells().iter().zip(values) {
+        let term = cell.area_m2() * value;
         let adjusted = term - correction;
         let next = sum + adjusted;
         correction = (next - sum) - adjusted;
@@ -1124,6 +1536,17 @@ pub enum CirculationOperatorError {
     InvalidRotationRate { found: f64 },
     #[error("transport time step {found} must be finite and nonnegative")]
     InvalidTimeStep { found: f64 },
+    #[error("nonnegative transport input is negative at cell {index}: {found}")]
+    NegativePositiveTransportInput { index: usize, found: f32 },
+    #[error(
+        "second-order workspace belongs to {found_cells} cells/{found_edges} edges; expected {expected_cells} cells/{expected_edges} edges"
+    )]
+    WorkspaceGridMismatch {
+        expected_cells: usize,
+        found_cells: usize,
+        expected_edges: usize,
+        found_edges: usize,
+    },
     #[error("finite-volume update overflowed the dense f32 state")]
     NumericalOverflow,
     #[error("tracer carrier layer amount {found} at cell {index} must be positive")]
