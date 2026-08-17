@@ -1,3 +1,4 @@
+mod spatial;
 mod spherical;
 
 use thiserror::Error;
@@ -8,6 +9,7 @@ use crate::world::natural::{
 };
 use crate::world::spatial::SurfaceRef;
 
+pub(crate) use spatial::evaluate_profile_surface_quality;
 pub use spherical::evaluate_spherical_foundation_quality;
 pub(crate) use spherical::{
     evaluate_spherical_foundation_quality_from_validated,
@@ -356,6 +358,14 @@ pub enum QualityBuildError {
     },
     #[error("invalid spherical quality input {input}: {reason}")]
     InvalidInput { input: &'static str, reason: String },
+    #[error("P1 conservative-remap fixture failed: {0}")]
+    ConservativeRemap(#[from] crate::generators::spatial::ConservativeRemapError),
+    #[error("remapped tangent vector at cell {cell:?} has radial residual {found} > {max}")]
+    TangentResidualExceeded {
+        cell: crate::world::CellId,
+        found: f64,
+        max: f64,
+    },
     #[error("spherical quality input {input} references {found:?}; expected {expected:?}")]
     SurfaceMismatch {
         input: &'static str,

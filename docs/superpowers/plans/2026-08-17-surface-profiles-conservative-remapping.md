@@ -406,19 +406,19 @@ impl ProfileSurfaceBuilder {
 }
 ```
 
-- [ ] **Step 1: Write RED bundle tests**
+- [x] **Step 1: Write RED bundle tests**
 
 For Draft, assert exact counts, the frozen authoritative fingerprint, map
 identity binding, the exact eight P1 metric IDs, passing hard P1 metrics,
 byte-identical repetition, and cancellation with no bundle.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test profile_surface_bundle -- --nocapture
 ```
 
-- [ ] **Step 3: Implement atomic orchestration and P1 metrics**
+- [x] **Step 3: Implement atomic orchestration and P1 metrics**
 
 Build the authoritative surface, control surface, then control-to-authoritative
 map. Cross-validate all outputs before constructing the bundle. Evaluate closed
@@ -426,7 +426,7 @@ area, paired-edge cancellation, map margins, constant/extensive fixtures,
 solid-body rotation, and deterministic category ambiguity into a P1
 `NaturalQualityReport` containing the design's eight versioned IDs.
 
-- [ ] **Step 4: Verify Draft and unchanged P0/V4 outputs**
+- [x] **Step 4: Verify Draft and unchanged P0/V4 outputs**
 
 ```powershell
 cargo test --test profile_surface_bundle -- --nocapture
@@ -434,7 +434,7 @@ cargo test --test natural_quality_contracts --test natural_quality_stage --test 
 cargo test --test spherical_natural_stage_graph -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/spatial/profile_surface.rs src/generators/spatial/mod.rs src/generators/natural/quality tests/profile_surface_bundle.rs

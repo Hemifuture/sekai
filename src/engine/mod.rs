@@ -14,7 +14,7 @@ pub use artifact::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, ContentHash,
 };
 pub use cache::{MemoryStageCache, StageCacheError, StageCacheKey};
-pub use cancellation::BuildCancellation;
+pub use cancellation::{BuildCancellation, BuildCancellationError};
 pub use diagnostics::{
     BuildReport, BuildResultHash, Diagnostic, DiagnosticContext, DiagnosticError,
     DiagnosticSeverity, StageReport,

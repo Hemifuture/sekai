@@ -165,8 +165,10 @@ impl Stage for CancellingStage {
         _diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         assert!(!rng.is_cancelled());
+        assert!(rng.check_cancelled().is_ok());
         self.cancellation.cancel();
         assert!(rng.is_cancelled());
+        assert!(rng.check_cancelled().is_err());
         self.cooperative_runs.fetch_add(1, Ordering::SeqCst);
         Ok(First(inputs.0 .0))
     }

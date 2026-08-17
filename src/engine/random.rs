@@ -1,6 +1,6 @@
 use rand::RngCore;
 
-use crate::engine::cancellation::BuildCancellation;
+use crate::engine::cancellation::{BuildCancellation, BuildCancellationError};
 use crate::world::RootSeed;
 
 /// Identifies a versioned generation stage within an owning namespace.
@@ -75,6 +75,11 @@ impl StageRng {
     /// Returns whether the owning build has requested cooperative cancellation.
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    /// Returns a stable error when the owning build requested cancellation.
+    pub fn check_cancelled(&self) -> Result<(), BuildCancellationError> {
+        self.cancellation.check_cancelled()
     }
 }
 

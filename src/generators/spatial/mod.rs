@@ -4,6 +4,7 @@ mod conservative_remap;
 mod geodesic_voronoi;
 mod jittered_grid;
 mod planar_voronoi;
+mod profile_surface;
 mod remap_fields;
 mod spherical_stage;
 mod stage;
@@ -12,6 +13,7 @@ pub use conservative_remap::{ConservativeRemapError, ConservativeSurfaceMapBuild
 pub use geodesic_voronoi::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
 pub use jittered_grid::JitteredGridSites;
 pub use planar_voronoi::{PlanarVoronoiBuilder, SpatialBuildError};
+pub use profile_surface::{ProfileSurfaceBuildError, ProfileSurfaceBuilder, ProfileSurfaceBundle};
 pub use remap_fields::{
     remap_categories_u16, remap_extensive_f64, remap_intensive_f32, remap_intensive_f64,
     remap_tangent_components_f64, CategoricalRemap, ExtensiveRemap,
