@@ -86,7 +86,16 @@ pub use geology::{
     GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
 pub use global_circulation::{
-    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, CLIMATE_WORK_DOMAIN_SCHEMA_V1,
+    ClimateBudgetReport, ClimateCapabilityAvailability, ClimateCapabilityError,
+    ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError,
+    ClimateLayerLayout, ClimateLayerLayoutError, ClimateLayerRole, ClimateLayerSpec,
+    ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateReportError,
+    ClimateSolveReport, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError,
+    GlobalCirculationFields, GlobalCirculationSnapshot, GlobalCirculationValidationError,
+    ProductionIntegratorId, CLIMATE_CHECKPOINT_SCHEMA_V1, CLIMATE_LAYER_LAYOUT_SCHEMA_V1,
+    CLIMATE_WORK_DOMAIN_SCHEMA_V1, GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX,
+    GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX, GLOBAL_CIRCULATION_SCHEMA_V1,
+    GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S,
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,

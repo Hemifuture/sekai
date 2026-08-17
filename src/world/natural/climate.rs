@@ -77,7 +77,7 @@ impl<'de> Deserialize<'de> for MonthlyScalarField {
     where
         D: Deserializer<'de>,
     {
-        let values = Vec::<[f32; CLIMATE_MONTH_COUNT]>::deserialize(deserializer)?;
+        let values = deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CLIMATE_CELLS>(deserializer)?;
         Self::from_values(values).map_err(serde::de::Error::custom)
     }
 }
@@ -130,7 +130,7 @@ impl<'de> Deserialize<'de> for MonthlyVectorField {
     where
         D: Deserializer<'de>,
     {
-        let values = Vec::<[[f32; 2]; CLIMATE_MONTH_COUNT]>::deserialize(deserializer)?;
+        let values = deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CLIMATE_CELLS>(deserializer)?;
         Self::from_values(values).map_err(serde::de::Error::custom)
     }
 }

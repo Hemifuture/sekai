@@ -25,13 +25,13 @@ Files:
 - Extend: `src/world/natural/global_circulation.rs`
 - Create: `tests/global_circulation_contracts.rs`
 
-- [ ] Write RED tests for fixed C1/C2 layouts, integrator identity, capability
+- [x] Write RED tests for fixed C1/C2 layouts, integrator identity, capability
   tri-state, checkpoint fingerprints, strict serde, bounded monthly arrays,
   vector tangency, monthly identities, and surface mismatch.
-- [ ] Implement `ClimateModelProfile`, `ClimateLayerLayout`,
+- [x] Implement `ClimateModelProfile`, `ClimateLayerLayout`,
   `ProductionIntegratorId`, `ClimateCheckpoint`, capabilities, solve/budget
   reports, and `GlobalCirculationSnapshot`.
-- [ ] Run focused tests and strict Clippy; commit.
+- [x] Run focused tests and strict Clippy; commit.
 
 ## Task 3: Build exact P3-derived climate forcing and reverse projection
 
