@@ -1,5 +1,7 @@
 mod forcing;
 mod project;
+mod state;
+mod tendency;
 
 pub use forcing::{
     GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
@@ -8,4 +10,10 @@ pub use forcing::{
 pub use project::{
     project_monthly_extensive_rate, project_monthly_intensive_scalar,
     project_monthly_tangent_vectors, ClimateProjectionError, ProjectedMonthlyScalar,
+};
+pub use state::{LayeredClimateState, LayeredStateError};
+pub use tendency::{
+    paired_heat_exchange, paired_momentum_exchange, LayeredClimateTendency, LayeredTendencyBudget,
+    LayeredTendencyError, LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange,
+    PairedMomentumExchange,
 };

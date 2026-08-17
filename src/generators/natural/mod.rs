@@ -92,10 +92,12 @@ pub use geologic_substrate::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use global_circulation::{
-    project_monthly_extensive_rate, project_monthly_intensive_scalar,
-    project_monthly_tangent_vectors, ClimateProjectionError, GlobalClimateForcing,
-    GlobalClimateForcingBuilder, GlobalClimateForcingError, ProjectedMonthlyScalar,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    paired_heat_exchange, paired_momentum_exchange, project_monthly_extensive_rate,
+    project_monthly_intensive_scalar, project_monthly_tangent_vectors, ClimateProjectionError,
+    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
+    LayeredClimateState, LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget,
+    LayeredTendencyError, LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange,
+    PairedMomentumExchange, ProjectedMonthlyScalar, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{

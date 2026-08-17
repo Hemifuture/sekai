@@ -56,11 +56,11 @@ Files:
 - Create: `src/generators/natural/global_circulation/tendency.rs`
 - Create: `tests/layered_circulation_physics.rs`
 
-- [ ] Write RED analytic tests for fixed layer roles, tangent dynamics, paired
+- [x] Write RED analytic tests for fixed layer roles, tangent dynamics, paired
   momentum/heat/moisture exchange, positive layer depth, deep-reservoir
   timescale, coastal permeability, and complete budget accounting.
-- [ ] Implement the shared C1/C2 tendency system without integrator branching.
-- [ ] Add cancellation polls and reusable workspace; commit.
+- [x] Implement the shared C1/C2 tendency system without integrator branching.
+- [x] Add cancellation polls and reusable workspace; commit.
 
 ## Task 5: Add monotone second-order conservative transport
 
