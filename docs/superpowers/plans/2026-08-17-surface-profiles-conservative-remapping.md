@@ -267,7 +267,7 @@ pub fn remap_categories_u16(map: &ConservativeSurfaceMap, source: &[u16])
     -> Result<CategoricalRemap, ConservativeRemapError>;
 ```
 
-- [ ] **Step 1: Write RED field tests**
+- [x] **Step 1: Write RED field tests**
 
 Use 42 -> 162, 162 -> 42, and Draft control -> Draft authoritative fixtures.
 Assert exact `f64`/post-quantization `f32` constants, bounded latitude
@@ -275,27 +275,27 @@ interpolation, positive/signed extensive conservation `<= 1e-6`, solid-body
 direction agreement `>= 0.999`, target tangency, category majority/tie/ambiguity,
 and atomic rejection of length mismatch/non-finite input.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test conservative_surface_field_remap -- --nocapture
 ```
 
-- [ ] **Step 3: Implement the locked field semantics**
+- [x] **Step 3: Implement the locked field semantics**
 
 Use compensated row/global accumulation. Constant scalars take an exact fast
 path. Extensive results publish source total, target total, absolute error, and
 relative error. Vectors apply stored transforms before area weighting.
 Categories aggregate in a `BTreeMap`; lower value wins an equal overlap.
 
-- [ ] **Step 4: Run field and WASM gates**
+- [x] **Step 4: Run field and WASM gates**
 
 ```powershell
 cargo test --test conservative_surface_field_remap -- --nocapture
 cargo check --target wasm32-unknown-unknown --workspace --all-features
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/spatial/remap_fields.rs src/generators/spatial/mod.rs tests/conservative_surface_field_remap.rs

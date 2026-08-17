@@ -885,6 +885,38 @@ pub enum ConservativeRemapError {
     ExcessiveGeometricAdjustment { found: f64, max: f64 },
     #[error("sparse overlap count {overlaps} exceeds addressable storage")]
     SparseAllocationOverflow { overlaps: usize },
+    #[error("{field} source length {found} differs from {expected}")]
+    FieldLengthMismatch {
+        field: &'static str,
+        found: usize,
+        expected: usize,
+    },
+    #[error("{field} source value {index} component {component:?} is non-finite: {found}")]
+    NonFiniteFieldValue {
+        field: &'static str,
+        index: usize,
+        component: Option<usize>,
+        found: f64,
+    },
+    #[error("{field} target {target_cell:?} produced a non-finite accumulation")]
+    NonFiniteFieldAccumulation {
+        field: &'static str,
+        target_cell: CellId,
+    },
+    #[error("{field} target {target_cell:?} cannot quantize finite value {found}")]
+    FieldQuantizationOverflow {
+        field: &'static str,
+        target_cell: CellId,
+        found: f64,
+    },
+    #[error("extensive remap conservation failed: source {source_total}, target {target_total}, scale {absolute_scale}, relative error {relative_error} > {max}")]
+    ExtensiveConservationExceeded {
+        source_total: f64,
+        target_total: f64,
+        absolute_scale: f64,
+        relative_error: f64,
+        max: f64,
+    },
     #[error("constructed conservative map is invalid: {0}")]
     InvalidMap(#[from] ConservativeSurfaceMapError),
 }
