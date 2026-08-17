@@ -375,6 +375,43 @@ impl NaturalQualityReport {
         })
     }
 
+    /// Rechecks the report envelope, metric invariants, and canonical ordering.
+    pub fn validate(&self) -> Result<(), NaturalQualityValidationError> {
+        if self.schema_version != NATURAL_QUALITY_REPORT_SCHEMA_V1 {
+            return Err(NaturalQualityValidationError::UnsupportedSchema {
+                found: self.schema_version,
+                supported: NATURAL_QUALITY_REPORT_SCHEMA_V1,
+            });
+        }
+        self.surface_ref.validate()?;
+        if self.metrics.len() > MAX_QUALITY_METRICS {
+            return Err(NaturalQualityValidationError::TooManyMetrics {
+                found: self.metrics.len(),
+                max: MAX_QUALITY_METRICS,
+            });
+        }
+        for metric in &self.metrics {
+            metric.validate()?;
+        }
+        for pair in self.metrics.windows(2) {
+            match pair[0].id.cmp(&pair[1].id) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    return Err(NaturalQualityValidationError::DuplicateMetric {
+                        id: pair[0].id.clone(),
+                    });
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(NaturalQualityValidationError::UnsortedMetrics {
+                        left: pair[0].id.clone(),
+                        right: pair[1].id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the report schema version.
     pub const fn schema_version(&self) -> u16 {
         self.schema_version
@@ -484,4 +521,9 @@ pub enum NaturalQualityValidationError {
     TooManyMetrics { found: usize, max: usize },
     #[error("natural quality report contains duplicate metric {id:?}")]
     DuplicateMetric { id: QualityMetricId },
+    #[error("natural quality report metric order is not canonical: {left:?} precedes {right:?}")]
+    UnsortedMetrics {
+        left: QualityMetricId,
+        right: QualityMetricId,
+    },
 }

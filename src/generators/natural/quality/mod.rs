@@ -9,6 +9,10 @@ use crate::world::natural::{
 use crate::world::spatial::SurfaceRef;
 
 pub use spherical::evaluate_spherical_foundation_quality;
+pub(crate) use spherical::{
+    evaluate_spherical_foundation_quality_from_validated,
+    validate_spherical_quality_input_identities,
+};
 
 const NO_POSITIVE_WEIGHT_REASON: &str = "no positive finite sample weight";
 

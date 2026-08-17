@@ -37,6 +37,7 @@ mod spherical_hydrology;
 mod spherical_island_relief;
 mod spherical_mantle;
 mod spherical_moisture;
+mod spherical_quality_stage;
 mod spherical_relief;
 mod spherical_stage;
 mod spherical_tectonics;
@@ -106,6 +107,9 @@ pub use spherical_hydro_erosion_stage::{
 };
 pub use spherical_hydrology::SphericalHydrologyGenerationError;
 pub use spherical_mantle::SphericalMantleGenerationError;
+pub use spherical_quality_stage::{
+    NaturalQualityArtifact, SphericalNaturalQualityStage, SphericalNaturalQualityStageInputs,
+};
 pub use spherical_relief::SphericalReliefGenerationError;
 pub use spherical_stage::{
     spherical_natural_foundation_graph, SphericalReliefArtifact, SphericalReliefStage,

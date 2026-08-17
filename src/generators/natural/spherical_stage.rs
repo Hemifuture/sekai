@@ -11,9 +11,9 @@ use super::{
     ResolvedWorldFormationArtifact, RuleClimateResolutionStage, RuleGeologicResolutionStage,
     RuleHydroErosionResolutionStage, RulePackSetArtifact, RuleTectonicResolutionStage,
     SphericalGeologicStage, SphericalHydroErosionStage, SphericalMantleArtifact,
-    SphericalMantleStage, SphericalPreliminaryClimateStage, SphericalReliefGenerationError,
-    SphericalTectonicGenerationError, TectonicGenerator, TectonicSpecArtifact,
-    WorldFormationSpecArtifact, WorldFormationStage,
+    SphericalMantleStage, SphericalNaturalQualityStage, SphericalPreliminaryClimateStage,
+    SphericalReliefGenerationError, SphericalTectonicGenerationError, TectonicGenerator,
+    TectonicSpecArtifact, WorldFormationSpecArtifact, WorldFormationStage,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
@@ -304,6 +304,7 @@ pub fn spherical_natural_foundation_graph() -> Result<StageGraph, GraphError> {
         .stage(SphericalGeologicStage)
         .stage(SphericalPreliminaryClimateStage)
         .stage(SphericalHydroErosionStage)
+        .stage(SphericalNaturalQualityStage)
         .build()
 }
 

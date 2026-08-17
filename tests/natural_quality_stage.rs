@@ -1,9 +1,12 @@
-use sekai::engine::{BuildEngine, BuildOutcome, ExternalArtifacts, MemoryStageCache};
+use sekai::engine::{
+    Artifact, BuildEngine, BuildOutcome, ExternalArtifacts, MemoryStageCache, Stage, StageInputs,
+};
 use sekai::generators::natural::{
     evaluate_spherical_foundation_quality, spherical_natural_foundation_graph,
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    ReliefSpecArtifact, ResolvedWorldFormationArtifact, RulePackSetArtifact,
-    SphericalHydroErosionArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
+    NaturalQualityArtifact, ReliefSpecArtifact, ResolvedWorldFormationArtifact,
+    RulePackSetArtifact, SphericalHydroErosionArtifact, SphericalNaturalQualityStage,
+    SphericalNaturalQualityStageInputs, SphericalReliefArtifact, SphericalTectonicArtifact,
     TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
@@ -16,6 +19,10 @@ use sekai::world::natural::{
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 fn external() -> ExternalArtifacts {
+    external_with_relief(ReliefSpec::default())
+}
+
+fn external_with_relief(relief: ReliefSpec) -> ExternalArtifacts {
     let mut artifacts = ExternalArtifacts::new();
     artifacts
         .insert(SphericalSpaceArtifact::new(SphericalSpaceSpec {
@@ -35,9 +42,7 @@ fn external() -> ExternalArtifacts {
     artifacts
         .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
         .unwrap();
-    artifacts
-        .insert(ReliefSpecArtifact::new(ReliefSpec::default()))
-        .unwrap();
+    artifacts.insert(ReliefSpecArtifact::new(relief)).unwrap();
     artifacts
         .insert(WorldFormationSpecArtifact::new(
             WorldFormationSpec::default(),
@@ -139,6 +144,87 @@ fn evaluator_hash_is_independent_of_display_palette_state() {
 
     let after = serde_json::to_vec(&evaluate(&outcome)).unwrap();
     assert_eq!(blake3::hash(&before), blake3::hash(&after));
+}
+
+#[test]
+fn quality_stage_declares_exact_dependencies_and_artifact_contract() {
+    let report = evaluate(&build_fixture());
+    let artifact = NaturalQualityArtifact::new(report.clone());
+    artifact.validate().unwrap();
+    assert_eq!(
+        NaturalQualityArtifact::KEY.as_str(),
+        "world.natural-quality"
+    );
+    assert_eq!(artifact.report(), &report);
+
+    let encoded = serde_json::to_value(&artifact).unwrap();
+    let decoded: NaturalQualityArtifact = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(decoded, artifact);
+    let mut invalid_report = encoded.clone();
+    invalid_report["report"]["schema_version"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<NaturalQualityArtifact>(invalid_report).is_err());
+    let mut unknown = encoded;
+    unknown["renderer"] = serde_json::json!("globe");
+    assert!(serde_json::from_value::<NaturalQualityArtifact>(unknown).is_err());
+
+    assert_eq!(
+        SphericalNaturalQualityStageInputs::dependencies(),
+        &[
+            ResolvedWorldFormationArtifact::KEY,
+            SphericalHydroErosionArtifact::KEY,
+            SphericalReliefArtifact::KEY,
+            ReliefSpecArtifact::KEY,
+            SphericalSurfaceArtifact::KEY,
+            SphericalTectonicArtifact::KEY,
+        ]
+    );
+    let stage = SphericalNaturalQualityStage;
+    assert_eq!(stage.id().as_str(), "natural.spherical-quality");
+    assert_eq!(stage.version(), 1);
+    assert_eq!(stage.namespace(), "sekai.core");
+}
+
+#[test]
+fn quality_stage_cache_tracks_science_but_ignores_palette_state() {
+    let engine = BuildEngine::new(spherical_natural_foundation_graph().unwrap());
+    let mut cache = MemoryStageCache::with_max_entries(128).unwrap();
+    let first = engine
+        .build(RootSeed::new(42), external(), &mut cache)
+        .unwrap();
+    assert!(!quality_stage_report(&first).cache_hit());
+
+    let mut display = SphericalFieldDisplayState::default();
+    display.set_palette_override(Some(PaletteId::Categorical));
+    let repeated = engine
+        .build(RootSeed::new(42), external(), &mut cache)
+        .unwrap();
+    assert_eq!(display.palette_override(), Some(PaletteId::Categorical));
+    assert!(quality_stage_report(&repeated).cache_hit());
+
+    let changed = engine
+        .build(
+            RootSeed::new(42),
+            external_with_relief(ReliefSpec {
+                target_land_fraction: 0.45,
+                ..ReliefSpec::default()
+            }),
+            &mut cache,
+        )
+        .unwrap();
+    assert!(!quality_stage_report(&changed).cache_hit());
+    assert_ne!(
+        first.artifacts.hash::<NaturalQualityArtifact>().unwrap(),
+        changed.artifacts.hash::<NaturalQualityArtifact>().unwrap()
+    );
+}
+
+fn quality_stage_report(outcome: &BuildOutcome) -> &sekai::engine::StageReport {
+    outcome
+        .report
+        .stages()
+        .iter()
+        .find(|stage| stage.stage_id() == "natural.spherical-quality")
+        .expect("formal graph must publish the quality stage")
 }
 
 fn surface_ref(outcome: &BuildOutcome) -> sekai::world::spatial::SurfaceRef {

@@ -37,7 +37,26 @@ pub fn evaluate_spherical_foundation_quality(
         relief,
         hydro_erosion,
     )?;
-    let surface_ref = SurfaceRef::try_for_spherical(surface)
+    evaluate_spherical_foundation_quality_from_validated(
+        surface,
+        formation,
+        relief_spec,
+        tectonic,
+        relief,
+        hydro_erosion,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_spherical_foundation_quality_from_validated(
+    surface: &SphericalSurfaceSnapshot,
+    formation: &ResolvedWorldFormation,
+    relief_spec: &ReliefSpec,
+    tectonic: &SphericalTectonicSnapshot,
+    relief: &SphericalReliefSnapshot,
+    hydro_erosion: &SphericalHydroErosionSnapshot,
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    let surface_ref = SurfaceRef::from_validated_spherical(surface)
         .map_err(|error| invalid_input("surface identity", error))?;
     let areas = surface
         .cells()
@@ -191,9 +210,31 @@ fn validate_inputs(
         hydro_erosion.hydrology().validate_against(surface),
     )?;
 
-    let authoritative = SurfaceRef::try_for_spherical(surface)
+    validate_spherical_quality_input_identities(
+        surface,
+        formation,
+        relief_spec,
+        tectonic,
+        relief,
+        hydro_erosion,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_spherical_quality_input_identities(
+    surface: &SphericalSurfaceSnapshot,
+    formation: &ResolvedWorldFormation,
+    relief_spec: &ReliefSpec,
+    tectonic: &SphericalTectonicSnapshot,
+    relief: &SphericalReliefSnapshot,
+    hydro_erosion: &SphericalHydroErosionSnapshot,
+) -> Result<(), QualityBuildError> {
+    validate_input("formation", formation.validate())?;
+    validate_input("relief spec", relief_spec.validate())?;
+    let authoritative = SurfaceRef::from_validated_spherical(surface)
         .map_err(|error| invalid_input("surface identity", error))?;
     for (input, found) in [
+        ("tectonics", tectonic.surface_ref()),
         ("relief", relief.surface_ref()),
         ("hydro-erosion", hydro_erosion.surface_ref()),
     ] {

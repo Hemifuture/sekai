@@ -5,7 +5,7 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact,
+    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact, ReliefSpecArtifact,
     ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
     SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
     SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
@@ -22,7 +22,7 @@ use sekai::world::natural::{
 use sekai::world::spatial::SurfaceRef;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
 
-const ALL_STAGE_IDS: [&str; 16] = [
+const ALL_STAGE_IDS: [&str; 17] = [
     "natural.resolve-climate-rules",
     "natural.project-climate-input",
     "natural.resolve-geologic-rules",
@@ -39,18 +39,20 @@ const ALL_STAGE_IDS: [&str; 16] = [
     "natural.spherical-geology",
     "natural.spherical-preliminary-climate",
     "natural.spherical-hydro-erosion",
+    "natural.spherical-quality",
 ];
 
-const SPHERE_STAGE_IDS: [&str; 6] = [
+const SPHERE_STAGE_IDS: [&str; 7] = [
     "natural.spherical-tectonics",
     "natural.spherical-mantle",
     "natural.spherical-relief",
     "natural.spherical-geology",
     "natural.spherical-preliminary-climate",
     "natural.spherical-hydro-erosion",
+    "natural.spherical-quality",
 ];
 
-const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
+const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     (
         "surface",
         "213c897cc3af183bfb7a47c421d768e41f2993bd93d05f347ddf86fbb35500ec",
@@ -80,8 +82,12 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
         "f5b84485badfbd0cd33d7ada6c556a9ab08749bc5de199813e993ea9e1245913",
     ),
     (
+        "quality",
+        "2ba841b927093f6a6a0e693ebd5b6c111a00f6acf205dfb30d6c316165fb06d6",
+    ),
+    (
         "result",
-        "f2fb479d93d5c63a2180bed8bec6babe597658b47a7fa902584bb513781b7d83",
+        "30effcd5b29d9e40c4f519c725d6b5209a702c3073142a8ab3fc652782f2e2e8",
     ),
 ];
 
@@ -310,6 +316,7 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .artifacts
         .get::<SphericalHydroErosionArtifact>()
         .unwrap();
+    let quality = first.artifacts.get::<NaturalQualityArtifact>().unwrap();
 
     surface.snapshot().validate().unwrap();
     formation.formation().validate().unwrap();
@@ -347,6 +354,11 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
             climate.snapshot(),
         )
         .unwrap();
+    quality.report().validate().unwrap();
+    assert_eq!(
+        quality.report().surface_ref(),
+        SurfaceRef::for_spherical(surface.snapshot())
+    );
 
     let hashes = [
         (
@@ -405,6 +417,14 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
                 .unwrap()
                 .as_bytes()),
         ),
+        (
+            "quality",
+            hex(first
+                .artifacts
+                .hash::<NaturalQualityArtifact>()
+                .unwrap()
+                .as_bytes()),
+        ),
     ];
     let result_hash = hex(first.report.result_hash().unwrap().as_bytes());
     println!(
@@ -446,6 +466,7 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
                 .artifacts
                 .hash::<SphericalHydroErosionArtifact>()
                 .unwrap(),
+            "quality" => repeated.artifacts.hash::<NaturalQualityArtifact>().unwrap(),
             _ => unreachable!(),
         };
         assert_eq!(*hash, hex(repeated_hash.as_bytes()));
@@ -516,6 +537,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -531,6 +553,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -546,6 +569,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -558,6 +582,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.project-climate-input",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -569,6 +594,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.resolve-hydro-erosion-rules",
             "natural.project-hydro-erosion-input",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -581,6 +607,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 }
@@ -710,6 +737,7 @@ fn cache_isolates_same_count_surfaces_with_different_radii() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 

@@ -12,10 +12,10 @@ use sekai::engine::{
 use sekai::generators::natural::{
     legacy_planar_natural_foundation_graph, spherical_natural_foundation_graph,
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    ReliefSpecArtifact, ResolvedWorldFormationArtifact, RulePackSetArtifact,
-    SphericalGeologicArtifact, SphericalHydroErosionArtifact, SphericalMantleArtifact,
-    SphericalPreliminaryClimateArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
-    TectonicGenerator, TectonicSpecArtifact, WorldFormationSpecArtifact,
+    NaturalQualityArtifact, ReliefSpecArtifact, ResolvedWorldFormationArtifact,
+    RulePackSetArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
+    SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
+    SphericalTectonicArtifact, TectonicGenerator, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
     GeodesicVoronoiBuilder, PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
@@ -59,6 +59,7 @@ fn morphology_probe_child_requested(value: Option<&std::ffi::OsStr>) -> bool {
 struct MorphologyPerformanceEvidence {
     tectonic_elapsed: Duration,
     formal_tectonic_elapsed: Duration,
+    quality_elapsed: Duration,
     full_graph_elapsed: Duration,
     morphology_peak_delta_bytes: u64,
     cell_count: usize,
@@ -165,9 +166,16 @@ fn collect_morphology_performance_evidence(
         .find(|stage| stage.stage_id() == "natural.spherical-tectonics")
         .expect("formal spherical graph reports its tectonic stage")
         .duration();
+    let quality_elapsed = report
+        .stages()
+        .iter()
+        .find(|stage| stage.stage_id() == "natural.spherical-quality")
+        .expect("formal spherical graph reports its quality stage")
+        .duration();
     MorphologyPerformanceEvidence {
         tectonic_elapsed: child_probe.elapsed,
         formal_tectonic_elapsed,
+        quality_elapsed,
         full_graph_elapsed,
         morphology_peak_delta_bytes: child_probe.peak_delta_bytes,
         cell_count,
@@ -347,11 +355,15 @@ fn release_spherical_natural_full_graph_budget() {
         .artifacts
         .get::<SphericalHydroErosionArtifact>()
         .unwrap();
+    let quality = sphere_outcome
+        .artifacts
+        .get::<NaturalQualityArtifact>()
+        .unwrap();
 
     validate_final_product(
-        &surface, &formation, &tectonic, &mantle, &relief, &geology, &climate, &hydro,
+        &surface, &formation, &tectonic, &mantle, &relief, &geology, &climate, &hydro, &quality,
     );
-    assert_eq!(sphere_outcome.report.stages().len(), 16);
+    assert_eq!(sphere_outcome.report.stages().len(), 17);
     let provenance = sphere_outcome.verified_provenance().unwrap();
     assert_eq!(provenance.root_seed(), ROOT_SEED);
     assert_eq!(
@@ -371,6 +383,15 @@ fn release_spherical_natural_full_graph_budget() {
         child_probe,
         surface.snapshot().cells().len(),
         tectonic.snapshot().plates().len(),
+    );
+
+    eprintln!(
+        "spherical_natural_budget_probe full_ms={:.3} baseline_limit_ms={:.3} isolated_tectonic_ms={:.3} formal_tectonic_ms={:.3} quality_ms={:.3}",
+        morphology_evidence.full_graph_elapsed.as_secs_f64() * 1_000.0,
+        baseline_duration.as_secs_f64() * MORPHOLOGY_TO_BASELINE_TIME_RATIO_BUDGET * 1_000.0,
+        morphology_evidence.tectonic_elapsed.as_secs_f64() * 1_000.0,
+        morphology_evidence.formal_tectonic_elapsed.as_secs_f64() * 1_000.0,
+        morphology_evidence.quality_elapsed.as_secs_f64() * 1_000.0,
     );
 
     assert_eq!(morphology_evidence.cell_count, 20_252);
@@ -435,6 +456,10 @@ fn release_spherical_natural_full_graph_budget() {
         hydro.as_ref(),
         spherical_hydro_persistent_bytes(hydro.as_ref()),
     );
+    let quality_bytes = ArtifactBytes::measure(
+        quality.as_ref(),
+        natural_quality_persistent_bytes(quality.as_ref()),
+    );
     let artifact_bytes = [
         surface_bytes,
         formation_bytes,
@@ -444,6 +469,7 @@ fn release_spherical_natural_full_graph_budget() {
         geology_bytes,
         climate_bytes,
         hydro_bytes,
+        quality_bytes,
     ];
     let persistent_total_bytes = artifact_bytes
         .iter()
@@ -473,12 +499,13 @@ fn release_spherical_natural_full_graph_budget() {
     let hydro_snapshot = hydro.snapshot().hydrology();
 
     eprintln!(
-        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} baseline_ms={:.3} morphology_tectonic_ms={:.3} formal_tectonic_ms={:.3} morphology_peak_delta_bytes={} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
+        "spherical_natural_graph_performance planar_ms={:.3} sphere_ms={:.3} baseline_ms={:.3} morphology_tectonic_ms={:.3} formal_tectonic_ms={:.3} quality_ms={:.3} morphology_peak_delta_bytes={} sphere_to_planar_ratio={sphere_to_planar_ratio:.6} stages={} cells={} vertices={} edges={} plates={} boundary_segments={} hotspots={} basins={} lakes={} rivers={} persistent_surface_bytes={} persistent_formation_bytes={} persistent_tectonic_bytes={} persistent_mantle_bytes={} persistent_relief_bytes={} persistent_geology_bytes={} persistent_climate_bytes={} persistent_hydro_bytes={} persistent_quality_bytes={} persistent_total_bytes={persistent_total_bytes} serialized_surface_bytes={} serialized_formation_bytes={} serialized_tectonic_bytes={} serialized_mantle_bytes={} serialized_relief_bytes={} serialized_geology_bytes={} serialized_climate_bytes={} serialized_hydro_bytes={} serialized_quality_bytes={} serialized_total_bytes={serialized_total_bytes} baseline_working_set_bytes={baseline_working_set:?} final_working_set_bytes={final_working_set:?} additional_working_set_bytes={additional_working_set_bytes:?} planar_peak_working_set_bytes={planar_peak_working_set:?} sphere_peak_working_set_bytes={sphere_peak_working_set:?} additional_peak_working_set_bytes={additional_peak_working_set_bytes:?} stage_timings_ms={stage_timings_ms}",
         planar_elapsed.as_secs_f64() * 1_000.0,
         sphere_elapsed.as_secs_f64() * 1_000.0,
         baseline_duration.as_secs_f64() * 1_000.0,
         morphology_evidence.tectonic_elapsed.as_secs_f64() * 1_000.0,
         morphology_evidence.formal_tectonic_elapsed.as_secs_f64() * 1_000.0,
+        morphology_evidence.quality_elapsed.as_secs_f64() * 1_000.0,
         morphology_evidence.morphology_peak_delta_bytes,
         sphere_outcome.report.stages().len(),
         surface_snapshot.cells().len(),
@@ -498,6 +525,7 @@ fn release_spherical_natural_full_graph_budget() {
         geology_bytes.persistent,
         climate_bytes.persistent,
         hydro_bytes.persistent,
+        quality_bytes.persistent,
         surface_bytes.serialized,
         formation_bytes.serialized,
         tectonic_bytes.serialized,
@@ -506,6 +534,7 @@ fn release_spherical_natural_full_graph_budget() {
         geology_bytes.serialized,
         climate_bytes.serialized,
         hydro_bytes.serialized,
+        quality_bytes.serialized,
     );
 
     assert!(
@@ -648,6 +677,7 @@ fn validate_final_product(
     geology: &SphericalGeologicArtifact,
     climate: &SphericalPreliminaryClimateArtifact,
     hydro: &SphericalHydroErosionArtifact,
+    quality: &NaturalQualityArtifact,
 ) {
     let surface_snapshot = surface.snapshot();
     surface_snapshot.validate().unwrap();
@@ -686,6 +716,11 @@ fn validate_final_product(
             climate.snapshot(),
         )
         .unwrap();
+    quality.report().validate().unwrap();
+    assert_eq!(
+        quality.report().surface_ref(),
+        sekai::world::spatial::SurfaceRef::for_spherical(surface_snapshot)
+    );
     let plate_count = u16::try_from(tectonic.snapshot().plates().len()).unwrap();
     let registry =
         spherical_natural_field_registry(plate_count, surface_snapshot.total_cell_area().get())
@@ -805,4 +840,19 @@ fn spherical_hydro_persistent_bytes(artifact: &SphericalHydroErosionArtifact) ->
             .sum::<usize>()
         + size_of_val(hydrology.river_segments())
         + size_of_val(hydrology.river_segment_length_m())
+}
+
+fn natural_quality_persistent_bytes(artifact: &NaturalQualityArtifact) -> usize {
+    size_of_val(artifact)
+        + size_of_val(artifact.report().metrics())
+        + artifact
+            .report()
+            .metrics()
+            .iter()
+            .map(|metric| {
+                metric.id().namespace().len()
+                    + metric.id().name().len()
+                    + metric.reason().map_or(0, str::len)
+            })
+            .sum::<usize>()
 }

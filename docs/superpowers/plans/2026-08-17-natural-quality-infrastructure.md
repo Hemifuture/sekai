@@ -288,11 +288,11 @@ git commit -m "feat: measure spherical natural quality"
 - Consumes: formal surface, resolved formation, relief spec, tectonic, relief, and hydro-erosion artifacts.
 - Produces: `NaturalQualityArtifact`, `SphericalNaturalQualityStage`, artifact key `world.natural-quality`, stage ID `natural.spherical-quality`, version 1.
 
-- [ ] **Step 1: Write stage graph RED tests**
+- [x] **Step 1: Write stage graph RED tests**
 
 Assert exact dependency keys, artifact serde/validation, stage identity/version, inclusion after `SphericalHydroErosionStage`, invalidation when an upstream scientific artifact changes, and no invalidation for palette/view state. Update the expected formal graph artifact count by exactly one.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 ```powershell
 cargo test --test natural_quality_stage stage -- --nocapture
@@ -301,7 +301,7 @@ cargo test --test spherical_natural_stage_graph -- --nocapture
 
 Expected: missing stage/artifact and old graph count.
 
-- [ ] **Step 3: Implement the thin stage adapter**
+- [x] **Step 3: Implement the thin stage adapter**
 
 Define inputs with only these artifact dependencies:
 
@@ -318,7 +318,7 @@ pub struct SphericalNaturalQualityStageInputs {
 
 The stage validates identity compatibility, calls the pure evaluator once, validates the report, and wraps it. It does not read UI state, renderer resources, or an entire `WorldSpec`.
 
-- [ ] **Step 4: Run graph, performance, and serialization tests**
+- [x] **Step 4: Run graph, performance, and serialization tests**
 
 ```powershell
 cargo test --test natural_quality_stage -- --nocapture
@@ -328,7 +328,7 @@ cargo test --release --test spherical_natural_graph_performance -- --ignored --n
 
 Expected: functional tests pass. Performance output records the quality stage separately; a timeout or budget regression is fixed before commit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/natural/spherical_quality_stage.rs src/generators/natural/mod.rs src/generators/natural/spherical_stage.rs tests/natural_quality_stage.rs tests/spherical_natural_stage_graph.rs tests/spherical_natural_graph_performance.rs
