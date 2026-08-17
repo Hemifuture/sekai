@@ -1,5 +1,7 @@
 use sekai::engine::BuildCancellation;
-use sekai::generators::natural::circulation::CubedSphereGrid;
+use sekai::generators::natural::circulation::{
+    CirculationOperators, CubedSphereGrid, SecondOrderTransportWorkspace,
+};
 use sekai::generators::natural::{
     paired_heat_exchange, paired_momentum_exchange, LayeredClimateState, LayeredTendencyError,
     LayeredTendencySystem, LayeredTendencyWorkspace,
@@ -178,4 +180,101 @@ fn tendency_rejects_nonpositive_thickness_bad_permeability_and_cancellation() {
         ),
         Err(LayeredTendencyError::Cancelled)
     );
+}
+
+#[test]
+fn shared_tendency_uses_monotone_second_order_heat_and_moisture_transport() {
+    let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
+    let forcing = forcing(&grid);
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
+    let mut still = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+    for (cell, temperature) in grid.cells().iter().zip(
+        still
+            .temperature_c_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap(),
+    ) {
+        *temperature = (15.0 + 2.0 * cell.center_unit()[0]) as f32;
+    }
+    for (cell, humidity) in grid.cells().iter().zip(still.specific_humidity_mut()) {
+        *humidity = (0.008 + 0.002 * cell.center_unit()[0]) as f32;
+    }
+    let mut moving = still.clone();
+    for (cell, velocity) in grid.cells().iter().zip(
+        moving
+            .velocity_m_s_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap(),
+    ) {
+        let [x, y, _] = cell.center_unit();
+        *velocity = [-80.0 * y as f32, 80.0 * x as f32, 0.0];
+    }
+    let permeability = vec![1.0; grid.edges().len()];
+    let system = LayeredTendencySystem::new(&grid);
+    let still_tendency = system
+        .evaluate(
+            &still,
+            &forcing,
+            &permeability,
+            0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+    let moving_tendency = system
+        .evaluate(
+            &moving,
+            &forcing,
+            &permeability,
+            0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+    let expected_temperature = operators
+        .advect_scalar_monotone_second_order_into(
+            still
+                .temperature_c(ClimateLayerRole::LowerAtmosphere)
+                .unwrap(),
+            moving
+                .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
+                .unwrap(),
+            &permeability,
+            1.0,
+            false,
+            &mut workspace,
+        )
+        .unwrap()
+        .values()
+        .to_vec();
+    let expected_humidity = operators
+        .advect_scalar_monotone_second_order_into(
+            still.specific_humidity(),
+            moving
+                .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
+                .unwrap(),
+            &permeability,
+            1.0,
+            true,
+            &mut workspace,
+        )
+        .unwrap()
+        .values()
+        .to_vec();
+    for cell in 0..grid.cell_count() {
+        let found_temperature = moving_tendency
+            .temperature_tendency_k_s(ClimateLayerRole::LowerAtmosphere)
+            .unwrap()[cell]
+            - still_tendency
+                .temperature_tendency_k_s(ClimateLayerRole::LowerAtmosphere)
+                .unwrap()[cell];
+        let expected_temperature = expected_temperature[cell]
+            - still
+                .temperature_c(ClimateLayerRole::LowerAtmosphere)
+                .unwrap()[cell];
+        assert!((found_temperature - expected_temperature).abs() <= 2.0e-8);
+
+        let found_humidity = moving_tendency.specific_humidity_tendency_s_inv()[cell]
+            - still_tendency.specific_humidity_tendency_s_inv()[cell];
+        let expected_humidity = expected_humidity[cell] - still.specific_humidity()[cell];
+        assert!((found_humidity - expected_humidity).abs() <= 2.0e-10);
+    }
 }

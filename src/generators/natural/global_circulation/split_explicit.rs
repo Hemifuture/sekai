@@ -7,6 +7,8 @@ use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
 use crate::world::natural::PlanetForcing;
 
+const FAST_CFL_TARGET: f64 = 0.35;
+
 /// Slow/fast additive RK3 with one frozen slow tendency per macro step.
 #[derive(Debug, Clone, Copy)]
 pub struct SplitExplicitRk3Integrator<'grid> {
@@ -41,9 +43,13 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         cancellation: &BuildCancellation,
     ) -> Result<ClimateStepResult, ClimateIntegratorError> {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
-        let substeps_f64 = (macro_step_seconds / self.maximum_fast_step_seconds)
-            .ceil()
-            .max(1.0);
+        let configured_cfl = estimate_cfl(self.grid, state, self.maximum_fast_step_seconds);
+        let cfl_limited_step = if configured_cfl > FAST_CFL_TARGET {
+            self.maximum_fast_step_seconds * FAST_CFL_TARGET / configured_cfl
+        } else {
+            self.maximum_fast_step_seconds
+        };
+        let substeps_f64 = (macro_step_seconds / cfl_limited_step).ceil().max(1.0);
         if substeps_f64 > f64::from(u32::MAX) {
             return Err(ClimateIntegratorError::InvalidTimeStep {
                 found: macro_step_seconds,

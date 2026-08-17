@@ -151,6 +151,38 @@ fn production_candidates_remain_finite_and_positive_beyond_explicit_macro_stabil
 }
 
 #[test]
+fn split_explicit_subcycles_against_the_actual_characteristic_speed() {
+    let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
+    let forcing = uniform_forcing(&grid, 15.0);
+    let mut initial = state(&grid, ClimateModelProfile::C1SingleLayerV1, &forcing);
+    for (cell, velocity) in grid.cells().iter().zip(
+        initial
+            .velocity_m_s_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap(),
+    ) {
+        let [x, y, _] = cell.center_unit();
+        *velocity = [-250.0 * y as f32, 250.0 * x as f32, 0.0];
+    }
+    let result = SplitExplicitRk3Integrator::new(&grid, 7_200.0)
+        .unwrap()
+        .advance(
+            &initial,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            7_200.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+    assert!(
+        result.diagnostics().maximum_cfl() <= 0.35 + 1.0e-12,
+        "dynamic split CFL was {}",
+        result.diagnostics().maximum_cfl()
+    );
+    assert!(result.diagnostics().fast_substeps() > 1);
+}
+
+#[test]
 fn integrator_results_and_diagnostics_are_byte_deterministic() {
     let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
     let (forcing, initial) = perturbed_state(&grid);

@@ -1,4 +1,5 @@
 mod evolved_tectonics;
+mod global_circulation;
 mod primary_relief;
 mod spatial;
 mod spherical;
@@ -15,6 +16,7 @@ pub(crate) use evolved_tectonics::validate_evolved_tectonic_quality_report;
 pub use evolved_tectonics::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
 };
+pub use global_circulation::evaluate_global_circulation_quality;
 pub(crate) use primary_relief::validate_primary_relief_quality_report;
 pub use primary_relief::{
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,

@@ -1,5 +1,5 @@
 use super::rk3::{
-    estimate_cfl, validate_step, ClimateDerivative, ClimateIntegratorDiagnostics,
+    combine_state, estimate_cfl, validate_step, ClimateDerivative, ClimateIntegratorDiagnostics,
     ClimateIntegratorError, ClimateStepResult,
 };
 use super::{LayeredClimateState, LayeredTendencySystem, LayeredTendencyWorkspace};
@@ -56,14 +56,24 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             cancellation,
             &mut workspace,
         )?;
+        let base_implicit_tendency = system.evaluate_linear_implicit_with_workspace(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            &mut workspace,
+        )?;
         let base_derivative = ClimateDerivative::from_tendency(state, &base_tendency);
-        let base_implicit_derivative = flatten_implicit_derivative(state, &base_derivative);
+        let implicit_derivative = ClimateDerivative::from_tendency(state, &base_implicit_tendency);
+        let explicit_derivative = base_derivative.subtract(&implicit_derivative);
+        let base_implicit_derivative = flatten_implicit_derivative(state, &implicit_derivative);
         let right_hand_side = base_implicit_derivative
             .iter()
             .copied()
             .map(|value| dt_seconds * value)
             .collect::<Vec<_>>();
-        let mut tendency_evaluations = 1_u64;
+        let mut tendency_evaluations = 2_u64;
         let initial_norm = norm(&right_hand_side);
         let (increment, iterations, relative_residual) = if initial_norm == 0.0 {
             (vec![0.0; right_hand_side.len()], 0, 0.0)
@@ -78,7 +88,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 cancellation,
                 |vector| {
                     let perturbed = state_with_implicit_increment(self.grid, state, vector)?;
-                    let tendency = system.evaluate_with_workspace(
+                    let tendency = system.evaluate_linear_implicit_with_workspace(
                         &perturbed,
                         forcing,
                         ocean_edge_permeability,
@@ -101,7 +111,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 },
             )?;
             let perturbed = state_with_implicit_increment(self.grid, state, &increment)?;
-            let tendency = system.evaluate_with_workspace(
+            let tendency = system.evaluate_linear_implicit_with_workspace(
                 &perturbed,
                 forcing,
                 ocean_edge_permeability,
@@ -136,11 +146,18 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             (increment, iterations, actual_relative_residual)
         };
 
-        let mut advanced = state_with_implicit_increment(self.grid, state, &increment)?;
+        let implicit_advanced = state_with_implicit_increment(self.grid, state, &increment)?;
+        let mut explicit_non_humidity = explicit_derivative.clone();
+        explicit_non_humidity.humidity.fill(0.0);
+        let mut advanced = combine_state(
+            self.grid,
+            &implicit_advanced,
+            &[(dt_seconds, &explicit_non_humidity)],
+        )?;
         let humidity_predictor = state
             .specific_humidity()
             .iter()
-            .zip(&base_derivative.humidity)
+            .zip(&explicit_derivative.humidity)
             .map(|(value, tendency)| {
                 (f64::from(*value) + dt_seconds * f64::from(*tendency)).max(0.0) as f32
             })
@@ -148,7 +165,11 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         advanced
             .specific_humidity_mut()
             .copy_from_slice(&humidity_predictor);
-        if base_derivative.humidity.iter().any(|value| *value != 0.0) {
+        if explicit_derivative
+            .humidity
+            .iter()
+            .any(|value| *value != 0.0)
+        {
             let predicted_tendency = system.evaluate_with_workspace(
                 &advanced,
                 forcing,
@@ -162,7 +183,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 *target = (f64::from(state.specific_humidity()[index])
                     + 0.5
                         * dt_seconds
-                        * (f64::from(base_derivative.humidity[index])
+                        * (f64::from(explicit_derivative.humidity[index])
                             + f64::from(
                                 predicted_tendency.specific_humidity_tendency_s_inv()[index],
                             )))

@@ -1,9 +1,11 @@
 use thiserror::Error;
 
-use super::state::{LayeredClimateState, LayeredStateError};
+use super::state::{
+    LayeredClimateState, LayeredStateError, LIQUID_MIXED_LAYER_MIN_C, SUBSURFACE_OCEAN_MIN_C,
+};
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{
-    CirculationOperatorError, CirculationOperators, CubedSphereGrid,
+    CirculationOperatorError, CirculationOperators, CubedSphereGrid, SecondOrderTransportWorkspace,
 };
 use crate::world::natural::{
     ClimateLayerRole, ClimateModelProfile, PlanetForcing, CLIMATE_MONTH_COUNT,
@@ -11,6 +13,13 @@ use crate::world::natural::{
 
 const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 const SECONDS_PER_DAY: f64 = 86_400.0;
+const OROGRAPHIC_CONDENSATION_DEPTH_M: f64 = 800.0;
+const OROGRAPHIC_UPLIFT_MAX_M_S: f64 = 0.02;
+// Effective hypsometric pressure couplings for the fixed 6 km / 4 km layers.
+// They keep the equilibrium geopotential contrast inside the layer-depth
+// validity range while retaining a resolved baroclinic response.
+const LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 30.0;
+const UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 25.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PairedHeatExchange {
@@ -277,6 +286,7 @@ pub struct LayeredTendencyWorkspace {
     open_edges: Vec<f32>,
     scalar_scratch: Vec<f32>,
     vector_scratch: Vec<[f32; 3]>,
+    transport: SecondOrderTransportWorkspace,
 }
 
 impl LayeredTendencyWorkspace {
@@ -287,14 +297,27 @@ impl LayeredTendencyWorkspace {
             open_edges: vec![1.0; grid.edges().len()],
             scalar_scratch: vec![0.0; grid.cell_count()],
             vector_scratch: vec![[0.0; 3]; grid.cell_count()],
+            transport: SecondOrderTransportWorkspace::for_grid(grid),
         }
     }
 
-    pub fn allocation_signature(&self) -> [usize; 3] {
+    pub fn allocation_signature(&self) -> [usize; 14] {
+        let transport = self.transport.allocation_signature();
         [
             self.open_edges.capacity(),
             self.scalar_scratch.capacity(),
             self.vector_scratch.capacity(),
+            transport[0],
+            transport[1],
+            transport[2],
+            transport[3],
+            transport[4],
+            transport[5],
+            transport[6],
+            transport[7],
+            transport[8],
+            transport[9],
+            transport[10],
         ]
     }
 }
@@ -340,6 +363,49 @@ impl<'grid> LayeredTendencySystem<'grid> {
         cancellation: &BuildCancellation,
         workspace: &mut LayeredTendencyWorkspace,
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        self.evaluate_with_workspace_mode(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            workspace,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn evaluate_linear_implicit_with_workspace(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+        workspace: &mut LayeredTendencyWorkspace,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        self.evaluate_with_workspace_mode(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            workspace,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_with_workspace_mode(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+        workspace: &mut LayeredTendencyWorkspace,
+        include_explicit_transport_and_moisture: bool,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
         self.validate_inputs(
             state,
             forcing,
@@ -377,7 +443,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 ClimateLayerRole::DeepOceanReservoir => unreachable!(),
             };
             for (cell, scratch) in workspace.scalar_scratch.iter_mut().enumerate() {
-                *scratch = target[cell][month]
+                let raw = target[cell][month]
                     - if *role == ClimateLayerRole::UpperAtmosphere {
                         12.0
                     } else if *role == ClimateLayerRole::OceanThermocline {
@@ -385,6 +451,11 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     } else {
                         0.0
                     };
+                *scratch = match role {
+                    ClimateLayerRole::OceanMixedLayer => raw.clamp(LIQUID_MIXED_LAYER_MIN_C, 40.0),
+                    ClimateLayerRole::OceanThermocline => raw.clamp(SUBSURFACE_OCEAN_MIN_C, 40.0),
+                    _ => raw,
+                };
             }
             let thermal_gradient =
                 operators.gradient_with_permeability(&workspace.scalar_scratch, permeability)?;
@@ -419,9 +490,56 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 }
             }
             tendency.budget.radiative_heat_tendency_k_s += radiative_absolute;
+
+            if include_explicit_transport_and_moisture {
+                let transported = operators.advect_scalar_monotone_second_order_into(
+                    temperature,
+                    velocity,
+                    permeability,
+                    1.0,
+                    false,
+                    &mut workspace.transport,
+                )?;
+                for (target, (transported, original)) in tendency
+                    .layer_mut(*role)
+                    .expect("active tendency role")
+                    .temperature_tendency_k_s
+                    .iter_mut()
+                    .zip(transported.values().iter().zip(temperature))
+                {
+                    *target += transported - original;
+                }
+            }
         }
 
-        self.apply_moisture(state, forcing, month, &mut tendency);
+        if include_explicit_transport_and_moisture {
+            workspace
+                .scalar_scratch
+                .copy_from_slice(forcing.elevation_m());
+            let terrain_gradient = operators.gradient(&workspace.scalar_scratch)?;
+            self.apply_moisture(state, forcing, &terrain_gradient, month, &mut tendency);
+            let lower_velocity = state
+                .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
+                .expect("lower atmosphere is active");
+            let transported_humidity = operators.advect_scalar_monotone_second_order_into(
+                state.specific_humidity(),
+                lower_velocity,
+                &workspace.open_edges,
+                1.0,
+                true,
+                &mut workspace.transport,
+            )?;
+            for (target, (transported, original)) in
+                tendency.specific_humidity_tendency_s_inv.iter_mut().zip(
+                    transported_humidity
+                        .values()
+                        .iter()
+                        .zip(state.specific_humidity()),
+                )
+            {
+                *target += transported - original;
+            }
+        }
         self.apply_pair_exchanges(state, forcing, cancellation, &mut tendency)?;
         self.validate_tendency(&tendency)?;
         Ok(tendency)
@@ -554,18 +672,36 @@ impl<'grid> LayeredTendencySystem<'grid> {
         &self,
         state: &LayeredClimateState,
         forcing: &PlanetForcing,
+        terrain_gradient: &[[f32; 3]],
         month: usize,
         tendency: &mut LayeredClimateTendency,
     ) {
+        let lower_velocity = state
+            .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
+            .expect("lower atmosphere is active");
+        let atmospheric_column_mass = mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
         for cell in 0..self.grid.cell_count() {
             let humidity = f64::from(state.specific_humidity()[cell]);
             let equilibrium = f64::from(forcing.equilibrium_specific_humidity()[cell][month]);
             let evaporation = (equilibrium - humidity).max(0.0) / (5.0 * SECONDS_PER_DAY);
-            let condensation = (humidity - equilibrium).max(0.0) / (3.0 * SECONDS_PER_DAY);
+            let upslope_velocity = lower_velocity[cell]
+                .iter()
+                .zip(terrain_gradient[cell])
+                .map(|(velocity, gradient)| f64::from(*velocity) * f64::from(gradient))
+                .sum::<f64>()
+                .clamp(0.0, OROGRAPHIC_UPLIFT_MAX_M_S);
+            let orographic_condensation =
+                humidity * upslope_velocity * f64::from(forcing.land_fraction()[cell])
+                    / OROGRAPHIC_CONDENSATION_DEPTH_M;
+            let condensation = (humidity - equilibrium).max(0.0) / (3.0 * SECONDS_PER_DAY)
+                + orographic_condensation;
             tendency.specific_humidity_tendency_s_inv[cell] = (evaporation - condensation) as f32;
-            tendency.precipitation_rate_mm_s[cell] = (condensation * 1_000.0) as f32;
-            tendency.budget.physical_moisture_source_kg_m2_s += evaporation;
-            tendency.budget.physical_precipitation_sink_kg_m2_s += condensation;
+            tendency.precipitation_rate_mm_s[cell] =
+                (condensation * atmospheric_column_mass) as f32;
+            tendency.budget.physical_moisture_source_kg_m2_s +=
+                evaporation * atmospheric_column_mass;
+            tendency.budget.physical_precipitation_sink_kg_m2_s +=
+                condensation * atmospheric_column_mass;
         }
     }
 
@@ -726,14 +862,14 @@ fn role_constants(role: ClimateLayerRole) -> (f64, f64, f64, f64, f64) {
             1.0 / (5.0 * SECONDS_PER_DAY),
             20.0 * SECONDS_PER_DAY,
             12.0 * SECONDS_PER_DAY,
-            45.0,
+            LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         ),
         ClimateLayerRole::UpperAtmosphere => (
             0.45,
             1.0 / (10.0 * SECONDS_PER_DAY),
             30.0 * SECONDS_PER_DAY,
             20.0 * SECONDS_PER_DAY,
-            65.0,
+            UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         ),
         ClimateLayerRole::OceanMixedLayer => (
             0.02,

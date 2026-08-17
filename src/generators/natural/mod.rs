@@ -97,13 +97,13 @@ pub use global_circulation::{
     project_monthly_tangent_vectors, run_integrator_comparison, CandidateIntegratorComparison,
     ClimateAgreementFailure, ClimateAgreementThresholds, ClimateIntegratorDiagnostics,
     ClimateIntegratorError, ClimateProjectionError, ClimateStateComparison, ClimateStepResult,
-    ExplicitRk3Integrator, GlobalClimateForcing, GlobalClimateForcingBuilder,
-    GlobalClimateForcingError, ImexCrankNicolsonIntegrator, IntegratorComparisonReport,
-    LayeredClimateState, LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget,
-    LayeredTendencyError, LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange,
-    PairedMomentumExchange, ProductionCandidateSelection, ProjectedMonthlyScalar,
-    SplitExplicitRk3Integrator, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    SELECTED_PRODUCTION_INTEGRATOR,
+    ExplicitRk3Integrator, GlobalCirculationGenerationError, GlobalCirculationGenerator,
+    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
+    ImexCrankNicolsonIntegrator, IntegratorComparisonReport, LayeredClimateState,
+    LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget, LayeredTendencyError,
+    LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange, PairedMomentumExchange,
+    ProductionCandidateSelection, ProjectedMonthlyScalar, SplitExplicitRk3Integrator,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{
@@ -127,9 +127,9 @@ pub use primary_relief_stage::{
 };
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
-    evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
-    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality,
-    PrimaryReliefQualitySample, QualityBuildError,
+    evaluate_global_circulation_quality, evaluate_primary_relief_corpus_quality,
+    evaluate_primary_relief_quality, evaluate_profile_surface_quality,
+    evaluate_spherical_foundation_quality, PrimaryReliefQualitySample, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;

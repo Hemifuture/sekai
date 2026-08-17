@@ -104,12 +104,12 @@ Files:
 - Create: `tests/global_circulation_generation.rs`
 - Create: `tests/global_circulation_quality.rs`
 
-- [ ] Write RED tests for all public semantic fields, component identities,
+- [x] Write RED tests for all public semantic fields, component identities,
   formation convergence, wind belts, vertical shear, basin gyres, thermocline,
   humidity/precipitation causality, cross-resolution statistics, unavailable
   C3/C4 capabilities, determinism, and cancellation.
-- [ ] Implement the bounded annual/monthly formation driver and quality report.
-- [ ] Tune declared physical/numerical constants only; commit.
+- [x] Implement the bounded annual/monthly formation driver and quality report.
+- [x] Tune declared physical/numerical constants only; commit.
 
 ## Task 8: Publish typed stages and isolated P4 graph
 

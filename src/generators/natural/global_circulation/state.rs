@@ -15,6 +15,8 @@ const C2_ACTIVE_ROLES: [ClimateLayerRole; 4] = [
     ClimateLayerRole::OceanMixedLayer,
     ClimateLayerRole::OceanThermocline,
 ];
+pub(crate) const LIQUID_MIXED_LAYER_MIN_C: f32 = -2.0;
+pub(crate) const SUBSURFACE_OCEAN_MIN_C: f32 = -5.0;
 
 #[derive(Debug, Clone, PartialEq)]
 struct ActiveLayerState {
@@ -85,12 +87,12 @@ impl LayeredClimateState {
                 ClimateLayerRole::OceanMixedLayer => forcing
                     .equilibrium_surface_temperature_c()
                     .iter()
-                    .map(|months| months[month])
+                    .map(|months| months[month].clamp(LIQUID_MIXED_LAYER_MIN_C, 40.0))
                     .collect(),
                 ClimateLayerRole::OceanThermocline => forcing
                     .equilibrium_surface_temperature_c()
                     .iter()
-                    .map(|months| months[month] - 8.0)
+                    .map(|months| (months[month] - 8.0).clamp(SUBSURFACE_OCEAN_MIN_C, 40.0))
                     .collect(),
                 ClimateLayerRole::DeepOceanReservoir => {
                     unreachable!("deep reservoir is not dynamically active")
@@ -114,7 +116,7 @@ impl LayeredClimateState {
                 forcing
                     .equilibrium_surface_temperature_c()
                     .iter()
-                    .map(|months| (months[month] - 12.0).clamp(-5.0, 40.0))
+                    .map(|months| (months[month] - 12.0).clamp(SUBSURFACE_OCEAN_MIN_C, 40.0))
                     .collect()
             });
         let state = Self {

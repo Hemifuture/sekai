@@ -903,7 +903,7 @@ pub struct ConservativeTransport {
 /// The workspace is tied to one grid shape. Reusing it across time steps keeps
 /// the hot transport path allocation-free while still validating accidental
 /// use with a different grid.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SecondOrderTransportWorkspace {
     cell_count: usize,
     edge_count: usize,

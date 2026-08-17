@@ -1,5 +1,6 @@
 mod comparison;
 mod forcing;
+mod generation;
 mod imex;
 mod project;
 mod rk3;
@@ -16,6 +17,7 @@ pub use forcing::{
     GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
     CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
 };
+pub use generation::{GlobalCirculationGenerationError, GlobalCirculationGenerator};
 pub use imex::ImexCrankNicolsonIntegrator;
 pub use project::{
     project_monthly_extensive_rate, project_monthly_intensive_scalar,

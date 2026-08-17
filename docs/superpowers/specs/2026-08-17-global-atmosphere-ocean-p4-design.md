@@ -200,6 +200,12 @@ scales the complete outgoing fan, preserving nonnegative humidity and positive
 layer amounts without cell-order dependence. First-order upwind remains a
 reference operator.
 
+The shared C1/C2 tendency invokes this operator for every active-layer
+temperature and for lower-atmosphere specific humidity. IMEX excludes these
+nonlinear terms from its matrix-free linear operator and advances them
+explicitly. The selected split-explicit path freezes one evaluated slow
+tendency over each macro step, as required by its comparison contract.
+
 ## 7. C2 physical closure
 
 The fixed C2 layout is:
@@ -214,6 +220,29 @@ The fixed C2 layout is:
 
 Orographic forcing uses P3 elevation; ocean forcing uses physical bathymetry.
 Seasonal radiation uses the authored axial tilt and temperature/moisture scale.
+C2 converts condensation of a lower-atmosphere mixing ratio through the fixed
+column mass to `kg m-2 s-1 == mm s-1`. Its resolved orographic term is
+`q max(u dot grad(z), 0) / 800 m`, capped at `0.02 m s-1` uplift and multiplied
+by P3 land fraction; the same conservative humidity tendency creates the
+precipitation sink. Because sea ice is explicitly unavailable in P4, liquid
+mixed-layer equilibrium is bounded at `-2 C` and subsurface ocean equilibrium
+at `-5 C` rather than allowing impossible supercooled liquid values.
+
+The fixed atmospheric layer depths use declared effective hypsometric pressure
+couplings of `30 m2 s-2 K-1` (lower) and `25 m2 s-2 K-1` (upper). The original
+unbounded trial values required an equilibrium geopotential anomaly deeper
+than the 4 km upper layer at n32. The locked values retain baroclinic shear but
+keep the Earth-like forcing contrast inside the shallow-water layer validity
+range; no layer-thickness clipping is used.
+
+The product formation driver is a deterministic accelerated climatological
+continuation: sequential January-to-December forcing phases each receive one
+`7,200 s` split-explicit macro adjustment per cycle. It stops only at normalized
+cycle residual `<= 0.25`, with Draft/Standard/High hard maxima `8/10/12`; a
+nonconverged state is a typed failure. Monthly state fields are the converged
+phase endpoints, while precipitation is the frozen-slow macro-step mean. This
+is a procedural climatology closure, not a claim that each adjustment step is
+a literal 30-day weather integration.
 C2 does not yet include C3 clouds, soil moisture, snow, glaciers, vegetation,
 or sea ice; their capability states remain explicitly unavailable.
 
@@ -272,6 +301,8 @@ The fixed water/two-basin/Earth-like fixtures and paired 17 P3 seeds must show:
   positive bounded thermocline depth, and slower deep-reservoir response;
 - warm-ocean moisture supply, orographic precipitation enhancement, and a
   downstream rain-shadow signal;
+- at least `65%` correct January/July hemispheric phase outside 10 degrees,
+  with auxiliary latitude/temperature correlation `>= 0.30`;
 - no independent cubed-face seam, pole spike, global ring, or P3 coastline
   displacement in map/globe atlases.
 
