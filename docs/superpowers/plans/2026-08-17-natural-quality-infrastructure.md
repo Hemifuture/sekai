@@ -396,7 +396,7 @@ git commit -m "test: record spherical v4 quality baseline"
 - Consumes: Tasks 1-5 and their fresh outputs.
 - Produces: auditable P0 completion record and the exact P1 input contract.
 
-- [ ] **Step 1: Run all P0 engineering gates fresh**
+- [x] **Step 1: Run all P0 engineering gates fresh**
 
 ```powershell
 cargo fmt --all -- --check
@@ -411,17 +411,17 @@ git diff --check
 
 Expected: every command exits 0; no warning is waived.
 
-- [ ] **Step 2: Generate and inspect the V4 baseline**
+- [x] **Step 2: Generate and inspect the V4 baseline**
 
 Run: `cargo test --release --test natural_quality_baseline -- --ignored --nocapture`
 
 Inspect `target/natural-quality/v4-baseline.json`. Record exact aggregate values, failed/unavailable counts, runtime, machine/protocol information, and the fact that failures are expected evidence rather than P0 failures.
 
-- [ ] **Step 3: Write the completion record**
+- [x] **Step 3: Write the completion record**
 
 The completion record contains the exact commands, exit codes, metric inventory, aggregate V4 values, generated paths, known limitations, commit IDs, and P1 handoff: `NaturalQualityReport` V1 plus the fixed seed corpus. It contains no generated images or JSON blobs.
 
-- [ ] **Step 4: Mark checkboxes and commit**
+- [x] **Step 4: Mark checkboxes and commit**
 
 ```powershell
 git add docs/superpowers/plans/2026-08-17-natural-quality-infrastructure.md docs/superpowers/specs/2026-08-17-natural-quality-infrastructure-completion.md

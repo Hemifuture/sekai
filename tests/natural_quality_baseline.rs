@@ -3,16 +3,16 @@ mod natural_quality;
 
 use std::time::Instant;
 
-use sekai::world::natural::{
-    NaturalQualityReport, QualityBounds, QualityMetric, QualityMetricId, QualityMetricStatus,
-    NATURAL_QUALITY_REPORT_SCHEMA_V1,
-};
-use sekai::world::spatial::{SurfaceGeometryKind, SurfaceRef, SPHERICAL_SURFACE_SCHEMA_V1};
 use natural_quality::{
     build_v4_quality_reports, natural_quality_output_paths, render_v4_natural_quality_baseline,
     write_v4_natural_quality_baseline as write_v4_natural_quality_baseline_files,
     NaturalQualityBaseline, SeedQualityReport, EXPECTED_P0_METRIC_IDS, QUALITY_SEEDS,
 };
+use sekai::world::natural::{
+    NaturalQualityReport, QualityBounds, QualityMetric, QualityMetricId, QualityMetricStatus,
+    NATURAL_QUALITY_REPORT_SCHEMA_V1,
+};
+use sekai::world::spatial::{SurfaceGeometryKind, SurfaceRef, SPHERICAL_SURFACE_SCHEMA_V1};
 
 fn synthetic_reports() -> Vec<SeedQualityReport> {
     QUALITY_SEEDS
