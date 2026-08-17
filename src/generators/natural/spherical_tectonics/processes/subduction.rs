@@ -15,7 +15,11 @@ use crate::generators::natural::spherical_tectonics::model::{
 use crate::world::natural::{CrustKind, SphericalOrogenyKind};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
-pub(super) fn subduction_profile(distance_m: f64, speed_mm_per_year: f64, gain: f64) -> (f32, f32) {
+pub(in crate::generators::natural::spherical_tectonics) fn subduction_profile(
+    distance_m: f64,
+    speed_mm_per_year: f64,
+    gain: f64,
+) -> (f32, f32) {
     if !distance_m.is_finite()
         || !speed_mm_per_year.is_finite()
         || !gain.is_finite()

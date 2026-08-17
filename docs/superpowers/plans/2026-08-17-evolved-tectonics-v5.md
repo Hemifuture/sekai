@@ -177,27 +177,27 @@ Files:
 - Modify: `src/generators/natural/spherical_tectonics.rs`
 - Create: `tests/evolved_tectonic_forcing.rs`
 
-- [ ] **Step 1: Write RED handcrafted-boundary tests**
+- [x] **Step 1: Write RED handcrafted-boundary tests**
 
   Construct ocean-continent, ocean-ocean, continent-continent, divergence, and
   transform fixtures. Require correct side/sign, positive collision shortening,
   zero transform forcing, minimum boundary distance, and event-age semantics.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Confirm V4 cannot expose the requested fields.
 
-- [ ] **Step 3: Implement final-contact forcing evaluation**
+- [x] **Step 3: Implement final-contact forcing evaluation**
 
   Rebuild contacts after final resampling, apply the locked transfer curves as
   rates, preserve active orogenic forcing, and validate all finite/unit bounds.
 
-- [ ] **Step 4: Run analytic and corpus causality tests**
+- [x] **Step 4: Run analytic and corpus causality tests**
 
   Require both 80% transect gates, age-depth rank correlation `>= 0.70`, and
   transform/convergent uplift ratio `<= 0.5`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: publish active tectonic forcing"`
 

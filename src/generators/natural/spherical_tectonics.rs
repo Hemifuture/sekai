@@ -17,6 +17,7 @@ use crate::world::spatial::{
 mod boundaries;
 mod contacts;
 mod control_surface;
+mod forcing;
 mod initial_state;
 mod kinematics;
 mod model;

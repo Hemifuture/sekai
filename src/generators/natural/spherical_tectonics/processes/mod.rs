@@ -23,17 +23,20 @@ use crate::world::spatial::{
 use crate::world::{CellId, EdgeId};
 
 pub(super) mod constants {
-    pub(super) const DEFAULT_DELTA_MYR: f64 = 2.0;
+    pub(in crate::generators::natural::spherical_tectonics) const DEFAULT_DELTA_MYR: f64 = 2.0;
     pub(super) const OCEANIC_RIDGE_ELEVATION_M: f32 = -1_000.0;
-    pub(super) const OCEANIC_TRENCH_ELEVATION_M: f32 = -10_000.0;
-    pub(super) const HIGHEST_CONTINENTAL_ELEVATION_M: f32 = 10_000.0;
+    pub(in crate::generators::natural::spherical_tectonics) const OCEANIC_TRENCH_ELEVATION_M: f32 =
+        -10_000.0;
+    pub(in crate::generators::natural::spherical_tectonics) const HIGHEST_CONTINENTAL_ELEVATION_M: f32 = 10_000.0;
     pub(super) const ABYSSAL_PLAIN_ELEVATION_M: f32 = -6_000.0;
     pub(super) const SUBDUCTION_MAX_DISTANCE_M: f64 = 1_800_000.0;
-    pub(super) const SUBDUCTION_PEAK_DISTANCE_M: f64 = 600_000.0;
-    pub(super) const COLLISION_MAX_DISTANCE_M: f64 = 4_200_000.0;
+    pub(in crate::generators::natural::spherical_tectonics) const SUBDUCTION_PEAK_DISTANCE_M: f64 =
+        600_000.0;
+    pub(in crate::generators::natural::spherical_tectonics) const COLLISION_MAX_DISTANCE_M: f64 =
+        4_200_000.0;
     pub(super) const COLLISION_COEFFICIENT_PER_KM: f64 = 1.3e-5;
-    pub(super) const REFERENCE_PLATE_SPEED_MM_PER_YEAR: f64 = 100.0;
-    pub(super) const BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR: f64 = 0.6;
+    pub(in crate::generators::natural::spherical_tectonics) const REFERENCE_PLATE_SPEED_MM_PER_YEAR: f64 = 100.0;
+    pub(in crate::generators::natural::spherical_tectonics) const BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR: f64 = 0.6;
     pub(super) const OCEANIC_ELEVATION_DAMPING_MM_PER_YEAR: f64 = 0.04;
     pub(super) const CONTINENTAL_EROSION_MM_PER_YEAR: f64 = 0.03;
     pub(super) const TRENCH_SEDIMENT_MM_PER_YEAR: f64 = 0.3;
@@ -814,6 +817,8 @@ mod relaxation;
 mod rifting;
 mod spreading;
 mod subduction;
+
+pub(in crate::generators::natural::spherical_tectonics) use subduction::subduction_profile;
 
 pub(super) use collision::{apply_collision, apply_collision_v5};
 pub(super) use relaxation::relax_current_crust;

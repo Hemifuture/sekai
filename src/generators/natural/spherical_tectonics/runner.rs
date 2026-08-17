@@ -9,6 +9,7 @@
 use thiserror::Error;
 
 use super::contacts::{build_contacts, ContactError};
+use super::forcing::{evaluate_present_day_forcing, ForcingError};
 use super::initial_state::{build_initial_state, build_initial_state_v5, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
 use super::model::{
@@ -27,6 +28,7 @@ use super::resample::{
 use super::workspace::TectonicWorkspace;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
+use crate::world::natural::SphericalTectonicForcingState;
 use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec, MIN_PLATE_COUNT};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
@@ -36,6 +38,7 @@ pub(super) const EVOLUTION_DELTA_MYR: f64 = 2.0;
 #[derive(Debug)]
 pub(super) struct EvolvedControlState {
     pub(super) current: TectonicState,
+    pub(super) forcing: SphericalTectonicForcingState,
     pub(super) material_ledger: EvolutionMaterialLedger,
     pub(super) lineage_ledger: EvolutionLineageLedger,
 }
@@ -182,8 +185,10 @@ pub(super) fn evolve_control_state_v5(
     }
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
+    let forcing = evaluate_present_day_forcing(surface, topology, &workspace.current, recipe)?;
     Ok(EvolvedControlState {
         current: workspace.current,
+        forcing,
         material_ledger,
         lineage_ledger,
     })
@@ -216,6 +221,8 @@ pub(super) enum RunnerError {
     Material(#[from] super::model::MaterialColumnError),
     #[error("tectonic lineage failed: {0}")]
     Lineage(#[from] super::model::LineageLedgerError),
+    #[error("present-day tectonic forcing failed: {0}")]
+    Forcing(#[from] ForcingError),
 }
 
 #[cfg(test)]
@@ -226,6 +233,9 @@ mod tests {
     use super::{evolve_control_state_v5, run_tectonic_evolution};
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
+    use crate::generators::natural::spherical_tectonics::contacts::{
+        build_contacts, ContactKind, CoverageScratch,
+    };
     use crate::generators::natural::spherical_tectonics::initial_state::{
         build_initial_state, build_initial_state_v5,
     };
@@ -495,8 +505,12 @@ mod tests {
             first.current.material_totals().unwrap(),
             second.current.material_totals().unwrap()
         );
-        assert_eq!(first.current.initial_owners(), second.current.initial_owners());
+        assert_eq!(
+            first.current.initial_owners(),
+            second.current.initial_owners()
+        );
         assert_eq!(first.current.plates, second.current.plates);
+        assert_eq!(first.forcing, second.forcing);
         assert_eq!(
             first.lineage_ledger.budget(&first.current).unwrap(),
             second.lineage_ledger.budget(&second.current).unwrap()
@@ -533,6 +547,13 @@ mod tests {
         };
         let mut triple_angles = Vec::new();
         let mut initial_triple_angles = Vec::new();
+        let mut subduction_total = 0_usize;
+        let mut subduction_passed = 0_usize;
+        let mut collision_total = 0_usize;
+        let mut collision_passed = 0_usize;
+        let mut transform_uplift = Vec::new();
+        let mut convergent_uplift = Vec::new();
+        let mut ocean_age_depth_area = Vec::new();
         for seed in [
             42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
         ] {
@@ -613,6 +634,66 @@ mod tests {
             }
             assert!(maximum_share <= 0.45, "seed {seed}: {maximum_share}");
             let lineage = evolved.lineage_ledger.budget(&evolved.current).unwrap();
+            let mut coverage = CoverageScratch::with_cell_capacity(surface.cells().len());
+            let mut events = Vec::new();
+            build_contacts(
+                &surface,
+                &topology,
+                &evolved.current,
+                &mut coverage,
+                &mut events,
+            )
+            .unwrap();
+            let uplift = evolved.forcing.uplift_rate_mm_per_year();
+            let subsidence = evolved.forcing.subsidence_rate_mm_per_year();
+            let shortening = evolved.forcing.shortening_rate_mm_per_year();
+            for event in &events {
+                let [Some(first), Some(second)] = event.sample_indices else {
+                    continue;
+                };
+                let first = first as usize;
+                let second = second as usize;
+                let first_cell = evolved.current.samples[first].anchor.raw() as usize;
+                let second_cell = evolved.current.samples[second].anchor.raw() as usize;
+                match event.kind {
+                    ContactKind::OceanicSubduction { descending } => {
+                        subduction_total += 1;
+                        let (descending_cell, overriding_cell) =
+                            if evolved.current.samples[first].owner == descending {
+                                (first_cell, second_cell)
+                            } else {
+                                (second_cell, first_cell)
+                            };
+                        subduction_passed += usize::from(
+                            subsidence[descending_cell] > 0.0 && uplift[overriding_cell] > 0.0,
+                        );
+                        convergent_uplift.push(uplift[overriding_cell]);
+                    }
+                    ContactKind::ContinentalCollision => {
+                        collision_total += 1;
+                        collision_passed += usize::from(
+                            shortening[first_cell] > 0.0
+                                && shortening[second_cell] > 0.0
+                                && uplift[first_cell] > 0.0
+                                && uplift[second_cell] > 0.0,
+                        );
+                        convergent_uplift.extend([uplift[first_cell], uplift[second_cell]]);
+                    }
+                    ContactKind::Transform => {
+                        transform_uplift.extend([uplift[first_cell], uplift[second_cell]]);
+                    }
+                    ContactKind::Gap | ContactKind::Divergence => {}
+                }
+            }
+            for (cell, sample) in surface.cells().iter().zip(&evolved.current.samples) {
+                if sample.kind == crate::world::natural::CrustKind::Oceanic {
+                    ocean_age_depth_area.push((
+                        f64::from(sample.age_myr),
+                        -f64::from(sample.tectonic_elevation_m),
+                        cell.area.get(),
+                    ));
+                }
+            }
             triple_angles.extend(macro_triple_angles(&surface, &evolved.current));
             eprintln!(
                 "evolved seed={seed} retention={retention:.6} max_plate={maximum_share:.6} plates={} fragmentations={}",
@@ -636,6 +717,89 @@ mod tests {
             triple_angles.len(),
             initial_triple_angles.len(),
         );
+        let subduction_fraction = subduction_passed as f64 / subduction_total as f64;
+        let collision_fraction = collision_passed as f64 / collision_total as f64;
+        let transform_median = median(&mut transform_uplift);
+        let convergent_median = median(&mut convergent_uplift);
+        let age_depth_correlation = weighted_spearman(&ocean_age_depth_area);
+        eprintln!(
+            "forcing subduction={subduction_passed}/{subduction_total} ({subduction_fraction:.6}) collision={collision_passed}/{collision_total} ({collision_fraction:.6}) transform_uplift_median={transform_median:.6} convergent_uplift_median={convergent_median:.6} age_depth_spearman={age_depth_correlation:.6}"
+        );
         assert!(regular_fraction <= 0.35, "{regular_fraction}");
+        assert!(subduction_total > 0);
+        assert!(collision_total > 0);
+        assert!(subduction_fraction >= 0.80, "{subduction_fraction}");
+        assert!(collision_fraction >= 0.80, "{collision_fraction}");
+        assert!(age_depth_correlation >= 0.70, "{age_depth_correlation}");
+        assert!(
+            transform_median <= convergent_median * 0.5,
+            "transform={transform_median} convergent={convergent_median}"
+        );
+    }
+
+    fn median(values: &mut [f32]) -> f64 {
+        assert!(!values.is_empty());
+        values.sort_by(f32::total_cmp);
+        let middle = values.len() / 2;
+        if values.len() % 2 == 0 {
+            (f64::from(values[middle - 1]) + f64::from(values[middle])) * 0.5
+        } else {
+            f64::from(values[middle])
+        }
+    }
+
+    fn weighted_spearman(values: &[(f64, f64, f64)]) -> f64 {
+        assert!(values.len() >= 2);
+        let first = average_ranks(values, |value| value.0);
+        let second = average_ranks(values, |value| value.1);
+        let weight_sum = values.iter().map(|value| value.2).sum::<f64>();
+        let first_mean = first
+            .iter()
+            .zip(values)
+            .map(|(rank, value)| rank * value.2)
+            .sum::<f64>()
+            / weight_sum;
+        let second_mean = second
+            .iter()
+            .zip(values)
+            .map(|(rank, value)| rank * value.2)
+            .sum::<f64>()
+            / weight_sum;
+        let mut covariance = 0.0;
+        let mut first_variance = 0.0;
+        let mut second_variance = 0.0;
+        for index in 0..values.len() {
+            let first_delta = first[index] - first_mean;
+            let second_delta = second[index] - second_mean;
+            let weight = values[index].2;
+            covariance += weight * first_delta * second_delta;
+            first_variance += weight * first_delta * first_delta;
+            second_variance += weight * second_delta * second_delta;
+        }
+        covariance / (first_variance * second_variance).sqrt()
+    }
+
+    fn average_ranks(
+        values: &[(f64, f64, f64)],
+        key: impl Fn(&(f64, f64, f64)) -> f64,
+    ) -> Vec<f64> {
+        let mut order = (0..values.len()).collect::<Vec<_>>();
+        order.sort_by(|&first, &second| key(&values[first]).total_cmp(&key(&values[second])));
+        let mut ranks = vec![0.0; values.len()];
+        let mut start = 0;
+        while start < order.len() {
+            let mut end = start + 1;
+            while end < order.len()
+                && key(&values[order[end]]).to_bits() == key(&values[order[start]]).to_bits()
+            {
+                end += 1;
+            }
+            let average = (start + end - 1) as f64 * 0.5;
+            for &index in &order[start..end] {
+                ranks[index] = average;
+            }
+            start = end;
+        }
+        ranks
     }
 }
