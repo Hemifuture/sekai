@@ -1,3 +1,5 @@
+mod spherical;
+
 use thiserror::Error;
 
 use crate::world::natural::{
@@ -5,6 +7,8 @@ use crate::world::natural::{
     QualityMetricId, QualityMetricStatus, NATURAL_QUALITY_REPORT_SCHEMA_V1,
 };
 use crate::world::spatial::SurfaceRef;
+
+pub use spherical::evaluate_spherical_foundation_quality;
 
 const NO_POSITIVE_WEIGHT_REASON: &str = "no positive finite sample weight";
 
@@ -20,17 +24,6 @@ impl NaturalQualityReportBuilder {
             surface_ref,
             metrics: Vec::new(),
         }
-    }
-
-    pub(crate) fn record_at_least(
-        &mut self,
-        id: QualityMetricId,
-        value: f64,
-        sample_count: u32,
-        min: f64,
-    ) -> Result<(), QualityBuildError> {
-        let bounds = QualityBounds::at_least(min)?;
-        self.record_available(id, value, sample_count, bounds, value >= min)
     }
 
     pub(crate) fn record_at_most(
@@ -60,6 +53,15 @@ impl NaturalQualityReportBuilder {
             bounds,
             (min..=max).contains(&value),
         )
+    }
+
+    pub(crate) fn record_unbounded(
+        &mut self,
+        id: QualityMetricId,
+        value: f64,
+        sample_count: u32,
+    ) -> Result<(), QualityBuildError> {
+        self.record_available(id, value, sample_count, QualityBounds::unbounded(), true)
     }
 
     pub(crate) fn record_observation_at_least(
@@ -168,6 +170,7 @@ pub(crate) enum MetricObservation {
     Unavailable { reason: String },
 }
 
+#[cfg(test)]
 impl MetricObservation {
     pub(crate) const fn value(&self) -> Option<f64> {
         match self {
@@ -326,7 +329,7 @@ fn validate_equal_lengths(lengths: &[(&'static str, usize)]) -> Result<(), Quali
 
 /// Errors returned while deterministically assembling natural-quality evidence.
 #[derive(Debug, Clone, PartialEq, Error)]
-pub(crate) enum QualityBuildError {
+pub enum QualityBuildError {
     #[error("invalid quality metric or report: {0}")]
     InvalidReport(#[from] NaturalQualityValidationError),
     #[error("quality sample values must be finite")]
@@ -347,6 +350,16 @@ pub(crate) enum QualityBuildError {
         found: usize,
         expected: usize,
     },
+    #[error("invalid spherical quality input {input}: {reason}")]
+    InvalidInput { input: &'static str, reason: String },
+    #[error("spherical quality input {input} references {found:?}; expected {expected:?}")]
+    SurfaceMismatch {
+        input: &'static str,
+        found: SurfaceRef,
+        expected: SurfaceRef,
+    },
+    #[error("quality input {field} count {found} exceeds the supported report range")]
+    CountOverflow { field: &'static str, found: usize },
 }
 
 #[cfg(test)]
@@ -387,8 +400,8 @@ mod tests {
         assert_eq!(report.metrics()[1].id().name(), "z-last");
 
         let mut duplicate = NaturalQualityReportBuilder::new(surface_ref());
-        duplicate.record_at_least(id("same"), 1.0, 1, 0.0).unwrap();
-        duplicate.record_at_least(id("same"), 1.0, 1, 0.0).unwrap();
+        duplicate.record_at_most(id("same"), 1.0, 1, 2.0).unwrap();
+        duplicate.record_at_most(id("same"), 1.0, 1, 2.0).unwrap();
         assert!(duplicate.finish().is_err());
     }
 
@@ -432,7 +445,14 @@ mod tests {
             .record_at_most(id("at-most"), 0.35, 1, 0.35)
             .unwrap();
         builder
-            .record_at_least(id("at-least"), 0.75, 1, 0.75)
+            .record_observation_at_least(
+                id("at-least"),
+                MetricObservation::Available {
+                    value: 0.75,
+                    sample_count: 1,
+                },
+                0.75,
+            )
             .unwrap();
         builder
             .record_between(id("between-min"), 0.30, 1, 0.30, 0.45)
@@ -441,6 +461,7 @@ mod tests {
             .record_between(id("between-max"), 0.45, 1, 0.30, 0.45)
             .unwrap();
         builder.record_at_most(id("fail"), 0.36, 1, 0.35).unwrap();
+        builder.record_unbounded(id("unbounded"), 12.0, 1).unwrap();
 
         let report = builder.finish().unwrap();
         for metric in report.metrics() {

@@ -105,6 +105,14 @@ struct QualityBoundsWire {
 }
 
 impl QualityBounds {
+    /// Constructs an evidence-only interval that accepts every finite value.
+    pub const fn unbounded() -> Self {
+        Self {
+            min: None,
+            max: None,
+        }
+    }
+
     /// Constructs a lower-bounded interval.
     pub fn at_least(min: f64) -> Result<Self, NaturalQualityValidationError> {
         Self::new(Some(min), None)
@@ -127,9 +135,6 @@ impl QualityBounds {
     }
 
     fn validate(&self) -> Result<(), NaturalQualityValidationError> {
-        if self.min.is_none() && self.max.is_none() {
-            return Err(NaturalQualityValidationError::EmptyBounds);
-        }
         for (field, value) in [("min", self.min), ("max", self.max)] {
             if value.is_some_and(|value| !value.is_finite()) {
                 return Err(NaturalQualityValidationError::NonFiniteBound { field });
@@ -452,8 +457,6 @@ pub enum NaturalQualityValidationError {
     },
     #[error("quality metric identifier versions must be nonzero")]
     ZeroMetricVersion,
-    #[error("quality bounds must contain at least one endpoint")]
-    EmptyBounds,
     #[error("quality bound {field} must be finite")]
     NonFiniteBound { field: &'static str },
     #[error("quality bounds are inverted: minimum {min} exceeds maximum {max}")]

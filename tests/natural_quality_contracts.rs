@@ -189,6 +189,25 @@ fn identifiers_and_bounds_reject_invalid_or_ambiguous_values() {
 }
 
 #[test]
+fn unbounded_evidence_accepts_any_finite_available_value() {
+    let bounds = QualityBounds::unbounded();
+    assert_eq!(bounds.min(), None);
+    assert_eq!(bounds.max(), None);
+    let metric = QualityMetric::new(
+        QualityMetricId::new("hydrology", "river-segment-count", 1).unwrap(),
+        QualityMetricStatus::Pass,
+        Some(0.0),
+        1,
+        bounds,
+        None,
+    )
+    .unwrap();
+    let decoded: QualityMetric =
+        serde_json::from_value(serde_json::to_value(&metric).unwrap()).unwrap();
+    assert_eq!(decoded, metric);
+}
+
+#[test]
 fn report_rejects_duplicate_wrong_schema_unknown_fields_and_oversized_metric_lists() {
     let one = metric(
         "quality",

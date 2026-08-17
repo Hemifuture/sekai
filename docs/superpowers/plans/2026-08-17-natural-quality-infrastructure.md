@@ -202,7 +202,7 @@ git commit -m "feat: build deterministic quality metrics"
 - Consumes: `SphericalSurfaceSnapshot`, `ResolvedWorldFormation`, `ReliefSpec`, `SphericalTectonicSnapshot`, `SphericalReliefSnapshot`, `SphericalHydroErosionSnapshot`.
 - Produces: `evaluate_spherical_foundation_quality(...) -> Result<NaturalQualityReport, QualityBuildError>` and stable P0 metric IDs.
 
-- [ ] **Step 1: Write evaluator RED tests**
+- [x] **Step 1: Write evaluator RED tests**
 
 Build a 162-cell fixed spherical fixture through the formal graph, then call:
 
@@ -233,13 +233,13 @@ quality.non-finite-value-count.v1
 
 Repeat evaluation twice and assert byte-identical JSON. Mutate display palette state in a separate app fixture and assert the report hash is unchanged.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `cargo test --test natural_quality_stage evaluator -- --nocapture`
 
 Expected: missing evaluator.
 
-- [ ] **Step 3: Implement area-weighted P0 metrics**
+- [x] **Step 3: Implement area-weighted P0 metrics**
 
 Use each authoritative cell's spherical area. Continental retention divides evolved continental area by `formation.recommended_continental_crust_fraction()` times total area. Requested land comes from `relief_spec.target_land_fraction()`. Land/crust Jaccard compares final land with evolved continental crust. Oceanic emergent fraction divides oceanic-crust land area by all oceanic-crust area. Outlet coverage uses hydrology basin/outlet membership; river count is an exact count converted to `f64`. Scan every dense numeric field used by the evaluator and count non-finite values.
 
@@ -257,7 +257,7 @@ non-finite count              <= 0
 
 `river-segment-count` has unbounded evidence bounds in P0 and reports Pass for a finite available count; morphology bounds arrive in P5.
 
-- [ ] **Step 4: Run evaluator and existing causal tests**
+- [x] **Step 4: Run evaluator and existing causal tests**
 
 ```powershell
 cargo test --test natural_quality_stage evaluator -- --nocapture
@@ -267,7 +267,7 @@ cargo test --test spherical_hydro_erosion_contracts -- --nocapture
 
 Expected: all pass; the current product may contain valid `Fail` metrics.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/natural/quality tests/natural_quality_stage.rs
