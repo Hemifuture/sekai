@@ -249,35 +249,35 @@ Files:
 - Create: `tests/evolved_tectonic_stage.rs`
 - Create: `tests/evolved_tectonic_quality.rs`
 
-- [ ] **Step 1: Write RED typed-stage/graph tests**
+- [x] **Step 1: Write RED typed-stage/graph tests**
 
   Require exact dependencies, artifact key, stage identity/version, profile and
   surface mismatch rejection, cache determinism/invalidation, cooperative
   cancellation, atomic publication, and legacy graph coexistence.
 
-- [ ] **Step 2: Implement profile artifact and V5 stage**
+- [x] **Step 2: Implement profile artifact and V5 stage**
 
   Complete the supplied authoritative surface with P1 control/map data inside
   the stage, invoke V5, and publish only the validated evolved artifact.
 
-- [ ] **Step 3: Implement versioned P2 metrics**
+- [x] **Step 3: Implement versioned P2 metrics**
 
   Record material fraction/retention, max plate area, subduction/collision
   causality, ocean age-depth correlation, transform ratio, triple-junction
   regularity, material/lineage closure, remap ambiguity, and non-finite count.
 
-- [ ] **Step 4: Add the legacy-relief coast harness**
+- [x] **Step 4: Add the legacy-relief coast harness**
 
   Measure the fixed 17-seed median buffered coast/plate overlap and require
   `<= 0.35`; mark the harness explicitly as a P3 revalidation dependency, not a
   V5 graph input.
 
-- [ ] **Step 5: Verify native, WASM, and legacy graphs**
+- [x] **Step 5: Verify native, WASM, and legacy graphs**
 
   Run stage/quality suites, spherical legacy graph suites, all-target check,
   and WASM check.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   `git commit -m "feat: integrate evolved tectonic stage"`
 

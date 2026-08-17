@@ -5,6 +5,7 @@ mod climate_rule_input;
 mod climate_stage;
 mod connectivity;
 mod erosion;
+mod evolved_tectonic_stage;
 mod evolved_tectonics;
 mod formation;
 mod formation_stage;
@@ -58,6 +59,10 @@ pub use climate_stage::{
     PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
+pub use evolved_tectonic_stage::{
+    evolved_tectonic_graph, EvolvedTectonicArtifact, EvolvedTectonicStage,
+    EvolvedTectonicStageInputs, NaturalQualityProfileArtifact,
+};
 pub use evolved_tectonics::{EvolvedTectonicGenerationError, EvolvedTectonicGenerator};
 pub use formation::{WorldFormationGenerationError, WorldFormationGenerator};
 pub use formation_stage::{
@@ -85,7 +90,8 @@ pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroEros
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use quality::{
-    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality, QualityBuildError,
+    evaluate_evolved_tectonic_quality, evaluate_profile_surface_quality,
+    evaluate_spherical_foundation_quality, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;

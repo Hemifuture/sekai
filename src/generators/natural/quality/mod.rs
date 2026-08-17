@@ -1,3 +1,4 @@
+mod evolved_tectonics;
 mod spatial;
 mod spherical;
 
@@ -9,6 +10,8 @@ use crate::world::natural::{
 };
 use crate::world::spatial::SurfaceRef;
 
+pub use evolved_tectonics::evaluate_evolved_tectonic_quality;
+pub(crate) use evolved_tectonics::validate_evolved_tectonic_quality_report;
 pub use spatial::evaluate_profile_surface_quality;
 pub use spherical::evaluate_spherical_foundation_quality;
 pub(crate) use spherical::{

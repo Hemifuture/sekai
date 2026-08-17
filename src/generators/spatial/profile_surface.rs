@@ -78,6 +78,42 @@ impl ProfileSurfaceBuilder {
         )
         .map_err(map_authoritative_error)?;
         check_cancelled(cancellation)?;
+        Self::complete_with_plan(resolution_plan, authoritative_surface, cancellation)
+    }
+
+    /// Completes one already-published authoritative surface with the exact
+    /// transient control grid, conservative map, and P1 evidence selected by
+    /// `profile`.
+    ///
+    /// The supplied surface is cloned as the bundle authority. It is never
+    /// regenerated or replaced by a second world identity.
+    pub fn complete(
+        profile: NaturalQualityProfile,
+        authoritative_surface: &SphericalSurfaceSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<ProfileSurfaceBundle, ProfileSurfaceBuildError> {
+        check_cancelled(cancellation)?;
+        authoritative_surface
+            .validate()
+            .map_err(ProfileSurfaceBuildError::InvalidAuthoritativeSurface)?;
+        let resolution_plan = profile.resolve(&crate::world::SphericalSpaceSpec {
+            radius: authoritative_surface.radius(),
+            target_cell_count: profile.authoritative_target_cell_count(),
+        })?;
+        validate_count(
+            "authoritative",
+            authoritative_surface.cells().len(),
+            resolution_plan.authoritative_resolved_cell_count(),
+        )?;
+        check_cancelled(cancellation)?;
+        Self::complete_with_plan(resolution_plan, authoritative_surface.clone(), cancellation)
+    }
+
+    fn complete_with_plan(
+        resolution_plan: NaturalResolutionPlan,
+        authoritative_surface: SphericalSurfaceSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<ProfileSurfaceBundle, ProfileSurfaceBuildError> {
         let tectonic_control_surface = GeodesicVoronoiBuilder::build_cancellable(
             &resolution_plan.tectonic_control_space_spec(),
             || cancellation.is_cancelled(),
