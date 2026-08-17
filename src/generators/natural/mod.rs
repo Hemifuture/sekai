@@ -22,6 +22,7 @@ mod island_relief;
 mod land_fraction;
 mod mantle;
 mod morphology;
+mod primary_relief;
 mod quality;
 mod random;
 mod relief;
@@ -96,6 +97,10 @@ pub use hydro_erosion_rule_input::{
 pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroErosionStageInputs};
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
+pub use primary_relief::{
+    continental_airy_elevation_m, dynamic_tectonic_response_m, oceanic_isostatic_elevation_m,
+    parsons_sclater_ocean_depth_m, PrimaryReliefGenerationError, PrimaryReliefGenerator,
+};
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
     evaluate_profile_surface_quality, evaluate_spherical_foundation_quality, QualityBuildError,

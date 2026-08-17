@@ -19,7 +19,40 @@ use crate::world::spatial::{
 mod directed_noise;
 mod tectonic_heightmap;
 
+use directed_noise::DirectedDetailNoise;
 use tectonic_heightmap::{build_tectonic_heightmap, TectonicHeightmapError};
+
+pub(super) fn synthesize_conditioned_regional_detail(
+    surface: &SphericalSurfaceSnapshot,
+    tectonic: &SphericalTectonicSnapshot,
+    streams: &LabeledSubstreams,
+) -> Result<Vec<f32>, crate::engine::BuildCancellationError> {
+    let sample_spacing_m = (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
+    let detail_noise =
+        DirectedDetailNoise::from_streams(streams, surface.radius().get(), sample_spacing_m);
+    let mut detail = Vec::with_capacity(surface.cells().len());
+    for (index, surface_cell) in surface.cells().iter().enumerate() {
+        if index % 256 == 0 {
+            streams.check_cancelled()?;
+        }
+        let cell = crate::world::CellId::from_raw(index as u32);
+        detail.push(
+            detail_noise.sample_m(
+                surface_cell.centroid,
+                tectonic
+                    .crust_kind(cell)
+                    .expect("validated spherical crust is cell aligned"),
+                tectonic.crust_age_myr()[index],
+                tectonic.lineation_east()[index],
+                tectonic.lineation_north()[index],
+                tectonic.orogeny_kind()[index],
+                tectonic.orogeny_age_myr()[index],
+            ),
+        );
+    }
+    streams.check_cancelled()?;
+    Ok(detail)
+}
 
 impl ReliefGenerator {
     /// Generates explainable V4 relief directly on a closed spherical surface.

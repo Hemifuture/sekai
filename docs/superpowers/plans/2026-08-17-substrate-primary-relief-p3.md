@@ -54,10 +54,10 @@ Files:
 - Modify: `src/generators/natural/spherical_relief.rs`
 - Create: `tests/primary_relief_generation.rs`
 
-- [ ] Write RED tests for Airy density/thickness monotonicity, Parsons-Sclater age ordering, forcing signs, passive-margin support, hotspot construction, component closure, determinism, and cancellation.
-- [ ] Implement density-aware base, bounded dynamic response, hotspot construction, passive-margin distance profile, conditioned detail, safety reconciliation, and physical sea level.
-- [ ] Reuse existing primitives only through explicit causal inputs.
-- [ ] Commit: `feat: generate physical primary relief`
+- [x] Write RED tests for Airy density/thickness monotonicity, Parsons-Sclater age ordering, forcing signs, passive-margin support, hotspot construction, component closure, determinism, and cancellation.
+- [x] Implement density-aware base, bounded dynamic response, hotspot construction, passive-margin distance profile, conditioned detail, safety reconciliation, and physical sea level.
+- [x] Reuse existing primitives only through explicit causal inputs.
+- [x] Commit: `feat: generate physical primary relief`
 
 ## Task 5: Add P3 quality metrics and corpus evaluator
 
