@@ -137,7 +137,7 @@ pub struct ConservativeSurfaceMap { /* canonical target CSR */ }
 Getters expose source/target references, per-cell areas, target row ranges,
 weights, solve stats, and maximum row/column errors without cloning.
 
-- [ ] **Step 1: Write RED construction and serde tests**
+- [x] **Step 1: Write RED construction and serde tests**
 
 Construct a small synthetic identity map and assert canonical target rows/source
 IDs, finite positive areas/transforms, cardinality, monotone offsets, complete
@@ -146,26 +146,26 @@ Reject duplicate/unsorted sources, wrong schema, unknown fields, invalid refs,
 NaN/infinity, zero/negative area, bad offsets, excessive allocation, and
 contradictory stored stats.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test conservative_surface_map_contracts -- --nocapture
 ```
 
-- [ ] **Step 3: Implement bounded validated storage**
+- [x] **Step 3: Implement bounded validated storage**
 
 Bound areas by `MAX_SPHERICAL_CELL_COUNT`, offsets by that maximum plus one, and
 overlaps by a documented sparse maximum. Use compensated sums in validation.
 The constructor calculates closure and rejects contradictory solve evidence.
 
-- [ ] **Step 4: Verify contracts and adjacent spatial values**
+- [x] **Step 4: Verify contracts and adjacent spatial values**
 
 ```powershell
 cargo test --test conservative_surface_map_contracts -- --nocapture
 cargo test --test surface_ref_contracts --test spherical_surface_contracts -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/world/spatial/remap.rs src/world/spatial/mod.rs tests/conservative_surface_map_contracts.rs

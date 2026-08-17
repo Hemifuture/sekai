@@ -1,6 +1,7 @@
 //! Immutable planar and spherical cells, edges, topology queries, and validation.
 
 mod natural_surface;
+mod remap;
 mod snapshot;
 mod sphere_geometry;
 mod spherical_snapshot;
@@ -12,6 +13,10 @@ mod validation;
 pub use natural_surface::{
     NaturalSurface, NaturalSurfaceError, PlanarNaturalSurface, SphericalNaturalSurface,
     SphericalSurfaceCellFrame, SphericalSurfaceEdgeFrame, SurfaceCellMetrics, SurfaceEdgeMetrics,
+};
+pub use remap::{
+    ConservativeSurfaceMap, ConservativeSurfaceMapError, RemapSolveStats, SurfaceOverlapWeight,
+    TangentTransform, CONSERVATIVE_SURFACE_MAP_SCHEMA_V1,
 };
 pub use snapshot::{SpatialCell, SpatialEdge, SpatialSnapshot, SPATIAL_SCHEMA_V1};
 pub(crate) use sphere_geometry::{
