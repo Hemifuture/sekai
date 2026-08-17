@@ -26,6 +26,7 @@ use super::resample::{
     resampling_interval_steps, CanonicalTectonicState, ResampleError,
 };
 use super::workspace::TectonicWorkspace;
+use crate::engine::BuildCancellationError;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::SphericalTectonicForcingState;
@@ -110,13 +111,16 @@ pub(super) fn evolve_control_state_v5(
     formation: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
 ) -> Result<EvolvedControlState, RunnerError> {
+    streams.check_cancelled()?;
     let recipe = FormationTectonicRecipe::for_preset(formation);
     let initial = build_initial_state_v5(surface, topology, spec, recipe, streams)?;
+    streams.check_cancelled()?;
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
 
     for step in 0..EVOLUTION_STEP_COUNT {
+        streams.check_cancelled()?;
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, EVOLUTION_DELTA_MYR)?;
         build_contacts(surface, topology, next, coverage, events)?;
@@ -170,6 +174,7 @@ pub(super) fn evolve_control_state_v5(
                 &mut lineage_ledger,
             )?;
         }
+        streams.check_cancelled()?;
     }
     if workspace.requires_resample() {
         resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
@@ -185,6 +190,7 @@ pub(super) fn evolve_control_state_v5(
     }
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
+    streams.check_cancelled()?;
     let forcing = evaluate_present_day_forcing(surface, topology, &workspace.current, recipe)?;
     Ok(EvolvedControlState {
         current: workspace.current,
@@ -223,6 +229,8 @@ pub(super) enum RunnerError {
     Lineage(#[from] super::model::LineageLedgerError),
     #[error("present-day tectonic forcing failed: {0}")]
     Forcing(#[from] ForcingError),
+    #[error("tectonic evolution was cancelled")]
+    Cancelled(#[from] BuildCancellationError),
 }
 
 #[cfg(test)]

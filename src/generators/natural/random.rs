@@ -3,7 +3,7 @@
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::engine::StageRng;
+use crate::engine::{BuildCancellation, BuildCancellationError, StageRng};
 
 pub(super) const PLATE_SEEDS_LABEL: &str = "plate-seeds-v1";
 pub(super) const PLATE_MOTION_LABEL: &str = "plate-motion-v1";
@@ -54,13 +54,21 @@ pub(super) const SPHERICAL_TECTONIC_V3_LABELS: [&str; 7] = [
 
 pub(super) struct LabeledSubstreams {
     root: [u8; 32],
+    cancellation: BuildCancellation,
 }
 
 impl LabeledSubstreams {
     pub(super) fn capture(stage_rng: &mut StageRng) -> Self {
         let mut root = [0_u8; 32];
         stage_rng.fill_bytes(&mut root);
-        Self { root }
+        Self {
+            root,
+            cancellation: stage_rng.cancellation_signal(),
+        }
+    }
+
+    pub(super) fn check_cancelled(&self) -> Result<(), BuildCancellationError> {
+        self.cancellation.check_cancelled()
     }
 
     pub(super) fn stream(&self, label: &'static str) -> ChaCha8Rng {

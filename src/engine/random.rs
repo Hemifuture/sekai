@@ -60,10 +60,8 @@ impl StageRng {
         Self::from_seed_with_cancellation(seed, &BuildCancellation::new())
     }
 
-    pub(crate) fn from_seed_with_cancellation(
-        seed: StageSeed,
-        cancellation: &BuildCancellation,
-    ) -> Self {
+    /// Creates a deterministic stream linked to a cooperative cancellation signal.
+    pub fn from_seed_with_cancellation(seed: StageSeed, cancellation: &BuildCancellation) -> Self {
         use rand::SeedableRng;
 
         Self {
@@ -80,6 +78,10 @@ impl StageRng {
     /// Returns a stable error when the owning build requested cancellation.
     pub fn check_cancelled(&self) -> Result<(), BuildCancellationError> {
         self.cancellation.check_cancelled()
+    }
+
+    pub(crate) fn cancellation_signal(&self) -> BuildCancellation {
+        self.cancellation.clone()
     }
 }
 

@@ -5,6 +5,7 @@ mod climate_rule_input;
 mod climate_stage;
 mod connectivity;
 mod erosion;
+mod evolved_tectonics;
 mod formation;
 mod formation_stage;
 mod fractal;
@@ -57,6 +58,7 @@ pub use climate_stage::{
     PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
+pub use evolved_tectonics::{EvolvedTectonicGenerationError, EvolvedTectonicGenerator};
 pub use formation::{WorldFormationGenerationError, WorldFormationGenerator};
 pub use formation_stage::{
     ResolvedWorldFormationArtifact, WorldFormationSpecArtifact, WorldFormationStage,

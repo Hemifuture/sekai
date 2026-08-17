@@ -210,31 +210,31 @@ Files:
 - Modify: `src/generators/spatial/profile_surface.rs`
 - Create: `tests/evolved_tectonic_publication.rs`
 
-- [ ] **Step 1: Write RED control-to-authority tests**
+- [x] **Step 1: Write RED control-to-authority tests**
 
   Require exact P1 source/target identities, extensive closure for all material
   components, masked ocean-age remap, tangent lineation transport, category
   ambiguity evidence, derived thickness, authoritative boundary reconstruction,
   and deterministic bytes.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Confirm the old one-shot `project_current_state` fails the new conservation
   contract.
 
-- [ ] **Step 3: Implement the V5 generator/publisher**
+- [x] **Step 3: Implement the V5 generator/publisher**
 
   Add `EvolvedTectonicGenerator::generate`, consume a validated
   `ProfileSurfaceBundle`, run only the control evolution, remap by field
   semantics, canonicalize authority domains, build the nested V3 compatibility
   view, and assemble strict budgets.
 
-- [ ] **Step 4: Verify Draft/Standard/High publication and cancellation**
+- [x] **Step 4: Verify Draft/Standard/High publication and cancellation**
 
   Run Draft synchronously; exercise cancellable Standard/High paths and confirm
   no partial snapshot escapes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: publish conservative evolved tectonics"`
 

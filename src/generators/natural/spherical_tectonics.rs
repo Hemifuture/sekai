@@ -23,6 +23,7 @@ mod kinematics;
 mod model;
 mod passive_margin;
 mod processes;
+mod publication;
 mod resample;
 mod runner;
 mod workspace;
@@ -31,6 +32,8 @@ use boundaries::classify_and_aggregate_boundaries;
 use control_surface::{build_control_surface, project_current_state, requires_control_surface};
 use model::CrustSample;
 use runner::{canonicalize_evolved_state, evolve_current_state, run_tectonic_evolution};
+
+pub(super) use publication::generate_evolved_spherical;
 
 impl TectonicGenerator {
     /// Generates a surface-bound current snapshot on a validated closed spherical world.
