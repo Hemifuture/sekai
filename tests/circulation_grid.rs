@@ -92,6 +92,21 @@ fn cubed_sphere_is_closed_and_satisfies_euler_counts() {
 }
 
 #[test]
+fn production_resolutions_use_exact_topological_seam_welding() {
+    for resolution in [24_u16, 32, 48, 64] {
+        let grid = CubedSphereGrid::new(resolution, 6_371_000.0).unwrap();
+        let cells = 6 * usize::from(resolution) * usize::from(resolution);
+        assert_eq!(grid.cell_count(), cells);
+        assert_eq!(grid.edges().len(), 2 * cells);
+        assert_eq!(grid.vertex_count(), cells + 2);
+        assert_eq!(
+            grid.vertex_count() as isize - grid.edges().len() as isize + grid.cell_count() as isize,
+            2
+        );
+    }
+}
+
+#[test]
 fn cubed_sphere_cell_areas_close_to_the_analytic_sphere() {
     let radius = 6_371_000.0;
     let grid = CubedSphereGrid::new(12, radius).unwrap();

@@ -12,11 +12,11 @@ Files:
 - Create: `src/generators/natural/climate_work_domain.rs`
 - Create: `tests/climate_work_domain.rs`
 
-- [ ] Write RED tests for lossless cubed-sphere conversion, exact topology and
+- [x] Write RED tests for lossless cubed-sphere conversion, exact topology and
   area identity, stable fingerprints, profile resolutions, forward/reverse
   conservative overlaps, bounded allocation, cancellation, and determinism.
-- [ ] Implement `ClimateWorkDomainSnapshot` and the cancellable builder.
-- [ ] Verify Draft/Standard/High domains and commit.
+- [x] Implement `ClimateWorkDomainSnapshot` and the cancellable builder.
+- [x] Verify Draft/Standard/High domains and commit.
 
 ## Task 2: Define strict C0 layer, capability, checkpoint, and public schemas
 

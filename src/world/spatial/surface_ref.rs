@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::{
     SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot,
     SphericalSurfaceValidationError, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
+    SPHERICAL_SURFACE_SCHEMA_V2,
 };
 
 /// The authoritative geometry family addressed by a natural-field snapshot.
@@ -15,6 +16,8 @@ pub enum SurfaceGeometryKind {
     PlanarV1,
     /// A closed geodesic spherical Voronoi surface.
     SphericalV1,
+    /// A closed generic geodesic-polygon spherical mesh.
+    SphericalGeodesicV2,
 }
 
 impl SurfaceGeometryKind {
@@ -22,7 +25,13 @@ impl SurfaceGeometryKind {
         match self {
             Self::PlanarV1 => SPATIAL_SCHEMA_V1,
             Self::SphericalV1 => SPHERICAL_SURFACE_SCHEMA_V1,
+            Self::SphericalGeodesicV2 => SPHERICAL_SURFACE_SCHEMA_V2,
         }
+    }
+
+    /// Returns whether this kind belongs to the closed spherical family.
+    pub const fn is_spherical(self) -> bool {
+        matches!(self, Self::SphericalV1 | Self::SphericalGeodesicV2)
     }
 }
 
@@ -116,8 +125,13 @@ impl SurfaceRef {
     pub(crate) fn from_validated_spherical(
         snapshot: &SphericalSurfaceSnapshot,
     ) -> Result<Self, SurfaceRefError> {
+        let geometry_kind = match snapshot.schema_version() {
+            SPHERICAL_SURFACE_SCHEMA_V1 => SurfaceGeometryKind::SphericalV1,
+            SPHERICAL_SURFACE_SCHEMA_V2 => SurfaceGeometryKind::SphericalGeodesicV2,
+            _ => unreachable!("validated spherical surface has a supported schema"),
+        };
         Self::new(
-            SurfaceGeometryKind::SphericalV1,
+            geometry_kind,
             snapshot.schema_version(),
             snapshot.cells().len() as u32,
             snapshot.edges().len() as u32,

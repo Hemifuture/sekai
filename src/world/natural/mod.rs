@@ -8,6 +8,7 @@ mod fields;
 mod formation;
 mod geologic_spec;
 mod geology;
+mod global_circulation;
 mod hydro_erosion;
 mod hydro_erosion_spec;
 mod hydrology;
@@ -83,6 +84,9 @@ pub use geologic_spec::{
 pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
+};
+pub use global_circulation::{
+    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, CLIMATE_WORK_DOMAIN_SCHEMA_V1,
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,

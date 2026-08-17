@@ -3,6 +3,7 @@
 mod climate;
 mod climate_rule_input;
 mod climate_stage;
+mod climate_work_domain;
 mod connectivity;
 mod erosion;
 mod evolved_tectonic_stage;
@@ -61,6 +62,7 @@ pub use climate_rule_input::{
 pub use climate_stage::{
     PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
+pub use climate_work_domain::{ClimateWorkDomainBuildError, ClimateWorkDomainBuilder};
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
 pub use evolved_tectonic_stage::{
     evolved_tectonic_graph, EvolvedTectonicArtifact, EvolvedTectonicStage,

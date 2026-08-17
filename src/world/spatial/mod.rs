@@ -29,7 +29,7 @@ pub use sphere_geometry::{
 };
 pub use spherical_snapshot::{
     SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceVertex,
-    SPHERICAL_SURFACE_SCHEMA_V1,
+    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
 };
 pub(crate) use spherical_validation::spherical_polygon_metrics;
 pub use spherical_validation::SphericalSurfaceValidationError;

@@ -268,7 +268,7 @@ fn validation_rejects_unsupported_schema_first() {
         error,
         SphericalSurfaceValidationError::UnsupportedSchema {
             found: 7,
-            supported: 1
+            supported: 2
         }
     ));
 }

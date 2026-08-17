@@ -48,8 +48,19 @@ artifacts.
 The cubed sphere becomes a reconstructable work domain, never a second world
 surface. `CubedSphereGrid` publishes a lossless conversion of its canonical
 vertices, quadrilateral cells, shared edges, areas, and tangent normals into a
-validated `SphericalSurfaceSnapshot`. The grid and converted-surface
-fingerprints are both retained and cross-validated.
+validated `SphericalSurfaceSnapshot` V2. V1 remains the strict spherical
+Voronoi contract; V2 adds a distinct `SphericalGeodesicV2` identity for generic
+closed geodesic finite-volume meshes and deliberately does not claim that
+cubed-sphere cell sites generate Voronoi bisectors. Both schemas retain the
+same manifold, metric, orientation, bounded-allocation, area-closure, and
+fingerprint checks. Conservative remapping accepts both explicit spherical
+families. The grid and converted-surface fingerprints are both retained and
+cross-validated.
+
+Cubed-sphere seam welding uses exact integer face-lattice topology keys rather
+than rounded floating-point coordinates. This is required for the locked
+`n=24/32/48` production resolutions and preserves all pre-existing V1 grid
+fingerprints at the reference fixtures.
 
 `ClimateWorkDomainSnapshot` contains:
 

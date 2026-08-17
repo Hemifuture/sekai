@@ -2,7 +2,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use super::{SurfaceGeometryKind, SurfaceRef, SurfaceRefError};
+use super::{SurfaceRef, SurfaceRefError};
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
 
@@ -459,7 +459,7 @@ fn validate_map_data(
     source_ref.validate()?;
     target_ref.validate()?;
     for (role, surface_ref) in [("source", source_ref), ("target", target_ref)] {
-        if surface_ref.geometry_kind() != SurfaceGeometryKind::SphericalV1 {
+        if !surface_ref.geometry_kind().is_spherical() {
             return Err(ConservativeSurfaceMapError::NonSphericalSurface { role });
         }
         if surface_ref.cell_count() > MAX_SPHERICAL_CELL_COUNT {

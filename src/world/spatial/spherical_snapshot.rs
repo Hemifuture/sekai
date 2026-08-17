@@ -12,6 +12,8 @@ use crate::world::{
 
 /// The supported version of the serialized spherical-surface schema.
 pub const SPHERICAL_SURFACE_SCHEMA_V1: u16 = 1;
+/// A closed generic geodesic-polygon mesh whose sites need not be Voronoi generators.
+pub const SPHERICAL_SURFACE_SCHEMA_V2: u16 = 2;
 
 const MAX_SPHERICAL_VERTICES: usize = MAX_SPHERICAL_VERTEX_COUNT as usize;
 const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;

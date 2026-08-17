@@ -3,7 +3,7 @@ use thiserror::Error;
 use super::sphere_geometry::{add, cross, dot, norm, subtract};
 use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
-    UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
+    UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
 };
 use crate::world::{
     CellId, EdgeId, SurfaceVertexId, UnitError, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
@@ -20,9 +20,7 @@ const ABSOLUTE_SCALE_ULPS: f64 = 16.0;
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalSurfaceValidationError {
     /// The snapshot uses a schema version that this engine does not support.
-    #[error(
-        "unsupported spherical surface schema version {found}; supported version is {supported}"
-    )]
+    #[error("unsupported spherical surface schema version {found}; latest supported version is {supported}")]
     UnsupportedSchema { found: u16, supported: u16 },
     /// The snapshot radius is not finite and strictly positive.
     #[error("spherical surface radius must be finite and positive, got {found}")]
@@ -226,10 +224,13 @@ impl SphericalSurfaceSnapshot {
     }
 
     fn validate_header(&self) -> Result<(), SphericalSurfaceValidationError> {
-        if self.schema_version != SPHERICAL_SURFACE_SCHEMA_V1 {
+        if !matches!(
+            self.schema_version,
+            SPHERICAL_SURFACE_SCHEMA_V1 | SPHERICAL_SURFACE_SCHEMA_V2
+        ) {
             return Err(SphericalSurfaceValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: SPHERICAL_SURFACE_SCHEMA_V1,
+                supported: SPHERICAL_SURFACE_SCHEMA_V2,
             });
         }
         validate_record_count(
@@ -697,15 +698,22 @@ impl SphericalSurfaceSnapshot {
                 }
             }
 
-            let site_delta = subtract(second_site.components(), first_site.components());
-            let site_separation = norm(site_delta);
-            for endpoint in [first_vertex, second_vertex] {
-                let bisector_residual =
-                    dot(endpoint.components(), site_delta).abs() / site_separation;
-                if !bisector_residual.is_finite() || bisector_residual > VECTOR_ANGLE_TOLERANCE {
-                    return Err(SphericalSurfaceValidationError::EdgeNormalMismatch {
-                        edge: edge.id,
-                    });
+            // V1 is specifically a Voronoi dual and requires every shared arc
+            // to bisect its generating sites. V2 represents generic geodesic
+            // finite-volume meshes such as the cubed sphere, while retaining
+            // the manifold, metric, orientation, area, and normal checks.
+            if self.schema_version == SPHERICAL_SURFACE_SCHEMA_V1 {
+                let site_delta = subtract(second_site.components(), first_site.components());
+                let site_separation = norm(site_delta);
+                for endpoint in [first_vertex, second_vertex] {
+                    let bisector_residual =
+                        dot(endpoint.components(), site_delta).abs() / site_separation;
+                    if !bisector_residual.is_finite() || bisector_residual > VECTOR_ANGLE_TOLERANCE
+                    {
+                        return Err(SphericalSurfaceValidationError::EdgeNormalMismatch {
+                            edge: edge.id,
+                        });
+                    }
                 }
             }
 
