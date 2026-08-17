@@ -87,13 +87,13 @@ Files:
 - Create: `tests/global_circulation_integrators.rs`
 - Create: `tests/global_circulation_comparison.rs`
 
-- [ ] Write RED equilibrium, convergence-order, stability, linear-residual,
+- [x] Write RED equilibrium, convergence-order, stability, linear-residual,
   deterministic, cancellation, and known artificial-comparison tests.
-- [ ] Implement the same-equation explicit reference and both production
+- [x] Implement the same-equation explicit reference and both production
   candidates with fixed work budgets.
-- [ ] Run Release comparisons on all approved fixtures; select only a candidate
+- [x] Run Release comparisons on all approved fixtures; select only a candidate
   passing every locked metric. Do not relax thresholds.
-- [ ] Record candidate failures and commit the winner as the only product path.
+- [x] Record candidate failures and commit the winner as the only product path.
 
 ## Task 7: Generate and validate C2 seasonal circulation
 

@@ -92,12 +92,18 @@ pub use geologic_substrate::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use global_circulation::{
-    paired_heat_exchange, paired_momentum_exchange, project_monthly_extensive_rate,
-    project_monthly_intensive_scalar, project_monthly_tangent_vectors, ClimateProjectionError,
-    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
+    climate_state_rms_difference, compare_climate_states, paired_heat_exchange,
+    paired_momentum_exchange, project_monthly_extensive_rate, project_monthly_intensive_scalar,
+    project_monthly_tangent_vectors, run_integrator_comparison, CandidateIntegratorComparison,
+    ClimateAgreementFailure, ClimateAgreementThresholds, ClimateIntegratorDiagnostics,
+    ClimateIntegratorError, ClimateProjectionError, ClimateStateComparison, ClimateStepResult,
+    ExplicitRk3Integrator, GlobalClimateForcing, GlobalClimateForcingBuilder,
+    GlobalClimateForcingError, ImexCrankNicolsonIntegrator, IntegratorComparisonReport,
     LayeredClimateState, LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget,
     LayeredTendencyError, LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange,
-    PairedMomentumExchange, ProjectedMonthlyScalar, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    PairedMomentumExchange, ProductionCandidateSelection, ProjectedMonthlyScalar,
+    SplitExplicitRk3Integrator, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{

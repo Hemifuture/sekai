@@ -340,37 +340,14 @@ impl<'grid> LayeredTendencySystem<'grid> {
         cancellation: &BuildCancellation,
         workspace: &mut LayeredTendencyWorkspace,
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
-        check_cancelled(cancellation)?;
-        if month >= CLIMATE_MONTH_COUNT {
-            return Err(LayeredTendencyError::InvalidMonth { found: month });
-        }
-        state.validate_against(self.grid)?;
-        forcing
-            .validate()
-            .map_err(|error| LayeredTendencyError::InvalidForcing {
-                reason: error.to_string(),
-            })?;
-        if forcing.grid_fingerprint() != self.grid.fingerprint()
-            || forcing.cell_count() != self.grid.cell_count()
-        {
-            return Err(LayeredTendencyError::GridMismatch);
-        }
-        if ocean_edge_permeability.len() != self.grid.edges().len() {
-            return Err(LayeredTendencyError::PermeabilityLengthMismatch {
-                found: ocean_edge_permeability.len(),
-                expected: self.grid.edges().len(),
-            });
-        }
-        for (edge, value) in ocean_edge_permeability.iter().copied().enumerate() {
-            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-                return Err(LayeredTendencyError::InvalidPermeability { edge, found: value });
-            }
-        }
-        if workspace.cell_count != self.grid.cell_count()
-            || workspace.edge_count != self.grid.edges().len()
-        {
-            return Err(LayeredTendencyError::WorkspaceGridMismatch);
-        }
+        self.validate_inputs(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            workspace,
+        )?;
 
         let operators = CirculationOperators::new(self.grid);
         let mut tendency = LayeredClimateTendency::zeroed(state);
@@ -448,6 +425,129 @@ impl<'grid> LayeredTendencySystem<'grid> {
         self.apply_pair_exchanges(state, forcing, cancellation, &mut tendency)?;
         self.validate_tendency(&tendency)?;
         Ok(tendency)
+    }
+
+    /// Evaluates only the fast linear shallow-water and Coriolis operator.
+    /// Slow relaxation, thermodynamics, moisture, drag, and paired exchange
+    /// are deliberately absent so split-explicit integration can apply them
+    /// exactly once per macro step.
+    pub fn evaluate_fast(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        let mut workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        self.evaluate_fast_with_workspace(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            &mut workspace,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_fast_with_workspace(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+        workspace: &mut LayeredTendencyWorkspace,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        self.validate_inputs(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            workspace,
+        )?;
+        let operators = CirculationOperators::new(self.grid);
+        let mut tendency = LayeredClimateTendency::zeroed(state);
+        for role in state.active_roles() {
+            check_cancelled(cancellation)?;
+            let height = state.height_anomaly_m(*role).expect("active role");
+            let velocity = state.velocity_m_s(*role).expect("active role");
+            let ocean = matches!(
+                role,
+                ClimateLayerRole::OceanMixedLayer | ClimateLayerRole::OceanThermocline
+            );
+            let permeability = if ocean {
+                ocean_edge_permeability
+            } else {
+                &workspace.open_edges
+            };
+            let divergence = operators.divergence_with_permeability(velocity, permeability)?;
+            let height_gradient = operators.gradient_with_permeability(height, permeability)?;
+            let coriolis = operators.coriolis(velocity, EARTH_ROTATION_RATE_RAD_S)?;
+            let reduced_gravity = role_constants(*role).0;
+            let reference_thickness =
+                f64::from(state.reference_thickness_m(*role).expect("active role"));
+            let layer = tendency.layer_mut(*role).expect("active tendency role");
+            for cell in 0..self.grid.cell_count() {
+                layer.height_tendency_m_s[cell] =
+                    (-reference_thickness * f64::from(divergence[cell])) as f32;
+                let radial = self.grid.cells()[cell].center_unit();
+                let acceleration = std::array::from_fn(|component| {
+                    -reduced_gravity * f64::from(height_gradient[cell][component])
+                        + f64::from(coriolis[cell][component])
+                });
+                layer.velocity_tendency_m_s2[cell] =
+                    tangentize(acceleration, radial).map(|value| value as f32);
+            }
+        }
+        self.validate_tendency(&tendency)?;
+        Ok(tendency)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_inputs(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+        workspace: &LayeredTendencyWorkspace,
+    ) -> Result<(), LayeredTendencyError> {
+        check_cancelled(cancellation)?;
+        if month >= CLIMATE_MONTH_COUNT {
+            return Err(LayeredTendencyError::InvalidMonth { found: month });
+        }
+        state.validate_against(self.grid)?;
+        forcing
+            .validate()
+            .map_err(|error| LayeredTendencyError::InvalidForcing {
+                reason: error.to_string(),
+            })?;
+        if forcing.grid_fingerprint() != self.grid.fingerprint()
+            || forcing.cell_count() != self.grid.cell_count()
+        {
+            return Err(LayeredTendencyError::GridMismatch);
+        }
+        if ocean_edge_permeability.len() != self.grid.edges().len() {
+            return Err(LayeredTendencyError::PermeabilityLengthMismatch {
+                found: ocean_edge_permeability.len(),
+                expected: self.grid.edges().len(),
+            });
+        }
+        for (edge, value) in ocean_edge_permeability.iter().copied().enumerate() {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(LayeredTendencyError::InvalidPermeability { edge, found: value });
+            }
+        }
+        if workspace.cell_count != self.grid.cell_count()
+            || workspace.edge_count != self.grid.edges().len()
+        {
+            return Err(LayeredTendencyError::WorkspaceGridMismatch);
+        }
+        Ok(())
     }
 
     fn apply_moisture(

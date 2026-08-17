@@ -1168,6 +1168,9 @@ fn steady_transport_result(
 }
 
 fn interpolate_scalar_f64(edge: &SphericalEdge, first: f64, second: f64) -> f64 {
+    if first == second {
+        return first;
+    }
     let distances = edge.center_distances_to_midpoint_m();
     (first * distances[1] + second * distances[0]) / (distances[0] + distances[1])
 }
