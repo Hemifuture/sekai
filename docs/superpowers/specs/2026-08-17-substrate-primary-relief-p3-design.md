@@ -127,6 +127,16 @@ with rates in mm/year and result in metres. It is clamped only to the public
 tectonic-component safety envelope. Transform forcing remains exactly zero by
 the P2 contract.
 
+The V5 compatibility field is an absolute accumulated coarse response, while
+P3 publishes a signed dynamic contribution. On cells with nonzero normal
+forcing, P3 projects the inherited response onto the net forcing's sign before
+applying the equation: net uplift cannot inherit a negative dynamic
+contribution and net subsidence cannot inherit a positive one. Cells without a
+net normal forcing are unchanged. Quality sampling uses the same net-sign
+definition at multi-boundary junctions. This named causal projection prevents a
+legacy reference elevation from reversing the present V5 cause; it does not
+change the rate multiplier, crust, or final safety bounds.
+
 ### 4.3 Volcanic and passive-margin construction
 
 The existing spherical hotspot-chain construction is reused with the P3 stage's

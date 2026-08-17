@@ -98,12 +98,15 @@ pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroEros
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use primary_relief::{
-    continental_airy_elevation_m, dynamic_tectonic_response_m, oceanic_isostatic_elevation_m,
-    parsons_sclater_ocean_depth_m, PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
+    oceanic_isostatic_elevation_m, parsons_sclater_ocean_depth_m, PrimaryReliefGenerationError,
+    PrimaryReliefGenerator,
 };
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
-    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality, QualityBuildError,
+    evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
+    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality,
+    PrimaryReliefQualitySample, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;

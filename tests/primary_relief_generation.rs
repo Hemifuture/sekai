@@ -2,9 +2,9 @@ use std::sync::OnceLock;
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    continental_airy_elevation_m, dynamic_tectonic_response_m, oceanic_isostatic_elevation_m,
-    parsons_sclater_ocean_depth_m, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
-    PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
+    oceanic_isostatic_elevation_m, parsons_sclater_ocean_depth_m, EvolvedTectonicGenerator,
+    GeologicSubstrateGenerator, PrimaryReliefGenerationError, PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -108,6 +108,9 @@ fn parsons_sclater_depth_and_oceanic_buoyancy_keep_physical_ordering() {
 
 #[test]
 fn dynamic_response_preserves_accumulated_relief_and_present_forcing_signs() {
+    assert_eq!(causal_accumulated_response_m(-3_000.0, 1.0, 0.0), 0.0);
+    assert_eq!(causal_accumulated_response_m(500.0, 0.0, 1.0), 0.0);
+    assert_eq!(causal_accumulated_response_m(-2_600.0, 0.0, 0.0), -2_600.0);
     assert_eq!(dynamic_tectonic_response_m(1_000.0, 0.0, 0.0), 650.0);
     assert_eq!(dynamic_tectonic_response_m(0.0, 1.0, 0.0), 250.0);
     assert_eq!(dynamic_tectonic_response_m(0.0, 0.0, 1.0), -250.0);
@@ -151,6 +154,43 @@ fn generated_relief_closes_components_water_and_all_causal_supports() {
             + relief.conditioned_regional_detail_m()[index];
         assert!((relief.elevation_m()[index] - calculated).abs() <= 0.01);
     }
+}
+
+#[test]
+fn generated_dynamic_component_preserves_v5_response_with_causal_sign_projection() {
+    let fixture = fixture();
+    let surface = fixture.bundle.authoritative_surface();
+    let mut diagnostics = Vec::<Diagnostic>::new();
+    let relief = PrimaryReliefGenerator::generate(
+        surface,
+        &fixture.evolved,
+        &fixture.substrate,
+        &ReliefSpec::default(),
+        &mut relief_rng(None),
+        &mut diagnostics,
+    )
+    .unwrap();
+    let forcing = fixture.evolved.forcing();
+    let compatibility = fixture.evolved.compatibility();
+    let matching = (0..surface.cells().len())
+        .filter(|&index| {
+            let expected = dynamic_tectonic_response_m(
+                causal_accumulated_response_m(
+                    compatibility.tectonic_elevation_m()[index],
+                    forcing.uplift_rate_mm_per_year()[index],
+                    forcing.subsidence_rate_mm_per_year()[index],
+                ),
+                forcing.uplift_rate_mm_per_year()[index],
+                forcing.subsidence_rate_mm_per_year()[index],
+            );
+            (relief.dynamic_tectonic_offset_m()[index] - expected).abs() <= 0.13
+        })
+        .count();
+    assert!(
+        matching as f64 / surface.cells().len() as f64 >= 0.99,
+        "only {matching}/{} dynamic cells preserve the causal V5 response",
+        surface.cells().len()
+    );
 }
 
 #[test]

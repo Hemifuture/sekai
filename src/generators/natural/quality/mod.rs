@@ -1,4 +1,5 @@
 mod evolved_tectonics;
+mod primary_relief;
 mod spatial;
 mod spherical;
 
@@ -13,6 +14,10 @@ use crate::world::spatial::SurfaceRef;
 pub(crate) use evolved_tectonics::validate_evolved_tectonic_quality_report;
 pub use evolved_tectonics::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
+};
+pub use primary_relief::{
+    evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
+    PrimaryReliefQualitySample,
 };
 pub use spatial::evaluate_profile_surface_quality;
 pub use spherical::evaluate_spherical_foundation_quality;

@@ -105,7 +105,11 @@ impl PrimaryReliefGenerator {
                 / total_area as f32)
                 .clamp(CRUST_BASE_ELEVATION_MIN_M, CRUST_BASE_ELEVATION_MAX_M);
             let base = quantize(base);
-            let accumulated_response = compatibility.tectonic_elevation_m()[index] - base;
+            let accumulated_response = causal_accumulated_response_m(
+                compatibility.tectonic_elevation_m()[index],
+                forcing.uplift_rate_mm_per_year()[index],
+                forcing.subsidence_rate_mm_per_year()[index],
+            );
             let dynamic = quantize(dynamic_tectonic_response_m(
                 accumulated_response,
                 forcing.uplift_rate_mm_per_year()[index],
@@ -260,6 +264,23 @@ pub fn dynamic_tectonic_response_m(
         + DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR
             * (uplift_rate_mm_per_year - subsidence_rate_mm_per_year))
         .clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M)
+}
+
+/// Projects inherited coarse response onto an active normal forcing's causal sign.
+pub fn causal_accumulated_response_m(
+    accumulated_response_m: f32,
+    uplift_rate_mm_per_year: f32,
+    subsidence_rate_mm_per_year: f32,
+) -> f32 {
+    if uplift_rate_mm_per_year > subsidence_rate_mm_per_year && uplift_rate_mm_per_year > 0.0 {
+        accumulated_response_m.max(0.0)
+    } else if subsidence_rate_mm_per_year > uplift_rate_mm_per_year
+        && subsidence_rate_mm_per_year > 0.0
+    {
+        accumulated_response_m.min(0.0)
+    } else {
+        accumulated_response_m
+    }
 }
 
 fn synthesize_passive_margin(

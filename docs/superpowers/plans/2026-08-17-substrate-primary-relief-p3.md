@@ -68,10 +68,10 @@ Files:
 - Modify: `src/generators/natural/mod.rs`
 - Create: `tests/primary_relief_quality.rs`
 
-- [ ] Write RED tests for exact metric inventory, unavailable semantics, hard/statistical separation, and recomputation from raw corpus samples.
-- [ ] Implement all locked P3 gates without averaging per-world summaries.
-- [ ] Tune implementation constants only; do not relax thresholds to make the corpus pass.
-- [ ] Commit: `feat: measure primary relief quality`
+- [x] Write RED tests for exact metric inventory, unavailable semantics, hard/statistical separation, and recomputation from raw corpus samples.
+- [x] Implement all locked P3 gates without averaging per-world summaries.
+- [x] Tune implementation constants only; do not relax thresholds to make the corpus pass.
+- [x] Commit: `feat: measure primary relief quality`
 
 ## Task 6: Publish typed stages and graph
 
