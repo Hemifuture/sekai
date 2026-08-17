@@ -81,10 +81,10 @@ Files:
 - Modify: `src/generators/natural/mod.rs`
 - Create: `tests/primary_relief_stage.rs`
 
-- [ ] Write RED tests for artifact keys, exact dependencies, stage identities, cache restore, malformed/mismatched inputs, cancellation, and atomic publication.
-- [ ] Add `GeologicSubstrateArtifact`, `PrimaryReliefArtifact`, both stages, and `primary_relief_graph` including the P2 stage.
-- [ ] Verify the frozen V4 graph and hashes remain unchanged.
-- [ ] Commit: `feat: integrate substrate and primary relief`
+- [x] Write RED tests for artifact keys, exact dependencies, stage identities, cache restore, malformed/mismatched inputs, cancellation, and atomic publication.
+- [x] Add `GeologicSubstrateArtifact`, `PrimaryReliefArtifact`, both stages, and `primary_relief_graph` including the P2 stage.
+- [x] Verify the frozen V4 graph and hashes remain unchanged.
+- [x] Commit: `feat: integrate substrate and primary relief`
 
 ## Task 7: Freeze P3 evidence, atlas, and performance
 

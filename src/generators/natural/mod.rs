@@ -23,6 +23,7 @@ mod land_fraction;
 mod mantle;
 mod morphology;
 mod primary_relief;
+mod primary_relief_stage;
 mod quality;
 mod random;
 mod relief;
@@ -101,6 +102,11 @@ pub use primary_relief::{
     causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
     oceanic_isostatic_elevation_m, parsons_sclater_ocean_depth_m, PrimaryReliefGenerationError,
     PrimaryReliefGenerator,
+};
+pub use primary_relief_stage::{
+    primary_relief_graph, GeologicSubstrateArtifact, GeologicSubstrateStage,
+    GeologicSubstrateStageInputs, PrimaryReliefArtifact, PrimaryReliefStage,
+    PrimaryReliefStageInputs,
 };
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
