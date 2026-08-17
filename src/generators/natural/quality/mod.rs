@@ -9,7 +9,7 @@ use crate::world::natural::{
 };
 use crate::world::spatial::SurfaceRef;
 
-pub(crate) use spatial::evaluate_profile_surface_quality;
+pub use spatial::evaluate_profile_surface_quality;
 pub use spherical::evaluate_spherical_foundation_quality;
 pub(crate) use spherical::{
     evaluate_spherical_foundation_quality_from_validated,

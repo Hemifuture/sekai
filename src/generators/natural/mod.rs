@@ -82,8 +82,9 @@ pub use hydro_erosion_rule_input::{
 pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroErosionStageInputs};
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
-pub(crate) use quality::evaluate_profile_surface_quality;
-pub use quality::{evaluate_spherical_foundation_quality, QualityBuildError};
+pub use quality::{
+    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality, QualityBuildError,
+};
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;
 pub use rule_input::{

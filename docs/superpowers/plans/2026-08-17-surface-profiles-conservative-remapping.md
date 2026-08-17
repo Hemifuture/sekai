@@ -452,14 +452,14 @@ git commit -m "feat: build atomic profile surfaces"
 - Create: `docs/superpowers/specs/2026-08-17-surface-profiles-conservative-remapping-completion.md`
 - Modify: this plan
 
-- [ ] **Step 1: Add ignored release product tests**
+- [x] **Step 1: Add ignored release product tests**
 
 Build Draft, Standard, and High sequentially. Record component duration, overlap
 count, serialized/persistent bytes, closure errors, direction agreement, and
 cancellation latency. Assert exact counts and every P1 limit. Generated evidence
 lives only under `target/natural-quality/p1/`.
 
-- [ ] **Step 2: Run all P1 engineering gates fresh**
+- [x] **Step 2: Run all P1 engineering gates fresh**
 
 ```powershell
 cargo fmt --all -- --check
@@ -478,14 +478,14 @@ cargo test --release --test natural_quality_baseline -- --ignored --nocapture
 git diff --check
 ```
 
-- [ ] **Step 3: Inspect evidence and review the phase**
+- [x] **Step 3: Inspect evidence and review the phase**
 
 Record exact fingerprints, overlap counts, closure/conservation/vector metrics,
 runtimes, memory, cancellation evidence, limitations, and the unchanged
 five-failure V4 terrain baseline. Fix every Critical/Important review issue and
 rerun affected gates.
 
-- [ ] **Step 4: Write completion record, check all boxes, and commit**
+- [x] **Step 4: Write completion record, check all boxes, and commit**
 
 ```powershell
 git add tests/profile_surface_performance.rs tests/profile_surface_evidence.rs docs/superpowers/plans/2026-08-17-surface-profiles-conservative-remapping.md docs/superpowers/specs/2026-08-17-surface-profiles-conservative-remapping-completion.md

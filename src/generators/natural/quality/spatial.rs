@@ -18,7 +18,8 @@ const TANGENT_RADIAL_RESIDUAL_MAX: f64 = 1.0e-12;
 const CONSTANT_FIXTURE: f32 = 17.25;
 const SOLID_BODY_OMEGA: [f64; 3] = [0.31, -0.27, 0.91];
 
-pub(crate) fn evaluate_profile_surface_quality(
+/// Evaluates the P1 surface/remap contract without reading presentation state.
+pub fn evaluate_profile_surface_quality(
     authoritative: &SphericalSurfaceSnapshot,
     control: &SphericalSurfaceSnapshot,
     map: &ConservativeSurfaceMap,
