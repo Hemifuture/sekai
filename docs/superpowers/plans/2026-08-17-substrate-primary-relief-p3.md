@@ -94,10 +94,10 @@ Files:
 - Create: `tests/primary_relief_atlas.rs`
 - Create: `tests/primary_relief_performance.rs`
 
-- [ ] Write deterministic Release JSON/CSV under `target/natural-quality/p3`.
-- [ ] Render fixed map/globe rows for density, lithology, base, forcing response, volcanic/passive/detail components, elevation, and physical water.
-- [ ] Measure Draft completion and Standard/High cancellation.
-- [ ] Inspect at least seeds 42, 43, and 83; fix every severe artifact.
+- [x] Write deterministic Release JSON/CSV under `target/natural-quality/p3`.
+- [x] Render fixed map/globe rows for density, lithology, base, forcing response, volcanic/passive/detail components, elevation, and physical water.
+- [x] Measure Draft completion and Standard/High cancellation.
+- [x] Inspect at least seeds 42, 43, and 83; fix every severe artifact.
 
 ## Task 8: Verify and complete P3
 
