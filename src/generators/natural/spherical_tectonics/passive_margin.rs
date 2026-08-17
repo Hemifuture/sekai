@@ -87,7 +87,9 @@ pub(super) fn relax_passive_margins(
 #[cfg(test)]
 mod tests {
     use super::relax_passive_margins;
-    use crate::generators::natural::spherical_tectonics::model::{CrustSample, LineageId};
+    use crate::generators::natural::spherical_tectonics::model::{
+        CrustSample, LineageId, MaterialColumn,
+    };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
         CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
@@ -122,6 +124,16 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                if index == margin {
+                    CrustKind::Continental
+                } else {
+                    CrustKind::Oceanic
+                },
+                surface.cells()[index].area.get(),
+                if index == margin { 35.0 } else { 7.0 },
+            )
+            .unwrap(),
         };
         let mut passive = (0..surface.cells().len()).map(make).collect::<Vec<_>>();
         let mut active = passive.clone();

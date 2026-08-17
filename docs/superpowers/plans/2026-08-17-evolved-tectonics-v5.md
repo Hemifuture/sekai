@@ -63,28 +63,28 @@ Files:
 - Modify: all local `CrustSample` fixtures/builders
 - Create: `tests/evolved_tectonic_material.rs`
 
-- [ ] **Step 1: Write RED material-column tests**
+- [x] **Step 1: Write RED material-column tests**
 
   Prove pure continental/oceanic initialization, component thickness
   derivation, compensated totals, rigid-copy bit preservation, mixed-category
   tie behavior, and exact initial budget capture.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run the focused test and record the missing extensive representation.
 
-- [ ] **Step 3: Add material columns without changing V4 semantics**
+- [x] **Step 3: Add material columns without changing V4 semantics**
 
   Extend transient samples with both area/volume components, centralize
   construction/validation/derived compatibility fields, and add a compensated
   `EvolutionMaterialLedger`. Existing V4 branches must not read the new fields.
 
-- [ ] **Step 4: Re-run V4 hashes early**
+- [x] **Step 4: Re-run V4 hashes early**
 
   Run focused spherical tectonic tests and the Release P0 baseline writer;
   assert both frozen hashes are unchanged.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: track tectonic material columns"`
 

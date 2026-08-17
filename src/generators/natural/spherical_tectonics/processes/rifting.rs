@@ -391,7 +391,7 @@ mod tests {
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::{LabeledSubstreams, RIFT_EVENTS_V3_LABEL};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicState,
+        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{
         commit_process_actions, ProcessActions,
@@ -461,6 +461,16 @@ mod tests {
                     lineation: [0.0; 2],
                     orogeny: SphericalOrogenyKind::None,
                     orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+                    material: MaterialColumn::pure(
+                        if plate_index == 0 {
+                            CrustKind::Continental
+                        } else {
+                            CrustKind::Oceanic
+                        },
+                        cell.area.get(),
+                        if plate_index == 0 { 40.0 } else { 7.0 },
+                    )
+                    .unwrap(),
                 }
             })
             .collect();

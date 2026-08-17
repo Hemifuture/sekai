@@ -11,7 +11,7 @@ use super::{
 use crate::generators::natural::spherical_crust_physics::continental_isostatic_elevation_m;
 use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
 use crate::generators::natural::spherical_tectonics::model::{
-    CrustSample, FormationTectonicRecipe, TectonicState,
+    CrustSample, FormationTectonicRecipe, MaterialColumn, TectonicState,
 };
 use crate::world::natural::{
     CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
@@ -135,6 +135,8 @@ pub(in crate::generators::natural::spherical_tectonics) fn fill_spreading_gaps(
             lineation,
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0)
+                .expect("spreading creates bounded oceanic material"),
         });
         stats.spawned_samples += 1;
     }

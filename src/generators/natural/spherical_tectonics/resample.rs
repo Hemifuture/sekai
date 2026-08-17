@@ -928,6 +928,7 @@ fn interpolate_material(
                 blend(|sample| sample.orogeny_age_myr)
             }
         },
+        material: winner.material,
     }
 }
 
@@ -1137,7 +1138,7 @@ mod tests {
         resampling_interval_steps, ResampleError,
     };
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, LineageId, TectonicState,
+        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::workspace::TectonicWorkspace;
     use crate::generators::natural::topology::{
@@ -1212,6 +1213,15 @@ mod tests {
             },
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                kind,
+                1.0,
+                match kind {
+                    CrustKind::Continental => 30.0 + (marker % 16) as f32 * 0.5,
+                    CrustKind::Oceanic => 5.0 + (marker % 5) as f32 * 0.5,
+                },
+            )
+            .unwrap(),
         }
     }
 

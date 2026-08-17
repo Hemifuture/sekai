@@ -149,7 +149,7 @@ mod tests {
     use super::{apply_subduction, subduction_profile};
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicState,
+        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{constants, ProcessActions};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -188,6 +188,12 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                CrustKind::Oceanic,
+                surface.cell(edge.cells[0]).unwrap().area.get(),
+                7.0,
+            )
+            .unwrap(),
         };
         let continent = CrustSample {
             position: surface.cell(edge.cells[1]).unwrap().site,
@@ -200,6 +206,12 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                CrustKind::Continental,
+                surface.cell(edge.cells[1]).unwrap().area.get(),
+                40.0,
+            )
+            .unwrap(),
         };
         let plates = vec![
             ActivePlate::new(descending, edge.cells[0], rotation),

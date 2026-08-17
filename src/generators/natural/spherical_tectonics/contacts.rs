@@ -422,7 +422,7 @@ pub(super) enum ContactError {
 mod tests {
     use super::{build_contacts, classify_pair, ContactKind, CoverageScratch};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, LineageId, TectonicState,
+        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -462,6 +462,15 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                kind,
+                1.0,
+                match kind {
+                    CrustKind::Continental => 38.0,
+                    CrustKind::Oceanic => 7.0,
+                },
+            )
+            .unwrap(),
         }
     }
 

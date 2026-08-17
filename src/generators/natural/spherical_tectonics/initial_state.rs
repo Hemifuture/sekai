@@ -13,7 +13,8 @@ use rand::RngCore;
 use thiserror::Error;
 
 use super::model::{
-    ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicModelError, TectonicState,
+    ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn,
+    TectonicModelError, TectonicState,
 };
 use crate::generators::natural::fractal::FractalProfile;
 use crate::generators::natural::morphology::noise::SphericalNoise3d;
@@ -291,6 +292,8 @@ fn initial_crust_samples(
                 lineation: [0.0; 2],
                 orogeny: SphericalOrogenyKind::None,
                 orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+                material: MaterialColumn::pure(kind, cell.area.get(), thickness_km)
+                    .expect("validated initialized crust has a valid material column"),
             }
         })
         .collect()

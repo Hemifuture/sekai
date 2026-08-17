@@ -98,7 +98,7 @@ mod tests {
     use super::relax_current_crust;
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicState,
+        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{constants, ProcessActions};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -137,6 +137,16 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                kind,
+                surface.cells()[index].area.get(),
+                if kind == CrustKind::Oceanic {
+                    7.0
+                } else {
+                    40.0
+                },
+            )
+            .unwrap(),
         };
         let samples = vec![
             make(0, CrustKind::Oceanic, 20.0, -1_000.0),

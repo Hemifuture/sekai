@@ -81,7 +81,7 @@ impl TectonicWorkspace {
 mod tests {
     use super::TectonicWorkspace;
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, LineageId, TectonicState,
+        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
     };
     use crate::world::natural::{
         CrustKind, SphericalOrogenyKind, SphericalPlateRotation,
@@ -106,6 +106,7 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(CrustKind::Continental, 1.0, 35.0).unwrap(),
         };
         let state = TectonicState::new(
             vec![sample],

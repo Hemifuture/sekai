@@ -258,7 +258,7 @@ mod tests {
     use super::{apply_collision, collision_uplift_m, should_force_terrane_subduction};
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, TectonicState,
+        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{
         commit_process_actions, constants, ProcessActions,
@@ -295,6 +295,12 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                CrustKind::Continental,
+                surface.cell(cell).unwrap().area.get(),
+                40.0,
+            )
+            .unwrap(),
         }
     }
 

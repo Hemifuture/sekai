@@ -626,7 +626,7 @@ pub(super) enum ProcessError {
 mod tests {
     use super::{commit_process_actions, ProcessActions};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, LineageId, TectonicState,
+        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
     };
     use crate::world::natural::{
         CrustKind, SphericalOrogenyKind, SphericalPlateRotation,
@@ -664,6 +664,7 @@ mod tests {
             lineation: [0.0; 2],
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(CrustKind::Continental, 1.0, 38.0).unwrap(),
         };
         let mut state = TectonicState::new(
             vec![make(0, first), make(1, first), make(2, first)],
