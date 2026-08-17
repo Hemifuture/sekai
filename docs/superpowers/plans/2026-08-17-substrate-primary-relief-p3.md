@@ -28,10 +28,10 @@ Files:
 - Modify: `src/generators/natural/random.rs`
 - Create: `tests/geologic_substrate_generation.rs`
 
-- [ ] Write RED analytic tests for density mixing, causal lithology priority, hotspot causality, deterministic streams, and cancellation.
-- [ ] Generate mantle, copied crust facts, density, lithology, erodibility, permeability, fracture, and sediment-source fields.
-- [ ] Cross-validate against the exact V5 snapshot and surface.
-- [ ] Commit: `feat: generate causal geologic substrate`
+- [x] Write RED analytic tests for density mixing, causal lithology priority, hotspot causality, deterministic streams, and cancellation.
+- [x] Generate mantle, copied crust facts, density, lithology, erodibility, permeability, fracture, and sediment-source fields.
+- [x] Cross-validate against the exact V5 snapshot and surface.
+- [x] Commit: `feat: generate causal geologic substrate`
 
 ## Task 3: Define primary-relief and water-budget contracts
 

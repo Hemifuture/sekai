@@ -12,6 +12,7 @@ mod formation_stage;
 mod fractal;
 mod geologic_rule_input;
 mod geologic_stage;
+mod geologic_substrate;
 mod geology;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
@@ -77,6 +78,12 @@ pub use geologic_rule_input::{
 pub use geologic_stage::{
     GeologicArtifact, GeologicStage, GeologicStageInputs, MantleArtifact, MantleStage,
     MantleStageInputs,
+};
+pub use geologic_substrate::{
+    classify_substrate_bedrock, GeologicSubstrateGenerationError, GeologicSubstrateGenerator,
+    METAMORPHIC_SHORTENING_THRESHOLD_MM_PER_YEAR, METAMORPHIC_UPLIFT_THRESHOLD_MM_PER_YEAR,
+    SEDIMENTARY_FRACTURE_MAX, SEDIMENTARY_SUBSIDENCE_THRESHOLD_MM_PER_YEAR,
+    VOLCANIC_COVER_INFLUENCE_THRESHOLD,
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
