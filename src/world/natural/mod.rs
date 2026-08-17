@@ -3,6 +3,7 @@
 mod circulation;
 mod climate;
 mod climate_spec;
+mod evolved_tectonics;
 mod fields;
 mod formation;
 mod geologic_spec;
@@ -44,6 +45,14 @@ pub use climate_spec::{
     MAX_LATITUDE_CENTIDEG, MAX_MOISTURE_SCALE_PERMILLE, MAX_TEMPERATURE_OFFSET_DECI_C,
     MIN_LATITUDE_CENTIDEG, MIN_LATITUDE_SPAN_CENTIDEG, MIN_MOISTURE_SCALE_PERMILLE,
     MIN_TEMPERATURE_OFFSET_DECI_C,
+};
+pub use evolved_tectonics::{
+    CrustMaterialResidual, CrustMaterialTotals, EvolvedTectonicSnapshot,
+    EvolvedTectonicValidationError, SphericalCrustMaterialState, SphericalTectonicForcingState,
+    SphericalTectonicLineageBudget, SphericalTectonicMaterialBudget,
+    SphericalTectonicMaterialProcesses, TectonicMaterialAmount,
+    EVOLVED_TECTONIC_SNAPSHOT_SCHEMA_V1, MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR,
+    MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR, MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
 };
 pub use fields::{
     annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,

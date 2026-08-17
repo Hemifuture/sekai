@@ -25,7 +25,7 @@ Files:
 - Modify: `src/world/natural/mod.rs`
 - Create: `tests/evolved_tectonic_contracts.rs`
 
-- [ ] **Step 1: Write RED contract tests**
+- [x] **Step 1: Write RED contract tests**
 
   Cover schema constants, strict round-trip, nested V3 compatibility view,
   exact lengths, finite/non-negative material values, zero-area/volume
@@ -33,24 +33,24 @@ Files:
   equations, lineage equation, surface/profile identity, allocation limits, and
   nested unknown-field rejection.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run `cargo test --test evolved_tectonic_contracts -- --nocapture` and confirm
   failure is due to missing V5 types/APIs.
 
-- [ ] **Step 3: Implement strict immutable contracts**
+- [x] **Step 3: Implement strict immutable contracts**
 
   Add `EvolvedTectonicSnapshot`, `SphericalCrustMaterialState`,
   `SphericalTectonicForcingState`, `SphericalTectonicMaterialBudget`, and
   `SphericalTectonicLineageBudget` with bounded custom deserialization and
   cross-validation against an authoritative surface.
 
-- [ ] **Step 4: Verify contracts and V3 compatibility**
+- [x] **Step 4: Verify contracts and V3 compatibility**
 
   Run the new test plus `spherical_tectonic_contracts` and
   `natural_quality_profiles`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: define evolved tectonic contracts"`
 
