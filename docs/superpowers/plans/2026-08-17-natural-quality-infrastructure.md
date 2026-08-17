@@ -347,7 +347,7 @@ git commit -m "feat: publish spherical quality report"
 - Consumes: formal spherical graph and `NaturalQualityArtifact`.
 - Produces: ignored test `write_v4_natural_quality_baseline`, `target/natural-quality/v4-baseline.json`, `target/natural-quality/v4-metrics.csv`.
 
-- [ ] **Step 1: Write the ignored corpus driver**
+- [x] **Step 1: Write the ignored corpus driver**
 
 Use the fixed seeds:
 
@@ -359,17 +359,17 @@ const QUALITY_SEEDS: [u64; 17] = [
 
 For every seed build `Continents`, Draft 20,000 target cells, 12 initial plates, initial crust 0.38, and target land 0.38. Serialize a stable top-level object containing schema, git-independent scenario metadata, ordered per-seed reports, and aggregate median/min/max for every metric ID. CSV rows are ordered by `(metric_id, seed)`.
 
-- [ ] **Step 2: Run the ignored test and verify output isolation**
+- [x] **Step 2: Run the ignored test and verify output isolation**
 
 Run: `cargo test --release --test natural_quality_baseline -- --ignored --nocapture`
 
 Expected: two files under `target/natural-quality/`, no files elsewhere, and output explicitly shows the known V4 continental/land mismatch rather than hiding failed metrics.
 
-- [ ] **Step 3: Add deterministic output assertions**
+- [x] **Step 3: Add deterministic output assertions**
 
 Run the writer twice in one test process, hash both byte buffers before replacement, and assert equality. Assert all 17 seeds exist, all reports expose the same metric ID set, no metric is omitted, and aggregate sample counts equal the sum of per-seed counts.
 
-- [ ] **Step 4: Run focused and repository hygiene checks**
+- [x] **Step 4: Run focused and repository hygiene checks**
 
 ```powershell
 cargo test --test natural_quality_baseline -- --nocapture
@@ -379,7 +379,7 @@ git status --short
 
 Expected: non-ignored isolation/determinism tests pass and generated evidence remains ignored.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add tests/natural_quality_baseline.rs tests/support/mod.rs tests/support/natural_quality.rs .gitignore
