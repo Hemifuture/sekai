@@ -212,7 +212,7 @@ pub(super) fn resample_current_state_v5(
         )?;
         workspace.next.samples.push(sample);
     }
-    reconstruct_connected_plate_domains(
+    reconstruct_connected_plate_domains_v5(
         surface,
         topology,
         &workspace.current.samples,
@@ -945,6 +945,45 @@ fn reconstruct_connected_plate_domains(
     Ok(())
 }
 
+/// V5 keeps the advected ownership evidence dominant and uses the watershed
+/// only to repair connectivity. V4's one-cell mismatch penalty repeatedly
+/// regrew near-geometric marker Voronoi domains and erased warped boundaries.
+fn reconstruct_connected_plate_domains_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source_samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    next: &mut TectonicState,
+    local_candidates: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    let provisional = next
+        .samples
+        .iter()
+        .map(|sample| sample.owner)
+        .collect::<Vec<_>>();
+    let markers = select_domain_markers(surface, source_samples, &mut next.plates)?;
+    if markers.is_empty() {
+        return Err(ResampleError::NoLiveLineages);
+    }
+    let owners = evidence_guided_watershed_with_penalty(topology, &provisional, &markers, 12.0)?;
+    for (cell_index, owner) in owners.into_iter().enumerate() {
+        if provisional[cell_index] == owner {
+            continue;
+        }
+        let cell = CellId::from_raw(cell_index as u32);
+        next.samples[cell_index] = resample_cell_for_owner(
+            surface,
+            topology,
+            source_samples,
+            coverage,
+            cell,
+            owner,
+            local_candidates,
+        )?;
+    }
+    Ok(())
+}
+
 fn select_domain_markers(
     surface: &SphericalSurfaceSnapshot,
     samples: &[CrustSample],
@@ -1018,6 +1057,20 @@ fn evidence_guided_watershed(
     provisional: &[LineageId],
     markers: &[DomainMarker],
 ) -> Result<Vec<LineageId>, ResampleError> {
+    evidence_guided_watershed_with_penalty(
+        topology,
+        provisional,
+        markers,
+        DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION,
+    )
+}
+
+fn evidence_guided_watershed_with_penalty(
+    topology: &NaturalTopologyIndex,
+    provisional: &[LineageId],
+    markers: &[DomainMarker],
+    penalty_short_side_fraction: f64,
+) -> Result<Vec<LineageId>, ResampleError> {
     let cell_count = topology.cell_count();
     let mut costs = vec![u64::MAX; cell_count];
     let mut owners = vec![None; cell_count];
@@ -1029,7 +1082,7 @@ fn evidence_guided_watershed(
         pending.push(Reverse((0_u64, marker.lineage.raw(), marker.cell.raw())));
     }
     let mismatch_penalty = topology
-        .quantized_short_side_fraction(DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION)
+        .quantized_short_side_fraction(penalty_short_side_fraction)
         .max(1);
 
     while let Some(Reverse((cost, raw_lineage, raw_cell))) = pending.pop() {

@@ -5,17 +5,26 @@
 //! branches. Selected plate samples are split by a bounded, coherent perturbation
 //! of spherical Voronoi distance and receive stable, never-reused lineages.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use super::{ProcessActions, ProcessError, ProcessStats};
 use crate::generators::natural::fractal::FractalProfile;
 use crate::generators::natural::morphology::noise::SphericalNoise3d;
-use crate::generators::natural::random::{LabeledSubstreams, RIFT_EVENTS_V3_LABEL};
+use crate::generators::natural::random::{
+    LabeledSubstreams, MECHANICAL_FRAGMENTATION_V5_LABEL, RIFT_EVENTS_V3_LABEL,
+};
 use crate::generators::natural::spherical_tectonics::model::{
-    ActivePlate, FormationTectonicRecipe, LineageId, TectonicState,
+    ActivePlate, EvolutionLineageLedger, FormationTectonicRecipe, LineageId, TectonicState,
+};
+use crate::generators::natural::topology::{
+    farthest_point_seeds_from_candidates, NaturalTopologyIndex,
 };
 use crate::world::natural::{CrustKind, SphericalPlateRotation, MAX_PLATE_COUNT};
 use crate::world::spatial::{
     canonical_east_north_basis, project_tangent, SphericalSurfaceSnapshot, UnitVector3,
 };
+use crate::world::CellId;
 
 pub(super) const MAX_RIFT_RATE_PPM_PER_MYR: u32 = 10_000;
 const BASE_RIFT_RATE_PPM_PER_MYR: f64 = 4_000.0;
@@ -24,6 +33,10 @@ const MINIMUM_SAMPLES_PER_RIFT_CHILD: usize = 4;
 // Disconnected accreted terranes become separate published plates. Keep half
 // of the schema capacity in reserve for that final, factual split.
 const MAXIMUM_RIFTED_LINEAGES: usize = MAX_PLATE_COUNT as usize;
+const OVERSIZED_PLATE_FRAGMENTATION_TRIGGER: f64 = 0.40;
+const FRAGMENT_TARGET_AREA_FRACTION: f64 = 0.30;
+const MINIMUM_FRAGMENT_EDGE_FACTOR: f64 = 0.70;
+const MAXIMUM_FRAGMENT_EDGE_FACTOR: f64 = 1.30;
 
 pub(super) fn rate_q32_from_ppm(parts_per_million: u32) -> u64 {
     let numerator = u128::from(parts_per_million) * (1_u128 << 32) + 500_000;
@@ -210,6 +223,231 @@ pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
     Ok(stats)
 }
 
+pub(in crate::generators::natural::spherical_tectonics) fn mechanically_fragment_oversized_plates_v5(
+    step: u16,
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    state: &mut TectonicState,
+    recipe: FormationTectonicRecipe,
+    streams: &LabeledSubstreams,
+    ledger: &mut EvolutionLineageLedger,
+) -> Result<u32, ProcessError> {
+    let sphere_area = surface.total_cell_area().get();
+    let mut fragmentation_count = 0_u32;
+    loop {
+        let mut oversized: Option<(ActivePlate, f64)> = None;
+        for &plate in &state.plates {
+            let mut area = 0.0;
+            for sample in state
+                .samples
+                .iter()
+                .filter(|sample| sample.owner == plate.lineage)
+            {
+                area += surface
+                    .cell(sample.anchor)
+                    .ok_or(ProcessError::UnknownCell {
+                        cell: sample.anchor,
+                    })?
+                    .area
+                    .get();
+            }
+            if area / sphere_area <= OVERSIZED_PLATE_FRAGMENTATION_TRIGGER {
+                continue;
+            }
+            let replace = oversized.is_none_or(|(incumbent, incumbent_area)| {
+                area > incumbent_area
+                    || (area == incumbent_area && plate.lineage < incumbent.lineage)
+            });
+            if replace {
+                oversized = Some((plate, area));
+            }
+        }
+        let Some((parent, parent_area)) = oversized else {
+            break;
+        };
+        let parent_cells = state
+            .samples
+            .iter()
+            .filter(|sample| sample.owner == parent.lineage)
+            .map(|sample| sample.anchor)
+            .collect::<Vec<_>>();
+        let desired_children = ((parent_area / sphere_area) / FRAGMENT_TARGET_AREA_FRACTION)
+            .ceil()
+            .clamp(2.0, 4.0) as usize;
+        let capacity_children = MAXIMUM_RIFTED_LINEAGES
+            .checked_sub(state.plates.len())
+            .map(|remaining| remaining + 1)
+            .unwrap_or(0);
+        let child_count = desired_children
+            .min(capacity_children)
+            .min(parent_cells.len() / MINIMUM_SAMPLES_PER_RIFT_CHILD);
+        if child_count < 2 {
+            return Err(ProcessError::FragmentationCapacityExceeded {
+                lineage: parent.lineage,
+                samples: parent_cells.len(),
+                live_lineages: state.plates.len(),
+            });
+        }
+        let tie = streams.counter_u64(
+            MECHANICAL_FRAGMENTATION_V5_LABEL,
+            &[
+                u64::from(step),
+                u64::from(parent.lineage.raw()),
+                u64::from(fragmentation_count),
+            ],
+        );
+        let seeds = farthest_point_seeds_from_candidates(topology, &parent_cells, child_count, tie);
+        let mut lineages = Vec::with_capacity(child_count);
+        for _ in 0..child_count {
+            lineages.push(
+                state
+                    .allocate_lineage()
+                    .ok_or(ProcessError::LineageExhausted)?,
+            );
+        }
+        let assignments = assign_fragment_domains(
+            step,
+            surface,
+            topology,
+            &parent_cells,
+            &seeds,
+            &lineages,
+            recipe,
+            streams,
+        )?;
+        let material_before = state.material_totals()?;
+        for sample in &mut state.samples {
+            if sample.owner != parent.lineage {
+                continue;
+            }
+            sample.owner = assignments[sample.anchor.raw() as usize].ok_or(
+                ProcessError::FragmentationUnassigned {
+                    cell: sample.anchor,
+                },
+            )?;
+        }
+        state.plates.retain(|plate| plate.lineage != parent.lineage);
+        let fracture_axis = surface
+            .cell(seeds[0])
+            .ok_or(ProcessError::UnknownCell { cell: seeds[0] })?
+            .centroid;
+        for (child, (&lineage, &representative)) in lineages.iter().zip(&seeds).enumerate() {
+            let rotation = divergent_rotation(parent.rotation, fracture_axis, child, child_count)?;
+            rotation.validate_for_radius(surface.radius())?;
+            state
+                .plates
+                .push(ActivePlate::new(lineage, representative, rotation));
+        }
+        state.plates.sort_by_key(|plate| plate.lineage);
+        if state.material_totals()? != material_before {
+            return Err(ProcessError::FragmentationChangedMaterial);
+        }
+        ledger.record_mechanical_fragmentation();
+        fragmentation_count += 1;
+    }
+    Ok(fragmentation_count)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assign_fragment_domains(
+    step: u16,
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    parent_cells: &[CellId],
+    seeds: &[CellId],
+    lineages: &[LineageId],
+    recipe: FormationTectonicRecipe,
+    streams: &LabeledSubstreams,
+) -> Result<Vec<Option<LineageId>>, ProcessError> {
+    let mut allowed = vec![false; topology.cell_count()];
+    for &cell in parent_cells {
+        allowed[cell.raw() as usize] = true;
+    }
+    let profile = FractalProfile {
+        octaves: 2,
+        frequency: recipe.base_scale_rad.recip(),
+        lacunarity: 2.03,
+        persistence: 0.5,
+    };
+    let noise: Vec<[SphericalNoise3d; 4]> = lineages
+        .iter()
+        .map(|lineage| {
+            std::array::from_fn(|channel| {
+                SphericalNoise3d::new(streams.counter_u64(
+                    MECHANICAL_FRAGMENTATION_V5_LABEL,
+                    &[u64::from(step), u64::from(lineage.raw()), 1, channel as u64],
+                ) as u32)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut costs = vec![u64::MAX; topology.cell_count()];
+    let mut owners = vec![None; topology.cell_count()];
+    let mut pending = BinaryHeap::new();
+    for (child, (&seed, &lineage)) in seeds.iter().zip(lineages).enumerate() {
+        let index = seed.raw() as usize;
+        costs[index] = 0;
+        owners[index] = Some(lineage);
+        pending.push(Reverse((0_u64, lineage.raw(), seed.raw(), child)));
+    }
+    while let Some(Reverse((cost, raw_lineage, raw_cell, child))) = pending.pop() {
+        let cell = raw_cell as usize;
+        let lineage = LineageId::from_raw(raw_lineage);
+        if costs[cell] != cost || owners[cell] != Some(lineage) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell] {
+            let neighbor = arc.neighbor.raw() as usize;
+            if !allowed[neighbor] {
+                continue;
+            }
+            let midpoint = surface
+                .edge(arc.edge)
+                .expect("fragment topology and surface share edge IDs")
+                .midpoint;
+            let scalar = (4.0 * noise[child][0].fbm(midpoint, profile)).clamp(-1.0, 1.0);
+            let fabric = std::array::from_fn(|axis| noise[child][axis + 1].fbm(midpoint, profile));
+            let fabric = project_tangent(fabric, midpoint);
+            let edge_direction =
+                project_tangent(surface.cells()[neighbor].centroid.components(), midpoint);
+            let fabric_norm = norm(fabric);
+            let edge_norm = norm(edge_direction);
+            let directional = if fabric_norm > f64::EPSILON && edge_norm > f64::EPSILON {
+                let agreement = fabric
+                    .into_iter()
+                    .zip(edge_direction)
+                    .map(|(first, second)| first * second)
+                    .sum::<f64>()
+                    .abs()
+                    / (fabric_norm * edge_norm);
+                2.0 * agreement.clamp(0.0, 1.0) - 1.0
+            } else {
+                0.0
+            };
+            let signal = (0.35 * scalar + 0.65 * directional).clamp(-1.0, 1.0);
+            let factor = (1.0 + 0.3 * signal)
+                .clamp(MINIMUM_FRAGMENT_EDGE_FACTOR, MAXIMUM_FRAGMENT_EDGE_FACTOR);
+            let traversal = ((arc.traversal_cost as f64) * factor).round().max(1.0) as u64;
+            let candidate = cost.saturating_add(traversal);
+            let candidate_key = (candidate, raw_lineage);
+            let incumbent_key = (
+                costs[neighbor],
+                owners[neighbor].map_or(u32::MAX, LineageId::raw),
+            );
+            if candidate_key < incumbent_key {
+                costs[neighbor] = candidate;
+                owners[neighbor] = Some(lineage);
+                pending.push(Reverse((candidate, raw_lineage, arc.neighbor.raw(), child)));
+            }
+        }
+    }
+    for &cell in parent_cells {
+        if owners[cell.raw() as usize].is_none() {
+            return Err(ProcessError::FragmentationUnassigned { cell });
+        }
+    }
+    Ok(owners)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn split_plate(
     step: u16,
@@ -384,24 +622,28 @@ fn norm(vector: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::{
-        maybe_rift_plates, poisson_event, poisson_threshold_q64, rate_q32_from_ppm, rift_rate_q32,
-        MAX_RIFT_RATE_PPM_PER_MYR,
+        maybe_rift_plates, mechanically_fragment_oversized_plates_v5, poisson_event,
+        poisson_threshold_q64, rate_q32_from_ppm, rift_rate_q32, MAX_RIFT_RATE_PPM_PER_MYR,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::{LabeledSubstreams, RIFT_EVENTS_V3_LABEL};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, EvolutionLineageLedger, FormationTectonicRecipe, LineageId,
+        MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{
         commit_process_actions, ProcessActions,
     };
+    use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
         CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
         CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_PLATE_COUNT, NO_OROGENY_AGE_SENTINEL_MYR,
     };
-    use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
+    use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     fn surface(cells: u32) -> SphericalSurfaceSnapshot {
@@ -506,6 +748,84 @@ mod tests {
             poisson_threshold_q64(u64::MAX, 2),
             poisson_threshold_q64(rate_q32_from_ppm(MAX_RIFT_RATE_PPM_PER_MYR), 2),
             "out-of-contract rates must clamp before fixed-point products"
+        );
+    }
+
+    #[test]
+    fn mechanical_fragmentation_caps_area_preserves_material_and_closes_lineages() {
+        let surface = surface(642);
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let mut state = state(&surface, 1);
+        let material_before = state
+            .samples
+            .iter()
+            .map(|sample| sample.material.bits())
+            .collect::<Vec<_>>();
+        let mut ledger = EvolutionLineageLedger::capture_initial(&state).unwrap();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+
+        let events = mechanically_fragment_oversized_plates_v5(
+            9,
+            &surface,
+            &topology,
+            &mut state,
+            recipe,
+            &streams(),
+            &mut ledger,
+        )
+        .unwrap();
+
+        assert!(events >= 1);
+        assert_eq!(
+            state
+                .samples
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>(),
+            material_before
+        );
+        let total_area = surface.total_cell_area().get();
+        for plate in &state.plates {
+            let owned = state
+                .samples
+                .iter()
+                .filter(|sample| sample.owner == plate.lineage)
+                .map(|sample| surface.cell(sample.anchor).unwrap().area.get())
+                .sum::<f64>();
+            assert!(owned / total_area <= 0.40 + 1.0e-12);
+
+            let start = state
+                .samples
+                .iter()
+                .position(|sample| sample.owner == plate.lineage)
+                .unwrap();
+            let mut reached = vec![false; state.samples.len()];
+            let mut queue = VecDeque::from([start]);
+            reached[start] = true;
+            while let Some(cell) = queue.pop_front() {
+                for arc in &topology.arcs()[cell] {
+                    let neighbor = arc.neighbor.raw() as usize;
+                    if !reached[neighbor] && state.samples[neighbor].owner == plate.lineage {
+                        reached[neighbor] = true;
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+            assert_eq!(
+                reached.iter().filter(|&&value| value).count(),
+                state
+                    .samples
+                    .iter()
+                    .filter(|sample| sample.owner == plate.lineage)
+                    .count()
+            );
+        }
+        let budget = ledger.budget(&state).unwrap();
+        assert_eq!(budget.mechanical_fragmentation_count(), events);
+        assert_eq!(
+            budget.initial_lineages() + budget.allocated_lineages(),
+            budget.retired_lineages() + budget.final_live_lineages()
         );
     }
 

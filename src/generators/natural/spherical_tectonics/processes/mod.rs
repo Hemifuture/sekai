@@ -238,6 +238,7 @@ impl ProcessActions {
             &self.second_terrane_samples
         };
         let action_count = self.dispositions.len();
+        let mut changed = 0;
         for &sample in indices {
             let disposition =
                 self.dispositions
@@ -248,9 +249,10 @@ impl ProcessActions {
                     })?;
             if *disposition == SampleDisposition::Keep {
                 *disposition = SampleDisposition::Transfer(owner);
+                changed += 1;
             }
         }
-        Ok(indices.len())
+        Ok(changed)
     }
 
     pub(super) fn trench_scratch(&mut self, sample_count: usize) -> &mut [u8] {
@@ -511,6 +513,7 @@ pub(super) struct ProcessStats {
     pub(super) affected_samples: u32,
     pub(super) removed_samples: u32,
     pub(super) transferred_samples: u32,
+    pub(super) terrane_transfer_events: u32,
     pub(super) spawned_samples: u32,
     pub(super) rift_events: u32,
     pub(super) spawned_lineages: u32,
@@ -684,6 +687,18 @@ pub(super) enum ProcessError {
     Material(#[from] MaterialColumnError),
     #[error("process removal would discard continental material from sample {sample}")]
     ContinentalMaterialRemoval { sample: usize },
+    #[error(
+        "oversized lineage {lineage:?} cannot be fragmented: {samples} samples, {live_lineages} live lineages"
+    )]
+    FragmentationCapacityExceeded {
+        lineage: LineageId,
+        samples: usize,
+        live_lineages: usize,
+    },
+    #[error("mechanical fragmentation did not assign {cell:?}")]
+    FragmentationUnassigned { cell: CellId },
+    #[error("mechanical fragmentation changed crust material totals")]
+    FragmentationChangedMaterial,
     #[error("contact sample index {sample} is outside {samples} samples")]
     ContactSampleOutOfBounds { sample: usize, samples: usize },
     #[error("contact event has no complete pair of samples")]
@@ -800,9 +815,9 @@ mod rifting;
 mod spreading;
 mod subduction;
 
-pub(super) use collision::apply_collision;
+pub(super) use collision::{apply_collision, apply_collision_v5};
 pub(super) use relaxation::relax_current_crust;
-pub(super) use rifting::maybe_rift_plates;
+pub(super) use rifting::{maybe_rift_plates, mechanically_fragment_oversized_plates_v5};
 pub(super) use spreading::{
     apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
     fill_spreading_gaps_v5,

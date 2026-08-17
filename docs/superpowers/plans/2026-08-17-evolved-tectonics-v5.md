@@ -143,29 +143,29 @@ Files:
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Create: `tests/evolved_tectonic_morphology.rs`
 
-- [ ] **Step 1: Freeze RED V4 defects**
+- [x] **Step 1: Freeze RED V4 defects**
 
   On the locked 17 seeds record at least one V4 plate above 45% and a regular
   macro triple-junction fraction above 35%.
 
-- [ ] **Step 2: Implement connected anisotropic initial domains**
+- [x] **Step 2: Implement connected anisotropic initial domains**
 
   Add stable per-lineage low-frequency edge costs in `[0.70, 1.30]` and a
   multi-source shortest-path assignment whose predecessor paths guarantee
   connectivity.
 
-- [ ] **Step 3: Bound collision transfer and fragment oversized plates**
+- [x] **Step 3: Bound collision transfer and fragment oversized plates**
 
   Reject transfers above the hard cap, mechanically split lineages above the
   40% trigger, preserve all material bits/totals, and update the exact lineage
   ledger.
 
-- [ ] **Step 4: Run analytic and 17-seed morphology gates**
+- [x] **Step 4: Run analytic and 17-seed morphology gates**
 
   Require connected plates, max share `<= 0.45`, regular-120 fraction
   `<= 0.35`, final plate-count bounds, and byte-identical repetition.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: evolve bounded anisotropic plates"`
 

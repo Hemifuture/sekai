@@ -16,6 +16,8 @@ use crate::generators::natural::spherical_tectonics::model::{
 use crate::world::natural::{CrustKind, SphericalOrogenyKind};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
+const MAXIMUM_PUBLISHED_PLATE_AREA_FRACTION: f64 = 0.45;
+
 pub(super) fn collision_uplift_m(
     terrane_area_m2: f64,
     speed_mm_per_year: f64,
@@ -130,13 +132,134 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision(
             next.samples[sample_index].orogeny_age_myr = 0.0;
             next.samples[sample_index].lineation = lineation;
         }
-        stats.transferred_samples +=
-            actions.mark_terrane_transfer(moving_is_first, receiving)? as u32;
+        let transferred = actions.mark_terrane_transfer(moving_is_first, receiving)? as u32;
+        stats.transferred_samples += transferred;
+        stats.terrane_transfer_events += u32::from(transferred > 0);
         stats.collision_events += 1;
         stats.affected_samples += 2;
         stats.forced_subductions += u32::from(forced);
     }
     Ok(stats)
+}
+
+/// V5 collision retains the reference uplift/suture response but rejects an
+/// ownership transfer that would breach the published 45% spherical-area cap.
+pub(in crate::generators::natural::spherical_tectonics) fn apply_collision_v5(
+    surface: &SphericalSurfaceSnapshot,
+    events: &[ContactEvent],
+    current: &TectonicState,
+    next: &mut TectonicState,
+    actions: &mut ProcessActions,
+    recipe: FormationTectonicRecipe,
+) -> Result<ProcessStats, ProcessError> {
+    if current.samples.len() != next.samples.len() {
+        return Err(ProcessError::StateCardinalityMismatch {
+            current: current.samples.len(),
+            next: next.samples.len(),
+        });
+    }
+    actions.validate_for(next.samples.len())?;
+    let average_plate_area = surface.total_cell_area().get() / next.plates.len() as f64;
+    let maximum_plate_area =
+        surface.total_cell_area().get() * MAXIMUM_PUBLISHED_PLATE_AREA_FRACTION;
+    let gain = f64::from(recipe.subduction_gain_permille) / 1_000.0;
+    let mut stats = ProcessStats::default();
+    for event in events {
+        if event.kind != ContactKind::ContinentalCollision
+            || event.overlap_depth < constants::COLLISION_TRANSFER_OVERLAP_DEPTH
+        {
+            continue;
+        }
+        let [first, second] = participant_indices(event, next.samples.len())?;
+        if next.samples[first].kind != CrustKind::Continental
+            || next.samples[second].kind != CrustKind::Continental
+        {
+            return Err(ProcessError::NonContinentalCollision);
+        }
+        let (first_area_m2, second_area_m2) = {
+            let scratch = actions.terrane_scratch(surface.cells().len());
+            let first_area_m2 = terrane_members(
+                surface,
+                next,
+                first,
+                &mut *scratch.represented,
+                &mut *scratch.reached,
+                &mut *scratch.stack,
+                &mut *scratch.first_samples,
+            )?;
+            let second_area_m2 = terrane_members(
+                surface,
+                next,
+                second,
+                &mut *scratch.represented,
+                &mut *scratch.reached,
+                &mut *scratch.stack,
+                &mut *scratch.second_samples,
+            )?;
+            (first_area_m2, second_area_m2)
+        };
+        let (moving_is_first, moving_area_m2, receiving) = if first_area_m2 < second_area_m2
+            || (first_area_m2 == second_area_m2
+                && next.samples[first].owner < next.samples[second].owner)
+        {
+            (true, first_area_m2, next.samples[second].owner)
+        } else {
+            (false, second_area_m2, next.samples[first].owner)
+        };
+        let forced = should_force_terrane_subduction(moving_area_m2, average_plate_area);
+        let overlap = (0.35 + 0.25 * f64::from(event.overlap_depth)).min(1.0);
+        let uplift = collision_uplift_m(moving_area_m2, event_speed(event), overlap) * gain as f32;
+        let first_lineation = event_lineation(surface, event, next.samples[first].position)?;
+        let second_lineation = event_lineation(surface, event, next.samples[second].position)?;
+        for (sample_index, lineation) in [(first, first_lineation), (second, second_lineation)] {
+            next.samples[sample_index].tectonic_elevation_m =
+                bounded_elevation(next.samples[sample_index].tectonic_elevation_m + uplift);
+            next.samples[sample_index].orogeny = SphericalOrogenyKind::Himalayan;
+            next.samples[sample_index].orogeny_age_myr = 0.0;
+            next.samples[sample_index].lineation = lineation;
+        }
+        let receiving_area = {
+            let represented = actions.rift_scratch(surface.cells().len());
+            lineage_occupied_area(surface, next, receiving, represented)?
+        };
+        if receiving_area + moving_area_m2 <= maximum_plate_area {
+            let transferred = actions.mark_terrane_transfer(moving_is_first, receiving)? as u32;
+            stats.transferred_samples += transferred;
+            stats.terrane_transfer_events += u32::from(transferred > 0);
+            stats.forced_subductions += u32::from(forced);
+        }
+        stats.collision_events += 1;
+        stats.affected_samples += 2;
+    }
+    Ok(stats)
+}
+
+fn lineage_occupied_area(
+    surface: &SphericalSurfaceSnapshot,
+    state: &TectonicState,
+    lineage: crate::generators::natural::spherical_tectonics::model::LineageId,
+    represented: &mut [u8],
+) -> Result<f64, ProcessError> {
+    represented.fill(0);
+    let mut area = 0.0;
+    for (sample_index, sample) in state.samples.iter().enumerate() {
+        if sample.owner != lineage {
+            continue;
+        }
+        let cell = sample.anchor.raw() as usize;
+        if cell >= represented.len() {
+            return Err(ProcessError::InvalidAnchor {
+                sample: sample_index,
+                anchor: sample.anchor,
+                cells: represented.len(),
+            });
+        }
+        if represented[cell] == 0 {
+            represented[cell] = 1;
+            area += surface.cells()[cell].area.get();
+        }
+    }
+    Ok(area)
 }
 
 fn terrane_members(
@@ -255,7 +378,9 @@ fn smoothstep(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_collision, collision_uplift_m, should_force_terrane_subduction};
+    use super::{
+        apply_collision, apply_collision_v5, collision_uplift_m, should_force_terrane_subduction,
+    };
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
         ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
@@ -404,5 +529,63 @@ mod tests {
         assert_eq!(overlapped.samples[0].owner, large);
         assert_eq!(overlapped.samples[1].owner, large);
         assert_eq!(overlapped.material_totals().unwrap(), material_before);
+    }
+
+    #[test]
+    fn evolved_collision_rejects_a_transfer_above_the_hard_area_cap() {
+        let surface = surface();
+        let edge = &surface.edges()[0];
+        let moving = LineageId::from_raw(0);
+        let receiving = LineageId::from_raw(1);
+        let rotation =
+            SphericalPlateRotation::new(UnitVector3::new(0.0, 0.0, 1.0).unwrap(), 10_000).unwrap();
+        let samples = surface
+            .cells()
+            .iter()
+            .map(|cell| {
+                continental_sample(
+                    &surface,
+                    cell.id,
+                    if cell.id == edge.cells[0] {
+                        moving
+                    } else {
+                        receiving
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let plates = vec![
+            ActivePlate::new(moving, edge.cells[0], rotation),
+            ActivePlate::new(receiving, edge.cells[1], rotation),
+        ];
+        let current = TectonicState::new(samples.clone(), plates.clone(), 2).unwrap();
+        let mut next = TectonicState::new(samples, plates, 2).unwrap();
+        let event = ContactEvent {
+            cell: edge.cells[0],
+            edge: Some(edge.id),
+            sample_indices: [Some(edge.cells[0].raw()), Some(edge.cells[1].raw())],
+            lineages: [Some(moving), Some(receiving)],
+            kind: ContactKind::ContinentalCollision,
+            signed_normal_speed_mm_per_year: -90.0,
+            tangent_speed_mm_per_year: 5.0,
+            overlap_depth: 1,
+        };
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+        let stats = apply_collision_v5(
+            &surface,
+            &[event],
+            &current,
+            &mut next,
+            &mut actions,
+            FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+        )
+        .unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+
+        assert_eq!(stats.collision_events, 1);
+        assert_eq!(stats.transferred_samples, 0);
+        assert_eq!(stats.terrane_transfer_events, 0);
+        assert_eq!(next.samples[edge.cells[0].raw() as usize].owner, moving);
     }
 }

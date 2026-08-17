@@ -9,13 +9,16 @@
 use thiserror::Error;
 
 use super::contacts::{build_contacts, ContactError};
-use super::initial_state::{build_initial_state, InitialStateError};
+use super::initial_state::{build_initial_state, build_initial_state_v5, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
-use super::model::{EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState};
+use super::model::{
+    EvolutionLineageLedger, EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
+};
 use super::processes::{
-    apply_collision, apply_divergent_extension, apply_divergent_extension_v5, apply_subduction,
-    apply_subduction_v5, commit_process_actions, commit_process_actions_v5, fill_spreading_gaps,
-    fill_spreading_gaps_v5, maybe_rift_plates, relax_current_crust, ProcessError,
+    apply_collision, apply_collision_v5, apply_divergent_extension, apply_divergent_extension_v5,
+    apply_subduction, apply_subduction_v5, commit_process_actions, commit_process_actions_v5,
+    fill_spreading_gaps, fill_spreading_gaps_v5, maybe_rift_plates,
+    mechanically_fragment_oversized_plates_v5, relax_current_crust, ProcessError,
 };
 use super::resample::{
     canonicalize_final_plates, resample_current_state, resample_current_state_v5,
@@ -34,6 +37,7 @@ pub(super) const EVOLUTION_DELTA_MYR: f64 = 2.0;
 pub(super) struct EvolvedControlState {
     pub(super) current: TectonicState,
     pub(super) material_ledger: EvolutionMaterialLedger,
+    pub(super) lineage_ledger: EvolutionLineageLedger,
 }
 
 pub(super) fn run_tectonic_evolution(
@@ -104,8 +108,9 @@ pub(super) fn evolve_control_state_v5(
     streams: &LabeledSubstreams,
 ) -> Result<EvolvedControlState, RunnerError> {
     let recipe = FormationTectonicRecipe::for_preset(formation);
-    let initial = build_initial_state(surface, topology, spec, recipe, streams)?;
+    let initial = build_initial_state_v5(surface, topology, spec, recipe, streams)?;
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
+    let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
 
     for step in 0..EVOLUTION_STEP_COUNT {
@@ -114,7 +119,8 @@ pub(super) fn evolve_control_state_v5(
         build_contacts(surface, topology, next, coverage, events)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe)?;
-        apply_collision(surface, events, current, next, actions, recipe)?;
+        let collision = apply_collision_v5(surface, events, current, next, actions, recipe)?;
+        lineage_ledger.record_terrane_transfers(collision.terrane_transfer_events);
         apply_divergent_extension_v5(
             surface,
             events,
@@ -151,15 +157,35 @@ pub(super) fn evolve_control_state_v5(
         workspace.swap_current_next();
         if resample_due(&workspace) {
             resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
+            mechanically_fragment_oversized_plates_v5(
+                step,
+                surface,
+                topology,
+                &mut workspace.current,
+                recipe,
+                streams,
+                &mut lineage_ledger,
+            )?;
         }
     }
     if workspace.requires_resample() {
         resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
+        mechanically_fragment_oversized_plates_v5(
+            EVOLUTION_STEP_COUNT,
+            surface,
+            topology,
+            &mut workspace.current,
+            recipe,
+            streams,
+            &mut lineage_ledger,
+        )?;
     }
     material_ledger.control_budget(&workspace.current)?;
+    lineage_ledger.budget(&workspace.current)?;
     Ok(EvolvedControlState {
         current: workspace.current,
         material_ledger,
+        lineage_ledger,
     })
 }
 
@@ -188,20 +214,172 @@ pub(super) enum RunnerError {
     Resample(#[from] ResampleError),
     #[error("tectonic material failed: {0}")]
     Material(#[from] super::model::MaterialColumnError),
+    #[error("tectonic lineage failed: {0}")]
+    Lineage(#[from] super::model::LineageLedgerError),
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeSet, VecDeque};
+    use std::f64::consts::PI;
+
     use super::{evolve_control_state_v5, run_tectonic_evolution};
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
-    use crate::generators::natural::spherical_tectonics::initial_state::build_initial_state;
-    use crate::generators::natural::spherical_tectonics::model::FormationTectonicRecipe;
+    use crate::generators::natural::spherical_tectonics::initial_state::{
+        build_initial_state, build_initial_state_v5,
+    };
+    use crate::generators::natural::spherical_tectonics::model::{
+        FormationTectonicRecipe, LineageId, TectonicState,
+    };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec};
-    use crate::world::spatial::SphericalNaturalSurface;
-    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
+    use crate::world::spatial::{project_tangent, SphericalNaturalSurface, UnitVector3};
+    use crate::world::{EdgeId, Meters, RootSeed, SphericalSpaceSpec, SurfaceVertexId};
+
+    fn lineage_pair(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        state: &TectonicState,
+        edge: EdgeId,
+    ) -> Option<[LineageId; 2]> {
+        let cells = surface.edge(edge).unwrap().cells;
+        let mut pair = cells.map(|cell| state.samples[cell.raw() as usize].owner);
+        if pair[0] == pair[1] {
+            None
+        } else {
+            if pair[1] < pair[0] {
+                pair.swap(0, 1);
+            }
+            Some(pair)
+        }
+    }
+
+    fn trace_lineage_branch(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        state: &TectonicState,
+        incident: &[Vec<EdgeId>],
+        start: SurfaceVertexId,
+        first_edge: EdgeId,
+        target_length_m: f64,
+    ) -> SurfaceVertexId {
+        let pair = lineage_pair(surface, state, first_edge).unwrap();
+        let mut previous_vertex = start;
+        let mut edge = first_edge;
+        let mut length = 0.0;
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(edge) {
+                return previous_vertex;
+            }
+            let record = surface.edge(edge).unwrap();
+            let next_vertex = if record.vertices[0] == previous_vertex {
+                record.vertices[1]
+            } else {
+                record.vertices[0]
+            };
+            length += record.length.get();
+            if length >= target_length_m {
+                return next_vertex;
+            }
+            let candidates = incident[next_vertex.raw() as usize]
+                .iter()
+                .copied()
+                .filter(|&candidate| candidate != edge)
+                .filter(|&candidate| lineage_pair(surface, state, candidate) == Some(pair))
+                .collect::<Vec<_>>();
+            if candidates.len() != 1 {
+                return next_vertex;
+            }
+            previous_vertex = next_vertex;
+            edge = candidates[0];
+        }
+    }
+
+    fn macro_triple_angles(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        state: &TectonicState,
+    ) -> Vec<f64> {
+        let mut incident = vec![Vec::new(); surface.vertices().len()];
+        for edge in surface.edges() {
+            if lineage_pair(surface, state, edge.id).is_some() {
+                for vertex in edge.vertices {
+                    incident[vertex.raw() as usize].push(edge.id);
+                }
+            }
+        }
+        let mut angles = Vec::new();
+        for vertex in surface.vertices() {
+            let edges = &incident[vertex.id.raw() as usize];
+            let owners = edges
+                .iter()
+                .flat_map(|&edge| lineage_pair(surface, state, edge).unwrap())
+                .collect::<BTreeSet<_>>();
+            if owners.len() != 3 || edges.len() != 3 {
+                continue;
+            }
+            let radial = vertex.position;
+            let (east, north) = tangent_basis(radial);
+            let mut azimuths = edges
+                .iter()
+                .filter_map(|&edge| {
+                    let endpoint =
+                        trace_lineage_branch(surface, state, &incident, vertex.id, edge, 750_000.0);
+                    let tangent = project_tangent(
+                        surface.vertex(endpoint).unwrap().position.components(),
+                        radial,
+                    );
+                    let length = dot(tangent, tangent).sqrt();
+                    (length > f64::EPSILON).then(|| {
+                        let direction = tangent.map(|component| component / length);
+                        dot(direction, north).atan2(dot(direction, east))
+                    })
+                })
+                .collect::<Vec<_>>();
+            if azimuths.len() != 3 {
+                continue;
+            }
+            azimuths.sort_by(f64::total_cmp);
+            for index in 0..3 {
+                let next = if index == 2 {
+                    azimuths[0] + 2.0 * PI
+                } else {
+                    azimuths[index + 1]
+                };
+                angles.push((next - azimuths[index]).to_degrees());
+            }
+        }
+        angles
+    }
+
+    fn tangent_basis(radial: UnitVector3) -> ([f64; 3], [f64; 3]) {
+        let radial = radial.components();
+        let reference = if radial[2].abs() < 0.8 {
+            [0.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let east = normalize(cross(reference, radial));
+        let north = normalize(cross(radial, east));
+        (east, north)
+    }
+
+    fn normalize(vector: [f64; 3]) -> [f64; 3] {
+        let length = dot(vector, vector).sqrt();
+        vector.map(|value| value / length)
+    }
+
+    fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+        [
+            first[1] * second[2] - first[2] * second[1],
+            first[2] * second[0] - first[0] * second[2],
+            first[0] * second[1] - first[1] * second[0],
+        ]
+    }
+
+    fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
+        first.into_iter().zip(second).map(|(a, b)| a * b).sum()
+    }
 
     #[test]
     fn final_owners_come_from_evolution_not_the_initial_voronoi_partition() {
@@ -303,6 +481,7 @@ mod tests {
             .material_ledger
             .control_budget(&first.current)
             .unwrap();
+        first.lineage_ledger.budget(&first.current).unwrap();
 
         let second = evolve_control_state_v5(
             &surface,
@@ -315,6 +494,12 @@ mod tests {
         assert_eq!(
             first.current.material_totals().unwrap(),
             second.current.material_totals().unwrap()
+        );
+        assert_eq!(first.current.initial_owners(), second.current.initial_owners());
+        assert_eq!(first.current.plates, second.current.plates);
+        assert_eq!(
+            first.lineage_ledger.budget(&first.current).unwrap(),
+            second.lineage_ledger.budget(&second.current).unwrap()
         );
         assert_eq!(
             first
@@ -330,5 +515,127 @@ mod tests {
                 .map(|sample| sample.material.bits())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn evolved_locked_corpus_keeps_connected_bounded_plates_and_continental_material() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 4_842,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let spec = TectonicSpec {
+            plate_count: 12,
+            continental_crust_fraction: 0.38,
+            ..TectonicSpec::default()
+        };
+        let mut triple_angles = Vec::new();
+        let mut initial_triple_angles = Vec::new();
+        for seed in [
+            42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
+        ] {
+            let mut rng = StageRng::from_seed(derive_stage_seed(
+                RootSeed::new(seed),
+                StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+            ));
+            let streams = LabeledSubstreams::capture(&mut rng);
+            let initial = build_initial_state_v5(
+                &surface,
+                &topology,
+                &spec,
+                FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+                &streams,
+            )
+            .unwrap();
+            initial_triple_angles.extend(macro_triple_angles(&surface, &initial));
+            let evolved = evolve_control_state_v5(
+                &surface,
+                &topology,
+                &spec,
+                ResolvedWorldFormationPreset::Continents,
+                &streams,
+            )
+            .unwrap();
+            let initial_continental = evolved
+                .material_ledger
+                .initial_control()
+                .continental()
+                .reference_area_m2();
+            let final_continental = evolved
+                .current
+                .material_totals()
+                .unwrap()
+                .continental()
+                .reference_area_m2();
+            let retention = final_continental / initial_continental;
+            assert!(
+                (0.75..=1.15).contains(&retention),
+                "seed {seed}: {retention}"
+            );
+
+            let mut maximum_share = 0.0_f64;
+            for plate in &evolved.current.plates {
+                let indices = evolved
+                    .current
+                    .samples
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, sample)| sample.owner == plate.lineage)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                let area = indices
+                    .iter()
+                    .map(|&index| surface.cells()[index].area.get())
+                    .sum::<f64>();
+                maximum_share = maximum_share.max(area / surface.total_cell_area().get());
+                let mut reached = vec![false; surface.cells().len()];
+                let mut queue = VecDeque::from([indices[0]]);
+                reached[indices[0]] = true;
+                while let Some(cell) = queue.pop_front() {
+                    for arc in &topology.arcs()[cell] {
+                        let neighbor = arc.neighbor.raw() as usize;
+                        if !reached[neighbor]
+                            && evolved.current.samples[neighbor].owner == plate.lineage
+                        {
+                            reached[neighbor] = true;
+                            queue.push_back(neighbor);
+                        }
+                    }
+                }
+                assert_eq!(
+                    reached.iter().filter(|&&value| value).count(),
+                    indices.len(),
+                    "seed {seed}: disconnected {:?}",
+                    plate.lineage
+                );
+            }
+            assert!(maximum_share <= 0.45, "seed {seed}: {maximum_share}");
+            let lineage = evolved.lineage_ledger.budget(&evolved.current).unwrap();
+            triple_angles.extend(macro_triple_angles(&surface, &evolved.current));
+            eprintln!(
+                "evolved seed={seed} retention={retention:.6} max_plate={maximum_share:.6} plates={} fragmentations={}",
+                evolved.current.plates.len(),
+                lineage.mechanical_fragmentation_count()
+            );
+        }
+        assert!(!triple_angles.is_empty());
+        let regular_fraction = triple_angles
+            .iter()
+            .filter(|&&angle| (angle - 120.0).abs() <= 10.0)
+            .count() as f64
+            / triple_angles.len() as f64;
+        let initial_regular_fraction = initial_triple_angles
+            .iter()
+            .filter(|&&angle| (angle - 120.0).abs() <= 10.0)
+            .count() as f64
+            / initial_triple_angles.len() as f64;
+        eprintln!(
+            "evolved macro triple angles={} regular120={regular_fraction:.6}; initial angles={} regular120={initial_regular_fraction:.6}",
+            triple_angles.len(),
+            initial_triple_angles.len(),
+        );
+        assert!(regular_fraction <= 0.35, "{regular_fraction}");
     }
 }

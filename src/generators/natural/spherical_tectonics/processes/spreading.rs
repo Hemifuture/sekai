@@ -145,8 +145,15 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_divergent_exten
             });
         }
         let extension_m = f64::from(*speed) * f64::from(delta_myr) * 1_000.0;
-        let beta = (1.0 + extension_m / CONTINENTAL_RIFT_ZONE_WIDTH_M)
+        let requested_beta = (1.0 + extension_m / CONTINENTAL_RIFT_ZONE_WIDTH_M)
             .clamp(1.0, MAXIMUM_STEP_STRETCH_FACTOR);
+        let remaining_area_gain = ledger.remaining_rift_extension_area_m2();
+        if remaining_area_gain <= 0.0 {
+            continue;
+        }
+        let budget_beta =
+            1.0 + remaining_area_gain / sample.material.continental_reference_area_m2();
+        let beta = requested_beta.min(budget_beta);
         let (extended, area_gain) = sample.material.extend_continental_pure_shear(beta)?;
         if area_gain <= 0.0 {
             continue;

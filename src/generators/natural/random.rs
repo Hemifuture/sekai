@@ -31,6 +31,8 @@ pub(super) const RIFT_EVENTS_V3_LABEL: &str = "rift-events-v3";
 pub(super) const PROCESS_VARIATION_V3_LABEL: &str = "process-variation-v3";
 pub(super) const OROGENIC_DETAIL_V3_LABEL: &str = "orogenic-detail-v3";
 pub(super) const OCEANIC_DETAIL_V3_LABEL: &str = "oceanic-detail-v3";
+pub(super) const INITIAL_DOMAINS_V5_LABEL: &str = "initial-domains-v5";
+pub(super) const MECHANICAL_FRAGMENTATION_V5_LABEL: &str = "mechanical-fragmentation-v5";
 pub(super) const SPHERICAL_MORPHOLOGY_LABELS: [&str; 7] = [
     PLATE_TARGET_AREA_LABEL,
     PLATE_SEED_PLACEMENT_LABEL,

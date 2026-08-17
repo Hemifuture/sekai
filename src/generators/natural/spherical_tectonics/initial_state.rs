@@ -7,7 +7,8 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::VecDeque;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
 
 use rand::RngCore;
 use thiserror::Error;
@@ -19,12 +20,15 @@ use super::model::{
 use crate::generators::natural::fractal::FractalProfile;
 use crate::generators::natural::morphology::noise::SphericalNoise3d;
 use crate::generators::natural::random::{
-    LabeledSubstreams, INITIAL_CRUST_V3_LABEL, INITIAL_PLATES_V3_LABEL, PLATE_MOTION_V3_LABEL,
+    LabeledSubstreams, INITIAL_CRUST_V3_LABEL, INITIAL_DOMAINS_V5_LABEL, INITIAL_PLATES_V3_LABEL,
+    PLATE_MOTION_V3_LABEL,
 };
 use crate::generators::natural::spherical_crust_physics::{
     continental_isostatic_elevation_m, oceanic_plate_cooling_elevation_m,
 };
-use crate::generators::natural::topology::{farthest_point_seeds, NaturalTopologyIndex};
+use crate::generators::natural::topology::{
+    farthest_point_seeds, multi_source_distance, NaturalTopologyIndex,
+};
 use crate::world::natural::{
     CrustKind, NaturalSpecError, SphericalOrogenyKind, SphericalPlateRotation,
     SphericalTectonicValidationError, TectonicActivity, TectonicSpec,
@@ -41,6 +45,8 @@ const OCEANIC_THICKNESS_BASE_KM: f64 = 5.0;
 const OCEANIC_THICKNESS_SPAN_KM: f64 = 5.0;
 const INITIAL_OCEANIC_AGE_MIN_MYR: f64 = 8.0;
 const INITIAL_OCEANIC_AGE_SPAN_MYR: f64 = 172.0;
+const MINIMUM_ANISOTROPIC_EDGE_FACTOR: f64 = 0.70;
+const MAXIMUM_ANISOTROPIC_EDGE_FACTOR: f64 = 1.30;
 
 pub(super) fn build_initial_state(
     surface: &SphericalSurfaceSnapshot,
@@ -71,6 +77,188 @@ pub(super) fn build_initial_state(
     let plates = initial_plates(surface, spec.activity, &seeds, streams)?;
     let samples = initial_crust_samples(surface, spec, recipe, streams, &owners);
     TectonicState::new(samples, plates, spec.plate_count.into()).map_err(Into::into)
+}
+
+pub(super) fn build_initial_state_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    spec: &TectonicSpec,
+    recipe: FormationTectonicRecipe,
+    streams: &LabeledSubstreams,
+) -> Result<TectonicState, InitialStateError> {
+    spec.validate()?;
+    let cell_count = surface.cells().len();
+    if cell_count != topology.cell_count() {
+        return Err(InitialStateError::CardinalityMismatch {
+            surface_cells: cell_count,
+            topology_cells: topology.cell_count(),
+        });
+    }
+    let plate_count = usize::from(spec.plate_count);
+    if plate_count > cell_count {
+        return Err(InitialStateError::PlateCountExceedsCells {
+            plates: plate_count,
+            cells: cell_count,
+        });
+    }
+    let mut domain_rng = streams.stream(INITIAL_DOMAINS_V5_LABEL);
+    let seeds = irregular_blue_noise_seeds(topology, plate_count, domain_rng.next_u64(), streams);
+    let owners = assign_anisotropic_domains(surface, topology, &seeds, recipe, streams)?;
+    validate_initial_partition(topology, &seeds, &owners)?;
+    let plates = initial_plates(surface, spec.activity, &seeds, streams)?;
+    let samples = initial_crust_samples(surface, spec, recipe, streams, &owners);
+    TectonicState::new(samples, plates, spec.plate_count.into()).map_err(Into::into)
+}
+
+fn irregular_blue_noise_seeds(
+    topology: &NaturalTopologyIndex,
+    count: usize,
+    first_draw: u64,
+    streams: &LabeledSubstreams,
+) -> Vec<CellId> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let cell_count = topology.cell_count();
+    let mut selected = vec![false; cell_count];
+    let first = first_draw as usize % cell_count;
+    selected[first] = true;
+    let mut seeds = vec![CellId::from_raw(first as u32)];
+    while seeds.len() < count {
+        let distances = multi_source_distance(topology, &seeds, None);
+        let mut candidates = (0..cell_count)
+            .filter(|&index| !selected[index])
+            .collect::<Vec<_>>();
+        candidates.sort_by(|&first, &second| {
+            distances[second]
+                .cmp(&distances[first])
+                .then_with(|| first.cmp(&second))
+        });
+        // Draw from the well-separated frontier instead of taking its single
+        // extreme every time. This retains blue-noise spacing without forcing
+        // the near-equilateral Delaunay triangles that caused V4's 120-degree
+        // honeycomb signature.
+        let frontier = (cell_count / count.max(1)).clamp(1, candidates.len());
+        let rank = streams.counter_u64(
+            INITIAL_DOMAINS_V5_LABEL,
+            &[2, seeds.len() as u64, first_draw],
+        ) as usize
+            % frontier;
+        let next = candidates[rank];
+        selected[next] = true;
+        seeds.push(CellId::from_raw(next as u32));
+    }
+    seeds
+}
+
+fn assign_anisotropic_domains(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    seeds: &[CellId],
+    recipe: FormationTectonicRecipe,
+    streams: &LabeledSubstreams,
+) -> Result<Vec<LineageId>, InitialStateError> {
+    let profile = FractalProfile {
+        octaves: 2,
+        frequency: recipe.base_scale_rad.recip(),
+        lacunarity: 2.03,
+        persistence: 0.5,
+    };
+    let noise = (0..seeds.len())
+        .map(|lineage| {
+            std::array::from_fn(|channel| {
+                SphericalNoise3d::new(streams.counter_u64(
+                    INITIAL_DOMAINS_V5_LABEL,
+                    &[1, lineage as u64, channel as u64],
+                ) as u32)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut costs = vec![u64::MAX; topology.cell_count()];
+    let mut owners = vec![None; topology.cell_count()];
+    let mut pending = BinaryHeap::new();
+    for (lineage, &seed) in seeds.iter().enumerate() {
+        let index = seed.raw() as usize;
+        costs[index] = 0;
+        owners[index] = Some(LineageId::from_raw(lineage as u32));
+        pending.push(Reverse((0_u64, lineage as u32, seed.raw())));
+    }
+    while let Some(Reverse((cost, raw_lineage, raw_cell))) = pending.pop() {
+        let cell = raw_cell as usize;
+        let lineage = LineageId::from_raw(raw_lineage);
+        if costs[cell] != cost || owners[cell] != Some(lineage) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell] {
+            let edge = surface
+                .edge(arc.edge)
+                .expect("topology edges originate from the same validated surface");
+            let direction = project_tangent(
+                surface.cells()[arc.neighbor.raw() as usize]
+                    .centroid
+                    .components(),
+                edge.midpoint,
+            );
+            let factor = anisotropic_edge_factor(
+                &noise[raw_lineage as usize],
+                edge.midpoint,
+                direction,
+                profile,
+            );
+            let traversal = ((arc.traversal_cost as f64) * factor).round().max(1.0) as u64;
+            let candidate = cost.saturating_add(traversal);
+            let neighbor = arc.neighbor.raw() as usize;
+            let candidate_key = (candidate, raw_lineage);
+            let incumbent_key = (
+                costs[neighbor],
+                owners[neighbor].map_or(u32::MAX, LineageId::raw),
+            );
+            if candidate_key < incumbent_key {
+                costs[neighbor] = candidate;
+                owners[neighbor] = Some(lineage);
+                pending.push(Reverse((candidate, raw_lineage, arc.neighbor.raw())));
+            }
+        }
+    }
+    owners
+        .into_iter()
+        .enumerate()
+        .map(|(index, owner)| {
+            owner.ok_or(InitialStateError::UnassignedAnisotropicCell {
+                cell: CellId::from_raw(index as u32),
+            })
+        })
+        .collect()
+}
+
+fn anisotropic_edge_factor(
+    noise: &[SphericalNoise3d; 4],
+    position: UnitVector3,
+    edge_direction: [f64; 3],
+    profile: FractalProfile,
+) -> f64 {
+    let scalar = (4.0 * noise[0].fbm(position, profile)).clamp(-1.0, 1.0);
+    let fabric = std::array::from_fn(|axis| noise[axis + 1].fbm(position, profile));
+    let fabric = project_tangent(fabric, position);
+    let fabric_norm = norm(fabric);
+    let edge_norm = norm(edge_direction);
+    let directional = if fabric_norm > f64::EPSILON && edge_norm > f64::EPSILON {
+        let agreement = fabric
+            .into_iter()
+            .zip(edge_direction)
+            .map(|(first, second)| first * second)
+            .sum::<f64>()
+            .abs()
+            / (fabric_norm * edge_norm);
+        2.0 * agreement.clamp(0.0, 1.0) - 1.0
+    } else {
+        0.0
+    };
+    let signal = (0.35 * scalar + 0.65 * directional).clamp(-1.0, 1.0);
+    (1.0 + 0.3 * signal).clamp(
+        MINIMUM_ANISOTROPIC_EDGE_FACTOR,
+        MAXIMUM_ANISOTROPIC_EDGE_FACTOR,
+    )
 }
 
 fn initial_plate_centers(
@@ -384,6 +572,8 @@ pub(super) enum InitialStateError {
         reached: usize,
         expected: usize,
     },
+    #[error("anisotropic initial-domain solve did not reach {cell:?}")]
+    UnassignedAnisotropicCell { cell: CellId },
     #[error("invalid transient tectonic state: {0}")]
     InvalidState(#[from] TectonicModelError),
 }
@@ -392,7 +582,7 @@ pub(super) enum InitialStateError {
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
 
-    use super::build_initial_state;
+    use super::{build_initial_state, build_initial_state_v5};
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::spherical_tectonics::model::FormationTectonicRecipe;
@@ -589,6 +779,45 @@ mod tests {
                 cross_kind as f64 / surface.edges().len() as f64
             };
         assert!(boundary_fraction(&supercontinent) < boundary_fraction(&archipelago));
+    }
+
+    #[test]
+    fn evolved_initial_domains_are_connected_deterministic_and_not_nearest_center_voronoi() {
+        let (surface, topology) = fixture(642);
+        let spec = TectonicSpec {
+            plate_count: 12,
+            continental_crust_fraction: 0.38,
+            ..TectonicSpec::default()
+        };
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let first =
+            build_initial_state_v5(&surface, &topology, &spec, recipe, &streams(42)).unwrap();
+        let repeated =
+            build_initial_state_v5(&surface, &topology, &spec, recipe, &streams(42)).unwrap();
+        let legacy = build_initial_state(&surface, &topology, &spec, recipe, &streams(42)).unwrap();
+        let owners = first.initial_owners();
+
+        assert_eq!(owners, repeated.initial_owners());
+        assert_ne!(owners, legacy.initial_owners());
+        assert!(
+            owners
+                .iter()
+                .zip(legacy.initial_owners())
+                .filter(|(first, second)| **first != *second)
+                .count()
+                > surface.cells().len() / 50
+        );
+        for plate in &first.plates {
+            let expected = owners
+                .iter()
+                .filter(|&&owner| owner == plate.lineage)
+                .count();
+            assert_eq!(
+                connected_owner_count(&topology, &owners, plate.lineage),
+                expected
+            );
+            assert!(expected > 0);
+        }
     }
 
     #[test]

@@ -9,9 +9,10 @@
 use crate::generators::natural::fractal::FractalProfile;
 use crate::world::natural::{
     CrustKind, CrustMaterialTotals, ResolvedWorldFormationPreset, SphericalOrogenyKind,
-    SphericalPlateRotation, SphericalTectonicMaterialBudget, SphericalTectonicMaterialProcesses,
-    TectonicMaterialAmount, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
-    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    SphericalPlateRotation, SphericalTectonicLineageBudget, SphericalTectonicMaterialBudget,
+    SphericalTectonicMaterialProcesses, TectonicMaterialAmount, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
@@ -456,6 +457,8 @@ pub(super) struct EvolutionMaterialLedger {
 }
 
 impl EvolutionMaterialLedger {
+    const MAXIMUM_RIFT_EXTENSION_AREA_FRACTION: f64 = 0.15 - 1.0e-12;
+
     pub(super) fn capture_initial(state: &TectonicState) -> Result<Self, MaterialColumnError> {
         Ok(Self {
             initial_control: state.material_totals()?,
@@ -475,6 +478,12 @@ impl EvolutionMaterialLedger {
     pub(super) fn record_rift_extension_area_gain(&mut self, area_m2: f64) {
         debug_assert!(area_m2.is_finite() && area_m2 >= 0.0);
         self.rift_extension_continental_area_gain.add(area_m2);
+    }
+
+    pub(super) fn remaining_rift_extension_area_m2(self) -> f64 {
+        let maximum = self.initial_control.continental().reference_area_m2()
+            * Self::MAXIMUM_RIFT_EXTENSION_AREA_FRACTION;
+        (maximum - self.rift_extension_continental_area_gain.total()).max(0.0)
     }
 
     pub(super) fn record_oceanic_subduction(&mut self, amount: TectonicMaterialAmount) {
@@ -537,6 +546,81 @@ impl EvolutionMaterialLedger {
         )
         .map_err(|error| MaterialColumnError::InvalidTotals(error.to_string()))
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EvolutionLineageLedger {
+    initial_lineages: u32,
+    first_allocated_raw: u32,
+    terrane_transfer_count: u32,
+    mechanical_fragmentation_count: u32,
+}
+
+impl EvolutionLineageLedger {
+    pub(super) fn capture_initial(state: &TectonicState) -> Result<Self, LineageLedgerError> {
+        Ok(Self {
+            initial_lineages: u32::try_from(state.plates.len())
+                .map_err(|_| LineageLedgerError::CountOverflow)?,
+            first_allocated_raw: state.next_lineage_raw,
+            terrane_transfer_count: 0,
+            mechanical_fragmentation_count: 0,
+        })
+    }
+
+    pub(super) fn record_terrane_transfers(&mut self, count: u32) {
+        self.terrane_transfer_count = self.terrane_transfer_count.saturating_add(count);
+    }
+
+    pub(super) fn record_mechanical_fragmentation(&mut self) {
+        self.mechanical_fragmentation_count = self.mechanical_fragmentation_count.saturating_add(1);
+    }
+
+    pub(super) fn budget(
+        self,
+        state: &TectonicState,
+    ) -> Result<SphericalTectonicLineageBudget, LineageLedgerError> {
+        let allocated_lineages = state
+            .next_lineage_raw
+            .checked_sub(self.first_allocated_raw)
+            .ok_or(LineageLedgerError::ReusedLineage)?;
+        let mut live = state
+            .samples
+            .iter()
+            .map(|sample| sample.owner)
+            .collect::<Vec<_>>();
+        live.sort_unstable();
+        live.dedup();
+        let final_live_lineages =
+            u32::try_from(live.len()).map_err(|_| LineageLedgerError::CountOverflow)?;
+        let created = self
+            .initial_lineages
+            .checked_add(allocated_lineages)
+            .ok_or(LineageLedgerError::CountOverflow)?;
+        let retired_lineages = created
+            .checked_sub(final_live_lineages)
+            .ok_or(LineageLedgerError::LiveCountExceedsAllocated)?;
+        SphericalTectonicLineageBudget::new(
+            self.initial_lineages,
+            allocated_lineages,
+            retired_lineages,
+            final_live_lineages,
+            self.terrane_transfer_count,
+            self.mechanical_fragmentation_count,
+        )
+        .map_err(|error| LineageLedgerError::InvalidBudget(error.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub(super) enum LineageLedgerError {
+    #[error("lineage count exceeded the supported integer range")]
+    CountOverflow,
+    #[error("a transient lineage identifier was reused")]
+    ReusedLineage,
+    #[error("live lineage count exceeds all allocated lineages")]
+    LiveCountExceedsAllocated,
+    #[error("lineage budget is invalid: {0}")]
+    InvalidBudget(String),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
