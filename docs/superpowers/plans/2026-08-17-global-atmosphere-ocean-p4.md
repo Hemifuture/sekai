@@ -41,12 +41,12 @@ Files:
 - Create: `src/generators/natural/global_circulation/project.rs`
 - Create: `tests/global_circulation_forcing.rs`
 
-- [ ] Write RED tests for physical land/bathymetry causality, constant and
+- [x] Write RED tests for physical land/bathymetry causality, constant and
   bounded intensive remap, conservative precipitation projection, tangent
   vector transport, axial-tilt phase, mountain response, and wrong-input
   rejection.
-- [ ] Implement one forcing builder and one semantic diagnostic projector.
-- [ ] Prove no preliminary-climate or renderer dependency; commit.
+- [x] Implement one forcing builder and one semantic diagnostic projector.
+- [x] Prove no preliminary-climate or renderer dependency; commit.
 
 ## Task 4: Implement reusable layered state and paired C2 physics
 

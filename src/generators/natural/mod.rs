@@ -15,6 +15,7 @@ mod geologic_rule_input;
 mod geologic_stage;
 mod geologic_substrate;
 mod geology;
+mod global_circulation;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;
@@ -90,6 +91,12 @@ pub use geologic_substrate::{
     VOLCANIC_COVER_INFLUENCE_THRESHOLD,
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
+pub use global_circulation::{
+    project_monthly_extensive_rate, project_monthly_intensive_scalar,
+    project_monthly_tangent_vectors, ClimateProjectionError, GlobalClimateForcing,
+    GlobalClimateForcingBuilder, GlobalClimateForcingError, ProjectedMonthlyScalar,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+};
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{
     HydroErosionRuleResolutionArtifact, HydroErosionSpecArtifact, ResolvedHydroErosionInput,
