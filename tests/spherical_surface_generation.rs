@@ -5,7 +5,7 @@ use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceBuildEr
 use sekai::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use sekai::world::{
     Meters, SphericalSpaceSpec, SphericalSpecError, MAX_GEODESIC_FREQUENCY,
-    MAX_SPHERICAL_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
+    MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_TARGET_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
 };
 use serde_json::Value;
 
@@ -170,8 +170,11 @@ fn supported_cell_budget_endpoints_resolve_without_building_the_maximum_surface(
 }
 
 #[test]
-fn builder_rejects_cell_counts_immediately_outside_the_allocation_budget() {
-    for target_cell_count in [MIN_SPHERICAL_CELL_COUNT - 1, MAX_SPHERICAL_CELL_COUNT + 1] {
+fn builder_rejects_cell_counts_immediately_outside_the_request_budget() {
+    for target_cell_count in [
+        MIN_SPHERICAL_CELL_COUNT - 1,
+        MAX_SPHERICAL_TARGET_CELL_COUNT + 1,
+    ] {
         let error = GeodesicVoronoiBuilder::build(&spherical_spec(target_cell_count)).unwrap_err();
 
         assert_eq!(
@@ -179,7 +182,7 @@ fn builder_rejects_cell_counts_immediately_outside_the_allocation_budget() {
             SphericalSurfaceBuildError::InvalidSpec(SphericalSpecError::CellCountOutOfRange {
                 found: target_cell_count,
                 min: MIN_SPHERICAL_CELL_COUNT,
-                max: MAX_SPHERICAL_CELL_COUNT,
+                max: MAX_SPHERICAL_TARGET_CELL_COUNT,
             })
         );
     }

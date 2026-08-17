@@ -44,7 +44,10 @@ surface, existing stage engine, no new crate dependency.
 
 - Create: `src/world/natural/profile.rs`
 - Modify: `src/world/natural/mod.rs`
+- Modify: `src/world/spec.rs`
 - Create: `tests/natural_quality_profiles.rs`
+- Modify: `tests/spherical_foundation_build.rs`
+- Modify: `tests/spherical_surface_generation.rs`
 
 **Interfaces:**
 
@@ -62,7 +65,7 @@ impl NaturalQualityProfile {
 }
 ```
 
-- [ ] **Step 1: Write RED profile tests**
+- [x] **Step 1: Write RED profile tests**
 
 Assert exact settings:
 
@@ -75,9 +78,11 @@ High     200,000 -> 198,812; control 20,000 -> 20,252; climate 48
 Assert strict rejection when the authoritative target does not equal the
 selected profile target, exact radius propagation into the control spec,
 unknown-field/wrong-schema rejection, byte-identical serde repetition, and
-zero-copy getters for all requested/resolved values.
+zero-copy getters for all requested/resolved values. Also assert that a 200,000
+High request is valid and resolves to 198,812, while 200,001 is rejected; keep
+198,812 as the maximum actual spherical cell allocation.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test natural_quality_profiles -- --nocapture
@@ -85,14 +90,16 @@ cargo test --test natural_quality_profiles -- --nocapture
 
 Expected: compile failure because the profile contract does not exist.
 
-- [ ] **Step 3: Implement the minimal validated profile values**
+- [x] **Step 3: Implement the minimal validated profile values**
 
 Use private serde wires with `deny_unknown_fields`. `NaturalResolutionPlan::new`
 validates schema, exact profile targets, geodesic resolved counts, supported
 climate resolution, and finite valid radius. Do not add a `Custom` or test-only
-serialized profile.
+serialized profile. Split `MAX_SPHERICAL_TARGET_CELL_COUNT = 200_000` from the
+existing maximum resolved allocation `MAX_SPHERICAL_CELL_COUNT = 198_812` and
+update target-bound tests without weakening snapshot allocation bounds.
 
-- [ ] **Step 4: Run focused and compatibility tests**
+- [x] **Step 4: Run focused and compatibility tests**
 
 ```powershell
 cargo test --test natural_quality_profiles -- --nocapture
@@ -100,10 +107,10 @@ cargo test --test world_spec --test spherical_surface_generation -- --nocapture
 cargo check --target wasm32-unknown-unknown --workspace --all-features
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
-git add src/world/natural/profile.rs src/world/natural/mod.rs tests/natural_quality_profiles.rs
+git add src/world/natural/profile.rs src/world/natural/mod.rs src/world/spec.rs tests/natural_quality_profiles.rs tests/spherical_foundation_build.rs tests/spherical_surface_generation.rs
 git commit -m "feat: define natural quality profiles"
 ```
 

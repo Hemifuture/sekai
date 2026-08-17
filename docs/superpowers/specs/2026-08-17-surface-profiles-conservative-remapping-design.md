@@ -32,6 +32,12 @@ selected profile and records both requested and resolved values in a versioned
 `NaturalResolutionPlan`. Test fixtures may construct smaller surfaces directly,
 but they are not product profile resolutions and cannot be serialized as one.
 
+The existing spherical limits currently conflate requested and resolved counts.
+P1 separates `MAX_SPHERICAL_TARGET_CELL_COUNT = 200_000` from the maximum actual
+geodesic allocation `MAX_SPHERICAL_CELL_COUNT = 198_812`. A High request is valid
+and deterministically resolves to the latter; no surface may allocate beyond the
+frequency-141 vertex, edge, or cell bounds.
+
 Draft remains the synchronous application default during P1. Standard and High
 are explicit background-quality builds until the complete pipeline passes its
 release budget. No existing Draft `SphericalSurfaceSnapshot` fingerprint or

@@ -21,6 +21,8 @@ pub const MAX_GEODESIC_FREQUENCY: u32 = 141;
 pub const MIN_SPHERICAL_CELL_COUNT: u32 = geodesic_cell_count(MIN_GEODESIC_FREQUENCY);
 /// The largest supported geodesic cell allocation.
 pub const MAX_SPHERICAL_CELL_COUNT: u32 = geodesic_cell_count(MAX_GEODESIC_FREQUENCY);
+/// The largest requested spherical cell target; it resolves to the bounded allocation above.
+pub const MAX_SPHERICAL_TARGET_CELL_COUNT: u32 = MAX_CELL_COUNT;
 /// The largest authoritative spherical-surface vertex allocation in schema V1.
 pub const MAX_SPHERICAL_VERTEX_COUNT: u32 = 20 * frequency_squared(MAX_GEODESIC_FREQUENCY);
 /// The largest authoritative spherical-surface edge allocation in schema V1.
@@ -124,12 +126,13 @@ impl SphericalSpaceSpec {
             });
         }
 
-        if !(MIN_SPHERICAL_CELL_COUNT..=MAX_SPHERICAL_CELL_COUNT).contains(&self.target_cell_count)
+        if !(MIN_SPHERICAL_CELL_COUNT..=MAX_SPHERICAL_TARGET_CELL_COUNT)
+            .contains(&self.target_cell_count)
         {
             return Err(SphericalSpecError::CellCountOutOfRange {
                 found: self.target_cell_count,
                 min: MIN_SPHERICAL_CELL_COUNT,
-                max: MAX_SPHERICAL_CELL_COUNT,
+                max: MAX_SPHERICAL_TARGET_CELL_COUNT,
             });
         }
 
