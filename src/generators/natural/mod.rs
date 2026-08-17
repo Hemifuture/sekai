@@ -90,8 +90,8 @@ pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroEros
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use quality::{
-    evaluate_evolved_tectonic_quality, evaluate_profile_surface_quality,
-    evaluate_spherical_foundation_quality, QualityBuildError,
+    evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
+    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;

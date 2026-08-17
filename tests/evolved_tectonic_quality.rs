@@ -4,8 +4,8 @@ use sekai::engine::{
     derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
 };
 use sekai::generators::natural::{
-    evaluate_evolved_tectonic_quality, EvolvedTectonicArtifact, EvolvedTectonicGenerator,
-    MantleGenerator, ReliefGenerator,
+    evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
+    EvolvedTectonicArtifact, EvolvedTectonicGenerator, MantleGenerator, ReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -94,6 +94,26 @@ fn quality_report_is_surface_bound_versioned_and_covers_every_p2_gate() {
             && metric.bounds().min().is_none_or(f64::is_finite)
             && metric.bounds().max().is_none_or(f64::is_finite)
     }));
+
+    let corpus =
+        evaluate_evolved_tectonic_corpus_quality(bundle().authoritative_surface(), &[&snapshot])
+            .unwrap();
+    assert_eq!(corpus.surface_ref(), snapshot.surface_ref());
+    assert_eq!(
+        corpus
+            .metrics()
+            .iter()
+            .map(|metric| metric.id().name())
+            .collect::<Vec<_>>(),
+        vec![
+            "collision-causality-fraction",
+            "continental-area-fraction",
+            "ocean-age-depth-spearman",
+            "regular-triple-junction-angle-fraction",
+            "subduction-causality-fraction",
+            "transform-to-convergent-uplift-ratio",
+        ]
+    );
 }
 
 #[test]

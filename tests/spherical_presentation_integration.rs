@@ -34,7 +34,7 @@ use sekai::{
     TemplateApp,
 };
 
-const EXPECTED_STAGE_IDS: [&str; 16] = [
+const EXPECTED_STAGE_IDS: [&str; 17] = [
     "natural.resolve-climate-rules",
     "natural.project-climate-input",
     "natural.resolve-geologic-rules",
@@ -51,6 +51,7 @@ const EXPECTED_STAGE_IDS: [&str; 16] = [
     "natural.spherical-geology",
     "natural.spherical-preliminary-climate",
     "natural.spherical-hydro-erosion",
+    "natural.spherical-quality",
 ];
 
 fn space() -> SphericalSpaceSpec {

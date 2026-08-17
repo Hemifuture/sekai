@@ -163,6 +163,176 @@ pub fn evaluate_evolved_tectonic_quality(
     builder.finish()
 }
 
+/// Evaluates the six P2 statistical gates over a complete fixed-seed corpus.
+///
+/// Ratios are recombined from their contributing sample counts. Ocean
+/// age/depth ranks and transform/convergent medians are recomputed from the
+/// original authoritative cells rather than averaging per-world summaries.
+pub fn evaluate_evolved_tectonic_corpus_quality(
+    surface: &SphericalSurfaceSnapshot,
+    snapshots: &[&EvolvedTectonicSnapshot],
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    surface
+        .validate()
+        .map_err(|error| invalid_input("surface", error.to_string()))?;
+    if snapshots.is_empty() {
+        return Err(invalid_input(
+            "evolved-tectonic-corpus",
+            "the quality corpus is empty".to_owned(),
+        ));
+    }
+    for snapshot in snapshots {
+        snapshot
+            .validate_against(surface)
+            .map_err(|error| invalid_input("evolved-tectonic-corpus", error.to_string()))?;
+    }
+
+    let mut continental_fractions = Vec::with_capacity(snapshots.len());
+    let mut subduction = FractionAggregate::default();
+    let mut collision = FractionAggregate::default();
+    let mut triple_regularity = FractionAggregate::default();
+    let mut ocean_age_depth = Vec::new();
+    let mut transform_uplift = Vec::new();
+    let mut convergent_uplift = Vec::new();
+    for snapshot in snapshots {
+        let totals = snapshot.material_budget().final_authoritative();
+        continental_fractions.push(checked_ratio(
+            totals.continental().reference_area_m2(),
+            totals.continental().reference_area_m2() + totals.oceanic().reference_area_m2(),
+            "continental-area-fraction",
+        )?);
+        let causality = boundary_causality(surface, snapshot)?;
+        subduction.push(&causality.subduction)?;
+        collision.push(&causality.collision)?;
+        triple_regularity.push(&regular_triple_junction_fraction(surface, snapshot)?)?;
+        append_ocean_age_depth(surface, snapshot, &mut ocean_age_depth);
+        append_boundary_uplift_samples(
+            surface,
+            snapshot,
+            &mut transform_uplift,
+            &mut convergent_uplift,
+        )?;
+    }
+
+    continental_fractions.sort_by(f64::total_cmp);
+    let mut builder = NaturalQualityReportBuilder::new(snapshots[0].surface_ref());
+    builder.record_between(
+        metric_id("continental-area-fraction")?,
+        median_f64(&continental_fractions),
+        count(snapshots.len(), "evolved-tectonic-corpus")?,
+        0.30,
+        0.45,
+    )?;
+    builder.record_observation_at_least(
+        metric_id("subduction-causality-fraction")?,
+        subduction.finish("no ocean-continent subduction edges in the corpus")?,
+        0.80,
+    )?;
+    builder.record_observation_at_least(
+        metric_id("collision-causality-fraction")?,
+        collision.finish("no continental-collision edges in the corpus")?,
+        0.80,
+    )?;
+
+    let ocean_observation = if ocean_age_depth.len() < 2 {
+        MetricObservation::Unavailable {
+            reason: "fewer than two oceanic cells in the corpus".to_owned(),
+        }
+    } else if let Some(value) = weighted_spearman(&ocean_age_depth) {
+        MetricObservation::Available {
+            value,
+            sample_count: count(ocean_age_depth.len(), "corpus-ocean-age-depth")?,
+        }
+    } else {
+        MetricObservation::Unavailable {
+            reason: "corpus ocean age or depth ranks have zero weighted variance".to_owned(),
+        }
+    };
+    builder.record_observation_at_least(
+        metric_id("ocean-age-depth-spearman")?,
+        ocean_observation,
+        0.70,
+    )?;
+    builder.record_observation_at_most(
+        metric_id("regular-triple-junction-angle-fraction")?,
+        triple_regularity.finish("no three-lineage macro junctions in the corpus")?,
+        0.35,
+    )?;
+
+    let transform_observation = if transform_uplift.is_empty() {
+        MetricObservation::Unavailable {
+            reason: "no transform edges in the corpus".to_owned(),
+        }
+    } else if convergent_uplift.is_empty() {
+        MetricObservation::Unavailable {
+            reason: "no convergent edges in the corpus".to_owned(),
+        }
+    } else {
+        let transform = median(&mut transform_uplift);
+        let convergent = median(&mut convergent_uplift);
+        if convergent <= 0.0 {
+            MetricObservation::Unavailable {
+                reason: "corpus convergent median uplift is zero".to_owned(),
+            }
+        } else {
+            MetricObservation::Available {
+                value: checked_ratio(transform, convergent, "corpus-transform-uplift-ratio")?,
+                sample_count: count(
+                    transform_uplift.len() + convergent_uplift.len(),
+                    "corpus-transform-uplift-ratio",
+                )?,
+            }
+        }
+    };
+    builder.record_observation_at_most(
+        metric_id("transform-to-convergent-uplift-ratio")?,
+        transform_observation,
+        0.50,
+    )?;
+    builder.finish()
+}
+
+#[derive(Default)]
+struct FractionAggregate {
+    numerator: f64,
+    samples: u64,
+}
+
+impl FractionAggregate {
+    fn push(&mut self, observation: &MetricObservation) -> Result<(), QualityBuildError> {
+        if let MetricObservation::Available {
+            value,
+            sample_count,
+        } = observation
+        {
+            let contribution = *value * f64::from(*sample_count);
+            if !contribution.is_finite() {
+                return Err(QualityBuildError::NonFiniteAccumulation);
+            }
+            self.numerator += contribution;
+            self.samples = self
+                .samples
+                .checked_add(u64::from(*sample_count))
+                .ok_or(QualityBuildError::SampleCountOverflow)?;
+        }
+        Ok(())
+    }
+
+    fn finish(self, empty_reason: &'static str) -> Result<MetricObservation, QualityBuildError> {
+        if self.samples == 0 {
+            return Ok(MetricObservation::Unavailable {
+                reason: empty_reason.to_owned(),
+            });
+        }
+        let sample_count =
+            u32::try_from(self.samples).map_err(|_| QualityBuildError::SampleCountOverflow)?;
+        Ok(MetricObservation::Available {
+            value: self.numerator / self.samples as f64,
+            sample_count,
+        })
+    }
+}
+
 /// Enforces the exact V5 metric inventory and every per-world hard gate.
 ///
 /// Corpus-scoped metrics retain honest per-world `Fail` or `Unavailable`
@@ -373,6 +543,47 @@ fn boundary_causality(
     })
 }
 
+fn append_boundary_uplift_samples(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+    transform_uplift: &mut Vec<f32>,
+    convergent_uplift: &mut Vec<f32>,
+) -> Result<(), QualityBuildError> {
+    let tectonic = snapshot.compatibility();
+    let uplift = snapshot.forcing().uplift_rate_mm_per_year();
+    for (edge, boundary) in surface.edges().iter().zip(tectonic.boundaries()) {
+        let [first, second] = edge.cells.map(|cell| cell.raw() as usize);
+        match boundary.kind {
+            BoundaryKind::Subduction => {
+                let descending = boundary.subducting_plate.ok_or_else(|| {
+                    invalid_input("subduction", "missing descending plate".to_owned())
+                })?;
+                let first_owner = tectonic
+                    .cell_plates()
+                    .get(first)
+                    .ok_or_else(|| invalid_input("cell-plates", format!("missing cell {first}")))?;
+                let overriding = if first_owner == descending {
+                    second
+                } else {
+                    first
+                };
+                convergent_uplift.push(uplift[overriding].abs());
+            }
+            BoundaryKind::ContinentalCollision => {
+                convergent_uplift.extend([uplift[first].abs(), uplift[second].abs()]);
+            }
+            BoundaryKind::Transform => {
+                transform_uplift.extend([uplift[first].abs(), uplift[second].abs()]);
+            }
+            BoundaryKind::None
+            | BoundaryKind::Weak
+            | BoundaryKind::ContinentalRift
+            | BoundaryKind::OceanicRidge => {}
+        }
+    }
+    Ok(())
+}
+
 fn fraction_observation(
     passed: usize,
     total: usize,
@@ -394,17 +605,8 @@ fn ocean_age_depth_spearman(
     surface: &SphericalSurfaceSnapshot,
     snapshot: &EvolvedTectonicSnapshot,
 ) -> Result<MetricObservation, QualityBuildError> {
-    let tectonic = snapshot.compatibility();
     let mut values = Vec::new();
-    for (index, cell) in surface.cells().iter().enumerate() {
-        if tectonic.crust_kinds().get(index) == Some(CrustKind::Oceanic) {
-            values.push((
-                f64::from(tectonic.crust_age_myr()[index]),
-                -f64::from(tectonic.tectonic_elevation_m()[index]),
-                cell.area.get(),
-            ));
-        }
-    }
+    append_ocean_age_depth(surface, snapshot, &mut values);
     if values.len() < 2 {
         return Ok(MetricObservation::Unavailable {
             reason: "fewer than two oceanic cells".to_owned(),
@@ -422,6 +624,23 @@ fn ocean_age_depth_spearman(
         value,
         sample_count: count(values.len(), "ocean-age-depth-spearman")?,
     })
+}
+
+fn append_ocean_age_depth(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+    values: &mut Vec<(f64, f64, f64)>,
+) {
+    let tectonic = snapshot.compatibility();
+    for (index, cell) in surface.cells().iter().enumerate() {
+        if tectonic.crust_kinds().get(index) == Some(CrustKind::Oceanic) {
+            values.push((
+                f64::from(tectonic.crust_age_myr()[index]),
+                -f64::from(tectonic.tectonic_elevation_m()[index]),
+                cell.area.get(),
+            ));
+        }
+    }
 }
 
 fn regular_triple_junction_fraction(
@@ -572,6 +791,15 @@ fn median(values: &mut [f32]) -> f64 {
         (f64::from(values[middle - 1]) + f64::from(values[middle])) * 0.5
     } else {
         f64::from(values[middle])
+    }
+}
+
+fn median_f64(values: &[f64]) -> f64 {
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) * 0.5
+    } else {
+        values[middle]
     }
 }
 

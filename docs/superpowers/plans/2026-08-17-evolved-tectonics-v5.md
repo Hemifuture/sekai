@@ -291,31 +291,31 @@ Files:
 - Create: `docs/superpowers/specs/2026-08-17-evolved-tectonics-v5-completion.md`
 - Modify: this plan
 
-- [ ] **Step 1: Add ignored Release evidence/performance writers**
+- [x] **Step 1: Add ignored Release evidence/performance writers**
 
   Write deterministic JSON/CSV evidence and diagnostic atlases only under
   `target/natural-quality/p2`. Record exact hashes, sizes, profile timings,
   cancellation latency, per-seed metrics, aggregate metrics, and material
   budgets.
 
-- [ ] **Step 2: Run every P2 gate fresh**
+- [x] **Step 2: Run every P2 gate fresh**
 
   Run formatting, all-target/all-feature check, warning-free Clippy, focused
   P2 suites, adjacent V4 suites, WASM, Release 17-seed evidence, profile
   performance, and P0 baseline regeneration.
 
-- [ ] **Step 3: Inspect atlases and conduct direct review**
+- [x] **Step 3: Inspect atlases and conduct direct review**
 
   Inspect material, plate, forcing, age, and budget diagnostic views. Review
   contract safety, equations, paper/extension labeling, determinism,
   cancellation, performance, and compatibility. Fix every Critical or
   Important issue and re-run affected gates.
 
-- [ ] **Step 4: Write completion record and freeze P3 handoff**
+- [x] **Step 4: Write completion record and freeze P3 handoff**
 
   Record exact evidence and explicitly state remaining visual limitations: P2
   supplies better causes but P3-P9 are still required for finished terrain.
 
-- [ ] **Step 5: Check all boxes and commit**
+- [x] **Step 5: Check all boxes and commit**
 
   `git commit -m "docs: record evolved tectonics v5"`
