@@ -1,11 +1,13 @@
 //! Deterministic planar and spherical site and topology generation.
 
+mod conservative_remap;
 mod geodesic_voronoi;
 mod jittered_grid;
 mod planar_voronoi;
 mod spherical_stage;
 mod stage;
 
+pub use conservative_remap::{ConservativeRemapError, ConservativeSurfaceMapBuilder};
 pub use geodesic_voronoi::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
 pub use jittered_grid::JitteredGridSites;
 pub use planar_voronoi::{PlanarVoronoiBuilder, SpatialBuildError};

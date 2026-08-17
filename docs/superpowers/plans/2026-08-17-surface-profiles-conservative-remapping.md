@@ -197,20 +197,20 @@ impl ConservativeSurfaceMapBuilder {
 }
 ```
 
-- [ ] **Step 1: Write RED analytic map tests**
+- [x] **Step 1: Write RED analytic map tests**
 
 Cover 42 -> 42 identity, 42 -> 162 and the transposed 162 -> 42 map, row/column
 closure `<= 1e-10`, positive finite intersections, sphere-area closure,
 byte-identical repetition, unequal-radius rejection, and cancellation without a
 returned map.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test conservative_surface_map_generation -- --nocapture
 ```
 
-- [ ] **Step 3: Implement geometric primitives**
+- [x] **Step 3: Implement geometric primitives**
 
 Implement deterministic 3-D k-d nearest lookup, sorted adjacency rings,
 oriented great-circle half-space clipping, minor-arc plane intersection,
@@ -218,14 +218,14 @@ duplicate-vertex removal, compensated spherical polygon area, and canonical
 sparse rows. Expand candidate rings if raw fine-cell closure exceeds `1e-9`;
 never fall back to nearest-neighbour weights.
 
-- [ ] **Step 4: Implement deterministic margin balancing**
+- [x] **Step 4: Implement deterministic margin balancing**
 
 Alternate target-row and source-column scaling in canonical order. Require both
 relative residuals `<= 1e-12` within 96 iterations. Reject a correction large
 enough to indicate missing geometry. Derive tangent transforms from canonical
 source/target bases.
 
-- [ ] **Step 5: Run focused and spatial tests**
+- [x] **Step 5: Run focused and spatial tests**
 
 ```powershell
 cargo test conservative_remap --lib -- --nocapture
@@ -233,7 +233,7 @@ cargo test --test conservative_surface_map_generation -- --nocapture
 cargo test --test spherical_surface_generation --test spherical_primitives -- --nocapture
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/generators/spatial/conservative_remap.rs src/generators/spatial/mod.rs tests/conservative_surface_map_generation.rs
