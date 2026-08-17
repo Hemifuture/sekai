@@ -3,12 +3,27 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::world::natural::{
     GlobalCirculationSnapshot, LandOceanKind, NaturalQualityReport, PrimaryReliefSnapshot,
-    QualityMetricId,
+    QualityMetricId, QualityMetricStatus,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
 
 const METRIC_NAMESPACE: &str = "sekai.global-circulation-v1";
 const METRIC_VERSION: u16 = 1;
+const EXPECTED_METRIC_NAMES: [&str; 13] = [
+    "cubed-face-seam-speed-ratio",
+    "low-latitude-easterly-fraction",
+    "midlatitude-westerly-fraction",
+    "mixed-layer-warmer-than-thermocline-fraction",
+    "ocean-current-land-leakage-max-m-s",
+    "ocean-gyre-circulation-fraction",
+    "orographic-precipitation-response",
+    "orographic-rain-shadow-correlation",
+    "positive-thermocline-depth-fraction",
+    "seasonal-hemisphere-phase-correlation",
+    "seasonal-hemisphere-phase-fraction",
+    "vertical-shear-rms-m-s",
+    "warm-ocean-humidity-correlation",
+];
 
 pub fn evaluate_global_circulation_quality(
     surface: &SphericalSurfaceSnapshot,
@@ -383,4 +398,37 @@ fn norm(vector: [f64; 3]) -> f64 {
 
 fn invalid_input(input: &'static str, reason: String) -> QualityBuildError {
     QualityBuildError::InvalidInput { input, reason }
+}
+
+/// Enforces the exact P4 per-world metric inventory and every hard gate.
+pub(crate) fn validate_global_circulation_quality_report(
+    report: &NaturalQualityReport,
+    expected_surface: SurfaceRef,
+) -> Result<(), String> {
+    report.validate().map_err(|error| error.to_string())?;
+    if report.surface_ref() != expected_surface {
+        return Err("P4 quality report is not bound to global circulation authority".to_owned());
+    }
+    if report.metrics().len() != EXPECTED_METRIC_NAMES.len() {
+        return Err(format!(
+            "P4 quality report contains {} metrics; expected {}",
+            report.metrics().len(),
+            EXPECTED_METRIC_NAMES.len()
+        ));
+    }
+    for (metric, expected_name) in report.metrics().iter().zip(EXPECTED_METRIC_NAMES) {
+        if metric.id().namespace() != METRIC_NAMESPACE
+            || metric.id().version() != METRIC_VERSION
+            || metric.id().name() != expected_name
+        {
+            return Err(format!("unexpected P4 metric {}", metric.id().name()));
+        }
+        if metric.status() != QualityMetricStatus::Pass {
+            return Err(format!(
+                "per-world P4 metric {expected_name} returned {:?}",
+                metric.status()
+            ));
+        }
+    }
+    Ok(())
 }

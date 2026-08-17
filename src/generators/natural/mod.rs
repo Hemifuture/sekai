@@ -16,6 +16,7 @@ mod geologic_stage;
 mod geologic_substrate;
 mod geology;
 mod global_circulation;
+mod global_circulation_stage;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;
@@ -104,6 +105,11 @@ pub use global_circulation::{
     LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange, PairedMomentumExchange,
     ProductionCandidateSelection, ProjectedMonthlyScalar, SplitExplicitRk3Integrator,
     CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, SELECTED_PRODUCTION_INTEGRATOR,
+};
+pub use global_circulation_stage::{
+    global_circulation_graph, ClimateWorkDomainArtifact, ClimateWorkDomainStage,
+    ClimateWorkDomainStageInputs, GlobalCirculationArtifact, GlobalCirculationStage,
+    GlobalCirculationStageInputs,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{

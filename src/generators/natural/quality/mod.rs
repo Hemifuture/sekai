@@ -17,6 +17,7 @@ pub use evolved_tectonics::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
 };
 pub use global_circulation::evaluate_global_circulation_quality;
+pub(crate) use global_circulation::validate_global_circulation_quality_report;
 pub(crate) use primary_relief::validate_primary_relief_quality_report;
 pub use primary_relief::{
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,

@@ -119,12 +119,12 @@ Files:
 - Modify: `src/generators/natural/mod.rs`
 - Create: `tests/global_circulation_stage.rs`
 
-- [ ] Write RED tests for keys, stage identities, exact dependencies, cache
+- [x] Write RED tests for keys, stage identities, exact dependencies, cache
   restore/selective invalidation, malformed inputs, cancellation, and atomic
   publication.
-- [ ] Add `ClimateWorkDomainArtifact`, `GlobalCirculationArtifact`, both stages,
+- [x] Add `ClimateWorkDomainArtifact`, `GlobalCirculationArtifact`, both stages,
   and `global_circulation_graph` extending P3.
-- [ ] Verify V4 and P2/P3 graphs/hashes remain unchanged; commit.
+- [x] Verify V4 and P2/P3 graphs/hashes remain unchanged; commit.
 
 ## Task 9: Freeze evidence, atlas, performance, and P4 completion
 
