@@ -11,6 +11,7 @@ mod hydro_erosion;
 mod hydro_erosion_spec;
 mod hydrology;
 mod mantle;
+mod quality;
 mod relief;
 mod relief_spec;
 mod spec;
@@ -92,6 +93,10 @@ pub use hydrology::{
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
     MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_STRENGTH_PERMILLE, MIN_HOTSPOT_STRENGTH_PERMILLE,
+};
+pub use quality::{
+    NaturalQualityReport, NaturalQualityValidationError, QualityBounds, QualityMetric,
+    QualityMetricId, QualityMetricStatus, NATURAL_QUALITY_REPORT_SCHEMA_V1,
 };
 pub use relief::{
     ElevationField, LandOceanField, LandOceanKind, ReliefSnapshot, ReliefValidationError,

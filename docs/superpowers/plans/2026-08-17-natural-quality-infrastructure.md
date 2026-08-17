@@ -51,7 +51,7 @@ tests/natural_quality_baseline.rs
 - Consumes: `SurfaceRef`, serde bounded-wire conventions.
 - Produces: `QualityMetricId`, `QualityMetricStatus`, `QualityBounds`, `QualityMetric`, `NaturalQualityReport`, `NaturalQualityValidationError`, `NATURAL_QUALITY_REPORT_SCHEMA_V1`.
 
-- [ ] **Step 1: Write contract tests that fail to compile**
+- [x] **Step 1: Write contract tests that fail to compile**
 
 Construct this exact public API:
 
@@ -73,13 +73,13 @@ let report = NaturalQualityReport::new(
 
 Assert exact JSON round-trip, sorted unique IDs, finite values/bounds, `min <= max`, nonzero samples for available values, no value for `Unavailable`, non-empty reason for `Unavailable`, no reason for `Pass`, bound/status agreement, surface validation, wrong-schema rejection, duplicate rejection, invalid identifier rejection, and a maximum of 4,096 metrics during deserialization.
 
-- [ ] **Step 2: Run the contract test and verify RED**
+- [x] **Step 2: Run the contract test and verify RED**
 
 Run: `cargo test --test natural_quality_contracts -- --nocapture`
 
 Expected: compile failure because `world::natural::QualityMetric` and related types do not exist.
 
-- [ ] **Step 3: Implement the minimal validated contract**
+- [x] **Step 3: Implement the minimal validated contract**
 
 Use these representations:
 
@@ -124,7 +124,7 @@ pub struct NaturalQualityReport {
 
 Deserialize each validated struct through a private wire and constructor. Identifier syntax matches field-component syntax: 1..=128 lowercase ASCII bytes, `a-z0-9-_.`, alphanumeric endpoints. Provide `at_least`, `at_most`, and `between` constructors plus zero-copy getters. Sort metrics in `NaturalQualityReport::new`, reject duplicates, and never infer status during deserialization.
 
-- [ ] **Step 4: Run contract and adjacent world tests**
+- [x] **Step 4: Run contract and adjacent world tests**
 
 ```powershell
 cargo test --test natural_quality_contracts -- --nocapture
@@ -134,7 +134,7 @@ cargo test --test world_primitives -- --nocapture
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/world/natural/quality.rs src/world/natural/mod.rs tests/natural_quality_contracts.rs
