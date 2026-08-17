@@ -106,7 +106,7 @@ Files:
 - Create: `docs/superpowers/specs/2026-08-17-substrate-primary-relief-p3-completion.md`
 - Modify: this plan
 
-- [ ] Run fmt, all-target/all-feature check/test/Clippy, WASM, focused/adjacent suites, P0 baseline, P2 evidence, and all P3 Release writers.
-- [ ] Conduct direct equation/provenance/determinism/cancellation review.
-- [ ] Record exact hashes, metrics, timing, atlas review, limitations, and P4 handoff.
-- [ ] Check all boxes and commit: `docs: record substrate and primary relief`
+- [x] Run fmt, all-target/all-feature check/test/Clippy, WASM, focused/adjacent suites, P0 baseline, P2 evidence, and all P3 Release writers.
+- [x] Conduct direct equation/provenance/determinism/cancellation review.
+- [x] Record exact hashes, metrics, timing, atlas review, limitations, and P4 handoff.
+- [x] Check all boxes and commit: `docs: record substrate and primary relief`
