@@ -11,7 +11,7 @@ use super::{
 use crate::generators::natural::spherical_crust_physics::continental_isostatic_elevation_m;
 use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
 use crate::generators::natural::spherical_tectonics::model::{
-    CrustSample, FormationTectonicRecipe, MaterialColumn, TectonicState,
+    CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, MaterialColumn, TectonicState,
 };
 use crate::world::natural::{
     CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
@@ -92,6 +92,82 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_divergent_exten
     })
 }
 
+/// V5 pure-shear extension updates the extensive continental footprint while
+/// preserving continental volume. The legacy compatibility fields are always
+/// re-derived from the resulting material column.
+pub(in crate::generators::natural::spherical_tectonics) fn apply_divergent_extension_v5(
+    surface: &SphericalSurfaceSnapshot,
+    events: &[ContactEvent],
+    next: &mut TectonicState,
+    actions: &mut ProcessActions,
+    ledger: &mut EvolutionMaterialLedger,
+    delta_myr: f32,
+) -> Result<ProcessStats, ProcessError> {
+    if !delta_myr.is_finite() || delta_myr < 0.0 {
+        return Err(ProcessError::InvalidDeltaMyr { found: delta_myr });
+    }
+    actions.validate_for(next.samples.len())?;
+    for event in events
+        .iter()
+        .filter(|event| event.kind == ContactKind::Divergence)
+    {
+        let speed = event.signed_normal_speed_mm_per_year.max(0.0);
+        for &sample in event.sample_indices.iter().flatten() {
+            let sample = sample as usize;
+            if next.samples.get(sample).is_none() {
+                return Err(ProcessError::ContactSampleOutOfBounds {
+                    sample,
+                    samples: next.samples.len(),
+                });
+            }
+            actions.record_extensional_speed(sample, speed)?;
+        }
+    }
+
+    let mut affected_samples = 0;
+    for (index, (sample, speed)) in next
+        .samples
+        .iter_mut()
+        .zip(actions.extensional_speeds_mm_per_year())
+        .enumerate()
+    {
+        let Some(old_thickness) = sample.material.continental_thickness_km() else {
+            continue;
+        };
+        if *speed <= 0.0 {
+            continue;
+        }
+        if surface.cell(sample.anchor).is_none() {
+            return Err(ProcessError::InvalidAnchor {
+                sample: index,
+                anchor: sample.anchor,
+                cells: surface.cells().len(),
+            });
+        }
+        let extension_m = f64::from(*speed) * f64::from(delta_myr) * 1_000.0;
+        let beta = (1.0 + extension_m / CONTINENTAL_RIFT_ZONE_WIDTH_M)
+            .clamp(1.0, MAXIMUM_STEP_STRETCH_FACTOR);
+        let (extended, area_gain) = sample.material.extend_continental_pure_shear(beta)?;
+        if area_gain <= 0.0 {
+            continue;
+        }
+        let new_thickness = extended
+            .continental_thickness_km()
+            .expect("extended continental material remains present");
+        let subsidence = continental_isostatic_elevation_m(new_thickness)
+            - continental_isostatic_elevation_m(old_thickness);
+        sample.material = extended;
+        sample.synchronize_compatibility_from_material();
+        sample.tectonic_elevation_m = bounded_elevation(sample.tectonic_elevation_m + subsidence);
+        ledger.record_rift_extension_area_gain(area_gain);
+        affected_samples += 1;
+    }
+    Ok(ProcessStats {
+        affected_samples,
+        ..ProcessStats::default()
+    })
+}
+
 pub(in crate::generators::natural::spherical_tectonics) fn fill_spreading_gaps(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
@@ -139,6 +215,23 @@ pub(in crate::generators::natural::spherical_tectonics) fn fill_spreading_gaps(
                 .expect("spreading creates bounded oceanic material"),
         });
         stats.spawned_samples += 1;
+    }
+    Ok(stats)
+}
+
+pub(in crate::generators::natural::spherical_tectonics) fn fill_spreading_gaps_v5(
+    surface: &SphericalSurfaceSnapshot,
+    events: &[ContactEvent],
+    current: &TectonicState,
+    next: &mut TectonicState,
+    actions: &mut ProcessActions,
+    recipe: FormationTectonicRecipe,
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<ProcessStats, ProcessError> {
+    let first_spawn = actions.spawned_samples().len();
+    let stats = fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
+    for sample in &actions.spawned_samples()[first_spawn..] {
+        ledger.record_oceanic_spreading(sample.material.oceanic_amount()?);
     }
     Ok(stats)
 }
@@ -261,16 +354,19 @@ fn closest_owner<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_divergent_extension, fill_spreading_gaps};
+    use super::{
+        apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
+        fill_spreading_gaps_v5,
+    };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::initial_state::build_initial_state;
     use crate::generators::natural::spherical_tectonics::model::{
-        FormationTectonicRecipe, TectonicState,
+        EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{
-        commit_process_actions, constants, ProcessActions,
+        commit_process_actions, commit_process_actions_v5, constants, ProcessActions,
     };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -498,5 +594,132 @@ mod tests {
             .enumerate()
             .filter(|(index, _)| !continental.contains(index))
             .all(|(index, sample)| *sample == current.samples[index]));
+    }
+
+    #[test]
+    fn evolved_extension_gains_area_and_preserves_continental_volume() {
+        let (surface, topology) = fixture();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            recipe,
+            &streams(),
+        )
+        .unwrap();
+        let mut next = copy_state(&current);
+        let continental = next
+            .samples
+            .iter()
+            .enumerate()
+            .filter(|(_, sample)| sample.kind == CrustKind::Continental)
+            .map(|(index, _)| index)
+            .take(2)
+            .collect::<Vec<_>>();
+        let before = continental
+            .iter()
+            .map(|&index| next.samples[index].material)
+            .collect::<Vec<_>>();
+        let event = ContactEvent {
+            cell: next.samples[continental[0]].anchor,
+            edge: None,
+            sample_indices: [Some(continental[0] as u32), Some(continental[1] as u32)],
+            lineages: [
+                Some(next.samples[continental[0]].owner),
+                Some(next.samples[continental[1]].owner),
+            ],
+            kind: ContactKind::Divergence,
+            signed_normal_speed_mm_per_year: 60.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&current).unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+
+        let stats = apply_divergent_extension_v5(
+            &surface,
+            &[event],
+            &mut next,
+            &mut actions,
+            &mut ledger,
+            constants::DEFAULT_DELTA_MYR as f32,
+        )
+        .unwrap();
+
+        assert_eq!(stats.affected_samples, 2);
+        let mut expected_gain = 0.0;
+        for (&index, old) in continental.iter().zip(before) {
+            let new = next.samples[index].material;
+            assert!(new.continental_reference_area_m2() > old.continental_reference_area_m2());
+            assert_eq!(
+                new.continental_volume_m3().to_bits(),
+                old.continental_volume_m3().to_bits()
+            );
+            assert!(
+                new.continental_thickness_km().unwrap() < old.continental_thickness_km().unwrap()
+            );
+            expected_gain +=
+                new.continental_reference_area_m2() - old.continental_reference_area_m2();
+        }
+        assert_eq!(
+            ledger
+                .processes()
+                .unwrap()
+                .rift_extension_continental_area_gain_m2(),
+            expected_gain
+        );
+        ledger.control_budget(&next).unwrap();
+    }
+
+    #[test]
+    fn evolved_spreading_creates_ledgered_age_zero_oceanic_material() {
+        let (surface, topology) = fixture();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            recipe,
+            &streams(),
+        )
+        .unwrap();
+        let mut next = copy_state(&current);
+        let gap_cell = CellId::from_raw(3);
+        let gap = ContactEvent {
+            cell: gap_cell,
+            edge: None,
+            sample_indices: [None, None],
+            lineages: [None, None],
+            kind: ContactKind::Gap,
+            signed_normal_speed_mm_per_year: 0.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&current).unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+
+        fill_spreading_gaps_v5(
+            &surface,
+            &[gap],
+            &current,
+            &mut next,
+            &mut actions,
+            recipe,
+            &mut ledger,
+        )
+        .unwrap();
+        let created = *actions.spawned_samples().last().unwrap();
+        commit_process_actions_v5(&mut next, &mut actions, &mut ledger).unwrap();
+
+        assert_eq!(created.age_myr, 0.0);
+        assert_eq!(created.kind, CrustKind::Oceanic);
+        assert_eq!(
+            ledger.processes().unwrap().oceanic_spreading_created(),
+            created.material.oceanic_amount().unwrap()
+        );
+        ledger.control_budget(&next).unwrap();
     }
 }

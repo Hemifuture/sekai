@@ -8,12 +8,18 @@ use std::collections::{BinaryHeap, VecDeque};
 use thiserror::Error;
 
 use super::contacts::ContactError;
-use super::model::{CrustSample, LineageId, TectonicState};
+use super::model::{
+    CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn, MaterialColumnError,
+    TectonicState,
+};
 use super::passive_margin::relax_passive_margins;
 use super::workspace::TectonicWorkspace;
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
-    CrustKind, PlateIdField, SphericalOrogenyKind, SphericalPlate, MAX_PLATE_COUNT,
+    CrustKind, PlateIdField, SphericalOrogenyKind, SphericalPlate,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_PLATE_COUNT, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, spherical_triangle_area_unit, SphericalSurfaceSnapshot, UnitVector3,
@@ -82,6 +88,21 @@ pub(super) enum ResampleError {
     UnassignedDomainCell { cell: CellId },
     #[error("current moving crust has no {kind:?} material source for conservative remapping")]
     MissingMaterialSource { kind: CrustKind },
+    #[error("material operation failed: {0}")]
+    Material(#[from] MaterialColumnError),
+    #[error("continental reference area {area_m2} exceeds spherical area {sphere_area_m2}")]
+    ContinentalAreaExceedsSphere { area_m2: f64, sphere_area_m2: f64 },
+    #[error(
+        "{kind:?} volume {volume_m3} is outside bounded feasible interval {minimum_m3}..={maximum_m3}"
+    )]
+    InfeasibleMaterialVolume {
+        kind: CrustKind,
+        volume_m3: f64,
+        minimum_m3: f64,
+        maximum_m3: f64,
+    },
+    #[error("bounded {kind:?} volume allocation left residual {residual_m3}")]
+    MaterialVolumeResidual { kind: CrustKind, residual_m3: f64 },
 }
 
 pub(super) fn resampling_interval_steps(state: &TectonicState) -> u16 {
@@ -153,6 +174,402 @@ pub(super) fn resample_current_state(
     workspace.events.clear();
     workspace.mark_resampled();
     Ok(())
+}
+
+/// V5 geometry follows the retained moving-sample reconstruction, while its
+/// material solve is extensive and ledgered instead of occupied-anchor MBO.
+pub(super) fn resample_current_state_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    workspace: &mut TectonicWorkspace,
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if topology.cell_count() != cell_count {
+        return Err(ResampleError::CardinalityMismatch {
+            surface_cells: cell_count,
+            topology_cells: topology.cell_count(),
+        });
+    }
+
+    workspace
+        .coverage
+        .rebuild(cell_count, &workspace.current.samples)?;
+    workspace
+        .next
+        .copy_plate_table_into_reusable_next(&workspace.current);
+    workspace.next.samples.clear();
+    workspace.next.samples.reserve(cell_count);
+    let mut local_candidates = Vec::with_capacity(32);
+    for cell in surface.cells() {
+        let sample = resample_cell(
+            surface,
+            topology,
+            &workspace.current.samples,
+            &workspace.coverage,
+            cell.id,
+            &mut local_candidates,
+        )?;
+        workspace.next.samples.push(sample);
+    }
+    reconstruct_connected_plate_domains(
+        surface,
+        topology,
+        &workspace.current.samples,
+        &workspace.coverage,
+        &mut workspace.next,
+        &mut local_candidates,
+    )?;
+    conservative_material_resample_v5(
+        surface,
+        topology,
+        &workspace.current,
+        &mut workspace.next.samples,
+        ledger,
+    )?;
+
+    std::mem::swap(&mut workspace.current, &mut workspace.next);
+    workspace.next.samples.clear();
+    workspace.next.plates.clear();
+    workspace.events.clear();
+    workspace.mark_resampled();
+    Ok(())
+}
+
+fn conservative_material_resample_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source: &TectonicState,
+    remapped: &mut [CrustSample],
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if remapped.len() != cell_count {
+        return Err(ResampleError::StateCardinalityMismatch {
+            samples: remapped.len(),
+            surface_cells: cell_count,
+        });
+    }
+    let source_totals = source.material_totals()?;
+    let continental_area = source_totals.continental().reference_area_m2();
+    let continental_volume = source_totals.continental().volume_m3();
+    let source_oceanic_area = source_totals.oceanic().reference_area_m2();
+    let source_oceanic_volume = source_totals.oceanic().volume_m3();
+    let sphere_area = surface.total_cell_area().get();
+    let area_tolerance = sphere_area * 1.0e-12;
+    if continental_area > sphere_area + area_tolerance {
+        return Err(ResampleError::ContinentalAreaExceedsSphere {
+            area_m2: continental_area,
+            sphere_area_m2: sphere_area,
+        });
+    }
+    let continental_area = continental_area.min(sphere_area);
+
+    let order = material_allocation_order(surface, topology, &source.samples, remapped)?;
+    let mut continental_areas = vec![0.0; cell_count];
+    let mut remaining = continental_area;
+    for index in order {
+        if remaining <= 0.0 {
+            break;
+        }
+        let area = surface.cells()[index].area.get();
+        let allocated = remaining.min(area);
+        continental_areas[index] = allocated;
+        remaining -= allocated;
+    }
+    if remaining.abs() > area_tolerance {
+        return Err(ResampleError::ContinentalAreaExceedsSphere {
+            area_m2: continental_area,
+            sphere_area_m2: sphere_area,
+        });
+    }
+    // Close the final ulp on the last eligible cell so the compensated total
+    // matches the incoming extensive tracer rather than a rounded cell count.
+    let allocated = compensated_sum(&continental_areas);
+    let correction = continental_area - allocated;
+    if correction != 0.0 {
+        let pivot = continental_areas
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, area)| {
+                **area > 0.0
+                    && **area + correction >= 0.0
+                    && **area + correction <= surface.cells()[*index].area.get()
+            })
+            .map(|(index, _)| index)
+            .ok_or(ResampleError::MaterialVolumeResidual {
+                kind: CrustKind::Continental,
+                residual_m3: correction,
+            })?;
+        continental_areas[pivot] += correction;
+    }
+    let oceanic_areas = surface
+        .cells()
+        .iter()
+        .zip(&continental_areas)
+        .map(|(cell, continental)| (cell.area.get() - continental).max(0.0))
+        .collect::<Vec<_>>();
+    let target_oceanic_area = compensated_sum(&oceanic_areas);
+    let oceanic_area_delta = target_oceanic_area - source_oceanic_area;
+    let target_oceanic_volume = coverage_closed_oceanic_volume(
+        source_oceanic_area,
+        source_oceanic_volume,
+        target_oceanic_area,
+    );
+    let oceanic_volume_delta = target_oceanic_volume - source_oceanic_volume;
+
+    let continental_preferences = remapped
+        .iter()
+        .map(|sample| {
+            sample
+                .material
+                .continental_thickness_km()
+                .map(f64::from)
+                .unwrap_or(35.0)
+        })
+        .collect::<Vec<_>>();
+    let oceanic_preferences = remapped
+        .iter()
+        .map(|sample| {
+            sample
+                .material
+                .oceanic_thickness_km()
+                .map(f64::from)
+                .unwrap_or(7.0)
+        })
+        .collect::<Vec<_>>();
+    let continental_volumes = bounded_volume_water_fill(
+        CrustKind::Continental,
+        &continental_areas,
+        &continental_preferences,
+        continental_volume,
+        f64::from(CONTINENTAL_CRUST_MIN_THICKNESS_KM),
+        f64::from(CONTINENTAL_CRUST_MAX_THICKNESS_KM),
+    )?;
+    let oceanic_volumes = bounded_volume_water_fill(
+        CrustKind::Oceanic,
+        &oceanic_areas,
+        &oceanic_preferences,
+        target_oceanic_volume,
+        f64::from(OCEANIC_CRUST_MIN_THICKNESS_KM),
+        f64::from(OCEANIC_CRUST_MAX_THICKNESS_KM),
+    )?;
+
+    for index in 0..cell_count {
+        remapped[index].material = MaterialColumn::new(
+            continental_areas[index],
+            continental_volumes[index],
+            oceanic_areas[index],
+            oceanic_volumes[index],
+        )?;
+        let previous_kind = remapped[index].kind;
+        remapped[index].synchronize_compatibility_from_material();
+        if remapped[index].kind == CrustKind::Continental {
+            remapped[index].age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
+        } else if previous_kind == CrustKind::Continental {
+            remapped[index].age_myr = 0.0;
+        }
+    }
+    ledger.record_coverage_change(oceanic_area_delta, oceanic_volume_delta)?;
+    Ok(())
+}
+
+fn material_allocation_order(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source: &[CrustSample],
+    remapped: &[CrustSample],
+) -> Result<Vec<usize>, ResampleError> {
+    let phase = diffuse_extensive_material_phase(topology, remapped);
+    let mut order = (0..surface.cells().len()).collect::<Vec<_>>();
+    let has_continental = source
+        .iter()
+        .any(|sample| sample.material.continental_reference_area_m2() > 0.0);
+    let has_oceanic = source
+        .iter()
+        .any(|sample| sample.material.oceanic_reference_area_m2() > 0.0);
+    if !has_continental || !has_oceanic {
+        order.sort_by(|&first, &second| {
+            phase[second]
+                .total_cmp(&phase[first])
+                .then_with(|| first.cmp(&second))
+        });
+        return Ok(order);
+    }
+    let continental = nearest_component_map(surface, topology, source, CrustKind::Continental)?;
+    let oceanic = nearest_component_map(surface, topology, source, CrustKind::Oceanic)?;
+    order.sort_by(|&first, &second| {
+        phase[second]
+            .total_cmp(&phase[first])
+            .then_with(|| {
+                geometric_material_affinity(surface, source, &continental, &oceanic, second)
+                    .total_cmp(&geometric_material_affinity(
+                        surface,
+                        source,
+                        &continental,
+                        &oceanic,
+                        first,
+                    ))
+            })
+            .then_with(|| {
+                material_affinity(&continental, &oceanic, second).cmp(&material_affinity(
+                    &continental,
+                    &oceanic,
+                    first,
+                ))
+            })
+            .then_with(|| continental.source[first].cmp(&continental.source[second]))
+            .then_with(|| oceanic.source[first].cmp(&oceanic.source[second]))
+            .then_with(|| first.cmp(&second))
+    });
+    Ok(order)
+}
+
+fn diffuse_extensive_material_phase(
+    topology: &NaturalTopologyIndex,
+    remapped: &[CrustSample],
+) -> Vec<f64> {
+    let current = remapped
+        .iter()
+        .map(|sample| {
+            let continental = sample.material.continental_reference_area_m2();
+            let oceanic = sample.material.oceanic_reference_area_m2();
+            let total = continental + oceanic;
+            if total > 0.0 {
+                (continental - oceanic) / total
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+    diffuse_phase_values(topology, current)
+}
+
+fn coverage_closed_oceanic_volume(
+    source_area_m2: f64,
+    source_volume_m3: f64,
+    target_area_m2: f64,
+) -> f64 {
+    if target_area_m2 == 0.0 {
+        return 0.0;
+    }
+    if source_area_m2 == 0.0 {
+        return target_area_m2 * 7_000.0;
+    }
+    let area_delta = target_area_m2 - source_area_m2;
+    if area_delta > 0.0 {
+        source_volume_m3 + area_delta * 7_000.0
+    } else {
+        source_volume_m3 * (target_area_m2 / source_area_m2)
+    }
+}
+
+fn bounded_volume_water_fill(
+    kind: CrustKind,
+    areas_m2: &[f64],
+    preferred_thickness_km: &[f64],
+    target_volume_m3: f64,
+    minimum_thickness_km: f64,
+    maximum_thickness_km: f64,
+) -> Result<Vec<f64>, ResampleError> {
+    debug_assert_eq!(areas_m2.len(), preferred_thickness_km.len());
+    let total_area = compensated_sum(areas_m2);
+    if total_area == 0.0 {
+        if target_volume_m3 == 0.0 {
+            return Ok(vec![0.0; areas_m2.len()]);
+        }
+        return Err(ResampleError::InfeasibleMaterialVolume {
+            kind,
+            volume_m3: target_volume_m3,
+            minimum_m3: 0.0,
+            maximum_m3: 0.0,
+        });
+    }
+    let minimum_m3 = total_area * minimum_thickness_km * 1_000.0;
+    let maximum_m3 = total_area * maximum_thickness_km * 1_000.0;
+    let tolerance = maximum_m3.abs().max(1.0) * 1.0e-12;
+    if target_volume_m3 < minimum_m3 - tolerance || target_volume_m3 > maximum_m3 + tolerance {
+        return Err(ResampleError::InfeasibleMaterialVolume {
+            kind,
+            volume_m3: target_volume_m3,
+            minimum_m3,
+            maximum_m3,
+        });
+    }
+    let target_volume_m3 = target_volume_m3.clamp(minimum_m3, maximum_m3);
+    let mut low = preferred_thickness_km
+        .iter()
+        .map(|preferred| minimum_thickness_km - preferred)
+        .fold(f64::INFINITY, f64::min);
+    let mut high = preferred_thickness_km
+        .iter()
+        .map(|preferred| maximum_thickness_km - preferred)
+        .fold(f64::NEG_INFINITY, f64::max);
+    for _ in 0..96 {
+        let shift = (low + high) * 0.5;
+        let volume = compensated_sum_iter(areas_m2.iter().zip(preferred_thickness_km).map(
+            |(area, preferred)| {
+                area * (preferred + shift).clamp(minimum_thickness_km, maximum_thickness_km)
+                    * 1_000.0
+            },
+        ));
+        if volume < target_volume_m3 {
+            low = shift;
+        } else {
+            high = shift;
+        }
+    }
+    let shift = (low + high) * 0.5;
+    let mut volumes = areas_m2
+        .iter()
+        .zip(preferred_thickness_km)
+        .map(|(area, preferred)| {
+            if *area == 0.0 {
+                0.0
+            } else {
+                area * (preferred + shift).clamp(minimum_thickness_km, maximum_thickness_km)
+                    * 1_000.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut residual = target_volume_m3 - compensated_sum(&volumes);
+    for index in (0..volumes.len()).rev() {
+        if residual == 0.0 || areas_m2[index] == 0.0 {
+            continue;
+        }
+        let lower = areas_m2[index] * minimum_thickness_km * 1_000.0;
+        let upper = areas_m2[index] * maximum_thickness_km * 1_000.0;
+        let correction = residual.clamp(lower - volumes[index], upper - volumes[index]);
+        volumes[index] += correction;
+        residual -= correction;
+    }
+    if residual.abs() > tolerance {
+        return Err(ResampleError::MaterialVolumeResidual {
+            kind,
+            residual_m3: residual,
+        });
+    }
+    Ok(volumes)
+}
+
+fn compensated_sum(values: &[f64]) -> f64 {
+    compensated_sum_iter(values.iter().copied())
+}
+
+fn compensated_sum_iter(values: impl Iterator<Item = f64>) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
+    for value in values {
+        let next = sum + value;
+        correction += if sum.abs() >= value.abs() {
+            (sum - next) + value
+        } else {
+            (value - next) + sum
+        };
+        sum = next;
+    }
+    sum + correction
 }
 
 /// Applies a conservative categorical correction after semi-Lagrangian
@@ -277,13 +694,17 @@ fn conservative_material_remap(
 }
 
 fn diffuse_material_phase(topology: &NaturalTopologyIndex, remapped: &[CrustSample]) -> Vec<f64> {
-    let mut current = remapped
+    let current = remapped
         .iter()
         .map(|sample| match sample.kind {
             CrustKind::Continental => 1.0,
             CrustKind::Oceanic => -1.0,
         })
         .collect::<Vec<_>>();
+    diffuse_phase_values(topology, current)
+}
+
+fn diffuse_phase_values(topology: &NaturalTopologyIndex, mut current: Vec<f64>) -> Vec<f64> {
     let mut next = vec![0.0; current.len()];
     for _ in 0..MATERIAL_HEAT_STEPS {
         for (index, arcs) in topology.arcs().iter().enumerate() {
@@ -385,6 +806,60 @@ fn nearest_material_map(
         }
     }
 
+    Ok(NearestMaterialMap {
+        distance,
+        source: nearest,
+    })
+}
+
+fn nearest_component_map(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    kind: CrustKind,
+) -> Result<NearestMaterialMap, ResampleError> {
+    let mut distance = vec![u64::MAX; surface.cells().len()];
+    let mut nearest = vec![usize::MAX; surface.cells().len()];
+    let mut pending = BinaryHeap::new();
+    for (sample_index, sample) in samples.iter().enumerate() {
+        let present = match kind {
+            CrustKind::Continental => sample.material.continental_reference_area_m2() > 0.0,
+            CrustKind::Oceanic => sample.material.oceanic_reference_area_m2() > 0.0,
+        };
+        if !present {
+            continue;
+        }
+        let cell_index = sample.anchor.raw() as usize;
+        if cell_index >= surface.cells().len() {
+            return Err(ResampleError::InvalidFinalAnchor {
+                sample: sample_index,
+                anchor: sample.anchor,
+            });
+        }
+        if (0, sample_index) < (distance[cell_index], nearest[cell_index]) {
+            distance[cell_index] = 0;
+            nearest[cell_index] = sample_index;
+            pending.push(Reverse((0_u64, sample_index, sample.anchor.raw())));
+        }
+    }
+    if pending.is_empty() {
+        return Err(ResampleError::MissingMaterialSource { kind });
+    }
+    while let Some(Reverse((cost, source_index, raw_cell))) = pending.pop() {
+        let cell_index = raw_cell as usize;
+        if (distance[cell_index], nearest[cell_index]) != (cost, source_index) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell_index] {
+            let neighbor = arc.neighbor.raw() as usize;
+            let candidate = (cost.saturating_add(arc.traversal_cost), source_index);
+            if candidate < (distance[neighbor], nearest[neighbor]) {
+                distance[neighbor] = candidate.0;
+                nearest[neighbor] = candidate.1;
+                pending.push(Reverse((candidate.0, candidate.1, arc.neighbor.raw())));
+            }
+        }
+    }
     Ok(NearestMaterialMap {
         distance,
         source: nearest,
@@ -1134,11 +1609,12 @@ fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_final_plates, conservative_material_remap, resample_current_state,
+        bounded_volume_water_fill, canonicalize_final_plates, conservative_material_remap,
+        conservative_material_resample_v5, occupied_material_area, resample_current_state,
         resampling_interval_steps, ResampleError,
     };
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::workspace::TectonicWorkspace;
     use crate::generators::natural::topology::{
@@ -1318,6 +1794,157 @@ mod tests {
             assert_eq!(sample.anchor, cell.id);
             assert_eq!(sample.position, cell.centroid);
         }
+    }
+
+    #[test]
+    fn v4_occupied_anchors_lose_overlap_but_v5_closes_all_extensive_material() {
+        let (surface, topology) = fixture(42);
+        let owner = LineageId::from_raw(0);
+        let mut source_samples = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 1);
+                let kind = if index < 2 {
+                    CrustKind::Continental
+                } else {
+                    CrustKind::Oceanic
+                };
+                let thickness = if kind == CrustKind::Continental {
+                    38.0
+                } else {
+                    7.0
+                };
+                value.kind = kind;
+                value.thickness_km = thickness;
+                value.age_myr = if kind == CrustKind::Continental {
+                    CONTINENTAL_CRUST_AGE_SENTINEL_MYR
+                } else {
+                    40.0
+                };
+                value.material = MaterialColumn::pure(kind, cell.area.get(), thickness).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        source_samples[1].anchor = source_samples[0].anchor;
+        source_samples[1].position = source_samples[0].position;
+        let plate = ActivePlate::new(owner, CellId::from_raw(0), rotation(0, 10_000));
+        let source = TectonicState::new(source_samples, vec![plate], 1).unwrap();
+        let expected = source.material_totals().unwrap();
+        let legacy_area =
+            occupied_material_area(&surface, &source.samples, CrustKind::Continental).unwrap();
+        assert!(legacy_area < expected.continental().reference_area_m2());
+
+        let mut remapped = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 2);
+                value.kind = CrustKind::Oceanic;
+                value.thickness_km = 7.0;
+                value.age_myr = 40.0;
+                value.material =
+                    MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&source).unwrap();
+        conservative_material_resample_v5(&surface, &topology, &source, &mut remapped, &mut ledger)
+            .unwrap();
+        let remapped_state = TectonicState::new(remapped.clone(), vec![plate], 1).unwrap();
+        assert_eq!(remapped_state.material_totals().unwrap(), expected);
+        assert!(
+            remapped
+                .iter()
+                .filter(|sample| {
+                    sample.material.continental_reference_area_m2() > 0.0
+                        && sample.material.oceanic_reference_area_m2() > 0.0
+                })
+                .count()
+                <= 1
+        );
+        ledger.control_budget(&remapped_state).unwrap();
+
+        let mut repeated = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 2);
+                value.kind = CrustKind::Oceanic;
+                value.thickness_km = 7.0;
+                value.age_myr = 40.0;
+                value.material =
+                    MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        let mut repeated_ledger = EvolutionMaterialLedger::capture_initial(&source).unwrap();
+        conservative_material_resample_v5(
+            &surface,
+            &topology,
+            &source,
+            &mut repeated,
+            &mut repeated_ledger,
+        )
+        .unwrap();
+        assert_eq!(
+            remapped
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>(),
+            repeated
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bounded_water_fill_closes_exactly_and_rejects_infeasible_component_volume() {
+        let areas = [1.0, 2.0, 0.0, 4.0];
+        let preferences = [20.0, 80.0, 35.0, 42.0];
+        let target = 315_000.0;
+        let first = bounded_volume_water_fill(
+            CrustKind::Continental,
+            &areas,
+            &preferences,
+            target,
+            20.0,
+            80.0,
+        )
+        .unwrap();
+        let second = bounded_volume_water_fill(
+            CrustKind::Continental,
+            &areas,
+            &preferences,
+            target,
+            20.0,
+            80.0,
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(super::compensated_sum(&first), target);
+        for (area, volume) in areas.into_iter().zip(first) {
+            if area == 0.0 {
+                assert_eq!(volume, 0.0);
+            } else {
+                assert!((20_000.0 * area..=80_000.0 * area).contains(&volume));
+            }
+        }
+        assert!(matches!(
+            bounded_volume_water_fill(
+                CrustKind::Continental,
+                &areas,
+                &preferences,
+                100_000.0,
+                20.0,
+                80.0,
+            ),
+            Err(ResampleError::InfeasibleMaterialVolume { .. })
+        ));
     }
 
     fn material_bits(sample: &CrustSample) -> (u32, [u32; 6], SphericalOrogenyKind) {

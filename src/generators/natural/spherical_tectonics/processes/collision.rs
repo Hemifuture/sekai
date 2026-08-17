@@ -335,6 +335,7 @@ mod tests {
             ActivePlate::new(large, edge.cells[1], rotation),
         ];
         let current = TectonicState::new(samples.clone(), plates.clone(), 2).unwrap();
+        let material_before = current.material_totals().unwrap();
         let mut next = TectonicState::new(samples, plates, 2).unwrap();
         let event = ContactEvent {
             cell: edge.cells[0],
@@ -402,5 +403,6 @@ mod tests {
         commit_process_actions(&mut overlapped, &mut actions).unwrap();
         assert_eq!(overlapped.samples[0].owner, large);
         assert_eq!(overlapped.samples[1].owner, large);
+        assert_eq!(overlapped.material_totals().unwrap(), material_before);
     }
 }

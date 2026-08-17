@@ -120,6 +120,92 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction(
     Ok(stats)
 }
 
+/// Conservative V5 subduction. The geometric transfer curves remain the
+/// Cortial-style V4 curves, but overlap consumes only the descending oceanic
+/// component. A mixed column keeps its continental component; a pure oceanic
+/// column is removed atomically by the V5 action commit.
+pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction_v5(
+    surface: &SphericalSurfaceSnapshot,
+    events: &[ContactEvent],
+    current: &TectonicState,
+    next: &mut TectonicState,
+    actions: &mut ProcessActions,
+    recipe: FormationTectonicRecipe,
+) -> Result<ProcessStats, ProcessError> {
+    if current.samples.len() != next.samples.len() {
+        return Err(ProcessError::StateCardinalityMismatch {
+            current: current.samples.len(),
+            next: next.samples.len(),
+        });
+    }
+    actions.validate_for(next.samples.len())?;
+    let gain = f64::from(recipe.subduction_gain_permille) / 1_000.0;
+    let mut stats = ProcessStats::default();
+    for event in events {
+        let ContactKind::OceanicSubduction { descending } = event.kind else {
+            continue;
+        };
+        let [first, second] = participant_indices(event, next.samples.len())?;
+        let descending_index = if next.samples[first].owner == descending {
+            first
+        } else if next.samples[second].owner == descending {
+            second
+        } else {
+            return Err(ProcessError::MissingDescendingSide { descending });
+        };
+        let overriding_index = if descending_index == first {
+            second
+        } else {
+            first
+        };
+        let descending_distance =
+            event_distance_m(surface, event, next.samples[descending_index].position)?;
+        let overriding_distance =
+            event_distance_m(surface, event, next.samples[overriding_index].position)?;
+        let speed = event_speed(event);
+        let (trench, _) = subduction_profile(descending_distance, speed, gain);
+        let (_, raw_uplift) = subduction_profile(overriding_distance, speed, gain);
+        let descending_elevation = next.samples[descending_index].tectonic_elevation_m;
+        let normalized_height = ((descending_elevation - constants::OCEANIC_TRENCH_ELEVATION_M)
+            / (constants::HIGHEST_CONTINENTAL_ELEVATION_M - constants::OCEANIC_TRENCH_ELEVATION_M))
+            .clamp(0.0, 1.0);
+        let uplift = raw_uplift * normalized_height * normalized_height;
+        let lineation = event_lineation(surface, event, next.samples[overriding_index].position)?;
+
+        actions.record_subduction_trench(descending_index, trench)?;
+        actions.record_subduction_uplift(overriding_index, uplift, lineation)?;
+        if event.overlap_depth > 0
+            && actions.stage_oceanic_subduction(
+                descending_index,
+                next.samples[descending_index].material,
+            )?
+        {
+            stats.removed_samples += u32::from(
+                next.samples[descending_index]
+                    .material
+                    .continental_reference_area_m2()
+                    == 0.0,
+            );
+        }
+        stats.subduction_events += 1;
+    }
+    for (index, effect) in actions.subduction_effects().iter().copied().enumerate() {
+        if effect.trench_m == 0.0 && effect.uplift_m == 0.0 {
+            continue;
+        }
+        let sample = &mut next.samples[index];
+        sample.tectonic_elevation_m =
+            bounded_elevation(sample.tectonic_elevation_m + effect.trench_m + effect.uplift_m);
+        if effect.uplift_m > 0.0 && sample.kind == CrustKind::Continental {
+            sample.orogeny = SphericalOrogenyKind::Andean;
+            sample.orogeny_age_myr = 0.0;
+            sample.lineation = effect.uplift_lineation;
+        }
+        stats.affected_samples += 1;
+    }
+    Ok(stats)
+}
+
 fn participant_indices(
     event: &ContactEvent,
     sample_count: usize,
@@ -146,12 +232,15 @@ fn smoothstep(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_subduction, subduction_profile};
+    use super::{apply_subduction, apply_subduction_v5, subduction_profile};
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId,
+        MaterialColumn, TectonicState,
     };
-    use crate::generators::natural::spherical_tectonics::processes::{constants, ProcessActions};
+    use crate::generators::natural::spherical_tectonics::processes::{
+        commit_process_actions_v5, constants, ProcessActions,
+    };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
         CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
@@ -325,5 +414,70 @@ mod tests {
             repeated.samples, once.samples,
             "sampling the same continuous front twice doubled its elevation response"
         );
+    }
+
+    #[test]
+    fn evolved_subduction_consumes_oceanic_component_before_continental_material() {
+        let surface = surface();
+        let (mut current, mut next, event) = state_and_event(&surface, 120.0);
+        let cell_area = surface.cell(current.samples[0].anchor).unwrap().area.get();
+        let mixed = MaterialColumn::new(
+            cell_area * 0.25,
+            cell_area * 0.25 * 35_000.0,
+            cell_area * 0.75,
+            cell_area * 0.75 * 7_000.0,
+        )
+        .unwrap();
+        current.samples[0].material = mixed;
+        current.samples[0].synchronize_compatibility_from_material();
+        next.samples[0] = current.samples[0];
+        let initial_continental = current
+            .material_totals()
+            .unwrap()
+            .continental()
+            .reference_area_m2();
+        let consumed_oceanic = mixed.oceanic_amount().unwrap();
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&current).unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(2);
+        actions.begin_step(2);
+
+        apply_subduction_v5(
+            &surface,
+            &[event],
+            &current,
+            &mut next,
+            &mut actions,
+            FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+        )
+        .unwrap();
+        commit_process_actions_v5(&mut next, &mut actions, &mut ledger).unwrap();
+
+        assert_eq!(
+            next.samples.len(),
+            2,
+            "the continental remnant must survive"
+        );
+        assert_eq!(
+            next.material_totals()
+                .unwrap()
+                .continental()
+                .reference_area_m2(),
+            initial_continental
+        );
+        assert_eq!(next.samples[0].material.oceanic_reference_area_m2(), 0.0);
+        assert_eq!(next.samples[0].kind, CrustKind::Continental);
+        assert_eq!(
+            ledger.processes().unwrap().oceanic_subducted(),
+            consumed_oceanic
+        );
+        assert_eq!(
+            ledger
+                .processes()
+                .unwrap()
+                .continental_consumed()
+                .reference_area_m2(),
+            0.0
+        );
+        ledger.control_budget(&next).unwrap();
     }
 }

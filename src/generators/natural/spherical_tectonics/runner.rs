@@ -11,14 +11,15 @@ use thiserror::Error;
 use super::contacts::{build_contacts, ContactError};
 use super::initial_state::{build_initial_state, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
-use super::model::{FormationTectonicRecipe, TectonicState};
+use super::model::{EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState};
 use super::processes::{
-    apply_collision, apply_divergent_extension, apply_subduction, commit_process_actions,
-    fill_spreading_gaps, maybe_rift_plates, relax_current_crust, ProcessError,
+    apply_collision, apply_divergent_extension, apply_divergent_extension_v5, apply_subduction,
+    apply_subduction_v5, commit_process_actions, commit_process_actions_v5, fill_spreading_gaps,
+    fill_spreading_gaps_v5, maybe_rift_plates, relax_current_crust, ProcessError,
 };
 use super::resample::{
-    canonicalize_final_plates, resample_current_state, resampling_interval_steps,
-    CanonicalTectonicState, ResampleError,
+    canonicalize_final_plates, resample_current_state, resample_current_state_v5,
+    resampling_interval_steps, CanonicalTectonicState, ResampleError,
 };
 use super::workspace::TectonicWorkspace;
 use crate::generators::natural::random::LabeledSubstreams;
@@ -28,6 +29,12 @@ use crate::world::spatial::SphericalSurfaceSnapshot;
 
 pub(super) const EVOLUTION_STEP_COUNT: u16 = 128;
 pub(super) const EVOLUTION_DELTA_MYR: f64 = 2.0;
+
+#[derive(Debug)]
+pub(super) struct EvolvedControlState {
+    pub(super) current: TectonicState,
+    pub(super) material_ledger: EvolutionMaterialLedger,
+}
 
 pub(super) fn run_tectonic_evolution(
     surface: &SphericalSurfaceSnapshot,
@@ -87,6 +94,75 @@ pub(super) fn evolve_current_state(
     Ok(workspace.current)
 }
 
+/// Runs the separately versioned conservative V5 material semantics. The V4
+/// loop above remains the frozen compatibility path.
+pub(super) fn evolve_control_state_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    spec: &TectonicSpec,
+    formation: ResolvedWorldFormationPreset,
+    streams: &LabeledSubstreams,
+) -> Result<EvolvedControlState, RunnerError> {
+    let recipe = FormationTectonicRecipe::for_preset(formation);
+    let initial = build_initial_state(surface, topology, spec, recipe, streams)?;
+    let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
+    let mut workspace = TectonicWorkspace::from_initial(initial);
+
+    for step in 0..EVOLUTION_STEP_COUNT {
+        let (current, next, coverage, events, actions) = workspace.step_parts();
+        advance_samples(surface, topology, current, next, EVOLUTION_DELTA_MYR)?;
+        build_contacts(surface, topology, next, coverage, events)?;
+        actions.begin_step(next.samples.len());
+        apply_subduction_v5(surface, events, current, next, actions, recipe)?;
+        apply_collision(surface, events, current, next, actions, recipe)?;
+        apply_divergent_extension_v5(
+            surface,
+            events,
+            next,
+            actions,
+            &mut material_ledger,
+            EVOLUTION_DELTA_MYR as f32,
+        )?;
+        fill_spreading_gaps_v5(
+            surface,
+            events,
+            current,
+            next,
+            actions,
+            recipe,
+            &mut material_ledger,
+        )?;
+        maybe_rift_plates(step, surface, current, next, actions, recipe, streams)?;
+        relax_current_crust(
+            surface,
+            events,
+            next,
+            actions,
+            recipe,
+            EVOLUTION_DELTA_MYR as f32,
+        )?;
+        actions.preserve_minimum_live_lineages(
+            &next.samples,
+            &current.plates,
+            &next.plates,
+            usize::from(MIN_PLATE_COUNT),
+        )?;
+        commit_process_actions_v5(next, actions, &mut material_ledger)?;
+        workspace.swap_current_next();
+        if resample_due(&workspace) {
+            resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
+        }
+    }
+    if workspace.requires_resample() {
+        resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
+    }
+    material_ledger.control_budget(&workspace.current)?;
+    Ok(EvolvedControlState {
+        current: workspace.current,
+        material_ledger,
+    })
+}
+
 pub(super) fn canonicalize_evolved_state(
     surface: &SphericalSurfaceSnapshot,
     current: TectonicState,
@@ -110,11 +186,13 @@ pub(super) enum RunnerError {
     Process(#[from] ProcessError),
     #[error("tectonic resampling failed: {0}")]
     Resample(#[from] ResampleError),
+    #[error("tectonic material failed: {0}")]
+    Material(#[from] super::model::MaterialColumnError),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::run_tectonic_evolution;
+    use super::{evolve_control_state_v5, run_tectonic_evolution};
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::spherical_tectonics::initial_state::build_initial_state;
@@ -192,5 +270,65 @@ mod tests {
         .expect("the minimum supported plate configuration must remain publishable");
 
         assert!((2..=64).contains(&final_state.plates.len()));
+    }
+
+    #[test]
+    fn evolved_control_path_closes_its_material_ledger_deterministically() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 162,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(0xE701_ED55),
+            StageIdentity::new("runner-evolved-material-test", 1, "sekai.test"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let spec = TectonicSpec {
+            plate_count: 8,
+            continental_crust_fraction: 0.38,
+            ..TectonicSpec::default()
+        };
+        let first = evolve_control_state_v5(
+            &surface,
+            &topology,
+            &spec,
+            ResolvedWorldFormationPreset::Continents,
+            &streams,
+        )
+        .unwrap();
+        first
+            .material_ledger
+            .control_budget(&first.current)
+            .unwrap();
+
+        let second = evolve_control_state_v5(
+            &surface,
+            &topology,
+            &spec,
+            ResolvedWorldFormationPreset::Continents,
+            &streams,
+        )
+        .unwrap();
+        assert_eq!(
+            first.current.material_totals().unwrap(),
+            second.current.material_totals().unwrap()
+        );
+        assert_eq!(
+            first
+                .current
+                .samples
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>(),
+            second
+                .current
+                .samples
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>()
+        );
     }
 }

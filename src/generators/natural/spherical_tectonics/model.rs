@@ -9,9 +9,9 @@
 use crate::generators::natural::fractal::FractalProfile;
 use crate::world::natural::{
     CrustKind, CrustMaterialTotals, ResolvedWorldFormationPreset, SphericalOrogenyKind,
-    SphericalPlateRotation, TectonicMaterialAmount, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, OCEANIC_CRUST_MAX_THICKNESS_KM,
-    OCEANIC_CRUST_MIN_THICKNESS_KM,
+    SphericalPlateRotation, SphericalTectonicMaterialBudget, SphericalTectonicMaterialProcesses,
+    TectonicMaterialAmount, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
@@ -45,6 +45,13 @@ pub(super) struct CrustSample {
     pub(super) orogeny: SphericalOrogenyKind,
     pub(super) orogeny_age_myr: f32,
     pub(super) material: MaterialColumn,
+}
+
+impl CrustSample {
+    pub(super) fn synchronize_compatibility_from_material(&mut self) {
+        self.kind = self.material.compatibility_kind();
+        self.thickness_km = self.material.compatibility_thickness_km();
+    }
 }
 
 /// Extensive continental and oceanic material carried by one moving sample.
@@ -144,6 +151,73 @@ impl MaterialColumn {
         (volume / area / 1_000.0) as f32
     }
 
+    pub(super) fn continental_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
+        material_amount(
+            self.continental_reference_area_m2,
+            self.continental_volume_m3,
+        )
+    }
+
+    pub(super) fn continental_thickness_km(self) -> Option<f32> {
+        (self.continental_reference_area_m2 > 0.0).then_some(
+            (self.continental_volume_m3 / self.continental_reference_area_m2 / 1_000.0) as f32,
+        )
+    }
+
+    pub(super) fn oceanic_thickness_km(self) -> Option<f32> {
+        (self.oceanic_reference_area_m2 > 0.0)
+            .then_some((self.oceanic_volume_m3 / self.oceanic_reference_area_m2 / 1_000.0) as f32)
+    }
+
+    pub(super) fn oceanic_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
+        material_amount(self.oceanic_reference_area_m2, self.oceanic_volume_m3)
+    }
+
+    /// Removes the complete oceanic component, returning `None` when that
+    /// leaves no represented column at all.
+    pub(super) fn without_oceanic(self) -> Result<Option<Self>, MaterialColumnError> {
+        if self.continental_reference_area_m2 == 0.0 {
+            return Ok(None);
+        }
+        Self::new(
+            self.continental_reference_area_m2,
+            self.continental_volume_m3,
+            0.0,
+            0.0,
+        )
+        .map(Some)
+    }
+
+    /// Applies bounded pure-shear extension to continental material only.
+    /// Volume is bit-preserved and the returned value is the exact reference
+    /// area gained by the column.
+    pub(super) fn extend_continental_pure_shear(
+        self,
+        requested_beta: f64,
+    ) -> Result<(Self, f64), MaterialColumnError> {
+        if !requested_beta.is_finite() || requested_beta < 1.0 {
+            return Err(MaterialColumnError::InvalidStretchFactor {
+                found: requested_beta,
+            });
+        }
+        if self.continental_reference_area_m2 == 0.0 {
+            return Ok((self, 0.0));
+        }
+        let maximum_area =
+            self.continental_volume_m3 / (f64::from(CONTINENTAL_CRUST_MIN_THICKNESS_KM) * 1_000.0);
+        let extended_area = (self.continental_reference_area_m2 * requested_beta)
+            .min(maximum_area)
+            .max(self.continental_reference_area_m2);
+        let gain = extended_area - self.continental_reference_area_m2;
+        let extended = Self::new(
+            extended_area,
+            self.continental_volume_m3,
+            self.oceanic_reference_area_m2,
+            self.oceanic_volume_m3,
+        )?;
+        Ok((extended, gain))
+    }
+
     #[cfg(test)]
     pub(super) fn bits(self) -> [u64; 4] {
         [
@@ -210,8 +284,20 @@ pub(super) enum MaterialColumnError {
     InvalidThickness { kind: CrustKind, found: f32 },
     #[error("a moving crust sample cannot carry zero total reference area")]
     Empty,
+    #[error("continental pure-shear stretch factor is invalid: {found}")]
+    InvalidStretchFactor { found: f64 },
+    #[error("material source/sink area and volume changes must have the same sign")]
+    InconsistentCoverageChange,
     #[error("material totals are invalid: {0}")]
     InvalidTotals(String),
+}
+
+fn material_amount(
+    reference_area_m2: f64,
+    volume_m3: f64,
+) -> Result<TectonicMaterialAmount, MaterialColumnError> {
+    TectonicMaterialAmount::new(reference_area_m2, volume_m3)
+        .map_err(|error| MaterialColumnError::InvalidTotals(error.to_string()))
 }
 
 /// Current rigid motion and representative cell of one live lineage.
@@ -361,17 +447,112 @@ impl TectonicState {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EvolutionMaterialLedger {
     initial_control: CrustMaterialTotals,
+    rift_extension_continental_area_gain: CompensatedSum,
+    continental_consumed: MaterialAccumulator,
+    oceanic_subducted: MaterialAccumulator,
+    oceanic_spreading_created: MaterialAccumulator,
+    oceanic_coverage_created: MaterialAccumulator,
+    oceanic_coverage_consumed: MaterialAccumulator,
 }
 
 impl EvolutionMaterialLedger {
     pub(super) fn capture_initial(state: &TectonicState) -> Result<Self, MaterialColumnError> {
         Ok(Self {
             initial_control: state.material_totals()?,
+            rift_extension_continental_area_gain: CompensatedSum::default(),
+            continental_consumed: MaterialAccumulator::default(),
+            oceanic_subducted: MaterialAccumulator::default(),
+            oceanic_spreading_created: MaterialAccumulator::default(),
+            oceanic_coverage_created: MaterialAccumulator::default(),
+            oceanic_coverage_consumed: MaterialAccumulator::default(),
         })
     }
 
     pub(super) const fn initial_control(self) -> CrustMaterialTotals {
         self.initial_control
+    }
+
+    pub(super) fn record_rift_extension_area_gain(&mut self, area_m2: f64) {
+        debug_assert!(area_m2.is_finite() && area_m2 >= 0.0);
+        self.rift_extension_continental_area_gain.add(area_m2);
+    }
+
+    pub(super) fn record_oceanic_subduction(&mut self, amount: TectonicMaterialAmount) {
+        self.oceanic_subducted.add(amount);
+    }
+
+    pub(super) fn record_oceanic_spreading(&mut self, amount: TectonicMaterialAmount) {
+        self.oceanic_spreading_created.add(amount);
+    }
+
+    pub(super) fn record_coverage_change(
+        &mut self,
+        area_delta_m2: f64,
+        volume_delta_m3: f64,
+    ) -> Result<(), MaterialColumnError> {
+        if !area_delta_m2.is_finite()
+            || !volume_delta_m3.is_finite()
+            || area_delta_m2.signum() != volume_delta_m3.signum()
+        {
+            return Err(MaterialColumnError::InconsistentCoverageChange);
+        }
+        if area_delta_m2 > 0.0 {
+            self.oceanic_coverage_created
+                .add(material_amount(area_delta_m2, volume_delta_m3)?);
+        } else if area_delta_m2 < 0.0 {
+            self.oceanic_coverage_consumed
+                .add(material_amount(-area_delta_m2, -volume_delta_m3)?);
+        } else if volume_delta_m3 != 0.0 {
+            return Err(MaterialColumnError::InconsistentCoverageChange);
+        }
+        Ok(())
+    }
+
+    pub(super) fn processes(
+        self,
+    ) -> Result<SphericalTectonicMaterialProcesses, MaterialColumnError> {
+        SphericalTectonicMaterialProcesses::new(
+            self.rift_extension_continental_area_gain.total(),
+            self.continental_consumed.amount()?,
+            self.oceanic_subducted.amount()?,
+            self.oceanic_spreading_created.amount()?,
+            self.oceanic_coverage_created.amount()?,
+            self.oceanic_coverage_consumed.amount()?,
+        )
+        .map_err(|error| MaterialColumnError::InvalidTotals(error.to_string()))
+    }
+
+    pub(super) fn control_budget(
+        self,
+        state: &TectonicState,
+    ) -> Result<SphericalTectonicMaterialBudget, MaterialColumnError> {
+        let final_control = state.material_totals()?;
+        SphericalTectonicMaterialBudget::new(
+            self.initial_control,
+            self.processes()?,
+            final_control,
+            final_control,
+            0.0,
+            0.0,
+        )
+        .map_err(|error| MaterialColumnError::InvalidTotals(error.to_string()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MaterialAccumulator {
+    area: CompensatedSum,
+    volume: CompensatedSum,
+}
+
+impl MaterialAccumulator {
+    fn add(&mut self, amount: TectonicMaterialAmount) {
+        self.area.add(amount.reference_area_m2());
+        self.volume.add(amount.volume_m3());
+    }
+
+    fn amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
+        material_amount(self.area.total(), self.volume.total())
     }
 }
 
@@ -481,6 +662,13 @@ mod tests {
         assert_eq!(continental.oceanic_volume_m3(), 0.0);
         assert_eq!(continental.compatibility_kind(), CrustKind::Continental);
         assert_eq!(continental.compatibility_thickness_km(), 40.0);
+        assert_eq!(
+            continental
+                .continental_amount()
+                .unwrap()
+                .reference_area_m2(),
+            2.5
+        );
 
         let oceanic = MaterialColumn::pure(CrustKind::Oceanic, 4.0, 7.0).unwrap();
         assert_eq!(oceanic.oceanic_reference_area_m2(), 4.0);

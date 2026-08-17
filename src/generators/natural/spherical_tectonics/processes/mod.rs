@@ -10,7 +10,11 @@
 use thiserror::Error;
 
 use super::contacts::ContactEvent;
-use super::model::{ActivePlate, CrustSample, LineageId, TectonicState};
+use super::model::{
+    ActivePlate, CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn,
+    MaterialColumnError, TectonicState,
+};
+use crate::world::natural::TectonicMaterialAmount;
 use crate::world::natural::{ELEVATION_MAX_M, ELEVATION_MIN_M};
 use crate::world::spatial::{
     canonical_east_north_basis, central_angle, project_tangent, SphericalSurfaceSnapshot,
@@ -44,6 +48,12 @@ enum SampleDisposition {
     Transfer(LineageId),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingOceanicSubduction {
+    replacement: Option<MaterialColumn>,
+    consumed: TectonicMaterialAmount,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct SubductionEffect {
     pub(super) trench_m: f32,
@@ -66,6 +76,7 @@ pub(super) struct ProcessActions {
     second_terrane_samples: Vec<usize>,
     trench_flags: Vec<u8>,
     rift_represented: Vec<u8>,
+    pending_oceanic_subduction: Vec<Option<PendingOceanicSubduction>>,
 }
 
 pub(super) struct TerraneScratch<'a> {
@@ -92,6 +103,7 @@ impl ProcessActions {
             second_terrane_samples: Vec::with_capacity(sample_count),
             trench_flags: Vec::with_capacity(sample_count),
             rift_represented: Vec::with_capacity(sample_count),
+            pending_oceanic_subduction: Vec::with_capacity(sample_count),
         }
     }
 
@@ -106,6 +118,8 @@ impl ProcessActions {
         self.extensional_speeds_mm_per_year.clear();
         self.extensional_speeds_mm_per_year
             .resize(sample_count, 0.0);
+        self.pending_oceanic_subduction.clear();
+        self.pending_oceanic_subduction.resize(sample_count, None);
     }
 
     pub(super) fn record_subduction_trench(
@@ -289,6 +303,36 @@ impl ProcessActions {
         Ok(())
     }
 
+    pub(super) fn stage_oceanic_subduction(
+        &mut self,
+        sample: usize,
+        material: MaterialColumn,
+    ) -> Result<bool, ProcessError> {
+        let action_count = self.dispositions.len();
+        let slot = self.pending_oceanic_subduction.get_mut(sample).ok_or(
+            ProcessError::ActionIndexOutOfBounds {
+                sample,
+                actions: action_count,
+            },
+        )?;
+        if slot.is_some() {
+            return Ok(false);
+        }
+        let consumed = material.oceanic_amount()?;
+        if consumed.reference_area_m2() == 0.0 {
+            return Ok(false);
+        }
+        let replacement = material.without_oceanic()?;
+        if replacement.is_none() {
+            self.mark_remove(sample)?;
+        }
+        self.pending_oceanic_subduction[sample] = Some(PendingOceanicSubduction {
+            replacement,
+            consumed,
+        });
+        Ok(true)
+    }
+
     pub(super) fn mark_transfer(
         &mut self,
         sample: usize,
@@ -310,6 +354,10 @@ impl ProcessActions {
 
     pub(super) fn push_spawned(&mut self, sample: CrustSample) {
         self.spawned.push(sample);
+    }
+
+    pub(super) fn spawned_samples(&self) -> &[CrustSample] {
+        &self.spawned
     }
 
     pub(super) fn is_clear(&self) -> bool {
@@ -490,6 +538,56 @@ pub(super) fn commit_process_actions(
     Ok(())
 }
 
+pub(super) fn commit_process_actions_v5(
+    next: &mut TectonicState,
+    actions: &mut ProcessActions,
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<(), ProcessError> {
+    actions.validate_for(next.samples.len())?;
+    for (index, pending) in actions
+        .pending_oceanic_subduction
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let Some(pending) = pending else {
+            continue;
+        };
+        match (actions.dispositions[index], pending.replacement) {
+            (SampleDisposition::Remove, None) => {
+                ledger.record_oceanic_subduction(pending.consumed);
+            }
+            (SampleDisposition::Keep | SampleDisposition::Transfer(_), Some(material)) => {
+                next.samples[index].material = material;
+                next.samples[index].synchronize_compatibility_from_material();
+                ledger.record_oceanic_subduction(pending.consumed);
+            }
+            (SampleDisposition::Keep | SampleDisposition::Transfer(_), None) => {
+                // The minimum-lineage guard cancelled removal. Preserve the
+                // complete column and do not claim a sink that did not occur.
+            }
+            (SampleDisposition::Remove, Some(_)) => {
+                return Err(ProcessError::ContinentalMaterialRemoval { sample: index });
+            }
+        }
+    }
+    for (sample, disposition) in next.samples.iter_mut().zip(&actions.dispositions) {
+        if let SampleDisposition::Transfer(owner) = disposition {
+            sample.owner = *owner;
+        }
+    }
+    let mut sample_index = 0;
+    next.samples.retain(|_| {
+        let keep = actions.dispositions[sample_index] != SampleDisposition::Remove;
+        sample_index += 1;
+        keep
+    });
+    next.samples.append(&mut actions.spawned);
+    actions.dispositions.clear();
+    actions.pending_oceanic_subduction.clear();
+    Ok(())
+}
+
 pub(super) fn event_speed(event: &ContactEvent) -> f64 {
     f64::from(event.signed_normal_speed_mm_per_year)
         .abs()
@@ -582,6 +680,10 @@ pub(super) enum ProcessError {
     ActionCardinalityMismatch { samples: usize, actions: usize },
     #[error("process action index {sample} is outside {actions} actions")]
     ActionIndexOutOfBounds { sample: usize, actions: usize },
+    #[error("material operation failed: {0}")]
+    Material(#[from] MaterialColumnError),
+    #[error("process removal would discard continental material from sample {sample}")]
+    ContinentalMaterialRemoval { sample: usize },
     #[error("contact sample index {sample} is outside {samples} samples")]
     ContactSampleOutOfBounds { sample: usize, samples: usize },
     #[error("contact event has no complete pair of samples")]
@@ -701,5 +803,8 @@ mod subduction;
 pub(super) use collision::apply_collision;
 pub(super) use relaxation::relax_current_crust;
 pub(super) use rifting::maybe_rift_plates;
-pub(super) use spreading::{apply_divergent_extension, fill_spreading_gaps};
-pub(super) use subduction::apply_subduction;
+pub(super) use spreading::{
+    apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
+    fill_spreading_gaps_v5,
+};
+pub(super) use subduction::{apply_subduction, apply_subduction_v5};

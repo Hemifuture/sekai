@@ -193,6 +193,11 @@ mod tests {
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
         let mut actions = ProcessActions::with_sample_capacity(state.samples.len());
         actions.begin_step(state.samples.len());
+        let material_before = state
+            .samples
+            .iter()
+            .map(|sample| sample.material.bits())
+            .collect::<Vec<_>>();
         let stats = relax_current_crust(
             &surface,
             &[subduction, transform],
@@ -214,5 +219,13 @@ mod tests {
         assert!(state.samples[3].tectonic_elevation_m < 2_000.0);
         assert_eq!(state.samples[3].orogeny, SphericalOrogenyKind::None);
         assert_eq!(stats.relaxed_samples, 4);
+        assert_eq!(
+            state
+                .samples
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>(),
+            material_before
+        );
     }
 }

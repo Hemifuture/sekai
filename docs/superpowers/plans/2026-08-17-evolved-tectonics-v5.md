@@ -101,34 +101,34 @@ Files:
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Extend: `tests/evolved_tectonic_material.rs`
 
-- [ ] **Step 1: Add RED analytic process fixtures**
+- [x] **Step 1: Add RED analytic process fixtures**
 
   Demonstrate that V4 overlap resampling loses represented continental area;
   require V5 to preserve it, consume oceanic before continental at subduction,
   conserve collision volume, thin by pure shear without volume loss, create
   age-zero ocean at spreading, and leave material unchanged during relaxation.
 
-- [ ] **Step 2: Observe the intended failures**
+- [x] **Step 2: Observe the intended failures**
 
   Run focused integration/unit filters and confirm each failure points at the
   V4 conflation rather than fixture construction.
 
-- [ ] **Step 3: Implement separate V4/V5 semantics**
+- [x] **Step 3: Implement separate V4/V5 semantics**
 
   Keep the legacy entry points byte-stable. Add conservative process variants,
   fractional-pivot categorical allocation, bounded component-volume water
   filling, named ocean coverage closure, and ledger updates.
 
-- [ ] **Step 4: Add resample/property tests**
+- [x] **Step 4: Add resample/property tests**
 
   Exercise overlaps, gaps, mixed pivot cells, infeasible thickness bounds,
   signed residuals, deterministic ties, repeated resamples, and cancellation.
 
-- [ ] **Step 5: Verify focused and V4 regression suites**
+- [x] **Step 5: Verify focused and V4 regression suites**
 
   Run material, spherical tectonic generation/causality, and P0 baseline tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   `git commit -m "feat: conserve evolved crust material"`
 
