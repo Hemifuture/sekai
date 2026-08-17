@@ -14,10 +14,10 @@ Files:
 - Modify: `src/world/natural/mod.rs`
 - Create: `tests/geologic_substrate_contracts.rs`
 
-- [ ] Write RED tests for schema, bounded wire allocation, sediment-source decoding, exact dense lengths, density/range validation, and evolved cross-validation.
-- [ ] Implement `SedimentSourceKind`, its field, and `GeologicSubstrateSnapshot`.
-- [ ] Run focused tests and strict Clippy.
-- [ ] Commit: `feat: define geologic substrate contracts`
+- [x] Write RED tests for schema, bounded wire allocation, sediment-source decoding, exact dense lengths, density/range validation, and evolved cross-validation.
+- [x] Implement `SedimentSourceKind`, its field, and `GeologicSubstrateSnapshot`.
+- [x] Run focused tests and strict Clippy.
+- [x] Commit: `feat: define geologic substrate contracts`
 
 ## Task 2: Generate the V5-derived substrate
 

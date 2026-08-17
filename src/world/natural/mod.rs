@@ -12,6 +12,7 @@ mod hydro_erosion;
 mod hydro_erosion_spec;
 mod hydrology;
 mod mantle;
+mod primary_relief;
 mod profile;
 mod quality;
 mod relief;
@@ -103,6 +104,12 @@ pub use hydrology::{
 pub use mantle::{
     Hotspot, MantleSnapshot, MantleValidationError, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
     MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_STRENGTH_PERMILLE, MIN_HOTSPOT_STRENGTH_PERMILLE,
+};
+pub use primary_relief::{
+    effective_crust_density_kg_m3, sediment_source_for_bedrock, GeologicSubstrateSnapshot,
+    GeologicSubstrateValidationError, SedimentSourceKind, SedimentSourceKindField,
+    CONTINENTAL_CRUST_DENSITY_KG_M3, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3,
+    GEOLOGIC_SUBSTRATE_SCHEMA_V1, OCEANIC_CRUST_DENSITY_KG_M3,
 };
 pub use profile::{
     NaturalProfileError, NaturalQualityProfile, NaturalResolutionPlan,
