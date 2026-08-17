@@ -106,10 +106,16 @@ pub use mantle::{
     MANTLE_SNAPSHOT_SCHEMA_V1, MAX_HOTSPOT_STRENGTH_PERMILLE, MIN_HOTSPOT_STRENGTH_PERMILLE,
 };
 pub use primary_relief::{
-    effective_crust_density_kg_m3, sediment_source_for_bedrock, GeologicSubstrateSnapshot,
-    GeologicSubstrateValidationError, SedimentSourceKind, SedimentSourceKindField,
-    CONTINENTAL_CRUST_DENSITY_KG_M3, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3,
-    GEOLOGIC_SUBSTRATE_SCHEMA_V1, OCEANIC_CRUST_DENSITY_KG_M3,
+    constraint_status, effective_crust_density_kg_m3, land_fraction_constraint_tolerance,
+    physical_land_fraction, scaled_earth_ocean_inventory_m3, sediment_source_for_bedrock,
+    solve_physical_sea_level, water_volume_at_sea_level_m3, GeologicSubstrateSnapshot,
+    GeologicSubstrateValidationError, LandFractionConstraintStatus, PrimaryReliefSnapshot,
+    PrimaryReliefValidationError, SedimentSourceKind, SedimentSourceKindField, WaterVolumeSolution,
+    WaterVolumeSolveError, CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M, CONTINENTAL_CRUST_DENSITY_KG_M3,
+    CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, EARTH_OCEAN_VOLUME_M3,
+    EARTH_WATER_REFERENCE_RADIUS_M, GEOLOGIC_SUBSTRATE_SCHEMA_V1,
+    MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE, OCEANIC_CRUST_DENSITY_KG_M3,
+    PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V1, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 pub use profile::{
     NaturalProfileError, NaturalQualityProfile, NaturalResolutionPlan,

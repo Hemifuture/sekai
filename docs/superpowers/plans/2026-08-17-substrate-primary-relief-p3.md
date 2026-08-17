@@ -41,10 +41,10 @@ Files:
 - Create: `tests/primary_relief_contracts.rs`
 - Create: `tests/water_volume_sea_level.rs`
 
-- [ ] Write RED tests for strict serde, component identity, compatibility mapping, water closure, physical classification, and author-constraint status.
-- [ ] Implement `LandFractionConstraintStatus` and `PrimaryReliefSnapshot`.
-- [ ] Implement and analytically test the stable piecewise-linear water-volume solve.
-- [ ] Commit: `feat: define physical primary relief`
+- [x] Write RED tests for strict serde, component identity, compatibility mapping, water closure, physical classification, and author-constraint status.
+- [x] Implement `LandFractionConstraintStatus` and `PrimaryReliefSnapshot`.
+- [x] Implement and analytically test the stable piecewise-linear water-volume solve.
+- [x] Commit: `feat: define physical primary relief`
 
 ## Task 4: Generate isostatic and causal primary relief
 

@@ -5,10 +5,14 @@ use thiserror::Error;
 use super::geology::validate_bedrock_crust_compatibility;
 use super::{
     BedrockKind, BedrockKindField, CrustKind, CrustKindField, EvolvedTectonicSnapshot,
-    EvolvedTectonicValidationError, GeologicValidationError, SphericalMantleSnapshot,
-    SphericalMantleValidationError, TectonicValidationError, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
-    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_CRUST_AGE_MYR,
-    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    EvolvedTectonicValidationError, GeologicValidationError, LandOceanField, LandOceanKind,
+    ReliefSpec, ReliefSpecError, SphericalMantleSnapshot, SphericalMantleValidationError,
+    SphericalReliefSnapshot, SphericalReliefValidationError, TectonicValidationError,
+    COMPONENT_IDENTITY_TOLERANCE_M, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    MAX_CRUST_AGE_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -27,6 +31,20 @@ pub const OCEANIC_CRUST_DENSITY_KG_M3: f32 = 2_950.0;
 pub const CRUST_DENSITY_MIN_KG_M3: f32 = 2_500.0;
 /// Inclusive safety ceiling for a published effective crust density.
 pub const CRUST_DENSITY_MAX_KG_M3: f32 = 3_200.0;
+/// The first strict physical-primary-relief schema.
+pub const PRIMARY_RELIEF_SCHEMA_V1: u16 = 1;
+/// NOAA/NGDC Earth ocean inventory used by the locked P3 water budget.
+pub const EARTH_OCEAN_VOLUME_M3: f64 = 1.335e18;
+/// Earth-radius reference paired with the locked ocean inventory.
+pub const EARTH_WATER_REFERENCE_RADIUS_M: f64 = 6_371_000.0;
+/// Maximum relative error allowed after sea level is stored as `f32`.
+pub const WATER_VOLUME_RELATIVE_TOLERANCE: f64 = 1.0e-6;
+/// Minimum author-constraint tolerance in physical area fraction.
+pub const MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE: f32 = 0.02;
+/// Safety bound for the separately published passive-margin component.
+pub const PASSIVE_MARGIN_OFFSET_ABS_MAX_M: f32 = 2_000.0;
+/// Safety bound for the separately published conditioned-detail component.
+pub const CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M: f32 = 2_500.0;
 
 const MAX_SPHERICAL_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;
@@ -650,4 +668,829 @@ pub enum GeologicSubstrateValidationError {
         found: f32,
         expected: f32,
     },
+}
+
+/// Whether the physical water budget happened to satisfy the authored land request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LandFractionConstraintStatus {
+    /// The physical land fraction falls inside the declared discretization tolerance.
+    Satisfied,
+    /// The request cannot be met without violating the locked physical water inventory.
+    Infeasible,
+}
+
+/// Immutable pre-erosion relief with separate causal components and a physical water budget.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrimaryReliefSnapshot {
+    schema_version: u16,
+    surface_ref: SurfaceRef,
+    compatibility: SphericalReliefSnapshot,
+    isostatic_base_m: Vec<f32>,
+    dynamic_tectonic_offset_m: Vec<f32>,
+    volcanic_construction_m: Vec<f32>,
+    passive_margin_offset_m: Vec<f32>,
+    conditioned_regional_detail_m: Vec<f32>,
+    elevation_m: Vec<f32>,
+    water_inventory_m3: f64,
+    realized_water_volume_m3: f64,
+    requested_land_fraction: f32,
+    physical_land_fraction: f32,
+    land_fraction_tolerance: f32,
+    constraint_status: LandFractionConstraintStatus,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrimaryReliefSnapshotWire {
+    schema_version: u16,
+    surface_ref: SurfaceRef,
+    compatibility: SphericalReliefSnapshot,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    isostatic_base_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    dynamic_tectonic_offset_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    volcanic_construction_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    passive_margin_offset_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    conditioned_regional_detail_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_dense_f32")]
+    elevation_m: Vec<f32>,
+    water_inventory_m3: f64,
+    realized_water_volume_m3: f64,
+    requested_land_fraction: f32,
+    physical_land_fraction: f32,
+    land_fraction_tolerance: f32,
+    constraint_status: LandFractionConstraintStatus,
+}
+
+impl PrimaryReliefSnapshot {
+    /// Constructs a snapshot only after every self-contained P3 invariant holds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        schema_version: u16,
+        surface_ref: SurfaceRef,
+        compatibility: SphericalReliefSnapshot,
+        isostatic_base_m: Vec<f32>,
+        dynamic_tectonic_offset_m: Vec<f32>,
+        volcanic_construction_m: Vec<f32>,
+        passive_margin_offset_m: Vec<f32>,
+        conditioned_regional_detail_m: Vec<f32>,
+        elevation_m: Vec<f32>,
+        water_inventory_m3: f64,
+        realized_water_volume_m3: f64,
+        requested_land_fraction: f32,
+        physical_land_fraction: f32,
+        land_fraction_tolerance: f32,
+        constraint_status: LandFractionConstraintStatus,
+    ) -> Result<Self, PrimaryReliefValidationError> {
+        let snapshot = Self {
+            schema_version,
+            surface_ref,
+            compatibility,
+            isostatic_base_m,
+            dynamic_tectonic_offset_m,
+            volcanic_construction_m,
+            passive_margin_offset_m,
+            conditioned_regional_detail_m,
+            elevation_m,
+            water_inventory_m3,
+            realized_water_volume_m3,
+            requested_land_fraction,
+            physical_land_fraction,
+            land_fraction_tolerance,
+            constraint_status,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    /// Rechecks local component, compatibility, and budget-closure invariants.
+    pub fn validate(&self) -> Result<(), PrimaryReliefValidationError> {
+        if self.schema_version != PRIMARY_RELIEF_SCHEMA_V1 {
+            return Err(PrimaryReliefValidationError::UnsupportedSchema {
+                found: self.schema_version,
+                supported: PRIMARY_RELIEF_SCHEMA_V1,
+            });
+        }
+        self.surface_ref.validate()?;
+        if self.surface_ref.geometry_kind() != SurfaceGeometryKind::SphericalV1 {
+            return Err(PrimaryReliefValidationError::InvalidSurfaceKind {
+                found: self.surface_ref.geometry_kind(),
+            });
+        }
+        validate_allocation(
+            "surface_ref.cell_count",
+            self.cell_count() as usize,
+            MAX_SPHERICAL_CELLS,
+        )?;
+        validate_allocation(
+            "surface_ref.edge_count",
+            self.surface_ref.edge_count() as usize,
+            MAX_SPHERICAL_EDGES,
+        )?;
+        self.compatibility.validate()?;
+        if self.compatibility.surface_ref() != self.surface_ref {
+            return Err(PrimaryReliefValidationError::CompatibilitySurfaceMismatch {
+                snapshot: self.surface_ref,
+                compatibility: self.compatibility.surface_ref(),
+            });
+        }
+
+        let expected = self.cell_count() as usize;
+        for (field, values, minimum, maximum) in [
+            (
+                "isostatic_base_m",
+                self.isostatic_base_m.as_slice(),
+                CRUST_BASE_ELEVATION_MIN_M,
+                CRUST_BASE_ELEVATION_MAX_M,
+            ),
+            (
+                "dynamic_tectonic_offset_m",
+                self.dynamic_tectonic_offset_m.as_slice(),
+                TECTONIC_OFFSET_MIN_M,
+                TECTONIC_OFFSET_MAX_M,
+            ),
+            (
+                "volcanic_construction_m",
+                self.volcanic_construction_m.as_slice(),
+                VOLCANIC_OFFSET_MIN_M,
+                VOLCANIC_OFFSET_MAX_M,
+            ),
+            (
+                "passive_margin_offset_m",
+                self.passive_margin_offset_m.as_slice(),
+                -PASSIVE_MARGIN_OFFSET_ABS_MAX_M,
+                PASSIVE_MARGIN_OFFSET_ABS_MAX_M,
+            ),
+            (
+                "conditioned_regional_detail_m",
+                self.conditioned_regional_detail_m.as_slice(),
+                -CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M,
+                CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M,
+            ),
+            (
+                "elevation_m",
+                self.elevation_m.as_slice(),
+                ELEVATION_MIN_M,
+                ELEVATION_MAX_M,
+            ),
+        ] {
+            validate_primary_field(field, values, expected, minimum, maximum)?;
+        }
+
+        if self.compatibility.crust_base_elevation_m().values() != self.isostatic_base_m
+            || self.compatibility.tectonic_offset_m().values() != self.dynamic_tectonic_offset_m
+            || self.compatibility.volcanic_offset_m().values() != self.volcanic_construction_m
+            || self.compatibility.elevation_m().values() != self.elevation_m
+        {
+            return Err(PrimaryReliefValidationError::CompatibilityComponentMismatch);
+        }
+        for index in 0..expected {
+            let cell = CellId::from_raw(index as u32);
+            let regional =
+                self.passive_margin_offset_m[index] + self.conditioned_regional_detail_m[index];
+            if (self.compatibility.regional_offset_m().values()[index] - regional).abs()
+                > COMPONENT_IDENTITY_TOLERANCE_M
+            {
+                return Err(PrimaryReliefValidationError::CompatibilityRegionalMismatch { cell });
+            }
+            let calculated = self.isostatic_base_m[index]
+                + self.dynamic_tectonic_offset_m[index]
+                + self.volcanic_construction_m[index]
+                + self.passive_margin_offset_m[index]
+                + self.conditioned_regional_detail_m[index];
+            if (self.elevation_m[index] - calculated).abs() > COMPONENT_IDENTITY_TOLERANCE_M {
+                return Err(PrimaryReliefValidationError::ComponentIdentityMismatch {
+                    cell,
+                    elevation: self.elevation_m[index],
+                    calculated,
+                });
+            }
+        }
+
+        validate_non_negative_f64("water_inventory_m3", self.water_inventory_m3)?;
+        validate_non_negative_f64("realized_water_volume_m3", self.realized_water_volume_m3)?;
+        let relative_error =
+            relative_water_error(self.realized_water_volume_m3, self.water_inventory_m3);
+        if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
+            return Err(PrimaryReliefValidationError::WaterVolumeClosureExceeded {
+                realized: self.realized_water_volume_m3,
+                inventory: self.water_inventory_m3,
+                relative_error,
+                maximum: WATER_VOLUME_RELATIVE_TOLERANCE,
+            });
+        }
+        for (field, found) in [
+            ("requested_land_fraction", self.requested_land_fraction),
+            ("physical_land_fraction", self.physical_land_fraction),
+            ("land_fraction_tolerance", self.land_fraction_tolerance),
+        ] {
+            if !found.is_finite() || !(0.0..=1.0).contains(&found) {
+                return Err(PrimaryReliefValidationError::InvalidFraction { field, found });
+            }
+        }
+        if self.land_fraction_tolerance < MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE {
+            return Err(PrimaryReliefValidationError::ConstraintToleranceTooSmall {
+                found: self.land_fraction_tolerance,
+                minimum: MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE,
+            });
+        }
+        let expected_status = constraint_status(
+            self.requested_land_fraction,
+            self.physical_land_fraction,
+            self.land_fraction_tolerance,
+        );
+        if self.constraint_status != expected_status {
+            return Err(PrimaryReliefValidationError::ConstraintStatusMismatch {
+                stored: self.constraint_status,
+                expected: expected_status,
+            });
+        }
+        Ok(())
+    }
+
+    /// Recomputes surface-area water and authored-constraint quantities.
+    pub fn validate_against_surface(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        relief_spec: &ReliefSpec,
+    ) -> Result<(), PrimaryReliefValidationError> {
+        self.validate()?;
+        surface.validate()?;
+        relief_spec.validate()?;
+        self.compatibility
+            .validate_against_validated_surface(surface)?;
+        let authoritative = SurfaceRef::for_spherical(surface);
+        if self.surface_ref != authoritative {
+            return Err(PrimaryReliefValidationError::SurfaceMismatch {
+                snapshot: self.surface_ref,
+                authoritative,
+            });
+        }
+        if self.requested_land_fraction.to_bits() != relief_spec.target_land_fraction.to_bits() {
+            return Err(
+                PrimaryReliefValidationError::RequestedLandFractionMismatch {
+                    stored: self.requested_land_fraction,
+                    authored: relief_spec.target_land_fraction,
+                },
+            );
+        }
+
+        let areas = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .collect::<Vec<_>>();
+        let total_area = compensated_sum(areas.iter().copied());
+        let expected_inventory = scaled_earth_ocean_inventory_m3(total_area)?;
+        validate_close_f64(
+            "water_inventory_m3",
+            self.water_inventory_m3,
+            expected_inventory,
+        )?;
+        let realized = water_volume_at_sea_level_m3(
+            &self.elevation_m,
+            &areas,
+            self.compatibility.sea_level_m(),
+        )?;
+        validate_close_f64(
+            "realized_water_volume_m3",
+            self.realized_water_volume_m3,
+            realized,
+        )?;
+        let physical = physical_land_fraction(surface, self.compatibility.land_ocean())?;
+        if (self.physical_land_fraction - physical).abs() > 1.0e-6 {
+            return Err(PrimaryReliefValidationError::PhysicalLandFractionMismatch {
+                stored: self.physical_land_fraction,
+                recomputed: physical,
+            });
+        }
+        let tolerance = land_fraction_constraint_tolerance(surface)?;
+        if self.land_fraction_tolerance.to_bits() != tolerance.to_bits() {
+            return Err(
+                PrimaryReliefValidationError::LandFractionToleranceMismatch {
+                    stored: self.land_fraction_tolerance,
+                    recomputed: tolerance,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Adds exact substrate identity validation to the surface and water checks.
+    pub fn validate_against(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        substrate: &GeologicSubstrateSnapshot,
+        relief_spec: &ReliefSpec,
+    ) -> Result<(), PrimaryReliefValidationError> {
+        substrate.validate_against_surface(surface)?;
+        self.validate_against_surface(surface, relief_spec)
+    }
+
+    pub const fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
+
+    pub const fn surface_ref(&self) -> SurfaceRef {
+        self.surface_ref
+    }
+
+    pub const fn cell_count(&self) -> u32 {
+        self.surface_ref.cell_count()
+    }
+
+    pub const fn compatibility(&self) -> &SphericalReliefSnapshot {
+        &self.compatibility
+    }
+
+    pub fn isostatic_base_m(&self) -> &[f32] {
+        &self.isostatic_base_m
+    }
+
+    pub fn dynamic_tectonic_offset_m(&self) -> &[f32] {
+        &self.dynamic_tectonic_offset_m
+    }
+
+    pub fn volcanic_construction_m(&self) -> &[f32] {
+        &self.volcanic_construction_m
+    }
+
+    pub fn passive_margin_offset_m(&self) -> &[f32] {
+        &self.passive_margin_offset_m
+    }
+
+    pub fn conditioned_regional_detail_m(&self) -> &[f32] {
+        &self.conditioned_regional_detail_m
+    }
+
+    pub fn elevation_m(&self) -> &[f32] {
+        &self.elevation_m
+    }
+
+    pub const fn sea_level_m(&self) -> f32 {
+        self.compatibility.sea_level_m()
+    }
+
+    pub const fn land_ocean(&self) -> &LandOceanField {
+        self.compatibility.land_ocean()
+    }
+
+    pub const fn water_inventory_m3(&self) -> f64 {
+        self.water_inventory_m3
+    }
+
+    pub const fn realized_water_volume_m3(&self) -> f64 {
+        self.realized_water_volume_m3
+    }
+
+    pub fn water_volume_relative_error(&self) -> f64 {
+        relative_water_error(self.realized_water_volume_m3, self.water_inventory_m3)
+    }
+
+    pub const fn requested_land_fraction(&self) -> f32 {
+        self.requested_land_fraction
+    }
+
+    pub const fn physical_land_fraction(&self) -> f32 {
+        self.physical_land_fraction
+    }
+
+    pub const fn land_fraction_tolerance(&self) -> f32 {
+        self.land_fraction_tolerance
+    }
+
+    pub const fn constraint_status(&self) -> LandFractionConstraintStatus {
+        self.constraint_status
+    }
+}
+
+impl<'de> Deserialize<'de> for PrimaryReliefSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PrimaryReliefSnapshotWire::deserialize(deserializer)?;
+        Self::new(
+            wire.schema_version,
+            wire.surface_ref,
+            wire.compatibility,
+            wire.isostatic_base_m,
+            wire.dynamic_tectonic_offset_m,
+            wire.volcanic_construction_m,
+            wire.passive_margin_offset_m,
+            wire.conditioned_regional_detail_m,
+            wire.elevation_m,
+            wire.water_inventory_m3,
+            wire.realized_water_volume_m3,
+            wire.requested_land_fraction,
+            wire.physical_land_fraction,
+            wire.land_fraction_tolerance,
+            wire.constraint_status,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+/// Result of the stable piecewise-linear bath-tub solve after `f32` publication.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterVolumeSolution {
+    sea_level_m: f32,
+    realized_water_volume_m3: f64,
+    relative_error: f64,
+}
+
+impl WaterVolumeSolution {
+    pub const fn sea_level_m(self) -> f32 {
+        self.sea_level_m
+    }
+
+    pub const fn realized_water_volume_m3(self) -> f64 {
+        self.realized_water_volume_m3
+    }
+
+    pub const fn relative_error(self) -> f64 {
+        self.relative_error
+    }
+}
+
+/// Solves `sum(area * max(sea - elevation, 0)) = inventory` in stable cell order.
+pub fn solve_physical_sea_level(
+    elevation_m: &[f32],
+    cell_area_m2: &[f64],
+    water_inventory_m3: f64,
+) -> Result<WaterVolumeSolution, WaterVolumeSolveError> {
+    validate_water_inputs(elevation_m, cell_area_m2, water_inventory_m3)?;
+    let mut ordered = elevation_m
+        .iter()
+        .copied()
+        .zip(cell_area_m2.iter().copied())
+        .enumerate()
+        .map(|(index, (elevation, area))| (elevation, index, area))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+
+    let mut wet_area = CompensatedSum::default();
+    let mut weighted_elevation = CompensatedSum::default();
+    wet_area.add(ordered[0].2);
+    weighted_elevation.add(ordered[0].2 * f64::from(ordered[0].0));
+    let mut solved = None;
+    for &(next_elevation, _, next_area) in ordered.iter().skip(1) {
+        let candidate = (water_inventory_m3 + weighted_elevation.total()) / wet_area.total();
+        if candidate <= f64::from(next_elevation) {
+            solved = Some(candidate);
+            break;
+        }
+        wet_area.add(next_area);
+        weighted_elevation.add(next_area * f64::from(next_elevation));
+    }
+    let exact_level = solved
+        .unwrap_or_else(|| (water_inventory_m3 + weighted_elevation.total()) / wet_area.total());
+    if !exact_level.is_finite()
+        || exact_level < f64::from(f32::MIN)
+        || exact_level > f64::from(f32::MAX)
+    {
+        return Err(WaterVolumeSolveError::NonFiniteSolution { found: exact_level });
+    }
+    let sea_level_m = exact_level as f32;
+    let realized = water_volume_at_sea_level_m3(elevation_m, cell_area_m2, sea_level_m)?;
+    let relative_error = relative_water_error(realized, water_inventory_m3);
+    if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
+        return Err(WaterVolumeSolveError::ClosureExceeded {
+            realized,
+            inventory: water_inventory_m3,
+            relative_error,
+            maximum: WATER_VOLUME_RELATIVE_TOLERANCE,
+        });
+    }
+    Ok(WaterVolumeSolution {
+        sea_level_m,
+        realized_water_volume_m3: realized,
+        relative_error,
+    })
+}
+
+/// Recomputes liquid-water volume from a published sea level.
+pub fn water_volume_at_sea_level_m3(
+    elevation_m: &[f32],
+    cell_area_m2: &[f64],
+    sea_level_m: f32,
+) -> Result<f64, WaterVolumeSolveError> {
+    validate_water_inputs(elevation_m, cell_area_m2, 0.0)?;
+    if !sea_level_m.is_finite() {
+        return Err(WaterVolumeSolveError::InvalidSeaLevel { found: sea_level_m });
+    }
+    Ok(compensated_sum(elevation_m.iter().zip(cell_area_m2).map(
+        |(&elevation, &area)| area * f64::from((sea_level_m - elevation).max(0.0)),
+    )))
+}
+
+/// Scales the locked Earth ocean inventory by spherical surface area.
+pub fn scaled_earth_ocean_inventory_m3(
+    total_surface_area_m2: f64,
+) -> Result<f64, WaterVolumeSolveError> {
+    if !total_surface_area_m2.is_finite() || total_surface_area_m2 <= 0.0 {
+        return Err(WaterVolumeSolveError::InvalidSurfaceArea {
+            found: total_surface_area_m2,
+        });
+    }
+    let reference_area = 4.0
+        * std::f64::consts::PI
+        * EARTH_WATER_REFERENCE_RADIUS_M
+        * EARTH_WATER_REFERENCE_RADIUS_M;
+    Ok(EARTH_OCEAN_VOLUME_M3 * (total_surface_area_m2 / reference_area))
+}
+
+/// Recomputes the exact area-weighted physical land share from the stored mask.
+pub fn physical_land_fraction(
+    surface: &SphericalSurfaceSnapshot,
+    land_ocean: &LandOceanField,
+) -> Result<f32, PrimaryReliefValidationError> {
+    surface.validate()?;
+    if land_ocean.len() != surface.cells().len() {
+        return Err(PrimaryReliefValidationError::FieldLengthMismatch {
+            field: "land_ocean_kind",
+            expected: surface.cells().len(),
+            found: land_ocean.len(),
+        });
+    }
+    let total = compensated_sum(surface.cells().iter().map(|cell| cell.area.get()));
+    let land = compensated_sum(surface.cells().iter().filter_map(|cell| {
+        (land_ocean.get(cell.id.raw() as usize) == Some(LandOceanKind::Land))
+            .then_some(cell.area.get())
+    }));
+    Ok((land / total) as f32)
+}
+
+/// Returns the larger of the locked 2% tolerance and one-cell area quantization.
+pub fn land_fraction_constraint_tolerance(
+    surface: &SphericalSurfaceSnapshot,
+) -> Result<f32, PrimaryReliefValidationError> {
+    surface.validate()?;
+    let total = compensated_sum(surface.cells().iter().map(|cell| cell.area.get()));
+    let maximum = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .fold(0.0_f64, f64::max);
+    Ok((maximum / total).max(f64::from(MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE)) as f32)
+}
+
+/// Derives constraint status without changing physical sea level.
+pub fn constraint_status(
+    requested: f32,
+    physical: f32,
+    tolerance: f32,
+) -> LandFractionConstraintStatus {
+    if (requested - physical).abs() <= tolerance {
+        LandFractionConstraintStatus::Satisfied
+    } else {
+        LandFractionConstraintStatus::Infeasible
+    }
+}
+
+fn validate_primary_field(
+    field: &'static str,
+    values: &[f32],
+    expected: usize,
+    minimum: f32,
+    maximum: f32,
+) -> Result<(), PrimaryReliefValidationError> {
+    if values.len() != expected {
+        return Err(PrimaryReliefValidationError::FieldLengthMismatch {
+            field,
+            expected,
+            found: values.len(),
+        });
+    }
+    for (index, &found) in values.iter().enumerate() {
+        if !found.is_finite() || !(minimum..=maximum).contains(&found) {
+            return Err(PrimaryReliefValidationError::FieldValueOutOfRange {
+                field,
+                cell: CellId::from_raw(index as u32),
+                found,
+                minimum,
+                maximum,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_non_negative_f64(
+    field: &'static str,
+    found: f64,
+) -> Result<(), PrimaryReliefValidationError> {
+    if !found.is_finite() || found < 0.0 {
+        return Err(PrimaryReliefValidationError::InvalidNonNegativeValue { field, found });
+    }
+    Ok(())
+}
+
+fn validate_close_f64(
+    field: &'static str,
+    stored: f64,
+    recomputed: f64,
+) -> Result<(), PrimaryReliefValidationError> {
+    let relative_error = (stored - recomputed).abs() / recomputed.abs().max(1.0);
+    if relative_error > 1.0e-12 {
+        return Err(PrimaryReliefValidationError::RecomputedScalarMismatch {
+            field,
+            stored,
+            recomputed,
+            relative_error,
+        });
+    }
+    Ok(())
+}
+
+fn relative_water_error(realized: f64, inventory: f64) -> f64 {
+    (realized - inventory).abs() / inventory.abs().max(1.0)
+}
+
+fn validate_water_inputs(
+    elevation_m: &[f32],
+    cell_area_m2: &[f64],
+    water_inventory_m3: f64,
+) -> Result<(), WaterVolumeSolveError> {
+    if elevation_m.is_empty() {
+        return Err(WaterVolumeSolveError::EmptySurface);
+    }
+    if elevation_m.len() != cell_area_m2.len() {
+        return Err(WaterVolumeSolveError::LengthMismatch {
+            elevations: elevation_m.len(),
+            areas: cell_area_m2.len(),
+        });
+    }
+    if !water_inventory_m3.is_finite() || water_inventory_m3 < 0.0 {
+        return Err(WaterVolumeSolveError::InvalidInventory {
+            found: water_inventory_m3,
+        });
+    }
+    for (index, &found) in elevation_m.iter().enumerate() {
+        if !found.is_finite() {
+            return Err(WaterVolumeSolveError::InvalidElevation { index, found });
+        }
+    }
+    for (index, &found) in cell_area_m2.iter().enumerate() {
+        if !found.is_finite() || found <= 0.0 {
+            return Err(WaterVolumeSolveError::InvalidCellArea { index, found });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct CompensatedSum {
+    sum: f64,
+    correction: f64,
+}
+
+impl CompensatedSum {
+    fn add(&mut self, value: f64) {
+        let next = self.sum + value;
+        if self.sum.abs() >= value.abs() {
+            self.correction += (self.sum - next) + value;
+        } else {
+            self.correction += (value - next) + self.sum;
+        }
+        self.sum = next;
+    }
+
+    fn total(&self) -> f64 {
+        self.sum + self.correction
+    }
+}
+
+fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+    let mut sum = CompensatedSum::default();
+    for value in values {
+        sum.add(value);
+    }
+    sum.total()
+}
+
+/// Failures from the stable physical-water operator.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum WaterVolumeSolveError {
+    #[error("physical sea-level solve requires at least one cell")]
+    EmptySurface,
+    #[error("elevation count {elevations} differs from area count {areas}")]
+    LengthMismatch { elevations: usize, areas: usize },
+    #[error("invalid elevation {found} at dense index {index}")]
+    InvalidElevation { index: usize, found: f32 },
+    #[error("invalid cell area {found} at dense index {index}")]
+    InvalidCellArea { index: usize, found: f64 },
+    #[error("invalid water inventory {found}")]
+    InvalidInventory { found: f64 },
+    #[error("invalid total surface area {found}")]
+    InvalidSurfaceArea { found: f64 },
+    #[error("invalid published sea level {found}")]
+    InvalidSeaLevel { found: f32 },
+    #[error("physical sea-level solve produced non-finite or unrepresentable level {found}")]
+    NonFiniteSolution { found: f64 },
+    #[error(
+        "quantized water volume {realized} differs from inventory {inventory} by {relative_error}; maximum is {maximum}"
+    )]
+    ClosureExceeded {
+        realized: f64,
+        inventory: f64,
+        relative_error: f64,
+        maximum: f64,
+    },
+}
+
+/// Failures in the strict P3 primary-relief contract.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum PrimaryReliefValidationError {
+    #[error("unsupported primary relief schema {found}; supported version is {supported}")]
+    UnsupportedSchema { found: u16, supported: u16 },
+    #[error("invalid primary relief surface identity: {0}")]
+    InvalidSurfaceRef(#[from] SurfaceRefError),
+    #[error("primary relief requires spherical_v1 geometry, found {found:?}")]
+    InvalidSurfaceKind { found: SurfaceGeometryKind },
+    #[error("primary relief compatibility snapshot is invalid: {0}")]
+    InvalidCompatibility(#[from] SphericalReliefValidationError),
+    #[error("compatibility surface {compatibility:?} differs from primary relief {snapshot:?}")]
+    CompatibilitySurfaceMismatch {
+        snapshot: SurfaceRef,
+        compatibility: SurfaceRef,
+    },
+    #[error("field {field} has length {found}; expected {expected}")]
+    FieldLengthMismatch {
+        field: &'static str,
+        expected: usize,
+        found: usize,
+    },
+    #[error("{field} at {cell:?} is {found}; expected {minimum}..={maximum}")]
+    FieldValueOutOfRange {
+        field: &'static str,
+        cell: CellId,
+        found: f32,
+        minimum: f32,
+        maximum: f32,
+    },
+    #[error("compatibility base, tectonic, volcanic, or elevation differs from P3 components")]
+    CompatibilityComponentMismatch,
+    #[error("compatibility regional component differs from passive plus detail at {cell:?}")]
+    CompatibilityRegionalMismatch { cell: CellId },
+    #[error("cell {cell:?} elevation {elevation} differs from causal sum {calculated}")]
+    ComponentIdentityMismatch {
+        cell: CellId,
+        elevation: f32,
+        calculated: f32,
+    },
+    #[error("{field} must be finite and non-negative, found {found}")]
+    InvalidNonNegativeValue { field: &'static str, found: f64 },
+    #[error(
+        "realized water {realized} differs from inventory {inventory} by {relative_error}; maximum is {maximum}"
+    )]
+    WaterVolumeClosureExceeded {
+        realized: f64,
+        inventory: f64,
+        relative_error: f64,
+        maximum: f64,
+    },
+    #[error("{field} fraction {found} is outside 0..=1")]
+    InvalidFraction { field: &'static str, found: f32 },
+    #[error("land-fraction tolerance {found} is below {minimum}")]
+    ConstraintToleranceTooSmall { found: f32, minimum: f32 },
+    #[error("constraint status {stored:?} differs from derived {expected:?}")]
+    ConstraintStatusMismatch {
+        stored: LandFractionConstraintStatus,
+        expected: LandFractionConstraintStatus,
+    },
+    #[error("invalid authoritative surface: {0}")]
+    InvalidSurface(#[from] SphericalSurfaceValidationError),
+    #[error("primary relief surface {snapshot:?} differs from authority {authoritative:?}")]
+    SurfaceMismatch {
+        snapshot: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
+    #[error("invalid relief authoring specification: {0}")]
+    InvalidReliefSpec(#[from] ReliefSpecError),
+    #[error("requested land fraction {stored} differs from authored {authored}")]
+    RequestedLandFractionMismatch { stored: f32, authored: f32 },
+    #[error("physical water solve is invalid: {0}")]
+    InvalidWaterSolve(#[from] WaterVolumeSolveError),
+    #[error("{field} stored {stored} differs from recomputed {recomputed} by {relative_error}")]
+    RecomputedScalarMismatch {
+        field: &'static str,
+        stored: f64,
+        recomputed: f64,
+        relative_error: f64,
+    },
+    #[error("physical land fraction {stored} differs from recomputed {recomputed}")]
+    PhysicalLandFractionMismatch { stored: f32, recomputed: f32 },
+    #[error("land-fraction tolerance {stored} differs from recomputed {recomputed}")]
+    LandFractionToleranceMismatch { stored: f32, recomputed: f32 },
+    #[error("invalid geologic substrate upstream: {0}")]
+    InvalidSubstrate(#[from] GeologicSubstrateValidationError),
 }
