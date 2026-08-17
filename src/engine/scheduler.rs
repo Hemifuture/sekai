@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::engine::artifact::{Artifact, ArtifactError, ArtifactKey, BuildArtifacts, ContentHash};
 use crate::engine::cache::{MemoryStageCache, StageCacheKey};
+use crate::engine::cancellation::BuildCancellation;
 use crate::engine::diagnostics::{
     BuildReport, BuildResultHash, Diagnostic, DiagnosticContext, DiagnosticSeverity, StageReport,
 };
@@ -92,7 +93,21 @@ impl BuildEngine {
         external: ExternalArtifacts,
         cache: &mut MemoryStageCache,
     ) -> Result<BuildOutcome, BuildFailure> {
+        self.build_with_cancellation(root_seed, external, cache, &BuildCancellation::new())
+    }
+
+    /// Executes the graph atomically while observing a cooperative cancellation signal.
+    pub fn build_with_cancellation(
+        &self,
+        root_seed: RootSeed,
+        external: ExternalArtifacts,
+        cache: &mut MemoryStageCache,
+        cancellation: &BuildCancellation,
+    ) -> Result<BuildOutcome, BuildFailure> {
         let mut report = BuildReport::new();
+        if cancellation.is_cancelled() {
+            return Err(cancelled_failure(report, None));
+        }
         let external_hashes = match self.graph.external_hashes(&external.artifacts) {
             Ok(hashes) => hashes,
             Err(error) => {
@@ -120,6 +135,9 @@ impl BuildEngine {
 
         let mut artifacts = external.artifacts;
         for (descriptor, stage) in self.graph.execution_stages() {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
             let started = StageTimer::now();
             let dependency_hashes = match self.graph.dependency_hashes(descriptor, &artifacts) {
                 Ok(hashes) => hashes,
@@ -133,6 +151,9 @@ impl BuildEngine {
                     return Err(BuildFailure { report });
                 }
             };
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
             let identity = StageIdentity::new(
                 descriptor.id().as_str(),
                 descriptor.version(),
@@ -157,7 +178,14 @@ impl BuildEngine {
                 }
             };
 
-            if let Some((stored, cached_diagnostics)) = cache.get(&cache_key) {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
+            let cached = cache.get(&cache_key);
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
+            if let Some((stored, cached_diagnostics)) = cached {
                 if let Err(error) = stage.restore_cached_output(stored, &mut artifacts) {
                     push_engine_error(
                         &mut report,
@@ -166,6 +194,9 @@ impl BuildEngine {
                         Some(descriptor),
                     );
                     return Err(BuildFailure { report });
+                }
+                if cancellation.is_cancelled() {
+                    return Err(cancelled_failure(report, Some(descriptor)));
                 }
                 for diagnostic in cached_diagnostics {
                     report.push_diagnostic(diagnostic);
@@ -181,7 +212,7 @@ impl BuildEngine {
             let mut emitted = Vec::new();
             let run_result = stage.run(
                 &mut artifacts,
-                &mut StageRng::from_seed(stage_seed),
+                &mut StageRng::from_seed_with_cancellation(stage_seed, cancellation),
                 &mut emitted,
             );
             let emitted_error = emitted
@@ -195,6 +226,9 @@ impl BuildEngine {
                 started.elapsed(),
                 false,
             ));
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
 
             let stored = match run_result {
                 Ok(stored) => stored,
@@ -207,9 +241,15 @@ impl BuildEngine {
             if emitted_error {
                 return Err(BuildFailure { report });
             }
+            if cancellation.is_cancelled() {
+                return Err(cancelled_failure(report, Some(descriptor)));
+            }
             cache.insert(cache_key, stored, emitted);
         }
 
+        if cancellation.is_cancelled() {
+            return Err(cancelled_failure(report, None));
+        }
         let output_hashes = match self.graph.output_hashes(&artifacts) {
             Ok(hashes) => hashes,
             Err(error) => {
@@ -222,6 +262,9 @@ impl BuildEngine {
                 return Err(BuildFailure { report });
             }
         };
+        if cancellation.is_cancelled() {
+            return Err(cancelled_failure(report, None));
+        }
         let result_hash = result_hash(&output_hashes);
         report.set_result_hash(result_hash);
         let provenance = BuildProvenance {
@@ -230,12 +273,28 @@ impl BuildEngine {
             artifact_set_hash: artifacts.semantic_binding_hash(),
             report_hash: report_binding_hash(&report),
         };
+        if cancellation.is_cancelled() {
+            return Err(cancelled_failure(report, None));
+        }
         Ok(BuildOutcome {
             artifacts,
             report,
             provenance,
         })
     }
+}
+
+fn cancelled_failure(
+    mut report: BuildReport,
+    descriptor: Option<&StageDescriptor>,
+) -> BuildFailure {
+    push_engine_error(
+        &mut report,
+        "engine.cancelled",
+        "build cancellation requested",
+        descriptor,
+    );
+    BuildFailure { report }
 }
 
 /// Immutable semantic provenance retained by one successful engine build.

@@ -2,6 +2,7 @@
 
 mod artifact;
 mod cache;
+mod cancellation;
 mod diagnostics;
 mod graph;
 mod provenance;
@@ -13,6 +14,7 @@ pub use artifact::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, ContentHash,
 };
 pub use cache::{MemoryStageCache, StageCacheError, StageCacheKey};
+pub use cancellation::BuildCancellation;
 pub use diagnostics::{
     BuildReport, BuildResultHash, Diagnostic, DiagnosticContext, DiagnosticError,
     DiagnosticSeverity, StageReport,

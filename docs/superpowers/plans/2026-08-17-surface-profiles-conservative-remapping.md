@@ -337,7 +337,7 @@ impl BuildEngine {
 }
 ```
 
-- [ ] **Step 1: Write RED engine cancellation tests**
+- [x] **Step 1: Write RED engine cancellation tests**
 
 Assert cancellation before build, between stages, during a cooperative stage,
 and before cache restore/final publication. No cancelled output enters cache or
@@ -345,27 +345,27 @@ escapes as `BuildOutcome`. `BuildEngine::build` and a never-cancelled token must
 produce exact matching artifacts, RNG values, diagnostics, and hashes. A prior
 published outcome remains valid after a later cancelled attempt.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 cargo test --test build_cancellation -- --nocapture
 ```
 
-- [ ] **Step 3: Implement the engine token without changing random streams**
+- [x] **Step 3: Implement the engine token without changing random streams**
 
 `StageRng::from_seed` installs a never-cancelled handle; the scheduler-only
 constructor attaches the build token. Check cancellation at every scheduler
 boundary and immediately before cache insertion/final publication. Emit stable
 `engine.cancelled` diagnostics with a stage ID when known.
 
-- [ ] **Step 4: Make the geodesic builder cooperative**
+- [x] **Step 4: Make the geodesic builder cooperative**
 
 Add `GeodesicVoronoiBuilder::build_cancellable`; check bounded intervals during
 site, triangle, vertex, edge, and cell work. The original `build` delegates to a
 never-cancelled closure. Add `SphericalSurfaceBuildError::Cancelled` and a stable
 stage mapping.
 
-- [ ] **Step 5: Verify compatibility**
+- [x] **Step 5: Verify compatibility**
 
 ```powershell
 cargo test --test build_cancellation -- --nocapture
@@ -373,7 +373,7 @@ cargo test --test engine_execution --test stage_random -- --nocapture
 cargo test --test spherical_surface_generation --test spherical_foundation_build -- --nocapture
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add src/engine src/generators/spatial/geodesic_voronoi.rs src/generators/spatial/spherical_stage.rs tests/build_cancellation.rs
