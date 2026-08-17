@@ -152,7 +152,7 @@ git commit -m "feat: define natural quality report"
 - Consumes: public quality contract and deterministic metric samples.
 - Produces: crate-private `NaturalQualityReportBuilder`, `MetricAccumulator`, `area_weighted_fraction`, `jaccard_fraction`, `QualityBuildError`.
 
-- [ ] **Step 1: Write builder RED tests**
+- [x] **Step 1: Write builder RED tests**
 
 Test sorted output regardless of insertion order, duplicate rejection, stable Neumaier area summation, unavailable empty accumulator, finite rejection, inclusive threshold behavior, and exact Jaccard behavior for empty/non-empty masks.
 
@@ -163,19 +163,19 @@ builder.record_between(other_id, 0.38, 32, 0.30, 0.45)?;
 let report = builder.finish()?;
 ```
 
-- [ ] **Step 2: Run module tests and verify RED**
+- [x] **Step 2: Run module tests and verify RED**
 
 Run: `cargo test --lib generators::natural::quality -- --nocapture`
 
 Expected: missing module and builder.
 
-- [ ] **Step 3: Implement builder and numeric helpers**
+- [x] **Step 3: Implement builder and numeric helpers**
 
 `MetricAccumulator` stores `(value, nonnegative_weight)` samples in stable caller order and uses an `f64` Neumaier sum for numerator and denominator. It returns `Unavailable("no positive finite sample weight")` if no positive weight exists. `jaccard_fraction` returns unavailable when both masks have zero weighted union; it never returns 1.0 for an empty comparison.
 
 The builder creates `QualityMetric` through its constructor so generator code cannot bypass report validation. `finish` calls `NaturalQualityReport::new` and maps validation errors into `QualityBuildError`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```powershell
 cargo test --lib generators::natural::quality -- --nocapture
@@ -184,7 +184,7 @@ cargo test --test natural_quality_contracts -- --nocapture
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add src/generators/natural/quality src/generators/natural/mod.rs

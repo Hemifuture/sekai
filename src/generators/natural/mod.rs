@@ -19,6 +19,7 @@ mod island_relief;
 mod land_fraction;
 mod mantle;
 mod morphology;
+mod quality;
 mod random;
 mod relief;
 mod relief_noise;
