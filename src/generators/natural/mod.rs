@@ -189,5 +189,9 @@ pub use stage::{
     legacy_planar_natural_foundation_graph, natural_foundation_graph, ReliefArtifact, ReliefStage,
     TectonicArtifact, TectonicSpecArtifact, TectonicStage,
 };
-pub use surface_formation::{FormationHydrologyGenerationError, FormationHydrologyGenerator};
+pub use surface_formation::{
+    implicit_stream_power_n1_height, FormationHydrologyGenerationError,
+    FormationHydrologyGenerator, ImplicitStreamPowerSolver, StreamPowerGenerationError,
+    StreamPowerInputs, StreamPowerStep,
+};
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

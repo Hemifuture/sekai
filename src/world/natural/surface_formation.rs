@@ -43,6 +43,16 @@ pub const FORMATION_STREAM_POWER_SLOPE_EXPONENT: f64 = 1.0;
 pub const FORMATION_STREAM_POWER_SLOPE_THRESHOLD: f64 = 1.0e-5;
 /// Reference annual erodibility in the locked stream-power law.
 pub const FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR: f64 = 5.0e-6;
+/// Baseline multiplier retained even for resistant substrate.
+pub const FORMATION_STREAM_POWER_ERODIBILITY_BASE: f64 = 0.25;
+/// Additional multiplier contributed by unit substrate erodibility.
+pub const FORMATION_STREAM_POWER_ERODIBILITY_RANGE: f64 = 1.50;
+/// Annual effective-runoff reference used by the erodibility response.
+pub const FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM: f64 = 1_000.0;
+/// Lower positive-runoff factor admitted by the stream-power response.
+pub const FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN: f64 = 0.10;
+/// Upper positive-runoff factor admitted by the stream-power response.
+pub const FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX: f64 = 4.0;
 /// Base nonlinear hillslope diffusivity.
 pub const FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR: f64 = 5_000.0;
 /// Tangent of the fixed 32-degree critical hillslope angle.
@@ -106,6 +116,11 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_STREAM_POWER_SLOPE_EXPONENT,
         FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
         FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
+        FORMATION_STREAM_POWER_ERODIBILITY_BASE,
+        FORMATION_STREAM_POWER_ERODIBILITY_RANGE,
+        FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM,
+        FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN,
+        FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
         FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR,
         FORMATION_HILLSLOPE_CRITICAL_SLOPE,
         FORMATION_SEDIMENT_CAPACITY_KG_M3,

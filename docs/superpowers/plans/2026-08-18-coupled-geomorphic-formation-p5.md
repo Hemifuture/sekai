@@ -57,13 +57,13 @@ Files:
 - Create: `src/generators/natural/surface_formation/stream_power.rs`
 - Create: `tests/formation_stream_power.rs`
 
-- [ ] Write RED tests for the `n=1` backward-Euler closed form, large-step
+- [x] Write RED tests for the `n=1` backward-Euler closed form, large-step
   stability, base-level preservation, monotone downstream profiles, zero-source
   identity, uplift/runoff/erodibility counterfactuals, quantized accounting,
   determinism, and cancellation.
-- [ ] Implement the Braun-Willett downstream-stack specialization using P2
+- [x] Implement the Braun-Willett downstream-stack specialization using P2
   uplift/subsidence, P3 erodibility, and P4-derived runoff.
-- [ ] Compare against a bounded tiny-step explicit reference and commit.
+- [x] Compare against a bounded tiny-step explicit reference and commit.
 
 ## Task 5: Add paired nonlinear hillslope transport
 
