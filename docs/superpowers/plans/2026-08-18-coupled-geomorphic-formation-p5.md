@@ -128,12 +128,12 @@ Files:
 - Create: `tests/surface_formation_quality.rs`
 - Create: `tests/surface_formation_stage.rs`
 
-- [ ] Write RED tests for every analytic/corpus metric, forged passing reports,
+- [x] Write RED tests for every analytic/corpus metric, forged passing reports,
   same-surface wrong-relief/climate reports, exact dependencies, cache
   invalidation, cancellation during output hashing, and atomic publication.
-- [ ] Implement the evaluator-issued Serialize-only product and
+- [x] Implement the evaluator-issued Serialize-only product and
   `natural.surface-formation@1` graph extension.
-- [ ] Prove P0-P4 graphs and frozen hashes remain unchanged; commit.
+- [x] Prove P0-P4 graphs and frozen hashes remain unchanged; commit.
 
 ## Task 9: Freeze P5 evidence, atlas, performance, and completion
 

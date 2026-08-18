@@ -51,6 +51,7 @@ mod spherical_stage;
 mod spherical_tectonics;
 mod stage;
 mod surface_formation;
+mod surface_formation_stage;
 mod tectonics;
 mod topology;
 
@@ -149,6 +150,7 @@ pub use quality::{
     evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
     evaluate_profile_surface_quality, evaluate_spherical_foundation_quality,
+    evaluate_surface_formation_quality, evaluate_surface_formation_quality_cancellable,
     PrimaryReliefQualitySample, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
@@ -198,5 +200,9 @@ pub use surface_formation::{
     ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs, SedimentTransportStep,
     StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,
     SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
+};
+pub use surface_formation_stage::{
+    surface_formation_graph, NaturalSurfaceFormationArtifact, SurfaceFormationProductError,
+    SurfaceFormationStage, SurfaceFormationStageInputs,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

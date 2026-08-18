@@ -3,6 +3,7 @@ mod global_circulation;
 mod primary_relief;
 mod spatial;
 mod spherical;
+mod surface_formation;
 
 use thiserror::Error;
 
@@ -30,6 +31,10 @@ pub use spherical::evaluate_spherical_foundation_quality;
 pub(crate) use spherical::{
     evaluate_spherical_foundation_quality_from_validated,
     validate_spherical_quality_input_identities,
+};
+pub(crate) use surface_formation::validate_surface_formation_quality_report;
+pub use surface_formation::{
+    evaluate_surface_formation_quality, evaluate_surface_formation_quality_cancellable,
 };
 
 const NO_POSITIVE_WEIGHT_REASON: &str = "no positive finite sample weight";
