@@ -11,12 +11,12 @@ Files:
 - Modify: `src/world/natural/mod.rs`
 - Create: `tests/surface_formation_contracts.rs`
 
-- [ ] Write RED tests for strict bounded serde, component identity, checkpoint
+- [x] Write RED tests for strict bounded serde, component identity, checkpoint
   and model fingerprints, capabilities, reports, water/sediment bounds, wrong
   upstream identity, and malformed dense allocation.
-- [ ] Implement the V1 checkpoint, terrain/process fields, sediment provenance,
+- [x] Implement the V1 checkpoint, terrain/process fields, sediment provenance,
   solve/budget reports, and snapshot validation.
-- [ ] Verify focused contracts and commit.
+- [x] Verify focused contracts and commit.
 
 ## Task 2: Adapt P4 forcing to a validated formation terrain
 
