@@ -179,10 +179,12 @@ publication as a lake. Deeper connected depressions become lake candidates.
 
 For every candidate, the solver compares spill volume with `1,000 yr` of
 catchment effective runoff. A depression that cannot reach its spill level in
-that declared residence horizon becomes an endorheic `ClosedSink`; otherwise it
-has one stable spill cell and downstream receiver. This is an explicit P5
-formation proxy, not a claim to model lake evaporation. P6 replaces the proxy
-with the final water balance while retaining the same outlet categories.
+that declared residence horizon becomes an endorheic lake terminal; otherwise
+it has one stable spill cell and downstream receiver. In the retained V1
+hydrology vocabulary this is `BasinOutletKind::Lake`; `ClosedSink` remains the
+distinct dry all-land local-minimum terminal. This is an explicit P5 formation
+proxy, not a claim to model lake evaporation. P6 replaces the proxy with the
+final water balance while retaining the same outlet categories.
 
 Monthly P4 precipitation is a mean `mm day-1` rate. P5 multiplies by the exact
 climatological month duration and the bounded formation-runoff coefficient:

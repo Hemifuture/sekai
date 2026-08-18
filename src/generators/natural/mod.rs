@@ -50,6 +50,7 @@ mod spherical_relief;
 mod spherical_stage;
 mod spherical_tectonics;
 mod stage;
+mod surface_formation;
 mod tectonics;
 mod topology;
 
@@ -188,4 +189,5 @@ pub use stage::{
     legacy_planar_natural_foundation_graph, natural_foundation_graph, ReliefArtifact, ReliefStage,
     TectonicArtifact, TectonicSpecArtifact, TectonicStage,
 };
+pub use surface_formation::{FormationHydrologyGenerationError, FormationHydrologyGenerator};
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

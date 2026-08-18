@@ -33,6 +33,8 @@ pub const SURFACE_FORMATION_MACRO_STEP_YEARS: f64 = 12_500.0;
 pub const FORMATION_RUNOFF_MIN_FRACTION: f64 = 0.15;
 /// Additional runoff fraction removed linearly by unit permeability.
 pub const FORMATION_RUNOFF_PERMEABILITY_RANGE: f64 = 0.70;
+/// Minimum depression depth retained as a P5 lake after centimeter routing.
+pub const FORMATION_MINIMUM_LAKE_DEPTH_M: f64 = 1.0;
 /// Drainage-area exponent in the locked stream-power law.
 pub const FORMATION_STREAM_POWER_AREA_EXPONENT: f64 = 0.5;
 /// Slope exponent in the locked stream-power law.
@@ -99,6 +101,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         SURFACE_FORMATION_MACRO_STEP_YEARS,
         FORMATION_RUNOFF_MIN_FRACTION,
         FORMATION_RUNOFF_PERMEABILITY_RANGE,
+        FORMATION_MINIMUM_LAKE_DEPTH_M,
         FORMATION_STREAM_POWER_AREA_EXPONENT,
         FORMATION_STREAM_POWER_SLOPE_EXPONENT,
         FORMATION_STREAM_POWER_SLOPE_THRESHOLD,

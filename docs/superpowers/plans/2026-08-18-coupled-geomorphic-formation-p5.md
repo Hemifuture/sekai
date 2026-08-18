@@ -42,13 +42,13 @@ Files:
 - Create: `src/generators/natural/surface_formation/hydrology.rs`
 - Create: `tests/formation_hydrology.rs`
 
-- [ ] Write RED irregular-graph tests for ocean outlets, insignificant pits,
+- [x] Write RED irregular-graph tests for ocean outlets, insignificant pits,
   spill lakes, residence-horizon closed sinks, flats, DAG ordering, monthly
   rate conversion, discharge/area closure, stable IDs, and cancellation.
-- [ ] Reuse the validated Priority-Flood/river core, add explicit P4 `mm/day`
+- [x] Reuse the validated Priority-Flood/river core, add explicit P4 `mm/day`
   forcing and endorheic classification, and publish final V2 spherical
   hydrology without exposing an intermediate pass.
-- [ ] Run every legacy spherical hydrology regression unchanged; commit.
+- [x] Run every legacy spherical hydrology regression unchanged; commit.
 
 ## Task 4: Implement the implicit tectonic-stream-power kernel
 
