@@ -84,6 +84,17 @@ impl CoastalExchange {
         surface
             .validate_cancellable(&|| cancellation.is_cancelled())
             .map_err(|error| map_surface_error(error, cancellation))?;
+        Self::advance_from_validated_surface(surface, inputs, step_years, cancellation)
+    }
+
+    /// Same paired exchange for a caller that already validated the surface.
+    pub(super) fn advance_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        inputs: CoastalInputs<'_>,
+        step_years: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<CoastalExchangeStep, CoastGenerationError> {
+        check_cancelled(cancellation)?;
         validate_inputs(surface, inputs, step_years, cancellation)?;
         let count = surface.cells().len();
         let mut land_exposure_sum = vec![0.0_f64; count];

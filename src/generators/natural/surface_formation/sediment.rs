@@ -126,6 +126,17 @@ impl ProvenanceSedimentRouter {
         surface
             .validate_cancellable(&|| cancellation.is_cancelled())
             .map_err(|error| map_surface_error(error, cancellation))?;
+        Self::route_from_validated_surface(surface, inputs, step_years, cancellation)
+    }
+
+    /// Same conservative pass for a caller that already validated the surface.
+    pub(super) fn route_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        inputs: SedimentInputs<'_>,
+        step_years: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<SedimentTransportStep, SedimentGenerationError> {
+        check_cancelled(cancellation)?;
         validate_inputs(surface, inputs, step_years, cancellation)?;
         validate_paired_source_ledgers(inputs, cancellation)?;
         let order = upstream_to_downstream_order(surface, inputs.flow_receiver, cancellation)?;

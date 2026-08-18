@@ -36,14 +36,6 @@ impl FormationHydrologyGenerator {
         surface.validate()?;
         check_cancelled(cancellation)?;
         terrain.validate()?;
-        let expected = surface.cells().len();
-        if terrain.final_elevation_m().len() != expected {
-            return Err(FormationHydrologyGenerationError::CellCountMismatch {
-                input: "formation_terrain",
-                expected,
-                found: terrain.final_elevation_m().len(),
-            });
-        }
         check_cancelled(cancellation)?;
         substrate.validate_against_surface(surface)?;
         check_cancelled(cancellation)?;
@@ -56,6 +48,28 @@ impl FormationHydrologyGenerator {
                     FormationHydrologyGenerationError::InvalidClimate(error)
                 }
             })?;
+        Self::generate_from_validated(surface, terrain, substrate, climate, spec, cancellation)
+    }
+
+    /// Same drainage solve for a caller that already validated the surface,
+    /// terrain, substrate, climate, and specification in this build.
+    pub(super) fn generate_from_validated(
+        surface: &SphericalSurfaceSnapshot,
+        terrain: &FormationTerrainFields,
+        substrate: &GeologicSubstrateSnapshot,
+        climate: &GlobalCirculationSnapshot,
+        spec: &HydroErosionSpec,
+        cancellation: &BuildCancellation,
+    ) -> Result<SphericalHydrologySnapshot, FormationHydrologyGenerationError> {
+        check_cancelled(cancellation)?;
+        let expected = surface.cells().len();
+        if terrain.final_elevation_m().len() != expected {
+            return Err(FormationHydrologyGenerationError::CellCountMismatch {
+                input: "formation_terrain",
+                expected,
+                found: terrain.final_elevation_m().len(),
+            });
+        }
         check_cancelled(cancellation)?;
 
         let elevation = ElevationField::from_values(terrain.final_elevation_m().to_vec())

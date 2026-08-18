@@ -178,6 +178,18 @@ impl NonlinearHillslopeTransport {
     ) -> Result<HillslopeTransportStep, HillslopeGenerationError> {
         check_cancelled(cancellation)?;
         surface.validate()?;
+        Self::advance_from_validated_surface(surface, inputs, step_years, workspace, cancellation)
+    }
+
+    /// Same paired transfer for a caller that already validated the surface.
+    pub(super) fn advance_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        inputs: HillslopeInputs<'_>,
+        step_years: f64,
+        workspace: &mut HillslopeWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<HillslopeTransportStep, HillslopeGenerationError> {
+        check_cancelled(cancellation)?;
         validate_inputs(surface, inputs, step_years, cancellation)?;
         let cell_count = surface.cells().len();
         workspace.prepare(cell_count, surface.edges().len());

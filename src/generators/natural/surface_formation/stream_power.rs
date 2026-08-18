@@ -71,6 +71,18 @@ impl ImplicitStreamPowerSolver {
     ) -> Result<StreamPowerStep, StreamPowerGenerationError> {
         check_cancelled(cancellation)?;
         surface.validate()?;
+        Self::advance_from_validated_surface(surface, inputs, step_years, cancellation)
+    }
+
+    /// Same solve for a caller that already validated the authoritative surface
+    /// in this build, such as the compound P5 compositor.
+    pub(super) fn advance_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        inputs: StreamPowerInputs<'_>,
+        step_years: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<StreamPowerStep, StreamPowerGenerationError> {
+        check_cancelled(cancellation)?;
         validate_inputs(surface, inputs, step_years, cancellation)?;
         let order = upstream_to_downstream_order(inputs.flow_receiver, cancellation)?;
         let count = surface.cells().len();
@@ -197,7 +209,29 @@ impl ImplicitStreamPowerSolver {
         tectonics.validate_against(surface)?;
         check_cancelled(cancellation)?;
         substrate.validate_against_surface(surface)?;
-        Self::advance(
+        Self::advance_from_validated_snapshots(
+            surface,
+            initial_elevation_m,
+            hydrology,
+            tectonics,
+            substrate,
+            step_years,
+            cancellation,
+        )
+    }
+
+    /// Same solve for a caller that already validated the surface, hydrology,
+    /// tectonic, and substrate products in this build.
+    pub(super) fn advance_from_validated_snapshots(
+        surface: &SphericalSurfaceSnapshot,
+        initial_elevation_m: &[f32],
+        hydrology: &SphericalHydrologySnapshot,
+        tectonics: &EvolvedTectonicSnapshot,
+        substrate: &GeologicSubstrateSnapshot,
+        step_years: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<StreamPowerStep, StreamPowerGenerationError> {
+        Self::advance_from_validated_surface(
             surface,
             StreamPowerInputs {
                 elevation_m: initial_elevation_m,

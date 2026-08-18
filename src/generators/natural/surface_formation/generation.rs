@@ -96,7 +96,7 @@ impl SurfaceFormationGenerator {
 
         let mut climate = inputs.initial_climate.clone();
         let mut previous_terrain = primary_relief_terrain(inputs)?;
-        let mut previous_hydrology = FormationHydrologyGenerator::generate(
+        let mut previous_hydrology = FormationHydrologyGenerator::generate_from_validated(
             surface,
             &previous_terrain,
             inputs.substrate,
@@ -126,7 +126,7 @@ impl SurfaceFormationGenerator {
                     cancellation,
                 )?
             };
-            let candidate_hydrology = FormationHydrologyGenerator::generate(
+            let candidate_hydrology = FormationHydrologyGenerator::generate_from_validated(
                 surface,
                 &solved.terrain,
                 inputs.substrate,
@@ -320,7 +320,7 @@ fn solve_geomorphic(
 
     for _ in 0..SURFACE_FORMATION_MACRO_STEPS {
         check_cancelled(cancellation)?;
-        let hydrology = FormationHydrologyGenerator::generate(
+        let hydrology = FormationHydrologyGenerator::generate_from_validated(
             surface,
             &terrain,
             inputs.substrate,
@@ -329,7 +329,7 @@ fn solve_geomorphic(
             cancellation,
         )?;
 
-        let stream = ImplicitStreamPowerSolver::advance_from_snapshots(
+        let stream = ImplicitStreamPowerSolver::advance_from_validated_snapshots(
             surface,
             &state.elevation_m,
             &hydrology,
@@ -345,7 +345,7 @@ fn solve_geomorphic(
         accumulate(&mut state.fluvial_erosion_m, stream.fluvial_erosion_m());
         state.refresh_elevation(cancellation)?;
 
-        let hillslope = NonlinearHillslopeTransport::advance(
+        let hillslope = NonlinearHillslopeTransport::advance_from_validated_surface(
             surface,
             HillslopeInputs {
                 elevation_m: &state.elevation_m,
@@ -370,7 +370,7 @@ fn solve_geomorphic(
         );
         state.refresh_elevation(cancellation)?;
 
-        let coast = CoastalExchange::advance(
+        let coast = CoastalExchange::advance_from_validated_surface(
             surface,
             CoastalInputs {
                 elevation_m: &state.elevation_m,
@@ -389,7 +389,7 @@ fn solve_geomorphic(
         accumulate(&mut state.coastal_erosion_m, coast.coastal_erosion_m());
         state.refresh_elevation(cancellation)?;
 
-        let sediment = ProvenanceSedimentRouter::route(
+        let sediment = ProvenanceSedimentRouter::route_from_validated_surface(
             surface,
             SedimentInputs {
                 elevation_m: &state.elevation_m,
@@ -424,7 +424,7 @@ fn solve_geomorphic(
         state.refresh_elevation(cancellation)?;
         budget.add(sediment.budget_report());
 
-        let isostasy = LocalAiryIsostasy::apply(
+        let isostasy = LocalAiryIsostasy::apply_from_validated_surface(
             surface,
             &state.elevation_m,
             sediment.removed_mass_kg(),
@@ -437,7 +437,7 @@ fn solve_geomorphic(
         );
         state.refresh_elevation(cancellation)?;
 
-        let water = FormationSeaLevelSolver::solve(
+        let water = FormationSeaLevelSolver::solve_from_validated_surface(
             surface,
             &state.elevation_m,
             inputs.relief.water_inventory_m3(),

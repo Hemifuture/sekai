@@ -44,6 +44,24 @@ impl LocalAiryIsostasy {
         surface
             .validate_cancellable(&|| cancellation.is_cancelled())
             .map_err(|error| map_surface_error(error, cancellation))?;
+        Self::apply_from_validated_surface(
+            surface,
+            elevation_m,
+            removed_mass_kg,
+            deposited_mass_kg,
+            cancellation,
+        )
+    }
+
+    /// Same local response for a caller that already validated the surface.
+    pub(super) fn apply_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        elevation_m: &[f32],
+        removed_mass_kg: &[f64],
+        deposited_mass_kg: &[f64],
+        cancellation: &BuildCancellation,
+    ) -> Result<IsostaticAdjustmentStep, IsostasyGenerationError> {
+        check_cancelled(cancellation)?;
         let count = surface.cells().len();
         for (field, found) in [
             ("elevation_m", elevation_m.len()),
@@ -151,6 +169,17 @@ impl FormationSeaLevelSolver {
         surface
             .validate_cancellable(&|| cancellation.is_cancelled())
             .map_err(|error| map_surface_error(error, cancellation))?;
+        Self::solve_from_validated_surface(surface, elevation_m, water_inventory_m3, cancellation)
+    }
+
+    /// Same physical solve for a caller that already validated the surface.
+    pub(super) fn solve_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        elevation_m: &[f32],
+        water_inventory_m3: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<FormationWaterState, IsostasyGenerationError> {
+        check_cancelled(cancellation)?;
         if elevation_m.len() != surface.cells().len() {
             return Err(IsostasyGenerationError::CellCountMismatch {
                 field: "elevation_m",
