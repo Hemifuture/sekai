@@ -145,15 +145,15 @@ Files:
 - Create: `docs/superpowers/specs/2026-08-18-coupled-geomorphic-formation-p5-completion.md`
 - Modify: this plan
 
-- [ ] Generate deterministic Release JSON/CSV for analytic fixtures, the old
+- [x] Generate deterministic Release JSON/CSV for analytic fixtures, the old
   two-pass negative baseline, and all 17 paired product seeds.
-- [ ] Render fixed map/globe rows for every causal terrain, water, river,
+- [x] Render fixed map/globe rows for every causal terrain, water, river,
   sediment, coast, climate, and residual field.
-- [ ] Measure Draft/Standard/High wall time, conservative dense owners,
+- [x] Measure Draft/Standard/High wall time, conservative dense owners,
   isolated High RSS, active cancellation, and cold/warm cache behavior.
-- [ ] Inspect seeds 42, 43, and 83 and fix every severe scientific or visual
+- [x] Inspect seeds 42, 43, and 83 and fix every severe scientific or visual
   artifact without weakening a gate.
-- [ ] Run fmt, full native all-target/all-feature tests, Clippy, WASM, focused
+- [x] Run fmt, full native all-target/all-feature tests, Clippy, WASM, focused
   Release suites, upstream frozen checks, and every P5 writer.
-- [ ] Record exact hashes, equations, failed baseline, metrics, timing,
+- [x] Record exact hashes, equations, failed baseline, metrics, timing,
   limitations, schema policy, and P6 handoff; check all boxes and commit.
