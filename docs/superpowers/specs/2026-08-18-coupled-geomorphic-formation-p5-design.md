@@ -260,16 +260,24 @@ S_c = tan(32 deg)
 D0 = 5,000 m2 yr-1
 ```
 
-`D_eff` is `D0` times a bounded lithology/fracture/weathering factor derived
-from the same P3 substrate and P4 annual precipitation. The large value is
-explicitly an unresolved world-cell diffusivity; it is not a measured local
-soil-creep coefficient.
+`D_eff` is `D0 E F W`, where the bounded factors are
 
-Flux is limited by donor area, local relief, and the critical-slope target so a
-step cannot invert a pair or export more material than retained. Both cells are
-updated from the same quantized mass transfer. This provides conservative
-diffusion and a bounded landslide surrogate without random scars. P9 may derive
-subcell scar texture but cannot alter the authoritative mass or drainage.
+```text
+E = 0.25 + 0.75 * substrate_erodibility
+F = 0.50 + 0.50 * fracture_intensity
+W = 0.50 + 0.50 * sqrt(clamp(annual_precipitation / 1000 mm, 0, 4) / 4)
+```
+
+The large base value is explicitly an unresolved world-cell diffusivity; it is
+not a measured local soil-creep coefficient.
+
+Flux is limited at both donor and receiver to `0.25` of their minimum incident
+relief, as well as by the corresponding two-cell equalization volume. A step
+therefore cannot invert a pair or export more material than retained. Both
+cells are updated from the same quantized mass transfer. This provides
+conservative diffusion and a bounded landslide surrogate without random scars.
+P9 may derive subcell scar texture but cannot alter the authoritative mass or
+drainage.
 
 ## 10. Sediment production, transport, and deposition
 

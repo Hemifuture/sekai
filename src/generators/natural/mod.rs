@@ -191,7 +191,8 @@ pub use stage::{
 };
 pub use surface_formation::{
     implicit_stream_power_n1_height, FormationHydrologyGenerationError,
-    FormationHydrologyGenerator, ImplicitStreamPowerSolver, StreamPowerGenerationError,
-    StreamPowerInputs, StreamPowerStep,
+    FormationHydrologyGenerator, HillslopeGenerationError, HillslopeInputs, HillslopeTransportStep,
+    HillslopeWorkspace, ImplicitStreamPowerSolver, NonlinearHillslopeTransport,
+    StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

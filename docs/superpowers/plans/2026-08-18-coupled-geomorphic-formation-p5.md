@@ -72,12 +72,14 @@ Files:
 - Create: `src/generators/natural/surface_formation/hillslope.rs`
 - Create: `tests/formation_hillslope.rs`
 
-- [ ] Write RED tests for constant/linear equilibrium, paired mass closure,
+- [x] Write RED tests for constant equilibrium and the linear low-slope limit,
+  paired mass closure,
   critical-slope response, no inversion, lithology/climate causality, closed
   coast edges, zero allocations with supplied workspace, and cancellation.
-- [ ] Implement the irregular spherical finite-volume Roering-style effective
+- [x] Implement the irregular spherical finite-volume Roering-style effective
   flux with donor/local-relief limiting and retained-mass diagnostics.
-- [ ] Verify resolution and edge-order invariance; commit.
+- [x] Verify resolution scaling and canonical edge-orientation invariance;
+  commit.
 
 ## Task 6: Implement provenance-aware sediment, coast, isostasy, and sea level
 

@@ -57,6 +57,26 @@ pub const FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX: f64 = 4.0;
 pub const FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR: f64 = 5_000.0;
 /// Tangent of the fixed 32-degree critical hillslope angle.
 pub const FORMATION_HILLSLOPE_CRITICAL_SLOPE: f64 = 0.624_869_351_909_327_5;
+/// Floor preventing the nonlinear critical-slope denominator from diverging.
+pub const FORMATION_HILLSLOPE_DENOMINATOR_MIN: f64 = 0.10;
+/// Baseline substrate multiplier for coarse hillslope transport.
+pub const FORMATION_HILLSLOPE_ERODIBILITY_BASE: f64 = 0.25;
+/// Additional hillslope multiplier contributed by unit erodibility.
+pub const FORMATION_HILLSLOPE_ERODIBILITY_RANGE: f64 = 0.75;
+/// Baseline fracture multiplier for coarse hillslope transport.
+pub const FORMATION_HILLSLOPE_FRACTURE_BASE: f64 = 0.50;
+/// Additional hillslope multiplier contributed by unit fracture intensity.
+pub const FORMATION_HILLSLOPE_FRACTURE_RANGE: f64 = 0.50;
+/// Baseline weathering multiplier at zero annual precipitation.
+pub const FORMATION_HILLSLOPE_WEATHERING_BASE: f64 = 0.50;
+/// Additional normalized wet-weather multiplier.
+pub const FORMATION_HILLSLOPE_WEATHERING_RANGE: f64 = 0.50;
+/// Annual precipitation reference used by the hillslope weathering factor.
+pub const FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM: f64 = 1_000.0;
+/// Maximum normalized annual precipitation before weathering saturates.
+pub const FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX: f64 = 4.0;
+/// Maximum fraction of local relief changed at either end of one edge per step.
+pub const FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION: f64 = 0.25;
 /// Reference routed-sediment transport concentration.
 pub const FORMATION_SEDIMENT_CAPACITY_KG_M3: f64 = 0.5;
 /// Maximum non-lake floodplain accommodation per macro step.
@@ -123,6 +143,16 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
         FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR,
         FORMATION_HILLSLOPE_CRITICAL_SLOPE,
+        FORMATION_HILLSLOPE_DENOMINATOR_MIN,
+        FORMATION_HILLSLOPE_ERODIBILITY_BASE,
+        FORMATION_HILLSLOPE_ERODIBILITY_RANGE,
+        FORMATION_HILLSLOPE_FRACTURE_BASE,
+        FORMATION_HILLSLOPE_FRACTURE_RANGE,
+        FORMATION_HILLSLOPE_WEATHERING_BASE,
+        FORMATION_HILLSLOPE_WEATHERING_RANGE,
+        FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM,
+        FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX,
+        FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION,
         FORMATION_SEDIMENT_CAPACITY_KG_M3,
         FORMATION_FLOODPLAIN_ACCOMMODATION_M,
         FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
