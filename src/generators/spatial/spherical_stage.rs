@@ -231,7 +231,7 @@ mod tests {
         INVALID_SPEC_CODE,
     };
     use crate::generators::spatial::SphericalSurfaceBuildError;
-    use crate::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V1};
+    use crate::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V2};
     use crate::world::{SphericalSpecError, MIN_SPHERICAL_CELL_COUNT};
 
     #[test]
@@ -279,15 +279,15 @@ mod tests {
     #[test]
     fn spherical_snapshot_failures_have_a_stable_distinct_stage_error() {
         let source = SphericalSurfaceValidationError::UnsupportedSchema {
-            found: SPHERICAL_SURFACE_SCHEMA_V1 + 1,
-            supported: SPHERICAL_SURFACE_SCHEMA_V1,
+            found: SPHERICAL_SURFACE_SCHEMA_V2 + 1,
+            supported: SPHERICAL_SURFACE_SCHEMA_V2,
         };
         let error = builder_failure(SphericalSurfaceBuildError::InvalidSnapshot(source));
 
         assert_eq!(error.code(), INVALID_SNAPSHOT_CODE);
         assert_eq!(
             error.message(),
-            "generated spherical surface failed validation: unsupported spherical surface schema version 2; supported version is 1"
+            "generated spherical surface failed validation: unsupported spherical surface schema version 3; latest supported version is 2"
         );
     }
 }

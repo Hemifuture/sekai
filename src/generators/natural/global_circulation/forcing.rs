@@ -4,10 +4,11 @@ use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{
     CirculationOperatorError, CirculationOperators, CubedSphereGrid, CubedSphereGridError,
 };
-use crate::generators::spatial::{remap_intensive_f32, ConservativeRemapError};
+use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
-    ClimateSpec, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, LandOceanKind,
-    PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError, CLIMATE_MONTH_COUNT,
+    ClimateSpec, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
+    LandOceanKind, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
+    CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -24,6 +25,7 @@ pub struct GlobalClimateForcing {
     climate_spec_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
     sea_level_m: f32,
+    source_land_mask: Vec<u8>,
     planet_forcing: PlanetForcing,
     relative_elevation_m: Vec<f32>,
     ocean_depth_m: Vec<f32>,
@@ -33,6 +35,33 @@ pub struct GlobalClimateForcing {
 }
 
 impl GlobalClimateForcing {
+    pub(crate) fn validate_relief_identity(
+        &self,
+        relief: &PrimaryReliefSnapshot,
+    ) -> Result<(), GlobalClimateForcingError> {
+        if relief.surface_ref() != self.source_ref
+            || relief_fingerprint_impl(relief, None)? != self.source_relief_fingerprint
+        {
+            return Err(GlobalClimateForcingError::SourceMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_relief_identity_cancellable(
+        &self,
+        relief: &PrimaryReliefSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), GlobalClimateForcingError> {
+        check_cancelled(cancellation)?;
+        if relief.surface_ref() != self.source_ref
+            || relief_fingerprint_cancellable(relief, cancellation)?
+                != self.source_relief_fingerprint
+        {
+            return Err(GlobalClimateForcingError::SourceMismatch);
+        }
+        Ok(())
+    }
+
     pub fn validate_against(
         &self,
         domain: &ClimateWorkDomainSnapshot,
@@ -40,11 +69,40 @@ impl GlobalClimateForcing {
         domain
             .validate()
             .map_err(GlobalClimateForcingError::WorkDomain)?;
-        self.planet_forcing.validate().map_err(|error| {
-            GlobalClimateForcingError::InvalidForcing {
-                reason: error.to_string(),
-            }
-        })?;
+        self.validate_payload_against(domain)
+    }
+
+    /// Validates this private-field forcing payload against a domain whose
+    /// immutable invariants were already established at construction or
+    /// deserialization.
+    pub(crate) fn validate_payload_against(
+        &self,
+        domain: &ClimateWorkDomainSnapshot,
+    ) -> Result<(), GlobalClimateForcingError> {
+        self.validate_payload_against_impl(domain, None)
+    }
+
+    pub(crate) fn validate_payload_against_cancellable(
+        &self,
+        domain: &ClimateWorkDomainSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), GlobalClimateForcingError> {
+        self.validate_payload_against_impl(domain, Some(cancellation))
+    }
+
+    fn validate_payload_against_impl(
+        &self,
+        domain: &ClimateWorkDomainSnapshot,
+        cancellation: Option<&BuildCancellation>,
+    ) -> Result<(), GlobalClimateForcingError> {
+        check_optional_cancelled(cancellation)?;
+        match cancellation {
+            Some(cancellation) => self
+                .planet_forcing
+                .validate_cancellable(&|| cancellation.is_cancelled()),
+            None => self.planet_forcing.validate(),
+        }
+        .map_err(map_planet_forcing_error)?;
         if self.source_ref != domain.source_ref() {
             return Err(GlobalClimateForcingError::SourceMismatch);
         }
@@ -52,6 +110,26 @@ impl GlobalClimateForcing {
             return Err(GlobalClimateForcingError::GridMismatch);
         }
         let cell_count = domain.climate_surface().cells().len();
+        let source_cell_count = domain.source_ref().cell_count() as usize;
+        if self.source_land_mask.len() != source_cell_count {
+            return Err(GlobalClimateForcingError::FieldLengthMismatch {
+                field: "source_land_mask",
+                found: self.source_land_mask.len(),
+                expected: source_cell_count,
+            });
+        }
+        for (index, value) in self.source_land_mask.iter().copied().enumerate() {
+            poll_optional_cancelled(index, cancellation)?;
+            if value > 1 {
+                return Err(GlobalClimateForcingError::ValueOutOfRange {
+                    field: "source_land_mask",
+                    index,
+                    found: f32::from(value),
+                    minimum: 0.0,
+                    maximum: 1.0,
+                });
+            }
+        }
         for (field, found) in [
             ("relative_elevation_m", self.relative_elevation_m.len()),
             ("ocean_depth_m", self.ocean_depth_m.len()),
@@ -94,6 +172,7 @@ impl GlobalClimateForcing {
             ),
         ] {
             for (index, value) in values.iter().copied().enumerate() {
+                poll_optional_cancelled(index, cancellation)?;
                 if !value.is_finite() || value < minimum || value > maximum {
                     return Err(GlobalClimateForcingError::ValueOutOfRange {
                         field,
@@ -105,13 +184,23 @@ impl GlobalClimateForcing {
                 }
             }
         }
-        if self.fingerprint != self.calculate_fingerprint() {
+        if self.planet_forcing.ocean_depth_m() != self.ocean_depth_m {
+            return Err(GlobalClimateForcingError::PayloadIdentityMismatch {
+                field: "ocean_depth_m",
+            });
+        }
+        if self.fingerprint != self.calculate_fingerprint_impl(cancellation)? {
             return Err(GlobalClimateForcingError::FingerprintMismatch);
         }
+        check_optional_cancelled(cancellation)?;
         Ok(())
     }
 
-    fn calculate_fingerprint(&self) -> [u8; 32] {
+    fn calculate_fingerprint_impl(
+        &self,
+        cancellation: Option<&BuildCancellation>,
+    ) -> Result<[u8; 32], GlobalClimateForcingError> {
+        check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"sekai.global-climate-forcing.v1\0");
         hasher.update(&self.source_ref.fingerprint());
@@ -119,16 +208,20 @@ impl GlobalClimateForcing {
         hasher.update(&self.climate_spec_fingerprint);
         hasher.update(self.planet_forcing.fingerprint());
         hasher.update(&self.sea_level_m.to_bits().to_le_bytes());
-        hash_f32_slice(&mut hasher, &self.relative_elevation_m);
-        hash_f32_slice(&mut hasher, &self.ocean_depth_m);
-        for value in &self.terrain_gradient_m_per_m {
+        hasher.update(&self.source_land_mask);
+        hash_f32_slice_cancellable(&mut hasher, &self.relative_elevation_m, cancellation)?;
+        hash_f32_slice_cancellable(&mut hasher, &self.ocean_depth_m, cancellation)?;
+        for (index, value) in self.terrain_gradient_m_per_m.iter().enumerate() {
+            poll_optional_cancelled(index, cancellation)?;
             hash_f32_slice(&mut hasher, value);
         }
-        hash_f32_slice(&mut hasher, &self.ocean_edge_permeability);
-        for months in &self.monthly_insolation_fraction {
+        hash_f32_slice_cancellable(&mut hasher, &self.ocean_edge_permeability, cancellation)?;
+        for (index, months) in self.monthly_insolation_fraction.iter().enumerate() {
+            poll_optional_cancelled(index, cancellation)?;
             hash_f32_slice(&mut hasher, months);
         }
-        *hasher.finalize().as_bytes()
+        check_optional_cancelled(cancellation)?;
+        Ok(*hasher.finalize().as_bytes())
     }
 
     pub const fn source_ref(&self) -> SurfaceRef {
@@ -153,6 +246,11 @@ impl GlobalClimateForcing {
 
     pub const fn planet_forcing(&self) -> &PlanetForcing {
         &self.planet_forcing
+    }
+
+    /// Exact authoritative P3 classification. A value of one is full land.
+    pub fn source_land_mask(&self) -> &[u8] {
+        &self.source_land_mask
     }
 
     pub fn relative_elevation_m(&self) -> &[f32] {
@@ -188,66 +286,84 @@ impl GlobalClimateForcingBuilder {
         cancellation: &BuildCancellation,
     ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
         check_cancelled(cancellation)?;
-        surface
-            .validate()
-            .map_err(|error| GlobalClimateForcingError::InvalidInput {
-                role: "surface",
-                reason: error.to_string(),
-            })?;
-        relief
-            .validate()
-            .map_err(GlobalClimateForcingError::Relief)?;
         climate_spec
             .validate()
             .map_err(|error| GlobalClimateForcingError::InvalidInput {
                 role: "climate_spec",
                 reason: error.to_string(),
             })?;
-        domain.validate_against(surface)?;
-        if relief.surface_ref() != SurfaceRef::for_spherical(surface) {
+        domain
+            .validate_against_cancellable(surface, &|| cancellation.is_cancelled())
+            .map_err(map_work_domain_error)?;
+        let source_ref = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+            GlobalClimateForcingError::InvalidInput {
+                role: "surface",
+                reason: error.to_string(),
+            }
+        })?;
+        if relief.surface_ref() != source_ref {
             return Err(GlobalClimateForcingError::SourceMismatch);
         }
 
         let map = domain.source_to_climate();
-        let elevation_m = remap_intensive_f32(map, relief.elevation_m())?;
-        check_cancelled(cancellation)?;
-        let source_land = relief
-            .land_ocean()
-            .raw_values()
-            .iter()
-            .map(|&kind| f32::from(kind == LandOceanKind::Land.raw()))
-            .collect::<Vec<_>>();
-        let land_fraction = remap_intensive_f32(map, &source_land)?;
-        let source_ocean_depth = relief
-            .elevation_m()
-            .iter()
-            .map(|&elevation| (relief.sea_level_m() - elevation).max(0.0))
-            .collect::<Vec<_>>();
-        let ocean_depth_m = remap_intensive_f32(map, &source_ocean_depth)?;
-        let relative_elevation_m = elevation_m
-            .iter()
-            .map(|&elevation| elevation - relief.sea_level_m())
-            .collect::<Vec<_>>();
+        let elevation_m = remap_intensive_f32_cancellable(map, relief.elevation_m(), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(map_remap_error)?;
+        let mut source_land = Vec::with_capacity(relief.land_ocean().raw_values().len());
+        let mut source_land_mask = Vec::with_capacity(relief.land_ocean().raw_values().len());
+        for (index, &kind) in relief.land_ocean().raw_values().iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let is_land = kind == LandOceanKind::Land.raw();
+            source_land.push(f32::from(is_land));
+            source_land_mask.push(u8::from(is_land));
+        }
+        let land_fraction =
+            remap_intensive_f32_cancellable(map, &source_land, &|| cancellation.is_cancelled())
+                .map_err(map_remap_error)?;
+        let mut source_ocean_depth = Vec::with_capacity(relief.elevation_m().len());
+        for (index, &elevation) in relief.elevation_m().iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            source_ocean_depth.push((relief.sea_level_m() - elevation).max(0.0));
+        }
+        let ocean_depth_m = remap_intensive_f32_cancellable(map, &source_ocean_depth, &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(map_remap_error)?;
+        let mut relative_elevation_m = Vec::with_capacity(elevation_m.len());
+        for (index, &elevation) in elevation_m.iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            relative_elevation_m.push(elevation - relief.sea_level_m());
+        }
 
-        let grid = CubedSphereGrid::new(
+        let grid = CubedSphereGrid::new_cancellable(
             domain.face_resolution(),
             domain.climate_surface().radius().get(),
-        )?;
+            &|| cancellation.is_cancelled(),
+        )
+        .map_err(map_grid_error)?;
         if grid.fingerprint() != domain.climate_grid_fingerprint() {
             return Err(GlobalClimateForcingError::GridMismatch);
         }
-        let terrain_gradient_m_per_m =
-            CirculationOperators::new(&grid).gradient(&relative_elevation_m)?;
-        let ocean_edge_permeability = grid
-            .edges()
-            .iter()
-            .map(|edge| {
-                let [first, second] = *edge.cells();
-                let first_water = 1.0 - land_fraction[first as usize];
-                let second_water = 1.0 - land_fraction[second as usize];
-                first_water.min(second_water).clamp(0.0, 1.0)
-            })
-            .collect::<Vec<_>>();
+        let terrain_gradient_m_per_m = CirculationOperators::new(&grid)
+            .gradient_cancellable(&relative_elevation_m, cancellation)
+            .map_err(map_operator_error)?;
+        let mut ocean_edge_permeability = Vec::with_capacity(grid.edges().len());
+        for (index, edge) in grid.edges().iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let [first, second] = *edge.cells();
+            let first_water = 1.0 - land_fraction[first as usize];
+            let second_water = 1.0 - land_fraction[second as usize];
+            ocean_edge_permeability.push(first_water.min(second_water).clamp(0.0, 1.0));
+        }
 
         let axial_tilt_rad = f64::from(climate_spec.axial_tilt_degrees()).to_radians();
         let temperature_offset_c = f64::from(climate_spec.temperature_offset_c());
@@ -298,25 +414,26 @@ impl GlobalClimateForcingBuilder {
             equilibrium_specific_humidity.push(humidity);
         }
 
-        let planet_forcing = PlanetForcing::new(
+        let planet_forcing = PlanetForcing::new_cancellable_with_ocean_depth(
             *grid.fingerprint(),
             elevation_m,
             land_fraction,
+            ocean_depth_m.clone(),
             surface_albedo,
             surface_moisture_availability,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
+            &|| cancellation.is_cancelled(),
         )
-        .map_err(|error| GlobalClimateForcingError::InvalidForcing {
-            reason: error.to_string(),
-        })?;
+        .map_err(map_planet_forcing_error)?;
         let mut forcing = GlobalClimateForcing {
-            source_ref: SurfaceRef::for_spherical(surface),
-            source_relief_fingerprint: relief_fingerprint(relief),
+            source_ref,
+            source_relief_fingerprint: relief_fingerprint_cancellable(relief, cancellation)?,
             climate_spec_fingerprint: climate_spec_fingerprint(climate_spec),
             fingerprint: [0; 32],
             sea_level_m: relief.sea_level_m(),
+            source_land_mask,
             planet_forcing,
             relative_elevation_m,
             ocean_depth_m,
@@ -324,8 +441,8 @@ impl GlobalClimateForcingBuilder {
             ocean_edge_permeability,
             monthly_insolation_fraction,
         };
-        forcing.fingerprint = forcing.calculate_fingerprint();
-        forcing.validate_against(domain)?;
+        forcing.fingerprint = forcing.calculate_fingerprint_impl(Some(cancellation))?;
+        forcing.validate_payload_against_cancellable(domain, cancellation)?;
         Ok(forcing)
     }
 }
@@ -339,17 +456,30 @@ fn daily_mean_insolation(latitude: f64, declination: f64) -> f64 {
         .max(0.0)
 }
 
-fn relief_fingerprint(relief: &PrimaryReliefSnapshot) -> [u8; 32] {
+fn relief_fingerprint_cancellable(
+    relief: &PrimaryReliefSnapshot,
+    cancellation: &BuildCancellation,
+) -> Result<[u8; 32], GlobalClimateForcingError> {
+    relief_fingerprint_impl(relief, Some(cancellation))
+}
+
+fn relief_fingerprint_impl(
+    relief: &PrimaryReliefSnapshot,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<[u8; 32], GlobalClimateForcingError> {
+    check_optional_cancelled(cancellation)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.primary-relief.climate-input.v1\0");
     hasher.update(&relief.schema_version().to_le_bytes());
     hasher.update(&relief.surface_ref().fingerprint());
     hasher.update(&relief.sea_level_m().to_bits().to_le_bytes());
-    hash_f32_slice(&mut hasher, relief.elevation_m());
-    for value in relief.land_ocean().raw_values() {
+    hash_f32_slice_cancellable(&mut hasher, relief.elevation_m(), cancellation)?;
+    for (index, value) in relief.land_ocean().raw_values().iter().enumerate() {
+        poll_optional_cancelled(index, cancellation)?;
         hasher.update(&value.to_le_bytes());
     }
-    *hasher.finalize().as_bytes()
+    check_optional_cancelled(cancellation)?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 fn climate_spec_fingerprint(spec: &ClimateSpec) -> [u8; 32] {
@@ -368,8 +498,82 @@ fn hash_f32_slice(hasher: &mut blake3::Hasher, values: &[f32]) {
     }
 }
 
+fn hash_f32_slice_cancellable(
+    hasher: &mut blake3::Hasher,
+    values: &[f32],
+    cancellation: Option<&BuildCancellation>,
+) -> Result<(), GlobalClimateForcingError> {
+    for (index, value) in values.iter().enumerate() {
+        poll_optional_cancelled(index, cancellation)?;
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    Ok(())
+}
+
+fn map_work_domain_error(error: ClimateWorkDomainValidationError) -> GlobalClimateForcingError {
+    if error == ClimateWorkDomainValidationError::Cancelled {
+        GlobalClimateForcingError::Cancelled
+    } else {
+        GlobalClimateForcingError::WorkDomain(error)
+    }
+}
+
+fn map_remap_error(error: ConservativeRemapError) -> GlobalClimateForcingError {
+    if error == ConservativeRemapError::Cancelled {
+        GlobalClimateForcingError::Cancelled
+    } else {
+        GlobalClimateForcingError::Remap(error)
+    }
+}
+
+fn map_operator_error(error: CirculationOperatorError) -> GlobalClimateForcingError {
+    if error == CirculationOperatorError::Cancelled {
+        GlobalClimateForcingError::Cancelled
+    } else {
+        GlobalClimateForcingError::Operator(error)
+    }
+}
+
+fn map_grid_error(error: CubedSphereGridError) -> GlobalClimateForcingError {
+    if error == CubedSphereGridError::Cancelled {
+        GlobalClimateForcingError::Cancelled
+    } else {
+        GlobalClimateForcingError::CubedSphere(error)
+    }
+}
+
+fn map_planet_forcing_error(error: ForcingError) -> GlobalClimateForcingError {
+    if error == ForcingError::Cancelled {
+        GlobalClimateForcingError::Cancelled
+    } else {
+        GlobalClimateForcingError::InvalidForcing {
+            reason: error.to_string(),
+        }
+    }
+}
+
 fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), GlobalClimateForcingError> {
     if cancellation.is_cancelled() {
+        Err(GlobalClimateForcingError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn poll_optional_cancelled(
+    index: usize,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<(), GlobalClimateForcingError> {
+    if index % 256 == 0 {
+        check_optional_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_optional_cancelled(
+    cancellation: Option<&BuildCancellation>,
+) -> Result<(), GlobalClimateForcingError> {
+    if cancellation.is_some_and(BuildCancellation::is_cancelled) {
         Err(GlobalClimateForcingError::Cancelled)
     } else {
         Ok(())
@@ -398,6 +602,8 @@ pub enum GlobalClimateForcingError {
     SourceMismatch,
     #[error("climate work-grid fingerprint does not reconstruct exactly")]
     GridMismatch,
+    #[error("global forcing field {field} disagrees with the shared planet forcing payload")]
+    PayloadIdentityMismatch { field: &'static str },
     #[error("forcing field {field} has {found} values, expected {expected}")]
     FieldLengthMismatch {
         field: &'static str,

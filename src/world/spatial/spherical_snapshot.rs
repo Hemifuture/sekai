@@ -154,14 +154,46 @@ impl SphericalSurfaceSnapshot {
     pub fn new(
         schema_version: u16,
         radius: Meters,
+        vertices: Vec<SphericalSurfaceVertex>,
+        cells: Vec<SphericalSurfaceCell>,
+        edges: Vec<SphericalSurfaceEdge>,
+    ) -> Result<Self, SphericalSurfaceValidationError> {
+        Self::new_impl(schema_version, radius, vertices, cells, edges, None)
+    }
+
+    pub(crate) fn new_cancellable(
+        schema_version: u16,
+        radius: Meters,
+        vertices: Vec<SphericalSurfaceVertex>,
+        cells: Vec<SphericalSurfaceCell>,
+        edges: Vec<SphericalSurfaceEdge>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, SphericalSurfaceValidationError> {
+        Self::new_impl(
+            schema_version,
+            radius,
+            vertices,
+            cells,
+            edges,
+            Some(cancelled),
+        )
+    }
+
+    fn new_impl(
+        schema_version: u16,
+        radius: Meters,
         mut vertices: Vec<SphericalSurfaceVertex>,
         mut cells: Vec<SphericalSurfaceCell>,
         mut edges: Vec<SphericalSurfaceEdge>,
+        cancellation: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, SphericalSurfaceValidationError> {
+        check_snapshot_cancelled(cancellation)?;
         vertices.sort_by_key(|vertex| vertex.id);
         cells.sort_by_key(|cell| cell.id);
         edges.sort_by_key(|edge| edge.id);
-        for cell in &mut cells {
+        check_snapshot_cancelled(cancellation)?;
+        for (index, cell) in cells.iter_mut().enumerate() {
+            poll_snapshot_cancelled(index, cancellation)?;
             canonicalize_cell_boundary(cell);
         }
 
@@ -173,8 +205,11 @@ impl SphericalSurfaceSnapshot {
             edges,
             fingerprint: [0; 32],
         };
-        snapshot.fingerprint = snapshot.canonical_fingerprint();
-        snapshot.validate()?;
+        snapshot.fingerprint = snapshot.canonical_fingerprint_impl(cancellation)?;
+        match cancellation {
+            Some(cancelled) => snapshot.validate_cancellable(cancelled)?,
+            None => snapshot.validate()?,
+        }
         Ok(snapshot)
     }
 
@@ -265,18 +300,36 @@ impl SphericalSurfaceSnapshot {
     }
 
     pub(super) fn canonical_fingerprint(&self) -> [u8; 32] {
+        self.canonical_fingerprint_impl(None)
+            .expect("an uncancelled spherical fingerprint cannot fail")
+    }
+
+    pub(super) fn canonical_fingerprint_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<[u8; 32], SphericalSurfaceValidationError> {
+        self.canonical_fingerprint_impl(Some(cancelled))
+    }
+
+    fn canonical_fingerprint_impl(
+        &self,
+        cancellation: Option<&dyn Fn() -> bool>,
+    ) -> Result<[u8; 32], SphericalSurfaceValidationError> {
+        check_snapshot_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
         hash_u16(&mut hasher, self.schema_version);
         hash_f64(&mut hasher, self.radius.get());
 
         hash_len(&mut hasher, self.vertices.len());
-        for vertex in &self.vertices {
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            poll_snapshot_cancelled(index, cancellation)?;
             hash_u32(&mut hasher, vertex.id.raw());
             hash_vector(&mut hasher, vertex.position);
         }
 
         hash_len(&mut hasher, self.cells.len());
-        for cell in &self.cells {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_snapshot_cancelled(index, cancellation)?;
             hash_u32(&mut hasher, cell.id.raw());
             hash_vector(&mut hasher, cell.site);
             hash_vector(&mut hasher, cell.centroid);
@@ -292,7 +345,8 @@ impl SphericalSurfaceSnapshot {
         }
 
         hash_len(&mut hasher, self.edges.len());
-        for edge in &self.edges {
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_snapshot_cancelled(index, cancellation)?;
             hash_u32(&mut hasher, edge.id.raw());
             for vertex in edge.vertices {
                 hash_u32(&mut hasher, vertex.raw());
@@ -309,7 +363,28 @@ impl SphericalSurfaceSnapshot {
             hash_vector(&mut hasher, edge.normal_from_first);
         }
 
-        *hasher.finalize().as_bytes()
+        check_snapshot_cancelled(cancellation)?;
+        Ok(*hasher.finalize().as_bytes())
+    }
+}
+
+fn poll_snapshot_cancelled(
+    index: usize,
+    cancellation: Option<&dyn Fn() -> bool>,
+) -> Result<(), SphericalSurfaceValidationError> {
+    if index % 256 == 0 {
+        check_snapshot_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_snapshot_cancelled(
+    cancellation: Option<&dyn Fn() -> bool>,
+) -> Result<(), SphericalSurfaceValidationError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(SphericalSurfaceValidationError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 

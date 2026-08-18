@@ -303,10 +303,19 @@ fn p4_artifact_wires_are_strict_and_cancellation_is_atomic() {
         .artifacts
         .get::<GlobalCirculationArtifact>()
         .unwrap();
-    let mut domain_wire = serde_json::to_value(domain.as_ref()).unwrap();
-    domain_wire["unknown"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<ClimateWorkDomainArtifact>(domain_wire).is_err());
-    let mut circulation_wire = serde_json::to_value(circulation.as_ref()).unwrap();
-    circulation_wire["unknown"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<GlobalCirculationArtifact>(circulation_wire).is_err());
+    let domain_wire = serde_json::to_value(domain.as_ref()).unwrap();
+    assert_eq!(domain_wire.as_object().unwrap().len(), 1);
+    let mut tampered_grid = serde_json::to_value(domain.as_ref()).unwrap();
+    let first = tampered_grid["snapshot"]["climate_grid_fingerprint"][0]
+        .as_u64()
+        .unwrap();
+    tampered_grid["snapshot"]["climate_grid_fingerprint"][0] = serde_json::json!((first + 1) % 256);
+    assert!(
+        serde_json::from_value::<sekai::world::natural::ClimateWorkDomainSnapshot>(
+            tampered_grid["snapshot"].clone()
+        )
+        .is_err()
+    );
+    let circulation_wire = serde_json::to_value(circulation.as_ref()).unwrap();
+    assert_eq!(circulation_wire.as_object().unwrap().len(), 2);
 }

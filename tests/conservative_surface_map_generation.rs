@@ -121,6 +121,31 @@ fn cancellable_builder_returns_no_partial_map() {
 }
 
 #[test]
+fn cancellable_builder_polls_through_final_sparse_publication_and_validation() {
+    let source = surface(42);
+    let target = surface(162);
+    let mut baseline_checks = 0_u64;
+    let expected = ConservativeSurfaceMapBuilder::build_cancellable(&source, &target, || {
+        baseline_checks += 1;
+        false
+    })
+    .unwrap();
+    assert!(baseline_checks > 32, "only {baseline_checks} total polls");
+
+    let cancel_at = baseline_checks - 2;
+    let mut observed = 0_u64;
+    let cancelled = ConservativeSurfaceMapBuilder::build_cancellable(&source, &target, || {
+        observed += 1;
+        observed >= cancel_at
+    });
+    assert_eq!(cancelled, Err(ConservativeRemapError::Cancelled));
+    assert!(observed >= cancel_at);
+
+    let rebuilt = ConservativeSurfaceMapBuilder::build(&source, &target).unwrap();
+    assert_eq!(expected, rebuilt);
+}
+
+#[test]
 #[ignore = "Draft product-scale conservative-map measurement"]
 fn draft_control_to_authoritative_map_meets_product_closure() {
     let control = surface(4_842);

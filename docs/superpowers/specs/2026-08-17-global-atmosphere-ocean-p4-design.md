@@ -71,6 +71,11 @@ fingerprints at the reference fixtures.
   maps;
 - overlap count, balance statistics, and conservative-closure diagnostics.
 
+Its canonical fingerprint covers both complete directed conservative maps,
+including schema, source/target identities and areas, CSR row offsets, every
+overlap weight and tangent transform, and solve statistics. Consequently a
+checkpoint cannot be resumed against a different-but-still-balanced remap.
+
 P3-to-climate forcing uses exact spherical polygon overlaps:
 
 - elevation and other intensive scalars use bounded area-weighted remapping;
@@ -101,8 +106,17 @@ density/heat capacity, and bounded coupling coefficients.
 
 `ProductionIntegratorId` has `ImexCrankNicolsonV1` and
 `SplitExplicitRk3V1`. `ClimateCheckpoint` includes grid, forcing, model,
-algorithm, quantization, and input fingerprints. Any mismatch is a typed cold
-start, never a guessed migration.
+algorithm, quantization, and input fingerprints. The input fingerprint includes
+the exact climate work-domain fingerprint, not only the two endpoint surfaces.
+Any mismatch is a typed cold start, never a guessed migration.
+
+The model fingerprint is the canonical identity of the complete active
+equation set, not merely the layer inventory. It covers the pair-specific
+exchange table, pressure/drag/relaxation coefficients, horizontal viscosity,
+bathymetric drag, Boussinesq steric constants, moisture and ocean bounds,
+initial upper-humidity fraction, accelerated-formation schedule and residual
+scales, and the declared discrete transport/Reynolds-stress semantics. A
+change to any of these constants is a different checkpoint model.
 
 ### 4.3 Capabilities and stable output
 
@@ -115,7 +129,8 @@ monthly climatologies for:
 - surface ocean current;
 - air and sea-surface temperature;
 - thermocline temperature and depth;
-- specific humidity and precipitation;
+- specific humidity, total precipitation, and its independently published
+  water-limited orographic component;
 - lower/upper atmosphere height anomalies;
 - sea-surface and thermocline height anomalies;
 - deep-ocean temperature/heat-reservoir proxy.
@@ -138,6 +153,7 @@ d eta_l / dt = -H_l div(u_l)
 d u_l / dt = -g'_l grad(eta_l)
              - f k x u_l
              - r_l u_l
+             + div(K_l grad(u_l))
              + external_l
              + sum exchange_momentum(l, k)
 ```
@@ -147,14 +163,96 @@ mixed-layer/thermocline temperature, and ocean momentum use paired exchange
 terms. Every pair is accumulated once with equal and opposite extensive
 budgets after heat-capacity/density conversion.
 
+The paired update is projected onto the two actual `f32` tendency lattices,
+never retained on only one side. A nearest representable pair is accepted only
+when its relative extensive imbalance is `<=5e-7` and its retained exchange
+magnitude differs from the requested flux by `<=1e-3`; otherwise a bounded
+neighbouring-ULP search selects the closest balanced pair. If neither side can
+represent a sub-ULP exchange, both retain zero. These two tolerances and this
+projection semantic are part of the equation-model fingerprint.
+
 The deep-ocean reservoir has no horizontal velocity. It exchanges heat only
 with the thermocline on a declared slow timescale. It cannot create or destroy
 energy outside the explicit radiative/surface budgets.
 
+Unresolved horizontal eddy mixing is a shared finite-volume momentum term,
+not a post-processing filter. It uses positive-permeability edges, parallel
+transports both endpoint velocities to the shared edge, applies the same
+opposite edge impulse, and projects the accumulated acceleration tangent at
+the cell center. The physical kinematic viscosities are `1e6 m2 s-1` for both
+atmosphere layers and `1e3 m2 s-1` for both ocean layers. Closed coastal edges
+therefore exchange neither tracer nor momentum. The thermocline additionally
+uses bathymetric bottom drag with a `90 day` reference timescale scaled by
+`1000 m / max(depth, 1000 m)` and by water fraction; changing P3 bathymetry
+thus changes the ocean solution while preserving the same land mask.
+
+C2 also diagnoses the unresolved monthly-mean baroclinic eddy momentum flux
+that the accelerated `7,200 s` climatological continuation cannot spin up as
+explicit multi-hundred-day weather. Because this background eddy field has
+multi-month memory, an area-weighted fit to the exact annual-mean forcing
+`T_eq = T0 + b sin^2(phi)` supplies `DeltaT = max(-b, 0)`; the resolved
+pressure/radiative terms still own monthly seasonality. The unresolved eddy
+velocity uses the available-potential-energy scale
+`U_e = min(sqrt(g H DeltaT / T0), 65 m s-1)`. This is a total horizontal eddy
+RMS scale, not a Held-Hou mean angular-momentum wind. Synoptic Eady activity
+vanishes with `|f|` at the equator, so the regular column-distributed stress is
+`u'v' = C U_e^2 sin(phi)|sin(phi)| cos^2(phi)`, with `C=2/3`. Since the
+latitude factor has maximum magnitude `1/4`, the retained covariance is at
+most `U_e^2/6`, one third of the Cauchy bound `|u'v'| <= 0.5 U_e^2`.
+Its spherical zonal divergence
+is proportional to `2 |sin(phi)| cos(phi) (3 sin^2(phi) - 1)`: it is finite and
+zero at both the equator and poles, decelerates the subtropics, accelerates the
+extratropics, and contains no authored acceptance latitude bands. After `f32`
+retention, a layer-uniform angular
+acceleration removes the residual global axial torque to relative `<=1e-6`.
+The same acceleration profile acts in both resolved atmosphere layers, which
+is the vertically unresolved column closure representable by C2; each layer's
+quantized profile is independently projected to zero global axial torque.
+Declared conservative lower/upper exchange still controls resolved shear.
+The closure is C2-only, is recomputed from the exact
+bound annual thermal forcing, and does not alter height or layer mass. A tested mass-only Eady overturning trial
+was rejected because it could not carry heat, humidity, and momentum with the
+exchanged mass; no such source exists in the production equation.
+
+Consequently, every internal production layer-height/amount term is the
+conservative divergence path advanced by the selected fast RK3 subsystem. The
+only remaining slow height term is declared external thickness relaxation and
+is recorded in the signed external amount ledger. The annual closed fixture
+disables that external relaxation and advances all internal height terms for
+twelve climatological months. It therefore exercises the complete selected
+no-source layer-mass path; it is not a partial substitute that omits a slow
+internal mass exchange.
+
+Lower-atmosphere Rayleigh friction uses the standard one-day boundary-layer
+timescale; the upper free-tropospheric layer uses ten days. This distinction is
+also required by the accelerated formation procedure: five-day lower drag left
+an unresolved inertial phase after only eight Draft continuation cycles and
+made the sign of the monthly near-surface jet depend on cycle phase rather than
+the bound forcing. The one-day value damps that numerical memory while the
+shared pressure, Coriolis, eddy-stress, and exchange terms determine the wind.
+
+`OceanMixedLayer.eta` is the published free-surface height anomaly, not an
+internal-interface displacement. Its pressure mode therefore uses standard
+gravity `g = 9.80665 m s-2`; using the thermocline reduced gravity here would
+amplify the public SSH response by roughly `g / g'`. For a vertically uniform
+100 m Boussinesq mixed layer with `rho = rho0 (1 - alpha T)`, depth-averaging
+the hydrostatic horizontal pressure gradient gives
+`du/dt = -g grad(eta) + 0.5 g alpha H grad(T)`, with Earth-like seawater
+`alpha = 2e-4 K-1`. Thus a warm column initially accelerates water toward the
+warm region and builds a positive steric surface displacement. The separate
+thermocline height is an internal-interface/thickness anomaly: its fixed
+reduced gravity already closes that baroclinic pressure response, so the same
+surface-temperature gradient is not applied a second time to thermocline
+momentum.
+
 Ocean edge permeability comes from the overlap-weighted P3 land fraction.
 Normal transport is zero through fully blocked coastal edges; fractional cells
 use one shared symmetric permeability. No solver-specific coastline logic is
-allowed.
+allowed. Partial coastal cells also receive a one-day maximum unresolved
+shelf/island form-drag tendency scaled linearly by land fraction. This drag is
+part of the same shared momentum equation used by all three integrators; only
+exact full-land velocity is zeroed after a step as an invariant check, and no
+fractional post-step damping is permitted.
 
 ## 6. Time integration
 
@@ -179,17 +277,31 @@ donor's outgoing fan to its available extensive amount. Because the sampled
 cell velocity is only discretely near-solenoidal, a final deterministic
 mass-conserving bound redistribution clips cell means to their original
 one-ring extrema and redistributes the clipped extensive residual according to
-remaining bound capacity. This projection is explicit, allocation-free in the
-supplied workspace, and never changes an edge flux asymmetrically. A failed
+remaining bound capacity. Gradient stencils, extrema, fluxes, and final
+redistribution all use the same graph of strictly positive-permeability edges,
+and the correction is performed independently in each connected component;
+two fully separated ocean basins therefore cannot exchange clipped residual.
+This projection is explicit, allocation-free in the supplied workspace, and
+never changes an edge flux asymmetrically. A failed
 linear solve, non-positive layer thickness, or budget excess is a typed
 failure; the solver cannot silently fall back to different physics.
 
 ### 6.3 Split-explicit candidate
 
 Split-explicit uses a slow advective/thermodynamic step and deterministic fast
-RK3 substeps chosen from the same gravity-wave and Coriolis stability limits as
-the reference. Slow tendencies are held consistently over the fast cycle and
-paired exchange is applied once per slow step.
+RK3 substeps chosen at a conservative `0.20` gravity-wave/advection/Coriolis CFL
+from the same stability limits as the reference. Transport, radiative/local
+physics, diagnosed Reynolds stress, and paired heat/moisture exchange are
+evaluated once and held consistently over the fast cycle. Horizontal momentum
+diffusion and conservative paired momentum exchange are re-evaluated at every
+RK stage together with pressure/divergence/Coriolis; freezing either
+velocity-dependent term over the full macro step admits a collocated
+equatorial grid mode at High resolution, while freezing momentum exchange also
+failed the locked ocean-current comparison. The monotone finite-volume
+transport operator is evaluated over the actual `7,200 s` slow-step horizon
+and converted back to a frozen tendency. This is essential: evaluating its
+outgoing-fan positivity limiter over an arbitrary one-second horizon and then
+extrapolating that tendency would bypass the limiter at high resolution.
 
 ### 6.4 Second-order transport
 
@@ -201,10 +313,22 @@ layer amounts without cell-order dependence. First-order upwind remains a
 reference operator.
 
 The shared C1/C2 tendency invokes this operator for every active-layer
-temperature and for lower-atmosphere specific humidity. IMEX excludes these
+temperature and for both lower- and upper-atmosphere specific humidity where
+the profile provides them. IMEX excludes these
 nonlinear terms from its matrix-free linear operator and advances them
 explicitly. The selected split-explicit path freezes one evaluated slow
-tendency over each macro step, as required by its comparison contract.
+tendency over each macro step, as required by its comparison contract. After
+the conservative humidity transport, the physical condensation sink is
+limited to the transported water actually available over that macro step; the
+same removed sink is subtracted from precipitation, so positivity cannot
+create an unreported water source.
+
+The selected path does not project the terminal temperature or moisture fields
+onto a requested global total. Instead it integrates signed, quantized external
+source/sink ledgers and compares them directly with the terminal extensive
+state change. Conservative transport and paired internal exchange have zero
+declared external contribution, so any leak in those operators remains visible
+to the public closure gate rather than being absorbed by a correction.
 
 ## 7. C2 physical closure
 
@@ -224,25 +348,41 @@ C2 converts condensation of a lower-atmosphere mixing ratio through the fixed
 column mass to `kg m-2 s-1 == mm s-1`. Its resolved orographic term is
 `q max(u dot grad(z), 0) / 800 m`, capped at `0.02 m s-1` uplift and multiplied
 by P3 land fraction; the same conservative humidity tendency creates the
-precipitation sink. Because sea ice is explicitly unavailable in P4, liquid
+precipitation sink. The water-limited orographic contribution is retained as a
+separate monthly extensive field, is conservatively projected, and is
+validated cell-by-cell not to exceed total precipitation. Because sea ice is
+explicitly unavailable in P4, liquid
 mixed-layer equilibrium is bounded at `-2 C` and subsurface ocean equilibrium
 at `-5 C` rather than allowing impossible supercooled liquid values.
 
-The fixed atmospheric layer depths use declared effective hypsometric pressure
-couplings of `30 m2 s-2 K-1` (lower) and `25 m2 s-2 K-1` (upper). The original
-unbounded trial values required an equilibrium geopotential anomaly deeper
-than the 4 km upper layer at n32. The locked values retain baroclinic shear but
-keep the Earth-like forcing contrast inside the shallow-water layer validity
-range; no layer-thickness clipping is used.
+The C1 single lower layer retains its declared effective hypsometric pressure
+coupling of `30 m2 s-2 K-1`. C2 uses a first-baroclinic pair: the upper
+coupling is `-25 m2 s-2 K-1` and the lower coupling is derived as
+`+25 * 4000 / 6000 = +16.666... m2 s-2 K-1`, so the fixed 6 km/4 km column has
+zero depth-integrated internal pressure force. This replaces an earlier
+`+30/-25` pair whose nonzero column force conflated internal shear with a
+barotropic acceleration. The bounded values retain baroclinic shear inside
+the shallow-water depth validity range; no layer-thickness clipping is used.
 
 The product formation driver is a deterministic accelerated climatological
 continuation: sequential January-to-December forcing phases each receive one
-`7,200 s` split-explicit macro adjustment per cycle. It stops only at normalized
-cycle residual `<= 0.25`, with Draft/Standard/High hard maxima `8/10/12`; a
+`7,200 s` split-explicit macro adjustment per cycle. The public acceptance is
+normalized cycle residual `<= 0.25`; the deterministic implementation and
+comparison corpus use a `0.24` internal guard so publication cannot depend on
+rounding at the acceptance boundary. Draft/Standard/High hard maxima are
+`8/10/12`; a
 nonconverged state is a typed failure. Monthly state fields are the converged
 phase endpoints, while precipitation is the frozen-slow macro-step mean. This
 is a procedural climatology closure, not a claim that each adjustment step is
 a literal 30-day weather integration.
+
+Annual-cycle convergence is not a dimensionally mixed state norm. For every
+named prognostic scalar/vector field it computes a spherical-area-weighted RMS
+change, divides by a positive physical scale, and takes the maximum over
+fields. Height uses that layer's reference thickness; temperature/deep heat
+uses `30 K`; atmosphere speed uses `20 m s-1`; ocean speed uses `2 m s-1`;
+lower and upper specific humidity use `0.02`. Thus an unconverged humidity or
+wind field cannot be hidden by a numerically larger height field.
 C2 does not yet include C3 clouds, soil moisture, snow, glaciers, vegetation,
 or sea ice; their capability states remain explicitly unavailable.
 
@@ -260,7 +400,10 @@ and artifacts are:
 
 All work arrays and checkpoints are private until the complete public snapshot
 and quality report validate. Cancellation or any error publishes neither a
-partial work domain nor partial climate.
+partial work domain nor partial climate. The product artifact accepts only the
+locked winning integrator, and its quality report is bound to the complete
+checkpoint fingerprint (state plus forcing/input/integrator identity). A
+same-surface report from a different climate or relief input is rejected.
 
 ## 9. Acceptance gates
 
@@ -275,6 +418,19 @@ partial work domain nor partial climate.
   publication quantization;
 - repeated fixed-input output and diagnostics are byte deterministic;
 - cancellation latency is `<= 250 ms` once a solver work loop is active.
+
+Formation budgets accumulate signed per-cell extensive changes and compare
+the complete formation interval with integrated declared external sources and
+sinks. Height relaxation is area-weighted volume rate, evaporation and
+precipitation are area-weighted mass rates, and radiative/thermal relaxation is
+area- and heat-capacity-weighted signed power. Each ledger uses the increment
+actually retained after `f32` quantization and water-availability limiting.
+Transport and paired vertical exchange contribute exactly zero to the expected
+external budget. The absolute value is applied only to the final global
+closure. This avoids both catastrophic subtraction of two planet-scale totals,
+the incorrect conversion of unbiased per-step `f32` roundoff into
+resolution-dependent one-way drift, and a false pass caused by treating an
+internal conservation error as a declared source.
 
 ### 9.2 Production candidate agreement
 
@@ -299,10 +455,30 @@ The fixed water/two-basin/Earth-like fixtures and paired 17 P3 seeds must show:
   circulation responding to wind stress and rotation;
 - warm mixed layer over a cooler thermocline in eligible low/midlatitude ocean,
   positive bounded thermocline depth, and slower deep-reservoir response;
+- nontrivial but bounded free-surface response:
+  `0.01 m <= sea-surface-height-max-absolute-m <= 6 m` over ocean cell-months;
+  this rejects both a zeroed field and the tens-of-metres internal-interface
+  response produced by accidentally using reduced gravity for public SSH;
 - warm-ocean moisture supply, orographic precipitation enhancement, and a
   downstream rain-shadow signal;
-- at least `65%` correct January/July hemispheric phase outside 10 degrees,
-  with auxiliary latitude/temperature correlation `>= 0.30`;
+- `orographic-uplift-enrichment-ratio >= 1.20`. For every land cell/month with
+  wind speed at least `0.5 m s-1`, the support predicate requires an eligible
+  land neighbor at least `0.15` upstream, another at least `0.15` downstream,
+  and downstream-minus-upstream elevation at least `50 m`. The metric is
+  `(supported orographic amount / all-land orographic amount) /
+  (supported land-month area / all land-month area)`. Both denominators are
+  conditioned on land, so ocean area cannot inflate the score; an orographic
+  field uniform over land has enrichment near one and must fail;
+- when the exact bound forcing has at least `0.5 C` January/July equilibrium
+  air-temperature amplitude, at least `65%` correct hemispheric phase outside
+  10 degrees, with latitude/temperature Pearson correlation retained as an
+  unbounded layout-sensitive diagnostic. Below that forcing amplitude both
+  seasonal metrics are explicitly `Unavailable` with zero samples and a locked
+  reason; this is a valid conditional outcome, not a fabricated pass. In
+  particular, the V1-valid zero-axial-tilt input must still publish a product;
+- warmest-ocean-quartile humidity exceeds coldest-ocean-quartile humidity by
+  at least `10%` of the ocean mean; raw SST/humidity correlation remains an
+  unbounded advection-sensitive diagnostic;
 - no independent cubed-face seam, pole spike, global ring, or P3 coastline
   displacement in map/globe atlases.
 
@@ -313,7 +489,9 @@ Release targets remain those already approved:
 - C1 `n=24 <= 10 s`;
 - C2 `n=32 <= 30 s`;
 - C2 `n=48 <= 120 s`;
-- C2 `n=48` core state, workspace, and climate output `<= 512 MiB`.
+- C2 `n=48` core state, workspace, and climate output `<= 512 MiB`, checked
+  both by a mechanically derived owner inventory and by 1 ms process-RSS
+  sampling with the pre-generation baseline subtracted.
 
 Standard and High execution is asynchronous and cancellable. The product may
 display only the last valid snapshot while updating; it may not display a

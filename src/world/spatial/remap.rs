@@ -309,6 +309,60 @@ impl ConservativeSurfaceMap {
         balance_iterations: u16,
         max_relative_geometric_adjustment: f64,
     ) -> Result<Self, ConservativeSurfaceMapError> {
+        Self::new_impl(
+            schema_version,
+            source_ref,
+            target_ref,
+            source_cell_areas_m2,
+            target_cell_areas_m2,
+            target_row_offsets,
+            weights,
+            balance_iterations,
+            max_relative_geometric_adjustment,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_cancellable(
+        schema_version: u16,
+        source_ref: SurfaceRef,
+        target_ref: SurfaceRef,
+        source_cell_areas_m2: Vec<f64>,
+        target_cell_areas_m2: Vec<f64>,
+        target_row_offsets: Vec<u32>,
+        weights: Vec<SurfaceOverlapWeight>,
+        balance_iterations: u16,
+        max_relative_geometric_adjustment: f64,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, ConservativeSurfaceMapError> {
+        Self::new_impl(
+            schema_version,
+            source_ref,
+            target_ref,
+            source_cell_areas_m2,
+            target_cell_areas_m2,
+            target_row_offsets,
+            weights,
+            balance_iterations,
+            max_relative_geometric_adjustment,
+            Some(cancelled),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_impl(
+        schema_version: u16,
+        source_ref: SurfaceRef,
+        target_ref: SurfaceRef,
+        source_cell_areas_m2: Vec<f64>,
+        target_cell_areas_m2: Vec<f64>,
+        target_row_offsets: Vec<u32>,
+        weights: Vec<SurfaceOverlapWeight>,
+        balance_iterations: u16,
+        max_relative_geometric_adjustment: f64,
+        cancellation: MapCancellation<'_>,
+    ) -> Result<Self, ConservativeSurfaceMapError> {
         let (max_source_error, max_target_error) = validate_map_data(
             schema_version,
             source_ref,
@@ -317,6 +371,7 @@ impl ConservativeSurfaceMap {
             &target_cell_areas_m2,
             &target_row_offsets,
             &weights,
+            cancellation,
         )?;
         let solve_stats = RemapSolveStats::new(
             balance_iterations,
@@ -338,6 +393,21 @@ impl ConservativeSurfaceMap {
 
     /// Rechecks all stable map invariants and stored closure evidence.
     pub fn validate(&self) -> Result<(), ConservativeSurfaceMapError> {
+        self.validate_impl(None)
+    }
+
+    /// Rechecks all map invariants while polling sparse rows and weights.
+    pub fn validate_cancellable(
+        &self,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ConservativeSurfaceMapError> {
+        self.validate_impl(Some(cancelled))
+    }
+
+    fn validate_impl(
+        &self,
+        cancellation: MapCancellation<'_>,
+    ) -> Result<(), ConservativeSurfaceMapError> {
         let (max_source_error, max_target_error) = validate_map_data(
             self.schema_version,
             self.source_ref,
@@ -346,6 +416,7 @@ impl ConservativeSurfaceMap {
             &self.target_cell_areas_m2,
             &self.target_row_offsets,
             &self.weights,
+            cancellation,
         )?;
         let recalculated = RemapSolveStats::new(
             self.solve_stats.balance_iterations,
@@ -411,6 +482,100 @@ impl ConservativeSurfaceMap {
     pub const fn solve_stats(&self) -> RemapSolveStats {
         self.solve_stats
     }
+
+    /// Fingerprints every semantic map field, including tangent transforms
+    /// and solve evidence. Surface identities alone are insufficient because
+    /// multiple margin-closing sparse maps can address the same two surfaces.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint_impl(None)
+            .expect("an uncancelled semantic map fingerprint cannot fail")
+    }
+
+    pub fn fingerprint_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<[u8; 32], ConservativeSurfaceMapError> {
+        self.fingerprint_impl(Some(cancelled))
+    }
+
+    fn fingerprint_impl(
+        &self,
+        cancellation: Option<&dyn Fn() -> bool>,
+    ) -> Result<[u8; 32], ConservativeSurfaceMapError> {
+        check_fingerprint_cancelled(cancellation)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai.conservative-surface-map.v1\0");
+        hasher.update(&self.schema_version.to_le_bytes());
+        hash_surface_ref(&mut hasher, self.source_ref);
+        hash_surface_ref(&mut hasher, self.target_ref);
+        hasher.update(&(self.source_cell_areas_m2.len() as u64).to_le_bytes());
+        for (index, area) in self.source_cell_areas_m2.iter().enumerate() {
+            poll_fingerprint_cancelled(index, cancellation)?;
+            hasher.update(&area.to_bits().to_le_bytes());
+        }
+        hasher.update(&(self.target_cell_areas_m2.len() as u64).to_le_bytes());
+        for (index, area) in self.target_cell_areas_m2.iter().enumerate() {
+            poll_fingerprint_cancelled(index, cancellation)?;
+            hasher.update(&area.to_bits().to_le_bytes());
+        }
+        hasher.update(&(self.target_row_offsets.len() as u64).to_le_bytes());
+        for (index, offset) in self.target_row_offsets.iter().enumerate() {
+            poll_fingerprint_cancelled(index, cancellation)?;
+            hasher.update(&offset.to_le_bytes());
+        }
+        hasher.update(&(self.weights.len() as u64).to_le_bytes());
+        for (index, weight) in self.weights.iter().enumerate() {
+            poll_fingerprint_cancelled(index, cancellation)?;
+            hasher.update(&weight.source_cell.raw().to_le_bytes());
+            hasher.update(&weight.area_m2.to_bits().to_le_bytes());
+            for coefficient in weight.tangent_transform.coefficients {
+                hasher.update(&coefficient.to_bits().to_le_bytes());
+            }
+        }
+        hasher.update(&self.solve_stats.balance_iterations.to_le_bytes());
+        for value in [
+            self.solve_stats.max_source_margin_relative_error,
+            self.solve_stats.max_target_margin_relative_error,
+            self.solve_stats.max_relative_geometric_adjustment,
+        ] {
+            hasher.update(&value.to_bits().to_le_bytes());
+        }
+        check_fingerprint_cancelled(cancellation)?;
+        Ok(*hasher.finalize().as_bytes())
+    }
+}
+
+fn poll_fingerprint_cancelled(
+    index: usize,
+    cancellation: Option<&dyn Fn() -> bool>,
+) -> Result<(), ConservativeSurfaceMapError> {
+    if index % 256 == 0 {
+        check_fingerprint_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_fingerprint_cancelled(
+    cancellation: Option<&dyn Fn() -> bool>,
+) -> Result<(), ConservativeSurfaceMapError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(ConservativeSurfaceMapError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn hash_surface_ref(hasher: &mut blake3::Hasher, surface: SurfaceRef) {
+    let geometry_tag = match surface.geometry_kind() {
+        super::SurfaceGeometryKind::PlanarV1 => 0_u8,
+        super::SurfaceGeometryKind::SphericalV1 => 1,
+        super::SurfaceGeometryKind::SphericalGeodesicV2 => 2,
+    };
+    hasher.update(&[geometry_tag]);
+    hasher.update(&surface.geometry_schema().to_le_bytes());
+    hasher.update(&surface.cell_count().to_le_bytes());
+    hasher.update(&surface.edge_count().to_le_bytes());
+    hasher.update(&surface.fingerprint());
 }
 
 impl<'de> Deserialize<'de> for ConservativeSurfaceMap {
@@ -449,7 +614,9 @@ fn validate_map_data(
     target_areas: &[f64],
     target_offsets: &[u32],
     weights: &[SurfaceOverlapWeight],
+    mut cancellation: MapCancellation<'_>,
 ) -> Result<(f64, f64), ConservativeSurfaceMapError> {
+    check_map_cancelled(&mut cancellation)?;
     if schema_version != CONSERVATIVE_SURFACE_MAP_SCHEMA_V1 {
         return Err(ConservativeSurfaceMapError::UnsupportedSchema {
             found: schema_version,
@@ -470,8 +637,18 @@ fn validate_map_data(
             });
         }
     }
-    validate_area_cardinality("source", source_ref.cell_count(), source_areas)?;
-    validate_area_cardinality("target", target_ref.cell_count(), target_areas)?;
+    validate_area_cardinality(
+        "source",
+        source_ref.cell_count(),
+        source_areas,
+        &mut cancellation,
+    )?;
+    validate_area_cardinality(
+        "target",
+        target_ref.cell_count(),
+        target_areas,
+        &mut cancellation,
+    )?;
     let expected_offsets = target_areas.len() + 1;
     if target_offsets.len() != expected_offsets {
         return Err(ConservativeSurfaceMapError::RowOffsetCountMismatch {
@@ -503,6 +680,7 @@ fn validate_map_data(
     let mut source_sums = vec![CompensatedSum::default(); source_areas.len()];
     let mut max_target_error = 0.0_f64;
     for target_index in 0..target_areas.len() {
+        poll_map_cancelled(target_index, &mut cancellation)?;
         let start = target_offsets[target_index] as usize;
         let end = target_offsets[target_index + 1] as usize;
         if start >= end || end > weights.len() {
@@ -515,7 +693,8 @@ fn validate_map_data(
         }
         let mut row_sum = CompensatedSum::default();
         let mut previous_source = None;
-        for weight in &weights[start..end] {
+        for (weight_index, weight) in weights[start..end].iter().enumerate() {
+            poll_map_cancelled(start + weight_index, &mut cancellation)?;
             weight.validate()?;
             let source_index = weight.source_cell.raw() as usize;
             if source_index >= source_areas.len() {
@@ -541,7 +720,8 @@ fn validate_map_data(
     }
 
     let mut max_source_error = 0.0_f64;
-    for (sum, &expected) in source_sums.into_iter().zip(source_areas) {
+    for (index, (sum, &expected)) in source_sums.into_iter().zip(source_areas).enumerate() {
+        poll_map_cancelled(index, &mut cancellation)?;
         max_source_error = max_source_error.max(relative_error(sum.total()?, expected));
     }
     if max_source_error > MAX_MARGIN_RELATIVE_ERROR || max_target_error > MAX_MARGIN_RELATIVE_ERROR
@@ -552,8 +732,8 @@ fn validate_map_data(
             max: MAX_MARGIN_RELATIVE_ERROR,
         });
     }
-    let source_total = compensated_total(source_areas)?;
-    let target_total = compensated_total(target_areas)?;
+    let source_total = compensated_total(source_areas, &mut cancellation)?;
+    let target_total = compensated_total(target_areas, &mut cancellation)?;
     let total_error = relative_error(source_total, target_total);
     if total_error > MAX_MARGIN_RELATIVE_ERROR {
         return Err(ConservativeSurfaceMapError::TotalAreaMismatch {
@@ -563,6 +743,7 @@ fn validate_map_data(
             max: MAX_MARGIN_RELATIVE_ERROR,
         });
     }
+    check_map_cancelled(&mut cancellation)?;
     Ok((max_source_error, max_target_error))
 }
 
@@ -570,6 +751,7 @@ fn validate_area_cardinality(
     role: &'static str,
     expected_count: u32,
     areas: &[f64],
+    cancellation: &mut MapCancellation<'_>,
 ) -> Result<(), ConservativeSurfaceMapError> {
     if areas.len() != expected_count as usize {
         return Err(ConservativeSurfaceMapError::AreaCountMismatch {
@@ -578,27 +760,54 @@ fn validate_area_cardinality(
             expected: expected_count as usize,
         });
     }
-    if let Some((cell, found)) = areas
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, area)| !area.is_finite() || *area <= 0.0)
-    {
-        return Err(ConservativeSurfaceMapError::InvalidCellArea {
-            role,
-            cell: CellId::from_raw(cell as u32),
-            found,
-        });
+    for (cell, found) in areas.iter().copied().enumerate() {
+        poll_map_cancelled(cell, cancellation)?;
+        if !found.is_finite() || found <= 0.0 {
+            return Err(ConservativeSurfaceMapError::InvalidCellArea {
+                role,
+                cell: CellId::from_raw(cell as u32),
+                found,
+            });
+        }
     }
     Ok(())
 }
 
-fn compensated_total(values: &[f64]) -> Result<f64, ConservativeSurfaceMapError> {
+fn compensated_total(
+    values: &[f64],
+    cancellation: &mut MapCancellation<'_>,
+) -> Result<f64, ConservativeSurfaceMapError> {
     let mut sum = CompensatedSum::default();
-    for &value in values {
+    for (index, &value) in values.iter().enumerate() {
+        poll_map_cancelled(index, cancellation)?;
         sum.add(value)?;
     }
     sum.total()
+}
+
+type MapCancellation<'a> = Option<&'a mut dyn FnMut() -> bool>;
+
+fn poll_map_cancelled(
+    index: usize,
+    cancellation: &mut MapCancellation<'_>,
+) -> Result<(), ConservativeSurfaceMapError> {
+    if index % 256 == 0 {
+        check_map_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_map_cancelled(
+    cancellation: &mut MapCancellation<'_>,
+) -> Result<(), ConservativeSurfaceMapError> {
+    if cancellation
+        .as_deref_mut()
+        .is_some_and(|cancelled| cancelled())
+    {
+        Err(ConservativeSurfaceMapError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn relative_error(found: f64, expected: f64) -> f64 {
@@ -642,6 +851,8 @@ impl CompensatedSum {
 /// Errors returned when a conservative map is malformed or insufficiently closed.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ConservativeSurfaceMapError {
+    #[error("conservative surface-map operation was cancelled")]
+    Cancelled,
     #[error(
         "unsupported conservative surface-map schema {found}; supported version is {supported}"
     )]

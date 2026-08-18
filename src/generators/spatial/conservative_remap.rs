@@ -28,16 +28,6 @@ impl ConservativeSurfaceMapBuilder {
         source: &SphericalSurfaceSnapshot,
         target: &SphericalSurfaceSnapshot,
     ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
-        Self::build_cancellable(source, target, || false)
-    }
-
-    /// Builds a map while periodically observing a monotonic cancellation callback.
-    pub fn build_cancellable(
-        source: &SphericalSurfaceSnapshot,
-        target: &SphericalSurfaceSnapshot,
-        mut is_cancelled: impl FnMut() -> bool,
-    ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
-        check_cancelled(&mut is_cancelled)?;
         source
             .validate()
             .map_err(|error| ConservativeRemapError::InvalidSurface {
@@ -50,18 +40,49 @@ impl ConservativeSurfaceMapBuilder {
                 role: "target",
                 reason: error.to_string(),
             })?;
+        Self::build_from_validated(source, target, || false)
+    }
+
+    /// Builds a map while periodically observing a monotonic cancellation callback.
+    pub fn build_cancellable(
+        source: &SphericalSurfaceSnapshot,
+        target: &SphericalSurfaceSnapshot,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
+        // Spherical snapshots are immutable validated types. The cancellable
+        // production path audits their cross-object geometry while building
+        // the map instead of repeating an uninterruptible topology scan.
+        Self::build_from_validated(source, target, is_cancelled)
+    }
+
+    fn build_from_validated(
+        source: &SphericalSurfaceSnapshot,
+        target: &SphericalSurfaceSnapshot,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
+        check_cancelled(&mut is_cancelled)?;
         validate_radius(source, target)?;
         check_cancelled(&mut is_cancelled)?;
 
-        let source_ref = SurfaceRef::for_spherical(source);
-        let target_ref = SurfaceRef::for_spherical(target);
+        let source_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+            ConservativeRemapError::InvalidSurface {
+                role: "source",
+                reason: error.to_string(),
+            }
+        })?;
+        let target_ref = SurfaceRef::from_validated_spherical(target).map_err(|error| {
+            ConservativeRemapError::InvalidSurface {
+                role: "target",
+                reason: error.to_string(),
+            }
+        })?;
         if source_ref == target_ref {
-            return identity_map(source, source_ref);
+            return identity_map(source, source_ref, &mut is_cancelled);
         }
 
         let orientation = GeometryOrientation::new(source, target, source_ref, target_ref);
-        let coarse_neighbors = build_neighbors(orientation.coarse);
-        let search = KdTree::new(orientation.coarse);
+        let coarse_neighbors = build_neighbors(orientation.coarse, &mut is_cancelled)?;
+        let search = KdTree::new(orientation.coarse, &mut is_cancelled)?;
         let mut marks = vec![0_u32; orientation.coarse.cells().len()];
         let mut epoch = 0_u32;
         let mut overlaps = Vec::with_capacity(orientation.fine.cells().len() * 3);
@@ -116,17 +137,31 @@ impl ConservativeSurfaceMapBuilder {
             overlaps.extend(row);
         }
 
-        overlaps.sort_unstable_by_key(|overlap| (overlap.fine_cell, overlap.coarse_cell));
+        // Fine cells are visited in canonical order and each intersection row
+        // is already source-sorted. Re-sorting the complete High overlap table
+        // would add an unnecessary non-interruptible window.
+        for (index, pair) in overlaps.windows(2).enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(&mut is_cancelled)?;
+            }
+            debug_assert!(
+                (pair[0].fine_cell, pair[0].coarse_cell) < (pair[1].fine_cell, pair[1].coarse_cell)
+            );
+        }
         let balance_iterations = balance_margins(
             &mut overlaps,
             orientation.fine,
             orientation.coarse,
             &mut is_cancelled,
         )?;
-        let max_adjustment = overlaps
-            .iter()
-            .map(|overlap| relative_error(overlap.area_m2, overlap.raw_area_m2))
-            .fold(0.0_f64, f64::max);
+        let mut max_adjustment = 0.0_f64;
+        for (index, overlap) in overlaps.iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(&mut is_cancelled)?;
+            }
+            max_adjustment =
+                max_adjustment.max(relative_error(overlap.area_m2, overlap.raw_area_m2));
+        }
         if max_adjustment > MAX_GEOMETRIC_ADJUSTMENT {
             return Err(ConservativeRemapError::ExcessiveGeometricAdjustment {
                 found: max_adjustment,
@@ -134,23 +169,28 @@ impl ConservativeSurfaceMapBuilder {
             });
         }
         check_cancelled(&mut is_cancelled)?;
-        orientation.finish(overlaps, balance_iterations, max_adjustment)
+        orientation.finish(
+            overlaps,
+            balance_iterations,
+            max_adjustment,
+            &mut is_cancelled,
+        )
     }
 }
 
 fn identity_map(
     surface: &SphericalSurfaceSnapshot,
     surface_ref: SurfaceRef,
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
-    let areas = surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get())
-        .collect::<Vec<_>>();
+    let areas = cell_areas(surface, is_cancelled)?;
     let mut offsets = Vec::with_capacity(areas.len() + 1);
     let mut weights = Vec::with_capacity(areas.len());
     offsets.push(0);
     for (index, &area) in areas.iter().enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         weights.push(SurfaceOverlapWeight::new(
             CellId::from_raw(index as u32),
             area,
@@ -158,7 +198,7 @@ fn identity_map(
         )?);
         offsets.push(weights.len() as u32);
     }
-    Ok(ConservativeSurfaceMap::new(
+    ConservativeSurfaceMap::new_cancellable(
         CONSERVATIVE_SURFACE_MAP_SCHEMA_V1,
         surface_ref,
         surface_ref,
@@ -168,7 +208,9 @@ fn identity_map(
         weights,
         0,
         0.0,
-    )?)
+        is_cancelled,
+    )
+    .map_err(map_surface_error)
 }
 
 struct GeometryOrientation<'a> {
@@ -211,11 +253,15 @@ impl<'a> GeometryOrientation<'a> {
         overlaps: Vec<GeometricOverlap>,
         balance_iterations: u16,
         max_adjustment: f64,
+        is_cancelled: &mut impl FnMut() -> bool,
     ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
-        let source_areas = cell_areas(self.original_source);
-        let target_areas = cell_areas(self.original_target);
+        let source_areas = cell_areas(self.original_source, is_cancelled)?;
+        let target_areas = cell_areas(self.original_target, is_cancelled)?;
         let mut target_rows = vec![Vec::<(u32, f64)>::new(); target_areas.len()];
-        for overlap in overlaps {
+        for (index, overlap) in overlaps.into_iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             let (source_cell, target_cell) = if self.source_is_fine {
                 (overlap.fine_cell, overlap.coarse_cell)
             } else {
@@ -228,8 +274,15 @@ impl<'a> GeometryOrientation<'a> {
         let mut weights = Vec::new();
         offsets.push(0);
         for (target_index, row) in target_rows.iter_mut().enumerate() {
-            row.sort_unstable_by_key(|(source, _)| *source);
-            for &(source_index, area_m2) in row.iter() {
+            if target_index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
+            // Construction order already gives strict source order in either
+            // geometric orientation; the final map validator rechecks it.
+            for (row_index, &(source_index, area_m2)) in row.iter().enumerate() {
+                if row_index % 256 == 0 {
+                    check_cancelled(is_cancelled)?;
+                }
                 let transform = tangent_transform(
                     &self.original_source.cells()[source_index as usize].centroid,
                     &self.original_target.cells()[target_index].centroid,
@@ -247,7 +300,7 @@ impl<'a> GeometryOrientation<'a> {
             })?);
         }
 
-        Ok(ConservativeSurfaceMap::new(
+        ConservativeSurfaceMap::new_cancellable(
             CONSERVATIVE_SURFACE_MAP_SCHEMA_V1,
             self.source_ref,
             self.target_ref,
@@ -257,7 +310,9 @@ impl<'a> GeometryOrientation<'a> {
             weights,
             balance_iterations,
             max_adjustment,
-        )?)
+            is_cancelled,
+        )
+        .map_err(map_surface_error)
     }
 }
 
@@ -278,26 +333,40 @@ fn validate_radius(
     Ok(())
 }
 
-fn cell_areas(surface: &SphericalSurfaceSnapshot) -> Vec<f64> {
-    surface.cells().iter().map(|cell| cell.area.get()).collect()
+fn cell_areas(
+    surface: &SphericalSurfaceSnapshot,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<Vec<f64>, ConservativeRemapError> {
+    let mut areas = Vec::with_capacity(surface.cells().len());
+    for (index, cell) in surface.cells().iter().enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
+        areas.push(cell.area.get());
+    }
+    Ok(areas)
 }
 
-fn build_neighbors(surface: &SphericalSurfaceSnapshot) -> Vec<Vec<usize>> {
-    surface
-        .cells()
-        .iter()
-        .map(|cell| {
-            let mut neighbors = cell
-                .boundary_edges
-                .iter()
-                .filter_map(|&edge| surface.opposite_cell(cell.id, edge))
-                .map(|cell| cell.raw() as usize)
-                .collect::<Vec<_>>();
-            neighbors.sort_unstable();
-            neighbors.dedup();
-            neighbors
-        })
-        .collect()
+fn build_neighbors(
+    surface: &SphericalSurfaceSnapshot,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<Vec<Vec<usize>>, ConservativeRemapError> {
+    let mut all_neighbors = Vec::with_capacity(surface.cells().len());
+    for (index, cell) in surface.cells().iter().enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
+        let mut neighbors = cell
+            .boundary_edges
+            .iter()
+            .filter_map(|&edge| surface.opposite_cell(cell.id, edge))
+            .map(|cell| cell.raw() as usize)
+            .collect::<Vec<_>>();
+        neighbors.sort_unstable();
+        neighbors.dedup();
+        all_neighbors.push(neighbors);
+    }
+    Ok(all_neighbors)
 }
 
 fn adjacency_candidates(
@@ -531,11 +600,14 @@ fn balance_margins(
     coarse: &SphericalSurfaceSnapshot,
     is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<u16, ConservativeRemapError> {
-    let fine_areas = cell_areas(fine);
-    let coarse_areas = cell_areas(coarse);
+    let fine_areas = cell_areas(fine, is_cancelled)?;
+    let coarse_areas = cell_areas(coarse, is_cancelled)?;
     let mut row_ranges = vec![(0_usize, 0_usize); fine_areas.len()];
     let mut cursor = 0;
     for (fine_index, range) in row_ranges.iter_mut().enumerate() {
+        if fine_index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         let start = cursor;
         while cursor < overlaps.len() && overlaps[cursor].fine_cell as usize == fine_index {
             cursor += 1;
@@ -557,6 +629,9 @@ fn balance_margins(
     for iteration in 1..=MAX_BALANCE_ITERATIONS {
         check_cancelled(is_cancelled)?;
         for (fine_index, &(start, end)) in row_ranges.iter().enumerate() {
+            if fine_index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             let sum = compensated_sum(overlaps[start..end].iter().map(|item| item.area_m2))?;
             if sum <= 0.0 {
                 return Err(ConservativeRemapError::ZeroBalanceMargin {
@@ -565,20 +640,32 @@ fn balance_margins(
                 });
             }
             let scale = fine_areas[fine_index] / sum;
-            for overlap in &mut overlaps[start..end] {
+            for (row_index, overlap) in overlaps[start..end].iter_mut().enumerate() {
+                if row_index % 256 == 0 {
+                    check_cancelled(is_cancelled)?;
+                }
                 overlap.area_m2 *= scale;
             }
         }
 
         coarse_sums.fill(0.0);
         let mut compensated = vec![CompensatedSum::default(); coarse_areas.len()];
-        for overlap in overlaps.iter() {
+        for (index, overlap) in overlaps.iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             compensated[overlap.coarse_cell as usize].add(overlap.area_m2)?;
         }
-        for (sum, value) in compensated.into_iter().zip(&mut coarse_sums) {
+        for (index, (sum, value)) in compensated.into_iter().zip(&mut coarse_sums).enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             *value = sum.total()?;
         }
         for (coarse_index, &sum) in coarse_sums.iter().enumerate() {
+            if coarse_index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             if sum <= 0.0 {
                 return Err(ConservativeRemapError::ZeroBalanceMargin {
                     role: "coarse column",
@@ -586,7 +673,10 @@ fn balance_margins(
                 });
             }
         }
-        for overlap in overlaps.iter_mut() {
+        for (index, overlap) in overlaps.iter_mut().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
             overlap.area_m2 *= coarse_areas[overlap.coarse_cell as usize]
                 / coarse_sums[overlap.coarse_cell as usize];
             if !overlap.area_m2.is_finite() || overlap.area_m2 <= 0.0 {
@@ -594,14 +684,24 @@ fn balance_margins(
             }
         }
 
-        let (max_fine_error, max_coarse_error) =
-            margin_errors(overlaps, &row_ranges, &fine_areas, &coarse_areas)?;
+        let (max_fine_error, max_coarse_error) = margin_errors(
+            overlaps,
+            &row_ranges,
+            &fine_areas,
+            &coarse_areas,
+            is_cancelled,
+        )?;
         if max_fine_error <= BALANCE_CLOSURE_LIMIT && max_coarse_error <= BALANCE_CLOSURE_LIMIT {
             return Ok(iteration);
         }
     }
-    let (max_fine_error, max_coarse_error) =
-        margin_errors(overlaps, &row_ranges, &fine_areas, &coarse_areas)?;
+    let (max_fine_error, max_coarse_error) = margin_errors(
+        overlaps,
+        &row_ranges,
+        &fine_areas,
+        &coarse_areas,
+        is_cancelled,
+    )?;
     Err(ConservativeRemapError::BalanceDidNotConverge {
         iterations: MAX_BALANCE_ITERATIONS,
         max_fine_relative_error: max_fine_error,
@@ -615,18 +715,28 @@ fn margin_errors(
     row_ranges: &[(usize, usize)],
     fine_areas: &[f64],
     coarse_areas: &[f64],
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(f64, f64), ConservativeRemapError> {
     let mut max_fine = 0.0_f64;
     for (fine_index, &(start, end)) in row_ranges.iter().enumerate() {
+        if fine_index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         let sum = compensated_sum(overlaps[start..end].iter().map(|item| item.area_m2))?;
         max_fine = max_fine.max(relative_error(sum, fine_areas[fine_index]));
     }
     let mut coarse_sums = vec![CompensatedSum::default(); coarse_areas.len()];
-    for overlap in overlaps {
+    for (index, overlap) in overlaps.iter().enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         coarse_sums[overlap.coarse_cell as usize].add(overlap.area_m2)?;
     }
     let mut max_coarse = 0.0_f64;
-    for (sum, &expected) in coarse_sums.into_iter().zip(coarse_areas) {
+    for (index, (sum, &expected)) in coarse_sums.into_iter().zip(coarse_areas).enumerate() {
+        if index % 256 == 0 {
+            check_cancelled(is_cancelled)?;
+        }
         max_coarse = max_coarse.max(relative_error(sum.total()?, expected));
     }
     Ok((max_fine, max_coarse))
@@ -728,20 +838,25 @@ struct KdNode {
 }
 
 impl KdTree {
-    fn new(surface: &SphericalSurfaceSnapshot) -> Self {
+    fn new(
+        surface: &SphericalSurfaceSnapshot,
+        is_cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<Self, ConservativeRemapError> {
         let mut cells = (0..surface.cells().len()).collect::<Vec<_>>();
         let mut nodes = Vec::with_capacity(cells.len());
-        let root = build_kd_node(&mut cells, 0, surface, &mut nodes);
-        let points = surface
-            .cells()
-            .iter()
-            .map(|cell| cell.site.components())
-            .collect();
-        Self {
+        let root = build_kd_node(&mut cells, 0, surface, &mut nodes, is_cancelled)?;
+        let mut points = Vec::with_capacity(surface.cells().len());
+        for (index, cell) in surface.cells().iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(is_cancelled)?;
+            }
+            points.push(cell.site.components());
+        }
+        Ok(Self {
             nodes,
             points,
             root,
-        }
+        })
     }
 
     fn nearest(&self, query: UnitVector3) -> Option<usize> {
@@ -763,10 +878,12 @@ fn build_kd_node(
     depth: usize,
     surface: &SphericalSurfaceSnapshot,
     nodes: &mut Vec<KdNode>,
-) -> Option<usize> {
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> Result<Option<usize>, ConservativeRemapError> {
     if cells.is_empty() {
-        return None;
+        return Ok(None);
     }
+    check_cancelled(is_cancelled)?;
     let axis = depth % 3;
     cells.sort_unstable_by(|&left, &right| {
         surface.cells()[left].site.components()[axis]
@@ -783,11 +900,11 @@ fn build_kd_node(
         left: None,
         right: None,
     });
-    let left = build_kd_node(left_cells, depth + 1, surface, nodes);
-    let right = build_kd_node(right_cells, depth + 1, surface, nodes);
+    let left = build_kd_node(left_cells, depth + 1, surface, nodes, is_cancelled)?;
+    let right = build_kd_node(right_cells, depth + 1, surface, nodes, is_cancelled)?;
     nodes[node_index].left = left;
     nodes[node_index].right = right;
-    Some(node_index)
+    Ok(Some(node_index))
 }
 
 fn nearest_kd_node(
@@ -828,6 +945,14 @@ fn check_cancelled(is_cancelled: &mut impl FnMut() -> bool) -> Result<(), Conser
         Err(ConservativeRemapError::Cancelled)
     } else {
         Ok(())
+    }
+}
+
+fn map_surface_error(error: ConservativeSurfaceMapError) -> ConservativeRemapError {
+    if error == ConservativeSurfaceMapError::Cancelled {
+        ConservativeRemapError::Cancelled
+    } else {
+        ConservativeRemapError::InvalidMap(error)
     }
 }
 
@@ -948,7 +1073,7 @@ mod tests {
     #[test]
     fn kd_tree_returns_each_exact_generating_site() {
         let surface = surface();
-        let tree = KdTree::new(&surface);
+        let tree = KdTree::new(&surface, &mut || false).unwrap();
         for cell in surface.cells() {
             assert_eq!(tree.nearest(cell.site), Some(cell.id.raw() as usize));
         }

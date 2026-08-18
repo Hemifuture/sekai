@@ -46,6 +46,15 @@ impl NaturalQualityProfile {
         }
     }
 
+    /// Exact bounded formation horizon for the global circulation solver.
+    pub const fn global_circulation_formation_years_max(self) -> u16 {
+        match self {
+            Self::Draft => 8,
+            Self::Standard => 10,
+            Self::High => 12,
+        }
+    }
+
     /// Resolves this profile against an exact authoritative spherical-space request.
     pub fn resolve(
         self,

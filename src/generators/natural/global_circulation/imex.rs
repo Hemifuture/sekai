@@ -2,10 +2,13 @@ use super::rk3::{
     combine_state, estimate_cfl, validate_step, ClimateDerivative, ClimateIntegratorDiagnostics,
     ClimateIntegratorError, ClimateStepResult,
 };
-use super::{LayeredClimateState, LayeredTendencySystem, LayeredTendencyWorkspace};
+use super::{
+    ClimateConservationInterpretation, FormationProcedureIdentity, LayeredClimateState,
+    LayeredTendencySystem, LayeredTendencyWorkspace,
+};
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
-use crate::world::natural::PlanetForcing;
+use crate::world::natural::{ClimateCapabilitySet, ClimateModelProfile, PlanetForcing};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ImexCrankNicolsonIntegrator<'grid> {
@@ -35,6 +38,19 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         })
     }
 
+    /// Declares the scientific capabilities and conservation ledger owned by
+    /// the actual IMEX comparison implementation.
+    pub fn formation_procedure_identity(
+        &self,
+        profile: ClimateModelProfile,
+    ) -> FormationProcedureIdentity {
+        FormationProcedureIdentity::new(
+            ClimateCapabilitySet::for_profile(profile),
+            ClimateConservationInterpretation::SharedTendencyExtensiveV1,
+            super::global_circulation_model_fingerprint(profile),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn advance(
         &self,
@@ -48,14 +64,16 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         validate_step(self.grid, state, dt_seconds, cancellation)?;
         let system = LayeredTendencySystem::new(self.grid);
         let mut workspace = LayeredTendencyWorkspace::for_grid(self.grid);
-        let base_tendency = system.evaluate_with_workspace(
+        let base_tendency = system.evaluate_with_workspace_for_step(
             state,
             forcing,
             ocean_edge_permeability,
             month,
+            dt_seconds,
             cancellation,
             &mut workspace,
         )?;
+        let mut mean_precipitation_rate_mm_s = base_tendency.precipitation_rate_mm_s().to_vec();
         let base_implicit_tendency = system.evaluate_linear_implicit_with_workspace(
             state,
             forcing,
@@ -64,9 +82,11 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             cancellation,
             &mut workspace,
         )?;
-        let base_derivative = ClimateDerivative::from_tendency(state, &base_tendency);
-        let implicit_derivative = ClimateDerivative::from_tendency(state, &base_implicit_tendency);
-        let explicit_derivative = base_derivative.subtract(&implicit_derivative);
+        let base_derivative =
+            ClimateDerivative::from_tendency(state, &base_tendency, cancellation)?;
+        let implicit_derivative =
+            ClimateDerivative::from_tendency(state, &base_implicit_tendency, cancellation)?;
+        let explicit_derivative = base_derivative.subtract(&implicit_derivative, cancellation)?;
         let base_implicit_derivative = flatten_implicit_derivative(state, &implicit_derivative);
         let right_hand_side = base_implicit_derivative
             .iter()
@@ -97,7 +117,8 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                         &mut workspace,
                     )?;
                     tendency_evaluations += 1;
-                    let derivative = ClimateDerivative::from_tendency(&perturbed, &tendency);
+                    let derivative =
+                        ClimateDerivative::from_tendency(&perturbed, &tendency, cancellation)?;
                     let linear_action = flatten_implicit_derivative(&perturbed, &derivative)
                         .into_iter()
                         .zip(&base_implicit_derivative)
@@ -120,7 +141,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 &mut workspace,
             )?;
             tendency_evaluations += 1;
-            let derivative = ClimateDerivative::from_tendency(&perturbed, &tendency);
+            let derivative = ClimateDerivative::from_tendency(&perturbed, &tendency, cancellation)?;
             let residual = increment
                 .iter()
                 .zip(
@@ -149,10 +170,14 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         let implicit_advanced = state_with_implicit_increment(self.grid, state, &increment)?;
         let mut explicit_non_humidity = explicit_derivative.clone();
         explicit_non_humidity.humidity.fill(0.0);
+        if let Some(upper) = &mut explicit_non_humidity.upper_humidity {
+            upper.fill(0.0);
+        }
         let mut advanced = combine_state(
             self.grid,
             &implicit_advanced,
             &[(dt_seconds, &explicit_non_humidity)],
+            cancellation,
         )?;
         let humidity_predictor = state
             .specific_humidity()
@@ -165,20 +190,50 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         advanced
             .specific_humidity_mut()
             .copy_from_slice(&humidity_predictor);
-        if explicit_derivative
+        if let (Some(base_upper), Some(derivative_upper)) = (
+            state.upper_specific_humidity(),
+            explicit_derivative.upper_humidity.as_ref(),
+        ) {
+            let predictor = base_upper
+                .iter()
+                .zip(derivative_upper)
+                .map(|(value, tendency)| {
+                    (f64::from(*value) + dt_seconds * f64::from(*tendency)).max(0.0) as f32
+                })
+                .collect::<Vec<_>>();
+            advanced
+                .upper_specific_humidity_mut()
+                .expect("C2 upper moisture")
+                .copy_from_slice(&predictor);
+        }
+        let humidity_is_active = explicit_derivative
             .humidity
             .iter()
             .any(|value| *value != 0.0)
-        {
-            let predicted_tendency = system.evaluate_with_workspace(
+            || explicit_derivative
+                .upper_humidity
+                .iter()
+                .flatten()
+                .any(|value| *value != 0.0);
+        if humidity_is_active {
+            let predicted_tendency = system.evaluate_with_workspace_for_step(
                 &advanced,
                 forcing,
                 ocean_edge_permeability,
                 month,
+                dt_seconds,
                 cancellation,
                 &mut workspace,
             )?;
             tendency_evaluations += 1;
+            for (mean, (base, predicted)) in mean_precipitation_rate_mm_s.iter_mut().zip(
+                base_tendency
+                    .precipitation_rate_mm_s()
+                    .iter()
+                    .zip(predicted_tendency.precipitation_rate_mm_s()),
+            ) {
+                *mean = (0.5 * (f64::from(*base) + f64::from(*predicted))) as f32;
+            }
             for (index, target) in advanced.specific_humidity_mut().iter_mut().enumerate() {
                 *target = (f64::from(state.specific_humidity()[index])
                     + 0.5
@@ -189,6 +244,25 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                             )))
                 .max(0.0) as f32;
             }
+            if let (Some(base_upper), Some(derivative_upper), Some(predicted_upper)) = (
+                state.upper_specific_humidity(),
+                explicit_derivative.upper_humidity.as_ref(),
+                predicted_tendency.upper_specific_humidity_tendency_s_inv(),
+            ) {
+                for (index, target) in advanced
+                    .upper_specific_humidity_mut()
+                    .expect("C2 upper moisture")
+                    .iter_mut()
+                    .enumerate()
+                {
+                    *target = (f64::from(base_upper[index])
+                        + 0.5
+                            * dt_seconds
+                            * (f64::from(derivative_upper[index])
+                                + f64::from(predicted_upper[index])))
+                    .max(0.0) as f32;
+                }
+            }
         }
         advanced.validate_against(self.grid)?;
         Ok(ClimateStepResult::new(
@@ -198,8 +272,9 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 iterations,
                 if initial_norm > 0.0 { 1.0 } else { 0.0 },
                 relative_residual,
-                estimate_cfl(self.grid, state, dt_seconds),
+                estimate_cfl(self.grid, state, dt_seconds, cancellation)?,
             ),
+            mean_precipitation_rate_mm_s,
         ))
     }
 }

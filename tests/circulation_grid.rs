@@ -1,4 +1,24 @@
-use sekai::generators::natural::circulation::CubedSphereGrid;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use sekai::generators::natural::circulation::{CubedSphereGrid, CubedSphereGridError};
+
+#[test]
+fn cubed_sphere_build_and_surface_conversion_cancel_inside_dense_work() {
+    let build_observations = AtomicUsize::new(0);
+    let build = CubedSphereGrid::new_cancellable(48, 6_371_000.0, &|| {
+        build_observations.fetch_add(1, Ordering::Relaxed) >= 12
+    });
+    assert_eq!(build, Err(CubedSphereGridError::Cancelled));
+    assert!(build_observations.load(Ordering::Relaxed) > 12);
+
+    let grid = CubedSphereGrid::new(48, 6_371_000.0).unwrap();
+    let conversion_observations = AtomicUsize::new(0);
+    let conversion = grid.to_surface_snapshot_cancellable(&|| {
+        conversion_observations.fetch_add(1, Ordering::Relaxed) >= 12
+    });
+    assert_eq!(conversion, Err(CubedSphereGridError::Cancelled));
+    assert!(conversion_observations.load(Ordering::Relaxed) > 12);
+}
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]

@@ -48,6 +48,21 @@ impl MonthlyScalarField {
         Ok(Self(values))
     }
 
+    /// Constructs a monthly field while polling during the complete finite-value scan.
+    pub(crate) fn from_values_cancellable(
+        values: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ClimateValidationError> {
+        validate_monthly_scalars_cancellable(
+            "monthly_scalar_field",
+            &values,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            cancelled,
+        )?;
+        Ok(Self(values))
+    }
+
     /// Returns all per-cell month arrays without copying.
     pub fn values(&self) -> &[[f32; CLIMATE_MONTH_COUNT]] {
         &self.0
@@ -153,6 +168,21 @@ impl MonthlyVector3Field {
             &values,
             f32::NEG_INFINITY,
             f32::INFINITY,
+        )?;
+        Ok(Self(values))
+    }
+
+    /// Constructs a monthly field while polling during the complete finite-value scan.
+    pub(crate) fn from_values_cancellable(
+        values: Vec<[[f32; 3]; CLIMATE_MONTH_COUNT]>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ClimateValidationError> {
+        validate_monthly_vectors_cancellable(
+            "monthly_vector3_field",
+            &values,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            cancelled,
         )?;
         Ok(Self(values))
     }
@@ -620,6 +650,44 @@ pub(crate) fn validate_monthly_scalars(
     Ok(())
 }
 
+fn validate_monthly_scalars_cancellable(
+    field: &'static str,
+    values: &[[f32; CLIMATE_MONTH_COUNT]],
+    min: f32,
+    max: f32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), ClimateValidationError> {
+    for (index, months) in values.iter().enumerate() {
+        if index % 256 == 0 && cancelled() {
+            return Err(ClimateValidationError::Cancelled);
+        }
+        for (month, &found) in months.iter().enumerate() {
+            if !found.is_finite() {
+                return Err(ClimateValidationError::NonFiniteScalarValue {
+                    field,
+                    cell: CellId::from_raw(index as u32),
+                    month: Some(month),
+                    found,
+                });
+            }
+            if found < min || found > max {
+                return Err(ClimateValidationError::ScalarValueOutOfRange {
+                    field,
+                    cell: CellId::from_raw(index as u32),
+                    month: Some(month),
+                    found,
+                    min,
+                    max,
+                });
+            }
+        }
+    }
+    if cancelled() {
+        return Err(ClimateValidationError::Cancelled);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_monthly_vectors<const COMPONENTS: usize>(
     field: &'static str,
     values: &[[[f32; COMPONENTS]; CLIMATE_MONTH_COUNT]],
@@ -655,6 +723,48 @@ pub(crate) fn validate_monthly_vectors<const COMPONENTS: usize>(
     Ok(())
 }
 
+fn validate_monthly_vectors_cancellable<const COMPONENTS: usize>(
+    field: &'static str,
+    values: &[[[f32; COMPONENTS]; CLIMATE_MONTH_COUNT]],
+    min: f32,
+    max: f32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), ClimateValidationError> {
+    for (index, months) in values.iter().enumerate() {
+        if index % 256 == 0 && cancelled() {
+            return Err(ClimateValidationError::Cancelled);
+        }
+        for (month, value) in months.iter().enumerate() {
+            for (component, &found) in value.iter().enumerate() {
+                if !found.is_finite() {
+                    return Err(ClimateValidationError::NonFiniteVectorValue {
+                        field,
+                        cell: CellId::from_raw(index as u32),
+                        month: Some(month),
+                        component,
+                        found,
+                    });
+                }
+                if found < min || found > max {
+                    return Err(ClimateValidationError::VectorValueOutOfRange {
+                        field,
+                        cell: CellId::from_raw(index as u32),
+                        month: Some(month),
+                        component,
+                        found,
+                        min,
+                        max,
+                    });
+                }
+            }
+        }
+    }
+    if cancelled() {
+        return Err(ClimateValidationError::Cancelled);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_summary_identity(
     field: &'static str,
     index: usize,
@@ -675,6 +785,9 @@ pub(crate) fn validate_summary_identity(
 /// Errors returned when preliminary-climate fields violate the V1 contract.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ClimateValidationError {
+    /// A caller-owned cancellation predicate fired during a dense field scan.
+    #[error("monthly climate field validation was cancelled")]
+    Cancelled,
     /// The snapshot uses a schema version that this engine does not support.
     #[error("unsupported preliminary-climate schema {found}; supported version is {supported}")]
     UnsupportedSchema {

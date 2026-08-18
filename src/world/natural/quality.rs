@@ -318,6 +318,8 @@ impl<'de> Deserialize<'de> for QualityMetric {
 pub struct NaturalQualityReport {
     schema_version: u16,
     surface_ref: SurfaceRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject_fingerprint: Option<[u8; 32]>,
     metrics: Vec<QualityMetric>,
 }
 
@@ -326,6 +328,8 @@ pub struct NaturalQualityReport {
 struct NaturalQualityReportWire {
     schema_version: u16,
     surface_ref: SurfaceRef,
+    #[serde(default)]
+    subject_fingerprint: Option<[u8; 32]>,
     #[serde(deserialize_with = "deserialize_quality_metrics")]
     metrics: Vec<QualityMetric>,
 }
@@ -342,6 +346,15 @@ impl NaturalQualityReport {
     pub fn new(
         schema_version: u16,
         surface_ref: SurfaceRef,
+        metrics: Vec<QualityMetric>,
+    ) -> Result<Self, NaturalQualityValidationError> {
+        Self::new_for_subject(schema_version, surface_ref, None, metrics)
+    }
+
+    fn new_for_subject(
+        schema_version: u16,
+        surface_ref: SurfaceRef,
+        subject_fingerprint: Option<[u8; 32]>,
         mut metrics: Vec<QualityMetric>,
     ) -> Result<Self, NaturalQualityValidationError> {
         if schema_version != NATURAL_QUALITY_REPORT_SCHEMA_V1 {
@@ -351,6 +364,9 @@ impl NaturalQualityReport {
             });
         }
         surface_ref.validate()?;
+        if subject_fingerprint == Some([0; 32]) {
+            return Err(NaturalQualityValidationError::ZeroSubjectFingerprint);
+        }
         if metrics.len() > MAX_QUALITY_METRICS {
             return Err(NaturalQualityValidationError::TooManyMetrics {
                 found: metrics.len(),
@@ -371,8 +387,23 @@ impl NaturalQualityReport {
         Ok(Self {
             schema_version,
             surface_ref,
+            subject_fingerprint,
             metrics,
         })
+    }
+
+    /// Binds the measurements to the exact immutable state that was sampled.
+    /// This prevents same-surface reports from being swapped across worlds.
+    pub(crate) fn bind_subject_fingerprint(
+        self,
+        subject_fingerprint: [u8; 32],
+    ) -> Result<Self, NaturalQualityValidationError> {
+        Self::new_for_subject(
+            self.schema_version,
+            self.surface_ref,
+            Some(subject_fingerprint),
+            self.metrics,
+        )
     }
 
     /// Rechecks the report envelope, metric invariants, and canonical ordering.
@@ -384,6 +415,9 @@ impl NaturalQualityReport {
             });
         }
         self.surface_ref.validate()?;
+        if self.subject_fingerprint == Some([0; 32]) {
+            return Err(NaturalQualityValidationError::ZeroSubjectFingerprint);
+        }
         if self.metrics.len() > MAX_QUALITY_METRICS {
             return Err(NaturalQualityValidationError::TooManyMetrics {
                 found: self.metrics.len(),
@@ -422,6 +456,12 @@ impl NaturalQualityReport {
         self.surface_ref
     }
 
+    /// Returns the exact sampled-state identity when the producer supplies
+    /// state-specific evidence.
+    pub const fn subject_fingerprint(&self) -> Option<&[u8; 32]> {
+        self.subject_fingerprint.as_ref()
+    }
+
     /// Returns the metrics in canonical identity order.
     pub fn metrics(&self) -> &[QualityMetric] {
         &self.metrics
@@ -434,7 +474,13 @@ impl<'de> Deserialize<'de> for NaturalQualityReport {
         D: Deserializer<'de>,
     {
         let wire = NaturalQualityReportWire::deserialize(deserializer)?;
-        Self::new(wire.schema_version, wire.surface_ref, wire.metrics).map_err(D::Error::custom)
+        Self::new_for_subject(
+            wire.schema_version,
+            wire.surface_ref,
+            wire.subject_fingerprint,
+            wire.metrics,
+        )
+        .map_err(D::Error::custom)
     }
 }
 
@@ -476,6 +522,8 @@ pub enum NaturalQualityValidationError {
     UnsupportedSchema { found: u16, supported: u16 },
     #[error("invalid natural quality surface: {0}")]
     InvalidSurfaceRef(#[from] SurfaceRefError),
+    #[error("quality report subject fingerprint cannot be all zero bytes")]
+    ZeroSubjectFingerprint,
     #[error("quality metric identifier {field} has {found} bytes; expected 1..={max}")]
     IdentifierLengthOutOfRange {
         field: &'static str,

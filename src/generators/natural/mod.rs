@@ -64,6 +64,10 @@ pub use climate_rule_input::{
 pub use climate_stage::{
     PreliminaryClimateArtifact, PreliminaryClimateStage, PreliminaryClimateStageInputs,
 };
+pub(crate) use climate_work_domain::{
+    validate_climate_work_domain_maps_against, validate_climate_work_domain_reconstruction,
+    validate_climate_work_domain_reconstruction_cancellable,
+};
 pub use climate_work_domain::{ClimateWorkDomainBuildError, ClimateWorkDomainBuilder};
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
 pub use evolved_tectonic_stage::{
@@ -93,23 +97,31 @@ pub use geologic_substrate::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use global_circulation::{
-    climate_state_rms_difference, compare_climate_states, paired_heat_exchange,
-    paired_momentum_exchange, project_monthly_extensive_rate, project_monthly_intensive_scalar,
-    project_monthly_tangent_vectors, run_integrator_comparison, CandidateIntegratorComparison,
-    ClimateAgreementFailure, ClimateAgreementThresholds, ClimateIntegratorDiagnostics,
-    ClimateIntegratorError, ClimateProjectionError, ClimateStateComparison, ClimateStepResult,
-    ExplicitRk3Integrator, GlobalCirculationGenerationError, GlobalCirculationGenerator,
+    annual_precipitation_total_bias, climate_state_formation_residual,
+    climate_state_rms_difference, compare_climate_states, compare_formation_procedure_identities,
+    formation_procedure_identity_matches, global_circulation_model_fingerprint,
+    paired_heat_exchange, paired_momentum_exchange, project_monthly_extensive_rate,
+    project_monthly_intensive_scalar, project_monthly_tangent_vectors,
+    run_closed_split_annual_mass_fixture, run_formation_cycle_comparison,
+    run_integrator_comparison, AnnualLayerMassConservationReport, CandidateIntegratorComparison,
+    ClimateAgreementFailure, ClimateAgreementThresholds, ClimateConservationInterpretation,
+    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimatePrecipitationAgreement,
+    ClimateProjectionError, ClimateScalarAgreement, ClimateStateComparison, ClimateStepResult,
+    ClimateVectorAgreement, ExplicitRk3Integrator, FormationCycleComparisonReport,
+    FormationProcedureAgreement, FormationProcedureIdentity, FormationRunOutcome,
+    GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalCirculationPhase,
     GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
-    ImexCrankNicolsonIntegrator, IntegratorComparisonReport, LayeredClimateState,
-    LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget, LayeredTendencyError,
-    LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange, PairedMomentumExchange,
-    ProductionCandidateSelection, ProjectedMonthlyScalar, SplitExplicitRk3Integrator,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, SELECTED_PRODUCTION_INTEGRATOR,
+    ImexCrankNicolsonIntegrator, IntegratorComparisonReport, LayerMassConservationDiagnostic,
+    LayeredClimateState, LayeredClimateTendency, LayeredStateError, LayeredTendencyBudget,
+    LayeredTendencyError, LayeredTendencySystem, LayeredTendencyWorkspace, PairedHeatExchange,
+    PairedMomentumExchange, ProductionCandidateSelection, ProjectedMonthlyScalar,
+    SplitExplicitRk3Integrator, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    CLOSED_ANNUAL_LAYER_MASS_DRIFT_MAX, SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use global_circulation_stage::{
     global_circulation_graph, ClimateWorkDomainArtifact, ClimateWorkDomainStage,
-    ClimateWorkDomainStageInputs, GlobalCirculationArtifact, GlobalCirculationStage,
-    GlobalCirculationStageInputs,
+    ClimateWorkDomainStageInputs, GlobalCirculationArtifact, GlobalCirculationProductError,
+    GlobalCirculationStage, GlobalCirculationStageInputs,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{
@@ -133,9 +145,10 @@ pub use primary_relief_stage::{
 };
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
-    evaluate_global_circulation_quality, evaluate_primary_relief_corpus_quality,
-    evaluate_primary_relief_quality, evaluate_profile_surface_quality,
-    evaluate_spherical_foundation_quality, PrimaryReliefQualitySample, QualityBuildError,
+    evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
+    evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
+    evaluate_profile_surface_quality, evaluate_spherical_foundation_quality,
+    PrimaryReliefQualitySample, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;

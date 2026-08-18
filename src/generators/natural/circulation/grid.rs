@@ -5,8 +5,9 @@ use thiserror::Error;
 use crate::world::natural::{CIRCULATION_SCHEMA_V1, MAX_CUBED_SPHERE_FACE_RESOLUTION};
 use crate::world::spatial::{
     central_angle as surface_central_angle, oriented_arc_normal, spherical_polygon_metrics,
-    SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceVertex,
-    UnitVector3, SPHERICAL_SURFACE_SCHEMA_V2,
+    SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
+    SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
+    SPHERICAL_SURFACE_SCHEMA_V2,
 };
 use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
 
@@ -17,6 +18,7 @@ use super::math::{
 
 type VertexKey = (i16, i16, i16);
 type EdgeKey = (u32, u32);
+type GridCancellation<'a> = Option<&'a dyn Fn() -> bool>;
 
 const UNIT_QUANTIZATION: f64 = 1.0e13;
 
@@ -130,6 +132,23 @@ pub struct CubedSphereGrid {
 
 impl CubedSphereGrid {
     pub fn new(face_resolution: u16, radius_m: f64) -> Result<Self, CubedSphereGridError> {
+        Self::new_impl(face_resolution, radius_m, None)
+    }
+
+    pub fn new_cancellable(
+        face_resolution: u16,
+        radius_m: f64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, CubedSphereGridError> {
+        Self::new_impl(face_resolution, radius_m, Some(cancelled))
+    }
+
+    fn new_impl(
+        face_resolution: u16,
+        radius_m: f64,
+        cancellation: GridCancellation<'_>,
+    ) -> Result<Self, CubedSphereGridError> {
+        check_grid_cancelled(cancellation)?;
         if !(1..=MAX_CUBED_SPHERE_FACE_RESOLUTION).contains(&face_resolution) {
             return Err(CubedSphereGridError::FaceResolutionOutOfRange {
                 found: face_resolution,
@@ -158,6 +177,7 @@ impl CubedSphereGrid {
         for face in 0_u8..6 {
             for row in 0..face_resolution {
                 for column in 0..face_resolution {
+                    poll_grid_cancelled(pending_cells.len(), cancellation)?;
                     let id = u32::try_from(pending_cells.len())
                         .map_err(|_| CubedSphereGridError::AllocationOverflow)?;
                     let corners = cell_corners(face, row, column, face_resolution)?;
@@ -213,7 +233,8 @@ impl CubedSphereGrid {
 
         let mut edges = Vec::with_capacity(edge_count);
         let mut edge_ids = BTreeMap::<EdgeKey, u32>::new();
-        for (key, owners) in edge_owners {
+        for (edge_index, (key, owners)) in edge_owners.into_iter().enumerate() {
+            poll_grid_cancelled(edge_index, cancellation)?;
             if owners.len() != 2 {
                 return Err(CubedSphereGridError::NonManifoldEdge {
                     vertices: [key.0, key.1],
@@ -265,12 +286,14 @@ impl CubedSphereGrid {
             });
         }
 
-        let minimum_center_distance_m = edges
-            .iter()
-            .map(SphericalEdge::center_distance_m)
-            .fold(f64::INFINITY, f64::min);
+        let mut minimum_center_distance_m = f64::INFINITY;
+        for (index, edge) in edges.iter().enumerate() {
+            poll_grid_cancelled(index, cancellation)?;
+            minimum_center_distance_m = minimum_center_distance_m.min(edge.center_distance_m());
+        }
         let mut cells = Vec::with_capacity(cell_count);
-        for pending in pending_cells {
+        for (index, pending) in pending_cells.into_iter().enumerate() {
+            poll_grid_cancelled(index, cancellation)?;
             let mut cell_edges = [0_u32; 4];
             let mut neighbors = [0_u32; 4];
             for local in 0..4 {
@@ -296,8 +319,15 @@ impl CubedSphereGrid {
             });
         }
 
-        let fingerprint =
-            calculate_fingerprint(face_resolution, radius_m, &vertices, &cells, &edges);
+        let fingerprint = calculate_fingerprint(
+            face_resolution,
+            radius_m,
+            &vertices,
+            &cells,
+            &edges,
+            cancellation,
+        )?;
+        check_grid_cancelled(cancellation)?;
         Ok(Self {
             face_resolution,
             radius_m,
@@ -348,95 +378,113 @@ impl CubedSphereGrid {
     /// Converts this reconstructable work grid to the common spherical-surface
     /// geometry consumed by the conservative remapper.
     pub fn to_surface_snapshot(&self) -> Result<SphericalSurfaceSnapshot, CubedSphereGridError> {
-        let vertices = self
-            .vertices
-            .iter()
-            .enumerate()
-            .map(|(index, &position)| {
-                Ok(SphericalSurfaceVertex {
-                    id: SurfaceVertexId::from_raw(
-                        u32::try_from(index)
-                            .map_err(|_| CubedSphereGridError::AllocationOverflow)?,
-                    ),
-                    position: preserved_unit(position)?,
-                })
-            })
-            .collect::<Result<Vec<_>, CubedSphereGridError>>()?;
-        let cells = self
-            .cells
-            .iter()
-            .map(|cell| {
-                let site = preserved_unit(cell.center_unit)?;
-                let polygon = cell
+        self.to_surface_snapshot_impl(None)
+    }
+
+    pub fn to_surface_snapshot_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<SphericalSurfaceSnapshot, CubedSphereGridError> {
+        self.to_surface_snapshot_impl(Some(cancelled))
+    }
+
+    fn to_surface_snapshot_impl(
+        &self,
+        cancellation: GridCancellation<'_>,
+    ) -> Result<SphericalSurfaceSnapshot, CubedSphereGridError> {
+        check_grid_cancelled(cancellation)?;
+        let mut vertices = Vec::with_capacity(self.vertices.len());
+        for (index, &position) in self.vertices.iter().enumerate() {
+            poll_grid_cancelled(index, cancellation)?;
+            vertices.push(SphericalSurfaceVertex {
+                id: SurfaceVertexId::from_raw(
+                    u32::try_from(index).map_err(|_| CubedSphereGridError::AllocationOverflow)?,
+                ),
+                position: preserved_unit(position)?,
+            });
+        }
+        let mut cells = Vec::with_capacity(self.cells.len());
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_grid_cancelled(index, cancellation)?;
+            let site = preserved_unit(cell.center_unit)?;
+            let polygon = cell
+                .vertices
+                .iter()
+                .map(|&vertex| preserved_unit(self.vertices[vertex as usize]))
+                .collect::<Result<Vec<_>, CubedSphereGridError>>()?;
+            let (_, centroid) = spherical_polygon_metrics(site, &polygon).ok_or_else(|| {
+                CubedSphereGridError::SurfaceConversion {
+                    reason: format!("cell {} has invalid spherical polygon metrics", cell.id),
+                }
+            })?;
+            cells.push(SphericalSurfaceCell {
+                id: CellId::from_raw(cell.id),
+                site,
+                centroid,
+                area: SquareMeters::new(cell.area_m2).map_err(surface_conversion)?,
+                boundary_vertices: cell
                     .vertices
                     .iter()
-                    .map(|&vertex| preserved_unit(self.vertices[vertex as usize]))
-                    .collect::<Result<Vec<_>, CubedSphereGridError>>()?;
-                let (_, centroid) = spherical_polygon_metrics(site, &polygon).ok_or_else(|| {
-                    CubedSphereGridError::SurfaceConversion {
-                        reason: format!("cell {} has invalid spherical polygon metrics", cell.id),
-                    }
-                })?;
-                Ok(SphericalSurfaceCell {
-                    id: CellId::from_raw(cell.id),
-                    site,
-                    centroid,
-                    area: SquareMeters::new(cell.area_m2).map_err(surface_conversion)?,
-                    boundary_vertices: cell
-                        .vertices
-                        .iter()
-                        .copied()
-                        .map(SurfaceVertexId::from_raw)
-                        .collect(),
-                    boundary_edges: cell.edges.iter().copied().map(EdgeId::from_raw).collect(),
-                })
-            })
-            .collect::<Result<Vec<_>, CubedSphereGridError>>()?;
-        let edges = self
-            .edges
-            .iter()
-            .map(|edge| {
-                let first_vertex = vertices[edge.vertices[0] as usize].position;
-                let second_vertex = vertices[edge.vertices[1] as usize].position;
-                let first_site = cells[edge.cells[0] as usize].site;
-                let second_site = cells[edge.cells[1] as usize].site;
-                let midpoint = unit(add(first_vertex.components(), second_vertex.components()))?;
-                let normal_from_first =
-                    oriented_arc_normal(first_vertex, second_vertex, first_site, second_site)
-                        .ok_or_else(|| CubedSphereGridError::SurfaceConversion {
-                            reason: format!("edge {} has a degenerate oriented normal", edge.id),
-                        })?;
-                Ok(SphericalSurfaceEdge {
-                    id: EdgeId::from_raw(edge.id),
-                    vertices: edge.vertices.map(SurfaceVertexId::from_raw),
-                    cells: edge.cells.map(CellId::from_raw),
-                    midpoint,
-                    length: Meters::new(
-                        surface_central_angle(first_vertex, second_vertex) * self.radius_m,
-                    )
-                    .map_err(surface_conversion)?,
-                    center_distance: Meters::new(
-                        surface_central_angle(first_site, second_site) * self.radius_m,
-                    )
-                    .map_err(surface_conversion)?,
-                    center_distances_to_midpoint: [
-                        Meters::new(surface_central_angle(first_site, midpoint) * self.radius_m)
-                            .map_err(surface_conversion)?,
-                        Meters::new(surface_central_angle(second_site, midpoint) * self.radius_m)
-                            .map_err(surface_conversion)?,
-                    ],
-                    normal_from_first,
-                })
-            })
-            .collect::<Result<Vec<_>, CubedSphereGridError>>()?;
-        SphericalSurfaceSnapshot::new(
-            SPHERICAL_SURFACE_SCHEMA_V2,
-            Meters::new(self.radius_m).map_err(surface_conversion)?,
-            vertices,
-            cells,
-            edges,
-        )
-        .map_err(surface_conversion)
+                    .copied()
+                    .map(SurfaceVertexId::from_raw)
+                    .collect(),
+                boundary_edges: cell.edges.iter().copied().map(EdgeId::from_raw).collect(),
+            });
+        }
+        let mut edges = Vec::with_capacity(self.edges.len());
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_grid_cancelled(index, cancellation)?;
+            let first_vertex = vertices[edge.vertices[0] as usize].position;
+            let second_vertex = vertices[edge.vertices[1] as usize].position;
+            let first_site = cells[edge.cells[0] as usize].site;
+            let second_site = cells[edge.cells[1] as usize].site;
+            let midpoint = unit(add(first_vertex.components(), second_vertex.components()))?;
+            let normal_from_first =
+                oriented_arc_normal(first_vertex, second_vertex, first_site, second_site)
+                    .ok_or_else(|| CubedSphereGridError::SurfaceConversion {
+                        reason: format!("edge {} has a degenerate oriented normal", edge.id),
+                    })?;
+            edges.push(SphericalSurfaceEdge {
+                id: EdgeId::from_raw(edge.id),
+                vertices: edge.vertices.map(SurfaceVertexId::from_raw),
+                cells: edge.cells.map(CellId::from_raw),
+                midpoint,
+                length: Meters::new(
+                    surface_central_angle(first_vertex, second_vertex) * self.radius_m,
+                )
+                .map_err(surface_conversion)?,
+                center_distance: Meters::new(
+                    surface_central_angle(first_site, second_site) * self.radius_m,
+                )
+                .map_err(surface_conversion)?,
+                center_distances_to_midpoint: [
+                    Meters::new(surface_central_angle(first_site, midpoint) * self.radius_m)
+                        .map_err(surface_conversion)?,
+                    Meters::new(surface_central_angle(second_site, midpoint) * self.radius_m)
+                        .map_err(surface_conversion)?,
+                ],
+                normal_from_first,
+            });
+        }
+        let radius = Meters::new(self.radius_m).map_err(surface_conversion)?;
+        match cancellation {
+            Some(cancelled) => SphericalSurfaceSnapshot::new_cancellable(
+                SPHERICAL_SURFACE_SCHEMA_V2,
+                radius,
+                vertices,
+                cells,
+                edges,
+                cancelled,
+            ),
+            None => SphericalSurfaceSnapshot::new(
+                SPHERICAL_SURFACE_SCHEMA_V2,
+                radius,
+                vertices,
+                cells,
+                edges,
+            ),
+        }
+        .map_err(map_surface_validation_error)
     }
 }
 
@@ -474,6 +522,14 @@ fn preserved_unit(value: [f64; 3]) -> Result<UnitVector3, CubedSphereGridError> 
 fn surface_conversion(error: impl std::fmt::Display) -> CubedSphereGridError {
     CubedSphereGridError::SurfaceConversion {
         reason: error.to_string(),
+    }
+}
+
+fn map_surface_validation_error(error: SphericalSurfaceValidationError) -> CubedSphereGridError {
+    if error == SphericalSurfaceValidationError::Cancelled {
+        CubedSphereGridError::Cancelled
+    } else {
+        surface_conversion(error)
     }
 }
 
@@ -623,20 +679,24 @@ fn calculate_fingerprint(
     vertices: &[[f64; 3]],
     cells: &[SphericalCell],
     edges: &[SphericalEdge],
-) -> [u8; 32] {
+    cancellation: GridCancellation<'_>,
+) -> Result<[u8; 32], CubedSphereGridError> {
+    check_grid_cancelled(cancellation)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.cubed-sphere-grid\0");
     hasher.update(&CIRCULATION_SCHEMA_V1.to_le_bytes());
     hasher.update(&face_resolution.to_le_bytes());
     hasher.update(&radius_m.to_bits().to_le_bytes());
     hasher.update(&(vertices.len() as u32).to_le_bytes());
-    for vertex in vertices {
+    for (index, vertex) in vertices.iter().enumerate() {
+        poll_grid_cancelled(index, cancellation)?;
         for component in vertex {
             hasher.update(&quantize_unit(*component).to_le_bytes());
         }
     }
     hasher.update(&(cells.len() as u32).to_le_bytes());
-    for cell in cells {
+    for (index, cell) in cells.iter().enumerate() {
+        poll_grid_cancelled(index, cancellation)?;
         hasher.update(&cell.id.to_le_bytes());
         hasher.update(&[cell.face]);
         hasher.update(&cell.row.to_le_bytes());
@@ -654,7 +714,8 @@ fn calculate_fingerprint(
         }
     }
     hasher.update(&(edges.len() as u32).to_le_bytes());
-    for edge in edges {
+    for (index, edge) in edges.iter().enumerate() {
+        poll_grid_cancelled(index, cancellation)?;
         hasher.update(&edge.id.to_le_bytes());
         for vertex in edge.vertices {
             hasher.update(&vertex.to_le_bytes());
@@ -674,11 +735,32 @@ fn calculate_fingerprint(
             hasher.update(&quantize_unit(distance / radius_m).to_le_bytes());
         }
     }
-    *hasher.finalize().as_bytes()
+    check_grid_cancelled(cancellation)?;
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn poll_grid_cancelled(
+    index: usize,
+    cancellation: GridCancellation<'_>,
+) -> Result<(), CubedSphereGridError> {
+    if index % 256 == 0 {
+        check_grid_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_grid_cancelled(cancellation: GridCancellation<'_>) -> Result<(), CubedSphereGridError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(CubedSphereGridError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum CubedSphereGridError {
+    #[error("cubed-sphere construction was cancelled")]
+    Cancelled,
     #[error("cubed-sphere face resolution {found} is outside {min}..={max}")]
     FaceResolutionOutOfRange { found: u16, min: u16, max: u16 },
     #[error("sphere radius {found} must be positive, finite, and squareable")]

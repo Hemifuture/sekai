@@ -3,8 +3,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT};
+use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    ConservativeSurfaceMap, SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef,
+    ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
+    SurfaceGeometryKind, SurfaceRef,
 };
 use crate::world::CellId;
 
@@ -22,6 +24,128 @@ pub const GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S: f64 = 1.0e-4;
 pub const GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX: f64 = 1.0e-6;
 /// Energy integrates more source terms and uses a separately declared bound.
 pub const GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX: f64 = 1.0e-5;
+/// Public convergence threshold; generation uses a stricter 0.24 guard.
+pub const GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX: f64 = 0.25;
+/// Absolute public ceiling across Draft/Standard/High formation cycles.
+pub const GLOBAL_CIRCULATION_FORMATION_YEARS_MAX: u16 = 12;
+/// Locked dense-owner memory budget for the High C2 product.
+pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
+
+pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64) {
+    // Conservative simultaneous dense-owner upper bound:
+    //
+    // states (7): generation state/before/previous-year plus split advanced
+    // and RK3 stage-two/stage-three/result during assignment;
+    // tendencies (5): retained full diagnostic plus the maximum nested
+    // tendency construction allowance used by full/fast evaluation;
+    // derivatives (5): frozen slow plus RK3 first/second/third and the
+    // combine return value;
+    // vector temporaries (3): height gradient, Coriolis acceleration, and
+    // thermal gradient in the full tendency role loop. The persistent
+    // workspace vector is counted separately in `workspace_bytes`.
+    (7, 5, 5, 3)
+}
+
+const fn global_circulation_dense_profile_inventory(
+    profile: ClimateModelProfile,
+) -> (u64, u64, u64, u64, u64) {
+    match profile {
+        ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 13, 13),
+        // C2 work has three vector fields plus eleven scalar fields; depth is
+        // derived from the projected height anomaly and owns no work Vec.
+        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 20, 24),
+    }
+}
+
+pub(crate) fn global_circulation_tendency_cell_bytes(profile: ClimateModelProfile) -> u64 {
+    let (active_layers, humidity_fields, reservoir_fields, _, _) =
+        global_circulation_dense_profile_inventory(profile);
+    let f32_bytes = std::mem::size_of::<f32>() as u64;
+    let f64_bytes = std::mem::size_of::<f64>() as u64;
+    let layer_cell_bytes = 2 * f32_bytes + std::mem::size_of::<[f32; 3]>() as u64;
+    active_layers * layer_cell_bytes
+        + (humidity_fields + reservoir_fields + 2) * f32_bytes
+        // `LayeredClimateTendency::external_moisture_tendency_s_inv` retains
+        // the quantized physical source/sink contribution per cell in f64.
+        + f64_bytes
+}
+
+/// Returns the mechanically-derived conservative peak dense-owner inventory
+/// for one locked climate product configuration.
+pub fn expected_global_circulation_dense_state_bytes(
+    quality_profile: NaturalQualityProfile,
+    profile: ClimateModelProfile,
+    output_cells: u32,
+) -> Option<u64> {
+    let face_resolution = u64::from(quality_profile.climate_face_resolution());
+    let climate_cells = 6_u64
+        .checked_mul(face_resolution)?
+        .checked_mul(face_resolution)?;
+    let climate_edges = climate_cells.checked_mul(2)?;
+    let output_cells = u64::from(output_cells);
+    let months = CLIMATE_MONTH_COUNT as u64;
+    let f32_bytes = std::mem::size_of::<f32>() as u64;
+    let u32_bytes = std::mem::size_of::<u32>() as u64;
+    let f64_bytes = std::mem::size_of::<f64>() as u64;
+    let vector_f32_bytes = std::mem::size_of::<[f32; 3]>() as u64;
+    let vector_f64_bytes = std::mem::size_of::<[f64; 3]>() as u64;
+    let (active_layers, humidity_fields, reservoir_fields, work_components, output_components) =
+        global_circulation_dense_profile_inventory(profile);
+    let (state_owners, tendency_owners, derivative_owners, vector_temps) =
+        global_circulation_owner_inventory();
+
+    let layer_cell_bytes = 2 * f32_bytes + vector_f32_bytes;
+    let state_cell_bytes = active_layers
+        .checked_mul(layer_cell_bytes)?
+        .checked_add((humidity_fields + reservoir_fields) * f32_bytes)?;
+    let tendency_cell_bytes = global_circulation_tendency_cell_bytes(profile);
+    let transport_cell_bytes = vector_f64_bytes
+        .checked_add(7 * f64_bytes)?
+        .checked_add(f32_bytes + u32_bytes)?;
+    let workspace_cell_bytes = f32_bytes
+        .checked_add(vector_f32_bytes)?
+        .checked_add(transport_cell_bytes)?;
+    let workspace_edge_bytes = f32_bytes + 2 * f64_bytes;
+    let workspace_bytes = climate_cells
+        .checked_mul(workspace_cell_bytes)?
+        .checked_add(climate_edges.checked_mul(workspace_edge_bytes)?)?;
+    let work_bytes = climate_cells
+        .checked_mul(work_components)?
+        .checked_mul(months)?
+        .checked_mul(f32_bytes)?;
+    let state_owner_bytes = climate_cells
+        .checked_mul(state_cell_bytes)?
+        .checked_mul(state_owners)?;
+    let tendency_owner_bytes = climate_cells
+        .checked_mul(tendency_cell_bytes)?
+        .checked_mul(tendency_owners)?;
+    let derivative_owner_bytes = climate_cells
+        .checked_mul(state_cell_bytes)?
+        .checked_mul(derivative_owners)?;
+    let vector_temp_bytes = climate_cells
+        .checked_mul(vector_f32_bytes)?
+        .checked_mul(vector_temps)?;
+    let formation_peak = work_bytes
+        .checked_add(state_owner_bytes)?
+        .checked_add(tendency_owner_bytes)?
+        .checked_add(derivative_owner_bytes)?
+        .checked_add(vector_temp_bytes)?
+        .checked_add(workspace_bytes.checked_mul(2)?)?;
+
+    let output_bytes = output_cells
+        .checked_mul(output_components)?
+        .checked_mul(months)?
+        .checked_mul(f32_bytes)?;
+    let remap_scratch = climate_cells
+        .checked_mul(std::mem::size_of::<[f64; 2]>() as u64 + f64_bytes)?
+        .checked_add(
+            output_cells.checked_mul(std::mem::size_of::<[f64; 2]>() as u64 + f64_bytes)?,
+        )?;
+    let publication_peak = work_bytes
+        .checked_add(output_bytes.checked_mul(2)?)?
+        .checked_add(remap_scratch)?;
+    Some(formation_peak.max(publication_peak))
+}
 
 /// Closed scientific layer configurations supported by the climate core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -51,7 +175,6 @@ pub struct ClimateLayerSpec {
     reference_thickness_m: f64,
     density_kg_m3: f64,
     heat_capacity_j_kg_k: f64,
-    exchange_time_s: f64,
 }
 
 impl ClimateLayerSpec {
@@ -74,9 +197,43 @@ impl ClimateLayerSpec {
     pub const fn heat_capacity_j_kg_k(&self) -> f64 {
         self.heat_capacity_j_kg_k
     }
+}
 
-    pub const fn exchange_time_s(&self) -> f64 {
-        self.exchange_time_s
+/// One canonical pair-specific internal exchange in the locked model.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClimateLayerExchangeSpec {
+    first: ClimateLayerRole,
+    second: ClimateLayerRole,
+    heat_exchange_time_s: Option<f64>,
+    momentum_exchange_time_s: Option<f64>,
+    moisture_exchange_time_s: Option<f64>,
+    water_only: bool,
+}
+
+impl ClimateLayerExchangeSpec {
+    pub const fn first(&self) -> ClimateLayerRole {
+        self.first
+    }
+
+    pub const fn second(&self) -> ClimateLayerRole {
+        self.second
+    }
+
+    pub const fn heat_exchange_time_s(&self) -> Option<f64> {
+        self.heat_exchange_time_s
+    }
+
+    pub const fn momentum_exchange_time_s(&self) -> Option<f64> {
+        self.momentum_exchange_time_s
+    }
+
+    pub const fn moisture_exchange_time_s(&self) -> Option<f64> {
+        self.moisture_exchange_time_s
+    }
+
+    pub const fn water_only(&self) -> bool {
+        self.water_only
     }
 }
 
@@ -87,6 +244,7 @@ pub struct ClimateLayerLayout {
     schema_version: u16,
     profile: ClimateModelProfile,
     layers: Vec<ClimateLayerSpec>,
+    exchanges: Vec<ClimateLayerExchangeSpec>,
 }
 
 #[derive(Deserialize)]
@@ -94,55 +252,103 @@ pub struct ClimateLayerLayout {
 struct ClimateLayerLayoutWire {
     schema_version: u16,
     profile: ClimateModelProfile,
+    #[serde(deserialize_with = "deserialize_climate_layers")]
     layers: Vec<ClimateLayerSpec>,
+    #[serde(deserialize_with = "deserialize_climate_exchanges")]
+    exchanges: Vec<ClimateLayerExchangeSpec>,
+}
+
+fn deserialize_climate_exchanges<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ClimateLayerExchangeSpec>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, 4>(deserializer)
+}
+
+fn deserialize_climate_layers<'de, D>(deserializer: D) -> Result<Vec<ClimateLayerSpec>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, 5>(deserializer)
 }
 
 impl ClimateLayerLayout {
     /// Returns the only legal layout for a closed model profile.
     pub fn for_profile(profile: ClimateModelProfile) -> Self {
-        let atmosphere = |role, thickness, exchange_days| ClimateLayerSpec {
+        let atmosphere = |role, thickness| ClimateLayerSpec {
             role,
             dynamically_active: true,
             reference_thickness_m: thickness,
             density_kg_m3: 1.225,
             heat_capacity_j_kg_k: 1_004.0,
-            exchange_time_s: exchange_days * 86_400.0,
         };
-        let ocean = |role, thickness, exchange_days, active| ClimateLayerSpec {
+        let ocean = |role, thickness, active| ClimateLayerSpec {
             role,
             dynamically_active: active,
             reference_thickness_m: thickness,
             density_kg_m3: 1_025.0,
             heat_capacity_j_kg_k: 3_990.0,
-            exchange_time_s: exchange_days * 86_400.0,
         };
-        let layers = match profile {
-            ClimateModelProfile::C1SingleLayerV1 => vec![
-                atmosphere(ClimateLayerRole::LowerAtmosphere, 8_000.0, 5.0),
-                ocean(ClimateLayerRole::OceanMixedLayer, 100.0, 90.0, true),
-            ],
-            ClimateModelProfile::C2LayeredV1 => vec![
-                atmosphere(ClimateLayerRole::LowerAtmosphere, 6_000.0, 5.0),
-                atmosphere(ClimateLayerRole::UpperAtmosphere, 4_000.0, 10.0),
-                ocean(ClimateLayerRole::OceanMixedLayer, 100.0, 90.0, true),
-                ocean(
-                    ClimateLayerRole::OceanThermocline,
-                    900.0,
-                    365.25 * 5.0,
-                    true,
-                ),
-                ocean(
-                    ClimateLayerRole::DeepOceanReservoir,
-                    3_000.0,
-                    365.25 * 200.0,
-                    false,
-                ),
-            ],
+        let lower_mixed = ClimateLayerExchangeSpec {
+            first: ClimateLayerRole::LowerAtmosphere,
+            second: ClimateLayerRole::OceanMixedLayer,
+            heat_exchange_time_s: Some(6.0 * 86_400.0),
+            momentum_exchange_time_s: Some(6.0 * 86_400.0),
+            moisture_exchange_time_s: None,
+            water_only: true,
+        };
+        let (layers, exchanges) = match profile {
+            ClimateModelProfile::C1SingleLayerV1 => (
+                vec![
+                    atmosphere(ClimateLayerRole::LowerAtmosphere, 8_000.0),
+                    ocean(ClimateLayerRole::OceanMixedLayer, 100.0, true),
+                ],
+                vec![lower_mixed],
+            ),
+            ClimateModelProfile::C2LayeredV1 => (
+                vec![
+                    atmosphere(ClimateLayerRole::LowerAtmosphere, 6_000.0),
+                    atmosphere(ClimateLayerRole::UpperAtmosphere, 4_000.0),
+                    ocean(ClimateLayerRole::OceanMixedLayer, 100.0, true),
+                    ocean(ClimateLayerRole::OceanThermocline, 900.0, true),
+                    ocean(ClimateLayerRole::DeepOceanReservoir, 3_000.0, false),
+                ],
+                vec![
+                    lower_mixed,
+                    ClimateLayerExchangeSpec {
+                        first: ClimateLayerRole::LowerAtmosphere,
+                        second: ClimateLayerRole::UpperAtmosphere,
+                        heat_exchange_time_s: Some(5.0 * 86_400.0),
+                        momentum_exchange_time_s: Some(5.0 * 86_400.0),
+                        moisture_exchange_time_s: Some(5.0 * 86_400.0),
+                        water_only: false,
+                    },
+                    ClimateLayerExchangeSpec {
+                        first: ClimateLayerRole::OceanMixedLayer,
+                        second: ClimateLayerRole::OceanThermocline,
+                        heat_exchange_time_s: Some(90.0 * 86_400.0),
+                        momentum_exchange_time_s: Some(90.0 * 86_400.0),
+                        moisture_exchange_time_s: None,
+                        water_only: false,
+                    },
+                    ClimateLayerExchangeSpec {
+                        first: ClimateLayerRole::OceanThermocline,
+                        second: ClimateLayerRole::DeepOceanReservoir,
+                        heat_exchange_time_s: Some(200.0 * 365.25 * 86_400.0),
+                        momentum_exchange_time_s: None,
+                        moisture_exchange_time_s: None,
+                        water_only: false,
+                    },
+                ],
+            ),
         };
         Self {
             schema_version: CLIMATE_LAYER_LAYOUT_SCHEMA_V1,
             profile,
             layers,
+            exchanges,
         }
     }
 
@@ -154,7 +360,7 @@ impl ClimateLayerLayout {
             });
         }
         let expected = Self::for_profile(self.profile);
-        if self.layers != expected.layers {
+        if self.layers != expected.layers || self.exchanges != expected.exchanges {
             return Err(ClimateLayerLayoutError::ProfileDefinitionMismatch {
                 profile: self.profile,
             });
@@ -168,6 +374,21 @@ impl ClimateLayerLayout {
 
     pub fn layers(&self) -> &[ClimateLayerSpec] {
         &self.layers
+    }
+
+    pub fn exchanges(&self) -> &[ClimateLayerExchangeSpec] {
+        &self.exchanges
+    }
+
+    pub fn exchange(
+        &self,
+        first: ClimateLayerRole,
+        second: ClimateLayerRole,
+    ) -> Option<ClimateLayerExchangeSpec> {
+        self.exchanges
+            .iter()
+            .copied()
+            .find(|exchange| exchange.first == first && exchange.second == second)
     }
 
     /// Fingerprints the scientific layer definition independently of serde.
@@ -184,10 +405,30 @@ impl ClimateLayerLayout {
                 layer.reference_thickness_m,
                 layer.density_kg_m3,
                 layer.heat_capacity_j_kg_k,
-                layer.exchange_time_s,
             ] {
                 hasher.update(&value.to_bits().to_le_bytes());
             }
+        }
+        hasher.update(&(self.exchanges.len() as u32).to_le_bytes());
+        for exchange in &self.exchanges {
+            hasher.update(&[layer_role_tag(exchange.first)]);
+            hasher.update(&[layer_role_tag(exchange.second)]);
+            for value in [
+                exchange.heat_exchange_time_s,
+                exchange.momentum_exchange_time_s,
+                exchange.moisture_exchange_time_s,
+            ] {
+                match value {
+                    Some(value) => {
+                        hasher.update(&[1]);
+                        hasher.update(&value.to_bits().to_le_bytes());
+                    }
+                    None => {
+                        hasher.update(&[0]);
+                    }
+                }
+            }
+            hasher.update(&[u8::from(exchange.water_only)]);
         }
         *hasher.finalize().as_bytes()
     }
@@ -203,6 +444,7 @@ impl<'de> Deserialize<'de> for ClimateLayerLayout {
             schema_version: wire.schema_version,
             profile: wire.profile,
             layers: wire.layers,
+            exchanges: wire.exchanges,
         };
         layout.validate().map_err(D::Error::custom)?;
         Ok(layout)
@@ -279,7 +521,17 @@ pub struct ClimateCapabilitySet {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClimateCapabilitySetWire {
+    #[serde(deserialize_with = "deserialize_climate_capabilities")]
     statuses: Vec<ClimateCapabilityStatus>,
+}
+
+fn deserialize_climate_capabilities<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ClimateCapabilityStatus>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, 6>(deserializer)
 }
 
 impl ClimateCapabilitySet {
@@ -372,6 +624,7 @@ pub enum ClimateCapabilityError {
 #[serde(deny_unknown_fields)]
 pub struct ClimateCheckpoint {
     schema_version: u16,
+    quality_profile: NaturalQualityProfile,
     profile: ClimateModelProfile,
     integrator: ProductionIntegratorId,
     grid_fingerprint: [u8; 32],
@@ -388,6 +641,7 @@ pub struct ClimateCheckpoint {
 #[serde(deny_unknown_fields)]
 struct ClimateCheckpointWire {
     schema_version: u16,
+    quality_profile: NaturalQualityProfile,
     profile: ClimateModelProfile,
     integrator: ProductionIntegratorId,
     grid_fingerprint: [u8; 32],
@@ -403,6 +657,7 @@ struct ClimateCheckpointWire {
 impl ClimateCheckpoint {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        quality_profile: NaturalQualityProfile,
         profile: ClimateModelProfile,
         integrator: ProductionIntegratorId,
         grid_fingerprint: [u8; 32],
@@ -415,6 +670,7 @@ impl ClimateCheckpoint {
     ) -> Result<Self, ClimateCheckpointError> {
         let mut checkpoint = Self {
             schema_version: CLIMATE_CHECKPOINT_SCHEMA_V1,
+            quality_profile,
             profile,
             integrator,
             grid_fingerprint,
@@ -465,6 +721,17 @@ impl ClimateCheckpoint {
                 found: self.completed_months,
             });
         }
+        let maximum_months = u32::from(
+            self.quality_profile
+                .global_circulation_formation_years_max(),
+        ) * CLIMATE_MONTH_COUNT as u32;
+        if self.completed_months > maximum_months {
+            return Err(ClimateCheckpointError::CompletedMonthsExceedProfile {
+                profile: self.quality_profile,
+                found: self.completed_months,
+                maximum: maximum_months,
+            });
+        }
         Ok(())
     }
 
@@ -472,6 +739,7 @@ impl ClimateCheckpoint {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"sekai.climate-checkpoint.v1\0");
         hasher.update(&self.schema_version.to_le_bytes());
+        hasher.update(&[natural_quality_profile_tag(self.quality_profile)]);
         hasher.update(&[model_profile_tag(self.profile)]);
         hasher.update(&[integrator_tag(self.integrator)]);
         hasher.update(&self.grid_fingerprint);
@@ -486,6 +754,10 @@ impl ClimateCheckpoint {
 
     pub const fn profile(&self) -> ClimateModelProfile {
         self.profile
+    }
+
+    pub const fn quality_profile(&self) -> NaturalQualityProfile {
+        self.quality_profile
     }
 
     pub const fn integrator(&self) -> ProductionIntegratorId {
@@ -508,6 +780,14 @@ impl ClimateCheckpoint {
         &self.input_fingerprint
     }
 
+    pub const fn completed_months(&self) -> u32 {
+        self.completed_months
+    }
+
+    pub const fn state_fingerprint(&self) -> &[u8; 32] {
+        &self.state_fingerprint
+    }
+
     pub const fn fingerprint(&self) -> &[u8; 32] {
         &self.fingerprint
     }
@@ -520,6 +800,7 @@ impl<'de> Deserialize<'de> for ClimateCheckpoint {
     {
         let wire = ClimateCheckpointWire::deserialize(deserializer)?;
         let mut checkpoint = Self::new(
+            wire.quality_profile,
             wire.profile,
             wire.integrator,
             wire.grid_fingerprint,
@@ -557,6 +838,12 @@ pub enum ClimateCheckpointError {
     ZeroFingerprint { field: &'static str },
     #[error("checkpoint completed months {found} must be a positive whole number of years")]
     InvalidCompletedMonths { found: u32 },
+    #[error("checkpoint completed months {found} exceeds {profile:?} formation maximum {maximum}")]
+    CompletedMonthsExceedProfile {
+        profile: NaturalQualityProfile,
+        found: u32,
+        maximum: u32,
+    },
     #[error("climate checkpoint fingerprint does not match its semantic fields")]
     FingerprintMismatch,
 }
@@ -565,6 +852,14 @@ const fn model_profile_tag(profile: ClimateModelProfile) -> u8 {
     match profile {
         ClimateModelProfile::C1SingleLayerV1 => 1,
         ClimateModelProfile::C2LayeredV1 => 2,
+    }
+}
+
+const fn natural_quality_profile_tag(profile: NaturalQualityProfile) -> u8 {
+    match profile {
+        NaturalQualityProfile::Draft => 1,
+        NaturalQualityProfile::Standard => 2,
+        NaturalQualityProfile::High => 3,
     }
 }
 
@@ -662,6 +957,13 @@ impl ClimateSolveReport {
                 field: "formation_years",
             });
         }
+        if self.formation_years > GLOBAL_CIRCULATION_FORMATION_YEARS_MAX {
+            return Err(ClimateReportError::StatisticAboveMaximum {
+                field: "formation_years",
+                found: f64::from(self.formation_years),
+                maximum: f64::from(GLOBAL_CIRCULATION_FORMATION_YEARS_MAX),
+            });
+        }
         if self.macro_steps == 0 {
             return Err(ClimateReportError::ZeroWork {
                 field: "macro_steps",
@@ -677,10 +979,24 @@ impl ClimateSolveReport {
                 field: "dense_state_bytes",
             });
         }
+        if self.dense_state_bytes > GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX {
+            return Err(ClimateReportError::StatisticAboveMaximum {
+                field: "dense_state_bytes",
+                found: self.dense_state_bytes as f64,
+                maximum: GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX as f64,
+            });
+        }
         if self.final_residual > self.initial_residual {
             return Err(ClimateReportError::ResidualIncreased {
                 initial: self.initial_residual,
                 final_value: self.final_residual,
+            });
+        }
+        if self.final_residual > GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX {
+            return Err(ClimateReportError::StatisticAboveMaximum {
+                field: "final_residual",
+                found: self.final_residual,
+                maximum: GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX,
             });
         }
         if self.maximum_cfl > 1.0 {
@@ -861,6 +1177,7 @@ pub struct ClimateRemapReport {
     forward_target_margin_relative_error: f64,
     reverse_source_margin_relative_error: f64,
     reverse_target_margin_relative_error: f64,
+    published_precipitation_relative_error: f64,
     forward_overlap_count: u32,
     reverse_overlap_count: u32,
 }
@@ -872,6 +1189,7 @@ struct ClimateRemapReportWire {
     forward_target_margin_relative_error: f64,
     reverse_source_margin_relative_error: f64,
     reverse_target_margin_relative_error: f64,
+    published_precipitation_relative_error: f64,
     forward_overlap_count: u32,
     reverse_overlap_count: u32,
 }
@@ -882,6 +1200,7 @@ impl ClimateRemapReport {
         forward_target_margin_relative_error: f64,
         reverse_source_margin_relative_error: f64,
         reverse_target_margin_relative_error: f64,
+        published_precipitation_relative_error: f64,
         forward_overlap_count: u32,
         reverse_overlap_count: u32,
     ) -> Result<Self, ClimateReportError> {
@@ -890,6 +1209,7 @@ impl ClimateRemapReport {
             forward_target_margin_relative_error,
             reverse_source_margin_relative_error,
             reverse_target_margin_relative_error,
+            published_precipitation_relative_error,
             forward_overlap_count,
             reverse_overlap_count,
         };
@@ -918,6 +1238,11 @@ impl ClimateRemapReport {
         ] {
             validate_nonnegative_bounded(field, value, 1.0e-10)?;
         }
+        validate_nonnegative_bounded(
+            "published_precipitation_relative_error",
+            self.published_precipitation_relative_error,
+            GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX,
+        )?;
         if self.forward_overlap_count == 0 {
             return Err(ClimateReportError::ZeroWork {
                 field: "forward_overlap_count",
@@ -938,6 +1263,26 @@ impl ClimateRemapReport {
     pub const fn reverse_overlap_count(&self) -> u32 {
         self.reverse_overlap_count
     }
+
+    pub const fn forward_source_margin_relative_error(&self) -> f64 {
+        self.forward_source_margin_relative_error
+    }
+
+    pub const fn forward_target_margin_relative_error(&self) -> f64 {
+        self.forward_target_margin_relative_error
+    }
+
+    pub const fn reverse_source_margin_relative_error(&self) -> f64 {
+        self.reverse_source_margin_relative_error
+    }
+
+    pub const fn reverse_target_margin_relative_error(&self) -> f64 {
+        self.reverse_target_margin_relative_error
+    }
+
+    pub const fn published_precipitation_relative_error(&self) -> f64 {
+        self.published_precipitation_relative_error
+    }
 }
 
 impl<'de> Deserialize<'de> for ClimateRemapReport {
@@ -951,6 +1296,7 @@ impl<'de> Deserialize<'de> for ClimateRemapReport {
             wire.forward_target_margin_relative_error,
             wire.reverse_source_margin_relative_error,
             wire.reverse_target_margin_relative_error,
+            wire.published_precipitation_relative_error,
             wire.forward_overlap_count,
             wire.reverse_overlap_count,
         )
@@ -1006,6 +1352,7 @@ pub struct GlobalCirculationFields {
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
     monthly_precipitation_mm_day: MonthlyScalarField,
+    monthly_orographic_precipitation_mm_day: MonthlyScalarField,
     monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
     monthly_upper_atmosphere_height_anomaly_m: Option<MonthlyScalarField>,
     monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
@@ -1026,6 +1373,7 @@ struct GlobalCirculationFieldsWire {
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
     monthly_precipitation_mm_day: MonthlyScalarField,
+    monthly_orographic_precipitation_mm_day: MonthlyScalarField,
     monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
     monthly_upper_atmosphere_height_anomaly_m: Option<MonthlyScalarField>,
     monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
@@ -1042,6 +1390,7 @@ impl GlobalCirculationFields {
         monthly_sea_surface_temperature_c: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
+        monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
         monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
     ) -> Result<Self, GlobalCirculationValidationError> {
@@ -1056,6 +1405,7 @@ impl GlobalCirculationFields {
             monthly_thermocline_depth_m: None,
             monthly_specific_humidity,
             monthly_precipitation_mm_day,
+            monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
             monthly_upper_atmosphere_height_anomaly_m: None,
             monthly_sea_surface_height_anomaly_m,
@@ -1063,6 +1413,45 @@ impl GlobalCirculationFields {
             monthly_deep_ocean_temperature_c: None,
         };
         fields.validate(ClimateModelProfile::C1SingleLayerV1, fields.cell_count())?;
+        Ok(fields)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_c1_cancellable(
+        near_surface_wind_m_s: MonthlyVector3Field,
+        surface_ocean_current_m_s: MonthlyVector3Field,
+        monthly_air_temperature_c: MonthlyScalarField,
+        monthly_sea_surface_temperature_c: MonthlyScalarField,
+        monthly_specific_humidity: MonthlyScalarField,
+        monthly_precipitation_mm_day: MonthlyScalarField,
+        monthly_orographic_precipitation_mm_day: MonthlyScalarField,
+        monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
+        monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, GlobalCirculationValidationError> {
+        let fields = Self {
+            near_surface_wind_m_s,
+            upper_wind_m_s: None,
+            vertical_wind_shear_m_s: None,
+            surface_ocean_current_m_s,
+            monthly_air_temperature_c,
+            monthly_sea_surface_temperature_c,
+            monthly_thermocline_temperature_c: None,
+            monthly_thermocline_depth_m: None,
+            monthly_specific_humidity,
+            monthly_precipitation_mm_day,
+            monthly_orographic_precipitation_mm_day,
+            monthly_lower_atmosphere_height_anomaly_m,
+            monthly_upper_atmosphere_height_anomaly_m: None,
+            monthly_sea_surface_height_anomaly_m,
+            monthly_thermocline_height_anomaly_m: None,
+            monthly_deep_ocean_temperature_c: None,
+        };
+        fields.validate_cancellable(
+            ClimateModelProfile::C1SingleLayerV1,
+            fields.cell_count(),
+            cancelled,
+        )?;
         Ok(fields)
     }
 
@@ -1078,6 +1467,7 @@ impl GlobalCirculationFields {
         monthly_thermocline_depth_m: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
+        monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
         monthly_upper_atmosphere_height_anomaly_m: MonthlyScalarField,
         monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
@@ -1095,6 +1485,7 @@ impl GlobalCirculationFields {
             monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
             monthly_specific_humidity,
             monthly_precipitation_mm_day,
+            monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
             monthly_upper_atmosphere_height_anomaly_m: Some(
                 monthly_upper_atmosphere_height_anomaly_m,
@@ -1104,6 +1495,54 @@ impl GlobalCirculationFields {
             monthly_deep_ocean_temperature_c: Some(monthly_deep_ocean_temperature_c),
         };
         fields.validate(ClimateModelProfile::C2LayeredV1, fields.cell_count())?;
+        Ok(fields)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_c2_cancellable(
+        near_surface_wind_m_s: MonthlyVector3Field,
+        upper_wind_m_s: MonthlyVector3Field,
+        vertical_wind_shear_m_s: MonthlyVector3Field,
+        surface_ocean_current_m_s: MonthlyVector3Field,
+        monthly_air_temperature_c: MonthlyScalarField,
+        monthly_sea_surface_temperature_c: MonthlyScalarField,
+        monthly_thermocline_temperature_c: MonthlyScalarField,
+        monthly_thermocline_depth_m: MonthlyScalarField,
+        monthly_specific_humidity: MonthlyScalarField,
+        monthly_precipitation_mm_day: MonthlyScalarField,
+        monthly_orographic_precipitation_mm_day: MonthlyScalarField,
+        monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
+        monthly_upper_atmosphere_height_anomaly_m: MonthlyScalarField,
+        monthly_sea_surface_height_anomaly_m: MonthlyScalarField,
+        monthly_thermocline_height_anomaly_m: MonthlyScalarField,
+        monthly_deep_ocean_temperature_c: MonthlyScalarField,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, GlobalCirculationValidationError> {
+        let fields = Self {
+            near_surface_wind_m_s,
+            upper_wind_m_s: Some(upper_wind_m_s),
+            vertical_wind_shear_m_s: Some(vertical_wind_shear_m_s),
+            surface_ocean_current_m_s,
+            monthly_air_temperature_c,
+            monthly_sea_surface_temperature_c,
+            monthly_thermocline_temperature_c: Some(monthly_thermocline_temperature_c),
+            monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
+            monthly_specific_humidity,
+            monthly_precipitation_mm_day,
+            monthly_orographic_precipitation_mm_day,
+            monthly_lower_atmosphere_height_anomaly_m,
+            monthly_upper_atmosphere_height_anomaly_m: Some(
+                monthly_upper_atmosphere_height_anomaly_m,
+            ),
+            monthly_sea_surface_height_anomaly_m,
+            monthly_thermocline_height_anomaly_m: Some(monthly_thermocline_height_anomaly_m),
+            monthly_deep_ocean_temperature_c: Some(monthly_deep_ocean_temperature_c),
+        };
+        fields.validate_cancellable(
+            ClimateModelProfile::C2LayeredV1,
+            fields.cell_count(),
+            cancelled,
+        )?;
         Ok(fields)
     }
 
@@ -1131,6 +1570,28 @@ impl GlobalCirculationFields {
         profile: ClimateModelProfile,
         expected_cells: usize,
     ) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_impl(profile, expected_cells, None)
+    }
+
+    /// Rechecks every dense field while cooperatively polling a caller-owned
+    /// cancellation predicate. World data stays independent of the engine's
+    /// cancellation type.
+    pub fn validate_cancellable(
+        &self,
+        profile: ClimateModelProfile,
+        expected_cells: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_impl(profile, expected_cells, Some(cancelled))
+    }
+
+    fn validate_impl(
+        &self,
+        profile: ClimateModelProfile,
+        expected_cells: usize,
+        cancellation: CancellationCheck<'_>,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        check_global_circulation_cancelled(cancellation)?;
         let inferred = self.inferred_profile()?;
         if inferred != profile {
             return Err(GlobalCirculationValidationError::FieldProfileMismatch {
@@ -1150,55 +1611,79 @@ impl GlobalCirculationFields {
                 });
             }
         }
-        validate_monthly_vector3("near_surface_wind_m_s", &self.near_surface_wind_m_s, 200.0)?;
+        validate_monthly_vector3(
+            "near_surface_wind_m_s",
+            &self.near_surface_wind_m_s,
+            200.0,
+            cancellation,
+        )?;
         validate_monthly_vector3(
             "surface_ocean_current_m_s",
             &self.surface_ocean_current_m_s,
             20.0,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_air_temperature_c",
             &self.monthly_air_temperature_c,
             -120.0,
             80.0,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_sea_surface_temperature_c",
             &self.monthly_sea_surface_temperature_c,
             -5.0,
             60.0,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_specific_humidity",
             &self.monthly_specific_humidity,
             0.0,
             0.1,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_precipitation_mm_day",
             &self.monthly_precipitation_mm_day,
             0.0,
             1_000.0,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_orographic_precipitation_mm_day",
+            &self.monthly_orographic_precipitation_mm_day,
+            0.0,
+            1_000.0,
+            cancellation,
+        )?;
+        validate_orographic_precipitation_identity(
+            &self.monthly_precipitation_mm_day,
+            &self.monthly_orographic_precipitation_mm_day,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_lower_atmosphere_height_anomaly_m",
             &self.monthly_lower_atmosphere_height_anomaly_m,
             -20_000.0,
             20_000.0,
+            cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_sea_surface_height_anomaly_m",
             &self.monthly_sea_surface_height_anomaly_m,
             -100.0,
             100.0,
+            cancellation,
         )?;
 
         if profile == ClimateModelProfile::C2LayeredV1 {
             let upper = self.upper_wind_m_s.as_ref().expect("inferred C2");
             let shear = self.vertical_wind_shear_m_s.as_ref().expect("inferred C2");
-            validate_monthly_vector3("upper_wind_m_s", upper, 200.0)?;
-            validate_monthly_vector3("vertical_wind_shear_m_s", shear, 300.0)?;
-            validate_shear_identity(&self.near_surface_wind_m_s, upper, shear)?;
+            validate_monthly_vector3("upper_wind_m_s", upper, 200.0, cancellation)?;
+            validate_monthly_vector3("vertical_wind_shear_m_s", shear, 300.0, cancellation)?;
+            validate_shear_identity(&self.near_surface_wind_m_s, upper, shear, cancellation)?;
             validate_monthly_scalar(
                 "monthly_thermocline_temperature_c",
                 self.monthly_thermocline_temperature_c
@@ -1206,6 +1691,7 @@ impl GlobalCirculationFields {
                     .expect("inferred C2"),
                 -5.0,
                 50.0,
+                cancellation,
             )?;
             validate_monthly_scalar(
                 "monthly_thermocline_depth_m",
@@ -1214,6 +1700,7 @@ impl GlobalCirculationFields {
                     .expect("inferred C2"),
                 1.0,
                 5_000.0,
+                cancellation,
             )?;
             validate_monthly_scalar(
                 "monthly_upper_atmosphere_height_anomaly_m",
@@ -1222,6 +1709,7 @@ impl GlobalCirculationFields {
                     .expect("inferred C2"),
                 -20_000.0,
                 20_000.0,
+                cancellation,
             )?;
             validate_monthly_scalar(
                 "monthly_thermocline_height_anomaly_m",
@@ -1230,6 +1718,16 @@ impl GlobalCirculationFields {
                     .expect("inferred C2"),
                 -1_000.0,
                 1_000.0,
+                cancellation,
+            )?;
+            validate_thermocline_depth_identity(
+                self.monthly_thermocline_depth_m
+                    .as_ref()
+                    .expect("inferred C2"),
+                self.monthly_thermocline_height_anomaly_m
+                    .as_ref()
+                    .expect("inferred C2"),
+                cancellation,
             )?;
             validate_monthly_scalar(
                 "monthly_deep_ocean_temperature_c",
@@ -1238,6 +1736,7 @@ impl GlobalCirculationFields {
                     .expect("inferred C2"),
                 -5.0,
                 40.0,
+                cancellation,
             )?;
         }
         Ok(())
@@ -1265,6 +1764,10 @@ impl GlobalCirculationFields {
             (
                 "monthly_precipitation_mm_day",
                 self.monthly_precipitation_mm_day.len(),
+            ),
+            (
+                "monthly_orographic_precipitation_mm_day",
+                self.monthly_orographic_precipitation_mm_day.len(),
             ),
             (
                 "monthly_lower_atmosphere_height_anomaly_m",
@@ -1319,6 +1822,66 @@ impl GlobalCirculationFields {
         self.near_surface_wind_m_s.len()
     }
 
+    /// Canonical hash of every published semantic field, including optional
+    /// field presence. This is the checkpoint state identity.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint_impl(None)
+            .expect("non-cancellable field hashing cannot be cancelled")
+    }
+
+    pub fn fingerprint_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<[u8; 32], GlobalCirculationValidationError> {
+        self.fingerprint_impl(Some(cancelled))
+    }
+
+    fn fingerprint_impl(
+        &self,
+        cancellation: CancellationCheck<'_>,
+    ) -> Result<[u8; 32], GlobalCirculationValidationError> {
+        check_global_circulation_cancelled(cancellation)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai.global-circulation-state.v1\0");
+        hash_monthly_vectors(
+            &mut hasher,
+            self.near_surface_wind_m_s.values(),
+            cancellation,
+        )?;
+        hash_optional_monthly_vectors(&mut hasher, self.upper_wind_m_s.as_ref(), cancellation)?;
+        hash_optional_monthly_vectors(
+            &mut hasher,
+            self.vertical_wind_shear_m_s.as_ref(),
+            cancellation,
+        )?;
+        hash_monthly_vectors(
+            &mut hasher,
+            self.surface_ocean_current_m_s.values(),
+            cancellation,
+        )?;
+        for field in [
+            &self.monthly_air_temperature_c,
+            &self.monthly_sea_surface_temperature_c,
+            &self.monthly_specific_humidity,
+            &self.monthly_precipitation_mm_day,
+            &self.monthly_orographic_precipitation_mm_day,
+            &self.monthly_lower_atmosphere_height_anomaly_m,
+            &self.monthly_sea_surface_height_anomaly_m,
+        ] {
+            hash_monthly_scalars(&mut hasher, field.values(), cancellation)?;
+        }
+        for field in [
+            self.monthly_thermocline_temperature_c.as_ref(),
+            self.monthly_thermocline_depth_m.as_ref(),
+            self.monthly_upper_atmosphere_height_anomaly_m.as_ref(),
+            self.monthly_thermocline_height_anomaly_m.as_ref(),
+            self.monthly_deep_ocean_temperature_c.as_ref(),
+        ] {
+            hash_optional_monthly_scalars(&mut hasher, field, cancellation)?;
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
     pub const fn near_surface_wind_m_s(&self) -> &MonthlyVector3Field {
         &self.near_surface_wind_m_s
     }
@@ -1359,6 +1922,10 @@ impl GlobalCirculationFields {
         &self.monthly_precipitation_mm_day
     }
 
+    pub const fn monthly_orographic_precipitation_mm_day(&self) -> &MonthlyScalarField {
+        &self.monthly_orographic_precipitation_mm_day
+    }
+
     pub const fn monthly_lower_atmosphere_height_anomaly_m(&self) -> &MonthlyScalarField {
         &self.monthly_lower_atmosphere_height_anomaly_m
     }
@@ -1397,6 +1964,7 @@ impl<'de> Deserialize<'de> for GlobalCirculationFields {
             monthly_thermocline_depth_m: wire.monthly_thermocline_depth_m,
             monthly_specific_humidity: wire.monthly_specific_humidity,
             monthly_precipitation_mm_day: wire.monthly_precipitation_mm_day,
+            monthly_orographic_precipitation_mm_day: wire.monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m: wire
                 .monthly_lower_atmosphere_height_anomaly_m,
             monthly_upper_atmosphere_height_anomaly_m: wire
@@ -1413,13 +1981,29 @@ impl<'de> Deserialize<'de> for GlobalCirculationFields {
     }
 }
 
+type CancellationCheck<'a> = Option<&'a dyn Fn() -> bool>;
+
+fn check_global_circulation_cancelled(
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(GlobalCirculationValidationError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_monthly_scalar(
     field: &'static str,
     values: &MonthlyScalarField,
     minimum: f32,
     maximum: f32,
+    cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
     for (cell, months) in values.values().iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
         for (month, value) in months.iter().copied().enumerate() {
             if !value.is_finite() || value < minimum || value > maximum {
                 return Err(GlobalCirculationValidationError::ScalarOutOfRange {
@@ -1440,8 +2024,12 @@ fn validate_monthly_vector3(
     field: &'static str,
     values: &MonthlyVector3Field,
     component_abs_max: f32,
+    cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
     for (cell, months) in values.values().iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
         for (month, vector) in months.iter().enumerate() {
             for (component, value) in vector.iter().copied().enumerate() {
                 if !value.is_finite() || value.abs() > component_abs_max {
@@ -1464,14 +2052,18 @@ fn validate_shear_identity(
     lower: &MonthlyVector3Field,
     upper: &MonthlyVector3Field,
     shear: &MonthlyVector3Field,
+    cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
     for cell in 0..lower.len() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
         for month in 0..CLIMATE_MONTH_COUNT {
             for component in 0..3 {
                 let expected =
                     upper.values()[cell][month][component] - lower.values()[cell][month][component];
                 let found = shear.values()[cell][month][component];
-                if (found - expected).abs() > 2.0e-4 {
+                if found != expected {
                     return Err(GlobalCirculationValidationError::ShearIdentityMismatch {
                         cell,
                         month,
@@ -1482,6 +2074,124 @@ fn validate_shear_identity(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_thermocline_depth_identity(
+    depth: &MonthlyScalarField,
+    height: &MonthlyScalarField,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    let reference = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1)
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == ClimateLayerRole::OceanThermocline)
+        .expect("locked C2 thermocline")
+        .reference_thickness_m() as f32;
+    for cell in 0..depth.len() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        for month in 0..CLIMATE_MONTH_COUNT {
+            let expected = reference + height.values()[cell][month];
+            let found = depth.values()[cell][month];
+            if found != expected {
+                return Err(
+                    GlobalCirculationValidationError::ThermoclineDepthIdentityMismatch {
+                        cell,
+                        month,
+                        found,
+                        expected,
+                    },
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_orographic_precipitation_identity(
+    total: &MonthlyScalarField,
+    orographic: &MonthlyScalarField,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for cell in 0..total.len() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        for month in 0..CLIMATE_MONTH_COUNT {
+            let total_value = total.values()[cell][month];
+            let orographic_value = orographic.values()[cell][month];
+            if orographic_value > total_value {
+                return Err(
+                    GlobalCirculationValidationError::OrographicPrecipitationExceedsTotal {
+                        cell,
+                        month,
+                        orographic: orographic_value,
+                        total: total_value,
+                    },
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn hash_monthly_scalars(
+    hasher: &mut blake3::Hasher,
+    values: &[[f32; CLIMATE_MONTH_COUNT]],
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (cell, months) in values.iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        for value in months {
+            hasher.update(&value.to_bits().to_le_bytes());
+        }
+    }
+    Ok(())
+}
+
+fn hash_monthly_vectors(
+    hasher: &mut blake3::Hasher,
+    values: &[[[f32; 3]; CLIMATE_MONTH_COUNT]],
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (cell, months) in values.iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        for vector in months {
+            for value in vector {
+                hasher.update(&value.to_bits().to_le_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn hash_optional_monthly_scalars(
+    hasher: &mut blake3::Hasher,
+    field: Option<&MonthlyScalarField>,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    hasher.update(&[u8::from(field.is_some())]);
+    if let Some(field) = field {
+        hash_monthly_scalars(hasher, field.values(), cancellation)?;
+    }
+    Ok(())
+}
+
+fn hash_optional_monthly_vectors(
+    hasher: &mut blake3::Hasher,
+    field: Option<&MonthlyVector3Field>,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    hasher.update(&[u8::from(field.is_some())]);
+    if let Some(field) = field {
+        hash_monthly_vectors(hasher, field.values(), cancellation)?;
     }
     Ok(())
 }
@@ -1531,6 +2241,64 @@ impl GlobalCirculationSnapshot {
         remap_report: ClimateRemapReport,
         fields: GlobalCirculationFields,
     ) -> Result<Self, GlobalCirculationValidationError> {
+        Self::new_impl(
+            schema_version,
+            surface_ref,
+            layout,
+            integrator,
+            capabilities,
+            checkpoint,
+            solve_report,
+            budget_report,
+            remap_report,
+            fields,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_cancellable(
+        schema_version: u16,
+        surface_ref: SurfaceRef,
+        layout: ClimateLayerLayout,
+        integrator: ProductionIntegratorId,
+        capabilities: ClimateCapabilitySet,
+        checkpoint: ClimateCheckpoint,
+        solve_report: ClimateSolveReport,
+        budget_report: ClimateBudgetReport,
+        remap_report: ClimateRemapReport,
+        fields: GlobalCirculationFields,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, GlobalCirculationValidationError> {
+        Self::new_impl(
+            schema_version,
+            surface_ref,
+            layout,
+            integrator,
+            capabilities,
+            checkpoint,
+            solve_report,
+            budget_report,
+            remap_report,
+            fields,
+            Some(cancelled),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_impl(
+        schema_version: u16,
+        surface_ref: SurfaceRef,
+        layout: ClimateLayerLayout,
+        integrator: ProductionIntegratorId,
+        capabilities: ClimateCapabilitySet,
+        checkpoint: ClimateCheckpoint,
+        solve_report: ClimateSolveReport,
+        budget_report: ClimateBudgetReport,
+        remap_report: ClimateRemapReport,
+        fields: GlobalCirculationFields,
+        cancellation: CancellationCheck<'_>,
+    ) -> Result<Self, GlobalCirculationValidationError> {
         let snapshot = Self {
             schema_version,
             surface_ref,
@@ -1543,12 +2311,27 @@ impl GlobalCirculationSnapshot {
             remap_report,
             fields,
         };
-        snapshot.validate()?;
+        snapshot.validate_impl(cancellation)?;
         Ok(snapshot)
     }
 
     /// Rechecks invariants that require only serialized identities and fields.
     pub fn validate(&self) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_impl(None)
+    }
+
+    pub fn validate_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_impl(Some(cancelled))
+    }
+
+    fn validate_impl(
+        &self,
+        cancellation: CancellationCheck<'_>,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        check_global_circulation_cancelled(cancellation)?;
         if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V1 {
             return Err(GlobalCirculationValidationError::UnsupportedSchema {
                 found: self.schema_version,
@@ -1616,18 +2399,78 @@ impl GlobalCirculationSnapshot {
                 },
             );
         }
-        if self.checkpoint.model_fingerprint() != &self.layout.fingerprint() {
+        if self.checkpoint.model_fingerprint()
+            != &crate::generators::natural::global_circulation_model_fingerprint(profile)
+        {
             return Err(
                 GlobalCirculationValidationError::CheckpointIdentityMismatch {
                     field: "model_fingerprint",
                 },
             );
         }
+        let expected_months = u32::from(self.solve_report.formation_years())
+            .checked_mul(CLIMATE_MONTH_COUNT as u32)
+            .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "formation_years",
+            })?;
+        if self.checkpoint.completed_months() != expected_months {
+            return Err(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "completed_months",
+            });
+        }
+        if self.solve_report.macro_steps() != u64::from(expected_months) {
+            return Err(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "macro_steps",
+            });
+        }
+        if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
+            && self.solve_report.linear_iterations() != 0
+        {
+            return Err(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "linear_iterations",
+            });
+        }
+        let minimum_fast_substeps = self.solve_report.macro_steps().checked_mul(6).ok_or(
+            GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "fast_substeps",
+            },
+        )?;
+        if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
+            && self.solve_report.fast_substeps() < minimum_fast_substeps
+        {
+            return Err(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "fast_substeps",
+            });
+        }
+        let expected_dense_state_bytes = expected_global_circulation_dense_state_bytes(
+            self.checkpoint.quality_profile(),
+            profile,
+            self.surface_ref.cell_count(),
+        )
+        .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
+            field: "dense_state_bytes",
+        })?;
+        if self.solve_report.dense_state_bytes() != expected_dense_state_bytes {
+            return Err(GlobalCirculationValidationError::SolveWorkMismatch {
+                field: "dense_state_bytes",
+            });
+        }
         if self.capabilities != ClimateCapabilitySet::for_profile(profile) {
             return Err(GlobalCirculationValidationError::CapabilityProfileMismatch { profile });
         }
-        self.fields
-            .validate(profile, self.surface_ref.cell_count() as usize)?;
+        self.fields.validate_impl(
+            profile,
+            self.surface_ref.cell_count() as usize,
+            cancellation,
+        )?;
+        validate_positive_layer_depths(&self.layout, &self.fields, cancellation)?;
+        if self.checkpoint.state_fingerprint() != &self.fields.fingerprint_impl(cancellation)? {
+            return Err(
+                GlobalCirculationValidationError::CheckpointIdentityMismatch {
+                    field: "state_fingerprint",
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1636,35 +2479,96 @@ impl GlobalCirculationSnapshot {
         &self,
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), GlobalCirculationValidationError> {
-        self.validate()?;
-        surface
-            .validate()
-            .map_err(|error| GlobalCirculationValidationError::InvalidNested {
-                role: "authoritative_surface",
-                reason: error.to_string(),
+        self.validate_against_impl(surface, None)
+    }
+
+    pub fn validate_against_cancellable(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_against_impl(surface, Some(cancelled))
+    }
+
+    fn validate_against_impl(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        cancellation: CancellationCheck<'_>,
+    ) -> Result<(), GlobalCirculationValidationError> {
+        self.validate_impl(cancellation)?;
+        check_global_circulation_cancelled(cancellation)?;
+        // Safe Rust can only supply an immutable typed surface that was
+        // validated by construction or deserialization. Preserve the full
+        // standalone audit for the non-cancellable API, while the production
+        // path checks identity and polls all snapshot/tangent scans.
+        if cancellation.is_none() {
+            surface.validate().map_err(|error| {
+                GlobalCirculationValidationError::InvalidNested {
+                    role: "authoritative_surface",
+                    reason: error.to_string(),
+                }
             })?;
-        let authoritative = SurfaceRef::for_spherical(surface);
+        }
+        check_global_circulation_cancelled(cancellation)?;
+        let authoritative = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+            GlobalCirculationValidationError::InvalidNested {
+                role: "authoritative_surface_identity",
+                reason: error.to_string(),
+            }
+        })?;
         if authoritative != self.surface_ref {
             return Err(GlobalCirculationValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
                 authoritative,
             });
         }
+        let reconstructed_grid = match cancellation {
+            Some(cancelled) => {
+                crate::generators::natural::circulation::CubedSphereGrid::new_cancellable(
+                    self.checkpoint.quality_profile().climate_face_resolution(),
+                    surface.radius().get(),
+                    cancelled,
+                )
+            }
+            None => crate::generators::natural::circulation::CubedSphereGrid::new(
+                self.checkpoint.quality_profile().climate_face_resolution(),
+                surface.radius().get(),
+            ),
+        }
+        .map_err(|error| {
+            if error == crate::generators::natural::circulation::CubedSphereGridError::Cancelled {
+                GlobalCirculationValidationError::Cancelled
+            } else {
+                GlobalCirculationValidationError::InvalidNested {
+                    role: "checkpoint_grid",
+                    reason: error.to_string(),
+                }
+            }
+        })?;
+        if self.checkpoint.grid_fingerprint() != reconstructed_grid.fingerprint() {
+            return Err(
+                GlobalCirculationValidationError::CheckpointIdentityMismatch {
+                    field: "grid_fingerprint",
+                },
+            );
+        }
         validate_tangent_field(
             "near_surface_wind_m_s",
             self.fields.near_surface_wind_m_s(),
             surface,
+            cancellation,
         )?;
         validate_tangent_field(
             "surface_ocean_current_m_s",
             self.fields.surface_ocean_current_m_s(),
             surface,
+            cancellation,
         )?;
         if let Some(field) = self.fields.upper_wind_m_s() {
-            validate_tangent_field("upper_wind_m_s", field, surface)?;
+            validate_tangent_field("upper_wind_m_s", field, surface, cancellation)?;
         }
         if let Some(field) = self.fields.vertical_wind_shear_m_s() {
-            validate_tangent_field("vertical_wind_shear_m_s", field, surface)?;
+            validate_tangent_field("vertical_wind_shear_m_s", field, surface, cancellation)?;
         }
         Ok(())
     }
@@ -1714,6 +2618,77 @@ impl GlobalCirculationSnapshot {
     }
 }
 
+fn validate_positive_layer_depths(
+    layout: &ClimateLayerLayout,
+    fields: &GlobalCirculationFields,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    let reference = |role| {
+        layout
+            .layers()
+            .iter()
+            .find(|layer| layer.role() == role)
+            .expect("validated fixed layout contains every profile layer")
+            .reference_thickness_m()
+    };
+    validate_positive_layer_depth(
+        ClimateLayerRole::LowerAtmosphere,
+        reference(ClimateLayerRole::LowerAtmosphere),
+        fields.monthly_lower_atmosphere_height_anomaly_m(),
+        cancellation,
+    )?;
+    validate_positive_layer_depth(
+        ClimateLayerRole::OceanMixedLayer,
+        reference(ClimateLayerRole::OceanMixedLayer),
+        fields.monthly_sea_surface_height_anomaly_m(),
+        cancellation,
+    )?;
+    if let Some(upper) = fields.monthly_upper_atmosphere_height_anomaly_m() {
+        validate_positive_layer_depth(
+            ClimateLayerRole::UpperAtmosphere,
+            reference(ClimateLayerRole::UpperAtmosphere),
+            upper,
+            cancellation,
+        )?;
+    }
+    if let Some(thermocline) = fields.monthly_thermocline_height_anomaly_m() {
+        validate_positive_layer_depth(
+            ClimateLayerRole::OceanThermocline,
+            reference(ClimateLayerRole::OceanThermocline),
+            thermocline,
+            cancellation,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_positive_layer_depth(
+    role: ClimateLayerRole,
+    reference_m: f64,
+    anomaly: &MonthlyScalarField,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (cell, months) in anomaly.values().iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        for (month, anomaly_m) in months.iter().copied().enumerate() {
+            let depth_m = reference_m + f64::from(anomaly_m);
+            if depth_m <= 0.0 {
+                return Err(GlobalCirculationValidationError::NonPositiveLayerDepth {
+                    role,
+                    cell,
+                    month,
+                    reference_m,
+                    anomaly_m,
+                    depth_m,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 impl<'de> Deserialize<'de> for GlobalCirculationSnapshot {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1740,8 +2715,12 @@ fn validate_tangent_field(
     field: &'static str,
     values: &MonthlyVector3Field,
     surface: &SphericalSurfaceSnapshot,
+    cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
     for (cell, record) in surface.cells().iter().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
         let radial = record.centroid.components();
         for (month, vector) in values.values()[cell].iter().enumerate() {
             let radial_component = f64::from(vector[0]) * radial[0]
@@ -1763,6 +2742,8 @@ fn validate_tangent_field(
 /// Invalid public layered climate data or contradictory numerical evidence.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum GlobalCirculationValidationError {
+    #[error("global circulation validation was cancelled")]
+    Cancelled,
     #[error("unsupported global circulation schema {found}; supported schema is {supported}")]
     UnsupportedSchema { found: u16, supported: u16 },
     #[error("invalid global circulation {role}: {reason}")]
@@ -1779,6 +2760,17 @@ pub enum GlobalCirculationValidationError {
     FieldProfileMismatch {
         fields: ClimateModelProfile,
         snapshot: ClimateModelProfile,
+    },
+    #[error(
+        "{role:?} layer depth is non-positive at cell {cell}, month {month}: {reference_m} + {anomaly_m} = {depth_m} m"
+    )]
+    NonPositiveLayerDepth {
+        role: ClimateLayerRole,
+        cell: usize,
+        month: usize,
+        reference_m: f64,
+        anomaly_m: f32,
+        depth_m: f64,
     },
     #[error("{field} has {found} cells, expected {expected}")]
     FieldLengthMismatch {
@@ -1812,8 +2804,28 @@ pub enum GlobalCirculationValidationError {
         found: f32,
         expected: f32,
     },
+    #[error(
+        "thermocline depth identity failed at cell {cell}, month {month}: {found} != {expected}"
+    )]
+    ThermoclineDepthIdentityMismatch {
+        cell: usize,
+        month: usize,
+        found: f32,
+        expected: f32,
+    },
+    #[error(
+        "orographic precipitation exceeds total precipitation at cell {cell}, month {month}: {orographic} > {total}"
+    )]
+    OrographicPrecipitationExceedsTotal {
+        cell: usize,
+        month: usize,
+        orographic: f32,
+        total: f32,
+    },
     #[error("checkpoint {field} does not match snapshot identity")]
     CheckpointIdentityMismatch { field: &'static str },
+    #[error("solve report and checkpoint disagree about {field}")]
+    SolveWorkMismatch { field: &'static str },
     #[error("capabilities do not equal the locked P4 inventory for {profile:?}")]
     CapabilityProfileMismatch { profile: ClimateModelProfile },
     #[error(
@@ -1846,6 +2858,8 @@ pub struct ClimateWorkDomainSnapshot {
     source_to_climate: ConservativeSurfaceMap,
     climate_to_source: ConservativeSurfaceMap,
 }
+
+type WorkDomainCancellation<'a> = Option<&'a dyn Fn() -> bool>;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1884,11 +2898,72 @@ impl ClimateWorkDomainSnapshot {
             climate_to_source,
         };
         snapshot.validate()?;
+        crate::generators::natural::validate_climate_work_domain_reconstruction(&snapshot)
+            .map_err(
+                |error| ClimateWorkDomainValidationError::NonCanonicalClimateGrid {
+                    reason: error.to_string(),
+                },
+            )?;
+        Ok(snapshot)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_cancellable(
+        schema_version: u16,
+        profile: NaturalQualityProfile,
+        face_resolution: u16,
+        source_ref: SurfaceRef,
+        climate_grid_fingerprint: [u8; 32],
+        climate_surface: SphericalSurfaceSnapshot,
+        source_to_climate: ConservativeSurfaceMap,
+        climate_to_source: ConservativeSurfaceMap,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, ClimateWorkDomainValidationError> {
+        let snapshot = Self {
+            schema_version,
+            profile,
+            face_resolution,
+            source_ref,
+            climate_grid_fingerprint,
+            climate_surface,
+            source_to_climate,
+            climate_to_source,
+        };
+        snapshot.validate_cancellable(cancelled)?;
+        check_work_domain_cancelled(Some(cancelled))?;
+        crate::generators::natural::validate_climate_work_domain_reconstruction_cancellable(
+            &snapshot, cancelled,
+        )
+        .map_err(|error| {
+            if error == crate::generators::natural::ClimateWorkDomainBuildError::Cancelled {
+                ClimateWorkDomainValidationError::Cancelled
+            } else {
+                ClimateWorkDomainValidationError::NonCanonicalClimateGrid {
+                    reason: error.to_string(),
+                }
+            }
+        })?;
+        check_work_domain_cancelled(Some(cancelled))?;
         Ok(snapshot)
     }
 
     /// Rechecks the self-contained schema, topology counts, and map identities.
     pub fn validate(&self) -> Result<(), ClimateWorkDomainValidationError> {
+        self.validate_impl(None)
+    }
+
+    pub fn validate_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), ClimateWorkDomainValidationError> {
+        self.validate_impl(Some(cancelled))
+    }
+
+    fn validate_impl(
+        &self,
+        cancellation: WorkDomainCancellation<'_>,
+    ) -> Result<(), ClimateWorkDomainValidationError> {
+        check_work_domain_cancelled(cancellation)?;
         if self.schema_version != CLIMATE_WORK_DOMAIN_SCHEMA_V1 {
             return Err(ClimateWorkDomainValidationError::UnsupportedSchema {
                 found: self.schema_version,
@@ -1914,9 +2989,17 @@ impl ClimateWorkDomainSnapshot {
         if self.climate_grid_fingerprint == [0; 32] {
             return Err(ClimateWorkDomainValidationError::ZeroGridFingerprint);
         }
-        self.climate_surface.validate().map_err(|error| {
-            ClimateWorkDomainValidationError::InvalidClimateSurface {
-                reason: error.to_string(),
+        match cancellation {
+            Some(cancelled) => self.climate_surface.validate_cancellable(cancelled),
+            None => self.climate_surface.validate(),
+        }
+        .map_err(|error| {
+            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
+                ClimateWorkDomainValidationError::Cancelled
+            } else {
+                ClimateWorkDomainValidationError::InvalidClimateSurface {
+                    reason: error.to_string(),
+                }
             }
         })?;
 
@@ -1940,19 +3023,14 @@ impl ClimateWorkDomainSnapshot {
             });
         }
 
-        self.source_to_climate.validate().map_err(|error| {
-            ClimateWorkDomainValidationError::InvalidMap {
-                role: "source_to_climate",
-                reason: error.to_string(),
-            }
-        })?;
-        self.climate_to_source.validate().map_err(|error| {
-            ClimateWorkDomainValidationError::InvalidMap {
-                role: "climate_to_source",
-                reason: error.to_string(),
-            }
-        })?;
-        let climate_ref = SurfaceRef::for_spherical(&self.climate_surface);
+        validate_work_domain_map("source_to_climate", &self.source_to_climate, cancellation)?;
+        validate_work_domain_map("climate_to_source", &self.climate_to_source, cancellation)?;
+        let climate_ref =
+            SurfaceRef::from_validated_spherical(&self.climate_surface).map_err(|error| {
+                ClimateWorkDomainValidationError::InvalidClimateSurface {
+                    reason: error.to_string(),
+                }
+            })?;
         validate_map_identity(
             "source_to_climate",
             &self.source_to_climate,
@@ -1965,6 +3043,31 @@ impl ClimateWorkDomainSnapshot {
             climate_ref,
             self.source_ref,
         )?;
+        validate_map_surface_areas(
+            "source_to_climate target",
+            self.source_to_climate.target_cell_areas_m2(),
+            &self.climate_surface,
+            cancellation,
+        )?;
+        validate_map_surface_areas(
+            "climate_to_source source",
+            self.climate_to_source.source_cell_areas_m2(),
+            &self.climate_surface,
+            cancellation,
+        )?;
+        validate_matching_map_areas(
+            "authoritative source",
+            self.source_to_climate.source_cell_areas_m2(),
+            self.climate_to_source.target_cell_areas_m2(),
+            cancellation,
+        )?;
+        validate_matching_map_areas(
+            "climate surface",
+            self.source_to_climate.target_cell_areas_m2(),
+            self.climate_to_source.source_cell_areas_m2(),
+            cancellation,
+        )?;
+        check_work_domain_cancelled(cancellation)?;
         Ok(())
     }
 
@@ -1973,13 +3076,153 @@ impl ClimateWorkDomainSnapshot {
         &self,
         source: &SphericalSurfaceSnapshot,
     ) -> Result<(), ClimateWorkDomainValidationError> {
-        self.validate()?;
-        source.validate().map_err(|error| {
+        self.validate_against_impl(source, None)
+    }
+
+    pub fn validate_against_cancellable(
+        &self,
+        source: &SphericalSurfaceSnapshot,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), ClimateWorkDomainValidationError> {
+        self.validate_against_impl(source, Some(cancelled))
+    }
+
+    fn validate_against_impl(
+        &self,
+        source: &SphericalSurfaceSnapshot,
+        cancellation: WorkDomainCancellation<'_>,
+    ) -> Result<(), ClimateWorkDomainValidationError> {
+        self.validate_impl(cancellation)?;
+        match cancellation {
+            Some(cancelled) => source.validate_cancellable(cancelled),
+            None => source.validate(),
+        }
+        .map_err(|error| {
+            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
+                ClimateWorkDomainValidationError::Cancelled
+            } else {
+                ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
+                    reason: error.to_string(),
+                }
+            }
+        })?;
+        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
             ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
                 reason: error.to_string(),
             }
         })?;
-        let found_ref = SurfaceRef::for_spherical(source);
+        if found_ref != self.source_ref {
+            return Err(ClimateWorkDomainValidationError::SourceMismatch {
+                stored: self.source_ref,
+                found: found_ref,
+            });
+        }
+        if source.radius().get().to_bits() != self.climate_surface.radius().get().to_bits() {
+            return Err(ClimateWorkDomainValidationError::RadiusMismatch {
+                source_m: source.radius().get(),
+                climate_m: self.climate_surface.radius().get(),
+            });
+        }
+        validate_map_surface_areas(
+            "source_to_climate source",
+            self.source_to_climate.source_cell_areas_m2(),
+            source,
+            cancellation,
+        )?;
+        validate_map_surface_areas(
+            "climate_to_source target",
+            self.climate_to_source.target_cell_areas_m2(),
+            source,
+            cancellation,
+        )?;
+        crate::generators::natural::validate_climate_work_domain_maps_against(
+            self,
+            source,
+            cancellation,
+        )
+        .map_err(|error| {
+            if error == crate::generators::natural::ClimateWorkDomainBuildError::Cancelled {
+                ClimateWorkDomainValidationError::Cancelled
+            } else {
+                ClimateWorkDomainValidationError::NonCanonicalConservativeMaps {
+                    reason: error.to_string(),
+                }
+            }
+        })?;
+        check_work_domain_cancelled(cancellation)?;
+        Ok(())
+    }
+
+    /// Fingerprints the exact climate work domain, including both directed
+    /// conservative maps rather than only their endpoint surfaces.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint_impl(None)
+            .expect("an uncancelled work-domain fingerprint cannot fail")
+    }
+
+    pub fn fingerprint_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<[u8; 32], ConservativeSurfaceMapError> {
+        self.fingerprint_impl(Some(cancelled))
+    }
+
+    fn fingerprint_impl(
+        &self,
+        cancellation: Option<&dyn Fn() -> bool>,
+    ) -> Result<[u8; 32], ConservativeSurfaceMapError> {
+        if cancellation.is_some_and(|cancelled| cancelled()) {
+            return Err(ConservativeSurfaceMapError::Cancelled);
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"sekai.climate-work-domain.v1\0");
+        hasher.update(&self.schema_version.to_le_bytes());
+        let profile_tag = match self.profile {
+            NaturalQualityProfile::Draft => 0_u8,
+            NaturalQualityProfile::Standard => 1,
+            NaturalQualityProfile::High => 2,
+        };
+        hasher.update(&[profile_tag]);
+        hasher.update(&self.face_resolution.to_le_bytes());
+        let source_kind_tag = match self.source_ref.geometry_kind() {
+            SurfaceGeometryKind::PlanarV1 => 0_u8,
+            SurfaceGeometryKind::SphericalV1 => 1,
+            SurfaceGeometryKind::SphericalGeodesicV2 => 2,
+        };
+        hasher.update(&[source_kind_tag]);
+        hasher.update(&self.source_ref.geometry_schema().to_le_bytes());
+        hasher.update(&self.source_ref.cell_count().to_le_bytes());
+        hasher.update(&self.source_ref.edge_count().to_le_bytes());
+        hasher.update(&self.source_ref.fingerprint());
+        hasher.update(&self.climate_grid_fingerprint);
+        hasher.update(&self.climate_surface.fingerprint());
+        let forward = match cancellation {
+            Some(cancelled) => self.source_to_climate.fingerprint_cancellable(cancelled)?,
+            None => self.source_to_climate.fingerprint(),
+        };
+        hasher.update(&forward);
+        let reverse = match cancellation {
+            Some(cancelled) => self.climate_to_source.fingerprint_cancellable(cancelled)?,
+            None => self.climate_to_source.fingerprint(),
+        };
+        hasher.update(&reverse);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    /// Checks only the cross-object binding between two already validated,
+    /// immutable snapshots. Constructors and deserializers establish the
+    /// expensive internal topology/remap invariants once; hot generators use
+    /// this constant-time boundary to avoid repeating them before cancellable
+    /// work begins.
+    pub(crate) fn validate_binding_against(
+        &self,
+        source: &SphericalSurfaceSnapshot,
+    ) -> Result<(), ClimateWorkDomainValidationError> {
+        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+            ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
+                reason: error.to_string(),
+            }
+        })?;
         if found_ref != self.source_ref {
             return Err(ClimateWorkDomainValidationError::SourceMismatch {
                 stored: self.source_ref,
@@ -2034,7 +3277,7 @@ impl<'de> Deserialize<'de> for ClimateWorkDomainSnapshot {
         D: Deserializer<'de>,
     {
         let wire = ClimateWorkDomainSnapshotWire::deserialize(deserializer)?;
-        Self::new(
+        let snapshot = Self::new(
             wire.schema_version,
             wire.profile,
             wire.face_resolution,
@@ -2044,7 +3287,8 @@ impl<'de> Deserialize<'de> for ClimateWorkDomainSnapshot {
             wire.source_to_climate,
             wire.climate_to_source,
         )
-        .map_err(D::Error::custom)
+        .map_err(D::Error::custom)?;
+        Ok(snapshot)
     }
 }
 
@@ -2060,9 +3304,110 @@ fn validate_map_identity(
     Ok(())
 }
 
+fn validate_map_surface_areas(
+    role: &'static str,
+    stored: &[f64],
+    surface: &SphericalSurfaceSnapshot,
+    cancellation: WorkDomainCancellation<'_>,
+) -> Result<(), ClimateWorkDomainValidationError> {
+    if stored.len() != surface.cells().len() {
+        return Err(ClimateWorkDomainValidationError::MapAreaCountMismatch {
+            role,
+            stored: stored.len(),
+            expected: surface.cells().len(),
+        });
+    }
+    for (index, (&stored_m2, cell)) in stored.iter().zip(surface.cells()).enumerate() {
+        poll_work_domain_cancelled(index, cancellation)?;
+        let expected_m2 = cell.area.get();
+        if stored_m2.to_bits() != expected_m2.to_bits() {
+            return Err(ClimateWorkDomainValidationError::MapSurfaceAreaMismatch {
+                role,
+                cell: CellId::from_raw(index as u32),
+                stored_m2,
+                expected_m2,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_matching_map_areas(
+    role: &'static str,
+    first: &[f64],
+    second: &[f64],
+    cancellation: WorkDomainCancellation<'_>,
+) -> Result<(), ClimateWorkDomainValidationError> {
+    if first.len() != second.len() {
+        return Err(ClimateWorkDomainValidationError::MapAreaCountMismatch {
+            role,
+            stored: first.len(),
+            expected: second.len(),
+        });
+    }
+    for (index, (&first_m2, &second_m2)) in first.iter().zip(second).enumerate() {
+        poll_work_domain_cancelled(index, cancellation)?;
+        if first_m2.to_bits() != second_m2.to_bits() {
+            return Err(ClimateWorkDomainValidationError::CrossMapAreaMismatch {
+                role,
+                cell: CellId::from_raw(index as u32),
+                first_m2,
+                second_m2,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_work_domain_map(
+    role: &'static str,
+    map: &ConservativeSurfaceMap,
+    cancellation: WorkDomainCancellation<'_>,
+) -> Result<(), ClimateWorkDomainValidationError> {
+    let result = match cancellation {
+        Some(cancelled) => {
+            let mut cancelled = || cancelled();
+            map.validate_cancellable(&mut cancelled)
+        }
+        None => map.validate(),
+    };
+    result.map_err(|error| {
+        if error == ConservativeSurfaceMapError::Cancelled {
+            ClimateWorkDomainValidationError::Cancelled
+        } else {
+            ClimateWorkDomainValidationError::InvalidMap {
+                role,
+                reason: error.to_string(),
+            }
+        }
+    })
+}
+
+fn poll_work_domain_cancelled(
+    index: usize,
+    cancellation: WorkDomainCancellation<'_>,
+) -> Result<(), ClimateWorkDomainValidationError> {
+    if index % 256 == 0 {
+        check_work_domain_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_work_domain_cancelled(
+    cancellation: WorkDomainCancellation<'_>,
+) -> Result<(), ClimateWorkDomainValidationError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(ClimateWorkDomainValidationError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Invalid serialized or cross-linked climate work-domain data.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ClimateWorkDomainValidationError {
+    #[error("climate work-domain validation was cancelled")]
+    Cancelled,
     #[error("unsupported climate work-domain schema {found}; supported schema is {supported}")]
     UnsupportedSchema { found: u16, supported: u16 },
     #[error("{profile:?} climate face resolution is {found}, expected {expected}")]
@@ -2077,6 +3422,8 @@ pub enum ClimateWorkDomainValidationError {
     NonSphericalSource,
     #[error("the climate work-grid fingerprint cannot be zero")]
     ZeroGridFingerprint,
+    #[error("the climate work grid is not the canonical reconstructable cubed sphere: {reason}")]
+    NonCanonicalClimateGrid { reason: String },
     #[error("invalid climate surface: {reason}")]
     InvalidClimateSurface { reason: String },
     #[error("cubed-sphere counts are cells={found_cells}, edges={found_edges}, vertices={found_vertices}; expected cells={expected_cells}, edges={expected_edges}, vertices={expected_vertices}")]
@@ -2092,6 +3439,30 @@ pub enum ClimateWorkDomainValidationError {
     InvalidMap { role: &'static str, reason: String },
     #[error("{role} map source/target identity does not match the work domain")]
     MapIdentityMismatch { role: &'static str },
+    #[error("{role} map stores {stored} cell areas, expected {expected}")]
+    MapAreaCountMismatch {
+        role: &'static str,
+        stored: usize,
+        expected: usize,
+    },
+    #[error(
+        "{role} map area at {cell:?} is {stored_m2} m^2, expected surface area {expected_m2} m^2"
+    )]
+    MapSurfaceAreaMismatch {
+        role: &'static str,
+        cell: CellId,
+        stored_m2: f64,
+        expected_m2: f64,
+    },
+    #[error(
+        "the two directed maps disagree about {role} area at {cell:?}: {first_m2} vs {second_m2} m^2"
+    )]
+    CrossMapAreaMismatch {
+        role: &'static str,
+        cell: CellId,
+        first_m2: f64,
+        second_m2: f64,
+    },
     #[error("invalid supplied authoritative surface: {reason}")]
     InvalidAuthoritativeSurface { reason: String },
     #[error("work-domain source identity {stored:?} does not match supplied surface {found:?}")]
@@ -2101,4 +3472,6 @@ pub enum ClimateWorkDomainValidationError {
     },
     #[error("authoritative radius {source_m} m differs from climate radius {climate_m} m")]
     RadiusMismatch { source_m: f64, climate_m: f64 },
+    #[error("conservative maps are not the canonical overlap geometry: {reason}")]
+    NonCanonicalConservativeMaps { reason: String },
 }

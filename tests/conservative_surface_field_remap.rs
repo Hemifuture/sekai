@@ -1,6 +1,8 @@
 use sekai::generators::spatial::{
-    remap_categories_u16, remap_extensive_f64, remap_intensive_f32, remap_intensive_f64,
-    remap_tangent_components_f64, ConservativeSurfaceMapBuilder, GeodesicVoronoiBuilder,
+    remap_categories_u16, remap_extensive_f64, remap_extensive_f64_cancellable,
+    remap_intensive_f32, remap_intensive_f32_cancellable, remap_intensive_f64,
+    remap_tangent_components_f64, remap_tangent_components_f64_cancellable, ConservativeRemapError,
+    ConservativeSurfaceMapBuilder, GeodesicVoronoiBuilder,
 };
 use sekai::world::spatial::{
     canonical_east_north_basis, ConservativeSurfaceMap, SurfaceGeometryKind, SurfaceOverlapWeight,
@@ -264,6 +266,55 @@ fn field_remaps_reject_bad_lengths_and_non_finite_values_atomically() {
     let mut vectors = vec![[1.0, 0.0]; source.cells().len()];
     vectors[3][1] = f64::INFINITY;
     assert!(remap_tangent_components_f64(&map, &vectors).is_err());
+}
+
+#[test]
+fn climate_field_remap_kernels_observe_cancellation_inside_active_work() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (source, _, map) = small_fixture();
+    let scalar_f32 = source
+        .cells()
+        .iter()
+        .map(|cell| cell.centroid.components()[0] as f32)
+        .collect::<Vec<_>>();
+    let extensive = source
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .collect::<Vec<_>>();
+    let tangent = source
+        .cells()
+        .iter()
+        .map(|cell| local_solid_body_components(cell.centroid, [0.0, 0.0, 1.0]))
+        .collect::<Vec<_>>();
+
+    let observations = AtomicUsize::new(0);
+    assert_eq!(
+        remap_intensive_f32_cancellable(&map, &scalar_f32, &|| {
+            observations.fetch_add(1, Ordering::Relaxed) >= 1
+        })
+        .unwrap_err(),
+        ConservativeRemapError::Cancelled
+    );
+
+    let observations = AtomicUsize::new(0);
+    assert_eq!(
+        remap_extensive_f64_cancellable(&map, &extensive, &|| {
+            observations.fetch_add(1, Ordering::Relaxed) >= 1
+        })
+        .unwrap_err(),
+        ConservativeRemapError::Cancelled
+    );
+
+    let observations = AtomicUsize::new(0);
+    assert_eq!(
+        remap_tangent_components_f64_cancellable(&map, &tangent, &|| {
+            observations.fetch_add(1, Ordering::Relaxed) >= 1
+        })
+        .unwrap_err(),
+        ConservativeRemapError::Cancelled
+    );
 }
 
 #[test]

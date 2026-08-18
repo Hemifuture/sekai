@@ -2,18 +2,24 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use thiserror::Error;
 
 use super::quality::{
-    evaluate_global_circulation_quality, validate_global_circulation_quality_report,
+    evaluate_global_circulation_quality_cancellable, validate_global_circulation_quality_report,
     QualityBuildError,
 };
 use super::{
+    climate_work_domain::{
+        validate_climate_work_domain_reconstruction,
+        validate_climate_work_domain_reconstruction_cancellable,
+    },
     ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, EvolvedTectonicStage,
     GeologicSubstrateStage, GlobalCirculationGenerationError, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, GlobalClimateForcingError, NaturalQualityProfileArtifact,
-    PrimaryReliefArtifact, PrimaryReliefStage, ReliefSpecArtifact, ResolvedClimateInputArtifact,
-    ResolvedGeologicInputArtifact, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
+    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
+    NaturalQualityProfileArtifact, PrimaryReliefArtifact, PrimaryReliefStage, ReliefSpecArtifact,
+    ResolvedClimateInputArtifact, ResolvedGeologicInputArtifact, ResolvedTectonicInputArtifact,
+    ResolvedWorldFormationArtifact, SELECTED_PRODUCTION_INTEGRATOR,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
@@ -34,19 +40,69 @@ const INVALID_QUALITY_CODE: &str = "global-circulation.invalid-quality";
 const CANCELLED_CODE: &str = "engine.cancelled";
 
 /// Atomic publication of the reconstructable cubed-sphere climate work domain.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The portable [`ClimateWorkDomainSnapshot`] remains strict serde data, but
+/// this trusted product envelope is Serialize-only. A decoded snapshot must be
+/// rebound to its authoritative surface through [`Self::rehydrate`] so forged
+/// overlap support or tangent transforms cannot acquire an Artifact identity.
+///
+/// ```compile_fail
+/// use sekai::generators::natural::ClimateWorkDomainArtifact;
+///
+/// let _: ClimateWorkDomainArtifact = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClimateWorkDomainArtifact {
     snapshot: ClimateWorkDomainSnapshot,
 }
 
 impl ClimateWorkDomainArtifact {
-    pub const fn new(snapshot: ClimateWorkDomainSnapshot) -> Self {
+    pub(crate) const fn new(snapshot: ClimateWorkDomainSnapshot) -> Self {
         Self { snapshot }
+    }
+
+    pub fn build(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        profile: crate::world::natural::NaturalQualityProfile,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<Self, ClimateWorkDomainBuildError> {
+        ClimateWorkDomainBuilder::build(surface, profile, cancellation).map(Self::new)
+    }
+
+    pub fn rehydrate(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        snapshot: ClimateWorkDomainSnapshot,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<Self, ClimateWorkDomainBuildError> {
+        snapshot
+            .validate_against_cancellable(surface, &|| cancellation.is_cancelled())
+            .map_err(|error| {
+                if error == crate::world::natural::ClimateWorkDomainValidationError::Cancelled {
+                    ClimateWorkDomainBuildError::Cancelled
+                } else {
+                    ClimateWorkDomainBuildError::Validation(error)
+                }
+            })?;
+        Ok(Self::new(snapshot))
     }
 
     pub const fn snapshot(&self) -> &ClimateWorkDomainSnapshot {
         &self.snapshot
+    }
+
+    fn validate_cancellable(
+        &self,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<(), ArtifactValidationError> {
+        let cancelled = || cancellation.is_cancelled();
+        self.snapshot
+            .validate_cancellable(&cancelled)
+            .map_err(|error| {
+                ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
+            })?;
+        validate_climate_work_domain_reconstruction_cancellable(&self.snapshot, &cancelled)
+            .map_err(|error| ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string()))
     }
 }
 
@@ -54,14 +110,45 @@ impl Artifact for ClimateWorkDomainArtifact {
     const KEY: ArtifactKey = ArtifactKey::new("world.climate-work-domain");
 
     fn validate(&self) -> Result<(), ArtifactValidationError> {
-        self.snapshot
-            .validate()
+        self.snapshot.validate().map_err(|error| {
+            ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
+        })?;
+        validate_climate_work_domain_reconstruction(&self.snapshot)
             .map_err(|error| ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string()))
+    }
+
+    fn validate_cancellable(
+        &self,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<(), ArtifactValidationError> {
+        ClimateWorkDomainArtifact::validate_cancellable(self, cancellation)
     }
 }
 
 /// Atomic publication of C2 fields and their exact per-world quality evidence.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The raw `(snapshot, report)` constructor is intentionally crate-private and
+/// this product does not implement [`Deserialize`]. Callers must use
+/// [`GlobalCirculationArtifact::generate`], which runs the locked C2 generator
+/// and evaluator over authoritative inputs. That keeps structurally valid but
+/// fabricated solve, budget, remap, or quality reports from becoming a product
+/// artifact.
+///
+/// ```compile_fail
+/// use sekai::generators::natural::GlobalCirculationArtifact;
+/// use sekai::world::natural::{GlobalCirculationSnapshot, NaturalQualityReport};
+///
+/// fn forge(snapshot: GlobalCirculationSnapshot, report: NaturalQualityReport) {
+///     let _ = GlobalCirculationArtifact::new(snapshot, report);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use sekai::generators::natural::GlobalCirculationArtifact;
+///
+/// let _: GlobalCirculationArtifact = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalCirculationArtifact {
     snapshot: GlobalCirculationSnapshot,
@@ -69,7 +156,7 @@ pub struct GlobalCirculationArtifact {
 }
 
 impl GlobalCirculationArtifact {
-    pub const fn new(
+    pub(crate) const fn new(
         snapshot: GlobalCirculationSnapshot,
         quality_report: NaturalQualityReport,
     ) -> Self {
@@ -86,6 +173,139 @@ impl GlobalCirculationArtifact {
     pub const fn quality_report(&self) -> &NaturalQualityReport {
         &self.quality_report
     }
+
+    /// Runs the selected generator and locked evaluator, then publishes their
+    /// inseparable result. This is the only public construction path.
+    pub fn generate(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        domain: &ClimateWorkDomainSnapshot,
+        forcing: &GlobalClimateForcing,
+        relief: &crate::world::natural::PrimaryReliefSnapshot,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<Self, GlobalCirculationProductError> {
+        domain
+            .validate_against_cancellable(surface, &|| cancellation.is_cancelled())
+            .map_err(|error| {
+                if error == crate::world::natural::ClimateWorkDomainValidationError::Cancelled {
+                    GlobalCirculationProductError::Cancelled
+                } else {
+                    GlobalCirculationProductError::InvalidDomain(error.to_string())
+                }
+            })?;
+        forcing.validate_relief_identity_cancellable(relief, cancellation)?;
+        let snapshot = GlobalCirculationGenerator::generate_from_validated(
+            surface,
+            domain,
+            forcing,
+            ClimateModelProfile::C2LayeredV1,
+            cancellation,
+        )?;
+        Self::evaluate_cancellable(surface, relief, forcing, snapshot, cancellation)
+            .map_err(GlobalCirculationProductError::from)
+    }
+
+    pub(crate) fn evaluate_cancellable(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        relief: &crate::world::natural::PrimaryReliefSnapshot,
+        forcing: &GlobalClimateForcing,
+        snapshot: GlobalCirculationSnapshot,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<Self, QualityBuildError> {
+        let quality_report = evaluate_global_circulation_quality_cancellable(
+            surface,
+            relief,
+            forcing,
+            &snapshot,
+            cancellation,
+        )?;
+        let artifact = Self::new(snapshot, quality_report);
+        artifact
+            .validate_cancellable(cancellation)
+            .map_err(|error| {
+                if cancellation.is_cancelled() {
+                    QualityBuildError::Cancelled
+                } else {
+                    QualityBuildError::InvalidInput {
+                        input: "global_circulation_artifact",
+                        reason: error.to_string(),
+                    }
+                }
+            })?;
+        Ok(artifact)
+    }
+
+    fn validate_cancellable(
+        &self,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<(), ArtifactValidationError> {
+        self.snapshot
+            .validate_cancellable(&|| cancellation.is_cancelled())
+            .map_err(|error| {
+                ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
+            })?;
+        if self.snapshot.integrator() != SELECTED_PRODUCTION_INTEGRATOR {
+            return Err(ArtifactValidationError::new(
+                INVALID_ARTIFACT_CODE,
+                "only the locked split-explicit integrator may own a product artifact",
+            ));
+        }
+        validate_global_circulation_quality_report(
+            &self.quality_report,
+            self.snapshot.surface_ref(),
+            self.snapshot.checkpoint().fingerprint(),
+        )
+        .map_err(|error| ArtifactValidationError::new(INVALID_QUALITY_CODE, error))?;
+        Ok(())
+    }
+}
+
+/// Failures from the only public, generator-owned P4 product factory.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum GlobalCirculationProductError {
+    #[error("global circulation product generation was cancelled")]
+    Cancelled,
+    #[error("invalid climate work domain: {0}")]
+    InvalidDomain(String),
+    #[error(transparent)]
+    Forcing(GlobalClimateForcingError),
+    #[error(transparent)]
+    Generation(GlobalCirculationGenerationError),
+    #[error(transparent)]
+    Quality(QualityBuildError),
+}
+
+impl From<GlobalClimateForcingError> for GlobalCirculationProductError {
+    fn from(error: GlobalClimateForcingError) -> Self {
+        if error == GlobalClimateForcingError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Forcing(error)
+        }
+    }
+}
+
+impl From<GlobalCirculationGenerationError> for GlobalCirculationProductError {
+    fn from(error: GlobalCirculationGenerationError) -> Self {
+        if matches!(
+            &error,
+            GlobalCirculationGenerationError::Cancelled
+                | GlobalCirculationGenerationError::Forcing(GlobalClimateForcingError::Cancelled)
+        ) {
+            Self::Cancelled
+        } else {
+            Self::Generation(error)
+        }
+    }
+}
+
+impl From<QualityBuildError> for GlobalCirculationProductError {
+    fn from(error: QualityBuildError) -> Self {
+        if error == QualityBuildError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Quality(error)
+        }
+    }
 }
 
 impl Artifact for GlobalCirculationArtifact {
@@ -95,12 +315,26 @@ impl Artifact for GlobalCirculationArtifact {
         self.snapshot.validate().map_err(|error| {
             ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
         })?;
+        if self.snapshot.integrator() != SELECTED_PRODUCTION_INTEGRATOR {
+            return Err(ArtifactValidationError::new(
+                INVALID_ARTIFACT_CODE,
+                "only the locked split-explicit integrator may own a product artifact",
+            ));
+        }
         validate_global_circulation_quality_report(
             &self.quality_report,
             self.snapshot.surface_ref(),
+            self.snapshot.checkpoint().fingerprint(),
         )
         .map_err(|error| ArtifactValidationError::new(INVALID_QUALITY_CODE, error))?;
         Ok(())
+    }
+
+    fn validate_cancellable(
+        &self,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<(), ArtifactValidationError> {
+        GlobalCirculationArtifact::validate_cancellable(self, cancellation)
     }
 }
 
@@ -151,11 +385,6 @@ impl Stage for ClimateWorkDomainStage {
         _diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         rng.check_cancelled().map_err(|_| cancelled())?;
-        inputs
-            .surface
-            .snapshot()
-            .validate()
-            .map_err(|error| invalid_input(error.to_string()))?;
         let cancellation = rng.cancellation_signal();
         let snapshot = ClimateWorkDomainBuilder::build(
             inputs.surface.snapshot(),
@@ -165,8 +394,14 @@ impl Stage for ClimateWorkDomainStage {
         .map_err(domain_failure)?;
         let artifact = ClimateWorkDomainArtifact::new(snapshot);
         artifact
-            .validate()
-            .map_err(|error| StageError::new(error.code(), error.message()))?;
+            .validate_cancellable(&cancellation)
+            .map_err(|error| {
+                if cancellation.is_cancelled() {
+                    cancelled()
+                } else {
+                    StageError::new(error.code(), error.message())
+                }
+            })?;
         rng.check_cancelled().map_err(|_| cancelled())?;
         Ok(artifact)
     }
@@ -225,25 +460,16 @@ impl Stage for GlobalCirculationStage {
         _diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         rng.check_cancelled().map_err(|_| cancelled())?;
+        let cancellation = rng.cancellation_signal();
         let surface = inputs.surface.snapshot();
         inputs
             .resolved_climate
             .input()
             .validate()
             .map_err(|error| invalid_input(error.to_string()))?;
-        inputs
-            .domain
-            .snapshot()
-            .validate_against(surface)
+        let surface_ref = crate::world::spatial::SurfaceRef::from_validated_spherical(surface)
             .map_err(|error| invalid_input(error.to_string()))?;
-        inputs
-            .relief
-            .snapshot()
-            .validate()
-            .map_err(|error| invalid_input(error.to_string()))?;
-        if inputs.relief.snapshot().surface_ref()
-            != crate::world::spatial::SurfaceRef::for_spherical(surface)
-        {
+        if inputs.relief.snapshot().surface_ref() != surface_ref {
             return Err(invalid_input(
                 "primary relief does not match the authoritative surface".to_owned(),
             ));
@@ -251,7 +477,6 @@ impl Stage for GlobalCirculationStage {
         match inputs.resolved_climate.input().model() {
             ClimateModel::SeasonalEnergyMoistureV1 => {}
         }
-        let cancellation = rng.cancellation_signal();
         let forcing = GlobalClimateForcingBuilder::build(
             surface,
             inputs.relief.snapshot(),
@@ -260,7 +485,7 @@ impl Stage for GlobalCirculationStage {
             &cancellation,
         )
         .map_err(forcing_failure)?;
-        let snapshot = GlobalCirculationGenerator::generate(
+        let snapshot = GlobalCirculationGenerator::generate_from_validated(
             surface,
             inputs.domain.snapshot(),
             &forcing,
@@ -269,13 +494,14 @@ impl Stage for GlobalCirculationStage {
         )
         .map_err(circulation_failure)?;
         rng.check_cancelled().map_err(|_| cancelled())?;
-        let quality_report =
-            evaluate_global_circulation_quality(surface, inputs.relief.snapshot(), &snapshot)
-                .map_err(quality_failure)?;
-        let artifact = GlobalCirculationArtifact::new(snapshot, quality_report);
-        artifact
-            .validate()
-            .map_err(|error| StageError::new(error.code(), error.message()))?;
+        let artifact = GlobalCirculationArtifact::evaluate_cancellable(
+            surface,
+            inputs.relief.snapshot(),
+            &forcing,
+            snapshot,
+            &cancellation,
+        )
+        .map_err(quality_failure)?;
         rng.check_cancelled().map_err(|_| cancelled())?;
         Ok(artifact)
     }
@@ -306,7 +532,8 @@ fn domain_failure(error: ClimateWorkDomainBuildError) -> StageError {
         | ClimateWorkDomainBuildError::Validation(_) => invalid_input(error.to_string()),
         ClimateWorkDomainBuildError::CubedSphere(_)
         | ClimateWorkDomainBuildError::ConservativeRemap { .. }
-        | ClimateWorkDomainBuildError::ReconstructionMismatch => {
+        | ClimateWorkDomainBuildError::ReconstructionMismatch
+        | ClimateWorkDomainBuildError::CanonicalMapMismatch => {
             StageError::new(DOMAIN_BUILD_FAILED_CODE, error.to_string())
         }
     }
@@ -326,6 +553,7 @@ fn forcing_failure(error: GlobalClimateForcingError) -> StageError {
         | GlobalClimateForcingError::Remap(_)
         | GlobalClimateForcingError::Operator(_)
         | GlobalClimateForcingError::InvalidForcing { .. }
+        | GlobalClimateForcingError::PayloadIdentityMismatch { .. }
         | GlobalClimateForcingError::FingerprintMismatch => {
             StageError::new(FORCING_BUILD_FAILED_CODE, error.to_string())
         }
@@ -348,6 +576,7 @@ fn circulation_failure(error: GlobalCirculationGenerationError) -> StageError {
 
 fn quality_failure(error: QualityBuildError) -> StageError {
     match error {
+        QualityBuildError::Cancelled => cancelled(),
         QualityBuildError::InvalidInput { .. } | QualityBuildError::SurfaceMismatch { .. } => {
             invalid_input(error.to_string())
         }

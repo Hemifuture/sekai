@@ -14,7 +14,7 @@ use sekai::world::natural::{
     ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, LandOceanKind,
     NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -234,7 +234,12 @@ fn reverse_projection_preserves_constants_flux_budgets_and_tangency() {
     let fixture = fixture();
     let climate_count = fixture.domain.climate_surface().cells().len();
     let constant = vec![[7.25_f32; 12]; climate_count];
-    let intensive = project_monthly_intensive_scalar(&fixture.domain, &constant).unwrap();
+    let intensive = project_monthly_intensive_scalar(
+        &fixture.domain,
+        fixture.bundle.authoritative_surface(),
+        &constant,
+    )
+    .unwrap();
     assert!(intensive
         .values()
         .iter()
@@ -251,8 +256,13 @@ fn reverse_projection_preserves_constants_flux_budgets_and_tangency() {
             std::array::from_fn(|month| 1.0 + latitude.abs() + month as f32 * 0.1)
         })
         .collect::<Vec<_>>();
-    let projected = project_monthly_extensive_rate(&fixture.domain, &rates).unwrap();
-    assert!(projected.max_relative_conservation_error() <= 1.0e-12);
+    let projected = project_monthly_extensive_rate(
+        &fixture.domain,
+        fixture.bundle.authoritative_surface(),
+        &rates,
+    )
+    .unwrap();
+    let mut measured_max_relative_error = 0.0_f64;
     for month in 0..12 {
         let source_total = rates
             .iter()
@@ -265,8 +275,15 @@ fn reverse_projection_preserves_constants_flux_budgets_and_tangency() {
             .zip(fixture.domain.climate_to_source().target_cell_areas_m2())
             .map(|(value, area)| f64::from(value[month]) * area)
             .sum::<f64>();
-        assert!((target_total - source_total).abs() / source_total <= 2.0e-7);
+        let relative_error = (target_total - source_total).abs() / source_total;
+        measured_max_relative_error = measured_max_relative_error.max(relative_error);
+        assert!(relative_error <= GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX);
     }
+    assert_eq!(
+        projected.max_relative_conservation_error().to_bits(),
+        measured_max_relative_error.to_bits(),
+        "the report must describe the final quantized published field"
+    );
 
     let vectors = fixture
         .domain
@@ -317,11 +334,70 @@ fn forcing_and_projection_reject_cancellation_and_wrong_inputs_atomically() {
         Err(GlobalClimateForcingError::Cancelled)
     );
     assert!(matches!(
-        project_monthly_intensive_scalar(&fixture.domain, &[]),
+        project_monthly_intensive_scalar(
+            &fixture.domain,
+            fixture.bundle.authoritative_surface(),
+            &[],
+        ),
         Err(ClimateProjectionError::LengthMismatch { .. })
     ));
     assert!(matches!(
-        project_monthly_extensive_rate(&fixture.domain, &[[-1.0; 12]]),
+        project_monthly_extensive_rate(
+            &fixture.domain,
+            fixture.bundle.authoritative_surface(),
+            &[[-1.0; 12]],
+        ),
         Err(ClimateProjectionError::LengthMismatch { .. })
     ));
+}
+
+#[test]
+fn public_scalar_projection_rejects_a_structurally_valid_noncanonical_map() {
+    let fixture = fixture();
+    let mut value = serde_json::to_value(&fixture.domain).unwrap();
+    for role in ["source_to_climate", "climate_to_source"] {
+        for weight in value[role]["weights"].as_array_mut().unwrap() {
+            weight["tangent_transform"]["coefficients"] = serde_json::json!([0.0, 0.0, 0.0, 0.0]);
+        }
+    }
+    let forged: ClimateWorkDomainSnapshot = serde_json::from_value(value).unwrap();
+    let values = vec![[1.0_f32; 12]; forged.climate_surface().cells().len()];
+
+    assert!(matches!(
+        project_monthly_intensive_scalar(&forged, fixture.bundle.authoritative_surface(), &values,),
+        Err(ClimateProjectionError::InvalidDomain { .. })
+    ));
+    assert!(matches!(
+        project_monthly_extensive_rate(&forged, fixture.bundle.authoritative_surface(), &values,),
+        Err(ClimateProjectionError::InvalidDomain { .. })
+    ));
+}
+
+#[test]
+fn forcing_builder_observes_cancellation_after_dense_work_has_started() {
+    let fixture = fixture();
+    let cancellation = BuildCancellation::new();
+    let result = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            GlobalClimateForcingBuilder::build(
+                fixture.bundle.authoritative_surface(),
+                &fixture.relief,
+                &ClimateSpec::default(),
+                &fixture.domain,
+                &cancellation,
+            )
+        });
+        while cancellation.observation_count() < 8 && !worker.is_finished() {
+            std::hint::spin_loop();
+        }
+        let observed_before_request = cancellation.observation_count();
+        cancellation.cancel();
+        (observed_before_request, worker.join().unwrap())
+    });
+
+    assert!(
+        result.0 >= 8,
+        "forcing build completed before reaching cancellable dense work"
+    );
+    assert_eq!(result.1, Err(GlobalClimateForcingError::Cancelled));
 }

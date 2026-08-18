@@ -46,6 +46,24 @@ impl Artifact for Final {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct LargeOutput(Vec<u64>);
+
+impl Artifact for LargeOutput {
+    const KEY: ArtifactKey = ArtifactKey::new("test.cancellation-large-output");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        if self.0.is_empty() {
+            Err(ArtifactValidationError::new(
+                "test.empty-output",
+                "large cancellation fixture must be nonempty",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct SpecInputs(Arc<Spec>);
 
 impl StageInputs for SpecInputs {
@@ -134,6 +152,38 @@ impl Stage for FinalStage {
         _diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         Ok(Final(inputs.0 .0.rotate_left(7)))
+    }
+}
+
+struct LargeOutputStage {
+    ready: std::sync::mpsc::SyncSender<()>,
+}
+
+impl Stage for LargeOutputStage {
+    type Inputs = SpecInputs;
+    type Output = LargeOutput;
+
+    fn id(&self) -> StageId {
+        StageId::new("test.cancellation-output-preparation")
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn namespace(&self) -> &'static str {
+        "test"
+    }
+
+    fn run(
+        &self,
+        inputs: Self::Inputs,
+        _rng: &mut StageRng,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<Self::Output, StageError> {
+        let output = LargeOutput(vec![inputs.0 .0; 8 * 1024 * 1024]);
+        self.ready.send(()).unwrap();
+        Ok(output)
     }
 }
 
@@ -246,6 +296,62 @@ fn cancellation_observed_inside_a_stage_stops_before_cache_and_downstream_work()
     assert_eq!(
         diagnostic.context().stage_id.as_deref(),
         Some("test.cancellation-cooperative")
+    );
+}
+
+#[test]
+fn cancellation_inside_output_hashing_stops_before_publication_and_cache() {
+    let cancellation = BuildCancellation::new();
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+    let engine = BuildEngine::new(
+        StageGraphBuilder::new()
+            .external::<Spec>()
+            .stage(LargeOutputStage { ready: ready_tx })
+            .build()
+            .unwrap(),
+    );
+    let latency = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            let mut cache = MemoryStageCache::new();
+            let result = engine.build_with_cancellation(
+                RootSeed::new(42),
+                external(7),
+                &mut cache,
+                &cancellation,
+            );
+            (result, cache.len())
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("stage returned its dense output");
+        let observations = cancellation.observation_count();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cancellation.observation_count() < observations + 8 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "output preparation did not enter cancellable validation/hash work"
+            );
+            // Busy-poll this short synchronization window. Yielding here can
+            // let the worker serialize the complete fixture before this
+            // thread observes the requested hash-progress count, turning the
+            // test into a post-publication cancellation race instead of the
+            // intended active-hash latency measurement.
+            std::hint::spin_loop();
+        }
+        let started = std::time::Instant::now();
+        cancellation.cancel();
+        let (result, cache_len) = worker.join().unwrap();
+        let failure = result.unwrap_err();
+        assert_eq!(cache_len, 0);
+        assert_eq!(
+            failure.report.diagnostics().last().unwrap().code(),
+            "engine.cancelled"
+        );
+        started.elapsed()
+    });
+    assert!(
+        latency <= std::time::Duration::from_millis(250),
+        "output preparation cancellation took {latency:?}"
     );
 }
 

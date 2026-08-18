@@ -86,16 +86,22 @@ pub use geology::{
     GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
 pub use global_circulation::{
-    ClimateBudgetReport, ClimateCapabilityAvailability, ClimateCapabilityError,
-    ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError,
+    expected_global_circulation_dense_state_bytes, ClimateBudgetReport,
+    ClimateCapabilityAvailability, ClimateCapabilityError, ClimateCapabilityId,
+    ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError, ClimateLayerExchangeSpec,
     ClimateLayerLayout, ClimateLayerLayoutError, ClimateLayerRole, ClimateLayerSpec,
     ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateReportError,
     ClimateSolveReport, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError,
     GlobalCirculationFields, GlobalCirculationSnapshot, GlobalCirculationValidationError,
     ProductionIntegratorId, CLIMATE_CHECKPOINT_SCHEMA_V1, CLIMATE_LAYER_LAYOUT_SCHEMA_V1,
     CLIMATE_WORK_DOMAIN_SCHEMA_V1, GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX,
-    GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX, GLOBAL_CIRCULATION_SCHEMA_V1,
-    GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S,
+    GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX, GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX,
+    GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX, GLOBAL_CIRCULATION_FORMATION_YEARS_MAX,
+    GLOBAL_CIRCULATION_SCHEMA_V1, GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S,
+};
+#[cfg(test)]
+pub(crate) use global_circulation::{
+    global_circulation_owner_inventory, global_circulation_tendency_cell_bytes,
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,

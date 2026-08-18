@@ -142,6 +142,103 @@ fn work_domain_profile_resolution_and_serialization_are_strict_and_deterministic
 }
 
 #[test]
+fn work_domain_snapshot_rejects_an_arbitrary_nonzero_grid_fingerprint() {
+    let source = source_surface();
+    let domain = ClimateWorkDomainBuilder::build(
+        &source,
+        NaturalQualityProfile::Draft,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(domain).unwrap();
+    let first = value["climate_grid_fingerprint"][0].as_u64().unwrap();
+    value["climate_grid_fingerprint"][0] = serde_json::json!((first + 1) % 256);
+
+    assert!(
+        serde_json::from_value::<sekai::world::natural::ClimateWorkDomainSnapshot>(value).is_err(),
+        "a self-consistent work-domain snapshot must bind the exact reconstructable grid"
+    );
+}
+
+#[test]
+fn public_work_domain_constructor_rejects_an_arbitrary_grid_fingerprint() {
+    let source = source_surface();
+    let domain = ClimateWorkDomainBuilder::build(
+        &source,
+        NaturalQualityProfile::Draft,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let mut wrong_fingerprint = *domain.climate_grid_fingerprint();
+    wrong_fingerprint[0] = wrong_fingerprint[0].wrapping_add(1);
+
+    assert!(sekai::world::natural::ClimateWorkDomainSnapshot::new(
+        domain.schema_version(),
+        domain.profile(),
+        domain.face_resolution(),
+        domain.source_ref(),
+        wrong_fingerprint,
+        domain.climate_surface().clone(),
+        domain.source_to_climate().clone(),
+        domain.climate_to_source().clone(),
+    )
+    .is_err());
+}
+
+#[test]
+fn work_domain_snapshot_rejects_balanced_maps_scaled_off_their_surfaces() {
+    let source = source_surface();
+    let domain = ClimateWorkDomainBuilder::build(
+        &source,
+        NaturalQualityProfile::Draft,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(domain).unwrap();
+    for role in ["source_to_climate", "climate_to_source"] {
+        let map = value[role].as_object_mut().unwrap();
+        for field in ["source_cell_areas_m2", "target_cell_areas_m2"] {
+            for area in map[field].as_array_mut().unwrap() {
+                *area = serde_json::json!(area.as_f64().unwrap() * 0.5);
+            }
+        }
+        for weight in map["weights"].as_array_mut().unwrap() {
+            let area = weight["area_m2"].as_f64().unwrap();
+            weight["area_m2"] = serde_json::json!(area * 0.5);
+        }
+    }
+
+    assert!(
+        serde_json::from_value::<sekai::world::natural::ClimateWorkDomainSnapshot>(value).is_err(),
+        "balanced sparse margins must still be bound to the endpoint surface areas"
+    );
+}
+
+#[test]
+fn contextual_domain_validation_rejects_forged_tangent_transforms() {
+    let source = source_surface();
+    let domain = ClimateWorkDomainBuilder::build(
+        &source,
+        NaturalQualityProfile::Draft,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(&domain).unwrap();
+    for role in ["source_to_climate", "climate_to_source"] {
+        for weight in value[role]["weights"].as_array_mut().unwrap() {
+            weight["tangent_transform"]["coefficients"] = serde_json::json!([0.0, 0.0, 0.0, 0.0]);
+        }
+    }
+
+    let forged: sekai::world::natural::ClimateWorkDomainSnapshot =
+        serde_json::from_value(value).unwrap();
+    assert!(
+        forged.validate_against(&source).is_err(),
+        "self-consistent sparse margins must not substitute for endpoint geometry"
+    );
+}
+
+#[test]
 fn work_domain_honors_pre_cancel_and_never_returns_a_partial_snapshot() {
     let cancellation = BuildCancellation::new();
     cancellation.cancel();
@@ -153,4 +250,27 @@ fn work_domain_honors_pre_cancel_and_never_returns_a_partial_snapshot() {
         ),
         Err(ClimateWorkDomainBuildError::Cancelled)
     );
+}
+
+#[test]
+fn work_domain_honors_cancellation_after_grid_work_has_started() {
+    let source = source_surface();
+    let cancellation = BuildCancellation::new();
+    let result = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            ClimateWorkDomainBuilder::build(&source, NaturalQualityProfile::Draft, &cancellation)
+        });
+        while cancellation.observation_count() < 8 && !worker.is_finished() {
+            std::hint::spin_loop();
+        }
+        let observed_before_request = cancellation.observation_count();
+        cancellation.cancel();
+        (observed_before_request, worker.join().unwrap())
+    });
+
+    assert!(
+        result.0 >= 8,
+        "domain build ended before active cancellation"
+    );
+    assert_eq!(result.1, Err(ClimateWorkDomainBuildError::Cancelled));
 }

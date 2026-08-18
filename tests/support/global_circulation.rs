@@ -7,9 +7,9 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot,
-    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    ClimateSpec, ClimateWorkDomainSnapshot, EvolvedTectonicSnapshot, GeologicSpec,
+    GeologicSubstrateSnapshot, NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
@@ -17,6 +17,7 @@ use sekai::world::{Meters, RootSeed};
 #[allow(dead_code)]
 pub struct GlobalCirculationFixture {
     pub bundle: ProfileSurfaceBundle,
+    pub evolved: EvolvedTectonicSnapshot,
     pub substrate: GeologicSubstrateSnapshot,
     pub relief: PrimaryReliefSnapshot,
     pub domain: ClimateWorkDomainSnapshot,
@@ -93,6 +94,7 @@ pub fn global_circulation_fixture() -> &'static GlobalCirculationFixture {
         .unwrap();
         GlobalCirculationFixture {
             bundle,
+            evolved,
             substrate,
             relief,
             domain,

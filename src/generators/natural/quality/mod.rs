@@ -16,8 +16,10 @@ pub(crate) use evolved_tectonics::validate_evolved_tectonic_quality_report;
 pub use evolved_tectonics::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
 };
-pub use global_circulation::evaluate_global_circulation_quality;
 pub(crate) use global_circulation::validate_global_circulation_quality_report;
+pub use global_circulation::{
+    evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
+};
 pub(crate) use primary_relief::validate_primary_relief_quality_report;
 pub use primary_relief::{
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
@@ -82,6 +84,14 @@ impl NaturalQualityReportBuilder {
         sample_count: u32,
     ) -> Result<(), QualityBuildError> {
         self.record_available(id, value, sample_count, QualityBounds::unbounded(), true)
+    }
+
+    pub(crate) fn record_observation_unbounded(
+        &mut self,
+        id: QualityMetricId,
+        observation: MetricObservation,
+    ) -> Result<(), QualityBuildError> {
+        self.record_observation(id, observation, QualityBounds::unbounded())
     }
 
     pub(crate) fn record_observation_at_least(
@@ -350,6 +360,8 @@ fn validate_equal_lengths(lengths: &[(&'static str, usize)]) -> Result<(), Quali
 /// Errors returned while deterministically assembling natural-quality evidence.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum QualityBuildError {
+    #[error("quality evaluation was cancelled")]
+    Cancelled,
     #[error("invalid quality metric or report: {0}")]
     InvalidReport(#[from] NaturalQualityValidationError),
     #[error("quality sample values must be finite")]

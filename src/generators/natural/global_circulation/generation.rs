@@ -1,32 +1,55 @@
 use thiserror::Error;
 
+use super::project::{
+    project_monthly_extensive_rate_cancellable, project_monthly_intensive_scalar_cancellable,
+    project_monthly_tangent_vectors_cancellable,
+};
 use super::{
-    project_monthly_extensive_rate, project_monthly_intensive_scalar,
-    project_monthly_tangent_vectors, ClimateIntegratorError, ClimateProjectionError,
-    GlobalClimateForcing, LayeredClimateState, LayeredStateError, LayeredTendencyError,
-    LayeredTendencySystem, SplitExplicitRk3Integrator, SELECTED_PRODUCTION_INTEGRATOR,
+    ClimateIntegratorError, ClimateProjectionError, GlobalClimateForcing, LayeredClimateState,
+    LayeredStateError, LayeredTendencyError, LayeredTendencySystem, SplitExplicitRk3Integrator,
+    SELECTED_PRODUCTION_INTEGRATOR,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CubedSphereGrid, CubedSphereGridError};
+#[cfg(test)]
+use crate::world::natural::PlanetForcing;
 use crate::world::natural::{
-    ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError,
-    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ClimateQuantizationId,
-    ClimateRemapReport, ClimateReportError, ClimateSolveReport, ClimateValidationError,
-    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, GlobalCirculationFields,
-    GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
-    MonthlyVector3Field, PlanetForcing, CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_SCHEMA_V1,
+    expected_global_circulation_dense_state_bytes, ClimateBudgetReport, ClimateCapabilitySet,
+    ClimateCheckpoint, ClimateCheckpointError, ClimateLayerLayout, ClimateLayerRole,
+    ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateReportError,
+    ClimateSolveReport, ClimateValidationError, ClimateWorkDomainSnapshot,
+    ClimateWorkDomainValidationError, GlobalCirculationFields, GlobalCirculationSnapshot,
+    GlobalCirculationValidationError, MonthlyScalarField, MonthlyVector3Field, CLIMATE_MONTH_COUNT,
+    GLOBAL_CIRCULATION_SCHEMA_V1,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
-const MACRO_STEP_SECONDS: f64 = 7_200.0;
-const MAXIMUM_FAST_STEP_SECONDS: f64 = 1_200.0;
-const FAST_CFL_TARGET: f64 = 0.35;
-const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
-const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
-const FORMATION_RESIDUAL_TARGET: f64 = 0.25;
+pub(super) const MACRO_STEP_SECONDS: f64 = 7_200.0;
+pub(super) const MAXIMUM_FAST_STEP_SECONDS: f64 = 1_200.0;
+pub(super) const FAST_CFL_TARGET: f64 = 0.20;
+pub(super) const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
+pub(super) const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
+pub(super) const FORMATION_RESIDUAL_TARGET: f64 = 0.24;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlobalCirculationGenerator;
+
+/// Stable coarse phases for progress reporting and deterministic cancellation
+/// tests. Observers run synchronously on the solver thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalCirculationPhase {
+    SolverEntered,
+    TransportStarted,
+    TransportCompleted,
+    FastSubstepsStarted,
+    FastSubstepCompleted,
+    ProjectionStarted,
+    ProjectionFieldCompleted,
+    ProjectionHalfway,
+    PublicationStarted,
+    FinalValidationStarted,
+    StateFingerprintCompleted,
+}
 
 impl GlobalCirculationGenerator {
     pub fn generate(
@@ -36,15 +59,88 @@ impl GlobalCirculationGenerator {
         profile: ClimateModelProfile,
         cancellation: &BuildCancellation,
     ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError> {
+        domain.validate_against_cancellable(surface, &|| cancellation.is_cancelled())?;
+        Self::generate_from_validated(surface, domain, forcing, profile, cancellation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_with_phase_observer<F>(
+        surface: &SphericalSurfaceSnapshot,
+        domain: &ClimateWorkDomainSnapshot,
+        forcing: &GlobalClimateForcing,
+        profile: ClimateModelProfile,
+        cancellation: &BuildCancellation,
+        observer: F,
+    ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError>
+    where
+        F: FnMut(GlobalCirculationPhase),
+    {
+        domain.validate_against_cancellable(surface, &|| cancellation.is_cancelled())?;
+        Self::generate_from_validated_with_phase_observer(
+            surface,
+            domain,
+            forcing,
+            profile,
+            cancellation,
+            observer,
+        )
+    }
+
+    pub(crate) fn generate_from_validated(
+        surface: &SphericalSurfaceSnapshot,
+        domain: &ClimateWorkDomainSnapshot,
+        forcing: &GlobalClimateForcing,
+        profile: ClimateModelProfile,
+        cancellation: &BuildCancellation,
+    ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError> {
+        Self::generate_from_validated_with_phase_observer(
+            surface,
+            domain,
+            forcing,
+            profile,
+            cancellation,
+            |_| {},
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_from_validated_with_phase_observer<F>(
+        surface: &SphericalSurfaceSnapshot,
+        domain: &ClimateWorkDomainSnapshot,
+        forcing: &GlobalClimateForcing,
+        profile: ClimateModelProfile,
+        cancellation: &BuildCancellation,
+        mut observer: F,
+    ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError>
+    where
+        F: FnMut(GlobalCirculationPhase),
+    {
         check_cancelled(cancellation)?;
-        domain.validate_against(surface)?;
-        forcing.validate_against(domain)?;
-        let grid = CubedSphereGrid::new(domain.face_resolution(), surface.radius().get())?;
+        let surface_ref = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+            GlobalCirculationGenerationError::InvalidSurfaceIdentity {
+                reason: error.to_string(),
+            }
+        })?;
+        domain.validate_binding_against(surface)?;
+        check_cancelled(cancellation)?;
+        forcing.validate_payload_against_cancellable(domain, cancellation)?;
+        check_cancelled(cancellation)?;
+        let grid = CubedSphereGrid::new_cancellable(
+            domain.face_resolution(),
+            surface.radius().get(),
+            &|| cancellation.is_cancelled(),
+        )
+        .map_err(map_grid_error)?;
+        check_cancelled(cancellation)?;
         if grid.fingerprint() != domain.climate_grid_fingerprint()
-            || grid.to_surface_snapshot()? != *domain.climate_surface()
+            || grid
+                .to_surface_snapshot_cancellable(&|| cancellation.is_cancelled())
+                .map_err(map_grid_error)?
+                != *domain.climate_surface()
         {
             return Err(GlobalCirculationGenerationError::GridReconstructionMismatch);
         }
+        check_cancelled(cancellation)?;
         let layout = ClimateLayerLayout::for_profile(profile);
         layout
             .validate()
@@ -55,30 +151,34 @@ impl GlobalCirculationGenerator {
         let fast_step_seconds = stable_fast_step_seconds(&grid);
         let integrator = SplitExplicitRk3Integrator::new(&grid, fast_step_seconds)?;
         let planet = forcing.planet_forcing();
-        let mut state = LayeredClimateState::from_forcing(&grid, &layout, planet, 0)?;
-        let mut previous_annual = state.clone();
+        let mut state =
+            LayeredClimateState::from_forcing_cancellable(&grid, &layout, planet, 0, cancellation)
+                .map_err(map_state_error)?;
+        check_cancelled(cancellation)?;
+        let mut previous_annual = state
+            .clone_cancellable(cancellation)
+            .map_err(map_state_error)?;
         let mut initial_residual = 0.0_f64;
         let mut final_residual = 0.0_f64;
         let mut macro_steps = 0_u64;
         let mut fast_substeps = 0_u64;
         let mut maximum_cfl = 0.0_f64;
-        let mut budgets = BudgetAccumulator::new(&grid, &layout, &state);
+        let mut budgets = BudgetAccumulator::new(&grid, &layout, &state, cancellation)?;
         let mut work = WorkClimatology::new(grid.cell_count(), profile);
         let tendency_system = LayeredTendencySystem::new(&grid);
+        observer(GlobalCirculationPhase::SolverEntered);
+        check_cancelled(cancellation)?;
 
         let mut formation_years = 0_u16;
         for year in 0..maximum_formation_cycles {
             for month in 0..CLIMATE_MONTH_COUNT {
                 check_cancelled(cancellation)?;
-                let before = state.clone();
-                let declared = tendency_system.evaluate(
-                    &before,
-                    planet,
-                    forcing.ocean_edge_permeability(),
-                    month,
-                    cancellation,
-                )?;
-                let result = integrator.advance(
+                let before = state
+                    .clone_cancellable(cancellation)
+                    .map_err(map_state_error)?;
+                observer(GlobalCirculationPhase::TransportStarted);
+                check_cancelled(cancellation)?;
+                let declared = tendency_system.evaluate_for_step(
                     &before,
                     planet,
                     forcing.ocean_edge_permeability(),
@@ -86,10 +186,24 @@ impl GlobalCirculationGenerator {
                     MACRO_STEP_SECONDS,
                     cancellation,
                 )?;
+                observer(GlobalCirculationPhase::TransportCompleted);
+                let result = integrator.advance_with_phase_observer(
+                    &before,
+                    planet,
+                    forcing.ocean_edge_permeability(),
+                    month,
+                    MACRO_STEP_SECONDS,
+                    cancellation,
+                    &mut observer,
+                )?;
                 let diagnostics = result.diagnostics();
                 state = result.into_state();
-                enforce_ocean_land_mask(&mut state, planet);
-                state.validate_against(&grid)?;
+                state
+                    .enforce_full_land_ocean_velocity(planet, cancellation)
+                    .map_err(map_state_error)?;
+                state
+                    .validate_against_cancellable(&grid, cancellation)
+                    .map_err(map_state_error)?;
                 budgets.record(
                     &grid,
                     &layout,
@@ -97,19 +211,22 @@ impl GlobalCirculationGenerator {
                     &state,
                     &declared,
                     MACRO_STEP_SECONDS,
-                );
-                work.record_month(&state, &declared, month);
+                    cancellation,
+                )?;
+                work.record_month(&state, &declared, month, cancellation)?;
                 macro_steps += 1;
                 fast_substeps += u64::from(diagnostics.fast_substeps());
                 maximum_cfl = maximum_cfl.max(diagnostics.maximum_cfl());
             }
-            let residual = relative_state_residual(&grid, &previous_annual, &state)?;
+            let residual = relative_state_residual(&grid, &previous_annual, &state, cancellation)?;
             if year == 0 {
                 initial_residual = residual;
             }
             final_residual = residual;
             formation_years = year + 1;
-            previous_annual = state.clone();
+            previous_annual = state
+                .clone_cancellable(cancellation)
+                .map_err(map_state_error)?;
             if final_residual <= FORMATION_RESIDUAL_TARGET {
                 break;
             }
@@ -131,8 +248,16 @@ impl GlobalCirculationGenerator {
         }
         check_cancelled(cancellation)?;
 
-        let fields = work.project(surface, domain, planet)?;
-        let dense_state_bytes = dense_state_bytes(&grid, profile, surface.cells().len())?;
+        observer(GlobalCirculationPhase::ProjectionStarted);
+        check_cancelled(cancellation)?;
+        let (fields, published_precipitation_relative_error) =
+            work.project(surface, domain, forcing, cancellation, &mut observer)?;
+        let dense_state_bytes = expected_global_circulation_dense_state_bytes(
+            domain.profile(),
+            profile,
+            surface.cells().len() as u32,
+        )
+        .ok_or(GlobalCirculationGenerationError::AllocationOverflow)?;
         let solve_report = ClimateSolveReport::new(
             formation_years,
             macro_steps,
@@ -144,23 +269,28 @@ impl GlobalCirculationGenerator {
             dense_state_bytes,
         )?;
         let budget_report = budgets.finish()?;
-        let remap_report = remap_report(domain)?;
-        let state_fingerprint = fields_fingerprint(&fields, profile);
-        let input_fingerprint = input_fingerprint(surface, domain, forcing, &layout);
+        let remap_report = remap_report(domain, published_precipitation_relative_error)?;
+        observer(GlobalCirculationPhase::FinalValidationStarted);
+        let cancelled = || cancellation.is_cancelled();
+        let state_fingerprint = fields.fingerprint_cancellable(&cancelled)?;
+        observer(GlobalCirculationPhase::StateFingerprintCompleted);
+        let input_fingerprint =
+            input_fingerprint(surface_ref, domain, forcing, &layout, cancellation)?;
         let checkpoint = ClimateCheckpoint::new(
+            domain.profile(),
             profile,
             SELECTED_PRODUCTION_INTEGRATOR,
             *grid.fingerprint(),
             *forcing.fingerprint(),
-            layout.fingerprint(),
+            super::global_circulation_model_fingerprint(profile),
             input_fingerprint,
             ClimateQuantizationId::DeterministicF64V1,
             u32::from(formation_years) * CLIMATE_MONTH_COUNT as u32,
             state_fingerprint,
         )?;
-        let snapshot = GlobalCirculationSnapshot::new(
+        let snapshot = GlobalCirculationSnapshot::new_cancellable(
             GLOBAL_CIRCULATION_SCHEMA_V1,
-            SurfaceRef::for_spherical(surface),
+            surface_ref,
             layout,
             SELECTED_PRODUCTION_INTEGRATOR,
             ClimateCapabilitySet::for_profile(profile),
@@ -169,8 +299,9 @@ impl GlobalCirculationGenerator {
             budget_report,
             remap_report,
             fields,
+            &cancelled,
         )?;
-        snapshot.validate_against(surface)?;
+        snapshot.validate_against_cancellable(surface, &cancelled)?;
         Ok(snapshot)
     }
 }
@@ -191,56 +322,14 @@ fn stable_fast_step_seconds(grid: &CubedSphereGrid) -> f64 {
         .min(rotation_limit)
 }
 
-fn enforce_ocean_land_mask(state: &mut LayeredClimateState, forcing: &PlanetForcing) {
-    for role in [
-        ClimateLayerRole::OceanMixedLayer,
-        ClimateLayerRole::OceanThermocline,
-    ] {
-        if let Some(velocity) = state.velocity_m_s_mut(role) {
-            for (vector, land_fraction) in velocity.iter_mut().zip(forcing.land_fraction()) {
-                let ocean_fraction = (1.0 - *land_fraction).clamp(0.0, 1.0);
-                for component in vector {
-                    *component *= ocean_fraction;
-                }
-            }
-        }
-    }
-}
-
 fn relative_state_residual(
     grid: &CubedSphereGrid,
     previous: &LayeredClimateState,
     current: &LayeredClimateState,
+    cancellation: &BuildCancellation,
 ) -> Result<f64, GlobalCirculationGenerationError> {
-    let difference = super::climate_state_rms_difference(grid, previous, current)?;
-    let origin = LayeredClimateState::from_forcing(
-        grid,
-        &ClimateLayerLayout::for_profile(current.profile()),
-        &uniform_reference_forcing(grid, current.profile())?,
-        0,
-    )?;
-    let magnitude = super::climate_state_rms_difference(grid, current, &origin)?.max(1.0);
-    Ok(difference / magnitude)
-}
-
-fn uniform_reference_forcing(
-    grid: &CubedSphereGrid,
-    _profile: ClimateModelProfile,
-) -> Result<PlanetForcing, GlobalCirculationGenerationError> {
-    let count = grid.cell_count();
-    PlanetForcing::new(
-        *grid.fingerprint(),
-        vec![0.0; count],
-        vec![0.0; count],
-        vec![0.0; count],
-        vec![1.0; count],
-        vec![[0.0; CLIMATE_MONTH_COUNT]; count],
-        vec![[0.0; CLIMATE_MONTH_COUNT]; count],
-        vec![[0.0; CLIMATE_MONTH_COUNT]; count],
-    )
-    .map_err(|error| GlobalCirculationGenerationError::InvalidForcing {
-        reason: error.to_string(),
-    })
+    super::climate_state_formation_residual_cancellable(grid, previous, current, cancellation)
+        .map_err(Into::into)
 }
 
 struct WorkClimatology {
@@ -250,9 +339,9 @@ struct WorkClimatology {
     air_temperature: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     sea_temperature: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     thermocline_temperature: Option<Vec<[f32; CLIMATE_MONTH_COUNT]>>,
-    thermocline_depth: Option<Vec<[f32; CLIMATE_MONTH_COUNT]>>,
     humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     precipitation: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    orographic_precipitation: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     lower_height: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     upper_height: Option<Vec<[f32; CLIMATE_MONTH_COUNT]>>,
     sea_height: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -270,9 +359,9 @@ impl WorkClimatology {
             air_temperature: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             sea_temperature: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             thermocline_temperature: c2.then(|| vec![[0.0; CLIMATE_MONTH_COUNT]; count]),
-            thermocline_depth: c2.then(|| vec![[0.0; CLIMATE_MONTH_COUNT]; count]),
             humidity: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             precipitation: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+            orographic_precipitation: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             lower_height: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             upper_height: c2.then(|| vec![[0.0; CLIMATE_MONTH_COUNT]; count]),
             sea_height: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
@@ -286,41 +375,66 @@ impl WorkClimatology {
         state: &LayeredClimateState,
         tendency: &super::LayeredClimateTendency,
         month: usize,
-    ) {
+        cancellation: &BuildCancellation,
+    ) -> Result<(), GlobalCirculationGenerationError> {
         copy_vector_month(
             &mut self.lower_wind,
             state
                 .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
                 .expect("lower atmosphere"),
             month,
-        );
+            cancellation,
+        )?;
         copy_vector_month(
             &mut self.ocean_current,
             state
                 .velocity_m_s(ClimateLayerRole::OceanMixedLayer)
                 .expect("mixed layer"),
             month,
-        );
+            cancellation,
+        )?;
         copy_scalar_month(
             &mut self.air_temperature,
             state
                 .temperature_c(ClimateLayerRole::LowerAtmosphere)
                 .expect("lower atmosphere"),
             month,
-        );
+            cancellation,
+        )?;
         copy_scalar_month(
             &mut self.sea_temperature,
             state
                 .temperature_c(ClimateLayerRole::OceanMixedLayer)
                 .expect("mixed layer"),
             month,
-        );
-        copy_scalar_month(&mut self.humidity, state.specific_humidity(), month);
-        for (target, rate) in self
+            cancellation,
+        )?;
+        copy_scalar_month(
+            &mut self.humidity,
+            state.specific_humidity(),
+            month,
+            cancellation,
+        )?;
+        for (cell, (target, rate)) in self
             .precipitation
             .iter_mut()
             .zip(tendency.precipitation_rate_mm_s())
+            .enumerate()
         {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            target[month] = *rate * 86_400.0;
+        }
+        for (cell, (target, rate)) in self
+            .orographic_precipitation
+            .iter_mut()
+            .zip(tendency.orographic_precipitation_rate_mm_s())
+            .enumerate()
+        {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
             target[month] = *rate * 86_400.0;
         }
         copy_scalar_month(
@@ -329,14 +443,16 @@ impl WorkClimatology {
                 .height_anomaly_m(ClimateLayerRole::LowerAtmosphere)
                 .expect("lower atmosphere"),
             month,
-        );
+            cancellation,
+        )?;
         copy_scalar_month(
             &mut self.sea_height,
             state
                 .height_anomaly_m(ClimateLayerRole::OceanMixedLayer)
                 .expect("mixed layer"),
             month,
-        );
+            cancellation,
+        )?;
         if let Some(target) = &mut self.upper_wind {
             copy_vector_month(
                 target,
@@ -344,7 +460,8 @@ impl WorkClimatology {
                     .velocity_m_s(ClimateLayerRole::UpperAtmosphere)
                     .expect("C2 upper atmosphere"),
                 month,
-            );
+                cancellation,
+            )?;
         }
         if let Some(target) = &mut self.thermocline_temperature {
             copy_scalar_month(
@@ -353,19 +470,8 @@ impl WorkClimatology {
                     .temperature_c(ClimateLayerRole::OceanThermocline)
                     .expect("C2 thermocline"),
                 month,
-            );
-        }
-        if let Some(target) = &mut self.thermocline_depth {
-            let reference = state
-                .reference_thickness_m(ClimateLayerRole::OceanThermocline)
-                .expect("C2 thermocline");
-            for (target, anomaly) in target.iter_mut().zip(
-                state
-                    .height_anomaly_m(ClimateLayerRole::OceanThermocline)
-                    .expect("C2 thermocline"),
-            ) {
-                target[month] = reference + *anomaly;
-            }
+                cancellation,
+            )?;
         }
         if let Some(target) = &mut self.upper_height {
             copy_scalar_month(
@@ -374,7 +480,8 @@ impl WorkClimatology {
                     .height_anomaly_m(ClimateLayerRole::UpperAtmosphere)
                     .expect("C2 upper atmosphere"),
                 month,
-            );
+                cancellation,
+            )?;
         }
         if let Some(target) = &mut self.thermocline_height {
             copy_scalar_month(
@@ -383,139 +490,239 @@ impl WorkClimatology {
                     .height_anomaly_m(ClimateLayerRole::OceanThermocline)
                     .expect("C2 thermocline"),
                 month,
-            );
+                cancellation,
+            )?;
         }
         if let (Some(target), Some(deep)) =
             (&mut self.deep_temperature, state.deep_ocean_temperature_c())
         {
-            copy_scalar_month(target, deep, month);
+            copy_scalar_month(target, deep, month, cancellation)?;
         }
+        check_cancelled(cancellation)?;
+        Ok(())
     }
 
     fn project(
         self,
         surface: &SphericalSurfaceSnapshot,
         domain: &ClimateWorkDomainSnapshot,
-        forcing: &PlanetForcing,
-    ) -> Result<GlobalCirculationFields, GlobalCirculationGenerationError> {
-        let lower_wind = project_monthly_tangent_vectors(domain, surface, &self.lower_wind)?;
-        let mut ocean_current =
-            project_monthly_tangent_vectors(domain, surface, &self.ocean_current)?;
-        let projected_land = project_monthly_intensive_scalar(
+        forcing: &GlobalClimateForcing,
+        cancellation: &BuildCancellation,
+        observer: &mut impl FnMut(GlobalCirculationPhase),
+    ) -> Result<(GlobalCirculationFields, f64), GlobalCirculationGenerationError> {
+        let lower_wind = project_monthly_tangent_vectors_cancellable(
             domain,
-            &forcing
-                .land_fraction()
-                .iter()
-                .map(|value| [*value; CLIMATE_MONTH_COUNT])
-                .collect::<Vec<_>>(),
+            surface,
+            &self.lower_wind,
+            cancellation,
         )?;
-        for (vectors, land) in ocean_current.iter_mut().zip(projected_land.values()) {
-            for month in 0..CLIMATE_MONTH_COUNT {
-                let ocean_fraction = (1.0 - land[month]).clamp(0.0, 1.0);
-                for component in &mut vectors[month] {
-                    *component *= ocean_fraction;
-                }
+        observer(GlobalCirculationPhase::ProjectionFieldCompleted);
+        let mut ocean_current = project_monthly_tangent_vectors_cancellable(
+            domain,
+            surface,
+            &self.ocean_current,
+            cancellation,
+        )?;
+        observer(GlobalCirculationPhase::PublicationStarted);
+        for (cell, (vectors, &is_land)) in ocean_current
+            .iter_mut()
+            .zip(forcing.source_land_mask())
+            .enumerate()
+        {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            if is_land != 0 {
+                *vectors = [[0.0; 3]; CLIMATE_MONTH_COUNT];
             }
         }
-        let air = project_monthly_intensive_scalar(domain, &self.air_temperature)?;
-        let sea = project_monthly_intensive_scalar(domain, &self.sea_temperature)?;
-        let humidity = project_monthly_intensive_scalar(domain, &self.humidity)?;
-        let precipitation = project_monthly_extensive_rate(domain, &self.precipitation)?;
-        let lower_height = project_monthly_intensive_scalar(domain, &self.lower_height)?;
-        let sea_height = project_monthly_intensive_scalar(domain, &self.sea_height)?;
+        let air = project_monthly_intensive_scalar_cancellable(
+            domain,
+            &self.air_temperature,
+            cancellation,
+        )?;
+        let sea = project_monthly_intensive_scalar_cancellable(
+            domain,
+            &self.sea_temperature,
+            cancellation,
+        )?;
+        let humidity =
+            project_monthly_intensive_scalar_cancellable(domain, &self.humidity, cancellation)?;
+        let precipitation =
+            project_monthly_extensive_rate_cancellable(domain, &self.precipitation, cancellation)?;
+        let orographic_precipitation = project_monthly_extensive_rate_cancellable(
+            domain,
+            &self.orographic_precipitation,
+            cancellation,
+        )?;
+        let precipitation_relative_error = precipitation
+            .max_relative_conservation_error()
+            .max(orographic_precipitation.max_relative_conservation_error());
+        let lower_height =
+            project_monthly_intensive_scalar_cancellable(domain, &self.lower_height, cancellation)?;
+        let sea_height =
+            project_monthly_intensive_scalar_cancellable(domain, &self.sea_height, cancellation)?;
+        observer(GlobalCirculationPhase::ProjectionHalfway);
+        check_cancelled(cancellation)?;
         if let (
             Some(upper_wind),
             Some(thermocline_temperature),
-            Some(thermocline_depth),
             Some(upper_height),
             Some(thermocline_height),
             Some(deep_temperature),
         ) = (
             self.upper_wind,
             self.thermocline_temperature,
-            self.thermocline_depth,
             self.upper_height,
             self.thermocline_height,
             self.deep_temperature,
         ) {
-            let upper_wind = project_monthly_tangent_vectors(domain, surface, &upper_wind)?;
-            let shear = upper_wind
-                .iter()
-                .zip(&lower_wind)
-                .map(|(upper, lower)| {
-                    std::array::from_fn(|month| {
-                        std::array::from_fn(|component| {
-                            upper[month][component] - lower[month][component]
-                        })
+            let upper_wind = project_monthly_tangent_vectors_cancellable(
+                domain,
+                surface,
+                &upper_wind,
+                cancellation,
+            )?;
+            let mut shear = Vec::with_capacity(upper_wind.len());
+            for (cell, (upper, lower)) in upper_wind.iter().zip(&lower_wind).enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                shear.push(std::array::from_fn(|month| {
+                    std::array::from_fn(|component| {
+                        upper[month][component] - lower[month][component]
                     })
-                })
-                .collect::<Vec<_>>();
-            Ok(GlobalCirculationFields::new_c2(
-                MonthlyVector3Field::from_values(lower_wind)?,
-                MonthlyVector3Field::from_values(upper_wind)?,
-                MonthlyVector3Field::from_values(shear)?,
-                MonthlyVector3Field::from_values(ocean_current)?,
-                MonthlyScalarField::from_values(air.values().to_vec())?,
-                MonthlyScalarField::from_values(sea.values().to_vec())?,
-                MonthlyScalarField::from_values(
-                    project_monthly_intensive_scalar(domain, &thermocline_temperature)?
-                        .values()
-                        .to_vec(),
+                }));
+            }
+            let projected_thermocline_height = project_monthly_intensive_scalar_cancellable(
+                domain,
+                &thermocline_height,
+                cancellation,
+            )?;
+            let reference_depth = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1)
+                .layers()
+                .iter()
+                .find(|layer| layer.role() == ClimateLayerRole::OceanThermocline)
+                .expect("locked C2 thermocline")
+                .reference_thickness_m() as f32;
+            let mut thermocline_depth =
+                Vec::with_capacity(projected_thermocline_height.values().len());
+            for (cell, months) in projected_thermocline_height.values().iter().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                thermocline_depth.push(months.map(|height| reference_depth + height));
+            }
+            let thermocline_temperature = project_monthly_intensive_scalar_cancellable(
+                domain,
+                &thermocline_temperature,
+                cancellation,
+            )?;
+            let upper_height =
+                project_monthly_intensive_scalar_cancellable(domain, &upper_height, cancellation)?;
+            let deep_temperature = project_monthly_intensive_scalar_cancellable(
+                domain,
+                &deep_temperature,
+                cancellation,
+            )?;
+            let cancelled = || cancellation.is_cancelled();
+            let fields = GlobalCirculationFields::new_c2_cancellable(
+                MonthlyVector3Field::from_values_cancellable(lower_wind, &cancelled)?,
+                MonthlyVector3Field::from_values_cancellable(upper_wind, &cancelled)?,
+                MonthlyVector3Field::from_values_cancellable(shear, &cancelled)?,
+                MonthlyVector3Field::from_values_cancellable(ocean_current, &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(air.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(sea.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(
+                    thermocline_temperature.into_values(),
+                    &cancelled,
                 )?,
-                MonthlyScalarField::from_values(
-                    project_monthly_intensive_scalar(domain, &thermocline_depth)?
-                        .values()
-                        .to_vec(),
+                MonthlyScalarField::from_values_cancellable(thermocline_depth, &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(humidity.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(
+                    precipitation.into_values(),
+                    &cancelled,
                 )?,
-                MonthlyScalarField::from_values(humidity.values().to_vec())?,
-                MonthlyScalarField::from_values(precipitation.values().to_vec())?,
-                MonthlyScalarField::from_values(lower_height.values().to_vec())?,
-                MonthlyScalarField::from_values(
-                    project_monthly_intensive_scalar(domain, &upper_height)?
-                        .values()
-                        .to_vec(),
+                MonthlyScalarField::from_values_cancellable(
+                    orographic_precipitation.into_values(),
+                    &cancelled,
                 )?,
-                MonthlyScalarField::from_values(sea_height.values().to_vec())?,
-                MonthlyScalarField::from_values(
-                    project_monthly_intensive_scalar(domain, &thermocline_height)?
-                        .values()
-                        .to_vec(),
+                MonthlyScalarField::from_values_cancellable(
+                    lower_height.into_values(),
+                    &cancelled,
                 )?,
-                MonthlyScalarField::from_values(
-                    project_monthly_intensive_scalar(domain, &deep_temperature)?
-                        .values()
-                        .to_vec(),
+                MonthlyScalarField::from_values_cancellable(
+                    upper_height.into_values(),
+                    &cancelled,
                 )?,
-            )?)
+                MonthlyScalarField::from_values_cancellable(sea_height.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(
+                    projected_thermocline_height.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(
+                    deep_temperature.into_values(),
+                    &cancelled,
+                )?,
+                &cancelled,
+            )?;
+            Ok((fields, precipitation_relative_error))
         } else {
-            Ok(GlobalCirculationFields::new_c1(
-                MonthlyVector3Field::from_values(lower_wind)?,
-                MonthlyVector3Field::from_values(ocean_current)?,
-                MonthlyScalarField::from_values(air.values().to_vec())?,
-                MonthlyScalarField::from_values(sea.values().to_vec())?,
-                MonthlyScalarField::from_values(humidity.values().to_vec())?,
-                MonthlyScalarField::from_values(precipitation.values().to_vec())?,
-                MonthlyScalarField::from_values(lower_height.values().to_vec())?,
-                MonthlyScalarField::from_values(sea_height.values().to_vec())?,
-            )?)
+            let cancelled = || cancellation.is_cancelled();
+            let fields = GlobalCirculationFields::new_c1_cancellable(
+                MonthlyVector3Field::from_values_cancellable(lower_wind, &cancelled)?,
+                MonthlyVector3Field::from_values_cancellable(ocean_current, &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(air.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(sea.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(humidity.into_values(), &cancelled)?,
+                MonthlyScalarField::from_values_cancellable(
+                    precipitation.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(
+                    orographic_precipitation.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(
+                    lower_height.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(sea_height.into_values(), &cancelled)?,
+                &cancelled,
+            )?;
+            Ok((fields, precipitation_relative_error))
         }
     }
 }
 
-fn copy_scalar_month(target: &mut [[f32; CLIMATE_MONTH_COUNT]], source: &[f32], month: usize) {
-    for (target, source) in target.iter_mut().zip(source) {
+fn copy_scalar_month(
+    target: &mut [[f32; CLIMATE_MONTH_COUNT]],
+    source: &[f32],
+    month: usize,
+    cancellation: &BuildCancellation,
+) -> Result<(), GlobalCirculationGenerationError> {
+    for (cell, (target, source)) in target.iter_mut().zip(source).enumerate() {
+        if cell % 256 == 0 {
+            check_cancelled(cancellation)?;
+        }
         target[month] = *source;
     }
+    Ok(())
 }
 
 fn copy_vector_month(
     target: &mut [[[f32; 3]; CLIMATE_MONTH_COUNT]],
     source: &[[f32; 3]],
     month: usize,
-) {
-    for (target, source) in target.iter_mut().zip(source) {
+    cancellation: &BuildCancellation,
+) -> Result<(), GlobalCirculationGenerationError> {
+    for (cell, (target, source)) in target.iter_mut().zip(source).enumerate() {
+        if cell % 256 == 0 {
+            check_cancelled(cancellation)?;
+        }
         target[month] = *source;
     }
+    Ok(())
 }
 
 struct BudgetAccumulator {
@@ -523,12 +730,16 @@ struct BudgetAccumulator {
     ocean_residual: f64,
     moisture_residual: f64,
     energy_residual: f64,
-    paired_residual: f64,
+    paired_heat_residual: f64,
+    paired_momentum_residual: f64,
+    paired_moisture_residual: f64,
     atmosphere_scale: f64,
     ocean_scale: f64,
     moisture_scale: f64,
     energy_scale: f64,
-    paired_scale: f64,
+    paired_heat_scale: f64,
+    paired_momentum_scale: f64,
+    paired_moisture_scale: f64,
 }
 
 impl BudgetAccumulator {
@@ -536,19 +747,30 @@ impl BudgetAccumulator {
         grid: &CubedSphereGrid,
         layout: &ClimateLayerLayout,
         state: &LayeredClimateState,
-    ) -> Self {
-        Self {
+        cancellation: &BuildCancellation,
+    ) -> Result<Self, GlobalCirculationGenerationError> {
+        Ok(Self {
             atmosphere_residual: 0.0,
             ocean_residual: 0.0,
             moisture_residual: 0.0,
             energy_residual: 0.0,
-            paired_residual: 0.0,
-            atmosphere_scale: layer_amount_total(grid, state, true).abs().max(1.0),
-            ocean_scale: layer_amount_total(grid, state, false).abs().max(1.0),
-            moisture_scale: moisture_total(grid, state).abs().max(1.0),
-            energy_scale: energy_total(grid, layout, state).abs().max(1.0),
-            paired_scale: 1.0,
-        }
+            paired_heat_residual: 0.0,
+            paired_momentum_residual: 0.0,
+            paired_moisture_residual: 0.0,
+            atmosphere_scale: layer_amount_total(grid, state, true, cancellation)?
+                .abs()
+                .max(1.0),
+            ocean_scale: layer_amount_total(grid, state, false, cancellation)?
+                .abs()
+                .max(1.0),
+            moisture_scale: moisture_total(grid, state, cancellation)?.abs().max(1.0),
+            energy_scale: energy_total(grid, layout, state, cancellation)?
+                .abs()
+                .max(1.0),
+            paired_heat_scale: 0.0,
+            paired_momentum_scale: 0.0,
+            paired_moisture_scale: 0.0,
+        })
     }
 
     fn record(
@@ -559,47 +781,59 @@ impl BudgetAccumulator {
         after: &LayeredClimateState,
         tendency: &super::LayeredClimateTendency,
         dt: f64,
-    ) {
-        let atmosphere_expected = height_tendency_total(grid, tendency, true) * dt;
-        let ocean_expected = height_tendency_total(grid, tendency, false) * dt;
-        self.atmosphere_residual += ((layer_amount_total(grid, after, true)
-            - layer_amount_total(grid, before, true))
-            - atmosphere_expected)
-            .abs();
-        self.ocean_residual += ((layer_amount_total(grid, after, false)
-            - layer_amount_total(grid, before, false))
-            - ocean_expected)
-            .abs();
-        let lower_mass = layer_mass_per_area(layout, ClimateLayerRole::LowerAtmosphere);
-        let moisture_expected = grid
-            .cells()
-            .iter()
-            .zip(tendency.specific_humidity_tendency_s_inv())
-            .map(|(cell, value)| cell.area_m2() * lower_mass * f64::from(*value) * dt)
-            .sum::<f64>();
-        self.moisture_residual += ((moisture_total(grid, after) - moisture_total(grid, before))
-            - moisture_expected)
-            .abs();
-        let energy_expected = energy_tendency_total(grid, layout, tendency) * dt;
-        self.energy_residual += ((energy_total(grid, layout, after)
-            - energy_total(grid, layout, before))
-            - energy_expected)
-            .abs();
+        cancellation: &BuildCancellation,
+    ) -> Result<(), GlobalCirculationGenerationError> {
         let tendency_budget = tendency.budget();
-        self.paired_residual += tendency_budget.paired_heat_residual_w_m2().abs()
-            + tendency_budget.paired_momentum_residual_n_m2().abs();
-        self.paired_scale += tendency_budget.paired_heat_absolute_w_m2()
-            + tendency_budget.paired_momentum_absolute_n_m2();
+        let atmosphere_expected = tendency_budget.external_atmosphere_amount_rate_m3_s() * dt;
+        let ocean_expected = tendency_budget.external_ocean_amount_rate_m3_s() * dt;
+        // Accumulate the signed global closure over the complete formation
+        // interval. Computing per-cell deltas avoids subtracting two planet-
+        // scale totals, and deferring the absolute value until `finish` avoids
+        // turning unbiased f32 integration roundoff into an artificial drift
+        // that grows with resolution and macro-step count.
+        self.atmosphere_residual +=
+            layer_amount_change_total(grid, before, after, true, cancellation)?
+                - atmosphere_expected;
+        self.ocean_residual +=
+            layer_amount_change_total(grid, before, after, false, cancellation)? - ocean_expected;
+        let moisture_expected = tendency_budget.external_moisture_net_rate_kg_s() * dt;
+        self.moisture_residual +=
+            moisture_change_total(grid, before, after, cancellation)? - moisture_expected;
+        let energy_expected = tendency_budget.external_heat_rate_w() * dt;
+        self.energy_residual +=
+            energy_change_total(grid, layout, before, after, cancellation)? - energy_expected;
+        self.paired_heat_residual += tendency_budget.paired_heat_residual_w().abs();
+        self.paired_momentum_residual += tendency_budget.paired_momentum_residual_n().abs();
+        self.paired_moisture_residual += tendency_budget.paired_moisture_residual_kg_s().abs();
+        self.paired_heat_scale += tendency_budget.paired_heat_absolute_w();
+        self.paired_momentum_scale += tendency_budget.paired_momentum_absolute_n();
+        self.paired_moisture_scale += tendency_budget.paired_moisture_absolute_kg_s();
+        check_cancelled(cancellation)?;
+        Ok(())
     }
 
     fn finish(self) -> Result<ClimateBudgetReport, ClimateReportError> {
+        let component_pair_errors = [
+            relative_exchange_error(self.paired_heat_residual, self.paired_heat_scale),
+            relative_exchange_error(self.paired_momentum_residual, self.paired_momentum_scale),
+            relative_exchange_error(self.paired_moisture_residual, self.paired_moisture_scale),
+        ];
+        let paired_relative_error = component_pair_errors.into_iter().fold(0.0_f64, f64::max);
         ClimateBudgetReport::new(
-            self.atmosphere_residual / self.atmosphere_scale,
-            self.ocean_residual / self.ocean_scale,
-            self.moisture_residual / self.moisture_scale,
-            self.energy_residual / self.energy_scale,
-            self.paired_residual / self.paired_scale,
+            self.atmosphere_residual.abs() / self.atmosphere_scale,
+            self.ocean_residual.abs() / self.ocean_scale,
+            self.moisture_residual.abs() / self.moisture_scale,
+            self.energy_residual.abs() / self.energy_scale,
+            paired_relative_error,
         )
+    }
+}
+
+fn relative_exchange_error(residual: f64, scale: f64) -> f64 {
+    if scale > 0.0 {
+        residual / scale
+    } else {
+        residual.abs()
     }
 }
 
@@ -614,44 +848,62 @@ fn layer_amount_total(
     grid: &CubedSphereGrid,
     state: &LayeredClimateState,
     atmosphere: bool,
-) -> f64 {
-    state
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
+    let mut total = 0.0;
+    for role in state
         .active_roles()
         .iter()
         .filter(|role| is_atmosphere(**role) == atmosphere)
-        .map(|role| {
-            let reference = f64::from(state.reference_thickness_m(*role).expect("active role"));
-            grid.cells()
-                .iter()
-                .zip(state.height_anomaly_m(*role).expect("active role"))
-                .map(|(cell, anomaly)| cell.area_m2() * (reference + f64::from(*anomaly)))
-                .sum::<f64>()
-        })
-        .sum()
+    {
+        let reference = f64::from(state.reference_thickness_m(*role).expect("active role"));
+        for (index, (cell, anomaly)) in grid
+            .cells()
+            .iter()
+            .zip(state.height_anomaly_m(*role).expect("active role"))
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total += cell.area_m2() * (reference + f64::from(*anomaly));
+        }
+    }
+    Ok(total)
 }
 
-fn height_tendency_total(
+fn layer_amount_change_total(
     grid: &CubedSphereGrid,
-    tendency: &super::LayeredClimateTendency,
+    before: &LayeredClimateState,
+    after: &LayeredClimateState,
     atmosphere: bool,
-) -> f64 {
-    [
-        ClimateLayerRole::LowerAtmosphere,
-        ClimateLayerRole::UpperAtmosphere,
-        ClimateLayerRole::OceanMixedLayer,
-        ClimateLayerRole::OceanThermocline,
-    ]
-    .into_iter()
-    .filter(|role| is_atmosphere(*role) == atmosphere)
-    .filter_map(|role| tendency.height_tendency_m_s(role))
-    .map(|values| {
-        grid.cells()
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
+    let mut total = 0.0;
+    for role in before
+        .active_roles()
+        .iter()
+        .filter(|role| is_atmosphere(**role) == atmosphere)
+    {
+        for (index, (cell, (before_value, after_value))) in grid
+            .cells()
             .iter()
-            .zip(values)
-            .map(|(cell, value)| cell.area_m2() * f64::from(*value))
-            .sum::<f64>()
-    })
-    .sum()
+            .zip(
+                before
+                    .height_anomaly_m(*role)
+                    .expect("active before role")
+                    .iter()
+                    .zip(after.height_anomaly_m(*role).expect("active after role")),
+            )
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total += cell.area_m2() * (f64::from(*after_value) - f64::from(*before_value));
+        }
+    }
+    Ok(total)
 }
 
 fn layer_spec(
@@ -671,81 +923,173 @@ fn layer_heat_capacity_per_area(layout: &ClimateLayerLayout, role: ClimateLayerR
     layer_mass_per_area(layout, role) * layer.heat_capacity_j_kg_k()
 }
 
-fn moisture_total(grid: &CubedSphereGrid, state: &LayeredClimateState) -> f64 {
-    let mass = match state.profile() {
+fn moisture_total(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
+    let lower_mass = match state.profile() {
         ClimateModelProfile::C1SingleLayerV1 => 1.225 * 8_000.0,
         ClimateModelProfile::C2LayeredV1 => 1.225 * 6_000.0,
     };
-    grid.cells()
+    let mut total = 0.0;
+    for (index, (cell, value)) in grid
+        .cells()
         .iter()
         .zip(state.specific_humidity())
-        .map(|(cell, value)| cell.area_m2() * mass * f64::from(*value))
-        .sum()
+        .enumerate()
+    {
+        if index % 256 == 0 {
+            check_cancelled(cancellation)?;
+        }
+        total += cell.area_m2() * lower_mass * f64::from(*value);
+    }
+    if let Some(upper) = state.upper_specific_humidity() {
+        let upper_mass = 1.225 * 4_000.0;
+        for (index, (cell, value)) in grid.cells().iter().zip(upper).enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total += cell.area_m2() * upper_mass * f64::from(*value);
+        }
+    }
+    Ok(total)
+}
+
+fn moisture_change_total(
+    grid: &CubedSphereGrid,
+    before: &LayeredClimateState,
+    after: &LayeredClimateState,
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
+    let lower_mass = match before.profile() {
+        ClimateModelProfile::C1SingleLayerV1 => 1.225 * 8_000.0,
+        ClimateModelProfile::C2LayeredV1 => 1.225 * 6_000.0,
+    };
+    let mut total = 0.0;
+    for (index, (cell, (before_value, after_value))) in grid
+        .cells()
+        .iter()
+        .zip(
+            before
+                .specific_humidity()
+                .iter()
+                .zip(after.specific_humidity()),
+        )
+        .enumerate()
+    {
+        if index % 256 == 0 {
+            check_cancelled(cancellation)?;
+        }
+        total += cell.area_m2() * lower_mass * (f64::from(*after_value) - f64::from(*before_value));
+    }
+    if let (Some(before), Some(after)) = (
+        before.upper_specific_humidity(),
+        after.upper_specific_humidity(),
+    ) {
+        let upper_mass = 1.225 * 4_000.0;
+        for (index, (cell, (before_value, after_value))) in grid
+            .cells()
+            .iter()
+            .zip(before.iter().zip(after))
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total +=
+                cell.area_m2() * upper_mass * (f64::from(*after_value) - f64::from(*before_value));
+        }
+    }
+    Ok(total)
 }
 
 fn energy_total(
     grid: &CubedSphereGrid,
     layout: &ClimateLayerLayout,
     state: &LayeredClimateState,
-) -> f64 {
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
     let mut total = 0.0_f64;
     for role in state.active_roles() {
         let capacity = layer_heat_capacity_per_area(layout, *role);
-        total += grid
+        for (index, (cell, value)) in grid
             .cells()
             .iter()
             .zip(state.temperature_c(*role).expect("active role"))
-            .map(|(cell, value)| cell.area_m2() * capacity * f64::from(*value))
-            .sum::<f64>();
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total += cell.area_m2() * capacity * (f64::from(*value) + 273.15);
+        }
     }
     if let Some(deep) = state.deep_ocean_temperature_c() {
         let capacity = layer_heat_capacity_per_area(layout, ClimateLayerRole::DeepOceanReservoir);
-        total += grid
-            .cells()
-            .iter()
-            .zip(deep)
-            .map(|(cell, value)| cell.area_m2() * capacity * f64::from(*value))
-            .sum::<f64>();
-    }
-    total
-}
-
-fn energy_tendency_total(
-    grid: &CubedSphereGrid,
-    layout: &ClimateLayerLayout,
-    tendency: &super::LayeredClimateTendency,
-) -> f64 {
-    let mut total = 0.0_f64;
-    for role in [
-        ClimateLayerRole::LowerAtmosphere,
-        ClimateLayerRole::UpperAtmosphere,
-        ClimateLayerRole::OceanMixedLayer,
-        ClimateLayerRole::OceanThermocline,
-    ] {
-        if let Some(values) = tendency.temperature_tendency_k_s(role) {
-            let capacity = layer_heat_capacity_per_area(layout, role);
-            total += grid
-                .cells()
-                .iter()
-                .zip(values)
-                .map(|(cell, value)| cell.area_m2() * capacity * f64::from(*value))
-                .sum::<f64>();
+        for (index, (cell, value)) in grid.cells().iter().zip(deep).enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total += cell.area_m2() * capacity * (f64::from(*value) + 273.15);
         }
     }
-    if let Some(values) = tendency.deep_ocean_temperature_tendency_k_s() {
-        let capacity = layer_heat_capacity_per_area(layout, ClimateLayerRole::DeepOceanReservoir);
-        total += grid
+    Ok(total)
+}
+
+fn energy_change_total(
+    grid: &CubedSphereGrid,
+    layout: &ClimateLayerLayout,
+    before: &LayeredClimateState,
+    after: &LayeredClimateState,
+    cancellation: &BuildCancellation,
+) -> Result<f64, GlobalCirculationGenerationError> {
+    let mut total = 0.0_f64;
+    for role in before.active_roles() {
+        let capacity = layer_heat_capacity_per_area(layout, *role);
+        for (index, (cell, (before_value, after_value))) in grid
             .cells()
             .iter()
-            .zip(values)
-            .map(|(cell, value)| cell.area_m2() * capacity * f64::from(*value))
-            .sum::<f64>();
+            .zip(
+                before
+                    .temperature_c(*role)
+                    .expect("active before role")
+                    .iter()
+                    .zip(after.temperature_c(*role).expect("active after role")),
+            )
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total +=
+                cell.area_m2() * capacity * (f64::from(*after_value) - f64::from(*before_value));
+        }
     }
-    total
+    if let (Some(before), Some(after)) = (
+        before.deep_ocean_temperature_c(),
+        after.deep_ocean_temperature_c(),
+    ) {
+        let capacity = layer_heat_capacity_per_area(layout, ClimateLayerRole::DeepOceanReservoir);
+        for (index, (cell, (before_value, after_value))) in grid
+            .cells()
+            .iter()
+            .zip(before.iter().zip(after))
+            .enumerate()
+        {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            total +=
+                cell.area_m2() * capacity * (f64::from(*after_value) - f64::from(*before_value));
+        }
+    }
+    Ok(total)
 }
 
 fn remap_report(
     domain: &ClimateWorkDomainSnapshot,
+    published_precipitation_relative_error: f64,
 ) -> Result<ClimateRemapReport, GlobalCirculationGenerationError> {
     let forward = domain.source_to_climate();
     let reverse = domain.climate_to_source();
@@ -754,6 +1098,7 @@ fn remap_report(
         forward.solve_stats().max_target_margin_relative_error(),
         reverse.solve_stats().max_source_margin_relative_error(),
         reverse.solve_stats().max_target_margin_relative_error(),
+        published_precipitation_relative_error,
         u32::try_from(forward.overlap_count())
             .map_err(|_| GlobalCirculationGenerationError::AllocationOverflow)?,
         u32::try_from(reverse.overlap_count())
@@ -762,101 +1107,32 @@ fn remap_report(
 }
 
 fn input_fingerprint(
-    surface: &SphericalSurfaceSnapshot,
+    surface_ref: SurfaceRef,
     domain: &ClimateWorkDomainSnapshot,
     forcing: &GlobalClimateForcing,
     layout: &ClimateLayerLayout,
-) -> [u8; 32] {
+    cancellation: &BuildCancellation,
+) -> Result<[u8; 32], GlobalCirculationGenerationError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.global-circulation-input.v1\0");
-    hasher.update(&SurfaceRef::for_spherical(surface).fingerprint());
-    hasher.update(domain.climate_grid_fingerprint());
-    hasher.update(forcing.fingerprint());
-    hasher.update(&layout.fingerprint());
-    *hasher.finalize().as_bytes()
-}
-
-fn fields_fingerprint(fields: &GlobalCirculationFields, profile: ClimateModelProfile) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-state.v1\0");
-    hash_vectors(&mut hasher, fields.near_surface_wind_m_s().values());
-    hash_vectors(&mut hasher, fields.surface_ocean_current_m_s().values());
-    for scalar in [
-        fields.monthly_air_temperature_c(),
-        fields.monthly_sea_surface_temperature_c(),
-        fields.monthly_specific_humidity(),
-        fields.monthly_precipitation_mm_day(),
-        fields.monthly_lower_atmosphere_height_anomaly_m(),
-        fields.monthly_sea_surface_height_anomaly_m(),
-    ] {
-        hash_scalars(&mut hasher, scalar.values());
-    }
-    if profile == ClimateModelProfile::C2LayeredV1 {
-        hash_vectors(&mut hasher, fields.upper_wind_m_s().expect("C2").values());
-        hash_vectors(
-            &mut hasher,
-            fields.vertical_wind_shear_m_s().expect("C2").values(),
-        );
-        for scalar in [
-            fields.monthly_thermocline_temperature_c().expect("C2"),
-            fields.monthly_thermocline_depth_m().expect("C2"),
-            fields
-                .monthly_upper_atmosphere_height_anomaly_m()
-                .expect("C2"),
-            fields.monthly_thermocline_height_anomaly_m().expect("C2"),
-            fields.monthly_deep_ocean_temperature_c().expect("C2"),
-        ] {
-            hash_scalars(&mut hasher, scalar.values());
-        }
-    }
-    *hasher.finalize().as_bytes()
-}
-
-fn hash_scalars(hasher: &mut blake3::Hasher, values: &[[f32; CLIMATE_MONTH_COUNT]]) {
-    for months in values {
-        for value in months {
-            hasher.update(&value.to_bits().to_le_bytes());
-        }
-    }
-}
-
-fn hash_vectors(hasher: &mut blake3::Hasher, values: &[[[f32; 3]; CLIMATE_MONTH_COUNT]]) {
-    for months in values {
-        for vector in months {
-            for value in vector {
-                hasher.update(&value.to_bits().to_le_bytes());
+    hasher.update(&surface_ref.fingerprint());
+    let domain_fingerprint = domain
+        .fingerprint_cancellable(&|| cancellation.is_cancelled())
+        .map_err(|error| {
+            if error == crate::world::spatial::ConservativeSurfaceMapError::Cancelled {
+                GlobalCirculationGenerationError::Cancelled
+            } else {
+                GlobalCirculationGenerationError::InputFingerprint {
+                    reason: error.to_string(),
+                }
             }
-        }
-    }
-}
-
-fn dense_state_bytes(
-    grid: &CubedSphereGrid,
-    profile: ClimateModelProfile,
-    output_cells: usize,
-) -> Result<u64, GlobalCirculationGenerationError> {
-    let active = match profile {
-        ClimateModelProfile::C1SingleLayerV1 => 2_usize,
-        ClimateModelProfile::C2LayeredV1 => 4_usize,
-    };
-    let work_scalars = active
-        .checked_mul(5)
-        .and_then(|value| value.checked_add(2))
-        .and_then(|value| value.checked_mul(grid.cell_count()))
-        .and_then(|value| value.checked_mul(size_of::<f32>()))
-        .ok_or(GlobalCirculationGenerationError::AllocationOverflow)?;
-    let output_fields = if profile == ClimateModelProfile::C2LayeredV1 {
-        21_usize
-    } else {
-        11_usize
-    };
-    let output = output_fields
-        .checked_mul(CLIMATE_MONTH_COUNT)
-        .and_then(|value| value.checked_mul(output_cells))
-        .and_then(|value| value.checked_mul(size_of::<f32>()))
-        .ok_or(GlobalCirculationGenerationError::AllocationOverflow)?;
-    u64::try_from(work_scalars + output)
-        .map_err(|_| GlobalCirculationGenerationError::AllocationOverflow)
+        })?;
+    hasher.update(&domain_fingerprint);
+    hasher.update(forcing.fingerprint());
+    hasher.update(&super::global_circulation_model_fingerprint(
+        layout.profile(),
+    ));
+    Ok(*hasher.finalize().as_bytes())
 }
 
 fn check_cancelled(
@@ -869,10 +1145,30 @@ fn check_cancelled(
     }
 }
 
+fn map_grid_error(error: CubedSphereGridError) -> GlobalCirculationGenerationError {
+    if error == CubedSphereGridError::Cancelled {
+        GlobalCirculationGenerationError::Cancelled
+    } else {
+        GlobalCirculationGenerationError::Grid(error)
+    }
+}
+
+fn map_state_error(error: LayeredStateError) -> GlobalCirculationGenerationError {
+    if error == LayeredStateError::Cancelled {
+        GlobalCirculationGenerationError::Cancelled
+    } else {
+        GlobalCirculationGenerationError::State(error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum GlobalCirculationGenerationError {
     #[error("global circulation generation was cancelled")]
     Cancelled,
+    #[error("invalid authoritative surface identity: {reason}")]
+    InvalidSurfaceIdentity { reason: String },
+    #[error("climate input fingerprint failed: {reason}")]
+    InputFingerprint { reason: String },
     #[error("climate work grid reconstruction changed identity")]
     GridReconstructionMismatch,
     #[error("invalid climate layer layout: {reason}")]
@@ -892,25 +1188,204 @@ pub enum GlobalCirculationGenerationError {
     #[error("global circulation dense allocation size overflowed")]
     AllocationOverflow,
     #[error(transparent)]
-    WorkDomain(#[from] ClimateWorkDomainValidationError),
+    WorkDomain(ClimateWorkDomainValidationError),
     #[error(transparent)]
-    Grid(#[from] CubedSphereGridError),
+    Grid(CubedSphereGridError),
     #[error(transparent)]
-    Forcing(#[from] super::GlobalClimateForcingError),
+    Forcing(super::GlobalClimateForcingError),
     #[error(transparent)]
-    State(#[from] LayeredStateError),
+    State(LayeredStateError),
     #[error(transparent)]
-    Tendency(#[from] LayeredTendencyError),
+    Tendency(LayeredTendencyError),
     #[error(transparent)]
-    Integrator(#[from] ClimateIntegratorError),
+    Integrator(ClimateIntegratorError),
     #[error(transparent)]
-    Projection(#[from] ClimateProjectionError),
+    Projection(ClimateProjectionError),
     #[error(transparent)]
-    ClimateField(#[from] ClimateValidationError),
+    ClimateField(ClimateValidationError),
     #[error(transparent)]
-    Validation(#[from] GlobalCirculationValidationError),
+    Validation(GlobalCirculationValidationError),
     #[error(transparent)]
     Report(#[from] ClimateReportError),
     #[error(transparent)]
     Checkpoint(#[from] ClimateCheckpointError),
+}
+
+impl From<ClimateWorkDomainValidationError> for GlobalCirculationGenerationError {
+    fn from(error: ClimateWorkDomainValidationError) -> Self {
+        if error == ClimateWorkDomainValidationError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::WorkDomain(error)
+        }
+    }
+}
+
+impl From<CubedSphereGridError> for GlobalCirculationGenerationError {
+    fn from(error: CubedSphereGridError) -> Self {
+        map_grid_error(error)
+    }
+}
+
+impl From<super::GlobalClimateForcingError> for GlobalCirculationGenerationError {
+    fn from(error: super::GlobalClimateForcingError) -> Self {
+        if error == super::GlobalClimateForcingError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Forcing(error)
+        }
+    }
+}
+
+impl From<LayeredStateError> for GlobalCirculationGenerationError {
+    fn from(error: LayeredStateError) -> Self {
+        map_state_error(error)
+    }
+}
+
+impl From<LayeredTendencyError> for GlobalCirculationGenerationError {
+    fn from(error: LayeredTendencyError) -> Self {
+        if error == LayeredTendencyError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Tendency(error)
+        }
+    }
+}
+
+impl From<ClimateIntegratorError> for GlobalCirculationGenerationError {
+    fn from(error: ClimateIntegratorError) -> Self {
+        if error == ClimateIntegratorError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Integrator(error)
+        }
+    }
+}
+
+impl From<ClimateProjectionError> for GlobalCirculationGenerationError {
+    fn from(error: ClimateProjectionError) -> Self {
+        if error == ClimateProjectionError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Projection(error)
+        }
+    }
+}
+
+impl From<GlobalCirculationValidationError> for GlobalCirculationGenerationError {
+    fn from(error: GlobalCirculationValidationError) -> Self {
+        if error == GlobalCirculationValidationError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::Validation(error)
+        }
+    }
+}
+
+impl From<ClimateValidationError> for GlobalCirculationGenerationError {
+    fn from(error: ClimateValidationError) -> Self {
+        if error == ClimateValidationError::Cancelled {
+            Self::Cancelled
+        } else {
+            Self::ClimateField(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::natural::{
+        global_circulation_owner_inventory, global_circulation_tendency_cell_bytes,
+    };
+
+    #[test]
+    fn c2_tendency_owner_formula_includes_the_f64_external_moisture_ledger() {
+        // Four layer tendency records (20 bytes each), five f32 scalar
+        // fields, and the retained external-moisture f64 ledger.
+        assert_eq!(
+            global_circulation_tendency_cell_bytes(ClimateModelProfile::C2LayeredV1),
+            108
+        );
+    }
+
+    #[test]
+    fn formation_memory_inventory_covers_assignment_and_rk3_combine_peaks() {
+        assert_eq!(global_circulation_owner_inventory(), (7, 5, 5, 3));
+    }
+
+    #[test]
+    fn thermal_energy_scale_uses_a_positive_absolute_temperature_origin() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let total = energy_total(&grid, &layout, &state, &BuildCancellation::new()).unwrap();
+        assert!(total.is_finite() && total > 0.0);
+    }
+
+    #[test]
+    fn public_budget_rejects_an_unledgered_internal_moisture_leak() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let cell_count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![1.0; cell_count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; cell_count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
+        let before = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let tendency = LayeredTendencySystem::new(&grid)
+            .evaluate_for_step(
+                &before,
+                &forcing,
+                &vec![1.0; grid.edges().len()],
+                0,
+                MACRO_STEP_SECONDS,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        assert_eq!(tendency.budget().external_moisture_net_rate_kg_s(), 0.0);
+
+        let mut leaked = before.clone();
+        leaked.specific_humidity_mut()[0] += 0.001;
+        let cancellation = BuildCancellation::new();
+        let mut budgets = BudgetAccumulator::new(&grid, &layout, &before, &cancellation).unwrap();
+        budgets
+            .record(
+                &grid,
+                &layout,
+                &before,
+                &leaked,
+                &tendency,
+                MACRO_STEP_SECONDS,
+                &cancellation,
+            )
+            .unwrap();
+        assert!(matches!(
+            budgets.finish(),
+            Err(ClimateReportError::StatisticAboveMaximum {
+                field: "moisture_relative_error",
+                ..
+            })
+        ));
+    }
 }

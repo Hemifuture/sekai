@@ -6,6 +6,9 @@ use crate::world::CellId;
 
 const EXTENSIVE_CONSERVATION_LIMIT: f64 = 1.0e-6;
 const CATEGORY_HALF_TOLERANCE: f64 = 64.0 * f64::EPSILON;
+const CANCELLATION_POLL_STRIDE: usize = 256;
+
+type CancellationCheck<'a> = Option<&'a dyn Fn() -> bool>;
 
 /// A conservative extensive-field result and its measured global budget closure.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,16 +71,30 @@ pub fn remap_intensive_f64(
     map: &ConservativeSurfaceMap,
     source: &[f64],
 ) -> Result<Vec<f64>, ConservativeRemapError> {
-    validate_scalar_input(map, "intensive_f64", source)?;
-    if source
-        .iter()
-        .all(|value| value.to_bits() == source[0].to_bits())
-    {
+    remap_intensive_f64_impl(map, source, None)
+}
+
+pub fn remap_intensive_f64_cancellable(
+    map: &ConservativeSurfaceMap,
+    source: &[f64],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f64>, ConservativeRemapError> {
+    remap_intensive_f64_impl(map, source, Some(cancelled))
+}
+
+fn remap_intensive_f64_impl(
+    map: &ConservativeSurfaceMap,
+    source: &[f64],
+    cancellation: CancellationCheck<'_>,
+) -> Result<Vec<f64>, ConservativeRemapError> {
+    let constant = validate_scalar_input(map, "intensive_f64", source, cancellation)?;
+    if constant {
         return Ok(vec![source[0]; map.target_ref().cell_count() as usize]);
     }
 
     let mut target = Vec::with_capacity(map.target_ref().cell_count() as usize);
     for target_index in 0..map.target_ref().cell_count() as usize {
+        poll_cancelled(target_index, cancellation)?;
         let row = map
             .target_row(CellId::from_raw(target_index as u32))
             .expect("validated conservative maps contain every target row");
@@ -115,8 +132,27 @@ pub fn remap_intensive_f32(
     map: &ConservativeSurfaceMap,
     source: &[f32],
 ) -> Result<Vec<f32>, ConservativeRemapError> {
+    remap_intensive_f32_impl(map, source, None)
+}
+
+pub fn remap_intensive_f32_cancellable(
+    map: &ConservativeSurfaceMap,
+    source: &[f32],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, ConservativeRemapError> {
+    remap_intensive_f32_impl(map, source, Some(cancelled))
+}
+
+fn remap_intensive_f32_impl(
+    map: &ConservativeSurfaceMap,
+    source: &[f32],
+    cancellation: CancellationCheck<'_>,
+) -> Result<Vec<f32>, ConservativeRemapError> {
     validate_length(map, "intensive_f32", source.len())?;
+    check_field_cancelled(cancellation)?;
+    let mut constant = true;
     for (index, &value) in source.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
         if !value.is_finite() {
             return Err(ConservativeRemapError::NonFiniteFieldValue {
                 field: "intensive_f32",
@@ -125,30 +161,31 @@ pub fn remap_intensive_f32(
                 found: f64::from(value),
             });
         }
+        constant &= value.to_bits() == source[0].to_bits();
     }
-    if source
-        .iter()
-        .all(|value| value.to_bits() == source[0].to_bits())
-    {
+    if constant {
         return Ok(vec![source[0]; map.target_ref().cell_count() as usize]);
     }
-    remap_intensive_f64(
-        map,
-        &source.iter().copied().map(f64::from).collect::<Vec<_>>(),
-    )?
-    .into_iter()
-    .enumerate()
-    .map(|(index, value)| {
+    let mut widened = Vec::with_capacity(source.len());
+    for (index, &value) in source.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
+        widened.push(f64::from(value));
+    }
+    let remapped = remap_intensive_f64_impl(map, &widened, cancellation)?;
+    let mut quantized_values = Vec::with_capacity(remapped.len());
+    for (index, value) in remapped.into_iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
         let quantized = value as f32;
-        quantized.is_finite().then_some(quantized).ok_or(
-            ConservativeRemapError::FieldQuantizationOverflow {
+        if !quantized.is_finite() {
+            return Err(ConservativeRemapError::FieldQuantizationOverflow {
                 field: "intensive_f32",
                 target_cell: CellId::from_raw(index as u32),
                 found: value,
-            },
-        )
-    })
-    .collect()
+            });
+        }
+        quantized_values.push(quantized);
+    }
+    Ok(quantized_values)
 }
 
 /// Conservatively remaps finite extensive per-cell amounts.
@@ -156,9 +193,26 @@ pub fn remap_extensive_f64(
     map: &ConservativeSurfaceMap,
     source: &[f64],
 ) -> Result<ExtensiveRemap, ConservativeRemapError> {
-    validate_scalar_input(map, "extensive_f64", source)?;
+    remap_extensive_f64_impl(map, source, None)
+}
+
+pub fn remap_extensive_f64_cancellable(
+    map: &ConservativeSurfaceMap,
+    source: &[f64],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ExtensiveRemap, ConservativeRemapError> {
+    remap_extensive_f64_impl(map, source, Some(cancelled))
+}
+
+fn remap_extensive_f64_impl(
+    map: &ConservativeSurfaceMap,
+    source: &[f64],
+    cancellation: CancellationCheck<'_>,
+) -> Result<ExtensiveRemap, ConservativeRemapError> {
+    validate_scalar_input(map, "extensive_f64", source, cancellation)?;
     let mut target = Vec::with_capacity(map.target_ref().cell_count() as usize);
     for target_index in 0..map.target_ref().cell_count() as usize {
+        poll_cancelled(target_index, cancellation)?;
         let row = map
             .target_row(CellId::from_raw(target_index as u32))
             .expect("validated conservative maps contain every target row");
@@ -178,9 +232,9 @@ pub fn remap_extensive_f64(
         target.push(sum.total("extensive_f64", target_index)?);
     }
 
-    let source_total = total(source, "extensive_f64")?;
-    let target_total = total(&target, "extensive_f64")?;
-    let absolute_scale = total_absolute(source, "extensive_f64")?;
+    let source_total = total(source, "extensive_f64", cancellation)?;
+    let target_total = total(&target, "extensive_f64", cancellation)?;
+    let absolute_scale = total_absolute(source, "extensive_f64", cancellation)?;
     let absolute_error = (source_total - target_total).abs();
     let relative_error = if absolute_scale == 0.0 {
         absolute_error
@@ -210,8 +264,26 @@ pub fn remap_tangent_components_f64(
     map: &ConservativeSurfaceMap,
     source_east_north: &[[f64; 2]],
 ) -> Result<Vec<[f64; 2]>, ConservativeRemapError> {
+    remap_tangent_components_f64_impl(map, source_east_north, None)
+}
+
+pub fn remap_tangent_components_f64_cancellable(
+    map: &ConservativeSurfaceMap,
+    source_east_north: &[[f64; 2]],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<[f64; 2]>, ConservativeRemapError> {
+    remap_tangent_components_f64_impl(map, source_east_north, Some(cancelled))
+}
+
+fn remap_tangent_components_f64_impl(
+    map: &ConservativeSurfaceMap,
+    source_east_north: &[[f64; 2]],
+    cancellation: CancellationCheck<'_>,
+) -> Result<Vec<[f64; 2]>, ConservativeRemapError> {
     validate_length(map, "tangent_f64", source_east_north.len())?;
+    check_field_cancelled(cancellation)?;
     for (index, components) in source_east_north.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
         for (component, &value) in components.iter().enumerate() {
             if !value.is_finite() {
                 return Err(ConservativeRemapError::NonFiniteFieldValue {
@@ -226,6 +298,7 @@ pub fn remap_tangent_components_f64(
 
     let mut target = Vec::with_capacity(map.target_ref().cell_count() as usize);
     for target_index in 0..map.target_ref().cell_count() as usize {
+        poll_cancelled(target_index, cancellation)?;
         let row = map
             .target_row(CellId::from_raw(target_index as u32))
             .expect("validated conservative maps contain every target row");
@@ -303,7 +376,7 @@ pub fn remap_categories_u16(
             )?;
         }
     }
-    let total_target_area = total(map.target_cell_areas_m2(), "categories_u16")?;
+    let total_target_area = total(map.target_cell_areas_m2(), "categories_u16", None)?;
     let ambiguous_target_area_fraction =
         ambiguous_area.total("categories_u16", 0)? / total_target_area;
     Ok(CategoricalRemap {
@@ -316,22 +389,24 @@ fn validate_scalar_input(
     map: &ConservativeSurfaceMap,
     field: &'static str,
     source: &[f64],
-) -> Result<(), ConservativeRemapError> {
+    cancellation: CancellationCheck<'_>,
+) -> Result<bool, ConservativeRemapError> {
     validate_length(map, field, source.len())?;
-    if let Some((index, found)) = source
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, value)| !value.is_finite())
-    {
-        return Err(ConservativeRemapError::NonFiniteFieldValue {
-            field,
-            index,
-            component: None,
-            found,
-        });
+    check_field_cancelled(cancellation)?;
+    let mut constant = true;
+    for (index, &found) in source.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
+        if !found.is_finite() {
+            return Err(ConservativeRemapError::NonFiniteFieldValue {
+                field,
+                index,
+                component: None,
+                found,
+            });
+        }
+        constant &= found.to_bits() == source[0].to_bits();
     }
-    Ok(())
+    Ok(constant)
 }
 
 fn validate_length(
@@ -350,20 +425,50 @@ fn validate_length(
     Ok(())
 }
 
-fn total(values: &[f64], field: &'static str) -> Result<f64, ConservativeRemapError> {
+fn total(
+    values: &[f64],
+    field: &'static str,
+    cancellation: CancellationCheck<'_>,
+) -> Result<f64, ConservativeRemapError> {
     let mut sum = FieldSum::default();
     for (index, &value) in values.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
         sum.add(value, field, index)?;
     }
     sum.total(field, values.len().saturating_sub(1))
 }
 
-fn total_absolute(values: &[f64], field: &'static str) -> Result<f64, ConservativeRemapError> {
+fn total_absolute(
+    values: &[f64],
+    field: &'static str,
+    cancellation: CancellationCheck<'_>,
+) -> Result<f64, ConservativeRemapError> {
     let mut sum = FieldSum::default();
     for (index, &value) in values.iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
         sum.add(value.abs(), field, index)?;
     }
     sum.total(field, values.len().saturating_sub(1))
+}
+
+fn poll_cancelled(
+    index: usize,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), ConservativeRemapError> {
+    if index % CANCELLATION_POLL_STRIDE == 0 {
+        check_field_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_field_cancelled(
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), ConservativeRemapError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(ConservativeRemapError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

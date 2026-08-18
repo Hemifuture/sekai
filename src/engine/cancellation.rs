@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -12,6 +12,7 @@ pub struct BuildCancellationError;
 #[derive(Debug, Clone, Default)]
 pub struct BuildCancellation {
     cancelled: Arc<AtomicBool>,
+    observation_count: Arc<AtomicU64>,
 }
 
 impl BuildCancellation {
@@ -27,7 +28,15 @@ impl BuildCancellation {
 
     /// Returns whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
+        self.observation_count.fetch_add(1, Ordering::Relaxed);
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Number of cooperative observations made by all clones. This supports
+    /// progress-synchronized latency evidence without changing cancellation
+    /// semantics or exposing algorithm-specific test hooks.
+    pub fn observation_count(&self) -> u64 {
+        self.observation_count.load(Ordering::Relaxed)
     }
 
     /// Converts the current signal into a convenient cooperative result.
@@ -51,12 +60,14 @@ mod tests {
         assert!(!first.is_cancelled());
         assert!(!second.is_cancelled());
         assert_eq!(first.check_cancelled(), Ok(()));
+        assert_eq!(first.observation_count(), 3);
 
         second.cancel();
 
         assert!(first.is_cancelled());
         assert!(second.is_cancelled());
         assert_eq!(first.check_cancelled(), Err(BuildCancellationError));
+        assert_eq!(second.observation_count(), 6);
         first.cancel();
         assert!(second.is_cancelled());
     }

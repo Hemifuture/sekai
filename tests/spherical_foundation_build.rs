@@ -100,7 +100,7 @@ fn spherical_artifact_wrappers_round_trip_with_strict_validation() {
     assert_eq!(error.code(), "spherical-spatial.invalid-snapshot");
     assert_eq!(
         error.message(),
-        "unsupported spherical surface schema version 65535; supported version is 1"
+        "unsupported spherical surface schema version 65535; latest supported version is 2"
     );
 }
 

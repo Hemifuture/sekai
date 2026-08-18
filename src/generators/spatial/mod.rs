@@ -15,8 +15,10 @@ pub use jittered_grid::JitteredGridSites;
 pub use planar_voronoi::{PlanarVoronoiBuilder, SpatialBuildError};
 pub use profile_surface::{ProfileSurfaceBuildError, ProfileSurfaceBuilder, ProfileSurfaceBundle};
 pub use remap_fields::{
-    remap_categories_u16, remap_extensive_f64, remap_intensive_f32, remap_intensive_f64,
-    remap_tangent_components_f64, CategoricalRemap, ExtensiveRemap,
+    remap_categories_u16, remap_extensive_f64, remap_extensive_f64_cancellable,
+    remap_intensive_f32, remap_intensive_f32_cancellable, remap_intensive_f64,
+    remap_intensive_f64_cancellable, remap_tangent_components_f64,
+    remap_tangent_components_f64_cancellable, CategoricalRemap, ExtensiveRemap,
 };
 pub use spherical_stage::{
     spherical_foundation_graph, SphericalSpaceArtifact, SphericalSurfaceArtifact,

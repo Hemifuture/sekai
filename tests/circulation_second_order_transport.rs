@@ -20,6 +20,15 @@ fn extensive_total(grid: &CubedSphereGrid, values: &[f32]) -> f64 {
         .sum()
 }
 
+fn component_extensive_total(grid: &CubedSphereGrid, values: &[f32], positive_x: bool) -> f64 {
+    grid.cells()
+        .iter()
+        .zip(values)
+        .filter(|(cell, _)| (cell.center_unit()[0] >= 0.0) == positive_x)
+        .map(|(cell, value)| cell.area_m2() * f64::from(*value))
+        .sum()
+}
+
 #[test]
 fn limited_reconstruction_improves_a_smooth_linear_solid_rotation() {
     let grid = CubedSphereGrid::new(12, 6_371_000.0).unwrap();
@@ -141,6 +150,65 @@ fn large_step_positivity_scaling_prevents_negative_donors() {
         .unwrap();
     assert!(result.values().iter().all(|value| *value >= 0.0));
     assert!(result.positivity_scaled_cells() > 0);
+}
+
+#[test]
+fn disconnected_transport_components_retain_their_own_extensive_tracer() {
+    let grid = CubedSphereGrid::new(6, 6_371_000.0).unwrap();
+    let operators = CirculationOperators::new(&grid);
+    let velocity = solid_rotation(&grid, 900.0);
+    let permeability = grid
+        .edges()
+        .iter()
+        .map(|edge| {
+            let [first, second] = *edge.cells();
+            let first_positive = grid.cells()[first as usize].center_unit()[0] >= 0.0;
+            let second_positive = grid.cells()[second as usize].center_unit()[0] >= 0.0;
+            f32::from(first_positive == second_positive)
+        })
+        .collect::<Vec<_>>();
+    let scalar = grid
+        .cells()
+        .iter()
+        .map(|cell| {
+            let [x, y, z] = cell.center_unit();
+            if x >= 0.0 {
+                if y + z >= 0.0 {
+                    1.0
+                } else {
+                    0.05
+                }
+            } else if y - z >= 0.0 {
+                20.0
+            } else {
+                7.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let before = [
+        component_extensive_total(&grid, &scalar, false),
+        component_extensive_total(&grid, &scalar, true),
+    ];
+    let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+    let result = operators
+        .advect_scalar_monotone_second_order_into(
+            &scalar,
+            &velocity,
+            &permeability,
+            80_000.0,
+            true,
+            &mut workspace,
+        )
+        .unwrap();
+
+    for (index, positive_x) in [false, true].into_iter().enumerate() {
+        let after = component_extensive_total(&grid, result.values(), positive_x);
+        let relative = (after - before[index]).abs() / before[index].abs();
+        assert!(
+            relative <= 2.0e-7,
+            "component {index} exchanged tracer across a closed barrier: {relative}"
+        );
+    }
 }
 
 #[test]

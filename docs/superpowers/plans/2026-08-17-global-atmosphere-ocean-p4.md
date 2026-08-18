@@ -136,12 +136,12 @@ Files:
 - Create: `docs/superpowers/specs/2026-08-17-global-atmosphere-ocean-p4-completion.md`
 - Modify: this plan
 
-- [ ] Write deterministic Release JSON/CSV for fixtures and 17 P3 seeds.
-- [ ] Render fixed map/globe rows for lower/upper wind, shear, surface current,
+- [x] Write deterministic Release JSON/CSV for fixtures and 17 P3 seeds.
+- [x] Render fixed map/globe rows for lower/upper wind, shear, surface current,
   SST, thermocline, humidity, precipitation, and solver/remap diagnostics.
-- [ ] Measure C1 n24, C2 n32/n48, memory, cancellation, and cold/cache behavior.
-- [ ] Inspect seeds 42, 43, and 83 and fix every severe artifact.
-- [ ] Run fmt, all-target/all-feature check/test/Clippy, WASM, focused/adjacent
+- [x] Measure C1 n24, C2 n32/n48, memory, cancellation, and cold/cache behavior.
+- [x] Inspect seeds 42, 43, and 83 and fix every severe artifact.
+- [x] Run fmt, all-target/all-feature check/test/Clippy, WASM, focused/adjacent
   suites, frozen P0/P2/P3 evidence, and all P4 Release writers.
-- [ ] Record integrator decision, hashes, metrics, timing, limitations, and P5
+- [x] Record integrator decision, hashes, metrics, timing, limitations, and P5
   handoff; check all boxes and commit.

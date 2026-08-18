@@ -3,12 +3,13 @@ mod support;
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::{
     ClimateWorkDomainBuilder, GlobalCirculationGenerationError, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, SELECTED_PRODUCTION_INTEGRATOR,
+    GlobalCirculationPhase, GlobalClimateForcingBuilder, SELECTED_PRODUCTION_INTEGRATOR,
 };
 use sekai::world::natural::{
     ClimateCapabilityAvailability, ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile,
-    NaturalQualityProfile,
+    ClimateWorkDomainSnapshot, LandOceanKind, NaturalQualityProfile,
 };
+use sekai::world::spatial::{ConservativeSurfaceMap, SurfaceOverlapWeight, TangentTransform};
 
 use support::global_circulation::global_circulation_fixture;
 
@@ -28,6 +29,13 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     assert_eq!(snapshot.integrator(), SELECTED_PRODUCTION_INTEGRATOR);
     assert_eq!(snapshot.profile(), ClimateModelProfile::C2LayeredV1);
     assert_eq!(snapshot.fields().cell_count(), surface.cells().len());
+    let public_field_bytes = surface.cells().len() as u64 * 24 * 12 * size_of::<f32>() as u64;
+    assert!(
+        snapshot.solve_report().dense_state_bytes() >= public_field_bytes,
+        "dense allocation report {} is smaller than the {}-byte public C2 payload",
+        snapshot.solve_report().dense_state_bytes(),
+        public_field_bytes
+    );
     assert!(snapshot.fields().upper_wind_m_s().is_some());
     assert!(snapshot.fields().vertical_wind_shear_m_s().is_some());
     assert!(snapshot
@@ -67,15 +75,118 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     for cell in 0..lower.len() {
         for month in 0..12 {
             for component in 0..3 {
-                assert!(
-                    (shear[cell][month][component]
-                        - (upper[cell][month][component] - lower[cell][month][component]))
-                        .abs()
-                        <= 2.0e-4
+                assert_eq!(
+                    shear[cell][month][component],
+                    upper[cell][month][component] - lower[cell][month][component]
                 );
             }
         }
     }
+
+    let thermocline_depth = snapshot
+        .fields()
+        .monthly_thermocline_depth_m()
+        .unwrap()
+        .values();
+    let thermocline_height = snapshot
+        .fields()
+        .monthly_thermocline_height_anomaly_m()
+        .unwrap()
+        .values();
+    let reference_depth = snapshot
+        .layout()
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == ClimateLayerRole::OceanThermocline)
+        .unwrap()
+        .reference_thickness_m() as f32;
+    for cell in 0..thermocline_depth.len() {
+        for month in 0..12 {
+            assert_eq!(
+                thermocline_depth[cell][month],
+                reference_depth + thermocline_height[cell][month]
+            );
+        }
+    }
+
+    assert_eq!(
+        snapshot.checkpoint().completed_months(),
+        u32::from(snapshot.solve_report().formation_years()) * 12
+    );
+    assert_eq!(
+        snapshot.checkpoint().state_fingerprint(),
+        &snapshot.fields().fingerprint()
+    );
+    assert!(
+        snapshot
+            .remap_report()
+            .published_precipitation_relative_error()
+            <= sekai::world::natural::GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX
+    );
+
+    let currents = snapshot.fields().surface_ocean_current_m_s().values();
+    for (cell, kind) in fixture.relief.land_ocean().raw_values().iter().enumerate() {
+        if *kind == LandOceanKind::Land.raw() {
+            for current in &currents[cell] {
+                assert_eq!(*current, [0.0; 3]);
+            }
+        }
+    }
+}
+
+#[test]
+fn public_generator_rejects_noncanonical_remap_even_when_its_fingerprint_changes() {
+    let fixture = global_circulation_fixture();
+    let original_map = fixture.domain.climate_to_source();
+    let mut weights = original_map.weights().to_vec();
+    let first = weights[0];
+    let mut coefficients = first.tangent_transform().coefficients();
+    coefficients[0] *= 0.999;
+    weights[0] = SurfaceOverlapWeight::new(
+        first.source_cell(),
+        first.area_m2(),
+        TangentTransform::new(coefficients).unwrap(),
+    )
+    .unwrap();
+    let stats = original_map.solve_stats();
+    let changed_reverse = ConservativeSurfaceMap::new(
+        original_map.schema_version(),
+        original_map.source_ref(),
+        original_map.target_ref(),
+        original_map.source_cell_areas_m2().to_vec(),
+        original_map.target_cell_areas_m2().to_vec(),
+        original_map.target_row_offsets().to_vec(),
+        weights,
+        stats.balance_iterations(),
+        stats.max_relative_geometric_adjustment(),
+    )
+    .unwrap();
+    let changed_domain = ClimateWorkDomainSnapshot::new(
+        fixture.domain.schema_version(),
+        fixture.domain.profile(),
+        fixture.domain.face_resolution(),
+        fixture.domain.source_ref(),
+        *fixture.domain.climate_grid_fingerprint(),
+        fixture.domain.climate_surface().clone(),
+        fixture.domain.source_to_climate().clone(),
+        changed_reverse,
+    )
+    .unwrap();
+    assert_ne!(fixture.domain.fingerprint(), changed_domain.fingerprint());
+
+    let surface = fixture.bundle.authoritative_surface();
+    assert!(changed_domain.validate_against(surface).is_err());
+    assert!(
+        GlobalCirculationGenerator::generate(
+            surface,
+            &changed_domain,
+            &fixture.forcing,
+            ClimateModelProfile::C1SingleLayerV1,
+            &BuildCancellation::new(),
+        )
+        .is_err(),
+        "a changed map fingerprint identifies the forgery; it does not legalize it"
+    );
 }
 
 #[test]
@@ -148,7 +259,14 @@ fn formation_is_convergent_budgeted_causal_and_deterministic() {
 
     let fields = first.fields();
     let precipitation = fields.monthly_precipitation_mm_day().values();
+    let orographic = fields.monthly_orographic_precipitation_mm_day().values();
     assert!(precipitation.iter().flatten().any(|value| *value > 0.01));
+    assert!(orographic.iter().flatten().any(|value| *value > 0.01));
+    for (total, orographic) in precipitation.iter().zip(orographic) {
+        for month in 0..12 {
+            assert!(orographic[month] <= total[month]);
+        }
+    }
     let mixed = fields.monthly_sea_surface_temperature_c().values();
     let thermocline = fields.monthly_thermocline_temperature_c().unwrap().values();
     assert!(mixed.iter().zip(thermocline).any(|(mixed, thermocline)| {
@@ -208,6 +326,64 @@ fn pre_cancelled_generation_publishes_no_partial_snapshot() {
         ),
         Err(GlobalCirculationGenerationError::Cancelled)
     );
+}
+
+#[test]
+fn active_cancellation_is_synchronized_after_completed_solver_work_units() {
+    let fixture = global_circulation_fixture();
+    for phase in [
+        GlobalCirculationPhase::TransportCompleted,
+        GlobalCirculationPhase::FastSubstepCompleted,
+        GlobalCirculationPhase::ProjectionFieldCompleted,
+        GlobalCirculationPhase::PublicationStarted,
+        GlobalCirculationPhase::StateFingerprintCompleted,
+    ] {
+        let cancellation = BuildCancellation::new();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+        let latency = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let mut triggered = false;
+                GlobalCirculationGenerator::generate_with_phase_observer(
+                    fixture.bundle.authoritative_surface(),
+                    &fixture.domain,
+                    &fixture.forcing,
+                    ClimateModelProfile::C2LayeredV1,
+                    &cancellation,
+                    |observed| {
+                        if observed == phase && !triggered {
+                            triggered = true;
+                            entered_tx.send(()).unwrap();
+                        }
+                    },
+                )
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .unwrap_or_else(|_| panic!("solver never entered {phase:?}"));
+            // The observer fires only after a real work unit. Wait until the
+            // following unit has itself crossed several cooperative polls;
+            // cancellation is therefore requested from inside active work,
+            // not at the observer boundary.
+            let observations = cancellation.observation_count();
+            let progress_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while cancellation.observation_count() < observations + 4 {
+                assert!(
+                    std::time::Instant::now() < progress_deadline,
+                    "solver stopped polling after {phase:?}"
+                );
+                std::thread::yield_now();
+            }
+            let started = std::time::Instant::now();
+            cancellation.cancel();
+            let result = worker.join().unwrap();
+            assert_eq!(result, Err(GlobalCirculationGenerationError::Cancelled));
+            started.elapsed()
+        });
+        assert!(
+            latency <= std::time::Duration::from_millis(250),
+            "{phase:?} cancellation took {latency:?}"
+        );
+    }
 }
 
 #[test]
