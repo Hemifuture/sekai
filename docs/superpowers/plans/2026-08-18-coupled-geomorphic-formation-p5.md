@@ -108,13 +108,13 @@ Files:
 - Modify: `src/generators/natural/mod.rs`
 - Create: `tests/surface_formation_generation.rs`
 
-- [ ] Write RED tests for the exact component sum, multirate ordering, restart
+- [x] Write RED tests for the exact component sum, multirate ordering, restart
   from P3 on every outer iteration, production-climate feedback, all five
   residual components, convergence/non-convergence, deterministic repeats,
   memory ownership, and active cancellation.
-- [ ] Compose the complete eight-macro-step solve and bounded four-iteration
+- [x] Compose the complete eight-macro-step solve and bounded four-iteration
   fixed point with reusable workspaces and no partial publication.
-- [ ] Verify analytic fixtures and fixed seeds before tuning any declared
+- [x] Verify analytic fixtures and fixed seeds before tuning any declared
   constant; record every design amendment and commit.
 
 ## Task 8: Add exact quality gates and the typed atomic stage

@@ -194,6 +194,17 @@ runoff_fraction = 0.15 + 0.70 * (1 - relative_permeability)
 monthly_runoff_mm = precipitation_mm_day * days_per_month * runoff_fraction
 ```
 
+P4 admits mean rates far above the published `20,000 mm yr-1` annual
+precipitation envelope that every other natural product already shares. P5
+therefore derives one bounded monthly formation precipitation envelope before
+any process forcing: monthly totals are expanded from the mean daily rates,
+and a cell whose annual total exceeds the published envelope is scaled by a
+single factor across all twelve months. Hydrology runoff and hillslope
+precipitation forcing both read that one envelope, so monthly totals stay
+consistent with their own annual sum, with discharge, and with the published
+field bounds. The envelope is a declared bound of the formation forcing, not a
+claim that the underlying circulation produced less rain.
+
 Ocean runoff is zero. This is deliberately named effective formation runoff;
 soil storage, evapotranspiration, snow, and groundwater are unavailable until
 their owning phases. Monthly water volume and contributing cell area are

@@ -197,5 +197,6 @@ pub use surface_formation::{
     IsostaticAdjustmentStep, LocalAiryIsostasy, NonlinearHillslopeTransport,
     ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs, SedimentTransportStep,
     StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,
+    SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

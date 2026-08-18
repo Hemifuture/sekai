@@ -6,13 +6,13 @@ use thiserror::Error;
 use super::topology::NaturalTopologyIndex;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    BasinOutletKind, ClimateValidationError, DrainageBasin, ElevationField, HydroErosionSpec,
-    HydroErosionSpecError, HydrologySnapshot, HydrologyValidationError, Lake,
-    PreliminaryClimateSnapshot, ReliefValidationError, RiverSegment, RiverSegmentKind,
-    StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind, CLIMATE_MONTH_COUNT, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_ENDORHEIC_RESIDENCE_YEARS, FORMATION_MINIMUM_LAKE_DEPTH_M,
-    FORMATION_RUNOFF_MIN_FRACTION, FORMATION_RUNOFF_PERMEABILITY_RANGE, HYDROLOGY_SCHEMA_V1,
-    SECONDS_PER_CLIMATOLOGICAL_MONTH,
+    formation_monthly_precipitation_mm, BasinOutletKind, ClimateValidationError, DrainageBasin,
+    ElevationField, HydroErosionSpec, HydroErosionSpecError, HydrologySnapshot,
+    HydrologyValidationError, Lake, PreliminaryClimateSnapshot, ReliefValidationError,
+    RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind,
+    CLIMATE_MONTH_COUNT, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ENDORHEIC_RESIDENCE_YEARS,
+    FORMATION_MINIMUM_LAKE_DEPTH_M, FORMATION_RUNOFF_MIN_FRACTION,
+    FORMATION_RUNOFF_PERMEABILITY_RANGE, HYDROLOGY_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use crate::world::spatial::{
     NaturalSurface, PlanarNaturalSurface, SpatialSnapshot, SpatialValidationError, Topology,
@@ -21,7 +21,6 @@ use crate::world::{CellId, DrainageBasinId, LakeId, RiverSegmentId};
 
 const CENTIMETERS_PER_METER: f64 = 100.0;
 const METERS_PER_MILLIMETER: f64 = 0.001;
-const SECONDS_PER_DAY: f64 = 86_400.0;
 const FORMATION_MINIMUM_LAKE_DEPTH_CM: u16 =
     (FORMATION_MINIMUM_LAKE_DEPTH_M * CENTIMETERS_PER_METER) as u16;
 const CANCELLATION_POLL_MASK: usize = 255;
@@ -832,7 +831,6 @@ fn local_runoff(
     forcing_kind: RunoffForcingKind,
     cancellation: Option<&BuildCancellation>,
 ) -> Result<Vec<[f32; CLIMATE_MONTH_COUNT]>, HydrologyGenerationError> {
-    let days_per_month = SECONDS_PER_CLIMATOLOGICAL_MONTH / SECONDS_PER_DAY;
     let mut runoff = Vec::with_capacity(water.len());
     for index in 0..water.len() {
         poll_cancelled(cancellation, index)?;
@@ -850,11 +848,9 @@ fn local_runoff(
                     let runoff_fraction = FORMATION_RUNOFF_MIN_FRACTION
                         + FORMATION_RUNOFF_PERMEABILITY_RANGE
                             * (1.0 - f64::from(relative_permeability[index]));
-                    std::array::from_fn(|month| {
-                        (f64::from(monthly_precipitation_mm[index][month])
-                            * days_per_month
-                            * runoff_fraction) as f32
-                    })
+                    let bounded =
+                        formation_monthly_precipitation_mm(&monthly_precipitation_mm[index]);
+                    std::array::from_fn(|month| (bounded[month] * runoff_fraction) as f32)
                 }
             }
         };

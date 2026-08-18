@@ -1,6 +1,7 @@
 //! Coupled P5 surface-formation kernels.
 
 mod coast;
+mod generation;
 mod hillslope;
 mod hydrology;
 mod isostasy;
@@ -8,6 +9,9 @@ mod sediment;
 mod stream_power;
 
 pub use coast::{CoastGenerationError, CoastalExchange, CoastalExchangeStep, CoastalInputs};
+pub use generation::{
+    SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
+};
 pub use hillslope::{
     HillslopeGenerationError, HillslopeInputs, HillslopeTransportStep, HillslopeWorkspace,
     NonlinearHillslopeTransport,

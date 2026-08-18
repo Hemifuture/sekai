@@ -7,7 +7,8 @@ use thiserror::Error;
 use super::{
     water_volume_at_sea_level_m3, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
     NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot,
-    CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M, WATER_VOLUME_RELATIVE_TOLERANCE,
+    ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
@@ -119,6 +120,81 @@ pub const FORMATION_SEDIMENT_RESIDUAL_SCALE_M: f64 = 10.0;
 /// Coastline area-change scale used by the outer fixed-point residual.
 pub const FORMATION_COASTLINE_RESIDUAL_SCALE: f64 = 0.005;
 
+/// Seconds in one mean solar day, used to expand published mean daily rates.
+pub const FORMATION_SECONDS_PER_DAY: f64 = 86_400.0;
+
+/// Converts published P4 mean daily rates into the single bounded monthly
+/// formation precipitation envelope every P5 process forcing is derived from.
+///
+/// P4 admits mean rates far above the published annual-precipitation envelope
+/// that the rest of the natural pipeline shares. A cell above that envelope is
+/// scaled by one factor across all twelve months, so monthly totals stay
+/// consistent with their own annual sum and with every derived rate. The
+/// envelope stays in `f64`; each consumer quantizes its own published field
+/// exactly once.
+pub fn formation_monthly_precipitation_mm(
+    monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT],
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    let days_per_month =
+        CLIMATOLOGICAL_YEAR_SECONDS / CLIMATE_MONTH_COUNT as f64 / FORMATION_SECONDS_PER_DAY;
+    let mut monthly: [f64; CLIMATE_MONTH_COUNT] =
+        std::array::from_fn(|month| f64::from(monthly_mm_day[month]) * days_per_month);
+    let annual = monthly.iter().sum::<f64>();
+    if annual > f64::from(ANNUAL_PRECIPITATION_MAX_MM) {
+        let scale = f64::from(ANNUAL_PRECIPITATION_MAX_MM) / annual;
+        for value in &mut monthly {
+            *value *= scale;
+        }
+    }
+    monthly
+}
+
+/// Returns the bounded annual formation precipitation of one cell.
+pub fn formation_annual_precipitation_mm(monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT]) -> f32 {
+    formation_monthly_precipitation_mm(monthly_mm_day)
+        .iter()
+        .sum::<f64>() as f32
+}
+
+/// Conservative inventory of every dense buffer one P5 solve owns at once.
+///
+/// The nested production circulation reports its own dense ownership through
+/// `ClimateSolveReport`; this inventory covers the formation-owned buffers.
+pub fn expected_surface_formation_dense_state_bytes(
+    cell_count: u32,
+    edge_count: u32,
+) -> Option<u64> {
+    /// Eight signed `f64` component accumulators.
+    const COMPONENT_ACCUMULATOR_BYTES_PER_CELL: u64 = 8 * 8;
+    /// Immutable primary relief plus the working retained elevation.
+    const WORKING_ELEVATION_BYTES_PER_CELL: u64 = 2 * 4;
+    /// Previous and candidate retained terrain: ten components, sediment
+    /// thickness, five provenance fractions, four `f64` ledgers, and the delta
+    /// potential.
+    const RETAINED_TERRAIN_BYTES_PER_CELL: u64 = 2 * (10 * 4 + 4 + 5 * 4 + 4 * 8 + 4);
+    /// Previous and candidate hydrology: monthly runoff and discharge, five
+    /// dense `f32` fields, receiver, basin, Strahler order, and surface water.
+    const HYDROLOGY_BYTES_PER_CELL: u64 = 2 * (2 * 12 * 4 + 5 * 4 + 8 + 8 + 4 + 4);
+    /// Paired hillslope workspace request, limit, mass, and source buffers.
+    const HILLSLOPE_WORKSPACE_BYTES_PER_CELL: u64 = 6 * 8 + 2 * 5 * 8;
+    /// Sediment packets, deposited packets, six `f64` ledgers, and the stable
+    /// upstream-to-downstream order.
+    const SEDIMENT_ROUTER_BYTES_PER_CELL: u64 = 2 * 10 * 8 + 6 * 8 + 4;
+    /// One requested paired transfer per authoritative edge.
+    const HILLSLOPE_WORKSPACE_BYTES_PER_EDGE: u64 = 32;
+
+    let per_cell = COMPONENT_ACCUMULATOR_BYTES_PER_CELL
+        + WORKING_ELEVATION_BYTES_PER_CELL
+        + RETAINED_TERRAIN_BYTES_PER_CELL
+        + HYDROLOGY_BYTES_PER_CELL
+        + HILLSLOPE_WORKSPACE_BYTES_PER_CELL
+        + SEDIMENT_ROUTER_BYTES_PER_CELL;
+    u64::from(cell_count)
+        .checked_mul(per_cell)?
+        .checked_add(u64::from(edge_count).checked_mul(HILLSLOPE_WORKSPACE_BYTES_PER_EDGE)?)
+        .filter(|bytes| *bytes > 0 && *bytes <= SURFACE_FORMATION_DENSE_STATE_BYTES_MAX)
+}
+
 const MAX_FORMATION_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 const MAX_COMPONENT_ABS_M: f32 = 100_000.0;
 const MAX_SEDIMENT_THICKNESS_M: f32 = 100_000.0;
@@ -180,6 +256,8 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
         FORMATION_ENDORHEIC_RESIDENCE_YEARS,
         CLIMATOLOGICAL_YEAR_SECONDS,
+        FORMATION_SECONDS_PER_DAY,
+        f64::from(ANNUAL_PRECIPITATION_MAX_MM),
         FORMATION_ELEVATION_RESIDUAL_SCALE_M,
         FORMATION_RECEIVER_RESIDUAL_SCALE,
         FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE,
