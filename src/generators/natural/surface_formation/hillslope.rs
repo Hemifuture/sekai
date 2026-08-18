@@ -2,13 +2,15 @@ use thiserror::Error;
 
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_elevation_from_components, SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_HILLSLOPE_CRITICAL_SLOPE, FORMATION_HILLSLOPE_DENOMINATOR_MIN,
-    FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, FORMATION_HILLSLOPE_ERODIBILITY_BASE,
-    FORMATION_HILLSLOPE_ERODIBILITY_RANGE, FORMATION_HILLSLOPE_FRACTURE_BASE,
-    FORMATION_HILLSLOPE_FRACTURE_RANGE, FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX,
-    FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM, FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION,
-    FORMATION_HILLSLOPE_WEATHERING_BASE, FORMATION_HILLSLOPE_WEATHERING_RANGE,
+    formation_elevation_from_components, SedimentSourceKindField, SurfaceWaterField,
+    SurfaceWaterKind, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3, FORMATION_HILLSLOPE_CRITICAL_SLOPE,
+    FORMATION_HILLSLOPE_DENOMINATOR_MIN, FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR,
+    FORMATION_HILLSLOPE_ERODIBILITY_BASE, FORMATION_HILLSLOPE_ERODIBILITY_RANGE,
+    FORMATION_HILLSLOPE_FRACTURE_BASE, FORMATION_HILLSLOPE_FRACTURE_RANGE,
+    FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX, FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM,
+    FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION, FORMATION_HILLSLOPE_WEATHERING_BASE,
+    FORMATION_HILLSLOPE_WEATHERING_RANGE, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
@@ -23,25 +25,30 @@ pub struct HillslopeInputs<'a> {
     pub substrate_erodibility: &'a [f32],
     pub fracture_intensity: &'a [f32],
     pub annual_precipitation_mm: &'a [f32],
+    pub substrate_density_kg_m3: &'a [f32],
+    pub sediment_sources: &'a SedimentSourceKindField,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct EdgeTransfer {
     donor: usize,
     receiver: usize,
-    requested_volume_m3: f64,
+    source_index: usize,
+    requested_mass_kg: f64,
 }
 
 /// Reusable dense buffers for the paired edge solve.
 #[derive(Debug, Default)]
 pub struct HillslopeWorkspace {
     transfers: Vec<EdgeTransfer>,
-    outgoing_requested_m3: Vec<f64>,
-    incoming_requested_m3: Vec<f64>,
-    outgoing_limit_m3: Vec<f64>,
-    incoming_limit_m3: Vec<f64>,
-    erosion_volume_m3: Vec<f64>,
-    deposition_volume_m3: Vec<f64>,
+    outgoing_requested_kg: Vec<f64>,
+    incoming_requested_kg: Vec<f64>,
+    outgoing_limit_kg: Vec<f64>,
+    incoming_limit_kg: Vec<f64>,
+    erosion_mass_kg: Vec<f64>,
+    deposition_mass_kg: Vec<f64>,
+    erosion_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    deposition_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     allocation_epoch: u64,
 }
 
@@ -55,12 +62,12 @@ impl HillslopeWorkspace {
         }
         self.transfers.clear();
         for values in [
-            &mut self.outgoing_requested_m3,
-            &mut self.incoming_requested_m3,
-            &mut self.outgoing_limit_m3,
-            &mut self.incoming_limit_m3,
-            &mut self.erosion_volume_m3,
-            &mut self.deposition_volume_m3,
+            &mut self.outgoing_requested_kg,
+            &mut self.incoming_requested_kg,
+            &mut self.outgoing_limit_kg,
+            &mut self.incoming_limit_kg,
+            &mut self.erosion_mass_kg,
+            &mut self.deposition_mass_kg,
         ] {
             if values.len() != cell_count {
                 values.resize(cell_count, 0.0);
@@ -68,8 +75,22 @@ impl HillslopeWorkspace {
             }
             values.fill(0.0);
         }
-        self.outgoing_limit_m3.fill(f64::INFINITY);
-        self.incoming_limit_m3.fill(f64::INFINITY);
+        if self.erosion_by_source_kg.len() != cell_count {
+            self.erosion_by_source_kg
+                .resize(cell_count, [0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]);
+            allocated = true;
+        }
+        if self.deposition_by_source_kg.len() != cell_count {
+            self.deposition_by_source_kg
+                .resize(cell_count, [0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]);
+            allocated = true;
+        }
+        self.erosion_by_source_kg
+            .fill([0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]);
+        self.deposition_by_source_kg
+            .fill([0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]);
+        self.outgoing_limit_kg.fill(f64::INFINITY);
+        self.incoming_limit_kg.fill(f64::INFINITY);
         if allocated {
             self.allocation_epoch = self.allocation_epoch.saturating_add(1);
         }
@@ -87,10 +108,14 @@ pub struct HillslopeTransportStep {
     elevation_m: Vec<f32>,
     hillslope_erosion_m: Vec<f32>,
     hillslope_deposition_m: Vec<f32>,
-    transported_volume_m3: f64,
+    removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    deposited_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    transported_mass_kg: f64,
     removed_volume_m3: f64,
     deposited_volume_m3: f64,
-    retained_volume_relative_error: f64,
+    removed_mass_kg: f64,
+    deposited_mass_kg: f64,
+    retained_mass_relative_error: f64,
 }
 
 impl HillslopeTransportStep {
@@ -106,8 +131,16 @@ impl HillslopeTransportStep {
         &self.hillslope_deposition_m
     }
 
-    pub const fn transported_volume_m3(&self) -> f64 {
-        self.transported_volume_m3
+    pub fn deposited_by_source_kg(&self) -> &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]] {
+        &self.deposited_by_source_kg
+    }
+
+    pub fn removed_by_source_kg(&self) -> &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]] {
+        &self.removed_by_source_kg
+    }
+
+    pub const fn transported_mass_kg(&self) -> f64 {
+        self.transported_mass_kg
     }
 
     pub const fn removed_volume_m3(&self) -> f64 {
@@ -118,8 +151,16 @@ impl HillslopeTransportStep {
         self.deposited_volume_m3
     }
 
-    pub const fn retained_volume_relative_error(&self) -> f64 {
-        self.retained_volume_relative_error
+    pub const fn removed_mass_kg(&self) -> f64 {
+        self.removed_mass_kg
+    }
+
+    pub const fn deposited_mass_kg(&self) -> f64 {
+        self.deposited_mass_kg
+    }
+
+    pub const fn retained_mass_relative_error(&self) -> f64 {
+        self.retained_mass_relative_error
     }
 }
 
@@ -174,52 +215,80 @@ impl NonlinearHillslopeTransport {
             }
             let donor_area_m2 = surface.cells()[donor].area.get();
             let receiver_area_m2 = surface.cells()[receiver].area.get();
-            let pair_limit_m3 = FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION * relief_m
-                / (1.0 / donor_area_m2 + 1.0 / receiver_area_m2);
-            let requested_volume_m3 = requested_volume_m3.min(pair_limit_m3);
+            let donor_density_kg_m3 = f64::from(inputs.substrate_density_kg_m3[donor]);
+            let pair_limit_kg = FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION * relief_m
+                / (1.0 / (donor_density_kg_m3 * donor_area_m2)
+                    + 1.0 / (FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 * receiver_area_m2));
+            let requested_mass_kg = (requested_volume_m3 * donor_density_kg_m3).min(pair_limit_kg);
+            let source_index = inputs
+                .sediment_sources
+                .get(donor)
+                .expect("validated source field covers every cell")
+                .raw() as usize;
             workspace.transfers.push(EdgeTransfer {
                 donor,
                 receiver,
-                requested_volume_m3,
+                source_index,
+                requested_mass_kg,
             });
-            workspace.outgoing_requested_m3[donor] += requested_volume_m3;
-            workspace.incoming_requested_m3[receiver] += requested_volume_m3;
-            workspace.outgoing_limit_m3[donor] = workspace.outgoing_limit_m3[donor]
-                .min(FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION * relief_m * donor_area_m2);
-            workspace.incoming_limit_m3[receiver] = workspace.incoming_limit_m3[receiver]
-                .min(FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION * relief_m * receiver_area_m2);
+            workspace.outgoing_requested_kg[donor] += requested_mass_kg;
+            workspace.incoming_requested_kg[receiver] += requested_mass_kg;
+            workspace.outgoing_limit_kg[donor] = workspace.outgoing_limit_kg[donor].min(
+                FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION
+                    * relief_m
+                    * donor_area_m2
+                    * donor_density_kg_m3,
+            );
+            workspace.incoming_limit_kg[receiver] = workspace.incoming_limit_kg[receiver].min(
+                FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION
+                    * relief_m
+                    * receiver_area_m2
+                    * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+            );
         }
 
-        let mut transported_volume_m3 = 0.0_f64;
+        let mut transported_mass_kg = 0.0_f64;
+        let mut removed_volume_m3 = 0.0_f64;
         for (position, transfer) in workspace.transfers.iter().enumerate() {
             poll_cancelled(cancellation, position)?;
             let outgoing_scale = limit_scale(
-                workspace.outgoing_limit_m3[transfer.donor],
-                workspace.outgoing_requested_m3[transfer.donor],
+                workspace.outgoing_limit_kg[transfer.donor],
+                workspace.outgoing_requested_kg[transfer.donor],
             );
             let incoming_scale = limit_scale(
-                workspace.incoming_limit_m3[transfer.receiver],
-                workspace.incoming_requested_m3[transfer.receiver],
+                workspace.incoming_limit_kg[transfer.receiver],
+                workspace.incoming_requested_kg[transfer.receiver],
             );
-            let retained_volume_m3 =
-                transfer.requested_volume_m3 * outgoing_scale.min(incoming_scale);
-            workspace.erosion_volume_m3[transfer.donor] += retained_volume_m3;
-            workspace.deposition_volume_m3[transfer.receiver] += retained_volume_m3;
-            transported_volume_m3 += retained_volume_m3;
+            let retained_mass_kg = transfer.requested_mass_kg * outgoing_scale.min(incoming_scale);
+            workspace.erosion_mass_kg[transfer.donor] += retained_mass_kg;
+            workspace.deposition_mass_kg[transfer.receiver] += retained_mass_kg;
+            workspace.erosion_by_source_kg[transfer.donor][transfer.source_index] +=
+                retained_mass_kg;
+            workspace.deposition_by_source_kg[transfer.receiver][transfer.source_index] +=
+                retained_mass_kg;
+            transported_mass_kg += retained_mass_kg;
+            removed_volume_m3 +=
+                retained_mass_kg / f64::from(inputs.substrate_density_kg_m3[transfer.donor]);
         }
 
         let mut hillslope_erosion_m = Vec::with_capacity(cell_count);
         let mut hillslope_deposition_m = Vec::with_capacity(cell_count);
         let mut elevation_m = Vec::with_capacity(cell_count);
-        let mut retained_removed_volume_m3 = 0.0_f64;
-        let mut retained_deposited_volume_m3 = 0.0_f64;
+        let mut retained_removed_mass_kg = 0.0_f64;
+        let mut retained_deposited_mass_kg = 0.0_f64;
         for index in 0..cell_count {
             poll_cancelled(cancellation, index)?;
             let area_m2 = surface.cells()[index].area.get();
-            let erosion_m = (workspace.erosion_volume_m3[index] / area_m2) as f32;
-            let deposition_m = (workspace.deposition_volume_m3[index] / area_m2) as f32;
-            retained_removed_volume_m3 += f64::from(erosion_m) * area_m2;
-            retained_deposited_volume_m3 += f64::from(deposition_m) * area_m2;
+            let erosion_m = (workspace.erosion_mass_kg[index]
+                / (f64::from(inputs.substrate_density_kg_m3[index]) * area_m2))
+                as f32;
+            let deposition_m = (workspace.deposition_mass_kg[index]
+                / (FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 * area_m2))
+                as f32;
+            retained_removed_mass_kg +=
+                f64::from(erosion_m) * area_m2 * f64::from(inputs.substrate_density_kg_m3[index]);
+            retained_deposited_mass_kg +=
+                f64::from(deposition_m) * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
             hillslope_erosion_m.push(erosion_m);
             hillslope_deposition_m.push(deposition_m);
             elevation_m.push(formation_elevation_from_components(
@@ -235,21 +304,25 @@ impl NonlinearHillslopeTransport {
             ));
         }
         validate_no_inversion(surface, inputs, &elevation_m, cancellation)?;
-        let retained_scale = retained_removed_volume_m3
+        let retained_scale = retained_removed_mass_kg
             .abs()
-            .max(retained_deposited_volume_m3.abs())
+            .max(retained_deposited_mass_kg.abs())
             .max(1.0);
-        let retained_volume_relative_error =
-            (retained_removed_volume_m3 - retained_deposited_volume_m3).abs() / retained_scale;
+        let retained_mass_relative_error =
+            (retained_removed_mass_kg - retained_deposited_mass_kg).abs() / retained_scale;
         check_cancelled(cancellation)?;
         Ok(HillslopeTransportStep {
             elevation_m,
             hillslope_erosion_m,
             hillslope_deposition_m,
-            transported_volume_m3,
-            removed_volume_m3: transported_volume_m3,
-            deposited_volume_m3: transported_volume_m3,
-            retained_volume_relative_error,
+            removed_by_source_kg: workspace.erosion_by_source_kg.clone(),
+            deposited_by_source_kg: workspace.deposition_by_source_kg.clone(),
+            transported_mass_kg,
+            removed_volume_m3,
+            deposited_volume_m3: transported_mass_kg / FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+            removed_mass_kg: transported_mass_kg,
+            deposited_mass_kg: transported_mass_kg,
+            retained_mass_relative_error,
         })
     }
 }
@@ -296,6 +369,11 @@ fn validate_inputs(
             "annual_precipitation_mm",
             inputs.annual_precipitation_mm.len(),
         ),
+        (
+            "substrate_density_kg_m3",
+            inputs.substrate_density_kg_m3.len(),
+        ),
+        ("sediment_sources", inputs.sediment_sources.len()),
     ] {
         if found != count {
             return Err(HillslopeGenerationError::CellCountMismatch {
@@ -328,8 +406,18 @@ fn validate_inputs(
                 inputs.annual_precipitation_mm[index],
                 f32::MAX,
             ),
+            (
+                "substrate_density_kg_m3",
+                inputs.substrate_density_kg_m3[index],
+                CRUST_DENSITY_MAX_KG_M3,
+            ),
         ] {
-            if !value.is_finite() || !(0.0..=maximum).contains(&value) {
+            let minimum = if field == "substrate_density_kg_m3" {
+                CRUST_DENSITY_MIN_KG_M3
+            } else {
+                0.0
+            };
+            if !value.is_finite() || !(minimum..=maximum).contains(&value) {
                 return Err(HillslopeGenerationError::InvalidCellValue {
                     field,
                     cell,

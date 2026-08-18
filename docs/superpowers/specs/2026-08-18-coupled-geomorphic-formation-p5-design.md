@@ -273,9 +273,14 @@ not a measured local soil-creep coefficient.
 
 Flux is limited at both donor and receiver to `0.25` of their minimum incident
 relief, as well as by the corresponding two-cell equalization volume. A step
-therefore cannot invert a pair or export more material than retained. Both
-cells are updated from the same quantized mass transfer. This provides
-conservative diffusion and a bounded landslide surrogate without random scars.
+therefore cannot invert a pair or export more material than retained. The flux
+is a donor-bedrock volume. It is converted once with the donor's P3 substrate
+density; the receiver thickness is that same mass divided by the fixed
+`1,800 kg m-3` alluvial bulk density. Donor, receiver, and equalization limits
+are evaluated in mass space. Both cells are therefore updated from one
+identical mass packet even when competent rock becomes porous colluvium. This
+provides conservative diffusion and a bounded landslide surrogate without
+random scars.
 P9 may derive subcell scar texture but cannot alter the authoritative mass or
 drainage.
 
@@ -304,10 +309,21 @@ relief and `50 m` per macro step. A capacity or elevation limit reduces
 deposition, never discards the remainder.
 
 At an ocean receiver, sediment first enters adjacent shelf accommodation. The
-retained shelf fraction decreases with annual wind/current exposure; its
-ratio to marine transport capacity is published as `delta_potential` in
-`0..=1`. Remaining mass becomes explicit deep-ocean delivery. Endorheic
-terminal storage is a deposited mass, not an unexplained export.
+retained shelf fraction decreases with annual wind/current exposure. Shelf
+accommodation is the shallower of local water depth and the fixed `200 m`
+shelf-break depth. With exposure `X` from section 11, the retained candidate is
+`available * (1 - X)`, bounded by this accommodation. Marine transport
+capacity is the fluvial capacity multiplied by `1 + 4 X`, and
+
+```text
+delta_potential = (available / (available + marine_capacity)) * (1 - X).
+```
+
+It is zero without supplied sediment and remains in `0..=1`. Remaining mass
+becomes explicit deep-ocean delivery. Endorheic terminal storage is a
+deposited mass, not an unexplained export. Already paired hillslope deposits
+enter retained cover and the same provenance ledger but are not routed a
+second time.
 
 The global signed ledger is evaluated from retained `f32` layer changes and
 `f64` masses:
@@ -332,6 +348,19 @@ maximum `2e-5 m yr-1` bedrock-coast erosion rate, multiplied by local
 erodibility and reduced by existing sediment cover. Removed mass enters the
 same shelf/alongshore sediment ledger; deposition is never painted
 independently of a source.
+
+For each coast edge, the twelve-month RMS normal wind `W_n` and RMS alongshore
+surface current `U_t` form
+
+```text
+F = sqrt((W_n / 15 m s-1)^2 + (U_t / 1 m s-1)^2)
+X = F / (1 + F).
+```
+
+Cell exposure is the edge-length-weighted mean. Existing sediment shields
+bedrock by `1 / (1 + sediment_thickness / 10 m)`. Retained coastal erosion is
+distributed to adjacent shelf cells by the same edge-length/exposure weights,
+so every ocean injection has one causal land removal and one source class.
 
 P5 uses local Airy unloading/loading, not elastic flexure:
 

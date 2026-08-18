@@ -91,13 +91,13 @@ Files:
 - Create: `tests/formation_sediment.rs`
 - Create: `tests/formation_coast_isostasy.rs`
 
-- [ ] Write RED tests for five-source production, capacity ordering, lake/basin
+- [x] Write RED tests for five-source production, capacity ordering, lake/basin
   fill, shelf/deep-ocean delivery, delta potential, no-source/no-deposit,
   global and per-source mass closure, coast eligibility/exposure, Airy signs,
   and fixed-water-volume sea level.
-- [ ] Implement one upstream-to-downstream conservative sediment pass, paired
+- [x] Implement one upstream-to-downstream conservative sediment pass, paired
   coast exchange, local loading/unloading response, and exact retained fields.
-- [ ] Add adversarial overflow/boundary/cancellation tests and commit.
+- [x] Add adversarial overflow/boundary/cancellation tests and commit.
 
 ## Task 7: Build the eight-step geomorphic solve and four-step fixed point
 

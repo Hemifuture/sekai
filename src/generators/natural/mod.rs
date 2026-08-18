@@ -190,9 +190,12 @@ pub use stage::{
     TectonicArtifact, TectonicSpecArtifact, TectonicStage,
 };
 pub use surface_formation::{
-    implicit_stream_power_n1_height, FormationHydrologyGenerationError,
-    FormationHydrologyGenerator, HillslopeGenerationError, HillslopeInputs, HillslopeTransportStep,
-    HillslopeWorkspace, ImplicitStreamPowerSolver, NonlinearHillslopeTransport,
+    implicit_stream_power_n1_height, CoastGenerationError, CoastalExchange, CoastalExchangeStep,
+    CoastalInputs, FormationHydrologyGenerationError, FormationHydrologyGenerator,
+    FormationSeaLevelSolver, FormationWaterState, HillslopeGenerationError, HillslopeInputs,
+    HillslopeTransportStep, HillslopeWorkspace, ImplicitStreamPowerSolver, IsostasyGenerationError,
+    IsostaticAdjustmentStep, LocalAiryIsostasy, NonlinearHillslopeTransport,
+    ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs, SedimentTransportStep,
     StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};

@@ -6,7 +6,8 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
-    NaturalQualityProfile, SurfaceWaterField, SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE,
+    NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField, SurfaceWaterField,
+    SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -25,6 +26,8 @@ struct Fields {
     erodibility: Vec<f32>,
     fracture: Vec<f32>,
     annual_precipitation_mm: Vec<f32>,
+    substrate_density_kg_m3: Vec<f32>,
+    sediment_sources: SedimentSourceKindField,
 }
 
 impl Fields {
@@ -35,6 +38,8 @@ impl Fields {
             substrate_erodibility: &self.erodibility,
             fracture_intensity: &self.fracture,
             annual_precipitation_mm: &self.annual_precipitation_mm,
+            substrate_density_kg_m3: &self.substrate_density_kg_m3,
+            sediment_sources: &self.sediment_sources,
         }
     }
 }
@@ -46,6 +51,11 @@ fn uniform_fields(count: usize, elevation_m: f32) -> Fields {
         erodibility: vec![0.5; count],
         fracture: vec![0.5; count],
         annual_precipitation_mm: vec![1_000.0; count],
+        substrate_density_kg_m3: vec![2_700.0; count],
+        sediment_sources: SedimentSourceKindField::from_kinds(vec![
+            SedimentSourceKind::Felsic;
+            count
+        ]),
     }
 }
 
@@ -77,7 +87,7 @@ fn constant_surface_and_closed_coast_are_exact_no_ops_with_reused_workspace() {
         .hillslope_deposition_m()
         .iter()
         .all(|&value| value == 0.0));
-    assert_eq!(first.transported_volume_m3(), 0.0);
+    assert_eq!(first.transported_mass_kg(), 0.0);
     let allocation_epoch = workspace.allocation_epoch();
     let repeated = NonlinearHillslopeTransport::advance(
         &surface,
@@ -106,7 +116,7 @@ fn constant_surface_and_closed_coast_are_exact_no_ops_with_reused_workspace() {
     )
     .unwrap();
     assert_eq!(coast_result.elevation_m(), coast.elevation_m);
-    assert_eq!(coast_result.transported_volume_m3(), 0.0);
+    assert_eq!(coast_result.transported_mass_kg(), 0.0);
 }
 
 fn isolated_edge_fields(
@@ -166,9 +176,9 @@ fn nonlinear_flux_accelerates_near_critical_slope_without_inversion() {
     )
     .unwrap();
     let low_per_slope =
-        low_result.transported_volume_m3() / (FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.10);
+        low_result.removed_volume_m3() / (FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.10);
     let near_per_slope =
-        near_result.transported_volume_m3() / (FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.90);
+        near_result.removed_volume_m3() / (FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.90);
     assert!(near_per_slope > low_per_slope * 4.0);
     assert!(
         low_result.elevation_m()[low_high.raw() as usize]
@@ -202,7 +212,7 @@ fn normalized_edge_flux_is_resolution_invariant_before_the_shared_limiter() {
         let retained_slope = (f64::from(fields.elevation_m[high.raw() as usize])
             - f64::from(fields.elevation_m[low.raw() as usize]))
             / edge.center_distance.get();
-        result.transported_volume_m3() / (0.001 * edge.length.get() * retained_slope)
+        result.removed_volume_m3() / (0.001 * edge.length.get() * retained_slope)
     };
     let coarse = normalized(42);
     let finer = normalized(162);
@@ -230,8 +240,8 @@ fn normalized_edge_flux_is_resolution_invariant_before_the_shared_limiter() {
     )
     .unwrap();
     assert_eq!(
-        reverse_result.transported_volume_m3().to_bits(),
-        forward_result.transported_volume_m3().to_bits()
+        reverse_result.removed_volume_m3().to_bits(),
+        forward_result.removed_volume_m3().to_bits()
     );
 }
 
@@ -255,18 +265,30 @@ fn paired_transfer_closes_and_responds_to_rock_fracture_and_weathering() {
     let (high, low, fields, base) = run(0.2, 0.2, 250.0);
     let (_, _, _, weak) = run(0.0, 0.0, 0.0);
     let (_, _, _, strong) = run(1.0, 1.0, 4_000.0);
-    assert!(strong.transported_volume_m3() > base.transported_volume_m3());
-    assert!(base.transported_volume_m3() > weak.transported_volume_m3());
+    assert!(strong.transported_mass_kg() > base.transported_mass_kg());
+    assert!(base.transported_mass_kg() > weak.transported_mass_kg());
     assert_eq!(
-        base.removed_volume_m3().to_bits(),
-        base.deposited_volume_m3().to_bits()
+        base.removed_mass_kg().to_bits(),
+        base.deposited_mass_kg().to_bits()
     );
-    assert!(base.retained_volume_relative_error() <= 2.0e-7);
+    assert!(base.retained_mass_relative_error() <= 2.0e-7);
     assert!(base.hillslope_erosion_m()[high.raw() as usize] > 0.0);
     assert!(base.hillslope_deposition_m()[low.raw() as usize] > 0.0);
     assert!(base.elevation_m()[high.raw() as usize] >= base.elevation_m()[low.raw() as usize]);
     assert!(base.elevation_m()[high.raw() as usize] < fields.elevation_m[high.raw() as usize]);
     assert!(base.elevation_m()[low.raw() as usize] > fields.elevation_m[low.raw() as usize]);
+
+    let source = SedimentSourceKind::Felsic.raw() as usize;
+    let deposited_source_mass = base
+        .deposited_by_source_kg()
+        .iter()
+        .map(|channels| channels[source])
+        .sum::<f64>();
+    assert_eq!(
+        deposited_source_mass.to_bits(),
+        base.deposited_mass_kg().to_bits()
+    );
+    assert!(base.deposited_volume_m3() > base.removed_volume_m3());
 }
 
 #[test]

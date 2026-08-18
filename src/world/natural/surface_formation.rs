@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use super::{
     water_volume_at_sea_level_m3, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
-    NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, WATER_VOLUME_RELATIVE_TOLERANCE,
+    NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot,
+    CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
@@ -79,8 +79,22 @@ pub const FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX: f64 = 4.0;
 pub const FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION: f64 = 0.25;
 /// Reference routed-sediment transport concentration.
 pub const FORMATION_SEDIMENT_CAPACITY_KG_M3: f64 = 0.5;
+/// Slope scale in the bounded routed-sediment capacity response.
+pub const FORMATION_SEDIMENT_SLOPE_SCALE: f64 = 0.001;
+/// Fixed coarse alluvial bulk density used for every retained deposit.
+pub const FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3: f64 = 1_800.0;
 /// Maximum non-lake floodplain accommodation per macro step.
 pub const FORMATION_FLOODPLAIN_ACCOMMODATION_M: f64 = 50.0;
+/// Fixed coarse shelf-break depth limiting marine accommodation.
+pub const FORMATION_SHELF_BREAK_DEPTH_M: f64 = 200.0;
+/// Normal-wind scale in the bounded coastal exposure proxy.
+pub const FORMATION_COASTAL_WIND_REFERENCE_M_S: f64 = 15.0;
+/// Alongshore-current scale in the bounded coastal exposure proxy.
+pub const FORMATION_COASTAL_CURRENT_REFERENCE_M_S: f64 = 1.0;
+/// Sediment-cover thickness that halves coastal bedrock exposure.
+pub const FORMATION_COASTAL_COVER_SHIELD_M: f64 = 10.0;
+/// Exposure multiplier applied to marine transport capacity.
+pub const FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE: f64 = 4.0;
 /// Maximum annual bedrock-coast erosion rate.
 pub const FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR: f64 = 2.0e-5;
 /// Mantle density used by the local Airy response.
@@ -154,10 +168,18 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX,
         FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION,
         FORMATION_SEDIMENT_CAPACITY_KG_M3,
+        FORMATION_SEDIMENT_SLOPE_SCALE,
+        FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
         FORMATION_FLOODPLAIN_ACCOMMODATION_M,
+        FORMATION_SHELF_BREAK_DEPTH_M,
+        FORMATION_COASTAL_WIND_REFERENCE_M_S,
+        FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
+        FORMATION_COASTAL_COVER_SHIELD_M,
+        FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE,
         FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
         FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
         FORMATION_ENDORHEIC_RESIDENCE_YEARS,
+        CLIMATOLOGICAL_YEAR_SECONDS,
         FORMATION_ELEVATION_RESIDUAL_SCALE_M,
         FORMATION_RECEIVER_RESIDUAL_SCALE,
         FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE,

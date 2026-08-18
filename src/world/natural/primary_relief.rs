@@ -1177,6 +1177,152 @@ pub fn solve_physical_sea_level(
     })
 }
 
+/// Cancellation-aware form of the exact piecewise-linear water-volume solve.
+pub fn solve_physical_sea_level_cancellable(
+    elevation_m: &[f32],
+    cell_area_m2: &[f64],
+    water_inventory_m3: f64,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<WaterVolumeSolution, WaterVolumeSolveError> {
+    check_water_cancelled(cancelled)?;
+    validate_water_inputs(elevation_m, cell_area_m2, water_inventory_m3)?;
+    let mut ordered = Vec::with_capacity(elevation_m.len());
+    for (index, (&elevation, &area)) in elevation_m.iter().zip(cell_area_m2).enumerate() {
+        poll_water_cancelled(cancelled, index)?;
+        ordered.push((elevation, index, area));
+    }
+    stable_sort_water_cells(&mut ordered, cancelled)?;
+
+    let mut wet_area = CompensatedSum::default();
+    let mut weighted_elevation = CompensatedSum::default();
+    wet_area.add(ordered[0].2);
+    weighted_elevation.add(ordered[0].2 * f64::from(ordered[0].0));
+    let mut solved = None;
+    for (position, &(next_elevation, _, next_area)) in ordered.iter().enumerate().skip(1) {
+        poll_water_cancelled(cancelled, position)?;
+        let candidate = (water_inventory_m3 + weighted_elevation.total()) / wet_area.total();
+        if candidate <= f64::from(next_elevation) {
+            solved = Some(candidate);
+            break;
+        }
+        wet_area.add(next_area);
+        weighted_elevation.add(next_area * f64::from(next_elevation));
+    }
+    let exact_level = solved
+        .unwrap_or_else(|| (water_inventory_m3 + weighted_elevation.total()) / wet_area.total());
+    if !exact_level.is_finite()
+        || exact_level < f64::from(f32::MIN)
+        || exact_level > f64::from(f32::MAX)
+    {
+        return Err(WaterVolumeSolveError::NonFiniteSolution { found: exact_level });
+    }
+    let sea_level_m = exact_level as f32;
+    let mut realized_sum = CompensatedSum::default();
+    for (index, (&elevation, &area)) in elevation_m.iter().zip(cell_area_m2).enumerate() {
+        poll_water_cancelled(cancelled, index)?;
+        realized_sum.add(area * f64::from((sea_level_m - elevation).max(0.0)));
+    }
+    let realized = realized_sum.total();
+    let relative_error = relative_water_error(realized, water_inventory_m3);
+    if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
+        return Err(WaterVolumeSolveError::ClosureExceeded {
+            realized,
+            inventory: water_inventory_m3,
+            relative_error,
+            maximum: WATER_VOLUME_RELATIVE_TOLERANCE,
+        });
+    }
+    check_water_cancelled(cancelled)?;
+    Ok(WaterVolumeSolution {
+        sea_level_m,
+        realized_water_volume_m3: realized,
+        relative_error,
+    })
+}
+
+fn stable_sort_water_cells(
+    values: &mut [(f32, usize, f64)],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), WaterVolumeSolveError> {
+    let count = values.len();
+    let mut scratch = values.to_owned();
+    let mut width = 1_usize;
+    let mut data_in_values = true;
+    while width < count {
+        check_water_cancelled(cancelled)?;
+        if data_in_values {
+            merge_water_pass(values, &mut scratch, width, cancelled)?;
+        } else {
+            merge_water_pass(&scratch, values, width, cancelled)?;
+        }
+        data_in_values = !data_in_values;
+        width = width.saturating_mul(2);
+    }
+    if !data_in_values {
+        for (index, value) in scratch.iter().copied().enumerate() {
+            poll_water_cancelled(cancelled, index)?;
+            values[index] = value;
+        }
+    }
+    Ok(())
+}
+
+fn merge_water_pass(
+    source: &[(f32, usize, f64)],
+    destination: &mut [(f32, usize, f64)],
+    width: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), WaterVolumeSolveError> {
+    let mut start = 0_usize;
+    let mut written = 0_usize;
+    while start < source.len() {
+        let middle = start.saturating_add(width).min(source.len());
+        let end = middle.saturating_add(width).min(source.len());
+        let mut left = start;
+        let mut right = middle;
+        for slot in &mut destination[start..end] {
+            poll_water_cancelled(cancelled, written)?;
+            let take_left = right >= end
+                || (left < middle && water_cell_less_equal(source[left], source[right]));
+            if take_left {
+                *slot = source[left];
+                left += 1;
+            } else {
+                *slot = source[right];
+                right += 1;
+            }
+            written += 1;
+        }
+        start = end;
+    }
+    Ok(())
+}
+
+fn water_cell_less_equal(left: (f32, usize, f64), right: (f32, usize, f64)) -> bool {
+    left.0
+        .total_cmp(&right.0)
+        .then_with(|| left.1.cmp(&right.1))
+        .is_le()
+}
+
+fn poll_water_cancelled(
+    cancelled: &dyn Fn() -> bool,
+    index: usize,
+) -> Result<(), WaterVolumeSolveError> {
+    if index & 255 == 0 {
+        check_water_cancelled(cancelled)?;
+    }
+    Ok(())
+}
+
+fn check_water_cancelled(cancelled: &dyn Fn() -> bool) -> Result<(), WaterVolumeSolveError> {
+    if cancelled() {
+        Err(WaterVolumeSolveError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Recomputes liquid-water volume from a published sea level.
 pub fn water_volume_at_sea_level_m3(
     elevation_m: &[f32],
@@ -1380,6 +1526,8 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
 /// Failures from the stable physical-water operator.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum WaterVolumeSolveError {
+    #[error("physical sea-level solve cancelled")]
+    Cancelled,
     #[error("physical sea-level solve requires at least one cell")]
     EmptySurface,
     #[error("elevation count {elevations} differs from area count {areas}")]

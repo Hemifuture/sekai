@@ -1,6 +1,7 @@
 use sekai::world::natural::{
-    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, water_volume_at_sea_level_m3,
-    WaterVolumeSolveError, EARTH_OCEAN_VOLUME_M3,
+    scaled_earth_ocean_inventory_m3, solve_physical_sea_level,
+    solve_physical_sea_level_cancellable, water_volume_at_sea_level_m3, WaterVolumeSolveError,
+    EARTH_OCEAN_VOLUME_M3,
 };
 
 #[test]
@@ -29,6 +30,34 @@ fn stable_cell_ties_and_zero_inventory_have_a_defined_solution() {
     let solution = solve_physical_sea_level(&[-20.0, -20.0, 5.0], &[3.0, 2.0, 1.0], 0.0).unwrap();
     assert_eq!(solution.sea_level_m(), -20.0);
     assert_eq!(solution.realized_water_volume_m3(), 0.0);
+}
+
+#[test]
+fn cancellable_solver_is_bit_identical_to_the_frozen_water_operator() {
+    let elevations = [12.0, -20.0, 3.0, -20.0, 80.0, 3.0];
+    let areas = [4.0, 3.0, 7.0, 2.0, 9.0, 5.0];
+    for inventory in [0.0, 10.0, 100.0, 10_000.0] {
+        let frozen = solve_physical_sea_level(&elevations, &areas, inventory).unwrap();
+        let cancellable =
+            solve_physical_sea_level_cancellable(&elevations, &areas, inventory, &|| false)
+                .unwrap();
+        assert_eq!(
+            cancellable.sea_level_m().to_bits(),
+            frozen.sea_level_m().to_bits()
+        );
+        assert_eq!(
+            cancellable.realized_water_volume_m3().to_bits(),
+            frozen.realized_water_volume_m3().to_bits()
+        );
+        assert_eq!(
+            cancellable.relative_error().to_bits(),
+            frozen.relative_error().to_bits()
+        );
+    }
+    assert_eq!(
+        solve_physical_sea_level_cancellable(&elevations, &areas, 10.0, &|| true).unwrap_err(),
+        WaterVolumeSolveError::Cancelled
+    );
 }
 
 #[test]
