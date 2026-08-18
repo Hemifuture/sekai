@@ -26,12 +26,12 @@ Files:
 - Modify: `src/generators/natural/global_circulation/generation.rs`
 - Create: `tests/formation_climate_coupling.rs`
 
-- [ ] Write RED tests proving unchanged P3 terrain reproduces exact P4 forcing,
+- [x] Write RED tests proving unchanged P3 terrain reproduces exact P4 forcing,
   terrain-only changes alter forcing/checkpoint, malformed terrain is rejected,
   and no preliminary/preview climate path exists.
-- [ ] Add a crate-private validated formation-terrain forcing boundary and reuse
+- [x] Add a crate-private validated formation-terrain forcing boundary and reuse
   the selected P4 generator without weakening the public P4 relief identity.
-- [ ] Add cancellation and deterministic fingerprint coverage; commit.
+- [x] Add cancellation and deterministic fingerprint coverage; commit.
 
 ## Task 3: Generalize spherical Priority-Flood hydrology for P4 rates
 
