@@ -290,8 +290,12 @@ pub enum FieldPaletteHint {
     Sequential,
     /// A two-sided palette for scalar deviation.
     Diverging,
+    /// A sea-anchored elevation palette: water depths below the midpoint, land above.
+    Hypsometric,
     /// A palette that distinguishes discrete values.
     Categorical,
+    /// A fixed two-color ocean/land palette keyed by the stable category index.
+    LandOcean,
     /// A two-state palette.
     Boolean,
     /// A vector-oriented display.
@@ -538,11 +542,14 @@ fn validate_schema(schema: &FieldSchema) -> Result<(), FieldSchemaError> {
         (schema.value_type, schema.display.palette),
         (
             FieldValueType::ScalarF32,
-            FieldPaletteHint::Sequential | FieldPaletteHint::Diverging
+            FieldPaletteHint::Sequential
+                | FieldPaletteHint::Diverging
+                | FieldPaletteHint::Hypsometric
         ) | (
             FieldValueType::CategoryU32 | FieldValueType::StableIdU32(_),
             FieldPaletteHint::Categorical
-        ) | (FieldValueType::Boolean, FieldPaletteHint::Boolean)
+        ) | (FieldValueType::CategoryU32, FieldPaletteHint::LandOcean)
+            | (FieldValueType::Boolean, FieldPaletteHint::Boolean)
             | (FieldValueType::Vector2F32, FieldPaletteHint::Vector)
     );
     if !palette_is_compatible {

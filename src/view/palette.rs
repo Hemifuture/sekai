@@ -39,6 +39,10 @@ pub enum PaletteId {
     Diverging,
     /// Twelve discrete colors for stable category indices.
     Categorical,
+    /// Sea-anchored terrain colors: water depths below the midpoint, land heights above.
+    Hypsometric,
+    /// Two fixed semantic colors: ocean water then land.
+    LandOcean,
 }
 
 /// How a scalar display range is selected.
@@ -389,6 +393,32 @@ const CATEGORICAL: [LinearRgba; 12] = [
     LinearRgba::new(0.540, 0.255, 0.095, 1.0),
 ];
 
+/// Sea-anchored terrain table: six water stops, the coastal stop exactly at the
+/// midpoint, and six land stops. Display ranges for hypsometric fields must be
+/// symmetric around sea level so the water-to-land break stays at t = 0.5.
+const HYPSOMETRIC: [LinearRgba; 13] = [
+    LinearRgba::new(0.008, 0.020, 0.065, 1.0),
+    LinearRgba::new(0.015, 0.045, 0.120, 1.0),
+    LinearRgba::new(0.030, 0.090, 0.200, 1.0),
+    LinearRgba::new(0.070, 0.165, 0.300, 1.0),
+    LinearRgba::new(0.140, 0.280, 0.420, 1.0),
+    LinearRgba::new(0.280, 0.440, 0.540, 1.0),
+    LinearRgba::new(0.180, 0.290, 0.130, 1.0),
+    LinearRgba::new(0.290, 0.365, 0.145, 1.0),
+    LinearRgba::new(0.430, 0.400, 0.170, 1.0),
+    LinearRgba::new(0.470, 0.330, 0.160, 1.0),
+    LinearRgba::new(0.380, 0.240, 0.140, 1.0),
+    LinearRgba::new(0.420, 0.360, 0.320, 1.0),
+    LinearRgba::new(0.880, 0.870, 0.850, 1.0),
+];
+
+/// Fixed semantic pair for land/ocean category fields: index 0 is ocean water,
+/// index 1 is land, matching the stable land/ocean category encoding.
+const LAND_OCEAN: [LinearRgba; 2] = [
+    LinearRgba::new(0.055, 0.150, 0.290, 1.0),
+    LinearRgba::new(0.320, 0.360, 0.180, 1.0),
+];
+
 /// Linear-light color for an informational diagnostic.
 pub const DIAGNOSTIC_INFO_COLOR: LinearRgba = LinearRgba::new(0.130, 0.430, 0.720, 1.0);
 /// Linear-light color for a warning diagnostic.
@@ -402,6 +432,8 @@ pub const fn built_in_palette(id: PaletteId) -> &'static [LinearRgba] {
         PaletteId::Sequential => &SEQUENTIAL,
         PaletteId::Diverging => &DIVERGING,
         PaletteId::Categorical => &CATEGORICAL,
+        PaletteId::Hypsometric => &HYPSOMETRIC,
+        PaletteId::LandOcean => &LAND_OCEAN,
     }
 }
 

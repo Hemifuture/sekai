@@ -468,7 +468,7 @@ fn schemas(
             custom_unit("meter", "m"),
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
-            FieldPaletteHint::Diverging,
+            FieldPaletteHint::Hypsometric,
             0,
             vec![
                 crust_base,
@@ -477,7 +477,7 @@ fn schemas(
                 regional_offset,
             ],
         )?,
-        category_schema_with_dependencies(
+        category_schema_with_palette(
             land_ocean.clone(),
             FieldDomain::Cells,
             BTreeMap::from([
@@ -485,6 +485,7 @@ fn schemas(
                 (1, "field.sekai.core.natural.land_ocean.land".into()),
             ]),
             vec![elevation.clone()],
+            FieldPaletteHint::LandOcean,
         )?,
         category_schema_with_dependencies(
             bedrock_kind.clone(),
@@ -680,7 +681,7 @@ fn schemas(
             custom_unit("meter", "m"),
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
-            FieldPaletteHint::Diverging,
+            FieldPaletteHint::Hypsometric,
             0,
             vec![
                 elevation,
@@ -801,8 +802,24 @@ fn category_schema_with_dependencies(
     category_labels: BTreeMap<u32, String>,
     dependencies: Vec<FieldId>,
 ) -> Result<FieldSchema, FieldSchemaError> {
+    category_schema_with_palette(
+        id,
+        domain,
+        category_labels,
+        dependencies,
+        FieldPaletteHint::Categorical,
+    )
+}
+
+fn category_schema_with_palette(
+    id: FieldId,
+    domain: FieldDomain,
+    category_labels: BTreeMap<u32, String>,
+    dependencies: Vec<FieldId>,
+    palette: FieldPaletteHint,
+) -> Result<FieldSchema, FieldSchemaError> {
     Ok(FieldSchema {
-        display: display(&id, FieldPaletteHint::Categorical, 0)?,
+        display: display(&id, palette, 0)?,
         id,
         domain,
         value_type: FieldValueType::CategoryU32,

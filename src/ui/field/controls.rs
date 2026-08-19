@@ -28,7 +28,9 @@ pub fn compatible_palettes(hint: FieldPaletteHint) -> &'static [PaletteId] {
     match hint {
         FieldPaletteHint::Sequential => &[PaletteId::Sequential],
         FieldPaletteHint::Diverging => &[PaletteId::Diverging],
+        FieldPaletteHint::Hypsometric => &[PaletteId::Hypsometric],
         FieldPaletteHint::Categorical => &[PaletteId::Categorical],
+        FieldPaletteHint::LandOcean => &[PaletteId::LandOcean],
         FieldPaletteHint::Boolean | FieldPaletteHint::Vector => &[],
     }
 }

@@ -337,13 +337,39 @@ pub(super) fn natural_preferred_range(
     {
         return Some(DisplayRangeMode::Data);
     }
-    (field == &surface_elevation_m_field_id()).then_some(())?;
+    (field == &surface_elevation_m_field_id() || field == &elevation_field_id()).then_some(())?;
     registry.get(field)?;
-    let radius = surface_elevation_m
-        .iter()
-        .map(|value| (value - sea_level_m).abs())
-        .fold(0.0_f32, f32::max);
+    let radius = elevation_display_radius_m(sea_level_m, surface_elevation_m)?;
     ValueRange::new(sea_level_m - radius, sea_level_m + radius)
         .ok()
         .map(DisplayRangeMode::Manual)
+}
+
+/// Percentile of the absolute deviation from sea level used as the symmetric
+/// elevation display radius.
+const ELEVATION_DISPLAY_RADIUS_PERCENTILE: f64 = 0.98;
+
+/// Returns a symmetric hypsometric display radius around sea level.
+///
+/// The radius is the 98th percentile of `|elevation − sea level|` instead of
+/// the maximum, so one extreme trench or peak cannot compress the rest of the
+/// world into the palette midpoint; values beyond the radius clamp to the
+/// palette ends. The radius stays symmetric because the hypsometric palette
+/// crosses from water to land exactly at its midpoint.
+pub(super) fn elevation_display_radius_m(
+    sea_level_m: f32,
+    surface_elevation_m: &[f32],
+) -> Option<f32> {
+    if surface_elevation_m.is_empty() {
+        return None;
+    }
+    let mut deviations: Vec<f32> = surface_elevation_m
+        .iter()
+        .map(|value| (value - sea_level_m).abs())
+        .collect();
+    deviations.sort_unstable_by(f32::total_cmp);
+    let index =
+        ((deviations.len() - 1) as f64 * ELEVATION_DISPLAY_RADIUS_PERCENTILE).round() as usize;
+    let radius = deviations[index.min(deviations.len() - 1)];
+    radius.is_finite().then_some(radius.max(1.0))
 }

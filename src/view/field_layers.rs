@@ -1846,7 +1846,9 @@ fn fill_palette_for(
     let schema_palette = match field.schema().display.palette() {
         FieldPaletteHint::Sequential | FieldPaletteHint::Vector => PaletteId::Sequential,
         FieldPaletteHint::Diverging => PaletteId::Diverging,
+        FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
+        FieldPaletteHint::LandOcean => PaletteId::LandOcean,
         FieldPaletteHint::Boolean => {
             return Err(DisplayPrepareError::UnsupportedSphericalChannel {
                 field: field.schema().id.clone(),
@@ -1860,7 +1862,9 @@ fn overlay_palette_for(field: &FieldView<'_>) -> Result<PaletteId, DisplayPrepar
     match field.schema().display.palette() {
         FieldPaletteHint::Sequential | FieldPaletteHint::Vector => Ok(PaletteId::Sequential),
         FieldPaletteHint::Diverging => Ok(PaletteId::Diverging),
+        FieldPaletteHint::Hypsometric => Ok(PaletteId::Hypsometric),
         FieldPaletteHint::Categorical => Ok(PaletteId::Categorical),
+        FieldPaletteHint::LandOcean => Ok(PaletteId::LandOcean),
         FieldPaletteHint::Boolean => Err(DisplayPrepareError::UnsupportedSphericalChannel {
             field: field.schema().id.clone(),
         }),
@@ -1967,7 +1971,9 @@ fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
             PaletteId::Sequential,
             FieldPaletteHint::Sequential | FieldPaletteHint::Vector
         ) | (PaletteId::Diverging, FieldPaletteHint::Diverging)
+            | (PaletteId::Hypsometric, FieldPaletteHint::Hypsometric)
             | (PaletteId::Categorical, FieldPaletteHint::Categorical)
+            | (PaletteId::LandOcean, FieldPaletteHint::LandOcean)
     )
 }
 

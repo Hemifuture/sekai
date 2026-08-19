@@ -684,15 +684,16 @@ mod tests {
         };
         let sea_level = document.relief.snapshot().sea_level_m();
         assert!(((range.min() + range.max()) * 0.5 - sea_level).abs() < 0.001);
-        let expected_radius = document
-            .hydro_erosion
-            .snapshot()
-            .surface()
-            .surface_elevation_m()
-            .values()
-            .iter()
-            .map(|value| (value - sea_level).abs())
-            .fold(0.0_f32, f32::max);
+        let expected_radius = crate::app::natural_field_payloads::elevation_display_radius_m(
+            sea_level,
+            document
+                .hydro_erosion
+                .snapshot()
+                .surface()
+                .surface_elevation_m()
+                .values(),
+        )
+        .expect("finite elevations produce a percentile display radius");
         assert!((range.max() - sea_level - expected_radius).abs() < 0.001);
     }
 }

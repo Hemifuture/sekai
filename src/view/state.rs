@@ -202,6 +202,8 @@ fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
         (palette, hint),
         (PaletteId::Sequential, FieldPaletteHint::Sequential)
             | (PaletteId::Diverging, FieldPaletteHint::Diverging)
+            | (PaletteId::Hypsometric, FieldPaletteHint::Hypsometric)
             | (PaletteId::Categorical, FieldPaletteHint::Categorical)
+            | (PaletteId::LandOcean, FieldPaletteHint::LandOcean)
     )
 }

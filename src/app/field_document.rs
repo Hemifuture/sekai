@@ -340,7 +340,9 @@ fn prepare_palette(
     let schema_palette = match schema.display.palette() {
         FieldPaletteHint::Sequential => PaletteId::Sequential,
         FieldPaletteHint::Diverging => PaletteId::Diverging,
+        FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
+        FieldPaletteHint::LandOcean => PaletteId::LandOcean,
         FieldPaletteHint::Boolean | FieldPaletteHint::Vector => {
             return Err(DisplayPrepareError::UnsupportedCellFill {
                 field: schema.id.clone(),

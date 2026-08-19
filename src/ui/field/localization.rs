@@ -124,5 +124,7 @@ pub(super) const fn localized_palette(palette: PaletteId) -> &'static str {
         PaletteId::Sequential => "顺序",
         PaletteId::Diverging => "发散",
         PaletteId::Categorical => "分类",
+        PaletteId::Hypsometric => "等高地形",
+        PaletteId::LandOcean => "海陆",
     }
 }

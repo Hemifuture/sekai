@@ -1855,7 +1855,7 @@ mod tests {
         let edge_count = document.surface.snapshot().edges().len();
         let mut state = SphericalFieldDisplayState::default();
         state.select_fill(surface_elevation_m_field_id());
-        state.set_palette_override(Some(PaletteId::Diverging));
+        state.set_palette_override(Some(PaletteId::Hypsometric));
         state.select_overlay(Some(boundary_kind_field_id()));
         let mut clock = crate::view::DisplayRevisionClock::default();
         let category = prepare_spherical_field_layers(
@@ -1872,7 +1872,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             category.fill_palette(),
-            built_in_palette(PaletteId::Diverging)
+            built_in_palette(PaletteId::Hypsometric)
         );
         assert_eq!(
             category.overlay_palette().unwrap(),
@@ -1998,7 +1998,11 @@ mod tests {
             crate::view::field_layer_preparation_counts(),
             crate::view::FieldLayerPreparationCounts {
                 fill: 1,
-                overlay: 0,
+                // Switching the fill to the relief elevation swaps the shared
+                // range mode from the default data range to that field's
+                // preferred sea-anchored manual range, so the overlay must
+                // re-resolve under the new range exactly once.
+                overlay: 1,
                 diagnostics: 1,
                 diagnostic_validation_values_scanned: expected_diagnostic_scans,
                 diagnostic_fingerprint_values_scanned: expected_diagnostic_scans,
