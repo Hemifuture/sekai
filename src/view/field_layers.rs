@@ -1799,6 +1799,14 @@ fn reconcile_spherical_state<F>(
             .fill_field()
             .and_then(preferred_range)
             .unwrap_or(DisplayRangeMode::Data);
+    } else if matches!(state.range_mode, DisplayRangeMode::Manual(_)) {
+        // Manual ranges only ever originate from a document preference (for
+        // example the sea-anchored hypsometric radius), so when the same fill
+        // field arrives from a new document the anchor must be re-derived;
+        // schema/data selections are user choices and survive unchanged.
+        if let Some(preferred) = state.fill_field().and_then(preferred_range) {
+            state.range_mode = preferred;
+        }
     }
 
     let overlay = state

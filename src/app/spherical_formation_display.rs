@@ -184,6 +184,7 @@ pub struct SphericalFormationFieldDocument {
     registry: FieldRegistry,
     diagnostics: Vec<OwnedViewDiagnostic>,
     cache: FormationDisplayCache,
+    elevation_display_radius_m: Option<f32>,
     area_summary: FormationAreaSummary,
     identity: SphericalFormationBuildIdentity,
 }
@@ -269,6 +270,8 @@ impl SphericalFormationFieldDocument {
             actual_land_fraction: land_area / total_area,
             sea_level_m: terrain.sea_level_m(),
         };
+        let elevation_display_radius_m =
+            elevation_display_radius_m(terrain.sea_level_m(), terrain.final_elevation_m());
         let identity = SphericalFormationBuildIdentity::new(&provenance, authoritative);
         let document = Self {
             surface,
@@ -279,6 +282,7 @@ impl SphericalFormationFieldDocument {
             registry,
             diagnostics: owned_view_diagnostics(report),
             cache,
+            elevation_display_radius_m,
             area_summary,
             identity,
         };
@@ -462,10 +466,7 @@ impl FieldDocument for SphericalFormationFieldDocument {
         formation_preferred_range(
             &self.registry,
             self.formation.snapshot().terrain_fields().sea_level_m(),
-            self.formation
-                .snapshot()
-                .terrain_fields()
-                .final_elevation_m(),
+            self.elevation_display_radius_m,
             field,
         )
     }
@@ -489,7 +490,7 @@ impl crate::app::field_document::SphericalFieldLayerDocument for SphericalFormat
 fn formation_preferred_range(
     registry: &FieldRegistry,
     sea_level_m: f32,
-    final_elevation_m: &[f32],
+    elevation_display_radius_m: Option<f32>,
     field: &FieldId,
 ) -> Option<DisplayRangeMode> {
     if [
@@ -516,7 +517,7 @@ fn formation_preferred_range(
     (field == &surface_elevation_m_field_id() || field == &primary_elevation_m_field_id())
         .then_some(())?;
     registry.get(field)?;
-    let radius = elevation_display_radius_m(sea_level_m, final_elevation_m)?;
+    let radius = elevation_display_radius_m?;
     ValueRange::new(sea_level_m - radius, sea_level_m + radius)
         .ok()
         .map(DisplayRangeMode::Manual)

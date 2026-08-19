@@ -239,6 +239,7 @@ pub struct SphericalNaturalFieldDocument {
     registry: FieldRegistry,
     diagnostics: Vec<OwnedViewDiagnostic>,
     display_cache: SphericalNaturalDisplayCache,
+    elevation_display_radius_m: Option<f32>,
     area_summary: SphericalNaturalAreaSummary,
     identity: SphericalNaturalBuildIdentity,
 }
@@ -320,6 +321,15 @@ impl SphericalNaturalFieldDocument {
             surface.snapshot().total_cell_area().get(),
         )?;
         let display_cache = SphericalNaturalDisplayCache::build(&surface, &tectonic, &climate)?;
+        let elevation_display_radius_m =
+            crate::app::natural_field_payloads::elevation_display_radius_m(
+                relief.snapshot().sea_level_m(),
+                hydro_erosion
+                    .snapshot()
+                    .surface()
+                    .surface_elevation_m()
+                    .values(),
+            );
         let area_summary = SphericalNaturalAreaSummary::build(
             &surface,
             &resolved_tectonic,
@@ -343,6 +353,7 @@ impl SphericalNaturalFieldDocument {
             registry,
             diagnostics: owned_view_diagnostics(report),
             display_cache,
+            elevation_display_radius_m,
             area_summary,
             identity,
         };
@@ -426,11 +437,7 @@ impl FieldDocument for SphericalNaturalFieldDocument {
         natural_preferred_range(
             &self.registry,
             self.relief.snapshot().sea_level_m(),
-            self.hydro_erosion
-                .snapshot()
-                .surface()
-                .surface_elevation_m()
-                .values(),
+            self.elevation_display_radius_m,
             field,
         )
     }

@@ -319,10 +319,13 @@ impl<'a> NaturalFieldPayloadBundle<'a> {
 }
 
 /// Returns the shared natural-field range preference for a current surface.
+///
+/// `elevation_display_radius_m` is the document-precomputed percentile radius
+/// so per-frame reconciliation never re-sorts the elevation field.
 pub(super) fn natural_preferred_range(
     registry: &FieldRegistry,
     sea_level_m: f32,
-    surface_elevation_m: &[f32],
+    elevation_display_radius_m: Option<f32>,
     field: &FieldId,
 ) -> Option<DisplayRangeMode> {
     if [
@@ -339,7 +342,7 @@ pub(super) fn natural_preferred_range(
     }
     (field == &surface_elevation_m_field_id() || field == &elevation_field_id()).then_some(())?;
     registry.get(field)?;
-    let radius = elevation_display_radius_m(sea_level_m, surface_elevation_m)?;
+    let radius = elevation_display_radius_m?;
     ValueRange::new(sea_level_m - radius, sea_level_m + radius)
         .ok()
         .map(DisplayRangeMode::Manual)
