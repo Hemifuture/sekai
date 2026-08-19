@@ -11,6 +11,7 @@ mod stage;
 
 pub use conservative_remap::{ConservativeRemapError, ConservativeSurfaceMapBuilder};
 pub use geodesic_voronoi::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
+pub(crate) use geodesic_voronoi::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 pub use jittered_grid::JitteredGridSites;
 pub use planar_voronoi::{PlanarVoronoiBuilder, SpatialBuildError};
 pub use profile_surface::{ProfileSurfaceBuildError, ProfileSurfaceBuilder, ProfileSurfaceBundle};

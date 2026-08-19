@@ -53,6 +53,7 @@ mod stage;
 mod surface_formation;
 mod surface_formation_stage;
 mod tectonics;
+mod terrain_amplification;
 mod topology;
 
 pub mod circulation;
@@ -206,3 +207,7 @@ pub use surface_formation_stage::{
     SurfaceFormationStage, SurfaceFormationStageInputs,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};
+pub use terrain_amplification::{
+    fibonacci_probe, AmplificationFieldsView, AmplificationLod, AmplifiedSample, SurfaceRegime,
+    TerrainAmplificationError, TerrainAmplifier, PROBE_COUNT,
+};

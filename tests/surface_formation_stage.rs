@@ -401,3 +401,80 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
     let source = document.presentation_source();
     assert_eq!(source.root_seed(), root_seed);
 }
+
+#[test]
+fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
+    use sekai::generators::natural::{fibonacci_probe, AmplificationLod, TerrainAmplifier};
+
+    let root_seed = RootSeed::new(42);
+    let external = sekai::app::build_spherical_formation_external_artifacts(
+        root_seed,
+        NaturalQualityProfile::Draft,
+        surface(),
+        &sekai::world::natural::WorldFormationSpec::default(),
+        &TectonicSpec::default(),
+        &ReliefSpec::default(),
+        &GeologicSpec::default(),
+    )
+    .unwrap();
+    let outcome = BuildEngine::new(surface_formation_graph().unwrap())
+        .build(root_seed, external, &mut MemoryStageCache::new())
+        .unwrap();
+    let evolved = outcome.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
+    let substrate = outcome
+        .artifacts
+        .get::<GeologicSubstrateArtifact>()
+        .unwrap();
+    let formation = outcome
+        .artifacts
+        .get::<NaturalSurfaceFormationArtifact>()
+        .unwrap();
+
+    let amplifier = TerrainAmplifier::from_formation_product(
+        surface(),
+        evolved.snapshot().compatibility(),
+        substrate.snapshot(),
+        formation.snapshot(),
+        root_seed,
+    )
+    .unwrap();
+
+    // M1 bake LOD from the spec §6 Nyquist rule (4096-wide equirect).
+    let bake_footprint_m = 40_075_000.0 / 4_096.0;
+    let lod =
+        AmplificationLod::for_sampling_footprint(amplifier.base_wavelength_m(), bake_footprint_m);
+    let fingerprint = amplifier.probe_fingerprint(lod);
+    let hex: String = fingerprint
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    eprintln!(
+        "t1 probe fingerprint (draft, seed 42, lod {}): {hex}",
+        lod.levels()
+    );
+    assert_eq!(
+        hex, "ab8bc747f493d4d61033c584e507628360b8497d9f92f9d27afafe1befe43e49",
+        "the frozen T1 probe fingerprint changed; record an amendment in the T1 spec"
+    );
+
+    // Spec §8 invariant 4 on the real product: amplified classification must
+    // keep the land fraction within one percentage point of T0's.
+    let terrain = formation.snapshot().terrain_fields();
+    let sea = terrain.sea_level_m();
+    let total = 16_384_usize;
+    let mut t0_land = 0_u32;
+    let mut amplified_land = 0_u32;
+    for index in 0..total {
+        let probe = fibonacci_probe(index, total);
+        let sample = amplifier.sample(probe, lod);
+        if sample.elevation_m >= sea {
+            amplified_land += 1;
+        }
+        let baseline = amplifier.sample(probe, AmplificationLod::new(0));
+        if baseline.elevation_m >= sea {
+            t0_land += 1;
+        }
+    }
+    let drift = (f64::from(t0_land) - f64::from(amplified_land)).abs() / total as f64;
+    assert!(drift <= 0.01, "product land-fraction drift {drift}");
+}

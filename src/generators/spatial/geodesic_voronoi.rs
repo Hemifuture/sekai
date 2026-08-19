@@ -18,7 +18,7 @@ use crate::world::{
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
 const CANCELLATION_POLL_INTERVAL: usize = 256;
 
-const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
+pub(crate) const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
     [-1.0, GOLDEN_RATIO, 0.0],
     [1.0, GOLDEN_RATIO, 0.0],
     [-1.0, -GOLDEN_RATIO, 0.0],
@@ -33,7 +33,7 @@ const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
     [-GOLDEN_RATIO, 0.0, 1.0],
 ];
 
-const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
+pub(crate) const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
     [0, 11, 5],
     [0, 5, 1],
     [0, 1, 7],
