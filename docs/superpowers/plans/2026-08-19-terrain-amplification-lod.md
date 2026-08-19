@@ -94,6 +94,63 @@ near the camera, GPU displacement and chunk cache, biome/material shading on
 top of the circulation fields, and per-chunk constrained fine hydrology
 synthesis below T0 resolution.
 
+## Provenance of every load-bearing technique
+
+None of the techniques below are invented here; each is an established
+result or a shipped production system. What *is* authored by us is the
+composition — in particular the Task 2 conditioning table that maps our P5
+physical fields onto noise parameters — which is exactly the part the spec
+freeze and the Task 6 user gate exist to validate.
+
+- **T0 geodesic icosahedral grid (existing surface)** — standard in global
+  atmospheric modelling since Sadourny, Arakawa & Mintz, *Integration of the
+  nondivergent barotropic vorticity equation with an icosahedral-hexagonal
+  grid for the sphere*, Monthly Weather Review 96 (1968); operational today
+  in DWD/MPI's ICON (Zängl et al., QJRMS 141, 2015) and NCAR's MPAS
+  (Skamarock et al., MWR 140, 2012 — spherical centroidal Voronoi meshes).
+  The 12 pentagons are the Goldberg-polyhedron property (Goldberg, 1937).
+- **Task 3/4 conditioned multi-octave noise** — fBm and procedural noise:
+  Perlin, *An Image Synthesizer*, SIGGRAPH 1985; Perlin, *Improving Noise*,
+  SIGGRAPH 2002; spatially varying roughness ("heterogeneous terrain") is
+  Musgrave's multifractal line: Musgrave, Kolb & Mace, *The Synthesis and
+  Rendering of Eroded Fractal Terrains*, SIGGRAPH 1989, canonized in Ebert
+  et al., *Texturing & Modeling: A Procedural Approach* (3rd ed., 2002).
+- **Task 3/4 domain warping** — Perlin & Hoffert, *Hypertexture*, SIGGRAPH
+  1989; Quilez, *Domain Warping* (iquilezles.org); first-party production
+  evidence read during the 2026-08-19 audit: Factorio Space Age's Gleba
+  expressions warp every biome coordinate (`gleba_wobble_x/y`, official
+  wube/factorio-data repository).
+- **Terrain amplification as a research line** — Paris, Galin, Peytavie,
+  Guérin & Gain, *Terrain Amplification with Implicit 3D Features*, ACM TOG
+  38(5), SIGGRAPH Asia 2019 (doi 10.1145/3342765); successor *Terrain
+  Amplification using Multi Scale Erosion*, ACM TOG 2024 (doi
+  10.1145/3658200); surveyed in Galin et al., *A Review of Digital Terrain
+  Modeling*, Eurographics STAR 2019.
+- **Task 5 river carving with analytic valley primitives** — Génevaux,
+  Galin, Guérin, Peytavie & Beneš, *Terrain Generation Using Procedural
+  Models Based on Hydrology*, ACM TOG 32(4), SIGGRAPH 2013 (doi
+  10.1145/2461912.2461996): hierarchical drainage graph, then terrain
+  assembled by blending/carving river patches — our variant substitutes the
+  P5-published physical reach network for their synthetic graph.
+- **Task 3 spherical interpolation** — Langer, Belyaev & Seidel, *Spherical
+  Barycentric Coordinates*, Eurographics SGP 2006; conservative/barycentric
+  remapping is likewise standard in climate regridding.
+- **M2 chunked LOD planet runtime** — Ulrich, *Rendering Massive Terrains
+  Using Chunked Level of Detail Control*, SIGGRAPH 2002 course; Losasso &
+  Hoppe, *Geometry Clipmaps*, SIGGRAPH 2004; Cignoni et al., *P-BDAM:
+  Planet-Sized Batched Dynamic Adaptive Meshes*, IEEE Vis 2003; Cozzi &
+  Ring, *3D Engine Design for Virtual Globes*, 2011 (cube-sphere quadtrees;
+  the Cesium lineage); open-source reference implementation: Proland
+  (INRIA, Bruneton & Neyret).
+- **M2 lazily evaluated deterministic chunks in production** — Factorio's
+  own noise pipeline (FFF-390, read during the audit); Hello Games,
+  *Building Worlds in No Man's Sky Using Math(s)*, GDC 2017; Outerra's
+  published pipeline (coarse Earth DEM + on-GPU fractal refinement).
+- **T0 physical chain (unchanged)** — already cited in the P5 completion
+  document: Barnes, Lehman & Mulla 2014 (priority-flood); Braun & Willett
+  2013 (O(N) implicit stream power); Roering, Kirchner & Dietrich 1999
+  (nonlinear hillslope); Davy & Lague 2009 / Yuan et al. 2019 (sediment).
+
 ## Non-goals (M1)
 
 - No changes to T0 artifacts, fingerprints, or quality evidence (until the
