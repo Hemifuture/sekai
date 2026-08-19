@@ -376,82 +376,82 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "ba9a9ffaac37104c19835948185f7fb5105af88b7c0df39369619f1898ffb8c9",
+            "b27a18d36197f1b620e6c586f8e6c97fd0585d7ca6a6a10de9151cb89be2fbc6",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "11db743dde5068afc35b77781e19f9f56970f06b61e45a7357b8f576f0d47559",
+            "54ced66ec5d3e84d977498b30574c12452358e56ec4405820fe6ef6d2ae1d819",
         ),
         (
             "map_category_fill",
             &map_category,
-            "be02bbbebf1aec22600262092c536cd4865149d26b343e96afbb00f0b44f2288",
+            "d41abd98f3205e33040e1e6cebf1c804d71537e8d3380b08e281a8b0e4850de8",
         ),
         (
             "globe_category_fill",
             &globe_category,
-            "83f1ed379ee7841397b8e43c5c252679f94d9b6182641caca1cfd4db7d98d060",
+            "6bc7212197e6b7522ee0282e533f07703f1487ae9069c135c9df661f2a988e1c",
         ),
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "c675a6900adc2131b1ccac489c97faf92d2101843de2701e5364ab3799ce8ad2",
+            "f863e356d5710b2b6f231e73e19111a5379efad47922ba3fc0d9e4c40ca916ab",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "c36ab5872b28a6019bb328b8fc3b2dbad87b00b7ceda2e7210840122d4df664b",
+            "c155a60c39c88ebdc833991910cb714a3a983d93f7ceaa7965523bb5f7dad70f",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "7a73e83168600192e50434c86318dfd957346231a0b997ea0139620187386954",
+            "1d63547ff8d27eab9473ccdebb9ff73226a1d8e761da0e52752d5dc29b0f744c",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "2f75ab877dfc01989462407b8a2647cea9bee15df370a11c7d8cf3f3ab0d9fe9",
+            "820da0ffd47698185ec0d9737ec3c9968d95b954765087867432371e4553a6f6",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "cc8769dd7f98a1ad3deee32d37e6fdfc94a3d293edb2055f4b20cd4237f670f4",
+            "427f0524aacecf23c1c0730cff11018d2dc38ec522acf743e956166dc5049dee",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "e19a76d6c160107895e75e3aece6993b2c875f124463a7785d6f8605881204e1",
+            "923239d7e2cb26787ea337708ddae8977766719361285ad97063972fb1c751da",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "f86d42bdde9f005ff0097bcddf6e31431c7c2e8f4c0cee67e82ad49609de11cb",
+            "abbb8b8825048f50cd4751b51e08e9b1a1316a16a0a4cca2cab2a85e347eb46b",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "59f7183747f30fca916acab4666a279529ead01b2547ab63f9f0d6a229bd2896",
+            "df659dfab10f61907b16020da00acda639edfc264f3e34a1732cf479708a1e1a",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "0296847b4db9a43b87adf19ec0da8a37e561af31c22fe32ad7c7945b9a8cd9e7",
+            "7a12ef1cb83894ea141c54753a60e74c82d4af82074a0b93b3e729056aac73c0",
         ),
         (
             "map_poles",
             &map_poles,
-            "45954cc3f27db3141a2722d3354f0bc931af4d3108b0707512fb9a0de66b5dab",
+            "28742ca44dc7bffe8694e2d711815abb1d4c8a34fa384e97850d8dbbce9089e3",
         ),
         (
             "globe_front_visibility",
             &globe_front,
-            "83f1ed379ee7841397b8e43c5c252679f94d9b6182641caca1cfd4db7d98d060",
+            "6bc7212197e6b7522ee0282e533f07703f1487ae9069c135c9df661f2a988e1c",
         ),
         (
             "globe_back_visibility",
             &globe_back,
-            "3cd1ed9ed98772ebdf8ca6bf63c4d383730c51043eadaed0d8ee659bf7978e91",
+            "f7aed911964d0a699810bc3613b993655c1ffc3523a0c5dbc8f05a94a5dba4cf",
         ),
     ]
     .into_iter()

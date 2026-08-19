@@ -1667,7 +1667,7 @@ fn unselected_inspector_describes_current_fields_ranges_and_legends_without_muta
     assert!(row_value("填色说明").contains("当前地表高程"));
     assert_eq!(row_value("填色单位"), "m");
     assert!(row_value("填色范围").contains('…'));
-    assert!(row_value("填色图例").contains("Diverging"));
+    assert!(row_value("填色图例").contains("Hypsometric"));
     assert_eq!(row_value("填色类别图例"), "不适用");
     assert!(row_value("叠加说明").contains("初步盛行风"));
     assert_eq!(row_value("叠加单位"), "m/s");

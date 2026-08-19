@@ -321,7 +321,7 @@ fn hydro_erosion_schemas_have_semantic_ranges_palettes_and_complete_categories()
         surface.valid_range.map(|range| (range.min(), range.max())),
         Some((ELEVATION_MIN_M, ELEVATION_MAX_M))
     );
-    assert_eq!(surface.display.palette(), FieldPaletteHint::Diverging);
+    assert_eq!(surface.display.palette(), FieldPaletteHint::Hypsometric);
     assert_eq!(surface.display.decimal_places(), 0);
 
     for (id, unit, decimals) in [
@@ -391,7 +391,7 @@ fn schema_units_ranges_labels_and_palettes_are_semantic() {
         (range.min(), range.max()),
         (ELEVATION_MIN_M, ELEVATION_MAX_M)
     );
-    assert_eq!(elevation.display.palette(), FieldPaletteHint::Diverging);
+    assert_eq!(elevation.display.palette(), FieldPaletteHint::Hypsometric);
     let heat = schema(&registry, mantle_heat_flow_field_id());
     assert_eq!(heat.unit.symbol(), "mW/m²");
     assert_eq!(

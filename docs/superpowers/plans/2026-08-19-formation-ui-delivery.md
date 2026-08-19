@@ -40,10 +40,14 @@ UI-visible state and names its user verification step.
       solve does not freeze the UI.
       Verify: user clicks rebuild; UI stays responsive with progress; cancel
       works.
-- [ ] Task 6 — Full gates (fmt, clippy, wasm check, workspace tests incl.
+- [x] Task 6 — Full gates (fmt, clippy, wasm check, workspace tests incl.
       golden refresh) + scripted UI drive evidence + written user acceptance
       steps.
       Verify: gates green; user walks the acceptance steps personally.
+      Result: full debug regression 172 suites green; the four presentation
+      contract suites (frozen registry bytes, semantic palettes, RGBA8 GPU
+      goldens, inspector legend) were re-pinned to the new Hypsometric /
+      LandOcean semantics and re-run green. User acceptance pending.
 
 ## Non-goals (tracked, not in this plan)
 
