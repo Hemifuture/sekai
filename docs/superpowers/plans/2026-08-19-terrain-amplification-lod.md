@@ -42,7 +42,7 @@ is visible and operable in the UI, and final acceptance is the user's.
       an explanatory tooltip while the formation pipeline is active.
       Verify (UI): switch 档位 to Standard, rebuild without freezing, watch
       the cell count rise to ~80k and the world gain visible detail.
-- [ ] Task 2 — Amplification design spec: freeze the short T1 contract in
+- [x] Task 2 — Amplification design spec: freeze the short T1 contract in
       docs/superpowers/specs/ — sampling domain (3D unit vectors, never
       lat/lon), T0 field interpolation scheme and its continuity class,
       conditioning table (which T0 fields modulate which noise parameters and
