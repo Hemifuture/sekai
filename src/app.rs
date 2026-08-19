@@ -98,9 +98,37 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
-/// The fixed quality profile driving interactive formation builds.
-const FORMATION_QUALITY_PROFILE: crate::world::natural::NaturalQualityProfile =
-    crate::world::natural::NaturalQualityProfile::Draft;
+/// The default quality tier for interactive formation builds.
+fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
+    crate::world::natural::NaturalQualityProfile::Draft
+}
+
+/// The authored combo label per quality tier (single source for the selector).
+fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> &'static str {
+    match profile {
+        crate::world::natural::NaturalQualityProfile::Draft => "草稿 · 约 2 万格 · 1–2 分钟",
+        crate::world::natural::NaturalQualityProfile::Standard => "标准 · 约 8 万格 · 3–6 分钟",
+        crate::world::natural::NaturalQualityProfile::High => "高 · 约 20 万格 · 实验性离线级",
+    }
+}
+
+/// The short tier name shown on the published-world status line.
+fn quality_tier_short_label(profile: crate::world::natural::NaturalQualityProfile) -> &'static str {
+    match profile {
+        crate::world::natural::NaturalQualityProfile::Draft => "草稿档",
+        crate::world::natural::NaturalQualityProfile::Standard => "标准档",
+        crate::world::natural::NaturalQualityProfile::High => "高档（实验性）",
+    }
+}
+
+/// True when the cached formation profile surface no longer serves a request.
+fn formation_surface_key_is_stale(
+    cached: Option<(crate::world::natural::NaturalQualityProfile, f64)>,
+    profile: crate::world::natural::NaturalQualityProfile,
+    radius_m: f64,
+) -> bool {
+    cached != Some((profile, radius_m))
+}
 
 /// Which authoritative generation chain the spherical canvas builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -130,8 +158,9 @@ impl Default for WorldPipeline {
     }
 }
 
-/// One cached formation profile surface keyed by its authored radius.
+/// One cached formation profile surface keyed by tier and authored radius.
 struct FormationSurfaceCacheEntry {
+    profile: crate::world::natural::NaturalQualityProfile,
     radius_m: f64,
     surface: crate::world::spatial::SphericalSurfaceSnapshot,
 }
@@ -287,6 +316,8 @@ pub struct TemplateApp {
     geologic_spec: GeologicSpec,
     #[serde(default)]
     world_pipeline: WorldPipeline,
+    #[serde(default = "default_formation_quality_profile")]
+    formation_quality_profile: crate::world::natural::NaturalQualityProfile,
     #[serde(skip)]
     formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
@@ -340,6 +371,7 @@ impl Default for TemplateApp {
             relief_spec: ReliefSpec::default(),
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
+            formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
             canvas_widget: Canvas::new(
@@ -546,7 +578,7 @@ impl TemplateApp {
                 let surface = self.formation_profile_surface()?.clone();
                 build_spherical_formation_candidate_for_view(
                     RootSeed::new(self.world_seed),
-                    FORMATION_QUALITY_PROFILE,
+                    self.formation_quality_profile,
                     &surface,
                     &self.formation_spec,
                     &self.tectonic_spec,
@@ -646,17 +678,22 @@ impl TemplateApp {
         &mut self,
     ) -> Result<&crate::world::spatial::SphericalSurfaceSnapshot, AppRuntimeError> {
         let radius_m = self.spherical_space_spec.radius.get();
-        let stale = self
-            .formation_surface
-            .as_ref()
-            .is_none_or(|entry| entry.radius_m != radius_m);
+        let profile = self.formation_quality_profile;
+        let stale = formation_surface_key_is_stale(
+            self.formation_surface
+                .as_ref()
+                .map(|entry| (entry.profile, entry.radius_m)),
+            profile,
+            radius_m,
+        );
         if stale {
             let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
-                FORMATION_QUALITY_PROFILE,
+                profile,
                 self.spherical_space_spec.radius,
                 &crate::engine::BuildCancellation::new(),
             )?;
             self.formation_surface = Some(FormationSurfaceCacheEntry {
+                profile,
                 radius_m,
                 surface: bundle.authoritative_surface().clone(),
             });
@@ -683,6 +720,7 @@ impl TemplateApp {
         let stage_cache = std::mem::take(&mut self.stage_cache);
         let formation_surface = self.formation_surface.take();
         let pipeline = self.world_pipeline;
+        let quality_profile = self.formation_quality_profile;
         let root_seed = RootSeed::new(self.world_seed);
         let space = self.spherical_space_spec.clone();
         let formation_spec = self.formation_spec.clone();
@@ -702,23 +740,28 @@ impl TemplateApp {
                 let target = match pipeline {
                     WorldPipeline::Formation => {
                         let radius_m = space.radius.get();
-                        let stale = formation_surface
-                            .as_ref()
-                            .is_none_or(|entry| entry.radius_m != radius_m);
+                        let stale = formation_surface_key_is_stale(
+                            formation_surface
+                                .as_ref()
+                                .map(|entry| (entry.profile, entry.radius_m)),
+                            quality_profile,
+                            radius_m,
+                        );
                         if stale {
                             let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
-                                FORMATION_QUALITY_PROFILE,
+                                quality_profile,
                                 space.radius,
                                 &worker_cancellation,
                             )
                             .map_err(|error| error.to_string())?;
                             formation_surface = Some(FormationSurfaceCacheEntry {
+                                profile: quality_profile,
                                 radius_m,
                                 surface: bundle.authoritative_surface().clone(),
                             });
                         }
                         crate::app::SphericalWorldBuildTarget::Formation {
-                            quality_profile: FORMATION_QUALITY_PROFILE,
+                            quality_profile,
                             surface: formation_surface
                                 .as_ref()
                                 .expect("the worker just filled the surface cache")
@@ -845,7 +888,7 @@ impl TemplateApp {
                         .ok_or(AppRuntimeError::MissingSphericalPublication)?
                         .prepare_formation_replacement_candidate_for_view(
                             RootSeed::new(self.world_seed),
-                            FORMATION_QUALITY_PROFILE,
+                            self.formation_quality_profile,
                             &surface,
                             &self.formation_spec,
                             &self.tectonic_spec,
@@ -1347,7 +1390,8 @@ impl eframe::App for TemplateApp {
                         .text("初始大陆地壳比例")
                         .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                     );
-                    ui.add(
+                    ui.add_enabled(
+                        self.world_pipeline == WorldPipeline::LegacyFoundation,
                         egui::Slider::new(
                             &mut self.relief_spec.target_land_fraction,
                             crate::world::natural::MIN_TARGET_LAND_FRACTION
@@ -1355,7 +1399,8 @@ impl eframe::App for TemplateApp {
                         )
                         .text("目标陆地面积比例")
                         .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                    );
+                    )
+                    .on_disabled_hover_text("P5 形成链的海平面由全球水量反解，此滑杆仅作用于旧链");
                     egui::ComboBox::from_label("构造活动")
                         .selected_text(activity_label(self.tectonic_spec.activity))
                         .show_ui(ui, |ui| {
@@ -1371,6 +1416,23 @@ impl eframe::App for TemplateApp {
                                 );
                             }
                         });
+                    if self.world_pipeline == WorldPipeline::Formation {
+                        egui::ComboBox::from_label("质量档位")
+                            .selected_text(quality_tier_label(self.formation_quality_profile))
+                            .show_ui(ui, |ui| {
+                                for profile in [
+                                    crate::world::natural::NaturalQualityProfile::Draft,
+                                    crate::world::natural::NaturalQualityProfile::Standard,
+                                    crate::world::natural::NaturalQualityProfile::High,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.formation_quality_profile,
+                                        profile,
+                                        quality_tier_label(profile),
+                                    );
+                                }
+                            });
+                    }
                     if ui.button("按当前参数重建").clicked() {
                         rebuild = true;
                     }
@@ -1429,10 +1491,17 @@ impl eframe::App for TemplateApp {
                                 return;
                             };
                             ui.separator();
-                            ui.label(format!(
-                                "{} 个球面单元｜单位球呈现",
-                                presentation.globe().cell_count()
-                            ));
+                            ui.label(match presentation.document().quality_profile() {
+                                Some(profile) => format!(
+                                    "{} 个球面单元｜{}｜单位球呈现",
+                                    presentation.globe().cell_count(),
+                                    quality_tier_short_label(profile),
+                                ),
+                                None => format!(
+                                    "{} 个球面单元｜单位球呈现",
+                                    presentation.globe().cell_count()
+                                ),
+                            });
                             show_spherical_area_summary(ui, presentation.document().area_summary());
                             match show_spherical_controls(
                                 ui,
@@ -3188,6 +3257,51 @@ mod natural_app_tests {
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
 
         assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
+    }
+
+    #[test]
+    fn quality_tier_roundtrips_and_defaults_to_draft() {
+        assert_eq!(
+            TemplateApp::default().formation_quality_profile,
+            crate::world::natural::NaturalQualityProfile::Draft
+        );
+        let app = TemplateApp {
+            formation_quality_profile: crate::world::natural::NaturalQualityProfile::Standard,
+            ..Default::default()
+        };
+        let restored: TemplateApp =
+            serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
+        assert_eq!(
+            restored.formation_quality_profile,
+            crate::world::natural::NaturalQualityProfile::Standard
+        );
+    }
+
+    #[test]
+    fn formation_surface_cache_is_keyed_by_tier_and_radius() {
+        use super::formation_surface_key_is_stale;
+        use crate::world::natural::NaturalQualityProfile;
+        let key = Some((NaturalQualityProfile::Draft, 6_371_000.0));
+        assert!(!formation_surface_key_is_stale(
+            key,
+            NaturalQualityProfile::Draft,
+            6_371_000.0
+        ));
+        assert!(formation_surface_key_is_stale(
+            key,
+            NaturalQualityProfile::Standard,
+            6_371_000.0
+        ));
+        assert!(formation_surface_key_is_stale(
+            key,
+            NaturalQualityProfile::Draft,
+            3_000_000.0
+        ));
+        assert!(formation_surface_key_is_stale(
+            None,
+            NaturalQualityProfile::Draft,
+            6_371_000.0
+        ));
     }
 
     #[test]

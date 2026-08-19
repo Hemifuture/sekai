@@ -311,6 +311,11 @@ impl SphericalFormationFieldDocument {
         self.surface.snapshot()
     }
 
+    /// Returns the quality tier the published formation product was built at.
+    pub fn quality_profile(&self) -> crate::world::natural::NaturalQualityProfile {
+        self.formation.snapshot().checkpoint().quality_profile()
+    }
+
     /// Borrows the resolved tectonic input that authored this world.
     pub fn resolved_tectonic_input(&self) -> &ResolvedTectonicInput {
         self.resolved_tectonic.input()

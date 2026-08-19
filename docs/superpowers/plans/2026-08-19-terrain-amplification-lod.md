@@ -34,7 +34,7 @@ is visible and operable in the UI, and final acceptance is the user's.
 
 ## Milestone M1 tasks
 
-- [ ] Task 1 — Quality tier selector in the UI: 档位 (Draft/Standard; High
+- [x] Task 1 — Quality tier selector in the UI: 档位 (Draft/Standard; High
       listed as 实验性·离线级) drives `FORMATION_QUALITY_PROFILE`-equivalent
       state, the formation surface cache keys on (profile, radius), the panel
       names the active tier and expected build time (Standard ≈ 3–5 min on

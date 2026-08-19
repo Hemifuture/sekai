@@ -149,6 +149,14 @@ impl SphericalWorldFieldDocument {
         self.surface()
     }
 
+    /// Returns the published quality tier when the formation product is active.
+    pub fn quality_profile(&self) -> Option<NaturalQualityProfile> {
+        match self {
+            Self::NaturalFoundation(_) => None,
+            Self::Formation(document) => Some(document.quality_profile()),
+        }
+    }
+
     /// Returns the build-time authoring-compliance summary for product panels.
     pub fn area_summary(&self) -> SphericalWorldAreaSummary {
         match self {
