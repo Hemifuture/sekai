@@ -1,202 +1,167 @@
-# Terrain Amplification T1 — Frozen Design (2026-08-19)
+# 地形放大层 T1 —— 冻结设计（2026-08-19）
 
-Status: frozen for P6 M1 Task 3. Deviations discovered during implementation
-must be recorded here as explicit amendment entries.
+状态：为 P6 M1 Task 3 冻结。实现期间发现的任何偏离，必须以显式修订条目
+回写到本文件。
 
-## 1. Scope
+## 1. 范围
 
-T1 is a deterministic, local, presentation-only refinement of the published
-formation product. It never mutates T0 artifacts, never enters the physical
-ledger, and is never read back by any solver. Its single deliverable is the
-pure function
+T1 是对已发布形成产品（P5）的确定性、局部、仅呈现层的细化。它永不改动
+T0 产物、永不进入物理账本、永不被任何求解器读回。唯一交付物是纯函数：
 
 ```text
 sample(position: UnitVector3, lod: AmplificationLod) -> AmplifiedSample
 AmplifiedSample { elevation_m: f32, regime: SurfaceRegime }
 ```
 
-- `position` is a three-dimensional unit vector. Latitude/longitude never
-  appear in the sampling path: they carry a ±180° seam and polar
-  singularities, both already observed as artifacts in equirect evidence
-  renders. All noise is evaluated in R³ on the sphere (existing
-  `SphericalNoise3d` machinery), which is seamless by construction.
-- The function is stateless after construction, `Send + Sync`, and free of
-  interior mutability, so M2 may evaluate chunks concurrently in any order.
-- `elevation_m` must stay within the existing authoritative bounds
-  `ELEVATION_MIN_M..=ELEVATION_MAX_M` and be finite for every input.
+- `position` 是三维单位向量。采样路径中永不出现经纬度：经纬度带有
+  ±180° 接缝与极点奇异性，两者都已在等距圆柱证据渲染中被观察为伪影。
+  所有噪声在球面上的 R³ 中求值（沿用既有 `SphericalNoise3d` 机器），
+  按构造即无缝。
+- 函数构造完成后无状态、`Send + Sync`、无内部可变性，因此 M2 可以按
+  任意顺序并行求值各分块。
+- `elevation_m` 必须始终落在既有权威边界
+  `ELEVATION_MIN_M..=ELEVATION_MAX_M` 内，且对任何输入都是有限值。
 
-## 2. Input assembly
+## 2. 输入装配
 
-`AmplificationInputs` is built once per published world from the same build
-outcome the display document uses. Every field below exists today; no new
-upstream data is introduced.
+`AmplificationInputs` 在每个已发布世界上构建一次，来源与显示文档相同的
+构建结果。下表每个字段今天都真实存在；不引入任何新的上游数据。
 
-| Input | Source (single source of truth) |
+| 输入 | 事实源（唯一事实源原则） |
 | --- | --- |
-| Final elevation, sea level, land/ocean | `FormationTerrainFields` (P5 product) |
-| Sediment blanket thickness | `FormationSedimentFields::sediment_thickness_m` |
-| Crust kind, crust age, lineation east/north, orogeny kind/age | `EvolvedTectonicSnapshot::compatibility()` |
-| Substrate erodibility | `GeologicSubstrateSnapshot::erodibility` |
-| Annual precipitation | `formation_annual_precipitation_mm` over the product's end-state circulation (`formation_climate()`) |
-| River reaches: per-cell receiver, discharge, Strahler order | P5 `SphericalHydrologySnapshot` |
-| Shelf break, floodplain accommodation | `FORMATION_SHELF_BREAK_DEPTH_M`, `FORMATION_FLOODPLAIN_ACCOMMODATION_M` (reused constants) |
+| 最终高程、海平面、海陆分类 | `FormationTerrainFields`（P5 产品） |
+| 沉积毯厚度 | `FormationSedimentFields::sediment_thickness_m` |
+| 地壳类型、地壳年龄、构造走向（lineation east/north）、造山类型/年龄 | `EvolvedTectonicSnapshot::compatibility()` |
+| 基底可蚀性 | `GeologicSubstrateSnapshot::erodibility` |
+| 年降水量 | 产品末态环流（`formation_climate()`）经 `formation_annual_precipitation_mm` 求得 |
+| 河段：逐格受水方向、流量、斯特拉勒河级 | P5 `SphericalHydrologySnapshot` |
+| 陆架坡折、泛滥平原容置 | 复用既有常量 `FORMATION_SHELF_BREAK_DEPTH_M`、`FORMATION_FLOODPLAIN_ACCOMMODATION_M` |
 
-## 3. T0 interpolation
+## 3. T0 场插值
 
-The cell centers of the product surface are exactly the vertices of the
-subdivided icosahedral lattice, so scalar fields are interpolated on that
-triangulation:
+产品球面的格元中心恰好是细分二十面体格的顶点，因此标量场在该三角剖分
+上插值：
 
-1. Locate the containing base icosahedron face (20 dot-product tests),
-   gnomonically project into it, and resolve the local subdivision triangle
-   by index arithmetic — the standard geodesic discrete-global-grid
-   addressing scheme (Sahr, White & Kimerling 2003). A one-time validation
-   pass asserts agreement with the authoritative adjacency.
-2. Interpolate with spherical barycentric weights (Langer, Belyaev & Seidel
-   2006). This is uniform everywhere, including around the 12 pentagon
-   cells, because interpolation runs on the triangular primal lattice, not
-   on the polygonal duals.
-3. Weights are smoothstep-remapped (`w ↦ w²(3−2w)`, renormalized) to remove
-   the gradient crease of plain barycentric interpolation at triangle edges
-   — the standard smooth-interpolation trick from texture filtering. The
-   result interpolates cell values exactly at vertices and is C1 across
-   edges for display purposes. This biased smoothing is acceptable only
-   because T1 is presentation-only (§1).
+1. 定位所在的基础二十面体面（20 次点积测试），做心射（gnomonic）投影
+   进入该面，再用下标算术解出局部细分三角形——这是测地离散全球网格的
+   标准寻址方案（Sahr, White & Kimerling 2003）。实现附带一次性校验，
+   断言其与权威邻接关系一致。
+2. 用球面重心坐标插值（Langer, Belyaev & Seidel 2006）。因为插值发生
+   在原始三角格上而不是对偶多边形上，包括 12 个五边形格在内处处一致。
+3. 权重经 smoothstep 重映射（`w ↦ w²(3−2w)` 后归一化），消除普通重心
+   插值在三角形边上的梯度折痕——纹理滤波中的标准平滑插值技巧。结果在
+   顶点处精确插值格元值，且对显示用途在边上达到 C1。这种带偏置的平滑
+   之所以可接受，仅因为 T1 是"仅呈现层"（§1）。
 
-Continuity class: C1 everywhere except along carved river center lines,
-where the carve operator is C0 with bounded gradient (§7).
+连续性等级：除被雕刻的河道中心线外处处 C1；河道雕刻算子为 C0，梯度有
+界（§7）。
 
-## 4. Regimes
+## 4. 地表状态（regime）
 
-Each sample resolves one of four regimes from interpolated T0 fields; all
-conditioning is expressed per-regime. Regime boundaries blend over explicit
-transition bands — never hard switches — so no regime edge can imprint a
-visible line of its own.
+每个采样点由插值后的 T0 场解出四种状态之一；所有条件化按状态表达。
+状态边界经显式过渡带混合——绝不硬切换——因此状态边缘自身不可能印出
+可见的线。
 
-- **Ocean floor**: below sea level − shelf-transition band.
-- **Continental shelf**: between the coast and
-  `FORMATION_SHELF_BREAK_DEPTH_M`, preserving the P5 shelf plateau.
-- **Coastal band**: within one warp wavelength of the interpolated
-  coastline.
-- **Land interior**: everything else.
+- **洋底**：低于海平面减去陆架过渡带。
+- **大陆架**：海岸至 `FORMATION_SHELF_BREAK_DEPTH_M` 之间，保持 P5 的
+  陆架平台。
+- **海岸带**：距插值海岸线一个扭曲波长以内。
+- **陆地内部**：其余全部。
 
-## 5. Conditioning table (frozen; each row cites its geologic basis)
+## 5. 条件表（冻结；每行注明其地质学依据）
 
-Notation: factors multiply a per-regime base amplitude `A₀` and shape the
-fractal parameters. All factors are clamped to the stated range and are
-smooth (C1) in their inputs. Initial numeric values are starting points to
-be calibrated on screen in Task 4; the *structure, drivers, directions and
-bounds* below are the frozen contract.
+记号：各因子乘在每状态基准振幅 `A₀` 上并塑形分形参数。所有因子钳制在
+声明范围内，且对其输入是光滑的（C1）。数值初值仅为出发点，将在 Task 4
+上屏后校准；下表冻结的契约是**结构、驱动场、方向与边界**。
 
-| # | Driver (T0 field) | Effect | Direction & bound | Geologic basis |
+| # | 驱动场（T0） | 效果 | 方向与边界 | 地质学依据 |
 | --- | --- | --- | --- | --- |
-| C1 | Local relief proxy: slope magnitude of interpolated final elevation over one cell spacing | Detail amplitude `f_relief ∈ [0.05, 1]` | Amplitude grows with relief; near-zero on plains | Fine-scale roughness scales with local relief/slope in DEM statistics; depositional plains are smooth because they are burial surfaces (Turcotte 1997; Gagnon, Lovejoy & Schertzer 2006) |
-| C2 | Orogeny age (Myr), where orogeny kind ≠ None | Ridge-noise weight and anisotropy strength `f_orog = exp(−age/80 Myr)` | Monotone decay; half-life reuses the T0 orogenic precedent (80 Myr, `directed_noise.rs`) | Post-orogenic relief decay over 10⁷–10⁸ yr (Himalaya vs Appalachians; Burbank & Anderson, *Tectonic Geomorphology*) |
-| C3 | Lineation east/north (tectonic grain) | Anisotropic ridge alignment via sparse Gabor along the lineation tangent | Anisotropy only where C2 active; isotropic fallback | Ridge-and-valley / fold-belt alignment with structural strike (Appalachians, Zagros); Gabor noise is the documented anisotropic primitive (Lagae et al. 2009) |
-| C4 | Substrate erodibility | Splits into two effects: amplitude ceiling `f_erod ∈ [0.4, 1]` decreasing with erodibility; dissection texture frequency increasing with erodibility | Two monotone effects in opposite channels, never one combined knob | Resistant lithologies hold cliffs and high local relief; weak lithologies lower relief but raise drainage density / fine texture (Schumm 1956 badlands; Horton 1945) |
-| C5 | Annual precipitation | Dissection (valley-texture) weight follows a **non-monotone** Langbein–Schumm curve peaking in the semi-arid band (~300–400 mm/yr equivalent), reduced under hyper-arid and humid conditions | Peaked response, bounded [0, 1]; explicitly NOT monotone | Maximum sediment yield / drainage texture at semi-arid effective precipitation (Langbein & Schumm 1958; Abrahams 1984) |
-| C6 | C4 high **and** C5 in semi-arid band | Badlands micro-texture gate (adds one extra dissection octave) | Only when both gates hold | Badlands form in weak rock + semi-arid climate (Schumm 1956, Perth Amboy) |
-| C7 | Sediment blanket thickness | Amplitude damping `f_sed = exp(−thickness/D)` toward smooth fills | Monotone damping; floors at alluvial-plain smoothness | Burial smoothing: abyssal plains are turbidite-buried hills; alluvial plains bury bedrock relief (Goff & Jordan 1988 sediment damping term) |
-| C8 | Ocean floor: crust age gradient magnitude (spreading-rate proxy) + lineation | Abyssal-hill field: anisotropic Gabor aligned with lineation; amplitude 50–300 m, wavelength band 2–10 km at full LOD; rougher where the age gradient indicates slow spreading; damped by C7 | Bounded to the measured abyssal-hill envelope | Abyssal hills are Earth's most common landform; their stochastic model and spreading-rate dependence are established (Goff & Jordan 1988; Malinverno 1991) |
-| C9 | Coastal band: local coastal relief | Domain-warp magnitude for the coastline and near-shore detail: rugged (ria/fjord-like) where coastal relief is high, subdued where low and sediment-rich | Bounded so warp displacement < one T0 cell spacing (T0 land fraction preserved, §8) | Tectonic coast classification: collision coasts rugged, trailing-edge depositional coasts smooth (Inman & Nordstrom 1971); coastline fractality D ≈ 1.2–1.33 (Mandelbrot 1967) |
-| C10 | Base spectral character per regime | Hurst exponent H: land interior blends 0.5 (young mountains) → 0.8 (plains) via C1/C2; per-octave persistence derived as `p = 2^(−H)` | H ∈ [0.4, 0.85] | Measured self-affine topography spectra: profile β ≈ 2, H clustered near 0.5 in mountains, higher (smoother fine-scale) in low-relief terrain (Sayles & Thomas 1978; Huang & Turcotte 1989; Gagnon et al. 2006). Note `p = 2^(−H)`, so the folklore p = 0.5 corresponds to H = 1 — smoother than real terrain; persistence is therefore derived from H, never hard-coded |
+| C1 | 局部起伏代理：最终高程插值在一个格距上的坡度幅值 | 细节振幅 `f_relief ∈ [0.05, 1]` | 振幅随起伏增大；平原趋近于零 | DEM 统计中细尺度粗糙度与局部起伏/坡度同尺度；沉积平原之所以平滑，因为它们是掩埋面（Turcotte 1997；Gagnon, Lovejoy & Schertzer 2006） |
+| C2 | 造山年龄（Myr），限造山类型 ≠ None | 脊噪声权重与各向异性强度 `f_orog = exp(−age/80 Myr)` | 单调衰减；半衰期沿用 T0 造山先例（80 Myr，`directed_noise.rs`） | 造山期后地形衰减发生在 10⁷–10⁸ 年尺度（喜马拉雅 vs 阿巴拉契亚；Burbank & Anderson, *Tectonic Geomorphology*） |
+| C3 | 构造走向（lineation east/north） | 沿走向切向的稀疏 Gabor 各向异性山脊排列 | 仅当 C2 激活时各向异性；否则退化为各向同性 | 脊谷地貌 / 褶皱带与构造走向对齐（阿巴拉契亚、扎格罗斯）；Gabor 噪声是文献化的各向异性图元（Lagae et al. 2009） |
+| C4 | 基底可蚀性 | 拆成两个通道：振幅上限 `f_erod ∈ [0.4, 1]` 随可蚀性下降；切割纹理频率随可蚀性上升 | 两个反向通道各自单调，绝不合并为一个旋钮 | 抗蚀岩性支撑陡崖与高局部起伏；软弱岩性降低起伏却抬高水系密度/细纹理（Schumm 1956 恶地；Horton 1945） |
+| C5 | 年降水量 | 切割（谷纹理）权重遵循**非单调**的 Langbein–Schumm 曲线：在半干旱带（约 300–400 mm/年当量）达峰，极干旱与湿润条件下降低 | 峰形响应，界于 [0, 1]；显式**非**单调 | 半干旱有效降水下泥沙产出/水系纹理最大（Langbein & Schumm 1958；Abrahams 1984） |
+| C6 | C4 高**且** C5 处于半干旱带 | 恶地微纹理门（追加一个切割 octave） | 仅双门同时成立时生效 | 恶地形成于软岩 + 半干旱气候（Schumm 1956，Perth Amboy） |
+| C7 | 沉积毯厚度 | 振幅阻尼 `f_sed = exp(−thickness/D)`，趋向平滑充填面 | 单调阻尼；下限为冲积平原平滑度 | 掩埋平滑：深海平原是被浊积物掩埋的丘陵；冲积平原掩埋基岩起伏（Goff & Jordan 1988 的沉积阻尼项） |
+| C8 | 洋底：地壳年龄梯度幅值（扩张速率代理）+ 构造走向 | 深海丘陵场：沿走向的各向异性 Gabor；满 LOD 下振幅 50–300 m、波长带 2–10 km；年龄梯度指示慢速扩张处更粗糙；受 C7 阻尼 | 钳制在实测深海丘陵包络内 | 深海丘陵是地球最常见地貌；其随机模型与扩张速率依赖已确立（Goff & Jordan 1988；Malinverno 1991） |
+| C9 | 海岸带：局部海岸起伏 | 海岸线与近岸细节的域扭曲幅度：海岸起伏高处崎岖（里亚式/峡湾式），低且富沉积处平缓 | 有界，扭曲位移 < 一个 T0 格距（保护 T0 陆地比例，§8） | 构造海岸分类：碰撞海岸崎岖、被动边缘沉积海岸平缓（Inman & Nordstrom 1971）；海岸线分形维数 D ≈ 1.2–1.33（Mandelbrot 1967） |
+| C10 | 每状态的基础频谱特征 | Hurst 指数 H：陆地内部经 C1/C2 在 0.5（年轻山地）→ 0.8（平原）间混合；每 octave 持续度按 `p = 2^(−H)` 推导 | H ∈ [0.4, 0.85] | 实测自仿射地形谱：剖面 β ≈ 2，山地 H 聚于 0.5 附近，低起伏区细尺度更平滑（Sayles & Thomas 1978；Huang & Turcotte 1989；Gagnon et al. 2006）。注意 `p = 2^(−H)` 意味着民间默认 p = 0.5 对应 H = 1——比真实地形更平滑；因此持续度一律从 H 推导，绝不硬编码 |
 
-## 6. Spectral budget and LOD ladder
+## 6. 频谱预算与 LOD 阶梯
 
-- Base detail wavelength λ₀ = 2 × mean cell spacing of the published tier
-  (Draft ≈ 318 km, Standard ≈ 160 km); each LOD level adds one octave:
-  λ_min(L) = λ₀ · 2^(−L).
-- Anti-aliasing rule: when evaluated for a raster or mesh with footprint s,
-  octaves with wavelength < 2s are skipped (Nyquist clamp) — standard
-  procedural practice (Ebert et al. 2002). The M1 bake at 4096×2048
-  (equatorial pixel ≈ 9.8 km) therefore uses L such that λ_min ≈ 20 km:
-  L = 4 at Draft, L = 3 at Standard.
-- Hard cap for M2: L ≤ 13 (λ_min ≈ 39 m at Draft λ₀), revisited in the M2
-  plan with measured per-sample cost.
+- 基础细节波长 λ₀ = 2 × 已发布档位的平均格距（草稿档 ≈ 318 km，标准档
+  ≈ 160 km）；每个 LOD 层加一个 octave：λ_min(L) = λ₀ · 2^(−L)。
+- 抗走样规则：对像素足迹为 s 的栅格或网格求值时，波长 < 2s 的 octave
+  一律跳过（Nyquist 钳制）——标准程序化实践（Ebert et al. 2002）。
+  M1 的 4096×2048 烘焙（赤道像素 ≈ 9.8 km）因此取 λ_min ≈ 20 km 的
+  L：草稿档 L = 4，标准档 L = 3。
+- M2 硬上限：L ≤ 13（草稿 λ₀ 下 λ_min ≈ 39 m），在 M2 计划中结合实测
+  单点采样成本复核。
 
-## 7. Rivers
+## 7. 河流
 
-- Carving applies only along published P5 reaches; T1 invents no channels.
-  (Sub-T0 fine hydrology is an M2 topic and is out of scope here.)
-- Channel/valley width scales as `w = k·Q^0.5` from P5 mean annual
-  discharge, modulated by Strahler order — hydraulic geometry (Leopold &
-  Maddock 1953). Valley cross-section: V-profile where C1 relief is high,
-  widening toward a floodplain profile bounded by
-  `FORMATION_FLOODPLAIN_ACCOMMODATION_M` where relief is low (Génevaux
-  et al. 2013 carve-and-blend operators).
-- Monotone-descent invariant: along each reach, carved bed elevation is
-  non-increasing downstream, enforced analytically by interpolating the P5
-  node elevations monotonically before subtracting the profile; carving is
-  subtractive only (`min(base, carve)`), so it can never dam a valley.
+- 雕刻只沿 P5 已发布河段进行；T1 不发明河道。（低于 T0 分辨率的精细
+  水文是 M2 议题，不在本文件范围。）
+- 河道/河谷宽度按水力几何从 P5 多年平均流量缩放：`w = k·Q^0.5`，并按
+  斯特拉勒河级调制（Leopold & Maddock 1953）。河谷横剖面：C1 起伏高处
+  为 V 形，起伏低处向泛滥平原剖面展宽，以
+  `FORMATION_FLOODPLAIN_ACCOMMODATION_M` 为界（Génevaux et al. 2013 的
+  雕刻-混合算子）。
+- 下游单调下降不变量：沿每条河段，被雕刻的河床高程自上游向下游不增。
+  实现方式是先对 P5 节点高程做单调插值再减去剖面；雕刻只做减法
+  （`min(base, carve)`），因此永远不可能筑坝。
 
-## 8. Determinism and invariants
+## 8. 确定性与不变量
 
-Seed derivation: world root seed → labeled substreams (existing
-discipline) with frozen labels `t1.warp`, `t1.continental-detail`,
-`t1.dissection`, `t1.badlands`, `t1.abyssal-hills`, `t1.coast`. Layers are
-mutually uncorrelated and cannot collide with T0 labels.
+种子派生：世界根种子 → 带标签子流（既有纪律），冻结标签为
+`t1.warp`、`t1.continental-detail`、`t1.dissection`、`t1.badlands`、
+`t1.abyssal-hills`、`t1.coast`。各层互不相关，且不可能与 T0 标签冲突。
 
-Frozen probe fingerprint: 256 probe directions defined by the spherical
-Fibonacci lattice (golden-angle formula, i = 0..255) — the formula is the
-definition, no stored coordinates. The implementation test evaluates
-`sample` at every probe for the M1 LOD and hashes the little-endian f32
-elevations with blake3. The value is recorded here by amendment when Task 3
-lands and must never change silently afterwards.
+冻结探针指纹：256 个探针方向由球面 Fibonacci 格（黄金角公式，
+i = 0..255）定义——公式即定义，不存储坐标。实现测试在 M1 LOD 下对每个
+探针求值 `sample`，对小端序 f32 高程序列取 blake3。该值在 Task 3 落地时
+以修订条目记录于此，此后任何静默变化都不允许。
 
-Invariant tests enumerated for Task 3 (all must exist before Task 4):
+Task 3 必须存在的不变量测试（全部先于 Task 4）：
 
-1. Determinism: probe fingerprint stable across runs and threads.
-2. Seamlessness: antipodal/meridian probe pairs straddling the atlas seam
-   agree with direct evaluation (no lat/lon anywhere in the path).
-3. Bounds: every probe result finite and inside
-   `ELEVATION_MIN_M..=ELEVATION_MAX_M`.
-4. Land-fraction preservation: classifying the probe set (extended to 16k
-   Fibonacci points) by amplified elevation vs sea level changes the T0
-   area-weighted land fraction by ≤ 1 percentage point.
-5. River monotone descent: for every reach, sampled bed elevations along
-   the polyline are non-increasing downstream.
-6. Conditioning directions: synthetic single-driver sweeps confirm each
-   table row's stated direction (and C5's peaked shape).
-7. Regime blending: no sample sequence crossing a regime boundary exhibits
-   a first-difference spike beyond the authored bound.
+1. 确定性：探针指纹跨运行、跨线程稳定。
+2. 无缝性：跨图集接缝的对趾/经线探针对与直接求值一致（路径中无任何
+   经纬度）。
+3. 边界：每个探针结果有限，且在 `ELEVATION_MIN_M..=ELEVATION_MAX_M` 内。
+4. 陆地比例保护：将探针集（扩展到 1.6 万个 Fibonacci 点）按放大后高程
+   对海平面分类，T0 面积加权陆地比例的变化 ≤ 1 个百分点。
+5. 河流单调下降：每条河段沿折线采样的河床高程自上而下不增。
+6. 条件化方向：单驱动合成扫描逐行确认表中声明的方向（含 C5 的峰形）。
+7. 状态混合：跨状态边界的采样序列的一阶差分不得出现超过声明边界的
+   尖峰。
 
-## 9. Scientific review record (2026-08-19, pre-freeze)
+## 9. 科学审查记录（2026-08-19，冻结前）
 
-The draft table was reviewed against planetary-geomorphology literature
-before freezing; three substantive corrections and two rejections resulted:
+条件表草稿在冻结前对照行星地貌学文献逐行复核，产生三处实质纠错、
+两处否决：
 
-1. **Corrected — precipitation is not a monotone dissection driver.** The
-   working draft (and the earlier chat sketch) had "more rain → more
-   gullies". The established Langbein–Schumm relation peaks in the
-   semi-arid band and declines under vegetated humid climates; C5 now
-   encodes the peaked curve explicitly.
-2. **Corrected — erodibility must split into two channels.** A single
-   "erodibility → smoother" knob contradicts badlands, where the weakest
-   rocks produce the finest, densest dissection. C4 separates the amplitude
-   ceiling (down with erodibility) from texture frequency (up with
-   erodibility), and C6 gates the badlands end-member on climate, matching
-   Schumm's observations.
-3. **Corrected — persistence is derived, not folklore.** p = 0.5 per octave
-   implies H = 1, smoother than any measured landscape. C10 derives
-   persistence from measured Hurst exponents (H ≈ 0.4–0.85) via
-   p = 2^(−H).
-4. **Rejected — invented "erosion-look" filters.** No ridged-multifractal
-   or thermal-erosion post-filters are applied without a named driver from
-   the table: every visible structure must trace to a T0 physical field or
-   a cited stochastic landform model (abyssal hills, hydraulic geometry).
-5. **Deferred — seamounts and volcanic edifices.** A grounded stochastic
-   model exists (Wessel 2001 seamount statistics), but the formation
-   product currently publishes no hotspot/volcanic flux field to condition
-   on; adding one is a T0 change and therefore out of T1's charter.
-   Recorded as a candidate alongside the Task 6 gate.
+1. **纠错——降水不是单调的切割驱动。** 工作草稿（以及此前对话中的
+   示意）写的是"雨越多沟壑越多"。确立的 Langbein–Schumm 关系在半干旱
+   带达峰、在植被覆盖的湿润气候下下降；C5 现已显式编码峰形曲线。
+2. **纠错——可蚀性必须拆成两个通道。** 单一"可蚀性高 → 更平滑"旋钮
+   与恶地矛盾：最软弱的岩石产生最细密的切割。C4 将振幅上限（随可蚀性
+   降）与纹理频率（随可蚀性升）分离，C6 按气候门控恶地端元，与 Schumm
+   的观察一致。
+3. **纠错——持续度是推导值，不是民间默认值。** 每 octave p = 0.5 意味
+   着 H = 1，比任何实测地貌都平滑。C10 从实测 Hurst 指数
+   （H ≈ 0.4–0.85）经 `p = 2^(−H)` 推导持续度。
+4. **否决——无驱动的"侵蚀感"滤镜。** 不加任何没有具名驱动场的
+   ridged-multifractal 或热蚀后处理：每个可见结构必须追溯到某个 T0
+   物理场，或某个有文献的随机地貌模型（深海丘陵、水力几何）。
+5. **推迟——海山与火山锥。** 有据可依的随机模型存在（Wessel 2001 海山
+   统计），但形成产品目前未发布可供条件化的热点/火山通量场；加场属于
+   T0 变更，超出 T1 职权。记录为 Task 6 决策门旁的候选项。
 
-Constraint philosophy: T1 may only *redistribute* detail below the T0 cell
-scale; every macro-scale truth (continents, land fraction, shelf plateaus,
-river topology, sea level) is inherited and protected by the §8 invariants.
-This is what guarantees "no unpredictable results": any deviation beyond
-the stated bounds is a test failure, not a matter of taste.
+约束哲学：T1 只允许在 T0 格距以下**再分配**细节；所有宏观真相（大陆、
+陆地比例、陆架平台、河网拓扑、海平面）一律继承，并由 §8 不变量保护。
+这就是"不产生不可预期结果"的保证：任何越出声明边界的偏离都是测试
+失败，而不是审美问题。
 
-## 10. Amendment log
+## 10. 修订日志
 
-- (empty — first entry will record the frozen probe fingerprint value from
-  Task 3.)
+-（空——第一条将记录 Task 3 产出的冻结探针指纹值。）

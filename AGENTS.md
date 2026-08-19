@@ -60,6 +60,8 @@
 - 较大特性走 superpowers 纪律：`docs/superpowers/plans/` 里的任务化
   计划、一任务一提交；锁定设计入 `docs/superpowers/specs/`，实现期偏离
   以修订条目显式记录。
+- 项目文档（plans / specs / 完成记录）用中文撰写；引文、代码标识符与
+  常量名保留原文。已完结的历史文档不回头翻译。（用户指令，2026-08-19）
 - 门禁（提交前）：`cargo fmt --all -- --check`；
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`；
   `cargo check --target wasm32-unknown-unknown --all-features --lib`；
