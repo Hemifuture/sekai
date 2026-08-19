@@ -20,7 +20,11 @@ struct SphericalFrameUniform {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) direction: vec3<f32>,
+}
+
+struct AmplifiedOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
 }
 
 struct OverlayOutput {
@@ -43,22 +47,12 @@ var<storage, read> fill_palette: array<vec4<f32>>;
 @group(0) @binding(3)
 var<uniform> frame: SphericalFrameUniform;
 
-@group(0) @binding(4)
-var amplified_texture: texture_2d<f32>;
-
-@group(0) @binding(5)
-var amplified_sampler: sampler;
-
-const PI: f32 = 3.14159265358979;
-
-// Equirectangular lookup from a unit direction. The convention (longitude
-// from atan2(y, x), v = 0 at the north pole) must match the CPU bake in
-// app::amplified_view; the GPU goldens pin the pairing.
-fn sample_amplified(direction: vec3<f32>) -> vec4<f32> {
-    let unit = normalize(direction);
-    let u = atan2(unit.y, unit.x) / (2.0 * PI) + 0.5;
-    let v = 0.5 - asin(clamp(unit.z, -1.0, 1.0)) / PI;
-    return textureSampleLevel(amplified_texture, amplified_sampler, vec2<f32>(u, v), 0.0);
+// The amplified subdivision mesh carries pre-lit sRGB vertex colors; decode
+// exactly the inverse of the CPU encoding so the sRGB target round-trips.
+fn srgb_to_linear(encoded: vec3<f32>) -> vec3<f32> {
+    let low = encoded / 12.92;
+    let high = pow((encoded + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, encoded <= vec3<f32>(0.04045));
 }
 
 fn sample_palette(t: f32) -> vec4<f32> {
@@ -102,7 +96,7 @@ fn apply_diagnostic_overlay(base: vec4<f32>, cell: u32) -> vec4<f32> {
     return fill_palette[frame.diagnostic_error_index];
 }
 
-fn vertex_output(position: vec4<f32>, cell: u32, direction: vec3<f32>) -> VertexOutput {
+fn vertex_output(position: vec4<f32>, cell: u32) -> VertexOutput {
     var output: VertexOutput;
     output.position = frame.transform * position;
     var base = vec4<f32>(0.0);
@@ -110,7 +104,6 @@ fn vertex_output(position: vec4<f32>, cell: u32, direction: vec3<f32>) -> Vertex
         base = decode_fill_color(cell);
     }
     output.color = apply_diagnostic_overlay(base, cell);
-    output.direction = direction;
     return output;
 }
 
@@ -118,9 +111,8 @@ fn vertex_output(position: vec4<f32>, cell: u32, direction: vec3<f32>) -> Vertex
 fn vs_map(
     @location(0) position: vec2<f32>,
     @location(1) cell: u32,
-    @location(2) direction: vec3<f32>,
 ) -> VertexOutput {
-    return vertex_output(vec4<f32>(position, 0.0, 1.0), cell, direction);
+    return vertex_output(vec4<f32>(position, 0.0, 1.0), cell);
 }
 
 @vertex
@@ -128,15 +120,39 @@ fn vs_globe(
     @location(0) position: vec3<f32>,
     @location(1) cell: u32,
 ) -> VertexOutput {
-    return vertex_output(vec4<f32>(position, 1.0), cell, position);
+    return vertex_output(vec4<f32>(position, 1.0), cell);
 }
 
 @fragment
 fn fs_fill(input: VertexOutput) -> @location(0) vec4<f32> {
-    if frame.amplified_mode != 0u {
-        return sample_amplified(input.direction);
-    }
     return input.color;
+}
+
+@vertex
+fn vs_map_amplified(
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+) -> AmplifiedOutput {
+    var output: AmplifiedOutput;
+    output.position = frame.transform * vec4<f32>(position, 0.0, 1.0);
+    output.color = color;
+    return output;
+}
+
+@vertex
+fn vs_globe_amplified(
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+) -> AmplifiedOutput {
+    var output: AmplifiedOutput;
+    output.position = frame.transform * vec4<f32>(position, 1.0);
+    output.color = color;
+    return output;
+}
+
+@fragment
+fn fs_amplified(input: AmplifiedOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(srgb_to_linear(input.color.rgb), input.color.a);
 }
 
 fn clipped_overlay(color: vec4<f32>, kind: u32) -> OverlayOutput {

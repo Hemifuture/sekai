@@ -236,6 +236,8 @@ pub enum SphericalMeshError {
     #[error("cell {cell:?} produced invalid unit-globe geometry")]
     InvalidGlobeGeometry { cell: CellId },
     /// An authoritative edge produced a non-finite, degenerate, or cross-map fragment.
+    #[error("amplified mesh arrays are inconsistent")]
+    InvalidAmplifiedMesh,
     #[error("edge {edge:?} produced invalid projected geometry")]
     InvalidEdgeGeometry { edge: EdgeId },
     /// A cell was not represented by any usable display triangle.
@@ -1308,6 +1310,247 @@ fn append_edge_segment(
     budgets.check_counts(0, 0, 0, next)?;
     output.push(ProjectedEdgeSegment { start, end, edge });
     Ok(())
+}
+
+/// One direction-domain amplified subdivision mesh shared by both presenters.
+///
+/// Directions are unit vectors and colors are pre-lit sRGB bytes; the mesh is
+/// built once per published world and re-projected per map view.
+#[derive(Debug, Clone)]
+pub struct AmplifiedSurfaceMesh {
+    directions: Vec<[f32; 3]>,
+    colors: Vec<[u8; 4]>,
+    indices: Vec<u32>,
+}
+
+impl AmplifiedSurfaceMesh {
+    /// Validates cardinalities, finiteness, and index bounds once.
+    pub fn new(
+        directions: Vec<[f32; 3]>,
+        colors: Vec<[u8; 4]>,
+        indices: Vec<u32>,
+    ) -> Result<Self, SphericalMeshError> {
+        if directions.is_empty()
+            || directions.len() != colors.len()
+            || indices.is_empty()
+            || indices.len() % TRIANGLE_VERTEX_COUNT != 0
+        {
+            return Err(SphericalMeshError::InvalidAmplifiedMesh);
+        }
+        if directions
+            .iter()
+            .any(|direction| direction.iter().any(|component| !component.is_finite()))
+        {
+            return Err(SphericalMeshError::InvalidAmplifiedMesh);
+        }
+        let vertex_count = directions.len();
+        if indices.iter().any(|&index| index as usize >= vertex_count) {
+            return Err(SphericalMeshError::InvalidAmplifiedMesh);
+        }
+        Ok(Self {
+            directions,
+            colors,
+            indices,
+        })
+    }
+
+    /// Returns the unit directions of all subdivision vertices.
+    pub fn directions(&self) -> &[[f32; 3]] {
+        &self.directions
+    }
+
+    /// Returns the pre-lit sRGB vertex colors.
+    pub fn colors(&self) -> &[[u8; 4]] {
+        &self.colors
+    }
+
+    /// Returns the triangle index list.
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+
+    /// Returns the triangle count.
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / TRIANGLE_VERTEX_COUNT
+    }
+}
+
+/// One projected amplified map vertex ready for GPU packing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmplifiedMapVertex {
+    /// The projected planar position.
+    pub position: [f32; 2],
+    /// The pre-lit sRGB color carried over from the direction-domain vertex.
+    pub color: [u8; 4],
+}
+
+/// Projects the amplified mesh for one map view.
+///
+/// Almost every subdivision triangle projects directly through the shared
+/// vertex table; a triangle whose projected x-span exceeds half the outline
+/// width (or with a non-finite corner) is re-cut through the seam pipeline,
+/// its cut-point colors re-interpolated barycentrically on the source
+/// triangle. Triangles the seam pipeline cannot represent are dropped rather
+/// than failing the whole view.
+pub fn project_amplified_map(
+    mesh: &AmplifiedSurfaceMesh,
+    projection: SphericalProjection,
+) -> (Vec<AmplifiedMapVertex>, Vec<u32>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    use rayon::prelude::*;
+
+    let bounds = projection.bounds();
+    let half_width = ((bounds.max_x() - bounds.min_x()) * 0.5 + SPAN_EPSILON) as f32;
+    let central_meridian = projection.central_meridian();
+    #[cfg(not(target_arch = "wasm32"))]
+    let vertex_iter = mesh.directions().par_iter().zip(mesh.colors().par_iter());
+    #[cfg(target_arch = "wasm32")]
+    let vertex_iter = mesh.directions().iter().zip(mesh.colors().iter());
+    let mut vertices: Vec<AmplifiedMapVertex> = vertex_iter
+        .map(|(direction, color)| {
+            let [x, y, z] = *direction;
+            let longitude = f64::from(y).atan2(f64::from(x));
+            let latitude = f64::from(z).clamp(-1.0, 1.0).asin();
+            let relative = wrap_radians(longitude - central_meridian);
+            let position = projection
+                .forward_latitude_relative_longitude(latitude, relative)
+                .map_or([f32::NAN; 2], |point| [point.x() as f32, point.y() as f32]);
+            AmplifiedMapVertex {
+                position,
+                color: *color,
+            }
+        })
+        .collect();
+    let mut indices = Vec::with_capacity(mesh.indices().len());
+    for triangle in mesh.indices().chunks_exact(TRIANGLE_VERTEX_COUNT) {
+        let corners = [triangle[0], triangle[1], triangle[2]];
+        let positions = corners.map(|index| vertices[index as usize].position);
+        let finite = positions
+            .iter()
+            .all(|position| position[0].is_finite() && position[1].is_finite());
+        let span = positions
+            .iter()
+            .map(|p| p[0])
+            .fold(f32::NEG_INFINITY, f32::max)
+            - positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+        if finite && span <= half_width {
+            indices.extend_from_slice(triangle);
+        } else {
+            append_seam_cut_triangle(
+                mesh,
+                corners,
+                projection,
+                central_meridian,
+                &mut vertices,
+                &mut indices,
+            );
+        }
+    }
+    (vertices, indices)
+}
+
+/// Re-cuts one seam- or pole-adjacent subdivision triangle for the map.
+fn append_seam_cut_triangle(
+    mesh: &AmplifiedSurfaceMesh,
+    corners: [u32; 3],
+    projection: SphericalProjection,
+    central_meridian: f64,
+    vertices: &mut Vec<AmplifiedMapVertex>,
+    indices: &mut Vec<u32>,
+) {
+    let mut recovered = Vec::with_capacity(TRIANGLE_VERTEX_COUNT);
+    for &corner in &corners {
+        let [x, y, z] = mesh.directions()[corner as usize];
+        let Ok(direction) = UnitVector3::new(f64::from(x), f64::from(y), f64::from(z)) else {
+            return;
+        };
+        recovered.push(direction);
+    }
+    let Ok(directions) = <[UnitVector3; TRIANGLE_VERTEX_COUNT]>::try_from(recovered) else {
+        return;
+    };
+    let colors = corners.map(|corner| mesh.colors()[corner as usize]);
+    let polygon = angular_fan_polygon(directions, central_meridian);
+    let Ok(fragments) = split_polygon_at_seam(&polygon, central_meridian, CellId::from_raw(0))
+    else {
+        return;
+    };
+    for fragment in fragments {
+        if fragment.len() < TRIANGLE_VERTEX_COUNT {
+            continue;
+        }
+        let mut projected = Vec::with_capacity(fragment.len());
+        for vertex in &fragment {
+            let Ok(point) = project_angular(*vertex, projection) else {
+                projected.clear();
+                break;
+            };
+            projected.push((point, vertex.direction));
+        }
+        if projected.len() < TRIANGLE_VERTEX_COUNT {
+            continue;
+        }
+        let Ok(base) = u32::try_from(vertices.len()) else {
+            return;
+        };
+        for (point, direction) in &projected {
+            vertices.push(AmplifiedMapVertex {
+                position: [point.x() as f32, point.y() as f32],
+                color: barycentric_color(&directions, &colors, *direction),
+            });
+        }
+        for corner in 1..projected.len() - 1 {
+            let (Ok(second), Ok(third)) = (
+                u32::try_from(corner).map(|c| base + c),
+                u32::try_from(corner + 1).map(|c| base + c),
+            ) else {
+                return;
+            };
+            indices.extend_from_slice(&[base, second, third]);
+        }
+    }
+}
+
+/// Interpolates a cut-point color barycentrically on its source triangle.
+fn barycentric_color(
+    directions: &[UnitVector3; TRIANGLE_VERTEX_COUNT],
+    colors: &[[u8; 4]; TRIANGLE_VERTEX_COUNT],
+    point: UnitVector3,
+) -> [u8; 4] {
+    fn triple(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+        a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0])
+    }
+    let [a, b, c] = directions.map(UnitVector3::components);
+    let p = point.components();
+    let determinant = triple(a, b, c);
+    if determinant.abs() <= f64::EPSILON {
+        return colors[0];
+    }
+    let mut weights = [
+        triple(p, b, c) / determinant,
+        triple(a, p, c) / determinant,
+        triple(a, b, p) / determinant,
+    ];
+    let mut total = 0.0;
+    for weight in &mut weights {
+        *weight = weight.max(0.0);
+        total += *weight;
+    }
+    if total <= f64::EPSILON {
+        return colors[0];
+    }
+    let mut blended = [0u8; 4];
+    for channel in 0..4 {
+        let value = weights
+            .iter()
+            .zip(colors.iter())
+            .map(|(weight, color)| weight / total * f64::from(color[channel]))
+            .sum::<f64>();
+        blended[channel] = value.round().clamp(0.0, 255.0) as u8;
+    }
+    blended
 }
 
 #[cfg(test)]

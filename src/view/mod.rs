@@ -57,7 +57,8 @@ pub use spherical_camera::{
     GlobeCamera, MapCamera, SphericalPresentationViewState, SphericalViewMode,
 };
 pub use spherical_mesh::{
-    GlobeVertex, PreparedGlobeMesh, PreparedProjectedMap, ProjectedEdgeSegment, ProjectedMapVertex,
+    project_amplified_map, AmplifiedMapVertex, AmplifiedSurfaceMesh, GlobeVertex,
+    PreparedGlobeMesh, PreparedProjectedMap, ProjectedEdgeSegment, ProjectedMapVertex,
     SphericalMeshBudgets, SphericalMeshError,
 };
 pub use spherical_picking::{

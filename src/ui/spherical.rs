@@ -1093,9 +1093,7 @@ pub fn interact_spherical_canvas(
     let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
     let pixels_per_point = f64::from(ui.ctx().pixels_per_point());
 
-    // Entity inspection stays a cell-view workflow in M1: the amplified
-    // texture is presentation-only, so clicks are inert while it shows.
-    if response.clicked_by(egui::PointerButton::Primary) && !state.field_state().amplified_view() {
+    if response.clicked_by(egui::PointerButton::Primary) {
         if let Some(position) = response.interact_pointer_pos() {
             let local = [
                 f64::from(position.x - rect.min.x),
@@ -1298,8 +1296,6 @@ pub fn show_spherical_controls(
         });
         if !amplified_available {
             ui.label("放大视图在形成链构建完成后可用");
-        } else if amplified {
-            ui.label("放大视图仅呈现；检查实体请切回格元视图");
         }
     });
 

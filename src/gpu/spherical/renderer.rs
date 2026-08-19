@@ -79,7 +79,22 @@ pub(crate) mod validation_probe {
 struct GpuMapVertex {
     position: [f32; 2],
     cell: u32,
-    direction: [f32; 3],
+}
+
+/// One amplified map vertex: projected position plus pre-lit sRGB color.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuAmplifiedMapVertex {
+    position: [f32; 2],
+    color: [u8; 4],
+}
+
+/// One amplified globe vertex: unit direction plus pre-lit sRGB color.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuAmplifiedGlobeVertex {
+    position: [f32; 3],
+    color: [u8; 4],
 }
 
 #[repr(C)]
@@ -845,9 +860,15 @@ pub struct SphericalFieldRenderer {
     map_uniform_buffer: wgpu::Buffer,
     globe_uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
-    amplified_sampler: wgpu::Sampler,
-    amplified_dummy_view: wgpu::TextureView,
-    amplified_view: Option<wgpu::TextureView>,
+    amplified_map_pipeline: wgpu::RenderPipeline,
+    amplified_globe_pipeline: wgpu::RenderPipeline,
+    amplified_map_vertex_buffer: Option<wgpu::Buffer>,
+    amplified_map_index_buffer: Option<wgpu::Buffer>,
+    amplified_map_index_count: u32,
+    amplified_globe_vertex_buffer: Option<wgpu::Buffer>,
+    amplified_globe_index_buffer: Option<wgpu::Buffer>,
+    amplified_globe_index_count: u32,
+    amplified_visible: bool,
     map_bind_group: wgpu::BindGroup,
     globe_bind_group: wgpu::BindGroup,
     map_pipeline: wgpu::RenderPipeline,
@@ -937,8 +958,6 @@ impl SphericalFieldRenderer {
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
         let bind_group_layout = create_bind_group_layout(device);
-        let amplified_sampler = create_amplified_sampler(device);
-        let amplified_dummy_view = create_amplified_texture(device, 1, 1).1;
         let map_bind_group = create_bind_group(
             device,
             &bind_group_layout,
@@ -946,8 +965,6 @@ impl SphericalFieldRenderer {
             &diagnostic_buffer,
             &palette_buffer,
             &map_uniform_buffer,
-            &amplified_dummy_view,
-            &amplified_sampler,
             "Spherical Map Fill Bind Group",
         );
         let globe_bind_group = create_bind_group(
@@ -957,8 +974,6 @@ impl SphericalFieldRenderer {
             &diagnostic_buffer,
             &palette_buffer,
             &globe_uniform_buffer,
-            &amplified_dummy_view,
-            &amplified_sampler,
             "Spherical Globe Fill Bind Group",
         );
         let map_pipeline = create_pipeline(
@@ -979,6 +994,18 @@ impl SphericalFieldRenderer {
             &bind_group_layout,
             SphericalRenderMode::Map,
         );
+        let amplified_map_pipeline = create_amplified_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Map,
+        );
+        let amplified_globe_pipeline = create_amplified_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Globe,
+        );
         let globe_overlay_pipeline = create_overlay_pipeline(
             device,
             target_format,
@@ -986,9 +1013,6 @@ impl SphericalFieldRenderer {
             SphericalRenderMode::Globe,
         );
         Self {
-            amplified_sampler,
-            amplified_dummy_view,
-            amplified_view: None,
             map_vertex_buffer,
             map_vertex_capacity: MIN_BUFFER_BYTES,
             map_index_buffer,
@@ -1016,6 +1040,15 @@ impl SphericalFieldRenderer {
             globe_pipeline,
             map_overlay_pipeline,
             globe_overlay_pipeline,
+            amplified_map_pipeline,
+            amplified_globe_pipeline,
+            amplified_map_vertex_buffer: None,
+            amplified_map_index_buffer: None,
+            amplified_map_index_count: 0,
+            amplified_globe_vertex_buffer: None,
+            amplified_globe_index_buffer: None,
+            amplified_globe_index_count: 0,
+            amplified_visible: false,
             installed_source: None,
             installed_revisions: None,
             installed_packet_key: None,
@@ -1165,7 +1198,6 @@ impl SphericalFieldRenderer {
                 .map(|vertex| GpuMapVertex {
                     position: [vertex.position().x() as f32, vertex.position().y() as f32],
                     cell: vertex.cell().raw(),
-                    direction: vertex.direction(),
                 })
                 .collect::<Vec<_>>()
         });
@@ -1329,10 +1361,6 @@ impl SphericalFieldRenderer {
                     diagnostics,
                     palette,
                     &self.map_uniform_buffer,
-                    self.amplified_view
-                        .as_ref()
-                        .unwrap_or(&self.amplified_dummy_view),
-                    &self.amplified_sampler,
                     "Spherical Map Fill Bind Group",
                 ),
                 create_bind_group(
@@ -1342,10 +1370,6 @@ impl SphericalFieldRenderer {
                     diagnostics,
                     palette,
                     &self.globe_uniform_buffer,
-                    self.amplified_view
-                        .as_ref()
-                        .unwrap_or(&self.amplified_dummy_view),
-                    &self.amplified_sampler,
                     "Spherical Globe Fill Bind Group",
                 ),
             )
@@ -1494,74 +1518,71 @@ impl SphericalFieldRenderer {
     }
 
     /// Writes one fixed-size mode-specific camera/value uniform.
-    /// Installs (or replaces) the amplified equirect texture and rebinds.
-    pub fn set_amplified_image(
+    /// Installs (or replaces) the projected amplified map mesh.
+    pub fn set_amplified_map_mesh(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        rgba8: &[u8],
+        vertices: &[crate::view::AmplifiedMapVertex],
+        indices: &[u32],
     ) {
-        debug_assert_eq!((width as usize) * (height as usize) * 4, rgba8.len());
-        let (texture, view) = create_amplified_texture(device, width, height);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba8,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+        let gpu_vertices: Vec<GpuAmplifiedMapVertex> = vertices
+            .iter()
+            .map(|vertex| GpuAmplifiedMapVertex {
+                position: vertex.position,
+                color: vertex.color,
+            })
+            .collect();
+        (
+            self.amplified_map_vertex_buffer,
+            self.amplified_map_index_buffer,
+            self.amplified_map_index_count,
+        ) = upload_amplified_buffers(
+            device,
+            queue,
+            "Spherical Amplified Map",
+            bytemuck::cast_slice(&gpu_vertices),
+            indices,
         );
-        self.amplified_view = Some(view);
-        self.rebuild_fill_bind_groups(device);
     }
 
-    /// Drops the amplified texture (legacy worlds render cells only).
-    pub fn clear_amplified_image(&mut self, device: &wgpu::Device) {
-        if self.amplified_view.take().is_some() {
-            self.rebuild_fill_bind_groups(device);
-        }
+    /// Installs (or replaces) the direction-domain amplified globe mesh.
+    pub fn set_amplified_globe_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: &crate::view::AmplifiedSurfaceMesh,
+    ) {
+        let gpu_vertices: Vec<GpuAmplifiedGlobeVertex> = mesh
+            .directions()
+            .iter()
+            .zip(mesh.colors())
+            .map(|(direction, color)| GpuAmplifiedGlobeVertex {
+                position: *direction,
+                color: *color,
+            })
+            .collect();
+        (
+            self.amplified_globe_vertex_buffer,
+            self.amplified_globe_index_buffer,
+            self.amplified_globe_index_count,
+        ) = upload_amplified_buffers(
+            device,
+            queue,
+            "Spherical Amplified Globe",
+            bytemuck::cast_slice(&gpu_vertices),
+            mesh.indices(),
+        );
     }
 
-    fn rebuild_fill_bind_groups(&mut self, device: &wgpu::Device) {
-        let amplified = self
-            .amplified_view
-            .as_ref()
-            .unwrap_or(&self.amplified_dummy_view);
-        self.map_bind_group = create_bind_group(
-            device,
-            &self.bind_group_layout,
-            &self.fill_buffer,
-            &self.diagnostic_buffer,
-            &self.palette_buffer,
-            &self.map_uniform_buffer,
-            amplified,
-            &self.amplified_sampler,
-            "Spherical Map Fill Bind Group",
-        );
-        self.globe_bind_group = create_bind_group(
-            device,
-            &self.bind_group_layout,
-            &self.fill_buffer,
-            &self.diagnostic_buffer,
-            &self.palette_buffer,
-            &self.globe_uniform_buffer,
-            amplified,
-            &self.amplified_sampler,
-            "Spherical Globe Fill Bind Group",
-        );
+    /// Drops both amplified meshes (worlds without an amplified product).
+    pub fn clear_amplified_meshes(&mut self) {
+        self.amplified_map_vertex_buffer = None;
+        self.amplified_map_index_buffer = None;
+        self.amplified_map_index_count = 0;
+        self.amplified_globe_vertex_buffer = None;
+        self.amplified_globe_index_buffer = None;
+        self.amplified_globe_index_count = 0;
     }
 
     pub(super) fn prepare_frame(
@@ -1583,13 +1604,10 @@ impl SphericalFieldRenderer {
             SphericalRenderMode::Map => &self.map_uniform_buffer,
             SphericalRenderMode::Globe => &self.globe_uniform_buffer,
         };
-        // The amplified view only renders when its texture actually exists;
-        // a stale toggle can never sample the placeholder.
-        let mut gated = *uniform;
-        if self.amplified_view.is_none() {
-            gated.amplified_mode = 0;
-        }
-        queue.write_buffer(buffer, 0, bytemuck::bytes_of(&gated));
+        // The shader no longer reads amplified_mode; paint() consults this
+        // flag and only ever draws a mesh that actually exists.
+        self.amplified_visible = uniform.amplified_mode != 0;
+        queue.write_buffer(buffer, 0, bytemuck::bytes_of(uniform));
         self.counters = next;
         self.frame_generation = next_generation;
         Ok(next_generation)
@@ -1602,11 +1620,26 @@ impl SphericalFieldRenderer {
                 if self.map_index_count == 0 {
                     return;
                 }
-                pass.set_pipeline(&self.map_pipeline);
-                pass.set_bind_group(0, &self.map_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.map_vertex_buffer.slice(..));
-                pass.set_index_buffer(self.map_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.map_index_count, 0, 0..1);
+                if let (true, Some(vertices), Some(indices)) = (
+                    self.amplified_visible && self.amplified_map_index_count > 0,
+                    &self.amplified_map_vertex_buffer,
+                    &self.amplified_map_index_buffer,
+                ) {
+                    pass.set_pipeline(&self.amplified_map_pipeline);
+                    pass.set_bind_group(0, &self.map_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vertices.slice(..));
+                    pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.amplified_map_index_count, 0, 0..1);
+                } else {
+                    pass.set_pipeline(&self.map_pipeline);
+                    pass.set_bind_group(0, &self.map_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.map_vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        self.map_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    pass.draw_indexed(0..self.map_index_count, 0, 0..1);
+                }
                 if self.map_overlay_instance_count > 0 {
                     pass.set_pipeline(&self.map_overlay_pipeline);
                     pass.set_bind_group(0, &self.map_bind_group, &[]);
@@ -1618,11 +1651,26 @@ impl SphericalFieldRenderer {
                 if self.globe_index_count == 0 {
                     return;
                 }
-                pass.set_pipeline(&self.globe_pipeline);
-                pass.set_bind_group(0, &self.globe_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.globe_vertex_buffer.slice(..));
-                pass.set_index_buffer(self.globe_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.globe_index_count, 0, 0..1);
+                if let (true, Some(vertices), Some(indices)) = (
+                    self.amplified_visible && self.amplified_globe_index_count > 0,
+                    &self.amplified_globe_vertex_buffer,
+                    &self.amplified_globe_index_buffer,
+                ) {
+                    pass.set_pipeline(&self.amplified_globe_pipeline);
+                    pass.set_bind_group(0, &self.globe_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vertices.slice(..));
+                    pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.amplified_globe_index_count, 0, 0..1);
+                } else {
+                    pass.set_pipeline(&self.globe_pipeline);
+                    pass.set_bind_group(0, &self.globe_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.globe_vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        self.globe_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    pass.draw_indexed(0..self.globe_index_count, 0, 0..1);
+                }
                 if self.globe_overlay_instance_count > 0 {
                     pass.set_pipeline(&self.globe_overlay_pipeline);
                     pass.set_bind_group(0, &self.globe_bind_group, &[]);
@@ -2121,22 +2169,6 @@ fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 5,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
         ],
     })
 }
@@ -2154,43 +2186,115 @@ fn storage_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn create_amplified_sampler(device: &wgpu::Device) -> wgpu::Sampler {
-    device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Spherical Amplified Sampler"),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
+/// Uploads one amplified vertex/index pair, or clears it for empty input.
+fn upload_amplified_buffers(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    vertex_bytes: &[u8],
+    indices: &[u32],
+) -> (Option<wgpu::Buffer>, Option<wgpu::Buffer>, u32) {
+    let Ok(index_count) = u32::try_from(indices.len()) else {
+        return (None, None, 0);
+    };
+    if vertex_bytes.is_empty() || indices.is_empty() {
+        return (None, None, 0);
+    }
+    let vertex_buffer = create_buffer(
+        device,
+        label,
+        vertex_bytes.len() as u64,
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    );
+    queue.write_buffer(&vertex_buffer, 0, vertex_bytes);
+    let index_bytes: &[u8] = bytemuck::cast_slice(indices);
+    let index_buffer = create_buffer(
+        device,
+        label,
+        index_bytes.len() as u64,
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+    );
+    queue.write_buffer(&index_buffer, 0, index_bytes);
+    (Some(vertex_buffer), Some(index_buffer), index_count)
+}
+
+/// Builds the vertex-color pipeline for one amplified presenter.
+fn create_amplified_pipeline(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    mode: SphericalRenderMode,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Spherical Amplified Shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../../assets/shaders/spherical_field.wgsl").into(),
+        ),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Spherical Amplified Pipeline Layout"),
+        bind_group_layouts: &[bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4];
+    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
+    let (label, entry_point, array_stride, attributes, cull_mode) = match mode {
+        SphericalRenderMode::Map => (
+            "Spherical Amplified Map Pipeline",
+            "vs_map_amplified",
+            std::mem::size_of::<GpuAmplifiedMapVertex>() as u64,
+            &MAP_ATTRIBUTES[..],
+            None,
+        ),
+        SphericalRenderMode::Globe => (
+            "Spherical Amplified Globe Pipeline",
+            "vs_globe_amplified",
+            std::mem::size_of::<GpuAmplifiedGlobeVertex>() as u64,
+            &GLOBE_ATTRIBUTES[..],
+            Some(wgpu::Face::Back),
+        ),
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some(entry_point),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes,
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_amplified"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
     })
 }
 
-fn create_amplified_texture(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Spherical Amplified Texture"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -2198,8 +2302,6 @@ fn create_bind_group(
     diagnostics: &wgpu::Buffer,
     palette: &wgpu::Buffer,
     uniform: &wgpu::Buffer,
-    amplified: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
     label: &'static str,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2222,14 +2324,6 @@ fn create_bind_group(
                 binding: 3,
                 resource: uniform.as_entire_binding(),
             },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::TextureView(amplified),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
         ],
     })
 }
@@ -2251,8 +2345,8 @@ fn create_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Uint32, 2 => Float32x3];
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Uint32];
     const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32];
     let (label, entry_point, array_stride, attributes, cull_mode) = match mode {
@@ -2435,7 +2529,7 @@ mod tests {
 
     #[test]
     fn spherical_gpu_layouts_match_wgsl_vertex_and_uniform_contracts() {
-        assert_eq!(std::mem::size_of::<GpuMapVertex>(), 24);
+        assert_eq!(std::mem::size_of::<GpuMapVertex>(), 12);
         assert_eq!(std::mem::size_of::<GpuGlobeVertex>(), 16);
         assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
         assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);

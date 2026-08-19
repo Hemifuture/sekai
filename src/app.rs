@@ -3,7 +3,7 @@ use std::sync::Arc;
 use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
-mod amplified_view;
+mod amplified_mesh;
 mod field_document;
 mod frame_stats;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -179,7 +179,7 @@ struct WorldBuildCompletion {
     result: Result<SphericalPresentationCandidate, String>,
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
-    amplified: Option<amplified_view::AmplifiedViewImage>,
+    amplified: Option<crate::view::AmplifiedSurfaceMesh>,
 }
 
 /// Persisted provenance of the currently authored world.
@@ -323,6 +323,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
+    amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
+    #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
     #[serde(skip)]
     canvas_widget: Canvas,
@@ -373,6 +375,7 @@ impl Default for TemplateApp {
             relief_spec: ReliefSpec::default(),
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
+            amplified_mesh: None,
             formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
@@ -613,7 +616,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
-        amplified: Option<amplified_view::AmplifiedViewImage>,
+        amplified: Option<crate::view::AmplifiedSurfaceMesh>,
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
@@ -626,15 +629,9 @@ impl TemplateApp {
             &render_state.device,
             render_state.target_format,
         );
-        if let Some(image) = &amplified {
-            renderer.set_amplified_image(
-                &render_state.device,
-                &render_state.queue,
-                image.width,
-                image.height,
-                &image.rgba8,
-            );
-        }
+        let amplified = amplified.map(std::sync::Arc::new);
+        self.upload_amplified_meshes(&mut renderer, render_state, amplified.as_deref());
+        self.amplified_mesh = amplified;
         let published = {
             let mut gpu = SphericalRendererPreparer::new(
                 &mut renderer,
@@ -658,7 +655,7 @@ impl TemplateApp {
         self.spherical_canvas_state
             .replace_field_state(published.state().clone());
         self.spherical_canvas_state
-            .set_amplified_available(amplified.is_some());
+            .set_amplified_available(self.amplified_mesh.is_some());
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
@@ -680,6 +677,32 @@ impl TemplateApp {
         self.active_runtime_stage_ids = stage_ids;
         self.world_origin = PersistedWorldOrigin::SphericalV1;
         Ok(())
+    }
+
+    /// Uploads (or clears) both amplified presenter meshes for one publication.
+    fn upload_amplified_meshes(
+        &self,
+        renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
+        render_state: &RenderState,
+        amplified: Option<&crate::view::AmplifiedSurfaceMesh>,
+    ) {
+        match amplified {
+            Some(mesh) => {
+                let projection = self
+                    .spherical_canvas_state
+                    .presentation_view_state()
+                    .projection();
+                let (vertices, indices) = crate::view::project_amplified_map(mesh, projection);
+                renderer.set_amplified_map_mesh(
+                    &render_state.device,
+                    &render_state.queue,
+                    &vertices,
+                    &indices,
+                );
+                renderer.set_amplified_globe_mesh(&render_state.device, &render_state.queue, mesh);
+            }
+            None => renderer.clear_amplified_meshes(),
+        }
     }
 
     /// Returns the cached formation profile surface, rebuilding it when the
@@ -804,8 +827,8 @@ impl TemplateApp {
                 )
                 .map_err(|error| error.to_string())
             })();
-            // The amplified display bake rides the same worker: it only exists
-            // for formation worlds and never blocks the UI thread.
+            // The amplified subdivision bake rides the same worker: it only
+            // exists for formation worlds and never blocks the UI thread.
             let amplified = if worker_cancellation.is_cancelled() {
                 None
             } else {
@@ -821,13 +844,12 @@ impl TemplateApp {
                             root_seed,
                         )
                         .ok()?;
-                    Some(amplified_view::bake_amplified_view(
+                    amplified_mesh::build_amplified_surface_mesh(
                         &amplifier,
+                        document.surface(),
                         sea_level_m,
                         display_radius_m,
-                        amplified_view::AMPLIFIED_BAKE_WIDTH,
-                        amplified_view::AMPLIFIED_BAKE_HEIGHT,
-                    ))
+                    )
                 })
             };
             let _ = sender.send(WorldBuildCompletion {
@@ -972,7 +994,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
-        amplified: Option<amplified_view::AmplifiedViewImage>,
+        amplified: Option<crate::view::AmplifiedSurfaceMesh>,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
             .report()
@@ -997,21 +1019,14 @@ impl TemplateApp {
             current.try_replace(candidate, &mut gpu)?;
             Ok::<_, AppRuntimeError>(current.state().clone())
         })?;
-        match &amplified {
-            Some(image) => renderer.set_amplified_image(
-                &render_state.device,
-                &render_state.queue,
-                image.width,
-                image.height,
-                &image.rgba8,
-            ),
-            None => renderer.clear_amplified_image(&render_state.device),
-        }
+        let amplified = amplified.map(std::sync::Arc::new);
+        self.upload_amplified_meshes(renderer, render_state, amplified.as_deref());
+        self.amplified_mesh = amplified;
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
         self.spherical_canvas_state
-            .set_amplified_available(amplified.is_some());
+            .set_amplified_available(self.amplified_mesh.is_some());
         self.active_runtime_graph = Some(match self.world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
@@ -1055,16 +1070,39 @@ impl TemplateApp {
                 .ok_or_else(|| "球面 publication 尚未建立".to_owned())?;
             apply_spherical_canvas_action(
                 current,
-                renderer,
+                &mut *renderer,
                 &render_state.device,
                 &render_state.queue,
                 &mut self.spherical_canvas_state,
                 action,
             )
-            .map(|_| ())
             .map_err(|error| error.to_string())
         });
-        self.spherical_runtime_error = result.err();
+        match result {
+            Ok(invalidation) => {
+                // The amplified map mesh is projection-bound; re-project it
+                // whenever the cell map geometry was replaced so both display
+                // modes stay valid after a projection or meridian change.
+                if invalidation.map_geometry() {
+                    if let Some(mesh) = self.amplified_mesh.clone() {
+                        let projection = self
+                            .spherical_canvas_state
+                            .presentation_view_state()
+                            .projection();
+                        let (vertices, indices) =
+                            crate::view::project_amplified_map(&mesh, projection);
+                        renderer.set_amplified_map_mesh(
+                            &render_state.device,
+                            &render_state.queue,
+                            &vertices,
+                            &indices,
+                        );
+                    }
+                }
+                self.spherical_runtime_error = None;
+            }
+            Err(error) => self.spherical_runtime_error = Some(error),
+        }
     }
 
     fn show_active_canvas_after_actions(
