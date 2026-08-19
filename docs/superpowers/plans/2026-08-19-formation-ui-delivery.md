@@ -36,7 +36,7 @@ UI-visible state and names its user verification step.
       candidate/publication carry a document enum, panels read the evolved
       material budget + formation sea level, slice label updated.
       Verify: user regenerates in-app and sees the P5 world on map + globe.
-- [ ] Task 5 — Async build with progress + cancellation so the ~12 s Draft
+- [x] Task 5 — Async build with progress + cancellation so the ~12 s Draft
       solve does not freeze the UI.
       Verify: user clicks rebuild; UI stays responsive with progress; cancel
       works.

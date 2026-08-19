@@ -16,8 +16,8 @@ use super::spherical_natural_display::{
     SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
 };
 use crate::engine::{
-    ArtifactError, BuildEngine, BuildFailure, BuildReport, ExternalArtifacts, GraphError,
-    MemoryStageCache,
+    ArtifactError, BuildCancellation, BuildEngine, BuildFailure, BuildReport, ExternalArtifacts,
+    GraphError, MemoryStageCache,
 };
 use crate::generators::natural::{
     spherical_natural_foundation_graph, surface_formation_graph, AuthorConstraintsArtifact,
@@ -653,6 +653,53 @@ impl PublishedSphericalPresentation {
             requested_state,
             FailureInjector::NONE,
         )
+    }
+
+    /// Builds a formation whole-replacement candidate bound to this publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_formation_replacement_candidate_for_view(
+        &self,
+        root_seed: RootSeed,
+        quality_profile: NaturalQualityProfile,
+        surface: &SphericalSurfaceSnapshot,
+        formation: &WorldFormationSpec,
+        tectonic: &TectonicSpec,
+        relief: &ReliefSpec,
+        geologic: &GeologicSpec,
+        cache: &mut MemoryStageCache,
+        requested_view: SphericalPresentationViewState,
+        requested_state: &SphericalFieldDisplayState,
+    ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+        build_spherical_formation_candidate_with_lineage(
+            root_seed,
+            quality_profile,
+            surface,
+            formation,
+            tectonic,
+            relief,
+            geologic,
+            cache,
+            requested_view,
+            requested_state,
+            self.clock(),
+            WorldCandidateLineage::Replacement(Arc::new(StateBoundCandidateBase::from_published(
+                self,
+            ))),
+            &BuildCancellation::new(),
+        )
+    }
+
+    /// Returns an owned replacement authorization for off-thread candidate builds.
+    ///
+    /// The token binds a future candidate to this exact publication; the
+    /// finished candidate is installed with [`Self::try_replace`].
+    pub fn replacement_token(&self) -> SphericalReplacementToken {
+        SphericalReplacementToken {
+            lineage: WorldCandidateLineage::Replacement(Arc::new(
+                StateBoundCandidateBase::from_published(self),
+            )),
+            clock: self.clock().clone(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1482,6 +1529,7 @@ pub fn build_spherical_formation_candidate_for_view(
         current_state,
         clock,
         WorldCandidateLineage::NoBase,
+        &BuildCancellation::new(),
     )
 }
 
@@ -1500,6 +1548,7 @@ fn build_spherical_formation_candidate_with_lineage(
     current_state: &SphericalFieldDisplayState,
     clock: &DisplayRevisionClock,
     lineage: WorldCandidateLineage,
+    cancellation: &BuildCancellation,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     let external = build_spherical_formation_external_artifacts(
         root_seed,
@@ -1510,7 +1559,12 @@ fn build_spherical_formation_candidate_with_lineage(
         relief,
         geologic,
     )?;
-    let outcome = BuildEngine::new(surface_formation_graph()?).build(root_seed, external, cache)?;
+    let outcome = BuildEngine::new(surface_formation_graph()?).build_with_cancellation(
+        root_seed,
+        external,
+        cache,
+        cancellation,
+    )?;
     let document = Arc::new(SphericalWorldFieldDocument::Formation(Arc::new(
         SphericalFormationFieldDocument::from_build_outcome(&outcome)?,
     )));
@@ -1523,6 +1577,115 @@ fn build_spherical_formation_candidate_with_lineage(
         FailureInjector::NONE,
         lineage,
     )
+}
+
+/// One complete, thread-friendly spherical world-build request.
+///
+/// Everything is owned so the request can move onto a worker thread; the
+/// worker executes it with [`run_spherical_world_build`] and reports the
+/// finished candidate back to the UI thread for GPU publication.
+pub struct SphericalWorldBuildRequest {
+    /// Root seed for the authoritative graph.
+    pub root_seed: RootSeed,
+    /// Which chain to build and its chain-specific geometry input.
+    pub target: SphericalWorldBuildTarget,
+    /// Author panel world-formation request.
+    pub formation: WorldFormationSpec,
+    /// Author panel tectonic specification.
+    pub tectonic: TectonicSpec,
+    /// Author panel relief specification.
+    pub relief: ReliefSpec,
+    /// Author panel geologic specification.
+    pub geologic: GeologicSpec,
+    /// The complete requested view snapshot.
+    pub view_state: SphericalPresentationViewState,
+    /// The requested field-display state carried into the candidate.
+    pub requested_state: SphericalFieldDisplayState,
+    /// Replacement authorization when a publication already exists.
+    pub replacement: Option<SphericalReplacementToken>,
+}
+
+/// Chain selection for one world-build request.
+pub enum SphericalWorldBuildTarget {
+    /// Formation-product chain on an already-built profile surface.
+    Formation {
+        /// The fixed quality profile driving the build.
+        quality_profile: NaturalQualityProfile,
+        /// The owned authoritative profile surface.
+        surface: SphericalSurfaceSnapshot,
+    },
+    /// Legacy natural-foundation chain on an authored space specification.
+    LegacyFoundation {
+        /// The authored spherical space specification.
+        space: SphericalSpaceSpec,
+    },
+}
+
+/// Opaque replacement authorization bound to one exact current publication.
+pub struct SphericalReplacementToken {
+    lineage: WorldCandidateLineage,
+    clock: DisplayRevisionClock,
+}
+
+/// Executes one complete world-build request without touching the GPU.
+///
+/// Safe to run on a worker thread; the caller keeps ownership of the stage
+/// cache and installs the returned candidate on the UI thread.
+pub fn run_spherical_world_build(
+    request: SphericalWorldBuildRequest,
+    cache: &mut MemoryStageCache,
+    cancellation: &BuildCancellation,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    let (lineage, clock) = match request.replacement {
+        Some(token) => (token.lineage, token.clock),
+        None => (
+            WorldCandidateLineage::NoBase,
+            DisplayRevisionClock::default(),
+        ),
+    };
+    match request.target {
+        SphericalWorldBuildTarget::Formation {
+            quality_profile,
+            surface,
+        } => build_spherical_formation_candidate_with_lineage(
+            request.root_seed,
+            quality_profile,
+            &surface,
+            &request.formation,
+            &request.tectonic,
+            &request.relief,
+            &request.geologic,
+            cache,
+            request.view_state,
+            &request.requested_state,
+            &clock,
+            lineage,
+            cancellation,
+        ),
+        SphericalWorldBuildTarget::LegacyFoundation { space } => {
+            let external = build_spherical_external_artifacts(
+                &space,
+                &request.formation,
+                &request.tectonic,
+                &request.relief,
+                &request.geologic,
+            )?;
+            let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
+                .build_with_cancellation(request.root_seed, external, cache, cancellation)?;
+            let document = Arc::new(SphericalWorldFieldDocument::NaturalFoundation(Arc::new(
+                SphericalNaturalFieldDocument::from_build_outcome(&outcome)?,
+            )));
+            assemble_spherical_candidate(
+                document,
+                outcome.report,
+                request.view_state,
+                &request.requested_state,
+                &clock,
+                FailureInjector::NONE,
+                lineage,
+            )
+        }
+    }
 }
 
 /// Builds the exact engine-facing external artifact set for the formation graph.

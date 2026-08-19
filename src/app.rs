@@ -23,10 +23,12 @@ pub use spherical_natural_display::{
 pub use spherical_presentation::{
     build_spherical_external_artifacts, build_spherical_formation_candidate_for_view,
     build_spherical_formation_external_artifacts, build_spherical_presentation_candidate,
-    build_spherical_presentation_candidate_for_view, PublishedSphericalPresentation,
-    SphericalFieldCandidate, SphericalGlobePresenter, SphericalMapPresenter,
-    SphericalPresentationCandidate, SphericalPresentationError, SphericalProjectionCandidate,
-    SphericalRendererPreparer, SphericalWorldAreaSummary, SphericalWorldFieldDocument,
+    build_spherical_presentation_candidate_for_view, run_spherical_world_build,
+    PublishedSphericalPresentation, SphericalFieldCandidate, SphericalGlobePresenter,
+    SphericalMapPresenter, SphericalPresentationCandidate, SphericalPresentationError,
+    SphericalProjectionCandidate, SphericalRendererPreparer, SphericalReplacementToken,
+    SphericalWorldAreaSummary, SphericalWorldBuildRequest, SphericalWorldBuildTarget,
+    SphericalWorldFieldDocument,
 };
 
 use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
@@ -132,6 +134,21 @@ impl Default for WorldPipeline {
 struct FormationSurfaceCacheEntry {
     radius_m: f64,
     surface: crate::world::spatial::SphericalSurfaceSnapshot,
+}
+
+/// A spherical world build running on a worker thread.
+struct PendingWorldBuild {
+    receiver: std::sync::mpsc::Receiver<WorldBuildCompletion>,
+    cancellation: crate::engine::BuildCancellation,
+    started_at: std::time::Instant,
+    replacement: bool,
+}
+
+/// Everything one finished worker build hands back to the UI thread.
+struct WorldBuildCompletion {
+    result: Result<SphericalPresentationCandidate, String>,
+    stage_cache: MemoryStageCache,
+    formation_surface: Option<FormationSurfaceCacheEntry>,
 }
 
 /// Persisted provenance of the currently authored world.
@@ -273,6 +290,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
+    world_build: Option<PendingWorldBuild>,
+    #[serde(skip)]
     canvas_widget: Canvas,
     #[serde(skip)]
     field_renderer: Option<FieldRendererResource>,
@@ -322,6 +341,7 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             formation_surface: None,
+            world_build: None,
             canvas_widget: Canvas::new(
                 canvas_state,
                 field_display.clone(),
@@ -461,10 +481,19 @@ impl TemplateApp {
                 app.generate_legacy_planar_natural_world();
             }
             (PersistedWorldOrigin::SphericalV1, Some(render_state)) => {
+                // Unit tests need the world synchronously; the interactive
+                // product defers to a worker thread so the window paints
+                // immediately with a progress indicator.
+                #[cfg(test)]
                 if let Err(error) =
                     app.try_start_spherical_world(render_state, MigrationFailurePoint::None)
                 {
                     log::error!("spherical natural world build failed: {error}");
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = render_state;
+                    app.request_spherical_world_build();
                 }
             }
             (PersistedWorldOrigin::SphericalV1, None) => {
@@ -542,6 +571,16 @@ impl TemplateApp {
                 &DisplayRevisionClock::default(),
             )?,
         };
+        self.install_initial_spherical_candidate(candidate, render_state, failure)
+    }
+
+    /// Publishes one complete standalone candidate through the GPU boundary.
+    fn install_initial_spherical_candidate(
+        &mut self,
+        candidate: SphericalPresentationCandidate,
+        render_state: &RenderState,
+        failure: MigrationFailurePoint,
+    ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
             .report()
             .stage_ids()
@@ -629,6 +668,152 @@ impl TemplateApp {
             .surface)
     }
 
+    /// Starts one spherical world build on a worker thread.
+    ///
+    /// The UI keeps rendering the current publication while the solve runs;
+    /// [`Self::poll_world_build`] installs the finished candidate. A second
+    /// request while one build is pending is ignored.
+    fn request_spherical_world_build(&mut self) {
+        if self.world_build.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = crate::engine::BuildCancellation::new();
+        let worker_cancellation = cancellation.clone();
+        let stage_cache = std::mem::take(&mut self.stage_cache);
+        let formation_surface = self.formation_surface.take();
+        let pipeline = self.world_pipeline;
+        let root_seed = RootSeed::new(self.world_seed);
+        let space = self.spherical_space_spec.clone();
+        let formation_spec = self.formation_spec.clone();
+        let tectonic_spec = self.tectonic_spec.clone();
+        let relief_spec = self.relief_spec.clone();
+        let geologic_spec = self.geologic_spec.clone();
+        let view_state = self.spherical_canvas_state.presentation_view_state();
+        let requested_state = self.spherical_canvas_state.field_state().clone();
+        let replacement = self
+            .spherical_presentation
+            .read_resource(|current| current.as_ref().map(|p| p.replacement_token()));
+        let is_replacement = replacement.is_some();
+        std::thread::spawn(move || {
+            let mut stage_cache = stage_cache;
+            let mut formation_surface = formation_surface;
+            let result = (|| -> Result<SphericalPresentationCandidate, String> {
+                let target = match pipeline {
+                    WorldPipeline::Formation => {
+                        let radius_m = space.radius.get();
+                        let stale = formation_surface
+                            .as_ref()
+                            .is_none_or(|entry| entry.radius_m != radius_m);
+                        if stale {
+                            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
+                                FORMATION_QUALITY_PROFILE,
+                                space.radius,
+                                &worker_cancellation,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            formation_surface = Some(FormationSurfaceCacheEntry {
+                                radius_m,
+                                surface: bundle.authoritative_surface().clone(),
+                            });
+                        }
+                        crate::app::SphericalWorldBuildTarget::Formation {
+                            quality_profile: FORMATION_QUALITY_PROFILE,
+                            surface: formation_surface
+                                .as_ref()
+                                .expect("the worker just filled the surface cache")
+                                .surface
+                                .clone(),
+                        }
+                    }
+                    WorldPipeline::LegacyFoundation => {
+                        crate::app::SphericalWorldBuildTarget::LegacyFoundation { space }
+                    }
+                };
+                run_spherical_world_build(
+                    SphericalWorldBuildRequest {
+                        root_seed,
+                        target,
+                        formation: formation_spec,
+                        tectonic: tectonic_spec,
+                        relief: relief_spec,
+                        geologic: geologic_spec,
+                        view_state,
+                        requested_state,
+                        replacement,
+                    },
+                    &mut stage_cache,
+                    &worker_cancellation,
+                )
+                .map_err(|error| error.to_string())
+            })();
+            let _ = sender.send(WorldBuildCompletion {
+                result,
+                stage_cache,
+                formation_surface,
+            });
+        });
+        self.world_build = Some(PendingWorldBuild {
+            receiver,
+            cancellation,
+            started_at: std::time::Instant::now(),
+            replacement: is_replacement,
+        });
+        self.spherical_runtime_error = None;
+    }
+
+    /// Installs a finished worker build, or keeps waiting without blocking.
+    fn poll_world_build(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.world_build else {
+            return;
+        };
+        match pending.receiver.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.world_build = None;
+                self.spherical_runtime_error = Some("世界构建线程意外终止".to_owned());
+            }
+            Ok(completion) => {
+                let was_replacement = pending.replacement;
+                let was_cancelled = pending.cancellation.is_cancelled();
+                self.world_build = None;
+                self.stage_cache = completion.stage_cache;
+                if completion.formation_surface.is_some() {
+                    self.formation_surface = completion.formation_surface;
+                }
+                match completion.result {
+                    Ok(candidate) => {
+                        let Some(render_state) = self.render_state.clone() else {
+                            self.spherical_runtime_error =
+                                Some("渲染状态不可用，无法发布新世界".to_owned());
+                            return;
+                        };
+                        let install = if was_replacement {
+                            self.install_replacement_candidate(candidate, &render_state)
+                        } else {
+                            self.install_initial_spherical_candidate(
+                                candidate,
+                                &render_state,
+                                MigrationFailurePoint::None,
+                            )
+                        };
+                        self.spherical_runtime_error = install.err().map(|error| error.to_string());
+                    }
+                    Err(error) => {
+                        self.spherical_runtime_error = if was_cancelled {
+                            Some("已取消本次世界构建".to_owned())
+                        } else {
+                            Some(error)
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_start_spherical_world(
         &mut self,
         render_state: &RenderState,
@@ -646,27 +831,62 @@ impl TemplateApp {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_rebuild_spherical_world(
         &mut self,
         render_state: &RenderState,
     ) -> Result<(), AppRuntimeError> {
-        let candidate = self.spherical_presentation.read_resource(|current| {
-            current
-                .as_ref()
-                .ok_or(AppRuntimeError::MissingSphericalPublication)?
-                .prepare_replacement_candidate_for_view(
-                    RootSeed::new(self.world_seed),
-                    &self.spherical_space_spec,
-                    &self.formation_spec,
-                    &self.tectonic_spec,
-                    &self.relief_spec,
-                    &self.geologic_spec,
-                    &mut self.stage_cache,
-                    self.spherical_canvas_state.presentation_view_state(),
-                    self.spherical_canvas_state.field_state(),
-                )
-                .map_err(AppRuntimeError::from)
-        })?;
+        let candidate = match self.world_pipeline {
+            WorldPipeline::Formation => {
+                let surface = self.formation_profile_surface()?.clone();
+                self.spherical_presentation.read_resource(|current| {
+                    current
+                        .as_ref()
+                        .ok_or(AppRuntimeError::MissingSphericalPublication)?
+                        .prepare_formation_replacement_candidate_for_view(
+                            RootSeed::new(self.world_seed),
+                            FORMATION_QUALITY_PROFILE,
+                            &surface,
+                            &self.formation_spec,
+                            &self.tectonic_spec,
+                            &self.relief_spec,
+                            &self.geologic_spec,
+                            &mut self.stage_cache,
+                            self.spherical_canvas_state.presentation_view_state(),
+                            self.spherical_canvas_state.field_state(),
+                        )
+                        .map_err(AppRuntimeError::from)
+                })?
+            }
+            WorldPipeline::LegacyFoundation => {
+                self.spherical_presentation.read_resource(|current| {
+                    current
+                        .as_ref()
+                        .ok_or(AppRuntimeError::MissingSphericalPublication)?
+                        .prepare_replacement_candidate_for_view(
+                            RootSeed::new(self.world_seed),
+                            &self.spherical_space_spec,
+                            &self.formation_spec,
+                            &self.tectonic_spec,
+                            &self.relief_spec,
+                            &self.geologic_spec,
+                            &mut self.stage_cache,
+                            self.spherical_canvas_state.presentation_view_state(),
+                            self.spherical_canvas_state.field_state(),
+                        )
+                        .map_err(AppRuntimeError::from)
+                })?
+            }
+        };
+        self.install_replacement_candidate(candidate, render_state)
+    }
+
+    /// Replaces the whole current publication with one finished candidate.
+    fn install_replacement_candidate(
+        &mut self,
+        candidate: SphericalPresentationCandidate,
+        render_state: &RenderState,
+    ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
             .report()
             .stage_ids()
@@ -687,9 +907,13 @@ impl TemplateApp {
             current.try_replace(candidate, &mut gpu)?;
             Ok::<_, AppRuntimeError>(current.state().clone())
         })?;
+        drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
-        self.active_runtime_graph = Some(AppRuntimeGraph::SphericalNaturalFoundation);
+        self.active_runtime_graph = Some(match self.world_pipeline {
+            WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
+            WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
+        });
         self.active_runtime_stage_ids = stage_ids;
         Ok(())
     }
@@ -705,11 +929,10 @@ impl TemplateApp {
                     self.try_regenerate_as_spherical(&render_state)
                 }
                 PersistedWorldOrigin::SphericalV1 => {
-                    if self.spherical_presentation.read_resource(Option::is_some) {
-                        self.try_rebuild_spherical_world(&render_state)
-                    } else {
-                        self.try_start_spherical_world(&render_state, MigrationFailurePoint::None)
-                    }
+                    // Spherical rebuilds run on a worker thread so the UI
+                    // keeps rendering the current world during the solve.
+                    self.request_spherical_world_build();
+                    Ok(())
                 }
             };
             self.spherical_runtime_error = result.err().map(|error| error.to_string());
@@ -982,6 +1205,7 @@ impl eframe::App for TemplateApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_world_build(ctx);
         let update_time_seconds = ctx.input(|input| input.time);
         let toggle_frame_sampler = ctx.input(|input| {
             input.modifiers.ctrl && input.modifiers.alt && input.key_pressed(egui::Key::F)
@@ -1149,6 +1373,18 @@ impl eframe::App for TemplateApp {
                         });
                     if ui.button("按当前参数重建").clicked() {
                         rebuild = true;
+                    }
+                    if let Some(pending) = &self.world_build {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new());
+                            ui.label(format!(
+                                "正在生成世界…已用 {:.0} 秒",
+                                pending.started_at.elapsed().as_secs_f32()
+                            ));
+                            if ui.button("取消").clicked() {
+                                pending.cancellation.cancel();
+                            }
+                        });
                     }
 
                     if let Some(compatibility) = legacy_compatibility_ui(self) {
@@ -2124,6 +2360,19 @@ mod natural_app_tests {
         assert!(initial_sea_level < rebuilt_sea_level);
     }
 
+    fn wait_for_world_build(app: &mut TemplateApp) {
+        let context = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        while app.world_build.is_some() {
+            app.poll_world_build(&context);
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "asynchronous world build timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     #[test]
     fn failed_spherical_startup_is_visible_and_retries_standalone_without_planar_fallback() {
         let render_state = request_test_render_state();
@@ -2140,6 +2389,7 @@ mod natural_app_tests {
 
         app.tectonic_spec.plate_count = TectonicSpec::default().plate_count;
         app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
+        wait_for_world_build(&mut app);
         assert!(app.spherical_runtime_error.is_none());
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
         assert_eq!(
@@ -2178,6 +2428,7 @@ mod natural_app_tests {
             .is_none());
 
         app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
+        wait_for_world_build(&mut app);
         assert!(app.spherical_runtime_error.is_none());
         assert!(app.spherical_presentation.read_resource(Option::is_some));
         assert!(render_state
