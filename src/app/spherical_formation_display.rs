@@ -118,7 +118,9 @@ impl FormationAreaSummary {
     }
 }
 
-/// Owned display arrays derived once from the published circulation fields.
+/// Owned display arrays derived once from the formation product's own
+/// published end-state circulation, so the climate on screen is consistent
+/// with the terrain on screen.
 struct FormationDisplayCache {
     annual_precipitation_mm: Vec<f32>,
     mean_air_temperature_c: Vec<f32>,
@@ -243,8 +245,10 @@ impl SphericalFormationFieldDocument {
             plate_count,
             surface.snapshot().total_cell_area().get(),
         )?;
-        let cache =
-            FormationDisplayCache::build(surface.snapshot(), circulation.snapshot().fields())?;
+        let cache = FormationDisplayCache::build(
+            surface.snapshot(),
+            formation_snapshot.formation_climate().fields(),
+        )?;
 
         let terrain = formation_snapshot.terrain_fields();
         let areas = surface.snapshot().cells();
@@ -321,8 +325,11 @@ impl SphericalFormationFieldDocument {
         self.resolved_tectonic.input()
     }
 
-    /// Borrows the published circulation snapshot backing the climate summaries.
-    pub fn circulation(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
+    /// Borrows the initial P4 circulation checkpoint retained for provenance.
+    ///
+    /// Displayed climatologies come from the formation product's own
+    /// end-state circulation instead (single source of display truth).
+    pub fn initial_circulation(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
         self.circulation.snapshot()
     }
 
