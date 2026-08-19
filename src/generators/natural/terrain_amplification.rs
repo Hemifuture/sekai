@@ -404,6 +404,11 @@ impl TerrainAmplifier {
         self.base_wavelength_m
     }
 
+    /// The sphere radius the amplifier was built for, in metres.
+    pub fn radius_m(&self) -> f64 {
+        self.radius_m
+    }
+
     /// Evaluates the amplified surface at one direction (spec §1).
     ///
     /// LOD 0 reproduces the interpolated T0 surface exactly: no warp and no

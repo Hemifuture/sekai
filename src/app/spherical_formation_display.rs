@@ -16,8 +16,8 @@ use crate::engine::{
     BuildResultHash,
 };
 use crate::generators::natural::{
-    EvolvedTectonicArtifact, GlobalCirculationArtifact, NaturalSurfaceFormationArtifact,
-    ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    EvolvedTectonicArtifact, GeologicSubstrateArtifact, GlobalCirculationArtifact,
+    NaturalSurfaceFormationArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::view::{
@@ -181,6 +181,7 @@ pub struct SphericalFormationFieldDocument {
     pub(super) surface: Arc<SphericalSurfaceArtifact>,
     resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
     tectonics: Arc<EvolvedTectonicArtifact>,
+    substrate: Arc<GeologicSubstrateArtifact>,
     circulation: Arc<GlobalCirculationArtifact>,
     pub(super) formation: Arc<NaturalSurfaceFormationArtifact>,
     registry: FieldRegistry,
@@ -208,6 +209,7 @@ impl SphericalFormationFieldDocument {
             outcome.artifacts.get::<SphericalSurfaceArtifact>()?,
             outcome.artifacts.get::<ResolvedTectonicInputArtifact>()?,
             outcome.artifacts.get::<EvolvedTectonicArtifact>()?,
+            outcome.artifacts.get::<GeologicSubstrateArtifact>()?,
             outcome.artifacts.get::<GlobalCirculationArtifact>()?,
             outcome.artifacts.get::<NaturalSurfaceFormationArtifact>()?,
             &outcome.report,
@@ -219,6 +221,7 @@ impl SphericalFormationFieldDocument {
         surface: Arc<SphericalSurfaceArtifact>,
         resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
         tectonics: Arc<EvolvedTectonicArtifact>,
+        substrate: Arc<GeologicSubstrateArtifact>,
         circulation: Arc<GlobalCirculationArtifact>,
         formation: Arc<NaturalSurfaceFormationArtifact>,
         report: &BuildReport,
@@ -281,6 +284,7 @@ impl SphericalFormationFieldDocument {
             surface,
             resolved_tectonic,
             tectonics,
+            substrate,
             circulation,
             formation,
             registry,
@@ -334,6 +338,28 @@ impl SphericalFormationFieldDocument {
     }
 
     /// Borrows the validated catalog used to prepare fill and annotation layers.
+    /// Returns the evolved plate-compatibility snapshot (T1 conditioning input).
+    pub fn evolved_compatibility(&self) -> &crate::world::natural::SphericalTectonicSnapshot {
+        self.tectonics.snapshot().compatibility()
+    }
+
+    /// Returns the geologic substrate snapshot (T1 erodibility source).
+    pub fn substrate(&self) -> &crate::world::natural::GeologicSubstrateSnapshot {
+        self.substrate.snapshot()
+    }
+
+    /// Returns the published formation snapshot (T1 terrain and climate source).
+    pub fn formation_snapshot(&self) -> &crate::world::natural::NaturalSurfaceFormationSnapshot {
+        self.formation.snapshot()
+    }
+
+    /// Sea level (m) and the sea-anchored hypsometric display radius (m) the
+    /// cell view renders with; the amplified bake reuses both for color parity.
+    pub fn amplified_color_anchors(&self) -> Option<(f32, f32)> {
+        let radius = self.elevation_display_radius_m?;
+        Some((self.area_summary.sea_level_m, radius))
+    }
+
     pub fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
         <Self as FieldDocument>::catalog(self)
     }

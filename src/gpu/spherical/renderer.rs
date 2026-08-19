@@ -79,6 +79,7 @@ pub(crate) mod validation_probe {
 struct GpuMapVertex {
     position: [f32; 2],
     cell: u32,
+    direction: [f32; 3],
 }
 
 #[repr(C)]
@@ -105,7 +106,8 @@ pub(super) struct SphericalFrameUniform {
     globe_silhouette_clip: u32,
     fill_visible: u32,
     overlay_visible: u32,
-    _padding: [u32; 2],
+    amplified_mode: u32,
+    _padding: u32,
 }
 
 impl SphericalFrameUniform {
@@ -349,7 +351,8 @@ impl SphericalFrameUniform {
             globe_silhouette_clip: u32::from(globe_silhouette_clip),
             fill_visible: u32::from(visibility.fill),
             overlay_visible: u32::from(visibility.overlay),
-            _padding: [0; 2],
+            amplified_mode: u32::from(visibility.amplified),
+            _padding: 0,
         })
     }
 }
@@ -842,6 +845,9 @@ pub struct SphericalFieldRenderer {
     map_uniform_buffer: wgpu::Buffer,
     globe_uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
+    amplified_sampler: wgpu::Sampler,
+    amplified_dummy_view: wgpu::TextureView,
+    amplified_view: Option<wgpu::TextureView>,
     map_bind_group: wgpu::BindGroup,
     globe_bind_group: wgpu::BindGroup,
     map_pipeline: wgpu::RenderPipeline,
@@ -931,6 +937,8 @@ impl SphericalFieldRenderer {
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
         let bind_group_layout = create_bind_group_layout(device);
+        let amplified_sampler = create_amplified_sampler(device);
+        let amplified_dummy_view = create_amplified_texture(device, 1, 1).1;
         let map_bind_group = create_bind_group(
             device,
             &bind_group_layout,
@@ -938,6 +946,8 @@ impl SphericalFieldRenderer {
             &diagnostic_buffer,
             &palette_buffer,
             &map_uniform_buffer,
+            &amplified_dummy_view,
+            &amplified_sampler,
             "Spherical Map Fill Bind Group",
         );
         let globe_bind_group = create_bind_group(
@@ -947,6 +957,8 @@ impl SphericalFieldRenderer {
             &diagnostic_buffer,
             &palette_buffer,
             &globe_uniform_buffer,
+            &amplified_dummy_view,
+            &amplified_sampler,
             "Spherical Globe Fill Bind Group",
         );
         let map_pipeline = create_pipeline(
@@ -974,6 +986,9 @@ impl SphericalFieldRenderer {
             SphericalRenderMode::Globe,
         );
         Self {
+            amplified_sampler,
+            amplified_dummy_view,
+            amplified_view: None,
             map_vertex_buffer,
             map_vertex_capacity: MIN_BUFFER_BYTES,
             map_index_buffer,
@@ -1150,6 +1165,7 @@ impl SphericalFieldRenderer {
                 .map(|vertex| GpuMapVertex {
                     position: [vertex.position().x() as f32, vertex.position().y() as f32],
                     cell: vertex.cell().raw(),
+                    direction: vertex.direction(),
                 })
                 .collect::<Vec<_>>()
         });
@@ -1313,6 +1329,10 @@ impl SphericalFieldRenderer {
                     diagnostics,
                     palette,
                     &self.map_uniform_buffer,
+                    self.amplified_view
+                        .as_ref()
+                        .unwrap_or(&self.amplified_dummy_view),
+                    &self.amplified_sampler,
                     "Spherical Map Fill Bind Group",
                 ),
                 create_bind_group(
@@ -1322,6 +1342,10 @@ impl SphericalFieldRenderer {
                     diagnostics,
                     palette,
                     &self.globe_uniform_buffer,
+                    self.amplified_view
+                        .as_ref()
+                        .unwrap_or(&self.amplified_dummy_view),
+                    &self.amplified_sampler,
                     "Spherical Globe Fill Bind Group",
                 ),
             )
@@ -1470,6 +1494,76 @@ impl SphericalFieldRenderer {
     }
 
     /// Writes one fixed-size mode-specific camera/value uniform.
+    /// Installs (or replaces) the amplified equirect texture and rebinds.
+    pub fn set_amplified_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+    ) {
+        debug_assert_eq!((width as usize) * (height as usize) * 4, rgba8.len());
+        let (texture, view) = create_amplified_texture(device, width, height);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba8,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.amplified_view = Some(view);
+        self.rebuild_fill_bind_groups(device);
+    }
+
+    /// Drops the amplified texture (legacy worlds render cells only).
+    pub fn clear_amplified_image(&mut self, device: &wgpu::Device) {
+        if self.amplified_view.take().is_some() {
+            self.rebuild_fill_bind_groups(device);
+        }
+    }
+
+    fn rebuild_fill_bind_groups(&mut self, device: &wgpu::Device) {
+        let amplified = self
+            .amplified_view
+            .as_ref()
+            .unwrap_or(&self.amplified_dummy_view);
+        self.map_bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.fill_buffer,
+            &self.diagnostic_buffer,
+            &self.palette_buffer,
+            &self.map_uniform_buffer,
+            amplified,
+            &self.amplified_sampler,
+            "Spherical Map Fill Bind Group",
+        );
+        self.globe_bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.fill_buffer,
+            &self.diagnostic_buffer,
+            &self.palette_buffer,
+            &self.globe_uniform_buffer,
+            amplified,
+            &self.amplified_sampler,
+            "Spherical Globe Fill Bind Group",
+        );
+    }
+
     pub(super) fn prepare_frame(
         &mut self,
         queue: &wgpu::Queue,
@@ -1489,7 +1583,13 @@ impl SphericalFieldRenderer {
             SphericalRenderMode::Map => &self.map_uniform_buffer,
             SphericalRenderMode::Globe => &self.globe_uniform_buffer,
         };
-        queue.write_buffer(buffer, 0, bytemuck::bytes_of(uniform));
+        // The amplified view only renders when its texture actually exists;
+        // a stale toggle can never sample the placeholder.
+        let mut gated = *uniform;
+        if self.amplified_view.is_none() {
+            gated.amplified_mode = 0;
+        }
+        queue.write_buffer(buffer, 0, bytemuck::bytes_of(&gated));
         self.counters = next;
         self.frame_generation = next_generation;
         Ok(next_generation)
@@ -2021,6 +2121,22 @@ fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     })
 }
@@ -2038,6 +2154,43 @@ fn storage_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+fn create_amplified_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Spherical Amplified Sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    })
+}
+
+fn create_amplified_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Spherical Amplified Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -2045,6 +2198,8 @@ fn create_bind_group(
     diagnostics: &wgpu::Buffer,
     palette: &wgpu::Buffer,
     uniform: &wgpu::Buffer,
+    amplified: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
     label: &'static str,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2067,6 +2222,14 @@ fn create_bind_group(
                 binding: 3,
                 resource: uniform.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(amplified),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     })
 }
@@ -2088,8 +2251,8 @@ fn create_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Uint32];
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Uint32, 2 => Float32x3];
     const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32];
     let (label, entry_point, array_stride, attributes, cull_mode) = match mode {
@@ -2272,7 +2435,7 @@ mod tests {
 
     #[test]
     fn spherical_gpu_layouts_match_wgsl_vertex_and_uniform_contracts() {
-        assert_eq!(std::mem::size_of::<GpuMapVertex>(), 12);
+        assert_eq!(std::mem::size_of::<GpuMapVertex>(), 24);
         assert_eq!(std::mem::size_of::<GpuGlobeVertex>(), 16);
         assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
         assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);
@@ -2817,6 +2980,7 @@ mod tests {
             let mut overlay_only = make_uniform(SphericalLayerVisibility {
                 fill: false,
                 overlay: true,
+                amplified: false,
             })
             .unwrap();
             overlay_only.diagnostics_enabled = 0;
@@ -2825,6 +2989,7 @@ mod tests {
             let mut transparent = make_uniform(SphericalLayerVisibility {
                 fill: false,
                 overlay: false,
+                amplified: false,
             })
             .unwrap();
             transparent.diagnostics_enabled = 0;
@@ -2835,6 +3000,7 @@ mod tests {
                 &make_uniform(SphericalLayerVisibility {
                     fill: false,
                     overlay: false,
+                    amplified: false,
                 })
                 .unwrap(),
             );
@@ -2842,6 +3008,7 @@ mod tests {
             let mut fill_only = make_uniform(SphericalLayerVisibility {
                 fill: true,
                 overlay: false,
+                amplified: false,
             })
             .unwrap();
             fill_only.diagnostics_enabled = 0;
@@ -2885,6 +3052,7 @@ mod tests {
             let uniform = make_uniform(SphericalLayerVisibility {
                 fill: false,
                 overlay: false,
+                amplified: false,
             })
             .unwrap();
             assert_pixel_near(

@@ -36,6 +36,7 @@ const DEFAULT_EDGE_SEGMENT_BUDGET: usize = MAX_SPHERICAL_EDGE_COUNT as usize * 2
 pub struct ProjectedMapVertex {
     position: ProjectionPoint,
     cell: CellId,
+    direction: [f32; 3],
 }
 
 impl ProjectedMapVertex {
@@ -47,6 +48,11 @@ impl ProjectedMapVertex {
     /// Returns the authoritative cell represented by this display vertex.
     pub const fn cell(self) -> CellId {
         self.cell
+    }
+
+    /// Returns the unit-sphere direction this projected vertex displays.
+    pub const fn direction(self) -> [f32; 3] {
+        self.direction
     }
 }
 
@@ -922,11 +928,25 @@ fn triangulate_fragment(
         .map(|&vertex| project_angular(vertex, projection))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| SphericalMeshError::InvalidCellGeometry { cell })?;
+    // Every fragment vertex carries its authoritative unit direction (seam
+    // splits interpolate it on the arc), so the display mesh forwards it
+    // instead of numerically inverting the projection. Winding repairs must
+    // keep both sequences aligned, hence the pre-reversal here.
+    let mut directions = fragment
+        .iter()
+        .map(|vertex| vertex.direction)
+        .collect::<Vec<_>>();
+    let twice_area = projected_polygon_twice_area(&points);
+    if twice_area.is_finite() && twice_area < 0.0 {
+        points.reverse();
+        directions.reverse();
+    }
     let triangles = triangulate_projected_polygon(&mut points)
         .ok_or(SphericalMeshError::InvalidCellGeometry { cell })?;
     for triangle in triangles {
         append_projected_triangle(
             triangle.map(|index| points[index]),
+            triangle.map(|index| directions[index]),
             cell,
             bounds,
             budgets,
@@ -939,6 +959,7 @@ fn triangulate_fragment(
 
 fn append_projected_triangle(
     points: [ProjectionPoint; TRIANGLE_VERTEX_COUNT],
+    directions: [UnitVector3; TRIANGLE_VERTEX_COUNT],
     cell: CellId,
     bounds: ProjectionBounds,
     budgets: SphericalMeshBudgets,
@@ -972,7 +993,13 @@ fn append_projected_triangle(
     )?;
     budgets.check_counts(0, next_vertices, next_indices, 0)?;
     let base = checked_u32(vertices.len(), "projected vertex index")?;
-    vertices.extend(points.map(|position| ProjectedMapVertex { position, cell }));
+    for (position, direction) in points.into_iter().zip(directions) {
+        vertices.push(ProjectedMapVertex {
+            position,
+            cell,
+            direction: direction.components().map(|component| component as f32),
+        });
+    }
     indices.extend([
         base,
         base.checked_add(1)

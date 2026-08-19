@@ -3,6 +3,7 @@ use std::sync::Arc;
 use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
+mod amplified_view;
 mod field_document;
 mod frame_stats;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -178,6 +179,7 @@ struct WorldBuildCompletion {
     result: Result<SphericalPresentationCandidate, String>,
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
+    amplified: Option<amplified_view::AmplifiedViewImage>,
 }
 
 /// Persisted provenance of the currently authored world.
@@ -603,7 +605,7 @@ impl TemplateApp {
                 &DisplayRevisionClock::default(),
             )?,
         };
-        self.install_initial_spherical_candidate(candidate, render_state, failure)
+        self.install_initial_spherical_candidate(candidate, render_state, None, failure)
     }
 
     /// Publishes one complete standalone candidate through the GPU boundary.
@@ -611,6 +613,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
+        amplified: Option<amplified_view::AmplifiedViewImage>,
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
@@ -623,6 +626,15 @@ impl TemplateApp {
             &render_state.device,
             render_state.target_format,
         );
+        if let Some(image) = &amplified {
+            renderer.set_amplified_image(
+                &render_state.device,
+                &render_state.queue,
+                image.width,
+                image.height,
+                &image.rgba8,
+            );
+        }
         let published = {
             let mut gpu = SphericalRendererPreparer::new(
                 &mut renderer,
@@ -645,6 +657,8 @@ impl TemplateApp {
             .insert::<crate::gpu::spherical::SphericalFieldRenderer>(renderer);
         self.spherical_canvas_state
             .replace_field_state(published.state().clone());
+        self.spherical_canvas_state
+            .set_amplified_available(amplified.is_some());
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
@@ -790,10 +804,37 @@ impl TemplateApp {
                 )
                 .map_err(|error| error.to_string())
             })();
+            // The amplified display bake rides the same worker: it only exists
+            // for formation worlds and never blocks the UI thread.
+            let amplified = if worker_cancellation.is_cancelled() {
+                None
+            } else {
+                result.as_ref().ok().and_then(|candidate| {
+                    let document = candidate.document().formation()?;
+                    let (sea_level_m, display_radius_m) = document.amplified_color_anchors()?;
+                    let amplifier =
+                        crate::generators::natural::TerrainAmplifier::from_formation_product(
+                            document.surface(),
+                            document.evolved_compatibility(),
+                            document.substrate(),
+                            document.formation_snapshot(),
+                            root_seed,
+                        )
+                        .ok()?;
+                    Some(amplified_view::bake_amplified_view(
+                        &amplifier,
+                        sea_level_m,
+                        display_radius_m,
+                        amplified_view::AMPLIFIED_BAKE_WIDTH,
+                        amplified_view::AMPLIFIED_BAKE_HEIGHT,
+                    ))
+                })
+            };
             let _ = sender.send(WorldBuildCompletion {
                 result,
                 stage_cache,
                 formation_surface,
+                amplified,
             });
         });
         self.world_build = Some(PendingWorldBuild {
@@ -826,6 +867,7 @@ impl TemplateApp {
                 if completion.formation_surface.is_some() {
                     self.formation_surface = completion.formation_surface;
                 }
+                let amplified = completion.amplified;
                 match completion.result {
                     Ok(candidate) => {
                         let Some(render_state) = self.render_state.clone() else {
@@ -834,11 +876,12 @@ impl TemplateApp {
                             return;
                         };
                         let install = if was_replacement {
-                            self.install_replacement_candidate(candidate, &render_state)
+                            self.install_replacement_candidate(candidate, &render_state, amplified)
                         } else {
                             self.install_initial_spherical_candidate(
                                 candidate,
                                 &render_state,
+                                amplified,
                                 MigrationFailurePoint::None,
                             )
                         };
@@ -921,7 +964,7 @@ impl TemplateApp {
                 })?
             }
         };
-        self.install_replacement_candidate(candidate, render_state)
+        self.install_replacement_candidate(candidate, render_state, None)
     }
 
     /// Replaces the whole current publication with one finished candidate.
@@ -929,6 +972,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
+        amplified: Option<amplified_view::AmplifiedViewImage>,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
             .report()
@@ -941,8 +985,11 @@ impl TemplateApp {
             .callback_resources
             .get_mut::<crate::gpu::spherical::SphericalFieldRenderer>()
             .ok_or(AppRuntimeError::MissingSphericalRenderer)?;
-        let mut gpu =
-            SphericalRendererPreparer::new(renderer, &render_state.device, &render_state.queue);
+        let mut gpu = SphericalRendererPreparer::new(
+            &mut *renderer,
+            &render_state.device,
+            &render_state.queue,
+        );
         let reconciled_state = self.spherical_presentation.with_resource(|current| {
             let current = current
                 .as_mut()
@@ -950,9 +997,21 @@ impl TemplateApp {
             current.try_replace(candidate, &mut gpu)?;
             Ok::<_, AppRuntimeError>(current.state().clone())
         })?;
+        match &amplified {
+            Some(image) => renderer.set_amplified_image(
+                &render_state.device,
+                &render_state.queue,
+                image.width,
+                image.height,
+                &image.rgba8,
+            ),
+            None => renderer.clear_amplified_image(&render_state.device),
+        }
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
+        self.spherical_canvas_state
+            .set_amplified_available(amplified.is_some());
         self.active_runtime_graph = Some(match self.world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,

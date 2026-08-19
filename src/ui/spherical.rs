@@ -62,6 +62,8 @@ pub enum SphericalCanvasAction {
     SetOverlayVisible(bool),
     /// Shows or hides diagnostics.
     SetDiagnosticsEnabled(bool),
+    /// Switches between the cell fill and the baked amplified presentation.
+    SetAmplifiedView(bool),
     /// Selects one authoritative surface entity.
     SelectEntity(Option<SelectedSurfaceEntity>),
     /// Pauses or resumes display-only vector animation.
@@ -160,6 +162,9 @@ pub struct SphericalCanvasState {
     globe_camera: GlobeCamera,
     field_state: SphericalFieldDisplayState,
     vector_animation: VectorAnimationUniform,
+    /// Runtime-only: whether a baked amplified texture is installed. Never
+    /// persisted; each installation re-announces it.
+    amplified_available: bool,
 }
 
 impl Default for SphericalCanvasState {
@@ -172,6 +177,7 @@ impl Default for SphericalCanvasState {
             globe_camera: GlobeCamera::default(),
             field_state: SphericalFieldDisplayState::default(),
             vector_animation: VectorAnimationUniform::default(),
+            amplified_available: false,
         }
     }
 }
@@ -271,6 +277,15 @@ impl SphericalCanvasState {
             SphericalCanvasAction::SetDiagnosticsEnabled(enabled) => {
                 self.field_state.set_diagnostics_enabled(enabled);
                 Ok(SphericalCanvasInvalidation::FIELD_LAYERS)
+            }
+            SphericalCanvasAction::SetAmplifiedView(enabled) => {
+                if self.field_state.amplified_view() == enabled
+                    || (enabled && !self.amplified_available)
+                {
+                    return Ok(SphericalCanvasInvalidation::NONE);
+                }
+                self.field_state.set_amplified_view(enabled);
+                Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
             }
             SphericalCanvasAction::SelectEntity(entity) => {
                 let previous = self.field_state.selected_entity();
@@ -379,6 +394,22 @@ impl SphericalCanvasState {
     /// Returns the fixed-size display-only vector animation state.
     pub const fn vector_animation(&self) -> VectorAnimationUniform {
         self.vector_animation
+    }
+
+    /// Announces whether a baked amplified texture is installed on the GPU.
+    ///
+    /// Losing the texture also leaves the amplified mode, so the uniform can
+    /// never request a sample from a missing image.
+    pub fn set_amplified_available(&mut self, available: bool) {
+        self.amplified_available = available;
+        if !available {
+            self.field_state.set_amplified_view(false);
+        }
+    }
+
+    /// Returns whether the amplified display mode can be offered.
+    pub const fn amplified_available(&self) -> bool {
+        self.amplified_available
     }
 
     /// Converts one active-view screen click into an authoritative cell or incident edge.
@@ -639,6 +670,7 @@ impl SphericalCanvasStateWire {
             globe_camera: self.globe_camera.try_into_camera()?,
             field_state: self.field_state.try_into_state()?,
             vector_animation: VectorAnimationUniform::new(self.vector_phase),
+            amplified_available: false,
         })
     }
 }
@@ -1061,7 +1093,9 @@ pub fn interact_spherical_canvas(
     let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
     let pixels_per_point = f64::from(ui.ctx().pixels_per_point());
 
-    if response.clicked_by(egui::PointerButton::Primary) {
+    // Entity inspection stays a cell-view workflow in M1: the amplified
+    // texture is presentation-only, so clicks are inert while it shows.
+    if response.clicked_by(egui::PointerButton::Primary) && !state.field_state().amplified_view() {
         if let Some(position) = response.interact_pointer_pos() {
             let local = [
                 f64::from(position.x - rect.min.x),
@@ -1247,6 +1281,27 @@ pub fn show_spherical_controls(
                 }
             }
         });
+
+    ui.group(|ui| {
+        ui.label("显示模式");
+        let amplified_available = state.amplified_available();
+        let amplified = state.field_state().amplified_view();
+        ui.add_enabled_ui(amplified_available, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!amplified, "格元视图").clicked() && amplified {
+                    actions.push(SphericalCanvasAction::SetAmplifiedView(false));
+                }
+                if ui.selectable_label(amplified, "放大视图").clicked() && !amplified {
+                    actions.push(SphericalCanvasAction::SetAmplifiedView(true));
+                }
+            });
+        });
+        if !amplified_available {
+            ui.label("放大视图在形成链构建完成后可用");
+        } else if amplified {
+            ui.label("放大视图仅呈现；检查实体请切回格元视图");
+        }
+    });
 
     ui.group(|ui| {
         ui.label("显示图层");

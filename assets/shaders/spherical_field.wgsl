@@ -13,12 +13,14 @@ struct SphericalFrameUniform {
     globe_silhouette_clip: u32,
     fill_visible: u32,
     overlay_visible: u32,
-    _padding: vec2<u32>,
+    amplified_mode: u32,
+    _padding: u32,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) direction: vec3<f32>,
 }
 
 struct OverlayOutput {
@@ -40,6 +42,24 @@ var<storage, read> fill_palette: array<vec4<f32>>;
 
 @group(0) @binding(3)
 var<uniform> frame: SphericalFrameUniform;
+
+@group(0) @binding(4)
+var amplified_texture: texture_2d<f32>;
+
+@group(0) @binding(5)
+var amplified_sampler: sampler;
+
+const PI: f32 = 3.14159265358979;
+
+// Equirectangular lookup from a unit direction. The convention (longitude
+// from atan2(y, x), v = 0 at the north pole) must match the CPU bake in
+// app::amplified_view; the GPU goldens pin the pairing.
+fn sample_amplified(direction: vec3<f32>) -> vec4<f32> {
+    let unit = normalize(direction);
+    let u = atan2(unit.y, unit.x) / (2.0 * PI) + 0.5;
+    let v = 0.5 - asin(clamp(unit.z, -1.0, 1.0)) / PI;
+    return textureSampleLevel(amplified_texture, amplified_sampler, vec2<f32>(u, v), 0.0);
+}
 
 fn sample_palette(t: f32) -> vec4<f32> {
     if frame.palette_len == 1u {
@@ -82,7 +102,7 @@ fn apply_diagnostic_overlay(base: vec4<f32>, cell: u32) -> vec4<f32> {
     return fill_palette[frame.diagnostic_error_index];
 }
 
-fn vertex_output(position: vec4<f32>, cell: u32) -> VertexOutput {
+fn vertex_output(position: vec4<f32>, cell: u32, direction: vec3<f32>) -> VertexOutput {
     var output: VertexOutput;
     output.position = frame.transform * position;
     var base = vec4<f32>(0.0);
@@ -90,6 +110,7 @@ fn vertex_output(position: vec4<f32>, cell: u32) -> VertexOutput {
         base = decode_fill_color(cell);
     }
     output.color = apply_diagnostic_overlay(base, cell);
+    output.direction = direction;
     return output;
 }
 
@@ -97,8 +118,9 @@ fn vertex_output(position: vec4<f32>, cell: u32) -> VertexOutput {
 fn vs_map(
     @location(0) position: vec2<f32>,
     @location(1) cell: u32,
+    @location(2) direction: vec3<f32>,
 ) -> VertexOutput {
-    return vertex_output(vec4<f32>(position, 0.0, 1.0), cell);
+    return vertex_output(vec4<f32>(position, 0.0, 1.0), cell, direction);
 }
 
 @vertex
@@ -106,11 +128,14 @@ fn vs_globe(
     @location(0) position: vec3<f32>,
     @location(1) cell: u32,
 ) -> VertexOutput {
-    return vertex_output(vec4<f32>(position, 1.0), cell);
+    return vertex_output(vec4<f32>(position, 1.0), cell, position);
 }
 
 @fragment
 fn fs_fill(input: VertexOutput) -> @location(0) vec4<f32> {
+    if frame.amplified_mode != 0u {
+        return sample_amplified(input.direction);
+    }
     return input.color;
 }
 

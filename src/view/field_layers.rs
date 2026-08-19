@@ -1132,6 +1132,8 @@ pub struct SphericalLayerVisibility {
     pub fill: bool,
     /// Whether the selected edge/vector overlay layer is visible.
     pub overlay: bool,
+    /// Whether the amplified (T1) texture replaces the cell fill.
+    pub amplified: bool,
 }
 
 impl Default for SphericalLayerVisibility {
@@ -1139,6 +1141,7 @@ impl Default for SphericalLayerVisibility {
         Self {
             fill: true,
             overlay: true,
+            amplified: false,
         }
     }
 }
@@ -1150,6 +1153,7 @@ pub struct SphericalFieldDisplayState {
     overlay_field: Option<FieldId>,
     fill_visible: bool,
     overlay_visible: bool,
+    amplified_view: bool,
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostics_enabled: bool,
@@ -1168,6 +1172,7 @@ impl Default for SphericalFieldDisplayState {
             overlay_field: None,
             fill_visible: true,
             overlay_visible: true,
+            amplified_view: false,
             range_mode: DisplayRangeMode::Data,
             palette_override: None,
             diagnostics_enabled: true,
@@ -1222,11 +1227,22 @@ impl SphericalFieldDisplayState {
         self.overlay_visible
     }
 
+    /// Switches between the cell view and the amplified (T1) texture view.
+    pub fn set_amplified_view(&mut self, amplified: bool) {
+        self.amplified_view = amplified;
+    }
+
+    /// Returns whether the amplified (T1) texture view is active.
+    pub const fn amplified_view(&self) -> bool {
+        self.amplified_view
+    }
+
     /// Returns the fixed-frame visibility flags for the two formal data layers.
     pub const fn layer_visibility(&self) -> SphericalLayerVisibility {
         SphericalLayerVisibility {
             fill: self.fill_visible,
             overlay: self.overlay_visible,
+            amplified: self.amplified_view,
         }
     }
 
@@ -2115,6 +2131,7 @@ mod vector_glyph_tests {
             super::SphericalLayerVisibility {
                 fill: true,
                 overlay: true,
+                amplified: false,
             }
         );
         let prepared_before = super::PreparedLayerState::from(&state);
@@ -2129,6 +2146,7 @@ mod vector_glyph_tests {
             super::SphericalLayerVisibility {
                 fill: false,
                 overlay: false,
+                amplified: false,
             }
         );
         assert_eq!(

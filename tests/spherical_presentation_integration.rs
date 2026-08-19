@@ -869,6 +869,7 @@ fn layer_visibility_defaults_migrates_round_trips_and_invalidates_only_uniforms(
         SphericalLayerVisibility {
             fill: true,
             overlay: true,
+            amplified: false,
         }
     );
 
@@ -918,6 +919,7 @@ fn layer_visibility_defaults_migrates_round_trips_and_invalidates_only_uniforms(
         SphericalLayerVisibility {
             fill: true,
             overlay: true,
+            amplified: false,
         }
     );
 }
@@ -981,6 +983,7 @@ fn layer_visibility_preserves_the_exact_published_packet_and_immutable_uploads()
         SphericalLayerVisibility {
             fill: false,
             overlay: false,
+            amplified: false,
         }
     );
     assert_eq!(published.state(), state.field_state());
