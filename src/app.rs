@@ -9,19 +9,24 @@ mod frame_stats;
 mod legacy_display;
 mod natural_display;
 mod natural_field_payloads;
+mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
 mod spherical_presentation;
 
+pub use spherical_formation_display::{
+    FormationAreaSummary, SphericalFormationDisplayError, SphericalFormationFieldDocument,
+};
 pub use spherical_natural_display::{
     SphericalNaturalAreaSummary, SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
 };
 pub use spherical_presentation::{
-    build_spherical_external_artifacts, build_spherical_presentation_candidate,
+    build_spherical_external_artifacts, build_spherical_formation_candidate_for_view,
+    build_spherical_formation_external_artifacts, build_spherical_presentation_candidate,
     build_spherical_presentation_candidate_for_view, PublishedSphericalPresentation,
     SphericalFieldCandidate, SphericalGlobePresenter, SphericalMapPresenter,
     SphericalPresentationCandidate, SphericalPresentationError, SphericalProjectionCandidate,
-    SphericalRendererPreparer,
+    SphericalRendererPreparer, SphericalWorldAreaSummary, SphericalWorldFieldDocument,
 };
 
 use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
@@ -87,8 +92,47 @@ const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
 pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 const CURRENT_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
+const FORMATION_SLICE_STATUS_TEXT: &str =
+    "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
+/// The fixed quality profile driving interactive formation builds.
+const FORMATION_QUALITY_PROFILE: crate::world::natural::NaturalQualityProfile =
+    crate::world::natural::NaturalQualityProfile::Draft;
+
+/// Which authoritative generation chain the spherical canvas builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WorldPipeline {
+    /// The formation product chain (P2v5→P5); the interactive product default.
+    Formation,
+    /// The legacy spherical natural-foundation chain.
+    ///
+    /// Kept for arbitrary-resolution worlds: the formation chain is bound to
+    /// the fixed quality-profile resolutions, so the 162-cell worlds used by
+    /// unit tests can only run here.
+    LegacyFoundation,
+}
+
+impl Default for WorldPipeline {
+    fn default() -> Self {
+        // Unit tests author tiny (162-cell) worlds that only the legacy chain
+        // accepts; the interactive product always starts on the formation chain.
+        #[cfg(test)]
+        {
+            Self::LegacyFoundation
+        }
+        #[cfg(not(test))]
+        {
+            Self::Formation
+        }
+    }
+}
+
+/// One cached formation profile surface keyed by its authored radius.
+struct FormationSurfaceCacheEntry {
+    radius_m: f64,
+    surface: crate::world::spatial::SphericalSurfaceSnapshot,
+}
 
 /// Persisted provenance of the currently authored world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -110,6 +154,8 @@ pub enum AppRuntimeGraph {
     LegacyPlanarFoundation,
     /// The formal spherical natural foundation graph.
     SphericalNaturalFoundation,
+    /// The formal formation-product graph (P2v5→P5).
+    SphericalFormation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +268,10 @@ pub struct TemplateApp {
     #[serde(default)]
     relief_spec: ReliefSpec,
     geologic_spec: GeologicSpec,
+    #[serde(default)]
+    world_pipeline: WorldPipeline,
+    #[serde(skip)]
+    formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
     canvas_widget: Canvas,
     #[serde(skip)]
@@ -270,6 +320,8 @@ impl Default for TemplateApp {
             tectonic_spec: TectonicSpec::default(),
             relief_spec: ReliefSpec::default(),
             geologic_spec: GeologicSpec::default(),
+            world_pipeline: WorldPipeline::default(),
+            formation_surface: None,
             canvas_widget: Canvas::new(
                 canvas_state,
                 field_display.clone(),
@@ -460,18 +512,36 @@ impl TemplateApp {
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let requested_state = self.spherical_canvas_state.field_state().clone();
-        let candidate = build_spherical_presentation_candidate_for_view(
-            RootSeed::new(self.world_seed),
-            &self.spherical_space_spec,
-            &self.formation_spec,
-            &self.tectonic_spec,
-            &self.relief_spec,
-            &self.geologic_spec,
-            &mut self.stage_cache,
-            self.spherical_canvas_state.presentation_view_state(),
-            &requested_state,
-            &DisplayRevisionClock::default(),
-        )?;
+        let candidate = match self.world_pipeline {
+            WorldPipeline::Formation => {
+                let surface = self.formation_profile_surface()?.clone();
+                build_spherical_formation_candidate_for_view(
+                    RootSeed::new(self.world_seed),
+                    FORMATION_QUALITY_PROFILE,
+                    &surface,
+                    &self.formation_spec,
+                    &self.tectonic_spec,
+                    &self.relief_spec,
+                    &self.geologic_spec,
+                    &mut self.stage_cache,
+                    self.spherical_canvas_state.presentation_view_state(),
+                    &requested_state,
+                    &DisplayRevisionClock::default(),
+                )?
+            }
+            WorldPipeline::LegacyFoundation => build_spherical_presentation_candidate_for_view(
+                RootSeed::new(self.world_seed),
+                &self.spherical_space_spec,
+                &self.formation_spec,
+                &self.tectonic_spec,
+                &self.relief_spec,
+                &self.geologic_spec,
+                &mut self.stage_cache,
+                self.spherical_canvas_state.presentation_view_state(),
+                &requested_state,
+                &DisplayRevisionClock::default(),
+            )?,
+        };
         let stage_ids = candidate
             .report()
             .stage_ids()
@@ -518,10 +588,45 @@ impl TemplateApp {
             .write()
             .callback_resources
             .remove::<FieldRendererResource>();
-        self.active_runtime_graph = Some(AppRuntimeGraph::SphericalNaturalFoundation);
+        self.active_runtime_graph = Some(match self.world_pipeline {
+            WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
+            WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
+        });
         self.active_runtime_stage_ids = stage_ids;
         self.world_origin = PersistedWorldOrigin::SphericalV1;
         Ok(())
+    }
+
+    /// Returns the cached formation profile surface, rebuilding it when the
+    /// authored radius changed.
+    ///
+    /// The formation chain is bound to the fixed quality-profile resolutions,
+    /// so the authored `target_cell_count` does not apply here; only the
+    /// radius participates in the surface identity.
+    fn formation_profile_surface(
+        &mut self,
+    ) -> Result<&crate::world::spatial::SphericalSurfaceSnapshot, AppRuntimeError> {
+        let radius_m = self.spherical_space_spec.radius.get();
+        let stale = self
+            .formation_surface
+            .as_ref()
+            .is_none_or(|entry| entry.radius_m != radius_m);
+        if stale {
+            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
+                FORMATION_QUALITY_PROFILE,
+                self.spherical_space_spec.radius,
+                &crate::engine::BuildCancellation::new(),
+            )?;
+            self.formation_surface = Some(FormationSurfaceCacheEntry {
+                radius_m,
+                surface: bundle.authoritative_surface().clone(),
+            });
+        }
+        Ok(&self
+            .formation_surface
+            .as_ref()
+            .expect("the formation surface cache was just filled")
+            .surface)
     }
 
     fn try_start_spherical_world(
@@ -943,7 +1048,10 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(CURRENT_SLICE_STATUS_TEXT);
+                ui.label(match self.active_runtime_graph {
+                    Some(AppRuntimeGraph::SphericalFormation) => FORMATION_SLICE_STATUS_TEXT,
+                    _ => CURRENT_SLICE_STATUS_TEXT,
+                });
                 ui.separator();
                 ui.hyperlink_to("egui", "https://github.com/emilk/egui");
                 egui::warn_if_debug_build(ui);
@@ -1089,10 +1197,7 @@ impl eframe::App for TemplateApp {
                                 "{} 个球面单元｜单位球呈现",
                                 presentation.globe().cell_count()
                             ));
-                            show_spherical_area_summary(
-                                ui,
-                                *presentation.document().area_summary(),
-                            );
+                            show_spherical_area_summary(ui, presentation.document().area_summary());
                             match show_spherical_controls(
                                 ui,
                                 presentation,
@@ -1160,7 +1265,16 @@ fn activity_label(activity: TectonicActivity) -> &'static str {
     }
 }
 
-fn show_spherical_area_summary(ui: &mut egui::Ui, summary: SphericalNaturalAreaSummary) {
+fn show_spherical_area_summary(ui: &mut egui::Ui, summary: SphericalWorldAreaSummary) {
+    match summary {
+        SphericalWorldAreaSummary::NaturalFoundation(summary) => {
+            show_natural_area_summary(ui, summary)
+        }
+        SphericalWorldAreaSummary::Formation(summary) => show_formation_area_summary(ui, summary),
+    }
+}
+
+fn show_natural_area_summary(ui: &mut egui::Ui, summary: SphericalNaturalAreaSummary) {
     ui.group(|ui| {
         ui.strong("面积依从性");
         ui.label(format!(
@@ -1173,6 +1287,22 @@ fn show_spherical_area_summary(ui: &mut egui::Ui, summary: SphericalNaturalAreaS
             summary.target_land_fraction() * 100.0,
             summary.actual_land_fraction() * 100.0,
             (summary.actual_land_fraction() - summary.target_land_fraction()) * 100.0,
+        ));
+        ui.label(format!("海平面：{:.1} m", summary.sea_level_m()));
+    });
+}
+
+fn show_formation_area_summary(ui: &mut egui::Ui, summary: crate::app::FormationAreaSummary) {
+    ui.group(|ui| {
+        ui.strong("面积依从性（P5 形成链）");
+        ui.label(format!(
+            "大陆地壳面积：作者 {:.1}%｜演化后 {:.1}%（材料守恒）",
+            summary.authored_continental_fraction() * 100.0,
+            summary.evolved_continental_fraction() * 100.0,
+        ));
+        ui.label(format!(
+            "陆地面积：实际 {:.1}%（海平面由全球水量反解，无陆地目标）",
+            summary.actual_land_fraction() * 100.0,
         ));
         ui.label(format!("海平面：{:.1} m", summary.sea_level_m()));
     });
@@ -1399,6 +1529,9 @@ pub enum AppRuntimeError {
     /// The formal spherical candidate or GPU publication failed atomically.
     #[error(transparent)]
     SphericalPresentation(#[from] SphericalPresentationError),
+    /// The formation profile surface could not be constructed for the radius.
+    #[error(transparent)]
+    FormationSurface(#[from] crate::generators::spatial::ProfileSurfaceBuildError),
     /// Spherical runtime state was requested before a publication existed.
     #[error("spherical runtime has no current publication")]
     MissingSphericalPublication,
@@ -1949,7 +2082,10 @@ mod natural_app_tests {
         fn published_land_fraction(app: &TemplateApp) -> (f64, Vec<u32>, f32) {
             app.spherical_presentation.read_resource(|current| {
                 let current = current.as_ref().unwrap();
-                let document = current.document();
+                let document = current
+                    .document()
+                    .natural_foundation()
+                    .expect("unit-test worlds build on the legacy foundation chain");
                 let surface = document.surface.snapshot();
                 let relief = document.relief.snapshot();
                 let land_area = surface
@@ -2819,13 +2955,13 @@ mod natural_app_tests {
 
         let render_state = request_test_render_state();
         let app = create_from_persisted(TemplateApp::default(), &render_state);
-        let summary = app
+        let world_summary = app
             .spherical_presentation
-            .read_resource(|current| *current.as_ref().unwrap().document().area_summary());
+            .read_resource(|current| current.as_ref().unwrap().document().area_summary());
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                show_spherical_area_summary(ui, summary);
+                show_spherical_area_summary(ui, world_summary);
             });
         });
         let mut texts = Vec::new();
@@ -2833,6 +2969,10 @@ mod natural_app_tests {
             collect_text(&shape.shape, &mut texts);
         }
 
+        let crate::app::SphericalWorldAreaSummary::NaturalFoundation(summary) = world_summary
+        else {
+            panic!("unit-test worlds build on the legacy foundation chain");
+        };
         assert!(texts.iter().any(|text| text == "面积依从性"));
         assert!(texts.iter().any(|text| {
             text == &format!(

@@ -7,7 +7,10 @@ use thiserror::Error;
 
 use super::field_document::{
     prepare_spherical_document_layers, reconcile_spherical_document_camera,
-    update_spherical_document_layers,
+    update_spherical_document_layers, FieldDocument,
+};
+use super::spherical_formation_display::{
+    SphericalFormationDisplayError, SphericalFormationFieldDocument,
 };
 use super::spherical_natural_display::{
     SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
@@ -17,13 +20,21 @@ use crate::engine::{
     MemoryStageCache,
 };
 use crate::generators::natural::{
-    spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact, RulePackSetArtifact,
-    TectonicSpecArtifact, WorldFormationSpecArtifact,
+    spherical_natural_foundation_graph, surface_formation_graph, AuthorConstraintsArtifact,
+    ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
+    NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedClimateInput,
+    ResolvedClimateInputArtifact, ResolvedGeologicInput, ResolvedGeologicInputArtifact,
+    ResolvedHydroErosionInput, ResolvedHydroErosionInputArtifact, ResolvedTectonicInput,
+    ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact, RulePackSetArtifact,
+    TectonicSpecArtifact, WorldFormationGenerationError, WorldFormationGenerator,
+    WorldFormationSpecArtifact,
 };
-use crate::generators::spatial::SphericalSpaceArtifact;
+use crate::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
 use crate::gpu::spherical::{SphericalFieldRenderer, SphericalGpuPacket, SphericalRenderError};
-use crate::rules::{default_rule_pack_set, AuthorConstraints, BuiltinRuleError};
+use crate::rules::{
+    default_rule_pack_set, AuthorConstraints, BuiltinRuleError, ClimateModel, GeologicModel,
+    HydroErosionModel, TectonicModel,
+};
 use crate::view::{
     DisplayPrepareError, DisplayRevision, DisplayRevisionClock, FieldLayerRevisions, GlobeCamera,
     MapCamera, PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap,
@@ -32,10 +43,180 @@ use crate::view::{
     SphericalProjection, SphericalProjectionError, SphericalViewMode,
 };
 use crate::world::natural::{
-    GeologicSpec, GeologicSpecError, NaturalSpecError, ReliefSpec, ReliefSpecError, TectonicSpec,
-    WorldFormationSpec, WorldFormationSpecError,
+    ClimateSpec, ClimateSpecError, GeologicSpec, GeologicSpecError, HydroErosionSpec,
+    HydroErosionSpecError, NaturalQualityProfile, NaturalSpecError, ReliefSpec, ReliefSpecError,
+    TectonicSpec, WorldFormationSpec, WorldFormationSpecError,
 };
+use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::{RootSeed, SphericalSpaceSpec, SphericalSpecError};
+
+/// The authoritative field document behind one published spherical world.
+///
+/// Everything downstream of the document boundary (locator, meshes, layers,
+/// presenters) is document-agnostic, so one candidate/publication pipeline
+/// carries either the legacy natural-foundation product or the formation
+/// product (P2v5→P5).
+#[derive(Clone)]
+pub enum SphericalWorldFieldDocument {
+    /// Legacy spherical natural-foundation chain document.
+    NaturalFoundation(Arc<SphericalNaturalFieldDocument>),
+    /// Formation-product chain (P2v5→P5) document.
+    Formation(Arc<SphericalFormationFieldDocument>),
+}
+
+impl SphericalWorldFieldDocument {
+    /// Returns the verified presentation source derived from the document.
+    pub fn presentation_source(&self) -> SphericalPresentationSource {
+        match self {
+            Self::NaturalFoundation(document) => document.presentation_source(),
+            Self::Formation(document) => document.presentation_source(),
+        }
+    }
+
+    /// Borrows the sole authoritative topology used by every derivative.
+    pub fn surface(&self) -> &SphericalSurfaceSnapshot {
+        match self {
+            Self::NaturalFoundation(document) => document.surface(),
+            Self::Formation(document) => document.surface(),
+        }
+    }
+
+    /// Returns the legacy natural-foundation document when it is active.
+    pub fn natural_foundation(&self) -> Option<&SphericalNaturalFieldDocument> {
+        match self {
+            Self::NaturalFoundation(document) => Some(document),
+            Self::Formation(_) => None,
+        }
+    }
+
+    /// Returns the formation-product document when it is active.
+    pub fn formation(&self) -> Option<&SphericalFormationFieldDocument> {
+        match self {
+            Self::NaturalFoundation(_) => None,
+            Self::Formation(document) => Some(document),
+        }
+    }
+
+    /// Borrows the validated field catalog of the active document.
+    pub fn catalog(&self) -> Result<crate::view::FieldCatalog<'_>, crate::view::FieldViewError> {
+        match self {
+            Self::NaturalFoundation(document) => document.catalog(),
+            Self::Formation(document) => document.catalog(),
+        }
+    }
+
+    /// Borrows immutable document diagnostics of the active document.
+    pub fn diagnostics(&self) -> &[crate::view::OwnedViewDiagnostic] {
+        match self {
+            Self::NaturalFoundation(document) => document.diagnostics(),
+            Self::Formation(document) => document.diagnostics(),
+        }
+    }
+
+    /// Returns the product-preferred initial fill field.
+    pub fn preferred_field(&self) -> Option<crate::world::fields::FieldId> {
+        match self {
+            Self::NaturalFoundation(document) => document.preferred_field(),
+            Self::Formation(document) => document.preferred_field(),
+        }
+    }
+
+    /// Returns the document-authoritative preferred range for a field.
+    pub fn preferred_range(
+        &self,
+        field: &crate::world::fields::FieldId,
+    ) -> Option<crate::view::DisplayRangeMode> {
+        match self {
+            Self::NaturalFoundation(document) => document.preferred_range(field),
+            Self::Formation(document) => document.preferred_range(field),
+        }
+    }
+
+    /// Borrows the validated catalog for crate-internal product UI.
+    pub(crate) fn catalog_for_ui(
+        &self,
+    ) -> Result<crate::view::FieldCatalog<'_>, crate::view::FieldViewError> {
+        self.catalog()
+    }
+
+    /// Borrows document-owned diagnostics for crate-internal product UI.
+    pub(crate) fn diagnostics_for_ui(&self) -> &[crate::view::OwnedViewDiagnostic] {
+        FieldDocument::diagnostics(self)
+    }
+
+    /// Borrows the sole authoritative spherical topology for crate-internal product UI.
+    pub(crate) fn surface_for_ui(&self) -> &SphericalSurfaceSnapshot {
+        self.surface()
+    }
+
+    /// Returns the build-time authoring-compliance summary for product panels.
+    pub fn area_summary(&self) -> SphericalWorldAreaSummary {
+        match self {
+            Self::NaturalFoundation(document) => {
+                SphericalWorldAreaSummary::NaturalFoundation(*document.area_summary())
+            }
+            Self::Formation(document) => {
+                SphericalWorldAreaSummary::Formation(*document.area_summary())
+            }
+        }
+    }
+}
+
+/// Authoring-compliance measurements exposed by whichever document is active.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SphericalWorldAreaSummary {
+    /// Legacy natural-foundation compliance (land target driven).
+    NaturalFoundation(super::spherical_natural_display::SphericalNaturalAreaSummary),
+    /// Formation-product compliance (water-volume sea level, conserved crust).
+    Formation(super::spherical_formation_display::FormationAreaSummary),
+}
+
+impl FieldDocument for SphericalWorldFieldDocument {
+    fn catalog(&self) -> Result<crate::view::FieldCatalog<'_>, crate::view::FieldViewError> {
+        match self {
+            Self::NaturalFoundation(document) => document.catalog(),
+            Self::Formation(document) => document.catalog(),
+        }
+    }
+
+    fn diagnostics(&self) -> &[crate::view::OwnedViewDiagnostic] {
+        match self {
+            Self::NaturalFoundation(document) => document.diagnostics(),
+            Self::Formation(document) => document.diagnostics(),
+        }
+    }
+
+    fn preferred_field(&self) -> Option<crate::world::fields::FieldId> {
+        match self {
+            Self::NaturalFoundation(document) => document.preferred_field(),
+            Self::Formation(document) => document.preferred_field(),
+        }
+    }
+
+    fn preferred_range(
+        &self,
+        field: &crate::world::fields::FieldId,
+    ) -> Option<crate::view::DisplayRangeMode> {
+        match self {
+            Self::NaturalFoundation(document) => document.preferred_range(field),
+            Self::Formation(document) => document.preferred_range(field),
+        }
+    }
+}
+
+impl super::field_document::SphericalFieldLayerDocument for SphericalWorldFieldDocument {
+    fn presentation_source(&self) -> SphericalPresentationSource {
+        SphericalWorldFieldDocument::presentation_source(self)
+    }
+
+    fn spherical_cell_count(&self) -> usize {
+        self.surface().cells().len()
+    }
+
+    fn spherical_edge_count(&self) -> usize {
+        self.surface().edges().len()
+    }
+}
 
 /// The renderer-side preparation gate that must succeed before CPU publication changes.
 #[derive(Clone, Copy)]
@@ -225,7 +406,7 @@ impl SphericalGlobePresenter {
 /// ```
 pub struct SphericalPresentationCandidate {
     lineage: WorldCandidateLineage,
-    document: Arc<SphericalNaturalFieldDocument>,
+    document: Arc<SphericalWorldFieldDocument>,
     source: SphericalPresentationSource,
     locator: Arc<SphericalEntityLocator>,
     map_presenter: SphericalMapPresenter,
@@ -264,12 +445,12 @@ impl SphericalPresentationCandidate {
     }
 
     /// Returns the immutable source document.
-    pub fn document(&self) -> &SphericalNaturalFieldDocument {
+    pub fn document(&self) -> &SphericalWorldFieldDocument {
         &self.document
     }
 
     /// Returns the shared document allocation.
-    pub fn document_arc(&self) -> &Arc<SphericalNaturalFieldDocument> {
+    pub fn document_arc(&self) -> &Arc<SphericalWorldFieldDocument> {
         &self.document
     }
 
@@ -590,7 +771,7 @@ impl PublishedSphericalPresentation {
     ) -> Result<SphericalProjectionCandidate, SphericalPresentationError> {
         let map = Arc::new(PreparedProjectedMap::build(
             self.source().clone(),
-            self.document().surface.snapshot(),
+            self.document().surface(),
             view_state.projection(),
             budgets,
         )?);
@@ -735,12 +916,12 @@ impl PublishedSphericalPresentation {
     }
 
     /// Returns the immutable source document.
-    pub fn document(&self) -> &SphericalNaturalFieldDocument {
+    pub fn document(&self) -> &SphericalWorldFieldDocument {
         self.current.document()
     }
 
     /// Returns the shared document allocation.
-    pub fn document_arc(&self) -> &Arc<SphericalNaturalFieldDocument> {
+    pub fn document_arc(&self) -> &Arc<SphericalWorldFieldDocument> {
         self.current.document_arc()
     }
 
@@ -1258,20 +1439,158 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
         .build(root_seed, external, cache)?;
     failure.check("document")?;
-    let document = Arc::new(SphericalNaturalFieldDocument::from_build_outcome(&outcome)?);
+    let document = Arc::new(SphericalWorldFieldDocument::NaturalFoundation(Arc::new(
+        SphericalNaturalFieldDocument::from_build_outcome(&outcome)?,
+    )));
+    assemble_spherical_candidate(
+        document,
+        outcome.report,
+        view_state,
+        current_state,
+        clock,
+        failure,
+        lineage,
+    )
+}
+
+/// Runs the formation-product graph (P2v5→P5) and binds every derivative to
+/// an explicit complete view snapshot.
+#[allow(clippy::too_many_arguments)]
+pub fn build_spherical_formation_candidate_for_view(
+    root_seed: RootSeed,
+    quality_profile: NaturalQualityProfile,
+    surface: &SphericalSurfaceSnapshot,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
+    geologic: &GeologicSpec,
+    cache: &mut MemoryStageCache,
+    view_state: SphericalPresentationViewState,
+    current_state: &SphericalFieldDisplayState,
+    clock: &DisplayRevisionClock,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    build_spherical_formation_candidate_with_lineage(
+        root_seed,
+        quality_profile,
+        surface,
+        formation,
+        tectonic,
+        relief,
+        geologic,
+        cache,
+        view_state,
+        current_state,
+        clock,
+        WorldCandidateLineage::NoBase,
+    )
+}
+
+/// Formation-candidate builder that carries an explicit replacement lineage.
+#[allow(clippy::too_many_arguments)]
+fn build_spherical_formation_candidate_with_lineage(
+    root_seed: RootSeed,
+    quality_profile: NaturalQualityProfile,
+    surface: &SphericalSurfaceSnapshot,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
+    geologic: &GeologicSpec,
+    cache: &mut MemoryStageCache,
+    view_state: SphericalPresentationViewState,
+    current_state: &SphericalFieldDisplayState,
+    clock: &DisplayRevisionClock,
+    lineage: WorldCandidateLineage,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    let external = build_spherical_formation_external_artifacts(
+        root_seed,
+        quality_profile,
+        surface,
+        formation,
+        tectonic,
+        relief,
+        geologic,
+    )?;
+    let outcome = BuildEngine::new(surface_formation_graph()?).build(root_seed, external, cache)?;
+    let document = Arc::new(SphericalWorldFieldDocument::Formation(Arc::new(
+        SphericalFormationFieldDocument::from_build_outcome(&outcome)?,
+    )));
+    assemble_spherical_candidate(
+        document,
+        outcome.report,
+        view_state,
+        current_state,
+        clock,
+        FailureInjector::NONE,
+        lineage,
+    )
+}
+
+/// Builds the exact engine-facing external artifact set for the formation graph.
+///
+/// Resolved inputs are constructed directly from the author panel specs; the
+/// random world-formation preset resolves deterministically from the root
+/// seed so a rebuild with the same seed reproduces the same world.
+pub fn build_spherical_formation_external_artifacts(
+    root_seed: RootSeed,
+    quality_profile: NaturalQualityProfile,
+    surface: &SphericalSurfaceSnapshot,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
+    geologic: &GeologicSpec,
+) -> Result<ExternalArtifacts, SphericalPresentationError> {
+    surface.validate()?;
+    let resolved_formation =
+        WorldFormationGenerator::resolve_for_roll(formation, (root_seed.raw() % 100) as u32)?;
+    let mut external = ExternalArtifacts::new();
+    external.insert(NaturalQualityProfileArtifact::new(quality_profile))?;
+    external.insert(ResolvedTectonicInputArtifact::new(
+        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, tectonic.clone())?,
+    ))?;
+    external.insert(ResolvedWorldFormationArtifact::new(resolved_formation))?;
+    external.insert(ResolvedGeologicInputArtifact::new(
+        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, geologic.clone())?,
+    ))?;
+    external.insert(ReliefSpecArtifact::new(relief.clone()))?;
+    external.insert(ResolvedClimateInputArtifact::new(
+        ResolvedClimateInput::new(
+            ClimateModel::SeasonalEnergyMoistureV1,
+            ClimateSpec::default(),
+        )?,
+    ))?;
+    external.insert(ResolvedHydroErosionInputArtifact::new(
+        ResolvedHydroErosionInput::new(
+            HydroErosionModel::PriorityFloodStreamPowerV1,
+            HydroErosionSpec::default(),
+        )?,
+    ))?;
+    external.insert(SphericalSurfaceArtifact::new(surface.clone()))?;
+    Ok(external)
+}
+
+/// Binds one complete document to every presentation derivative for the view.
+fn assemble_spherical_candidate(
+    document: Arc<SphericalWorldFieldDocument>,
+    report: BuildReport,
+    view_state: SphericalPresentationViewState,
+    current_state: &SphericalFieldDisplayState,
+    clock: &DisplayRevisionClock,
+    failure: FailureInjector,
+    lineage: WorldCandidateLineage,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     let source = document.presentation_source();
 
     failure.check("locator")?;
     let locator = Arc::new(SphericalEntityLocator::new(
         source.clone(),
-        document.surface.snapshot(),
+        document.surface(),
     )?);
 
     failure.check("map")?;
     let projection = view_state.projection();
     let map = Arc::new(PreparedProjectedMap::build(
         source.clone(),
-        document.surface.snapshot(),
+        document.surface(),
         projection,
         SphericalMeshBudgets::DEFAULT,
     )?);
@@ -1279,7 +1598,7 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
     failure.check("globe")?;
     let globe = Arc::new(PreparedGlobeMesh::build(
         source.clone(),
-        document.surface.snapshot(),
+        document.surface(),
         SphericalMeshBudgets::DEFAULT,
     )?);
 
@@ -1322,14 +1641,14 @@ fn build_spherical_presentation_candidate_impl_with_lineage(
         view_state,
         state: next_state,
         clock: next_clock,
-        report: outcome.report,
+        report,
     };
     candidate.validate()?;
     Ok(candidate)
 }
 
 fn validate_complete_source_set(
-    document: &SphericalNaturalFieldDocument,
+    document: &SphericalWorldFieldDocument,
     source: &SphericalPresentationSource,
     locator: &SphericalEntityLocator,
     map: &PreparedProjectedMap,
@@ -1352,7 +1671,7 @@ fn validate_complete_source_set(
 }
 
 fn validate_complete_source_set_without_gpu(
-    document: &SphericalNaturalFieldDocument,
+    document: &SphericalWorldFieldDocument,
     source: &SphericalPresentationSource,
     locator: &SphericalEntityLocator,
     map: &PreparedProjectedMap,
@@ -1457,6 +1776,16 @@ pub enum SphericalPresentationError {
     Build(#[from] BuildFailure),
     #[error(transparent)]
     Document(#[from] SphericalNaturalDisplayError),
+    #[error(transparent)]
+    FormationDocument(#[from] SphericalFormationDisplayError),
+    #[error(transparent)]
+    WorldFormationResolution(#[from] WorldFormationGenerationError),
+    #[error(transparent)]
+    ClimateSpecInput(#[from] ClimateSpecError),
+    #[error(transparent)]
+    HydroErosionSpecInput(#[from] HydroErosionSpecError),
+    #[error(transparent)]
+    SurfaceInput(#[from] SphericalSurfaceValidationError),
     #[error(transparent)]
     Picking(#[from] SphericalPickingError),
     #[error(transparent)]

@@ -17,9 +17,21 @@ impl WorldFormationGenerator {
         spec: &WorldFormationSpec,
         rng: &mut StageRng,
     ) -> Result<ResolvedWorldFormation, WorldFormationGenerationError> {
+        Self::resolve_for_roll(spec, rng.next_u32() % 100)
+    }
+
+    /// Resolves a named request directly or maps one modulo-100 roll onto the
+    /// weighted random table.
+    ///
+    /// Callers outside the stage engine use this with a seed-derived roll so
+    /// the random preset stays deterministic per world seed.
+    pub fn resolve_for_roll(
+        spec: &WorldFormationSpec,
+        roll: u32,
+    ) -> Result<ResolvedWorldFormation, WorldFormationGenerationError> {
         spec.validate()?;
         let resolved = match spec.preset {
-            WorldFormationPreset::Random => resolve_weighted_roll(rng.next_u32() % 100),
+            WorldFormationPreset::Random => resolve_weighted_roll(roll % 100),
             WorldFormationPreset::Continents => ResolvedWorldFormationPreset::Continents,
             WorldFormationPreset::Archipelago => ResolvedWorldFormationPreset::Archipelago,
             WorldFormationPreset::Supercontinent => ResolvedWorldFormationPreset::Supercontinent,

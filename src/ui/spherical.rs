@@ -1458,7 +1458,7 @@ pub(crate) struct SphericalInspectorCache {
 
 struct SphericalInspectorCacheEntry {
     source: crate::view::SphericalPresentationSource,
-    document: Weak<crate::app::SphericalNaturalFieldDocument>,
+    document: Weak<crate::app::SphericalWorldFieldDocument>,
     layers: Weak<PreparedFieldLayers>,
     fill_field: Option<FieldId>,
     overlay_field: Option<FieldId>,

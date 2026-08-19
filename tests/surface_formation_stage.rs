@@ -303,3 +303,101 @@ fn the_p5_graph_reuses_p4_hashes_and_republishes_only_on_formation_input_changes
         "changing only the formation spec must not disturb the P4 product"
     );
 }
+
+#[test]
+fn the_formation_document_materializes_every_field_from_the_app_build_path() {
+    use sekai::world::natural::{
+        annual_local_runoff_mm_field_id, circulation_annual_precipitation_mm_field_id,
+        circulation_mean_air_temperature_c_field_id, circulation_prevailing_wind_m_s_field_id,
+        coastal_deposition_m_field_id, coastal_erosion_m_field_id, crust_kind_field_id,
+        crust_thickness_field_id, drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
+        hillslope_deposition_m_field_id, hillslope_erosion_m_field_id,
+        isostatic_response_m_field_id, lake_depth_m_field_id, land_ocean_field_id,
+        mean_annual_discharge_m3_s_field_id, plate_id_field_id, primary_elevation_m_field_id,
+        routed_sediment_deposition_m_field_id, sediment_deposition_thickness_m_field_id,
+        strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
+        tectonic_displacement_m_field_id, WorldFormationSpec,
+    };
+
+    let root_seed = RootSeed::new(42);
+    let external = sekai::app::build_spherical_formation_external_artifacts(
+        root_seed,
+        NaturalQualityProfile::Draft,
+        surface(),
+        &WorldFormationSpec::default(),
+        &TectonicSpec::default(),
+        &ReliefSpec::default(),
+        &GeologicSpec::default(),
+    )
+    .unwrap();
+    let outcome = BuildEngine::new(surface_formation_graph().unwrap())
+        .build(root_seed, external, &mut MemoryStageCache::new())
+        .unwrap();
+    let document =
+        sekai::app::SphericalFormationFieldDocument::from_build_outcome(&outcome).unwrap();
+
+    let cell_count = document.surface().cells().len();
+    assert_eq!(cell_count, surface().cells().len());
+    let catalog = document.catalog().unwrap();
+    let expected_fields = [
+        plate_id_field_id(),
+        crust_kind_field_id(),
+        crust_thickness_field_id(),
+        primary_elevation_m_field_id(),
+        tectonic_displacement_m_field_id(),
+        fluvial_erosion_depth_m_field_id(),
+        hillslope_erosion_m_field_id(),
+        hillslope_deposition_m_field_id(),
+        routed_sediment_deposition_m_field_id(),
+        coastal_erosion_m_field_id(),
+        coastal_deposition_m_field_id(),
+        isostatic_response_m_field_id(),
+        sediment_deposition_thickness_m_field_id(),
+        surface_elevation_m_field_id(),
+        land_ocean_field_id(),
+        circulation_annual_precipitation_mm_field_id(),
+        circulation_mean_air_temperature_c_field_id(),
+        circulation_prevailing_wind_m_s_field_id(),
+        annual_local_runoff_mm_field_id(),
+        lake_depth_m_field_id(),
+        surface_water_kind_field_id(),
+        mean_annual_discharge_m3_s_field_id(),
+        drainage_area_km2_field_id(),
+        strahler_stream_order_field_id(),
+    ];
+    assert_eq!(catalog.entries().len(), expected_fields.len());
+    for field in &expected_fields {
+        let view = catalog
+            .get(field)
+            .unwrap_or_else(|| panic!("field {field:?} is missing from the formation catalog"))
+            .view()
+            .unwrap_or_else(|| panic!("field {field:?} did not materialize a payload"));
+        assert_eq!(view.len(), cell_count, "cardinality of {field:?}");
+    }
+
+    assert_eq!(
+        document.preferred_field(),
+        Some(surface_elevation_m_field_id())
+    );
+    let Some(sekai::view::DisplayRangeMode::Manual(range)) =
+        document.preferred_range(&surface_elevation_m_field_id())
+    else {
+        panic!("the formation surface elevation must use a sea-anchored manual range");
+    };
+    let summary = document.area_summary();
+    let sea = summary.sea_level_m();
+    assert!(((range.min() + range.max()) * 0.5 - sea).abs() < 0.5);
+    assert!(
+        summary.evolved_continental_fraction() > 0.2,
+        "v5 conserves continental area, got {}",
+        summary.evolved_continental_fraction()
+    );
+    assert!(
+        (0.05..0.95).contains(&summary.actual_land_fraction()),
+        "land fraction {}",
+        summary.actual_land_fraction()
+    );
+
+    let source = document.presentation_source();
+    assert_eq!(source.root_seed(), root_seed);
+}

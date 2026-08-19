@@ -18,20 +18,20 @@ UI-visible state and names its user verification step.
 ## Tasks
 
 - [x] Task 1 — AGENTS.md acceptance discipline (commit 97eeed1).
-- [ ] Task 2 — Presentation fixes usable by both chains:
+- [x] Task 2 — Presentation fixes (commit b24895b) usable by both chains:
       new `Hypsometric` palette hint/table anchored at sea level for surface
       elevation, semantic `LandOcean` palette (ocean blue / land tan),
       percentile-based elevation display radius replacing the single-outlier
       symmetric range; refresh field-display goldens.
       Verify: regenerate in-app; elevation fill reads as a map (blue depths,
       green→brown land), 海陆分类 shows blue ocean / tan land.
-- [ ] Task 3 — Formation field document: registry subset + payload bindings
+- [x] Task 3 — Formation field document: registry subset + payload bindings
       for the P5 product (final/primary elevation, land/ocean, formation
       components, sediment, hydrology, circulation summaries) as
       `SphericalFormationFieldDocument` implementing the existing
       field-document traits; document-level tests.
       Verify: document unit tests; catalog materializes every registered field.
-- [ ] Task 4 — App wiring: spherical canvas builds `surface_formation_graph()`
+- [x] Task 4 — App wiring: spherical canvas builds `surface_formation_graph()`
       (profile surface + resolved-input externals from the author panel),
       candidate/publication carry a document enum, panels read the evolved
       material budget + formation sea level, slice label updated.
