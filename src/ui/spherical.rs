@@ -444,26 +444,9 @@ impl SphericalCanvasState {
         {
             return None;
         }
-        let bounds = self.projection.bounds();
-        let bounds_width = bounds.max_x() - bounds.min_x();
-        let bounds_height = bounds.max_y() - bounds.min_y();
-        let aspect = canvas_size[0] / canvas_size[1];
-        let map_aspect = bounds_width / bounds_height;
-        let (fit_x, fit_y) = if aspect >= map_aspect {
-            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
-        } else {
-            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
-        };
-        let zoom = self.map_camera.zoom(self.projection.kind());
-        let pan = self.map_camera.pan(self.projection.kind());
-        let ndc_x = 2.0 * screen[0] / canvas_size[0] - 1.0;
-        let ndc_y = 1.0 - 2.0 * screen[1] / canvas_size[1];
-        let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
-        let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
-        let point = crate::view::ProjectionPoint::new(
-            (ndc_x - 2.0 * pan[0]) / (fit_x * zoom) + center_x,
-            (ndc_y - 2.0 * pan[1]) / (fit_y * zoom) + center_y,
-        );
+        let transform =
+            crate::view::MapScreenTransform::new(self.projection, self.map_camera, canvas_size)?;
+        let point = transform.to_projection(screen);
         self.projection.outline_contains(point).then_some(point)
     }
 
@@ -543,28 +526,9 @@ impl SphericalCanvasState {
         point: crate::view::ProjectionPoint,
         canvas_size: [f64; 2],
     ) -> [f64; 2] {
-        let bounds = self.projection.bounds();
-        let bounds_width = bounds.max_x() - bounds.min_x();
-        let bounds_height = bounds.max_y() - bounds.min_y();
-        let aspect = canvas_size[0] / canvas_size[1];
-        let map_aspect = bounds_width / bounds_height;
-        let (fit_x, fit_y) = if aspect >= map_aspect {
-            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
-        } else {
-            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
-        };
-        let zoom = self.map_camera.zoom(self.projection.kind());
-        let pan = self.map_camera.pan(self.projection.kind());
-        let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
-        let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
-        let ndc = [
-            (point.x() - center_x) * fit_x * zoom + pan[0] * 2.0,
-            (point.y() - center_y) * fit_y * zoom + pan[1] * 2.0,
-        ];
-        [
-            (ndc[0] + 1.0) * canvas_size[0] * 0.5,
-            (1.0 - ndc[1]) * canvas_size[1] * 0.5,
-        ]
+        crate::view::MapScreenTransform::new(self.projection, self.map_camera, canvas_size)
+            .map(|transform| transform.to_screen(point))
+            .unwrap_or([f64::NAN; 2])
     }
 
     pub(crate) fn replace_field_state(&mut self, state: SphericalFieldDisplayState) {

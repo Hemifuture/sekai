@@ -54,7 +54,7 @@ pub use prepared::{
 pub use reference::{rasterize_reference, ReferenceImage};
 pub use resident::ResidentBytesError;
 pub use spherical_camera::{
-    GlobeCamera, MapCamera, SphericalPresentationViewState, SphericalViewMode,
+    GlobeCamera, MapCamera, MapScreenTransform, SphericalPresentationViewState, SphericalViewMode,
 };
 pub use spherical_mesh::{
     project_amplified_map, project_unit_direction, AmplifiedMapVertex, AmplifiedSurfaceMesh,

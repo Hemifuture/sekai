@@ -12,9 +12,9 @@
 //! midpoint geometry — with the display subdivision in
 //! `app/amplified_mesh.rs`, so geometry and data split identically.
 //!
-//! The M1 continuous-field `TerrainAmplifier` stays in service for the
-//! display layer until plan Task 3; this engine reuses it as the single
-//! fact source for conditioning drivers and river carving.
+//! Since plan Task 3 the display layer reads this engine's primitive
+//! values; the M1 `TerrainAmplifier` serves on inside it as the single
+//! fact source for conditioning drivers and §7 river carving.
 
 use blake3::Hasher;
 
@@ -70,7 +70,7 @@ pub struct PrimitiveValue {
 }
 
 /// A validated 2-bit-per-step subdivision path (spec §1, k ≤ 16).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HierarchicalPath {
     steps: [u8; HIERARCHICAL_PATH_DEPTH_MAX],
     len: u8,
@@ -189,6 +189,7 @@ struct Anchor {
 /// One triangle of the walk. `boundary_edge[i]` marks the directed edge
 /// (corner i → corner i+1) as lying on the root cell's shared L0
 /// boundary arc, whose midpoints take the two-cell mean conditions.
+#[derive(Clone, Copy)]
 struct TriangleFrame {
     corners: [Anchor; 3],
     boundary_edge: [bool; 3],
@@ -641,6 +642,103 @@ impl HierarchicalEvaluator {
             }
         }
         best
+    }
+
+    /// The number of L0 cells in the evaluated surface.
+    pub fn cell_count(&self) -> usize {
+        self.cell_conditions.len()
+    }
+
+    /// The number of fan sectors of one cell (6, or 5 on pentagons).
+    pub fn sector_count(&self, cell: CellId) -> usize {
+        self.ring_bounds(cell.raw()).1
+    }
+
+    /// The mean cell spacing in metres — the L0 primitive scale that the
+    /// spec §5 ladder halves per level.
+    pub fn cell_spacing_m(&self) -> f64 {
+        self.amplifier.base_wavelength_m() * 0.5
+    }
+
+    /// The corner directions of one L1 sector triangle, in the frozen
+    /// (centroid, near vertex, far vertex) walk order.
+    pub fn sector_corners(&self, cell: CellId, sector: u8) -> [UnitVector3; 3] {
+        let (start, len) = self.ring_bounds(cell.raw());
+        assert!(
+            usize::from(sector) < len,
+            "sector {sector} is outside the {len}-sector fan of cell {}",
+            cell.raw()
+        );
+        [
+            self.cell_centroid[cell.raw() as usize],
+            self.vertex_position[self.ring_vertices[start + usize::from(sector)] as usize],
+            self.vertex_position
+                [self.ring_vertices[start + (usize::from(sector) + 1) % len] as usize],
+        ]
+    }
+
+    /// Streams the face values of every leaf `extra_levels` below the
+    /// primitive `(cell, sector, prefix)` in depth-first child order
+    /// 0, 1, 2, 3 — the same traversal order as the display subdivision,
+    /// so callers pair leaves with geometry by index. Each leaf value is
+    /// bit-identical to `value()` of its full path; the shared walk just
+    /// amortizes the upper anchors instead of re-deriving them per leaf.
+    pub fn for_each_leaf_value(
+        &self,
+        cell: CellId,
+        sector: u8,
+        prefix: &[u8],
+        extra_levels: u8,
+        sink: &mut dyn FnMut(PrimitiveValue),
+    ) {
+        assert!(
+            prefix.len() + usize::from(extra_levels) <= HIERARCHICAL_PATH_DEPTH_MAX,
+            "leaf depth {} exceeds the spec cap {}",
+            prefix.len() + usize::from(extra_levels),
+            HIERARCHICAL_PATH_DEPTH_MAX
+        );
+        let conditions = self.sector_conditions(cell.raw(), sector);
+        let mut frame = self.sector_frame(cell.raw(), sector);
+        for (step, &child) in prefix.iter().enumerate() {
+            assert!(child <= 3, "path step {child} is not a 2-bit child index");
+            let level = step as u32 + 1;
+            let midpoints = self.split_midpoints(&frame, level, &conditions);
+            frame = child_frame(frame, midpoints, child);
+        }
+        self.emit_leaf_values(
+            cell.raw() as usize,
+            frame,
+            prefix.len() as u32,
+            extra_levels,
+            &conditions,
+            sink,
+        );
+    }
+
+    fn emit_leaf_values(
+        &self,
+        cell_index: usize,
+        frame: TriangleFrame,
+        depth: u32,
+        remaining: u8,
+        conditions: &SectorConditions,
+        sink: &mut dyn FnMut(PrimitiveValue),
+    ) {
+        if remaining == 0 {
+            sink(self.face_value(cell_index, &frame));
+            return;
+        }
+        let midpoints = self.split_midpoints(&frame, depth + 1, conditions);
+        for child in 0..4u8 {
+            self.emit_leaf_values(
+                cell_index,
+                child_frame(frame, midpoints, child),
+                depth + 1,
+                remaining - 1,
+                conditions,
+                sink,
+            );
+        }
     }
 }
 
@@ -1208,6 +1306,47 @@ mod tests {
                 interior_margin(&corners, direction) >= -1.0e-9,
                 "located sector does not contain the direction"
             );
+        }
+    }
+
+    /// The streaming leaf walk yields exactly `value()` of every leaf in
+    /// depth-first child order 0..4 — the display pairing contract.
+    #[test]
+    fn leaf_stream_matches_per_leaf_values_in_dfs_order() {
+        let (evaluator, _surface) = evaluator();
+        let prefix = [1_u8, 3];
+        let extra = 3_u8;
+        let mut streamed = Vec::new();
+        evaluator.for_each_leaf_value(CellId::from_raw(7), 2, &prefix, extra, &mut |value| {
+            streamed.push(value)
+        });
+        assert_eq!(streamed.len(), 4_usize.pow(u32::from(extra)));
+
+        let mut suffixes = Vec::new();
+        let mut suffix = Vec::new();
+        enumerate_dfs(extra, &mut suffix, &mut suffixes);
+        assert_eq!(suffixes.len(), streamed.len());
+        for (index, tail) in suffixes.iter().enumerate() {
+            let mut path = prefix.to_vec();
+            path.extend_from_slice(tail);
+            let direct = evaluator.value(CellId::from_raw(7), 2, &path);
+            assert_eq!(
+                streamed[index].elevation_m.to_bits(),
+                direct.elevation_m.to_bits()
+            );
+            assert_eq!(streamed[index].regime, direct.regime);
+        }
+    }
+
+    fn enumerate_dfs(remaining: u8, current: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
+        if remaining == 0 {
+            out.push(current.clone());
+            return;
+        }
+        for child in 0..4u8 {
+            current.push(child);
+            enumerate_dfs(remaining - 1, current, out);
+            current.pop();
         }
     }
 

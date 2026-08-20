@@ -7,7 +7,7 @@
 //! visibility use this same orientation, and rays transform back to world space
 //! through its inverse.
 
-use super::{SphericalProjection, SphericalProjectionKind, UnitRay};
+use super::{ProjectionPoint, SphericalProjection, SphericalProjectionKind, UnitRay};
 use crate::world::spatial::UnitVector3;
 
 const IDENTITY_ORIENTATION: Quaternion = Quaternion {
@@ -228,6 +228,94 @@ impl MapCamera {
     }
 }
 
+/// The single projection-plane ↔ logical-screen mapping of the map view.
+///
+/// This is the presenter transform (`ndc = (point − center)·fit·zoom +
+/// 2·pan`) bound to one canvas size, shared by picking, screen-space
+/// measurement, and the detail scheduler so the mapping exists once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapScreenTransform {
+    fit: [f64; 2],
+    zoom: f64,
+    pan: [f64; 2],
+    center: [f64; 2],
+    canvas_size: [f64; 2],
+    bounds_width: f64,
+}
+
+impl MapScreenTransform {
+    /// Binds the projection outline, one retained camera, and a canvas.
+    ///
+    /// Returns `None` for a degenerate (non-finite or non-positive)
+    /// canvas size.
+    pub fn new(
+        projection: SphericalProjection,
+        camera: MapCamera,
+        canvas_size: [f64; 2],
+    ) -> Option<Self> {
+        if canvas_size
+            .into_iter()
+            .any(|component| !component.is_finite() || component <= 0.0)
+        {
+            return None;
+        }
+        let bounds = projection.bounds();
+        let bounds_width = bounds.max_x() - bounds.min_x();
+        let bounds_height = bounds.max_y() - bounds.min_y();
+        let aspect = canvas_size[0] / canvas_size[1];
+        let map_aspect = bounds_width / bounds_height;
+        let fit = if aspect >= map_aspect {
+            [2.0 / (bounds_height * aspect), 2.0 / bounds_height]
+        } else {
+            [2.0 / bounds_width, 2.0 * aspect / bounds_width]
+        };
+        Some(Self {
+            fit,
+            zoom: camera.zoom(projection.kind()),
+            pan: camera.pan(projection.kind()),
+            center: [
+                (bounds.min_x() + bounds.max_x()) * 0.5,
+                (bounds.min_y() + bounds.max_y()) * 0.5,
+            ],
+            canvas_size,
+            bounds_width,
+        })
+    }
+
+    /// Maps one projection-plane point to logical screen pixels.
+    pub fn to_screen(&self, point: ProjectionPoint) -> [f64; 2] {
+        let ndc = [
+            (point.x() - self.center[0]) * self.fit[0] * self.zoom + self.pan[0] * 2.0,
+            (point.y() - self.center[1]) * self.fit[1] * self.zoom + self.pan[1] * 2.0,
+        ];
+        [
+            (ndc[0] + 1.0) * self.canvas_size[0] * 0.5,
+            (1.0 - ndc[1]) * self.canvas_size[1] * 0.5,
+        ]
+    }
+
+    /// Maps one logical screen pixel back onto the projection plane.
+    pub fn to_projection(&self, screen: [f64; 2]) -> ProjectionPoint {
+        let ndc_x = 2.0 * screen[0] / self.canvas_size[0] - 1.0;
+        let ndc_y = 1.0 - 2.0 * screen[1] / self.canvas_size[1];
+        ProjectionPoint::new(
+            (ndc_x - 2.0 * self.pan[0]) / (self.fit[0] * self.zoom) + self.center[0],
+            (ndc_y - 2.0 * self.pan[1]) / (self.fit[1] * self.zoom) + self.center[1],
+        )
+    }
+
+    /// The bound logical canvas size.
+    pub const fn canvas_size(&self) -> [f64; 2] {
+        self.canvas_size
+    }
+
+    /// The screen-pixel width of one full outline wrap — the seam period
+    /// for wrap-aware visibility tests.
+    pub fn wrap_width_px(&self) -> f64 {
+        self.bounds_width * self.fit[0] * self.zoom * self.canvas_size[0] * 0.5
+    }
+}
+
 /// Orthographic trackball state for the undeformed unit globe.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlobeCamera {
@@ -339,6 +427,25 @@ impl GlobeCamera {
     /// Returns whether a unit world direction lies on the camera-facing hemisphere.
     pub fn is_front_facing(self, direction: UnitVector3) -> bool {
         self.orientation.rotate(direction.components())[2] >= 0.0
+    }
+
+    /// Rotates one unit direction into camera space and projects it into
+    /// logical screen pixels; the returned depth is the camera-space z
+    /// (front hemisphere at z ≥ 0). The caller validates the canvas once.
+    pub(crate) fn project_point_with_depth(
+        self,
+        direction: [f64; 3],
+        canvas_size: [f64; 2],
+    ) -> ([f64; 2], f64) {
+        let rotated = self.orientation.rotate(direction);
+        let diameter = canvas_size[0].min(canvas_size[1]);
+        (
+            [
+                canvas_size[0] * 0.5 + rotated[0] * self.orthographic_scale * diameter * 0.5,
+                canvas_size[1] * 0.5 - rotated[1] * self.orthographic_scale * diameter * 0.5,
+            ],
+            rotated[2],
+        )
     }
 
     /// Produces an orthographic world-space ray for one screen point.

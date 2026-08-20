@@ -178,6 +178,88 @@ struct PendingWorldBuild {
 struct AmplifiedDisplayBundle {
     mesh: crate::view::AmplifiedSurfaceMesh,
     rivers: Vec<crate::view::RiverPolylineSegment>,
+    detail: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
+    initial_hash: u64,
+}
+
+/// One camera snapshot deciding whether the detail selection reruns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AmplifiedDetailProbe {
+    view: crate::view::SphericalPresentationViewState,
+    canvas_size: [u32; 2],
+}
+
+/// One coalesced camera snapshot for the detail worker.
+struct DetailRebuildRequest {
+    view: crate::view::SphericalPresentationViewState,
+    canvas_size: [f64; 2],
+    serial: u64,
+}
+
+/// One worker answer: a fresh mesh, or `None` when the resolved
+/// selection matched the mesh already on screen.
+struct DetailRebuildResult {
+    mesh: Option<crate::view::AmplifiedSurfaceMesh>,
+    serial: u64,
+}
+
+/// The camera-driven incremental rebuild worker of the amplified display
+/// (plan M2 Task 3): camera snapshots coalesce latest-wins, selection and
+/// assembly both run off the UI thread against the per-batch cache, and
+/// finished meshes swap in whole.
+struct AmplifiedDetailEngine {
+    request: std::sync::mpsc::Sender<DetailRebuildRequest>,
+    results: std::sync::mpsc::Receiver<DetailRebuildResult>,
+    sent_serial: u64,
+    answered_serial: u64,
+    last_probe: Option<AmplifiedDetailProbe>,
+}
+
+fn spawn_amplified_detail_engine(
+    context: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
+    installed_hash: u64,
+) -> AmplifiedDetailEngine {
+    let (request, request_receiver) = std::sync::mpsc::channel::<DetailRebuildRequest>();
+    let (result_sender, results) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut cache = amplified_mesh::BatchCache::default();
+        let mut installed_hash = installed_hash;
+        while let Ok(mut request) = request_receiver.recv() {
+            // Latest wins: a burst of camera changes resolves once.
+            while let Ok(newer) = request_receiver.try_recv() {
+                request = newer;
+            }
+            let selection =
+                amplified_mesh::select_detail_batches(&context, &request.view, request.canvas_size);
+            let mesh = if selection.hash == installed_hash {
+                None
+            } else {
+                let Some(mesh) =
+                    amplified_mesh::build_detail_mesh(&context, &selection, &mut cache)
+                else {
+                    continue;
+                };
+                installed_hash = selection.hash;
+                Some(mesh)
+            };
+            if result_sender
+                .send(DetailRebuildResult {
+                    mesh,
+                    serial: request.serial,
+                })
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    AmplifiedDetailEngine {
+        request,
+        results,
+        sent_serial: 0,
+        answered_serial: 0,
+        last_probe: None,
+    }
 }
 
 /// Everything one finished worker build hands back to the UI thread.
@@ -331,6 +413,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
     #[serde(skip)]
+    amplified_detail: Option<AmplifiedDetailEngine>,
+    #[serde(skip)]
     river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
     #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
@@ -384,6 +468,7 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
+            amplified_detail: None,
             river_polylines: None,
             formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
@@ -685,18 +770,96 @@ impl TemplateApp {
         Ok(())
     }
 
-    /// Stores (or clears) the worker's amplified display bundle.
+    /// Stores (or clears) the worker's amplified display bundle and
+    /// (re)spawns the camera-driven detail engine for the new world.
     fn store_amplified_bundle(&mut self, amplified: Option<AmplifiedDisplayBundle>) {
         match amplified {
             Some(bundle) => {
                 self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
                 self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
+                self.amplified_detail = Some(spawn_amplified_detail_engine(
+                    bundle.detail,
+                    bundle.initial_hash,
+                ));
             }
             None => {
                 self.amplified_mesh = None;
+                self.amplified_detail = None;
                 self.river_polylines = None;
             }
         }
+    }
+
+    /// Installs finished camera-driven detail meshes without blocking.
+    fn poll_amplified_detail(&mut self, ctx: &egui::Context) {
+        let mut fresh_mesh = None;
+        let mut awaiting = false;
+        if let Some(engine) = &mut self.amplified_detail {
+            while let Ok(result) = engine.results.try_recv() {
+                engine.answered_serial = engine.answered_serial.max(result.serial);
+                if let Some(mesh) = result.mesh {
+                    fresh_mesh = Some(mesh);
+                }
+            }
+            awaiting = engine.sent_serial != engine.answered_serial;
+        }
+        if let Some(mesh) = fresh_mesh {
+            self.amplified_mesh = Some(std::sync::Arc::new(mesh));
+            if let Some(render_state) = self.render_state.clone() {
+                let mut egui_renderer = render_state.renderer.write();
+                if let Some(renderer) = egui_renderer
+                    .callback_resources
+                    .get_mut::<crate::gpu::spherical::SphericalFieldRenderer>()
+                {
+                    self.upload_amplified_display(renderer, &render_state);
+                }
+            }
+            ctx.request_repaint();
+        }
+        if awaiting {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        }
+    }
+
+    /// Submits the camera snapshot to the detail worker when the camera,
+    /// view, projection, or canvas changed (latest wins).
+    ///
+    /// Gated on the amplified layer actually standing in for the cell
+    /// fill, so data-inspection fields never trigger rebuilds.
+    fn schedule_amplified_detail(&mut self, rect: egui::Rect) {
+        if !self
+            .spherical_canvas_state
+            .field_state()
+            .layer_visibility()
+            .amplified
+        {
+            return;
+        }
+        let view = self.spherical_canvas_state.presentation_view_state();
+        let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
+        if canvas_size
+            .into_iter()
+            .any(|component| !component.is_finite() || component < 2.0)
+        {
+            return;
+        }
+        let Some(engine) = &mut self.amplified_detail else {
+            return;
+        };
+        let probe = AmplifiedDetailProbe {
+            view,
+            canvas_size: [rect.width().round() as u32, rect.height().round() as u32],
+        };
+        if engine.last_probe == Some(probe) {
+            return;
+        }
+        engine.last_probe = Some(probe);
+        engine.sent_serial += 1;
+        let _ = engine.request.send(DetailRebuildRequest {
+            view,
+            canvas_size,
+            serial: engine.sent_serial,
+        });
     }
 
     /// Uploads (or clears) the amplified meshes and river polylines.
@@ -908,14 +1071,17 @@ impl TemplateApp {
             })();
             // The amplified subdivision bake rides the same worker: it only
             // exists for formation worlds and never blocks the UI thread.
+            // The T1 v2 hierarchical engine is the value source; the bake
+            // installs the uniform global selection and the camera-driven
+            // detail engine refines it after install (plan M2 Task 3).
             let amplified = if worker_cancellation.is_cancelled() {
                 None
             } else {
                 result.as_ref().ok().and_then(|candidate| {
                     let document = candidate.document().formation()?;
                     let (sea_level_m, display_radius_m) = document.amplified_color_anchors()?;
-                    let amplifier =
-                        crate::generators::natural::TerrainAmplifier::from_formation_product(
+                    let evaluator =
+                        crate::generators::natural::HierarchicalEvaluator::from_formation_product(
                             document.surface(),
                             document.evolved_compatibility(),
                             document.substrate(),
@@ -923,17 +1089,24 @@ impl TemplateApp {
                             root_seed,
                         )
                         .ok()?;
-                    let mesh = amplified_mesh::build_amplified_surface_mesh(
-                        &amplifier,
-                        document.surface(),
-                        sea_level_m,
-                        display_radius_m,
-                    )?;
+                    let detail = std::sync::Arc::new(amplified_mesh::AmplifiedDetailContext {
+                        evaluator,
+                        sea_level_m: f64::from(sea_level_m),
+                        display_radius_m: f64::from(display_radius_m.max(1.0)),
+                    });
+                    let selection = amplified_mesh::initial_selection(&detail);
+                    let mut cache = amplified_mesh::BatchCache::default();
+                    let mesh = amplified_mesh::build_detail_mesh(&detail, &selection, &mut cache)?;
                     let rivers = amplified_mesh::river_display_polylines(
                         document.surface(),
                         document.formation_snapshot().hydrology(),
                     );
-                    Some(AmplifiedDisplayBundle { mesh, rivers })
+                    Some(AmplifiedDisplayBundle {
+                        mesh,
+                        rivers,
+                        detail,
+                        initial_hash: selection.hash,
+                    })
                 })
             };
             let _ = sender.send(WorldBuildCompletion {
@@ -1217,6 +1390,7 @@ impl TemplateApp {
                 for action in output.into_actions() {
                     self.apply_spherical_action(action);
                 }
+                self.schedule_amplified_detail(rect);
                 let queued = self.spherical_presentation.read_resource(|current| {
                     current.as_ref().is_some_and(|presentation| {
                         queue_spherical_canvas_callback(
@@ -1428,6 +1602,7 @@ impl eframe::App for TemplateApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_world_build(ctx);
+        self.poll_amplified_detail(ctx);
         let update_time_seconds = ctx.input(|input| input.time);
         let toggle_frame_sampler = ctx.input(|input| {
             input.modifiers.ctrl && input.modifiers.alt && input.key_pressed(egui::Key::F)
