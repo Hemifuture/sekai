@@ -238,6 +238,18 @@
   （P1→P5 一次通过，仅单向均衡响应），学术完全体为
   构造–气候–侵蚀双向反馈迭代；游戏主流为噪声合成，
   选择模拟路线的理由是地理因果可信性产品目标。
+  地图生成工程界细分（2026-08-20 补）：幻想地图工具的
+  事实标准 Azgaar's Fantasy Map Generator 即因果链架构
+  （风带→降水/雨影→河流→生物群系），深度模拟派先例
+  WorldEngine、Undiscovered Worlds；科学制图侧生成全球地图的
+  专业方式即模型求解：PALEOMAP paleoDEM（Scotese & Wright
+  2018）、goSPL 全球古 DEM 序列（Science 2023）、Köppen 气候
+  区图（Peel et al., HESS 2007）；衍生制图工业流程：
+  HydroSHEDS 全球河网（Lehner, Verdin & Jarvis, EOS 2008，从
+  DEM 以洼地填充+流向汇流批量派生——即 P5 同族算法的
+  工业日常）。定位：架构与 Azgaar 链同构，求解器与科学
+  制图同源，保真度介于二者之间；交互式产品层面尚无
+  商业同级先例，验收裁判为用户本人。
 - **T0 物理链（不变）**——已在 P5 完成文档中引用：Barnes, Lehman &
   Mulla 2014（priority-flood）；Braun & Willett 2013（O(N) 隐式流功）；
   Roering, Kirchner & Dietrich 1999（非线性坡面）；Davy & Lague 2009 /
