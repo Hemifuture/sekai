@@ -17,6 +17,7 @@ mod geologic_substrate;
 mod geology;
 mod global_circulation;
 mod global_circulation_stage;
+mod hierarchical_derivation;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;
@@ -125,6 +126,10 @@ pub use global_circulation_stage::{
     global_circulation_graph, ClimateWorkDomainArtifact, ClimateWorkDomainStage,
     ClimateWorkDomainStageInputs, GlobalCirculationArtifact, GlobalCirculationProductError,
     GlobalCirculationStage, GlobalCirculationStageInputs,
+};
+pub use hierarchical_derivation::{
+    HierarchicalEvaluator, HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue,
+    HIERARCHICAL_PATH_DEPTH_MAX, HIERARCHICAL_PROBE_COUNT,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{

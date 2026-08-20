@@ -75,19 +75,19 @@ const DISSECTION_PRECIPITATION_WIDTH_MM: f64 = 250.0;
 /// C7: sediment-blanket damping scale in metres of blanket thickness.
 const SEDIMENT_DAMPING_M: f64 = 350.0;
 /// Regime base amplitudes in metres (initial values; Task 4 calibrates).
-const LAND_BASE_AMPLITUDE_M: f64 = 320.0;
-const SHELF_BASE_AMPLITUDE_M: f64 = 35.0;
+pub(super) const LAND_BASE_AMPLITUDE_M: f64 = 320.0;
+pub(super) const SHELF_BASE_AMPLITUDE_M: f64 = 35.0;
 const OCEAN_BASE_AMPLITUDE_M: f64 = 90.0;
-const RIDGE_AMPLITUDE_M: f64 = 450.0;
+pub(super) const RIDGE_AMPLITUDE_M: f64 = 450.0;
 const DISSECTION_AMPLITUDE_M: f64 = 140.0;
-const BADLANDS_AMPLITUDE_M: f64 = 60.0;
+pub(super) const BADLANDS_AMPLITUDE_M: f64 = 60.0;
 const COAST_DETAIL_AMPLITUDE_M: f64 = 25.0;
 /// C9: warp displacement bounds as fractions of one T0 cell spacing.
 const WARP_COAST_FRACTION: f64 = 0.55;
 const WARP_OCEAN_FRACTION: f64 = 0.35;
 const WARP_LAND_FRACTION: f64 = 0.15;
 /// Shelf transition half-width in metres of depth around the shelf break.
-const SHELF_TRANSITION_M: f64 = 80.0;
+pub(super) const SHELF_TRANSITION_M: f64 = 80.0;
 /// Robust normalization percentile for erodibility and age gradients.
 const NORMALIZATION_PERCENTILE: f64 = 0.95;
 /// Probe count fixed by spec §8.
@@ -567,7 +567,11 @@ impl TerrainAmplifier {
     /// local relief crosses the floodplain accommodation band; the chord
     /// approximation to the reach arc is exact to well under a metre at
     /// cell-spacing scales.
-    fn river_carve_m(&self, position: UnitVector3, local_relief_norm: f64) -> Option<f64> {
+    pub(super) fn river_carve_m(
+        &self,
+        position: UnitVector3,
+        local_relief_norm: f64,
+    ) -> Option<f64> {
         let (corners, _) = self.locator.locate(position);
         let p = position.components();
         let wall_slope = VALLEY_SLOPE_FLOODPLAIN
@@ -668,6 +672,34 @@ impl TerrainAmplifier {
         self.radius_m
     }
 
+    /// Borrowed per-cell conditioning drivers for the hierarchical engine.
+    ///
+    /// The T1 v2 hierarchical derivation reuses this amplifier's normalized
+    /// C-table driver fields as its single fact source instead of
+    /// re-deriving them.
+    pub(super) fn conditioning(&self) -> ConditioningView<'_> {
+        ConditioningView {
+            elevation_m: &self.elevation_m,
+            sea_level_m: self.sea_level_m,
+            local_relief_norm: &self.local_relief_norm,
+            erodibility_norm: &self.erodibility_norm,
+            sediment_norm: &self.sediment_norm,
+            precipitation_mm: &self.precipitation_mm,
+            orogeny_factor: &self.orogeny_factor,
+            age_gradient_norm: &self.age_gradient_norm,
+        }
+    }
+
+    /// Whether a published river network is attached for §7 carving.
+    pub(super) fn has_rivers(&self) -> bool {
+        !self.reaches.is_empty()
+    }
+
+    /// The three lattice cells whose dual triangle contains `position`.
+    pub(super) fn locate_corner_cells(&self, position: UnitVector3) -> [u32; 3] {
+        self.locator.locate(position).0
+    }
+
     /// Evaluates the amplified surface at one direction (spec §1).
     ///
     /// LOD 0 reproduces the interpolated T0 surface exactly: no warp and no
@@ -755,16 +787,14 @@ impl TerrainAmplifier {
 
         // C10: spatially blended Hurst exponent -> per-octave persistence.
         let roughness = interp.local_relief.max(interp.orogeny_factor);
-        let hurst = HURST_PLAIN + (HURST_MOUNTAIN - HURST_PLAIN) * roughness;
+        let hurst = surface_roughness_hurst(roughness);
         let persistence = 2.0_f64.powf(-hurst);
 
         // C1, C4 (amplitude channel), C7: the land amplitude envelope.
-        let erodibility_amplitude = 1.0 - (1.0 - ERODIBILITY_AMPLITUDE_FLOOR) * interp.erodibility;
-        let sediment_damping = (-interp.sediment).exp();
-        let land_amplitude =
-            LAND_BASE_AMPLITUDE_M * interp.local_relief * erodibility_amplitude * sediment_damping;
-        let ocean_amplitude =
-            OCEAN_BASE_AMPLITUDE_M * (0.3 + 0.7 * interp.age_gradient) * sediment_damping;
+        let amplitude_cap = erodibility_amplitude(interp.erodibility);
+        let damping = sediment_damping(interp.sediment);
+        let land_amplitude = LAND_BASE_AMPLITUDE_M * interp.local_relief * amplitude_cap * damping;
+        let ocean_amplitude = OCEAN_BASE_AMPLITUDE_M * (0.3 + 0.7 * interp.age_gradient) * damping;
         let amplitude = land_amplitude * w.land
             + SHELF_BASE_AMPLITUDE_M * w.shelf
             + ocean_amplitude * w.ocean
@@ -791,8 +821,8 @@ impl TerrainAmplifier {
             let anisotropy = self.grain_alignment(position, interp);
             detail += RIDGE_AMPLITUDE_M
                 * interp.orogeny_factor
-                * erodibility_amplitude
-                * sediment_damping
+                * amplitude_cap
+                * damping
                 * w.land
                 * ridge
                 * anisotropy;
@@ -812,13 +842,12 @@ impl TerrainAmplifier {
                 * w.land
                 * valleys;
 
-            let badlands_gate = smoothstep(0.55, 0.8, interp.erodibility)
-                * smoothstep(0.5, 0.8, precipitation_factor);
-            if badlands_gate > 0.0 {
+            let badlands = badlands_gate(interp.erodibility, precipitation_factor);
+            if badlands > 0.0 {
                 let badlands_profile =
                     self.octave_profile((levels - 1).min(3), self.base_wavelength_m / 4.0);
                 detail -= BADLANDS_AMPLITUDE_M
-                    * badlands_gate
+                    * badlands
                     * w.land
                     * self.badlands.octaves[0].ridged(position, badlands_profile);
             }
@@ -903,6 +932,19 @@ impl TerrainAmplifier {
             weights,
         }
     }
+}
+
+/// Borrowed per-cell T0 conditioning drivers shared with the hierarchical
+/// derivation engine (normalized once at amplifier construction).
+pub(super) struct ConditioningView<'a> {
+    pub(super) elevation_m: &'a [f32],
+    pub(super) sea_level_m: f64,
+    pub(super) local_relief_norm: &'a [f32],
+    pub(super) erodibility_norm: &'a [f32],
+    pub(super) sediment_norm: &'a [f32],
+    pub(super) precipitation_mm: &'a [f32],
+    pub(super) orogeny_factor: &'a [f32],
+    pub(super) age_gradient_norm: &'a [f32],
 }
 
 /// One carve-ready river reach with monotone interpolated bed ends.
@@ -1192,10 +1234,33 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 }
 
 /// C5: the Langbein–Schumm peaked dissection response.
-fn langbein_schumm(precipitation_mm: f64) -> f64 {
+pub(super) fn langbein_schumm(precipitation_mm: f64) -> f64 {
     let deviation =
         (precipitation_mm - DISSECTION_PEAK_PRECIPITATION_MM) / DISSECTION_PRECIPITATION_WIDTH_MM;
     (-deviation * deviation).exp()
+}
+
+/// C4 amplitude channel: the detail-amplitude cap falling with substrate
+/// erodibility toward the frozen floor.
+pub(super) fn erodibility_amplitude(erodibility: f64) -> f64 {
+    1.0 - (1.0 - ERODIBILITY_AMPLITUDE_FLOOR) * erodibility
+}
+
+/// C7: sediment-blanket amplitude damping toward a smooth filled surface.
+pub(super) fn sediment_damping(sediment_norm: f64) -> f64 {
+    (-sediment_norm).exp()
+}
+
+/// C10 baseline: the roughness-blended Hurst exponent between plains and
+/// young mountains.
+pub(super) fn surface_roughness_hurst(roughness: f64) -> f64 {
+    HURST_PLAIN + (HURST_MOUNTAIN - HURST_PLAIN) * roughness
+}
+
+/// C6: the double-gated badlands peak — weak substrate and a semi-arid
+/// dissection maximum together.
+pub(super) fn badlands_gate(erodibility: f64, dissection: f64) -> f64 {
+    smoothstep(0.55, 0.8, erodibility) * smoothstep(0.5, 0.8, dissection)
 }
 
 fn substream_root(root_seed: RootSeed) -> [u8; 32] {

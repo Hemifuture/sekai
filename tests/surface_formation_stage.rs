@@ -1,7 +1,8 @@
 use std::sync::OnceLock;
 
 use sekai::engine::{
-    Artifact, BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage,
+    Artifact, BuildCancellation, BuildEngine, BuildOutcome, ExternalArtifacts, MemoryStageCache,
+    Stage,
 };
 use sekai::generators::natural::{
     global_circulation_graph, surface_formation_graph, ClimateWorkDomainArtifact,
@@ -33,6 +34,24 @@ fn surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
         .authoritative_surface()
         .clone()
     })
+}
+
+/// Builds the full draft-tier formation product the presentation-layer
+/// engines consume (shared by the frozen T1 fingerprint gates).
+fn draft_formation_outcome(root_seed: RootSeed) -> BuildOutcome {
+    let external = sekai::app::build_spherical_formation_external_artifacts(
+        root_seed,
+        NaturalQualityProfile::Draft,
+        surface(),
+        &sekai::world::natural::WorldFormationSpec::default(),
+        &TectonicSpec::default(),
+        &ReliefSpec::default(),
+        &GeologicSpec::default(),
+    )
+    .unwrap();
+    BuildEngine::new(surface_formation_graph().unwrap())
+        .build(root_seed, external, &mut MemoryStageCache::new())
+        .unwrap()
 }
 
 fn p5_external(climate_spec: ClimateSpec, formation_spec: HydroErosionSpec) -> ExternalArtifacts {
@@ -407,19 +426,7 @@ fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
     use sekai::generators::natural::{fibonacci_probe, AmplificationLod, TerrainAmplifier};
 
     let root_seed = RootSeed::new(42);
-    let external = sekai::app::build_spherical_formation_external_artifacts(
-        root_seed,
-        NaturalQualityProfile::Draft,
-        surface(),
-        &sekai::world::natural::WorldFormationSpec::default(),
-        &TectonicSpec::default(),
-        &ReliefSpec::default(),
-        &GeologicSpec::default(),
-    )
-    .unwrap();
-    let outcome = BuildEngine::new(surface_formation_graph().unwrap())
-        .build(root_seed, external, &mut MemoryStageCache::new())
-        .unwrap();
+    let outcome = draft_formation_outcome(root_seed);
     let evolved = outcome.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
     let substrate = outcome
         .artifacts
@@ -476,5 +483,76 @@ fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
         }
     }
     let drift = (f64::from(t0_land) - f64::from(amplified_land)).abs() / total as f64;
+    assert!(drift <= 0.01, "product land-fraction drift {drift}");
+}
+
+#[test]
+fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
+    use sekai::generators::natural::{fibonacci_probe, HierarchicalEvaluator};
+    use sekai::world::CellId;
+
+    let root_seed = RootSeed::new(42);
+    let outcome = draft_formation_outcome(root_seed);
+    let evolved = outcome.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
+    let substrate = outcome
+        .artifacts
+        .get::<GeologicSubstrateArtifact>()
+        .unwrap();
+    let formation = outcome
+        .artifacts
+        .get::<NaturalSurfaceFormationArtifact>()
+        .unwrap();
+
+    let evaluator = HierarchicalEvaluator::from_formation_product(
+        surface(),
+        evolved.snapshot().compatibility(),
+        substrate.snapshot(),
+        formation.snapshot(),
+        root_seed,
+    )
+    .unwrap();
+
+    // Spec §7 invariant 4 on the real product: every L0 cell primitive
+    // is the published T0 elevation, bit for bit.
+    let terrain = formation.snapshot().terrain_fields();
+    for (index, &elevation) in terrain.final_elevation_m().iter().enumerate() {
+        assert_eq!(
+            evaluator
+                .cell_value(CellId::from_raw(index as u32))
+                .elevation_m
+                .to_bits(),
+            elevation.to_bits()
+        );
+    }
+
+    // Spec §6: the frozen hierarchical probe fingerprint (values recorded
+    // as spec amendment A4 the moment this gate froze).
+    let fingerprint = evaluator.probe_fingerprint();
+    let hex: String = fingerprint
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
+    assert_eq!(
+        hex, "ca67aa601efa0c623115edc8e419117c85aea0aafbdeffa037098ed87509a6bc",
+        "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
+    );
+
+    // Spec §7 invariant 6 on the real product: the deep-level land
+    // fraction stays within one percentage point of the L0 stair field.
+    let sea = terrain.sea_level_m();
+    let total = 16_384_usize;
+    let mut l0_land = 0_u32;
+    let mut deep_land = 0_u32;
+    for index in 0..total {
+        let probe = fibonacci_probe(index, total);
+        if evaluator.sample(probe, 0).elevation_m >= sea {
+            l0_land += 1;
+        }
+        if evaluator.sample(probe, 6).elevation_m >= sea {
+            deep_land += 1;
+        }
+    }
+    let drift = (f64::from(l0_land) - f64::from(deep_land)).abs() / total as f64;
     assert!(drift <= 0.01, "product land-fraction drift {drift}");
 }
