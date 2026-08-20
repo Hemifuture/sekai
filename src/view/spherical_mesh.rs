@@ -1469,7 +1469,8 @@ fn append_seam_cut_triangle(
     let Ok(directions) = <[UnitVector3; TRIANGLE_VERTEX_COUNT]>::try_from(recovered) else {
         return;
     };
-    let colors = corners.map(|corner| mesh.colors()[corner as usize]);
+    // Flat patches keep their provoking-vertex color through the cut.
+    let flat_color = mesh.colors()[corners[0] as usize];
     let polygon = angular_fan_polygon(directions, central_meridian);
     let Ok(fragments) = split_polygon_at_seam(&polygon, central_meridian, CellId::from_raw(0))
     else {
@@ -1493,10 +1494,10 @@ fn append_seam_cut_triangle(
         let Ok(base) = u32::try_from(vertices.len()) else {
             return;
         };
-        for (point, direction) in &projected {
+        for (point, _direction) in &projected {
             vertices.push(AmplifiedMapVertex {
                 position: [point.x() as f32, point.y() as f32],
-                color: barycentric_color(&directions, &colors, *direction),
+                color: flat_color,
             });
         }
         for corner in 1..projected.len() - 1 {
@@ -1509,48 +1510,6 @@ fn append_seam_cut_triangle(
             indices.extend_from_slice(&[base, second, third]);
         }
     }
-}
-
-/// Interpolates a cut-point color barycentrically on its source triangle.
-fn barycentric_color(
-    directions: &[UnitVector3; TRIANGLE_VERTEX_COUNT],
-    colors: &[[u8; 4]; TRIANGLE_VERTEX_COUNT],
-    point: UnitVector3,
-) -> [u8; 4] {
-    fn triple(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
-        a[0] * (b[1] * c[2] - b[2] * c[1])
-            + a[1] * (b[2] * c[0] - b[0] * c[2])
-            + a[2] * (b[0] * c[1] - b[1] * c[0])
-    }
-    let [a, b, c] = directions.map(UnitVector3::components);
-    let p = point.components();
-    let determinant = triple(a, b, c);
-    if determinant.abs() <= f64::EPSILON {
-        return colors[0];
-    }
-    let mut weights = [
-        triple(p, b, c) / determinant,
-        triple(a, p, c) / determinant,
-        triple(a, b, p) / determinant,
-    ];
-    let mut total = 0.0;
-    for weight in &mut weights {
-        *weight = weight.max(0.0);
-        total += *weight;
-    }
-    if total <= f64::EPSILON {
-        return colors[0];
-    }
-    let mut blended = [0u8; 4];
-    for channel in 0..4 {
-        let value = weights
-            .iter()
-            .zip(colors.iter())
-            .map(|(weight, color)| weight / total * f64::from(color[channel]))
-            .sum::<f64>();
-        blended[channel] = value.round().clamp(0.0, 255.0) as u8;
-    }
-    blended
 }
 
 #[cfg(test)]

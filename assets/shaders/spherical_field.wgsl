@@ -24,7 +24,9 @@ struct VertexOutput {
 
 struct AmplifiedOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    // Flat interpolation reads the provoking vertex, so every subdivision
+    // triangle renders as one solid patch like the cell view's units.
+    @location(0) @interpolate(flat) color: vec4<f32>,
 }
 
 struct OverlayOutput {

@@ -1,9 +1,12 @@
 //! In-cell geodesic subdivision of the T1 amplified surface (plan Task 4R).
 //!
 //! Each cell fan triangle (centroid plus one adjacent boundary vertex pair)
-//! is recursively four-way subdivided in the direction domain; sub-vertices
-//! are renormalized onto the unit sphere and evaluated through the T1
-//! sampler with the cell view's hypsometric palette and sea-anchored range.
+//! is recursively four-way subdivided in the direction domain. Every
+//! sub-triangle renders as one solid patch — the same visual language as
+//! the cell view, only with smaller units: its color is the cell view's
+//! hypsometric palette sampled once at the sub-triangle's spherical
+//! centroid through the T1 sampler, carried by a dedicated provoking
+//! vertex and flat-interpolated on the GPU. No lighting, no gradients.
 //! Edge midpoints depend symmetrically on their two endpoint directions
 //! only, so shared cell borders produce bit-identical vertices on both
 //! sides and the mesh is crack-free without global vertex sharing.
@@ -15,22 +18,19 @@ use rayon::prelude::*;
 
 use crate::generators::natural::{AmplificationLod, TerrainAmplifier};
 use crate::view::{built_in_palette, sample_palette, AmplifiedSurfaceMesh, PaletteId};
-use crate::world::spatial::{
-    canonical_east_north_basis, SphericalSurfaceCell, SphericalSurfaceSnapshot, UnitVector3,
-};
+use crate::world::spatial::{SphericalSurfaceCell, SphericalSurfaceSnapshot, UnitVector3};
 
 /// Global triangle budget for the uniform first LOD step (plan Task 4R).
-const AMPLIFIED_TRIANGLE_BUDGET: usize = 8_000_000;
+///
+/// Each triangle also carries one dedicated provoking vertex (1.5 vertices
+/// per triangle overall) and one centroid sample, so the budget bounds
+/// bake time and GPU memory together.
+const AMPLIFIED_TRIANGLE_BUDGET: usize = 5_000_000;
 /// Deepest uniform subdivision; distance-adaptive depth is milestone M2.
 const MAX_SUBDIVISION_LEVELS: u32 = 3;
-/// Sun direction for the vertex hillshade in tangent (east, north, up)
-/// components; roughly north-west, matching cartographic convention.
-const HILLSHADE_LIGHT_TANGENT: [f64; 3] = [-0.55, 0.65, 0.75];
-/// Metres of probe-distance elevation drop treated as unit slope.
-const HILLSHADE_SLOPE_GAIN_M: f64 = 350.0;
-/// Shade range so ridges brighten and valleys dim without crushing blacks.
-const HILLSHADE_FLOOR: f64 = 0.45;
-const HILLSHADE_SPAN: f64 = 0.75;
+/// Placeholder for shared corner vertices; flat interpolation only ever
+/// reads the provoking vertex, and validation wants full opacity.
+const UNREAD_CORNER_COLOR: [u8; 4] = [0, 0, 0, 255];
 
 /// Builds the direction-domain subdivision mesh for one published world.
 ///
@@ -57,12 +57,10 @@ pub(super) fn build_amplified_surface_mesh(
     let vertex_spacing_m = cell_spacing_m / f64::from(2u32.pow(levels));
     let lod =
         AmplificationLod::for_sampling_footprint(amplifier.base_wavelength_m(), vertex_spacing_m);
-    let shading = VertexShading {
+    let shading = FlatShading {
         lod,
-        probe_step_rad: (vertex_spacing_m * 0.5 / amplifier.radius_m()).max(f64::EPSILON),
         sea_m: f64::from(sea_level_m),
         radius_m: f64::from(display_radius_m.max(1.0)),
-        light: normalized(HILLSHADE_LIGHT_TANGENT),
     };
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -71,11 +69,23 @@ pub(super) fn build_amplified_surface_mesh(
     let cell_iter = cells.iter();
     let cell_meshes = cell_iter
         .map(|cell| {
-            let (directions, triangles) = subdivide_cell(surface, cell, levels)?;
-            let colors = directions
-                .iter()
-                .map(|&direction| shaded_color(amplifier, &shading, direction))
-                .collect::<Vec<_>>();
+            let (mut directions, mut triangles) = subdivide_cell(surface, cell, levels)?;
+            // One solid color per sub-triangle: a dedicated provoking vertex
+            // carries the centroid sample and flat interpolation paints the
+            // whole patch with it, exactly like the cell view's units.
+            let mut colors = vec![UNREAD_CORNER_COLOR; directions.len()];
+            for triangle in triangles.chunks_exact_mut(3) {
+                let corner = directions[triangle[0] as usize];
+                let centroid = spherical_centroid(
+                    corner,
+                    directions[triangle[1] as usize],
+                    directions[triangle[2] as usize],
+                )?;
+                let provoking = u32::try_from(directions.len()).ok()?;
+                directions.push(corner);
+                colors.push(flat_color(amplifier, &shading, centroid));
+                triangle[0] = provoking;
+            }
             Some((directions, colors, triangles))
         })
         .collect::<Vec<_>>();
@@ -96,13 +106,19 @@ pub(super) fn build_amplified_surface_mesh(
     AmplifiedSurfaceMesh::new(directions, colors, indices).ok()
 }
 
-/// Per-vertex evaluation parameters shared by the whole bake.
-struct VertexShading {
+/// Per-patch evaluation parameters shared by the whole bake.
+struct FlatShading {
     lod: AmplificationLod,
-    probe_step_rad: f64,
     sea_m: f64,
     radius_m: f64,
-    light: [f64; 3],
+}
+
+/// Returns the renormalized spherical centroid of one sub-triangle.
+fn spherical_centroid(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> Option<UnitVector3> {
+    let [ax, ay, az] = a.components();
+    let [bx, by, bz] = b.components();
+    let [cx, cy, cz] = c.components();
+    UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).ok()
 }
 
 /// Subdivides one cell fan into local directions and triangle indices.
@@ -190,58 +206,23 @@ fn midpoint_index(
     Some(index)
 }
 
-/// Evaluates one subdivision vertex into a pre-lit sRGB color.
-fn shaded_color(
+/// Evaluates one sub-triangle centroid into its solid hypsometric color.
+fn flat_color(
     amplifier: &TerrainAmplifier,
-    shading: &VertexShading,
+    shading: &FlatShading,
     direction: UnitVector3,
 ) -> [u8; 4] {
-    let center = f64::from(amplifier.sample(direction, shading.lod).elevation_m);
-    let (east, north) = canonical_east_north_basis(direction);
-    let east_m = probe_elevation(amplifier, shading, direction, east).unwrap_or(center);
-    let north_m = probe_elevation(amplifier, shading, direction, north).unwrap_or(center);
-    let normal = normalized([
-        -(east_m - center) / HILLSHADE_SLOPE_GAIN_M,
-        -(north_m - center) / HILLSHADE_SLOPE_GAIN_M,
-        1.0,
-    ]);
-    let dot = (normal[0] * shading.light[0]
-        + normal[1] * shading.light[1]
-        + normal[2] * shading.light[2])
-        .max(0.0);
-    let shade = HILLSHADE_FLOOR + HILLSHADE_SPAN * dot;
-    let t =
-        ((center - (shading.sea_m - shading.radius_m)) / (2.0 * shading.radius_m)).clamp(0.0, 1.0);
+    let elevation = f64::from(amplifier.sample(direction, shading.lod).elevation_m);
+    let t = ((elevation - (shading.sea_m - shading.radius_m)) / (2.0 * shading.radius_m))
+        .clamp(0.0, 1.0);
     let base = sample_palette(built_in_palette(PaletteId::Hypsometric), t as f32);
     let components = base.components();
     [
-        encode_srgb(f64::from(components[0]) * shade),
-        encode_srgb(f64::from(components[1]) * shade),
-        encode_srgb(f64::from(components[2]) * shade),
+        encode_srgb(f64::from(components[0])),
+        encode_srgb(f64::from(components[1])),
+        encode_srgb(f64::from(components[2])),
         255,
     ]
-}
-
-/// Samples the elevation one probe step along a tangent direction.
-fn probe_elevation(
-    amplifier: &TerrainAmplifier,
-    shading: &VertexShading,
-    direction: UnitVector3,
-    tangent: [f64; 3],
-) -> Option<f64> {
-    let [x, y, z] = direction.components();
-    let probe = UnitVector3::new(
-        x + tangent[0] * shading.probe_step_rad,
-        y + tangent[1] * shading.probe_step_rad,
-        z + tangent[2] * shading.probe_step_rad,
-    )
-    .ok()?;
-    Some(f64::from(amplifier.sample(probe, shading.lod).elevation_m))
-}
-
-fn normalized(vector: [f64; 3]) -> [f64; 3] {
-    let norm = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
-    [vector[0] / norm, vector[1] / norm, vector[2] / norm]
 }
 
 fn encode_srgb(linear: f64) -> u8 {
@@ -315,6 +296,13 @@ mod tests {
             base_triangles * 4usize.pow(MAX_SUBDIVISION_LEVELS)
         );
         assert!(first.colors().iter().all(|color| color[3] == 255));
+        // Every sub-triangle owns its provoking vertex, so flat
+        // interpolation paints each patch with exactly its centroid sample.
+        let mut provoking = std::collections::HashSet::new();
+        assert!(first
+            .indices()
+            .chunks_exact(3)
+            .all(|triangle| provoking.insert(triangle[0])));
     }
 
     #[test]
