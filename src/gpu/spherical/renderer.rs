@@ -82,12 +82,15 @@ struct GpuMapVertex {
 }
 
 /// One projected river reach ready for the map presenter.
+///
+/// Endpoints stay f64 until the upload rebases them about the stored
+/// camera anchor, so deep zooms keep full precision.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RiverMapSegment {
     /// Projected upstream endpoint.
-    pub start: [f32; 2],
+    pub start: [f64; 2],
     /// Projected downstream endpoint.
-    pub end: [f32; 2],
+    pub end: [f64; 2],
     /// Symbolic line width in pixels (Strahler-scaled).
     pub width_px: f32,
 }
@@ -96,9 +99,9 @@ pub struct RiverMapSegment {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RiverGlobeSegment {
     /// Upstream unit direction.
-    pub start: [f32; 3],
+    pub start: [f64; 3],
     /// Downstream unit direction.
-    pub end: [f32; 3],
+    pub end: [f64; 3],
     /// Symbolic line width in pixels (Strahler-scaled).
     pub width_px: f32,
 }
@@ -148,6 +151,10 @@ pub(super) struct SphericalFrameUniform {
     overlay_visible: u32,
     amplified_mode: u32,
     _padding: u32,
+    /// The camera-relative transform for rebased detail geometry: the same
+    /// scale columns as `transform` with the rebase anchor folded into the
+    /// translation in f64, so the f32 cancellation of deep zooms vanishes.
+    detail_transform: [[f32; 4]; 4],
 }
 
 impl SphericalFrameUniform {
@@ -172,6 +179,7 @@ impl SphericalFrameUniform {
             viewport,
             animation,
             SphericalLayerVisibility::default(),
+            [0.0; 2],
         )
     }
 
@@ -188,6 +196,7 @@ impl SphericalFrameUniform {
             viewport,
             VectorAnimationUniform::default(),
             visibility,
+            [0.0; 2],
         )
     }
 
@@ -197,6 +206,7 @@ impl SphericalFrameUniform {
         viewport: [u32; 2],
         animation: VectorAnimationUniform,
         visibility: SphericalLayerVisibility,
+        detail_origin: [f64; 2],
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let bounds = packet.map().bounds();
@@ -232,9 +242,24 @@ impl SphericalFrameUniform {
             [0.0, 0.0, 1.0, 0.0],
             [translate_x, translate_y, 0.0, 1.0],
         ])?;
+        // Rebased detail vertices carry `p − origin`: fold the origin into
+        // the translation here, in f64, so the deep-zoom cancellation
+        // happens before any f32 rounding.
+        let detail_transform = f64_matrix_to_f32([
+            [scale_x, 0.0, 0.0, 0.0],
+            [0.0, scale_y, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [
+                detail_origin[0] * scale_x + translate_x,
+                detail_origin[1] * scale_y + translate_y,
+                0.0,
+                1.0,
+            ],
+        ])?;
         Self::with_transform(
             packet,
             transform,
+            detail_transform,
             [width as f32, height as f32],
             animation,
             false,
@@ -263,6 +288,7 @@ impl SphericalFrameUniform {
             viewport,
             animation,
             SphericalLayerVisibility::default(),
+            [0.0; 3],
         )
     }
 
@@ -279,6 +305,7 @@ impl SphericalFrameUniform {
             viewport,
             VectorAnimationUniform::default(),
             visibility,
+            [0.0; 3],
         )
     }
 
@@ -288,6 +315,7 @@ impl SphericalFrameUniform {
         viewport: [u32; 2],
         animation: VectorAnimationUniform,
         visibility: SphericalLayerVisibility,
+        detail_anchor: [f64; 3],
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
         let aspect = width / height;
@@ -315,7 +343,7 @@ impl SphericalFrameUniform {
                 1.0 - 2.0 * (x * x + y * y),
             ],
         ];
-        let transform = f64_matrix_to_f32([
+        let columns = [
             [
                 scale_x * rows[0][0],
                 scale_y * rows[1][0],
@@ -335,10 +363,23 @@ impl SphericalFrameUniform {
                 0.0,
             ],
             [0.0, 0.0, 0.5, 1.0],
-        ])?;
+        ];
+        let transform = f64_matrix_to_f32(columns)?;
+        // Rebased detail vertices carry `v − anchor`: fold the rotated
+        // anchor into the translation column in f64. The scale columns are
+        // identical, so horizon and silhouette math stay exact.
+        let mut detail_columns = columns;
+        for row in 0..3 {
+            detail_columns[3][row] = columns[0][row] * detail_anchor[0]
+                + columns[1][row] * detail_anchor[1]
+                + columns[2][row] * detail_anchor[2]
+                + columns[3][row];
+        }
+        let detail_transform = f64_matrix_to_f32(detail_columns)?;
         Self::with_transform(
             packet,
             transform,
+            detail_transform,
             [width as f32, height as f32],
             animation,
             true,
@@ -349,6 +390,7 @@ impl SphericalFrameUniform {
     fn with_transform(
         packet: &SphericalGpuPacket,
         transform: [[f32; 4]; 4],
+        detail_transform: [[f32; 4]; 4],
         viewport_pixels: [f32; 2],
         animation: VectorAnimationUniform,
         globe_silhouette_clip: bool,
@@ -393,6 +435,7 @@ impl SphericalFrameUniform {
             overlay_visible: u32::from(visibility.overlay),
             amplified_mode: u32::from(visibility.amplified),
             _padding: 0,
+            detail_transform,
         })
     }
 }
@@ -894,6 +937,12 @@ pub struct SphericalFieldRenderer {
     amplified_globe_index_buffer: Option<wgpu::Buffer>,
     amplified_globe_index_count: u32,
     amplified_visible: bool,
+    /// The map-plane rebase anchor shared by the amplified map mesh and
+    /// the map river instances (set with the mesh, reused by rivers).
+    amplified_map_origin: [f64; 2],
+    /// The direction-domain rebase anchor shared by the amplified globe
+    /// mesh and the globe river instances.
+    amplified_globe_anchor: [f64; 3],
     river_map_pipeline: wgpu::RenderPipeline,
     river_globe_pipeline: wgpu::RenderPipeline,
     river_map_buffer: Option<wgpu::Buffer>,
@@ -1024,6 +1073,7 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Map,
+            None,
             "fs_overlay",
         );
         let river_map_pipeline = create_overlay_pipeline(
@@ -1031,6 +1081,7 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Map,
+            Some("vs_map_river"),
             "fs_river",
         );
         let river_globe_pipeline = create_overlay_pipeline(
@@ -1038,6 +1089,7 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Globe,
+            Some("vs_globe_river"),
             "fs_river",
         );
         let amplified_map_pipeline = create_amplified_pipeline(
@@ -1057,6 +1109,7 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Globe,
+            None,
             "fs_overlay",
         );
         Self {
@@ -1096,6 +1149,8 @@ impl SphericalFieldRenderer {
             amplified_globe_index_buffer: None,
             amplified_globe_index_count: 0,
             amplified_visible: false,
+            amplified_map_origin: [0.0; 2],
+            amplified_globe_anchor: [0.0; 3],
             river_map_pipeline,
             river_globe_pipeline,
             river_map_buffer: None,
@@ -1571,18 +1626,24 @@ impl SphericalFieldRenderer {
     }
 
     /// Writes one fixed-size mode-specific camera/value uniform.
-    /// Installs (or replaces) the projected amplified map mesh.
+    /// Installs (or replaces) the projected amplified map mesh, rebased
+    /// about `origin` (the camera center on the projection plane).
     pub fn set_amplified_map_mesh(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         vertices: &[crate::view::AmplifiedMapVertex],
         indices: &[u32],
+        origin: [f64; 2],
     ) {
+        self.amplified_map_origin = origin;
         let gpu_vertices: Vec<GpuAmplifiedMapVertex> = vertices
             .iter()
             .map(|vertex| GpuAmplifiedMapVertex {
-                position: vertex.position,
+                position: [
+                    (vertex.position[0] - origin[0]) as f32,
+                    (vertex.position[1] - origin[1]) as f32,
+                ],
                 color: vertex.color,
             })
             .collect();
@@ -1599,19 +1660,26 @@ impl SphericalFieldRenderer {
         );
     }
 
-    /// Installs (or replaces) the direction-domain amplified globe mesh.
+    /// Installs (or replaces) the direction-domain amplified globe mesh,
+    /// rebased about `anchor` (the camera-front world direction).
     pub fn set_amplified_globe_mesh(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mesh: &crate::view::AmplifiedSurfaceMesh,
+        anchor: [f64; 3],
     ) {
+        self.amplified_globe_anchor = anchor;
         let gpu_vertices: Vec<GpuAmplifiedGlobeVertex> = mesh
             .directions()
             .iter()
             .zip(mesh.colors())
             .map(|(direction, color)| GpuAmplifiedGlobeVertex {
-                position: *direction,
+                position: [
+                    (direction[0] - anchor[0]) as f32,
+                    (direction[1] - anchor[1]) as f32,
+                    (direction[2] - anchor[2]) as f32,
+                ],
                 color: *color,
             })
             .collect();
@@ -1628,7 +1696,8 @@ impl SphericalFieldRenderer {
         );
     }
 
-    /// Installs (or replaces) the display river polylines.
+    /// Installs (or replaces) the display river polylines, rebased about
+    /// the anchors stored with the amplified meshes (upload those first).
     pub fn set_river_segments(
         &mut self,
         device: &wgpu::Device,
@@ -1636,11 +1705,19 @@ impl SphericalFieldRenderer {
         map: &[RiverMapSegment],
         globe: &[RiverGlobeSegment],
     ) {
+        let map_origin = self.amplified_map_origin;
+        let globe_anchor = self.amplified_globe_anchor;
         let map_instances: Vec<GpuMapOverlayInstance> = map
             .iter()
             .map(|segment| GpuMapOverlayInstance {
-                start: segment.start,
-                end: segment.end,
+                start: [
+                    (segment.start[0] - map_origin[0]) as f32,
+                    (segment.start[1] - map_origin[1]) as f32,
+                ],
+                end: [
+                    (segment.end[0] - map_origin[0]) as f32,
+                    (segment.end[1] - map_origin[1]) as f32,
+                ],
                 color: RIVER_COLOR,
                 width: segment.width_px,
                 kind: 0,
@@ -1650,9 +1727,17 @@ impl SphericalFieldRenderer {
         let globe_instances: Vec<GpuGlobeOverlayInstance> = globe
             .iter()
             .map(|segment| GpuGlobeOverlayInstance {
-                start: segment.start,
+                start: [
+                    (segment.start[0] - globe_anchor[0]) as f32,
+                    (segment.start[1] - globe_anchor[1]) as f32,
+                    (segment.start[2] - globe_anchor[2]) as f32,
+                ],
                 width: segment.width_px,
-                end_or_direction: segment.end,
+                end_or_direction: [
+                    (segment.end[0] - globe_anchor[0]) as f32,
+                    (segment.end[1] - globe_anchor[1]) as f32,
+                    (segment.end[2] - globe_anchor[2]) as f32,
+                ],
                 length: 0.0,
                 color: RIVER_COLOR,
                 kind: 0,
@@ -1691,6 +1776,14 @@ impl SphericalFieldRenderer {
         self.amplified_globe_vertex_buffer = None;
         self.amplified_globe_index_buffer = None;
         self.amplified_globe_index_count = 0;
+        self.amplified_map_origin = [0.0; 2];
+        self.amplified_globe_anchor = [0.0; 3];
+    }
+
+    /// The rebase anchors the installed detail geometry was uploaded with;
+    /// the per-frame uniforms must fold exactly these into the camera.
+    pub(super) fn detail_rebase_anchors(&self) -> ([f64; 2], [f64; 3]) {
+        (self.amplified_map_origin, self.amplified_globe_anchor)
     }
 
     pub(super) fn prepare_frame(
@@ -2559,6 +2652,7 @@ fn create_overlay_pipeline(
     target_format: wgpu::TextureFormat,
     bind_group_layout: &wgpu::BindGroupLayout,
     mode: SphericalRenderMode,
+    vertex_entry: Option<&'static str>,
     fragment_entry: &'static str,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2587,7 +2681,7 @@ fn create_overlay_pipeline(
         4 => Float32x4,
         5 => Uint32
     ];
-    let (label, entry_point, array_stride, attributes) = match mode {
+    let (label, default_entry, array_stride, attributes) = match mode {
         SphericalRenderMode::Map => (
             "Spherical Map Overlay Pipeline",
             "vs_map_overlay",
@@ -2601,6 +2695,7 @@ fn create_overlay_pipeline(
             &GLOBE_ATTRIBUTES[..],
         ),
     };
+    let entry_point = vertex_entry.unwrap_or(default_entry);
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
@@ -2684,7 +2779,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuGlobeVertex>(), 16);
         assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
         assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);
-        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 128);
+        assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 192);
     }
 
     #[test]

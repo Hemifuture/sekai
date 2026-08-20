@@ -71,6 +71,7 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
             self.prepared_generation.store(0, Ordering::Release);
             return Vec::new();
         }
+        let (map_origin, globe_anchor) = renderer.detail_rebase_anchors();
         let uniform = match self.mode {
             SphericalRenderMode::Map => {
                 SphericalFrameUniform::for_map_with_animation_and_visibility(
@@ -79,6 +80,7 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
                     self.viewport_pixels,
                     self.vector_animation,
                     self.layer_visibility,
+                    map_origin,
                 )
             }
             SphericalRenderMode::Globe => {
@@ -88,6 +90,7 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
                     self.viewport_pixels,
                     self.vector_animation,
                     self.layer_visibility,
+                    globe_anchor,
                 )
             }
         };

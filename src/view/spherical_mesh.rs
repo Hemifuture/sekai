@@ -1314,11 +1314,12 @@ fn append_edge_segment(
 
 /// One direction-domain amplified subdivision mesh shared by both presenters.
 ///
-/// Directions are unit vectors and colors are pre-lit sRGB bytes; the mesh is
-/// built once per published world and re-projected per map view.
+/// Directions are f64 unit vectors (full precision until the GPU rebase
+/// subtracts the camera anchor) and colors are pre-lit sRGB bytes; the
+/// mesh is rebuilt per detail selection and re-projected per map view.
 #[derive(Debug, Clone)]
 pub struct AmplifiedSurfaceMesh {
-    directions: Vec<[f32; 3]>,
+    directions: Vec<[f64; 3]>,
     colors: Vec<[u8; 4]>,
     indices: Vec<u32>,
 }
@@ -1326,7 +1327,7 @@ pub struct AmplifiedSurfaceMesh {
 impl AmplifiedSurfaceMesh {
     /// Validates cardinalities, finiteness, and index bounds once.
     pub fn new(
-        directions: Vec<[f32; 3]>,
+        directions: Vec<[f64; 3]>,
         colors: Vec<[u8; 4]>,
         indices: Vec<u32>,
     ) -> Result<Self, SphericalMeshError> {
@@ -1355,7 +1356,7 @@ impl AmplifiedSurfaceMesh {
     }
 
     /// Returns the unit directions of all subdivision vertices.
-    pub fn directions(&self) -> &[[f32; 3]] {
+    pub fn directions(&self) -> &[[f64; 3]] {
         &self.directions
     }
 
@@ -1379,9 +1380,9 @@ impl AmplifiedSurfaceMesh {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RiverPolylineSegment {
     /// The upstream cell centroid direction.
-    pub start: [f32; 3],
+    pub start: [f64; 3],
     /// The downstream cell centroid direction.
-    pub end: [f32; 3],
+    pub end: [f64; 3],
     /// The published Strahler order driving the symbolic line width.
     pub strahler_order: u8,
 }
@@ -1392,23 +1393,26 @@ pub struct RiverPolylineSegment {
 /// concern (amplified triangles re-cut, river reaches simply drop).
 pub fn project_unit_direction(
     projection: SphericalProjection,
-    direction: [f32; 3],
-) -> Option<[f32; 2]> {
+    direction: [f64; 3],
+) -> Option<[f64; 2]> {
     let [x, y, z] = direction;
-    let longitude = f64::from(y).atan2(f64::from(x));
-    let latitude = f64::from(z).clamp(-1.0, 1.0).asin();
+    let longitude = y.atan2(x);
+    let latitude = z.clamp(-1.0, 1.0).asin();
     let relative = wrap_radians(longitude - projection.central_meridian());
     projection
         .forward_latitude_relative_longitude(latitude, relative)
         .ok()
-        .map(|point| [point.x() as f32, point.y() as f32])
+        .map(|point| [point.x(), point.y()])
 }
 
 /// One projected amplified map vertex ready for GPU packing.
+///
+/// The position stays f64 so the renderer's camera-relative rebase
+/// subtracts the anchor before any f32 quantization.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmplifiedMapVertex {
     /// The projected planar position.
-    pub position: [f32; 2],
+    pub position: [f64; 2],
     /// The pre-lit sRGB color carried over from the direction-domain vertex.
     pub color: [u8; 4],
 }
@@ -1429,7 +1433,7 @@ pub fn project_amplified_map(
     use rayon::prelude::*;
 
     let bounds = projection.bounds();
-    let half_width = ((bounds.max_x() - bounds.min_x()) * 0.5 + SPAN_EPSILON) as f32;
+    let half_width = (bounds.max_x() - bounds.min_x()) * 0.5 + SPAN_EPSILON;
     let central_meridian = projection.central_meridian();
     #[cfg(not(target_arch = "wasm32"))]
     let vertex_iter = mesh.directions().par_iter().zip(mesh.colors().par_iter());
@@ -1437,7 +1441,7 @@ pub fn project_amplified_map(
     let vertex_iter = mesh.directions().iter().zip(mesh.colors().iter());
     let mut vertices: Vec<AmplifiedMapVertex> = vertex_iter
         .map(|(direction, color)| AmplifiedMapVertex {
-            position: project_unit_direction(projection, *direction).unwrap_or([f32::NAN; 2]),
+            position: project_unit_direction(projection, *direction).unwrap_or([f64::NAN; 2]),
             color: *color,
         })
         .collect();
@@ -1451,8 +1455,8 @@ pub fn project_amplified_map(
         let span = positions
             .iter()
             .map(|p| p[0])
-            .fold(f32::NEG_INFINITY, f32::max)
-            - positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+            .fold(f64::NEG_INFINITY, f64::max)
+            - positions.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
         if finite && span <= half_width {
             indices.extend_from_slice(triangle);
         } else {
@@ -1481,7 +1485,7 @@ fn append_seam_cut_triangle(
     let mut recovered = Vec::with_capacity(TRIANGLE_VERTEX_COUNT);
     for &corner in &corners {
         let [x, y, z] = mesh.directions()[corner as usize];
-        let Ok(direction) = UnitVector3::new(f64::from(x), f64::from(y), f64::from(z)) else {
+        let Ok(direction) = UnitVector3::new(x, y, z) else {
             return;
         };
         recovered.push(direction);
@@ -1516,7 +1520,7 @@ fn append_seam_cut_triangle(
         };
         for (point, _direction) in &projected {
             vertices.push(AmplifiedMapVertex {
-                position: [point.x() as f32, point.y() as f32],
+                position: [point.x(), point.y()],
                 color: flat_color,
             });
         }

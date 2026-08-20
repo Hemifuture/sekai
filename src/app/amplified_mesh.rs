@@ -6,10 +6,13 @@
 //! by a dedicated provoking vertex and flat-interpolated on the GPU.
 //!
 //! A *selection* replaces the M1 uniform global depth (Ulrich 2002 chunked
-//! LOD): each cell's leaf level follows its on-screen size toward
-//! [`TARGET_LEAF_PX`], cells outside the padded viewport stay at
-//! [`OFFSCREEN_LEAF_LEVEL`], and very near cells subdivide per subtree so
-//! only their visible portion deepens, all bounded by
+//! LOD) on a physical ladder: levels halve the spec §5 primitive edge from
+//! the cell spacing down to [`MIN_PRIMITIVE_EDGE_M`], each level engaging
+//! when [`UNITS_ACROSS_VIEW`] primitives span the viewport (one level per
+//! zoom octave), so the camera zooms past the ladder floor and the deepest
+//! atoms become plainly visible. Cells outside the padded viewport stay at
+//! [`OFFSCREEN_LEAF_LEVEL`], very near cells subdivide per subtree so only
+//! their visible portion deepens, and everything is bounded by
 //! [`VIEW_LEAF_BUDGET`]. Selections compile into batches — one subtree
 //! each — that a worker thread evaluates through
 //! `HierarchicalEvaluator::for_each_leaf_value` (paired by the shared
@@ -21,7 +24,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use crate::generators::natural::{HierarchicalEvaluator, HierarchicalPath, PrimitiveValue};
+use crate::generators::natural::{
+    HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
+};
 use crate::view::{
     built_in_palette, project_unit_direction, sample_palette, AmplifiedSurfaceMesh, GlobeCamera,
     MapScreenTransform, PaletteId, ProjectionPoint, RiverPolylineSegment,
@@ -31,16 +36,19 @@ use crate::world::natural::SphericalHydrologySnapshot;
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::CellId;
 
-/// Calibration target: the on-screen size of one leaf primitive, measured
-/// against the projected centroid-to-boundary-vertex distance halved per
-/// level. Plan Task 5 owns the visual calibration.
-const TARGET_LEAF_PX: f64 = 3.0;
+/// The physical primitive ladder floor (user calibration, 2026-08-20):
+/// per tier, the deepest level is the first whose spec §5 edge reaches
+/// this scale — draft 14 levels, standard and high 13. The camera keeps
+/// zooming past the floor down to the player-view span, so the deepest
+/// atoms become plainly visible instead of chasing the pixel grid.
+const MIN_PRIMITIVE_EDGE_M: f64 = 10.0;
+/// How many primitives span the viewport at every mid-zoom level (the
+/// physical zoom↔level link: one level per zoom octave). On common
+/// canvases this keeps units in the visible 8–17 px band.
+const UNITS_ACROSS_VIEW: f64 = 96.0;
 /// Viewport leaf budget bounding every selection (chunked-LOD budget
 /// discipline; the M1 Task 4R budget carried forward).
 const VIEW_LEAF_BUDGET: usize = 5_000_000;
-/// Hard display leaf level: ≈39 m draft primitives, inside the spec §5
-/// path cap with room for the map's maximum zoom.
-const MAX_LEAF_LEVEL: u8 = 13;
 /// Cells outside the padded viewport render at this shallow level.
 const OFFSCREEN_LEAF_LEVEL: u8 = 1;
 /// Whole-cell uniform batches up to this leaf level; deeper cells walk
@@ -193,12 +201,8 @@ impl ScreenMapper {
                 transform,
                 ..
             } => {
-                let [x, y, z] = direction.components();
-                let point = project_unit_direction(*projection, [x as f32, y as f32, z as f32])?;
-                Some(transform.to_screen(ProjectionPoint::new(
-                    f64::from(point[0]),
-                    f64::from(point[1]),
-                )))
+                let point = project_unit_direction(*projection, direction.components())?;
+                Some(transform.to_screen(ProjectionPoint::new(point[0], point[1])))
             }
             ScreenMapper::Globe {
                 camera,
@@ -261,6 +265,14 @@ pub(super) fn select_detail_batches(
         return initial_selection(context);
     };
     let evaluator = &context.evaluator;
+    // The physical ladder floor for this tier (spec §5 edge ≈ spacing/2^k)
+    // and the physical zoom↔level link expressed in this canvas's pixels.
+    let floor_level = (1.0
+        + (evaluator.cell_spacing_m() / MIN_PRIMITIVE_EDGE_M)
+            .log2()
+            .ceil())
+    .clamp(1.0, 1.0 + HIERARCHICAL_PATH_DEPTH_MAX as f64) as u8;
+    let target_px = (canvas_size[0] / UNITS_ACROSS_VIEW).max(1.0);
     let mut shrink = 0_u8;
     loop {
         let mut batches = Vec::new();
@@ -268,7 +280,14 @@ pub(super) fn select_detail_batches(
         for cell_index in 0..evaluator.cell_count() as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
-            let level = cell_leaf_level(&mapper, corners[0], corners[1], shrink);
+            let level = cell_leaf_level(
+                &mapper,
+                corners[0],
+                corners[1],
+                target_px,
+                floor_level,
+                shrink,
+            );
             for sector in 0..evaluator.sector_count(cell) as u8 {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
@@ -292,7 +311,7 @@ pub(super) fn select_detail_batches(
                 }
             }
         }
-        if leaves <= VIEW_LEAF_BUDGET || shrink >= MAX_LEAF_LEVEL {
+        if leaves <= VIEW_LEAF_BUDGET || shrink >= floor_level {
             return finish_selection(batches, leaves);
         }
         shrink += 1;
@@ -304,6 +323,8 @@ fn cell_leaf_level(
     mapper: &ScreenMapper,
     centroid: UnitVector3,
     vertex: UnitVector3,
+    target_px: f64,
+    floor_level: u8,
     shrink: u8,
 ) -> u8 {
     let (Some(centroid_px), Some(vertex_px)) = (mapper.screen(centroid), mapper.screen(vertex))
@@ -316,11 +337,11 @@ fn cell_leaf_level(
     if !size_px.is_finite() || !mapper.span_visible(centroid_px, 2.0 * size_px) {
         return OFFSCREEN_LEAF_LEVEL;
     }
-    if size_px <= TARGET_LEAF_PX {
+    if size_px <= target_px {
         return OFFSCREEN_LEAF_LEVEL.max(1);
     }
-    let level = 1.0 + (size_px / TARGET_LEAF_PX).log2().ceil();
-    (level.clamp(1.0, f64::from(MAX_LEAF_LEVEL)) as u8)
+    let level = 1.0 + (size_px / target_px).log2().ceil();
+    (level.clamp(1.0, f64::from(floor_level)) as u8)
         .saturating_sub(shrink)
         .max(1)
 }
@@ -432,7 +453,7 @@ fn node_intersects_viewport(mapper: &ScreenMapper, corners: &[UnitVector3; 3]) -
 
 /// One cached batch mesh in local index space.
 struct CachedBatch {
-    directions: Vec<[f32; 3]>,
+    directions: Vec<[f64; 3]>,
     colors: Vec<[u8; 4]>,
     indices: Vec<u32>,
     leaves: u32,
@@ -534,12 +555,9 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
     if values.len() * TRIANGLE_CORNERS != triangles.len() {
         return None;
     }
-    let mut directions: Vec<[f32; 3]> = vertices
+    let mut directions: Vec<[f64; 3]> = vertices
         .iter()
-        .map(|direction| {
-            let [x, y, z] = direction.components();
-            [x as f32, y as f32, z as f32]
-        })
+        .map(|direction| direction.components())
         .collect();
     let mut colors = vec![UNREAD_CORNER_COLOR; directions.len()];
     for (leaf, triangle) in triangles.chunks_exact_mut(TRIANGLE_CORNERS).enumerate() {
@@ -672,8 +690,8 @@ pub(super) fn river_display_polylines(
                 .centroid
                 .components();
             Some(RiverPolylineSegment {
-                start: [from[0] as f32, from[1] as f32, from[2] as f32],
-                end: [to[0] as f32, to[1] as f32, to[2] as f32],
+                start: from,
+                end: to,
                 strahler_order: segment.strahler_order(),
             })
         })
@@ -775,7 +793,7 @@ mod tests {
             global < near && near <= nearest,
             "leaf levels must deepen with zoom: {global} -> {near} -> {nearest}"
         );
-        assert!(nearest <= MAX_LEAF_LEVEL);
+        assert!(usize::from(nearest) <= 1 + HIERARCHICAL_PATH_DEPTH_MAX);
 
         // Deep-zoom containment: with the viewport inside one cell, that
         // cell must stay visible and subdivide deep, not fall off-screen.
@@ -834,12 +852,8 @@ mod tests {
                     let [ax, ay, az] = corner(0);
                     let [bx, by, bz] = corner(1);
                     let [cx, cy, cz] = corner(2);
-                    let centroid = UnitVector3::new(
-                        f64::from(ax) + f64::from(bx) + f64::from(cx),
-                        f64::from(ay) + f64::from(by) + f64::from(cy),
-                        f64::from(az) + f64::from(bz) + f64::from(cz),
-                    )
-                    .unwrap();
+                    let centroid =
+                        UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
                     let located = match context.evaluator.locate(centroid, leaf_level(batch)) {
                         LocatedPrimitive::Cell(cell) => context.evaluator.cell_value(cell),
                         LocatedPrimitive::Triangle { cell, sector, path } => {

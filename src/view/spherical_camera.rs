@@ -124,10 +124,11 @@ impl MapCamera {
     pub const MAX_ABS_PAN: f64 = 4.0;
     /// Smallest supported map zoom.
     pub const MIN_ZOOM: f64 = 0.125;
-    /// Largest supported map zoom: deep enough to fill the screen with the
-    /// finest amplified display unit of every quality tier (plan Task 4R),
-    /// with headroom for the M2 distance-adaptive levels.
-    pub const MAX_ZOOM: f64 = 4096.0;
+    /// Largest supported map zoom: an Earth-circumference outline over a
+    /// full-width canvas leaves a ≈100 m viewport — the player-view floor
+    /// past the 10 m primitive ladder (M2 Task 3, user calibration).
+    /// Detail geometry stays crisp through camera-relative rebasing.
+    pub const MAX_ZOOM: f64 = 409_600.0;
 
     /// Returns the retained normalized pan for `projection`.
     pub const fn pan(self, projection: SphericalProjectionKind) -> [f64; 2] {
@@ -335,9 +336,11 @@ impl Default for GlobeCamera {
 impl GlobeCamera {
     /// Smallest supported visible-globe scale.
     pub const MIN_SCALE: f64 = 0.55;
-    /// Largest supported visible-globe scale (regional close-ups; the map
-    /// presenter carries the deep zoom).
-    pub const MAX_SCALE: f64 = 64.0;
+    /// Largest supported visible-globe scale: an Earth-diameter disc at
+    /// this scale leaves a ≈100 m viewport, matching the map presenter's
+    /// player-view floor (M2 Task 3, user calibration). Trackball drags
+    /// attenuate with scale so deep close-ups stay steerable.
+    pub const MAX_SCALE: f64 = 131_072.0;
 
     /// Returns the normalized world-to-camera quaternion as `[x, y, z, w]`.
     pub const fn orientation_xyzw(self) -> [f64; 4] {
@@ -375,7 +378,10 @@ impl GlobeCamera {
     /// Applies a deterministic shortest-arc trackball rotation.
     ///
     /// Coordinates are logical screen pixels within `canvas_size`. Inputs
-    /// outside the canvas or with non-finite components are ignored.
+    /// outside the canvas or with non-finite components are ignored. Past
+    /// scale 1 the rotation angle divides by the orthographic scale, so a
+    /// drag moves the ground under the cursor by a comparable screen
+    /// distance at every zoom depth.
     pub fn trackball_drag(
         &mut self,
         start: [f64; 2],
@@ -391,6 +397,9 @@ impl GlobeCamera {
         let Some(delta) = Quaternion::shortest_rotation(start, end) else {
             return false;
         };
+        let Some(delta) = delta.with_angle_scaled(self.orthographic_scale.max(1.0).recip()) else {
+            return false;
+        };
         if delta == IDENTITY_ORIENTATION {
             return false;
         }
@@ -399,6 +408,12 @@ impl GlobeCamera {
         };
         self.orientation = next;
         true
+    }
+
+    /// The world direction at the view center (`+Z` in camera space) —
+    /// the rebase anchor for camera-relative detail geometry.
+    pub fn front_direction(self) -> [f64; 3] {
+        self.orientation.conjugate().rotate([0.0, 0.0, 1.0])
     }
 
     /// Multiplies scale by a finite positive factor and clamps to the contract.
@@ -598,6 +613,27 @@ impl Quaternion {
             z: self.w * right.z + self.x * right.y - self.y * right.x + self.z * right.w,
             w: self.w * right.w - self.x * right.x - self.y * right.y - self.z * right.z,
         }
+    }
+
+    /// Scales this rotation's angle about its own axis by `factor`.
+    fn with_angle_scaled(self, factor: f64) -> Option<Self> {
+        if !factor.is_finite() || factor <= 0.0 {
+            return None;
+        }
+        let axis = [self.x, self.y, self.z];
+        let sine = dot(axis, axis).sqrt();
+        if sine == 0.0 {
+            return Some(IDENTITY_ORIENTATION);
+        }
+        let half_angle = sine.atan2(self.w) * factor;
+        let (sin_half, cos_half) = half_angle.sin_cos();
+        Self {
+            x: axis[0] / sine * sin_half,
+            y: axis[1] / sine * sin_half,
+            z: axis[2] / sine * sin_half,
+            w: cos_half,
+        }
+        .normalized()
     }
 
     const fn conjugate(self) -> Self {

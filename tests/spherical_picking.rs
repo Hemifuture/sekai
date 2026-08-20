@@ -141,7 +141,7 @@ fn globe_camera_bounds_zoom_rejects_non_finite_input_and_misses_outside_disc() {
     assert_eq!(camera.orthographic_scale(), GlobeCamera::MAX_SCALE);
     assert!(camera.zoom_by(1.0e-12));
     assert_eq!(camera.orthographic_scale(), GlobeCamera::MIN_SCALE);
-    assert!(camera.set_orthographic_scale(100.0));
+    assert!(camera.set_orthographic_scale(GlobeCamera::MAX_SCALE * 2.0));
     assert_eq!(camera.orthographic_scale(), GlobeCamera::MAX_SCALE);
     assert!(camera.set_orthographic_scale(GlobeCamera::MIN_SCALE));
     assert!(camera.screen_to_ray([80.0, 50.0], [100.0, 100.0]).is_none());

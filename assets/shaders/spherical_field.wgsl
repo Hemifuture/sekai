@@ -15,6 +15,10 @@ struct SphericalFrameUniform {
     overlay_visible: u32,
     amplified_mode: u32,
     _padding: u32,
+    // The camera-relative transform for rebased detail geometry (amplified
+    // subdivision and rivers): identical scale columns, translation folded
+    // with the rebase anchor in f64 on the CPU, so deep zooms stay crisp.
+    detail_transform: mat4x4<f32>,
 }
 
 struct VertexOutput {
@@ -136,7 +140,7 @@ fn vs_map_amplified(
     @location(1) color: vec4<f32>,
 ) -> AmplifiedOutput {
     var output: AmplifiedOutput;
-    output.position = frame.transform * vec4<f32>(position, 0.0, 1.0);
+    output.position = frame.detail_transform * vec4<f32>(position, 0.0, 1.0);
     output.color = color;
     return output;
 }
@@ -147,7 +151,7 @@ fn vs_globe_amplified(
     @location(1) color: vec4<f32>,
 ) -> AmplifiedOutput {
     var output: AmplifiedOutput;
-    output.position = frame.transform * vec4<f32>(position, 1.0);
+    output.position = frame.detail_transform * vec4<f32>(position, 1.0);
     output.color = color;
     return output;
 }
@@ -229,6 +233,40 @@ fn expanded_overlay_vertex(
     return output;
 }
 
+fn globe_overlay_from_clip(
+    start_clip0: vec4<f32>,
+    end_clip0: vec4<f32>,
+    width: f32,
+    color: vec4<f32>,
+    kind: u32,
+    vertex: u32,
+) -> OverlayOutput {
+    var start_clip = start_clip0;
+    var end_clip = end_clip0;
+    let start_horizon = start_clip.w * 0.5;
+    let end_horizon = end_clip.w * 0.5;
+    let start_front = start_clip.z >= start_horizon;
+    let end_front = end_clip.z >= end_horizon;
+    if kind == 1u && !start_front {
+        return clipped_overlay(color, kind);
+    }
+    if !start_front && !end_front {
+        return clipped_overlay(color, kind);
+    }
+    if start_front != end_front {
+        let start_depth = start_clip.z - start_horizon;
+        let end_depth = end_clip.z - end_horizon;
+        let crossing = clamp(start_depth / (start_depth - end_depth), 0.0, 1.0);
+        let clipped = mix(start_clip, end_clip, crossing);
+        if !start_front {
+            start_clip = clipped;
+        } else {
+            end_clip = clipped;
+        }
+    }
+    return expanded_overlay_vertex(start_clip, end_clip, width, color, kind, vertex);
+}
+
 @vertex
 fn vs_map_overlay(
     @location(0) start: vec2<f32>,
@@ -257,30 +295,41 @@ fn vs_globe_overlay(
     if kind == 1u {
         end = start * cos(arrow_length) + end_or_direction * sin(arrow_length);
     }
-    var start_clip = frame.transform * vec4<f32>(start, 1.0);
-    var end_clip = frame.transform * vec4<f32>(end, 1.0);
-    let start_horizon = start_clip.w * 0.5;
-    let end_horizon = end_clip.w * 0.5;
-    let start_front = start_clip.z >= start_horizon;
-    let end_front = end_clip.z >= end_horizon;
-    if kind == 1u && !start_front {
-        return clipped_overlay(color, kind);
-    }
-    if !start_front && !end_front {
-        return clipped_overlay(color, kind);
-    }
-    if start_front != end_front {
-        let start_depth = start_clip.z - start_horizon;
-        let end_depth = end_clip.z - end_horizon;
-        let crossing = clamp(start_depth / (start_depth - end_depth), 0.0, 1.0);
-        let clipped = mix(start_clip, end_clip, crossing);
-        if !start_front {
-            start_clip = clipped;
-        } else {
-            end_clip = clipped;
-        }
-    }
+    let start_clip = frame.transform * vec4<f32>(start, 1.0);
+    let end_clip = frame.transform * vec4<f32>(end, 1.0);
+    return globe_overlay_from_clip(start_clip, end_clip, width, color, kind, vertex);
+}
+
+// Rivers ride the overlay expansion but through the camera-relative
+// detail transform: their instances are rebased with the amplified mesh
+// so the polylines stay put on the terrain at deep zoom.
+@vertex
+fn vs_map_river(
+    @location(0) start: vec2<f32>,
+    @location(1) end: vec2<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) width: f32,
+    @location(4) kind: u32,
+    @builtin(vertex_index) vertex: u32,
+) -> OverlayOutput {
+    let start_clip = frame.detail_transform * vec4<f32>(start, 0.0, 1.0);
+    let end_clip = frame.detail_transform * vec4<f32>(end, 0.0, 1.0);
     return expanded_overlay_vertex(start_clip, end_clip, width, color, kind, vertex);
+}
+
+@vertex
+fn vs_globe_river(
+    @location(0) start: vec3<f32>,
+    @location(1) width: f32,
+    @location(2) end_or_direction: vec3<f32>,
+    @location(3) arrow_length: f32,
+    @location(4) color: vec4<f32>,
+    @location(5) kind: u32,
+    @builtin(vertex_index) vertex: u32,
+) -> OverlayOutput {
+    let start_clip = frame.detail_transform * vec4<f32>(start, 1.0);
+    let end_clip = frame.detail_transform * vec4<f32>(end_or_direction, 1.0);
+    return globe_overlay_from_clip(start_clip, end_clip, width, color, kind, vertex);
 }
 
 // River polylines share the overlay expansion but ignore the overlay

@@ -862,6 +862,38 @@ impl TemplateApp {
         });
     }
 
+    /// The camera-relative rebase anchors for detail uploads: the map
+    /// camera center on the projection plane and the globe front
+    /// direction. Any nearby point works — precision degrades smoothly
+    /// with distance and every detail swap refreshes the anchors.
+    fn amplified_detail_anchors(&self) -> ([f64; 2], [f64; 3]) {
+        let view = self.spherical_canvas_state.presentation_view_state();
+        let globe_anchor = view.globe_camera().front_direction();
+        let map_origin = self
+            .amplified_detail
+            .as_ref()
+            .and_then(|engine| engine.last_probe)
+            .and_then(|probe| {
+                let canvas_size = [
+                    f64::from(probe.canvas_size[0]),
+                    f64::from(probe.canvas_size[1]),
+                ];
+                crate::view::MapScreenTransform::new(
+                    view.projection(),
+                    view.map_camera(),
+                    canvas_size,
+                )
+                .map(|transform| {
+                    let center =
+                        transform.to_projection([canvas_size[0] * 0.5, canvas_size[1] * 0.5]);
+                    [center.x(), center.y()]
+                })
+            })
+            .filter(|origin| origin.iter().all(|component| component.is_finite()))
+            .unwrap_or([0.0; 2]);
+        (map_origin, globe_anchor)
+    }
+
     /// Uploads (or clears) the amplified meshes and river polylines.
     fn upload_amplified_display(
         &self,
@@ -874,14 +906,21 @@ impl TemplateApp {
                     .spherical_canvas_state
                     .presentation_view_state()
                     .projection();
+                let (map_origin, globe_anchor) = self.amplified_detail_anchors();
                 let (vertices, indices) = crate::view::project_amplified_map(mesh, projection);
                 renderer.set_amplified_map_mesh(
                     &render_state.device,
                     &render_state.queue,
                     &vertices,
                     &indices,
+                    map_origin,
                 );
-                renderer.set_amplified_globe_mesh(&render_state.device, &render_state.queue, mesh);
+                renderer.set_amplified_globe_mesh(
+                    &render_state.device,
+                    &render_state.queue,
+                    mesh,
+                    globe_anchor,
+                );
             }
             None => renderer.clear_amplified_meshes(),
         }
@@ -903,7 +942,7 @@ impl TemplateApp {
             .presentation_view_state()
             .projection();
         let bounds = projection.bounds();
-        let half_width = ((bounds.max_x() - bounds.min_x()) * 0.5) as f32;
+        let half_width = (bounds.max_x() - bounds.min_x()) * 0.5;
         let mut map = Vec::with_capacity(rivers.len());
         let mut globe = Vec::with_capacity(rivers.len());
         for segment in rivers {
@@ -1343,6 +1382,7 @@ impl TemplateApp {
                             .spherical_canvas_state
                             .presentation_view_state()
                             .projection();
+                        let (map_origin, _) = self.amplified_detail_anchors();
                         let (vertices, indices) =
                             crate::view::project_amplified_map(&mesh, projection);
                         renderer.set_amplified_map_mesh(
@@ -1350,6 +1390,7 @@ impl TemplateApp {
                             &render_state.queue,
                             &vertices,
                             &indices,
+                            map_origin,
                         );
                     }
                     self.upload_river_segments(renderer, &render_state);
