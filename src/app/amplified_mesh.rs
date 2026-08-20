@@ -10,7 +10,10 @@
 //! the cell spacing down to [`MIN_PRIMITIVE_EDGE_M`], each level engaging
 //! when [`UNITS_ACROSS_VIEW`] primitives span the viewport (one level per
 //! zoom octave), so the camera zooms past the ladder floor and the deepest
-//! atoms become plainly visible. Cells outside the padded viewport stay at
+//! atoms become plainly visible. Cell sizes are measured by projected
+//! sector **area** (orientation-free and exact under equal-area
+//! projections, so levels stay uniform across the map), off-viewport
+//! cells fall off geometrically with distance toward
 //! [`OFFSCREEN_LEAF_LEVEL`], very near cells subdivide per subtree so only
 //! their visible portion deepens, and everything is bounded by
 //! [`VIEW_LEAF_BUDGET`]. Selections compile into batches — one subtree
@@ -49,8 +52,12 @@ const UNITS_ACROSS_VIEW: f64 = 96.0;
 /// Viewport leaf budget bounding every selection (chunked-LOD budget
 /// discipline; the M1 Task 4R budget carried forward).
 const VIEW_LEAF_BUDGET: usize = 5_000_000;
-/// Cells outside the padded viewport render at this shallow level.
+/// The floor level for cells far outside the padded viewport.
 const OFFSCREEN_LEAF_LEVEL: u8 = 1;
+/// Off-viewport levels drop this much per doubling of the distance in
+/// viewport widths — a geometric falloff that keeps zoom-out reveals and
+/// pans near-correct while bounding the off-screen leaf count.
+const DISTANCE_FALLOFF_LEVELS_PER_OCTAVE: f64 = 2.0;
 /// Whole-cell uniform batches up to this leaf level; deeper cells walk
 /// their sector subtrees so only the visible portion deepens.
 const CELL_UNIFORM_MAX_LEVEL: u8 = 6;
@@ -226,26 +233,43 @@ impl ScreenMapper {
         dx.hypot(a[1] - b[1])
     }
 
-    /// Whether a screen-space span around `screen` intersects the padded
-    /// viewport, wrap-aware on the map.
+    /// Shifts `x` by whole seam wraps until it lies nearest `reference`,
+    /// so seam-straddling geometry measures contiguously on the map.
+    fn unwrap_x_toward(&self, reference: f64, x: f64) -> f64 {
+        if let ScreenMapper::Map { wrap_px, .. } = self {
+            if *wrap_px > 0.0 {
+                let offset = ((x - reference) / wrap_px).round();
+                return x - offset * wrap_px;
+            }
+        }
+        x
+    }
+
+    /// The screen-space distance from a span around `screen` to the
+    /// padded viewport (zero when they intersect), wrap-aware on the map.
     ///
-    /// The half-extent makes this a rectangle-intersection test, so a
-    /// primitive much larger than the viewport (its anchor far outside)
-    /// still counts visible — the deep-zoom containment case.
-    fn span_visible(&self, screen: [f64; 2], half_extent_px: f64) -> bool {
+    /// The half-extent makes this a rectangle test, so a primitive much
+    /// larger than the viewport (its anchor far outside) still measures
+    /// zero — the deep-zoom containment case.
+    fn distance_to_padded_viewport(&self, screen: [f64; 2], half_extent_px: f64) -> f64 {
         let [width, height] = self.canvas_size();
         let margin_x = width * VIEW_MARGIN_FRACTION + half_extent_px;
         let margin_y = height * VIEW_MARGIN_FRACTION + half_extent_px;
-        let inside_x = |x: f64| (-margin_x..=width + margin_x).contains(&x);
-        let x_visible = match self {
-            ScreenMapper::Map { wrap_px, .. } if *wrap_px > 0.0 => {
-                inside_x(screen[0])
-                    || inside_x(screen[0] - wrap_px)
-                    || inside_x(screen[0] + wrap_px)
-            }
-            _ => inside_x(screen[0]),
+        let overhang = |value: f64, low: f64, high: f64| (low - value).max(value - high).max(0.0);
+        let overhang_x = |x: f64| overhang(x, -margin_x, width + margin_x);
+        let dx = match self {
+            ScreenMapper::Map { wrap_px, .. } if *wrap_px > 0.0 => overhang_x(screen[0])
+                .min(overhang_x(screen[0] - wrap_px))
+                .min(overhang_x(screen[0] + wrap_px)),
+            _ => overhang_x(screen[0]),
         };
-        x_visible && (-margin_y..=height + margin_y).contains(&screen[1])
+        dx.hypot(overhang(screen[1], -margin_y, height + margin_y))
+    }
+
+    /// Whether a screen-space span around `screen` intersects the padded
+    /// viewport, wrap-aware on the map.
+    fn span_visible(&self, screen: [f64; 2], half_extent_px: f64) -> bool {
+        self.distance_to_padded_viewport(screen, half_extent_px) == 0.0
     }
 }
 
@@ -280,14 +304,7 @@ pub(super) fn select_detail_batches(
         for cell_index in 0..evaluator.cell_count() as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
-            let level = cell_leaf_level(
-                &mapper,
-                corners[0],
-                corners[1],
-                target_px,
-                floor_level,
-                shrink,
-            );
+            let level = cell_leaf_level(&mapper, corners, target_px, floor_level, shrink);
             for sector in 0..evaluator.sector_count(cell) as u8 {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
@@ -318,30 +335,57 @@ pub(super) fn select_detail_batches(
     }
 }
 
-/// One cell's leaf level from its projected centroid-to-vertex size.
+/// One cell's leaf level from its projected first-sector size.
+///
+/// The size measure is the sector triangle's projected **area**
+/// (`√(2·area)`), which is orientation-free and exact under the
+/// equal-area Equal Earth projection — a single edge length would read
+/// up to a level low or high depending on how the edge happens to align
+/// with the projection's latitude-dependent stretch, leaving persistent
+/// level patches that panning cannot heal.
+///
+/// Off-viewport cells fall off smoothly instead of collapsing to the
+/// floor: [`DISTANCE_FALLOFF_LEVELS_PER_OCTAVE`] levels per doubling of
+/// their distance in viewport widths (chunked-LOD distance falloff), so
+/// zoom-out reveals and pans land on near-correct coarse content while
+/// the far side of the world still costs almost nothing.
 fn cell_leaf_level(
     mapper: &ScreenMapper,
-    centroid: UnitVector3,
-    vertex: UnitVector3,
+    corners: [UnitVector3; 3],
     target_px: f64,
     floor_level: u8,
     shrink: u8,
 ) -> u8 {
-    let (Some(centroid_px), Some(vertex_px)) = (mapper.screen(centroid), mapper.screen(vertex))
-    else {
+    let (Some(a), Some(b), Some(c)) = (
+        mapper.screen(corners[0]),
+        mapper.screen(corners[1]),
+        mapper.screen(corners[2]),
+    ) else {
         return OFFSCREEN_LEAF_LEVEL;
     };
-    let size_px = mapper.distance_px(centroid_px, vertex_px);
-    // Twice the centroid-to-vertex distance covers the whole cell, so a
-    // cell containing the deep-zoom viewport stays visible.
-    if !size_px.is_finite() || !mapper.span_visible(centroid_px, 2.0 * size_px) {
+    let b = [mapper.unwrap_x_toward(a[0], b[0]), b[1]];
+    let c = [mapper.unwrap_x_toward(a[0], c[0]), c[1]];
+    let doubled_area = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+    let size_px = doubled_area.sqrt();
+    let extent_px = mapper.distance_px(a, b).max(mapper.distance_px(a, c));
+    if !size_px.is_finite() || !extent_px.is_finite() {
         return OFFSCREEN_LEAF_LEVEL;
     }
-    if size_px <= target_px {
-        return OFFSCREEN_LEAF_LEVEL.max(1);
-    }
-    let level = 1.0 + (size_px / target_px).log2().ceil();
-    (level.clamp(1.0, f64::from(floor_level)) as u8)
+    let measured = if size_px <= target_px {
+        1.0
+    } else {
+        (1.0 + (size_px / target_px).log2().ceil()).clamp(1.0, f64::from(floor_level))
+    };
+    // Twice the sector extent covers the whole cell, so a cell containing
+    // the deep-zoom viewport measures distance zero.
+    let distance_px = mapper.distance_to_padded_viewport(a, 2.0 * extent_px);
+    let falloff = if distance_px <= 0.0 {
+        0.0
+    } else {
+        let viewport_width = mapper.canvas_size()[0].max(1.0);
+        (DISTANCE_FALLOFF_LEVELS_PER_OCTAVE * (1.0 + distance_px / viewport_width).log2()).ceil()
+    };
+    ((measured - falloff).max(f64::from(OFFSCREEN_LEAF_LEVEL)) as u8)
         .saturating_sub(shrink)
         .max(1)
 }
@@ -814,6 +858,85 @@ mod tests {
         let again = select_detail_batches(&context, &map_view(1_024.0), CANVAS);
         assert_eq!(selection.hash, again.hash);
         assert_eq!(selection.batches, again.batches);
+    }
+
+    /// Symptom regression (user acceptance, 2026-08-20): the level must be
+    /// a location-fair function of physical size — under the equal-area
+    /// projection every same-sized cell reads the same level regardless of
+    /// its latitude or its ring orientation, so no region can lag behind
+    /// its neighbours in a way panning cannot heal.
+    #[test]
+    fn visible_levels_are_uniform_across_the_equal_area_map() {
+        let context = test_context();
+        let selection = select_detail_batches(&context, &map_view(1.0), CANVAS);
+        let mut per_cell: HashMap<u32, u8> = HashMap::new();
+        for batch in &selection.batches {
+            let level = leaf_level(batch);
+            per_cell
+                .entry(batch.cell)
+                .and_modify(|current| *current = (*current).max(level))
+                .or_insert(level);
+        }
+        // Polar wedges bend so strongly on this 20°-cell fixture that the
+        // straight-edge triangle undercounts their area; the fairness
+        // property under test is the low- and mid-latitude field.
+        let mut low_mid = per_cell.iter().filter(|(cell, _)| {
+            let corners = context
+                .evaluator
+                .sector_corners(CellId::from_raw(**cell), 0);
+            corners[0].components()[2].abs() <= 0.7
+        });
+        let first = *low_mid.next().unwrap().1;
+        let (min, max) = low_mid.fold((first, first), |(min, max), (_, &level)| {
+            (min.min(level), max.max(level))
+        });
+        assert!(
+            max - min <= 1,
+            "same-sized cells must sit within one ceil bucket, got {min}..{max}"
+        );
+    }
+
+    /// Symptom regression (user acceptance, 2026-08-20): zooming out only
+    /// ever merges what stays on screen — for every cell inside the padded
+    /// viewport at two consecutive zooms, the shallower zoom's level is
+    /// never finer.
+    #[test]
+    fn zooming_out_never_refines_visible_cells() {
+        let context = test_context();
+        let evaluator = &context.evaluator;
+        let floor_level = 1
+            + (evaluator.cell_spacing_m() / MIN_PRIMITIVE_EDGE_M)
+                .log2()
+                .ceil()
+                .min(HIERARCHICAL_PATH_DEPTH_MAX as f64) as u8;
+        let target_px = CANVAS[0] / UNITS_ACROSS_VIEW;
+        let mut zooms = Vec::new();
+        let mut zoom = 4_096.0_f64;
+        while zoom >= 1.0 {
+            zooms.push(zoom);
+            zoom /= 2.0_f64.sqrt();
+        }
+        for cell_index in (0..evaluator.cell_count() as u32).step_by(7) {
+            let corners = evaluator.sector_corners(CellId::from_raw(cell_index), 0);
+            let mut previous: Option<(u8, bool)> = None;
+            for &zoom in &zooms {
+                let mapper = ScreenMapper::new(&map_view(zoom), CANVAS).unwrap();
+                let level = cell_leaf_level(&mapper, corners, target_px, floor_level, 0);
+                let inside = mapper
+                    .screen(corners[0])
+                    .is_some_and(|screen| mapper.distance_to_padded_viewport(screen, 0.0) == 0.0);
+                if let Some((previous_level, previous_inside)) = previous {
+                    if inside && previous_inside {
+                        assert!(
+                            level <= previous_level,
+                            "cell {cell_index} refined from {previous_level} to {level} \
+                             while zooming out to {zoom}x"
+                        );
+                    }
+                }
+                previous = Some((level, inside));
+            }
+        }
     }
 
     #[test]
