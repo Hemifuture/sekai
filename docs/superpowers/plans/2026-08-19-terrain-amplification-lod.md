@@ -218,6 +218,26 @@
   （FFF-390，审计中已读）；Hello Games, *Building Worlds in No Man's Sky
   Using Math(s)*, GDC 2017；Outerra 公开管线（粗真实 DEM + GPU 上的
   分形细化）。
+- **T0 全局耦合求解作为架构（2026-08-20 尽职调查补录）**——
+  学术背书：全球地貌演化模型 goSPL，Salles et al.,
+  *Hundred million years of landscape dynamics from catchment to
+  global scale*, Science 379 (2023)；区域级 LEM 谱系 FastScape
+  （Braun & Willett 2013）、LandLab（Hobley et al., Earth Surface
+  Dynamics 2017）、CHILD（Tucker et al. 2001）、Badlands
+  （Salles 2016–2018）；构造–气候–侵蚀耦合：Willett, JGR
+  1999；Whipple, *Nature Geoscience* 2009 综述；简化全球环流
+  对应 EMIC 谱系（PlaSim, Fraedrich et al. 2005；Budyko/Sellers
+  1969 能量平衡模型）；板块层面 GPlates（Müller 等）。
+  工程先例（游戏界少数派但有例可循）：Dwarf Fortress 世界
+  生成（温度/降雨/排水/侵蚀全图耦合）；WorldEngine +
+  PlaTec（Viitanen 2012，板块→气候→侵蚀单向链，与本链
+  结构同构）；Cordonnier et al., Eurographics 2016（LEM 入
+  内容生成）。Galin et al. STAR 2019 将 simulation-based 列为
+  三大路线之一并指认 hybrid（模拟大尺度 + 程序化细节）为
+  方向——即本项目 T0+T1 分层。已知简化：本链为单向
+  （P1→P5 一次通过，仅单向均衡响应），学术完全体为
+  构造–气候–侵蚀双向反馈迭代；游戏主流为噪声合成，
+  选择模拟路线的理由是地理因果可信性产品目标。
 - **T0 物理链（不变）**——已在 P5 完成文档中引用：Barnes, Lehman &
   Mulla 2014（priority-flood）；Braun & Willett 2013（O(N) 隐式流功）；
   Roering, Kirchner & Dietrich 1999（非线性坡面）；Davy & Lague 2009 /
