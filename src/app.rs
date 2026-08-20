@@ -654,8 +654,6 @@ impl TemplateApp {
             .insert::<crate::gpu::spherical::SphericalFieldRenderer>(renderer);
         self.spherical_canvas_state
             .replace_field_state(published.state().clone());
-        self.spherical_canvas_state
-            .set_amplified_available(self.amplified_mesh.is_some());
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
@@ -1025,8 +1023,6 @@ impl TemplateApp {
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
-        self.spherical_canvas_state
-            .set_amplified_available(self.amplified_mesh.is_some());
         self.active_runtime_graph = Some(match self.world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,

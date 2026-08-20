@@ -1153,7 +1153,6 @@ pub struct SphericalFieldDisplayState {
     overlay_field: Option<FieldId>,
     fill_visible: bool,
     overlay_visible: bool,
-    amplified_view: bool,
     range_mode: DisplayRangeMode,
     palette_override: Option<PaletteId>,
     diagnostics_enabled: bool,
@@ -1172,7 +1171,6 @@ impl Default for SphericalFieldDisplayState {
             overlay_field: None,
             fill_visible: true,
             overlay_visible: true,
-            amplified_view: false,
             range_mode: DisplayRangeMode::Data,
             palette_override: None,
             diagnostics_enabled: true,
@@ -1227,22 +1225,21 @@ impl SphericalFieldDisplayState {
         self.overlay_visible
     }
 
-    /// Switches between the cell view and the amplified (T1) texture view.
-    pub fn set_amplified_view(&mut self, amplified: bool) {
-        self.amplified_view = amplified;
-    }
-
-    /// Returns whether the amplified (T1) texture view is active.
-    pub const fn amplified_view(&self) -> bool {
-        self.amplified_view
-    }
-
     /// Returns the fixed-frame visibility flags for the two formal data layers.
-    pub const fn layer_visibility(&self) -> SphericalLayerVisibility {
+    ///
+    /// The amplified subdivision layer is not a mode: it stands in for the
+    /// cell fill exactly while the fill channel shows the surface elevation
+    /// itself, so wheel zoom keeps one canvas and every other field keeps
+    /// its authoritative per-cell rendering. The renderer still falls back
+    /// to the cell fill when no amplified mesh is installed.
+    pub fn layer_visibility(&self) -> SphericalLayerVisibility {
+        let amplified = self.fill_visible
+            && self.fill_field.as_ref()
+                == Some(&crate::world::natural::surface_elevation_m_field_id());
         SphericalLayerVisibility {
             fill: self.fill_visible,
             overlay: self.overlay_visible,
-            amplified: self.amplified_view,
+            amplified,
         }
     }
 
