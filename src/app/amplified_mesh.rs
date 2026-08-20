@@ -35,8 +35,7 @@ use crate::view::{
     MapScreenTransform, PaletteId, ProjectionPoint, RiverPolylineSegment,
     SphericalPresentationViewState, SphericalProjection, SphericalViewMode,
 };
-use crate::world::natural::SphericalHydrologySnapshot;
-use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
+use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 
 /// The physical primitive ladder floor (user calibration, 2026-08-20):
@@ -87,6 +86,11 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) sea_level_m: f64,
     /// The shared hypsometric color anchor: display radius in metres.
     pub(super) display_radius_m: f64,
+    /// Per reach (published segment order): the from/to cell ids, for
+    /// looking the reach's display depth up in a selection.
+    pub(super) river_cells: Vec<(u32, u32)>,
+    /// Per reach: the published Strahler order for symbolic line width.
+    pub(super) river_orders: Vec<u8>,
 }
 
 /// One renderable subtree: the leaves `extra` levels below
@@ -102,6 +106,10 @@ struct DetailBatch {
 impl DetailBatch {
     fn leaves(&self) -> usize {
         4_usize.pow(u32::from(self.extra))
+    }
+
+    fn leaf_level(&self) -> u8 {
+        1 + self.prefix.steps().len() as u8 + self.extra
     }
 }
 
@@ -715,31 +723,50 @@ fn encode_srgb(linear: f64) -> u8 {
     (encoded * 255.0).round() as u8
 }
 
-/// Converts the published river network into display polylines (Task 5).
-pub(super) fn river_display_polylines(
-    surface: &SphericalSurfaceSnapshot,
-    hydrology: &SphericalHydrologySnapshot,
+/// Builds the display river polylines for one selection: each reach is
+/// rerouted to the depth of its cells' current leaf level (the smaller
+/// of the two ends, engine-clamped to the meander cap), so channels
+/// meander in step with the terrain mosaic and fall back to the L0
+/// chain at the global view (plan M2 Task 4, spec amendment A6.6).
+pub(super) fn build_river_polylines(
+    context: &AmplifiedDetailContext,
+    selection: &DetailSelection,
 ) -> Vec<RiverPolylineSegment> {
-    let cells = surface.cells();
-    hydrology
-        .river_segments()
+    if context.river_cells.is_empty() {
+        return Vec::new();
+    }
+    let mut cell_level: HashMap<u32, u8> = HashMap::new();
+    for batch in &selection.batches {
+        let level = batch.leaf_level();
+        cell_level
+            .entry(batch.cell)
+            .and_modify(|current| *current = (*current).max(level))
+            .or_insert(level);
+    }
+    let mut polylines = Vec::with_capacity(context.river_cells.len());
+    for (reach, (&(from, to), &order)) in context
+        .river_cells
         .iter()
-        .filter_map(|segment| {
-            let from = cells
-                .get(segment.from().raw() as usize)?
-                .centroid
-                .components();
-            let to = cells
-                .get(segment.to().raw() as usize)?
-                .centroid
-                .components();
-            Some(RiverPolylineSegment {
-                start: from,
-                end: to,
-                strahler_order: segment.strahler_order(),
-            })
-        })
-        .collect()
+        .zip(&context.river_orders)
+        .enumerate()
+    {
+        let level = cell_level
+            .get(&from)
+            .copied()
+            .unwrap_or(1)
+            .min(cell_level.get(&to).copied().unwrap_or(1));
+        let path = context
+            .evaluator
+            .river_path(reach as u32, level.saturating_sub(1));
+        for pair in path.windows(2) {
+            polylines.push(RiverPolylineSegment {
+                start: pair[0].components(),
+                end: pair[1].components(),
+                strahler_order: order,
+            });
+        }
+    }
+    polylines
 }
 
 #[cfg(test)]
@@ -785,7 +812,118 @@ mod tests {
             evaluator: HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7)).unwrap(),
             sea_level_m: 0.0,
             display_radius_m: 2_000.0,
+            river_cells: Vec::new(),
+            river_orders: Vec::new(),
         }
+    }
+
+    /// A context with a two-reach chain for the polyline builder tests.
+    fn river_context() -> AmplifiedDetailContext {
+        use crate::world::natural::{RiverSegment, RiverSegmentKind};
+        use crate::world::RiverSegmentId;
+
+        let surface = GeodesicVoronoiBuilder::build_cancellable(
+            &SphericalSpaceSpec {
+                radius: Meters::new(6_371_000.0).unwrap(),
+                target_cell_count: 162,
+            },
+            || false,
+        )
+        .unwrap();
+        let count = surface.cells().len();
+        let elevation: Vec<f32> = surface
+            .cells()
+            .iter()
+            .map(|cell| (2_000.0 * cell.centroid.components()[2]) as f32)
+            .collect();
+        let zeros = vec![0.0_f32; count];
+        let ones = vec![1.0_f32; count];
+        let kinds = vec![SphericalOrogenyKind::None; count];
+        let fields = AmplificationFieldsView {
+            final_elevation_m: &elevation,
+            sea_level_m: 0.0,
+            sediment_thickness_m: &zeros,
+            erodibility: &zeros,
+            annual_precipitation_mm: &ones,
+            crust_age_myr: &zeros,
+            lineation_east: &ones,
+            lineation_north: &zeros,
+            orogeny_kind: &kinds,
+            orogeny_age_myr: &zeros,
+        };
+        let edge = &surface.edges()[0];
+        let (a, b) = (edge.cells[0], edge.cells[1]);
+        let next = surface
+            .edges()
+            .iter()
+            .find(|candidate| candidate.cells.contains(&b) && !candidate.cells.contains(&a))
+            .unwrap();
+        let c = if next.cells[0] == b {
+            next.cells[1]
+        } else {
+            next.cells[0]
+        };
+        let segments = vec![
+            RiverSegment::new(
+                RiverSegmentId::from_raw(0),
+                a,
+                b,
+                RiverSegmentKind::Channel,
+                1,
+                8.0,
+            )
+            .unwrap(),
+            RiverSegment::new(
+                RiverSegmentId::from_raw(1),
+                b,
+                c,
+                RiverSegmentKind::Channel,
+                2,
+                90.0,
+            )
+            .unwrap(),
+        ];
+        let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
+            .unwrap()
+            .with_rivers(&surface, &segments)
+            .unwrap();
+        AmplifiedDetailContext {
+            evaluator,
+            sea_level_m: 0.0,
+            display_radius_m: 2_000.0,
+            river_cells: segments
+                .iter()
+                .map(|segment| (segment.from().raw(), segment.to().raw()))
+                .collect(),
+            river_orders: segments
+                .iter()
+                .map(|segment| segment.strahler_order())
+                .collect(),
+        }
+    }
+
+    /// Amendment A6.6: river polylines follow the selection's cell levels
+    /// — the L0 chain at level one, `2^(level−1)` sub-segments as the
+    /// terrain deepens, deterministically.
+    #[test]
+    fn river_polylines_follow_selection_levels() {
+        let context = river_context();
+        let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
+        assert_eq!(coarse.len(), 2, "level one is the L0 chain");
+        let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
+        assert_eq!(
+            deeper.len(),
+            2 * (1 << 3),
+            "level four reroutes at depth three"
+        );
+        for (first, second) in coarse.iter().zip(&coarse) {
+            assert_eq!(first, second);
+        }
+        let again = build_river_polylines(&context, &uniform_selection(&context, 4));
+        assert_eq!(deeper, again, "polylines are deterministic");
+        // Chain junction stays welded: reach 0 ends where reach 1 begins.
+        let mid = deeper[(1 << 3) - 1].end;
+        assert_eq!(mid, deeper[1 << 3].start);
     }
 
     fn map_view(zoom: f64) -> SphericalPresentationViewState {
@@ -802,10 +940,6 @@ mod tests {
     }
 
     const CANVAS: [f64; 2] = [1_600.0, 900.0];
-
-    fn leaf_level(batch: &DetailBatch) -> u8 {
-        1 + batch.prefix.steps().len() as u8 + batch.extra
-    }
 
     #[test]
     fn initial_selection_is_the_uniform_task4r_density() {
@@ -828,7 +962,12 @@ mod tests {
             let selection = select_detail_batches(&context, &map_view(zoom), CANVAS);
             assert!(selection.leaves <= VIEW_LEAF_BUDGET, "budget at {zoom}x");
             assert!(!selection.batches.is_empty());
-            selection.batches.iter().map(leaf_level).max().unwrap()
+            selection
+                .batches
+                .iter()
+                .map(DetailBatch::leaf_level)
+                .max()
+                .unwrap()
         };
         let global = level_at(1.0);
         let near = level_at(64.0);
@@ -852,7 +991,7 @@ mod tests {
         assert!(selection
             .batches
             .iter()
-            .any(|batch| leaf_level(batch) == OFFSCREEN_LEAF_LEVEL));
+            .any(|batch| batch.leaf_level() == OFFSCREEN_LEAF_LEVEL));
 
         // Determinism: the same camera reselects identically.
         let again = select_detail_batches(&context, &map_view(1_024.0), CANVAS);
@@ -871,7 +1010,7 @@ mod tests {
         let selection = select_detail_batches(&context, &map_view(1.0), CANVAS);
         let mut per_cell: HashMap<u32, u8> = HashMap::new();
         for batch in &selection.batches {
-            let level = leaf_level(batch);
+            let level = batch.leaf_level();
             per_cell
                 .entry(batch.cell)
                 .and_modify(|current| *current = (*current).max(level))
@@ -943,14 +1082,19 @@ mod tests {
     fn global_view_keeps_every_cell_visible() {
         let context = test_context();
         let selection = select_detail_batches(&context, &map_view(1.0), CANVAS);
-        assert!(selection.batches.iter().all(|batch| leaf_level(batch) > 0));
+        assert!(selection.batches.iter().all(|batch| batch.leaf_level() > 0));
         // At zoom 1 the whole outline fits the canvas: nothing may be
         // classified off-screen (seam wrap included).
         assert!(selection
             .batches
             .iter()
-            .all(|batch| leaf_level(batch) >= OFFSCREEN_LEAF_LEVEL));
-        let deepest = selection.batches.iter().map(leaf_level).max().unwrap();
+            .all(|batch| batch.leaf_level() >= OFFSCREEN_LEAF_LEVEL));
+        let deepest = selection
+            .batches
+            .iter()
+            .map(DetailBatch::leaf_level)
+            .max()
+            .unwrap();
         assert!(deepest >= 2, "the global view keeps visible detail");
     }
 
@@ -977,7 +1121,7 @@ mod tests {
                     let [cx, cy, cz] = corner(2);
                     let centroid =
                         UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
-                    let located = match context.evaluator.locate(centroid, leaf_level(batch)) {
+                    let located = match context.evaluator.locate(centroid, batch.leaf_level()) {
                         LocatedPrimitive::Cell(cell) => context.evaluator.cell_value(cell),
                         LocatedPrimitive::Triangle { cell, sector, path } => {
                             context.evaluator.value(cell, sector, path.steps())

@@ -574,85 +574,17 @@ impl TerrainAmplifier {
     ) -> Option<f64> {
         let (corners, _) = self.locator.locate(position);
         let p = position.components();
-        let wall_slope = VALLEY_SLOPE_FLOODPLAIN
-            + (VALLEY_SLOPE_STEEP - VALLEY_SLOPE_FLOODPLAIN)
-                * smoothstep(
-                    0.0,
-                    2.0 * FORMATION_FLOODPLAIN_ACCOMMODATION_M / RELIEF_REFERENCE_M,
-                    local_relief_norm,
-                );
+        let wall_slope = Self::carve_wall_slope(local_relief_norm);
         let mut carve: Option<f64> = None;
         for &cell in &corners {
             let start = self.reach_offsets[cell as usize] as usize;
             let end = self.reach_offsets[cell as usize + 1] as usize;
             for &reach_index in &self.reach_indices[start..end] {
                 let reach = &self.reaches[reach_index as usize];
-                // Exact great-circle geometry: project onto the reach plane,
-                // renormalize, and fall back to the nearer endpoint when the
-                // projection leaves the arc. A raw chord would sag hundreds
-                // of metres below the arc at cell-spacing scales and miss
-                // the bed entirely.
-                let normal = [
-                    reach.from[1] * reach.to[2] - reach.from[2] * reach.to[1],
-                    reach.from[2] * reach.to[0] - reach.from[0] * reach.to[2],
-                    reach.from[0] * reach.to[1] - reach.from[1] * reach.to[0],
-                ];
-                let normal_len =
-                    (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-                if normal_len <= f64::EPSILON {
+                let Some((lateral_m, along)) =
+                    arc_nearest_point(reach.from, reach.to, p, self.radius_m)
+                else {
                     continue;
-                }
-                let normal = [
-                    normal[0] / normal_len,
-                    normal[1] / normal_len,
-                    normal[2] / normal_len,
-                ];
-                let sine = p[0] * normal[0] + p[1] * normal[1] + p[2] * normal[2];
-                let projected = [
-                    p[0] - sine * normal[0],
-                    p[1] - sine * normal[1],
-                    p[2] - sine * normal[2],
-                ];
-                let projected_len = (projected[0] * projected[0]
-                    + projected[1] * projected[1]
-                    + projected[2] * projected[2])
-                    .sqrt();
-                if projected_len <= f64::EPSILON {
-                    continue;
-                }
-                let onto = [
-                    projected[0] / projected_len,
-                    projected[1] / projected_len,
-                    projected[2] / projected_len,
-                ];
-                let cross_toward = |a: [f64; 3], b: [f64; 3]| {
-                    (a[1] * b[2] - a[2] * b[1]) * normal[0]
-                        + (a[2] * b[0] - a[0] * b[2]) * normal[1]
-                        + (a[0] * b[1] - a[1] * b[0]) * normal[2]
-                };
-                let arc_angle = |a: [f64; 3], b: [f64; 3]| {
-                    (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
-                        .clamp(-1.0, 1.0)
-                        .acos()
-                };
-                let within = cross_toward(reach.from, onto) >= -f64::EPSILON
-                    && cross_toward(onto, reach.to) >= -f64::EPSILON;
-                let (along, lateral_m) = if within {
-                    let total = arc_angle(reach.from, reach.to);
-                    let fraction = if total <= f64::EPSILON {
-                        0.0
-                    } else {
-                        (arc_angle(reach.from, onto) / total).clamp(0.0, 1.0)
-                    };
-                    (fraction, sine.clamp(-1.0, 1.0).abs().asin() * self.radius_m)
-                } else {
-                    let to_from = arc_angle(p, reach.from);
-                    let to_to = arc_angle(p, reach.to);
-                    if to_from <= to_to {
-                        (0.0, to_from * self.radius_m)
-                    } else {
-                        (1.0, to_to * self.radius_m)
-                    }
                 };
                 let bed = reach.bed_from_m + along * (reach.bed_to_m - reach.bed_from_m);
                 let value = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
@@ -693,6 +625,28 @@ impl TerrainAmplifier {
     /// Whether a published river network is attached for §7 carving.
     pub(super) fn has_rivers(&self) -> bool {
         !self.reaches.is_empty()
+    }
+
+    /// The carve-ready reaches in published segment order (index-aligned
+    /// with the P5 river segment list).
+    pub(super) fn river_reaches(&self) -> &[RiverReach] {
+        &self.reaches
+    }
+
+    /// The per-cell CSR lists of reach indices touching each cell.
+    pub(super) fn reach_lists(&self) -> (&[u32], &[u32]) {
+        (&self.reach_offsets, &self.reach_indices)
+    }
+
+    /// The §7 valley wall slope blended by local relief (amendment A4).
+    pub(super) fn carve_wall_slope(local_relief_norm: f64) -> f64 {
+        VALLEY_SLOPE_FLOODPLAIN
+            + (VALLEY_SLOPE_STEEP - VALLEY_SLOPE_FLOODPLAIN)
+                * smoothstep(
+                    0.0,
+                    2.0 * FORMATION_FLOODPLAIN_ACCOMMODATION_M / RELIEF_REFERENCE_M,
+                    local_relief_norm,
+                )
     }
 
     /// The three lattice cells whose dual triangle contains `position`.
@@ -948,13 +902,16 @@ pub(super) struct ConditioningView<'a> {
 }
 
 /// One carve-ready river reach with monotone interpolated bed ends.
+///
+/// Shared with the hierarchical river rerouting as its L0 source of
+/// truth (geometry, beds, and hydraulic width all come from here).
 #[derive(Debug, Clone)]
-struct RiverReach {
-    from: [f64; 3],
-    to: [f64; 3],
-    bed_from_m: f64,
-    bed_to_m: f64,
-    half_width_m: f64,
+pub(super) struct RiverReach {
+    pub(super) from: [f64; 3],
+    pub(super) to: [f64; 3],
+    pub(super) bed_from_m: f64,
+    pub(super) bed_to_m: f64,
+    pub(super) half_width_m: f64,
 }
 
 struct Interpolated {
@@ -1261,6 +1218,79 @@ pub(super) fn surface_roughness_hurst(roughness: f64) -> f64 {
 /// dissection maximum together.
 pub(super) fn badlands_gate(erodibility: f64, dissection: f64) -> f64 {
     smoothstep(0.55, 0.8, erodibility) * smoothstep(0.5, 0.8, dissection)
+}
+
+/// Exact great-circle nearest point of `p` on the arc `from → to`:
+/// returns `(lateral distance in metres, fraction along the arc)`, with
+/// the nearer endpoint as the fallback when the projection leaves the
+/// arc. A raw chord would sag hundreds of metres below the arc at
+/// cell-spacing scales and miss the bed entirely (amendment A4).
+pub(super) fn arc_nearest_point(
+    from: [f64; 3],
+    to: [f64; 3],
+    p: [f64; 3],
+    radius_m: f64,
+) -> Option<(f64, f64)> {
+    let normal = [
+        from[1] * to[2] - from[2] * to[1],
+        from[2] * to[0] - from[0] * to[2],
+        from[0] * to[1] - from[1] * to[0],
+    ];
+    let normal_len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if normal_len <= f64::EPSILON {
+        return None;
+    }
+    let normal = [
+        normal[0] / normal_len,
+        normal[1] / normal_len,
+        normal[2] / normal_len,
+    ];
+    let sine = p[0] * normal[0] + p[1] * normal[1] + p[2] * normal[2];
+    let projected = [
+        p[0] - sine * normal[0],
+        p[1] - sine * normal[1],
+        p[2] - sine * normal[2],
+    ];
+    let projected_len =
+        (projected[0] * projected[0] + projected[1] * projected[1] + projected[2] * projected[2])
+            .sqrt();
+    if projected_len <= f64::EPSILON {
+        return None;
+    }
+    let onto = [
+        projected[0] / projected_len,
+        projected[1] / projected_len,
+        projected[2] / projected_len,
+    ];
+    let cross_toward = |a: [f64; 3], b: [f64; 3]| {
+        (a[1] * b[2] - a[2] * b[1]) * normal[0]
+            + (a[2] * b[0] - a[0] * b[2]) * normal[1]
+            + (a[0] * b[1] - a[1] * b[0]) * normal[2]
+    };
+    let arc_angle = |a: [f64; 3], b: [f64; 3]| {
+        (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+            .clamp(-1.0, 1.0)
+            .acos()
+    };
+    let within =
+        cross_toward(from, onto) >= -f64::EPSILON && cross_toward(onto, to) >= -f64::EPSILON;
+    if within {
+        let total = arc_angle(from, to);
+        let fraction = if total <= f64::EPSILON {
+            0.0
+        } else {
+            (arc_angle(from, onto) / total).clamp(0.0, 1.0)
+        };
+        Some((sine.clamp(-1.0, 1.0).abs().asin() * radius_m, fraction))
+    } else {
+        let to_from = arc_angle(p, from);
+        let to_to = arc_angle(p, to);
+        if to_from <= to_to {
+            Some((to_from * radius_m, 0.0))
+        } else {
+            Some((to_to * radius_m, 1.0))
+        }
+    }
 }
 
 fn substream_root(root_seed: RootSeed) -> [u8; 32] {

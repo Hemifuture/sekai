@@ -337,6 +337,12 @@ impl HierarchicalEvaluator {
     /// the spec §5 cap) — IDs come from the same enumeration this engine
     /// defines, so an invalid one is a caller programming error.
     pub fn value(&self, cell: CellId, sector: u8, path: &[u8]) -> PrimitiveValue {
+        let frame = self.walk_frame(cell, sector, path);
+        self.face_value(cell.raw() as usize, &frame, 1 + path.len() as u8)
+    }
+
+    /// Descends one subdivision path to its primitive's anchor frame.
+    fn walk_frame(&self, cell: CellId, sector: u8, path: &[u8]) -> TriangleFrame {
         assert!(
             path.len() <= HIERARCHICAL_PATH_DEPTH_MAX,
             "hierarchical path depth {} exceeds the spec cap {}",
@@ -351,7 +357,49 @@ impl HierarchicalEvaluator {
             let midpoints = self.split_midpoints(&frame, level, &conditions);
             frame = child_frame(frame, midpoints, child);
         }
-        self.face_value(cell.raw() as usize, &frame)
+        frame
+    }
+
+    /// The derived face elevation of the primitive containing `direction`
+    /// at `level`, before river suppression and bounds clamping — the
+    /// guidance field for hierarchical river rerouting (a carve input can
+    /// never read carved output, so this stays cycle-free).
+    pub(super) fn uncarved_sample_elevation_m(&self, direction: UnitVector3, level: u8) -> f64 {
+        match self.locate(direction, level) {
+            LocatedPrimitive::Cell(cell) => {
+                f64::from(self.amplifier.conditioning().elevation_m[cell.raw() as usize])
+            }
+            LocatedPrimitive::Triangle { cell, sector, path } => {
+                let frame = self.walk_frame(cell, sector, path.steps());
+                let [a, b, c] = &frame.corners;
+                (a.value_m + b.value_m + c.value_m) / 3.0
+            }
+        }
+    }
+
+    /// The M1 amplifier inside this engine — the L0 fact source the
+    /// hierarchical river module shares (reaches, beds, carve laws).
+    pub(super) fn amplifier(&self) -> &TerrainAmplifier {
+        &self.amplifier
+    }
+
+    /// The number of published river reaches (segment-order aligned).
+    pub fn river_reach_count(&self) -> usize {
+        self.amplifier.river_reaches().len()
+    }
+
+    /// The deepest meaningful rerouting depth of one reach — where the
+    /// sub-segment length falls under half the meander wavelength
+    /// (spec §10 amendment A6).
+    pub fn river_path_depth_cap(&self, reach: u32) -> u8 {
+        super::hierarchical_rivers::path_depth_cap(self, reach)
+    }
+
+    /// Materializes one reach's rerouted polyline at `depth` (clamped to
+    /// the reach's cap): `2^depth + 1` points from the upstream to the
+    /// downstream cell centroid. Depth 0 is the L0 chain.
+    pub fn river_path(&self, reach: u32, depth: u8) -> Vec<UnitVector3> {
+        super::hierarchical_rivers::materialize_path(self, reach, depth)
     }
 
     /// Locates the primitive of `level` containing `direction`.
@@ -537,9 +585,15 @@ impl HierarchicalEvaluator {
     }
 
     /// The published face value: the corner mean, river-suppressed at the
-    /// face centroid (spec §4, L1+ only — the L0 identity has priority),
+    /// face centroid along the level's rerouted channel path (spec §4 and
+    /// §10 amendment A6; L1+ only — the L0 identity has priority),
     /// clamped into the authoritative elevation bounds.
-    fn face_value(&self, cell_index: usize, frame: &TriangleFrame) -> PrimitiveValue {
+    fn face_value(
+        &self,
+        cell_index: usize,
+        frame: &TriangleFrame,
+        leaf_level: u8,
+    ) -> PrimitiveValue {
         let [a, b, c] = &frame.corners;
         let mut elevation = (a.value_m + b.value_m + c.value_m) / 3.0;
         if self.amplifier.has_rivers() {
@@ -549,7 +603,9 @@ impl HierarchicalEvaluator {
             let centroid = UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz)
                 .expect("a fan triangle centroid stays strictly inside one hemisphere");
             let relief = f64::from(self.amplifier.conditioning().local_relief_norm[cell_index]);
-            if let Some(carve) = self.amplifier.river_carve_m(centroid, relief) {
+            if let Some(carve) =
+                super::hierarchical_rivers::carve_elevation_m(self, centroid, leaf_level, relief)
+            {
                 elevation = elevation.min(carve.max(f64::from(ELEVATION_MIN_M)));
             }
         }
@@ -565,7 +621,7 @@ impl HierarchicalEvaluator {
         regime_for_depth(elevation_m - self.amplifier.conditioning().sea_level_m)
     }
 
-    fn seed_hasher(&self) -> Hasher {
+    pub(super) fn seed_hasher(&self) -> Hasher {
         let mut hasher = Hasher::new();
         hasher.update(DERIVATION_DOMAIN);
         hasher.update(&self.root_seed_raw.to_le_bytes());
@@ -725,7 +781,7 @@ impl HierarchicalEvaluator {
         sink: &mut dyn FnMut(PrimitiveValue),
     ) {
         if remaining == 0 {
-            sink(self.face_value(cell_index, &frame));
+            sink(self.face_value(cell_index, &frame, 1 + depth as u8));
             return;
         }
         let midpoints = self.split_midpoints(&frame, depth + 1, conditions);
@@ -849,7 +905,7 @@ fn geometric_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
 
 /// N(seed) ∈ [−1, 1] (spec §2.1): the first eight little-endian seed
 /// bytes as u64, mapped through `u64 / 2^63 − 1`.
-fn signed_unit_noise(seed: &[u8; 32]) -> f64 {
+pub(super) fn signed_unit_noise(seed: &[u8; 32]) -> f64 {
     let mut bytes = [0_u8; 8];
     bytes.copy_from_slice(&seed[..8]);
     u64::from_le_bytes(bytes) as f64 / (1_u64 << 63) as f64 - 1.0

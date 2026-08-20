@@ -18,6 +18,7 @@ mod geology;
 mod global_circulation;
 mod global_circulation_stage;
 mod hierarchical_derivation;
+mod hierarchical_rivers;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
 mod hydro_erosion_stage;

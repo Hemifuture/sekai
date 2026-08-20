@@ -196,10 +196,14 @@ struct DetailRebuildRequest {
     serial: u64,
 }
 
-/// One worker answer: a fresh mesh, or `None` when the resolved
-/// selection matched the mesh already on screen.
+/// One worker answer: a fresh mesh with its level-matched river
+/// polylines, or `None` when the resolved selection matched the mesh
+/// already on screen.
 struct DetailRebuildResult {
-    mesh: Option<crate::view::AmplifiedSurfaceMesh>,
+    refreshed: Option<(
+        crate::view::AmplifiedSurfaceMesh,
+        Vec<crate::view::RiverPolylineSegment>,
+    )>,
     serial: u64,
 }
 
@@ -231,7 +235,7 @@ fn spawn_amplified_detail_engine(
             }
             let selection =
                 amplified_mesh::select_detail_batches(&context, &request.view, request.canvas_size);
-            let mesh = if selection.hash == installed_hash {
+            let refreshed = if selection.hash == installed_hash {
                 None
             } else {
                 let Some(mesh) =
@@ -240,11 +244,14 @@ fn spawn_amplified_detail_engine(
                     continue;
                 };
                 installed_hash = selection.hash;
-                Some(mesh)
+                Some((
+                    mesh,
+                    amplified_mesh::build_river_polylines(&context, &selection),
+                ))
             };
             if result_sender
                 .send(DetailRebuildResult {
-                    mesh,
+                    refreshed,
                     serial: request.serial,
                 })
                 .is_err()
@@ -792,19 +799,20 @@ impl TemplateApp {
 
     /// Installs finished camera-driven detail meshes without blocking.
     fn poll_amplified_detail(&mut self, ctx: &egui::Context) {
-        let mut fresh_mesh = None;
+        let mut fresh = None;
         let mut awaiting = false;
         if let Some(engine) = &mut self.amplified_detail {
             while let Ok(result) = engine.results.try_recv() {
                 engine.answered_serial = engine.answered_serial.max(result.serial);
-                if let Some(mesh) = result.mesh {
-                    fresh_mesh = Some(mesh);
+                if let Some(refreshed) = result.refreshed {
+                    fresh = Some(refreshed);
                 }
             }
             awaiting = engine.sent_serial != engine.answered_serial;
         }
-        if let Some(mesh) = fresh_mesh {
+        if let Some((mesh, rivers)) = fresh {
             self.amplified_mesh = Some(std::sync::Arc::new(mesh));
+            self.river_polylines = Some(std::sync::Arc::new(rivers));
             if let Some(render_state) = self.render_state.clone() {
                 let mut egui_renderer = render_state.renderer.write();
                 if let Some(renderer) = egui_renderer
@@ -1128,18 +1136,24 @@ impl TemplateApp {
                             root_seed,
                         )
                         .ok()?;
+                    let segments = document.formation_snapshot().hydrology().river_segments();
                     let detail = std::sync::Arc::new(amplified_mesh::AmplifiedDetailContext {
                         evaluator,
                         sea_level_m: f64::from(sea_level_m),
                         display_radius_m: f64::from(display_radius_m.max(1.0)),
+                        river_cells: segments
+                            .iter()
+                            .map(|segment| (segment.from().raw(), segment.to().raw()))
+                            .collect(),
+                        river_orders: segments
+                            .iter()
+                            .map(|segment| segment.strahler_order())
+                            .collect(),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
                     let mesh = amplified_mesh::build_detail_mesh(&detail, &selection, &mut cache)?;
-                    let rivers = amplified_mesh::river_display_polylines(
-                        document.surface(),
-                        document.formation_snapshot().hydrology(),
-                    );
+                    let rivers = amplified_mesh::build_river_polylines(&detail, &selection);
                     Some(AmplifiedDisplayBundle {
                         mesh,
                         rivers,

@@ -534,7 +534,7 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
         .collect();
     eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
     assert_eq!(
-        hex, "ca67aa601efa0c623115edc8e419117c85aea0aafbdeffa037098ed87509a6bc",
+        hex, "62642196f34dc18f831e63dbdebd907725601919dc6fc9b60f5b3c191afd4948",
         "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
     );
 
