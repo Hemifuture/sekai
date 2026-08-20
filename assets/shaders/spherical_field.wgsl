@@ -283,6 +283,24 @@ fn vs_globe_overlay(
     return expanded_overlay_vertex(start_clip, end_clip, width, color, kind, vertex);
 }
 
+// River polylines share the overlay expansion but ignore the overlay
+// visibility switch and the vector animation: they belong to the terrain
+// presentation itself.
+@fragment
+fn fs_river(input: OverlayOutput) -> @location(0) vec4<f32> {
+    if frame.globe_silhouette_clip != 0u {
+        let radius = vec2<f32>(
+            length(vec3<f32>(frame.transform[0].x, frame.transform[1].x, frame.transform[2].x)),
+            length(vec3<f32>(frame.transform[0].y, frame.transform[1].y, frame.transform[2].y)),
+        );
+        let normalized = input.local_ndc / radius;
+        if dot(normalized, normalized) > 1.0 {
+            discard;
+        }
+    }
+    return input.color;
+}
+
 @fragment
 fn fs_overlay(input: OverlayOutput) -> @location(0) vec4<f32> {
     if frame.overlay_visible == 0u {

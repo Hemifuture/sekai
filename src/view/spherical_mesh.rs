@@ -1375,6 +1375,35 @@ impl AmplifiedSurfaceMesh {
     }
 }
 
+/// One display river reach in the direction domain (plan Task 5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RiverPolylineSegment {
+    /// The upstream cell centroid direction.
+    pub start: [f32; 3],
+    /// The downstream cell centroid direction.
+    pub end: [f32; 3],
+    /// The published Strahler order driving the symbolic line width.
+    pub strahler_order: u8,
+}
+
+/// Projects one unit direction through the map's fast path.
+///
+/// Returns `None` for non-finite output; seam handling is the caller's
+/// concern (amplified triangles re-cut, river reaches simply drop).
+pub fn project_unit_direction(
+    projection: SphericalProjection,
+    direction: [f32; 3],
+) -> Option<[f32; 2]> {
+    let [x, y, z] = direction;
+    let longitude = f64::from(y).atan2(f64::from(x));
+    let latitude = f64::from(z).clamp(-1.0, 1.0).asin();
+    let relative = wrap_radians(longitude - projection.central_meridian());
+    projection
+        .forward_latitude_relative_longitude(latitude, relative)
+        .ok()
+        .map(|point| [point.x() as f32, point.y() as f32])
+}
+
 /// One projected amplified map vertex ready for GPU packing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmplifiedMapVertex {
@@ -1407,18 +1436,9 @@ pub fn project_amplified_map(
     #[cfg(target_arch = "wasm32")]
     let vertex_iter = mesh.directions().iter().zip(mesh.colors().iter());
     let mut vertices: Vec<AmplifiedMapVertex> = vertex_iter
-        .map(|(direction, color)| {
-            let [x, y, z] = *direction;
-            let longitude = f64::from(y).atan2(f64::from(x));
-            let latitude = f64::from(z).clamp(-1.0, 1.0).asin();
-            let relative = wrap_radians(longitude - central_meridian);
-            let position = projection
-                .forward_latitude_relative_longitude(latitude, relative)
-                .map_or([f32::NAN; 2], |point| [point.x() as f32, point.y() as f32]);
-            AmplifiedMapVertex {
-                position,
-                color: *color,
-            }
+        .map(|(direction, color)| AmplifiedMapVertex {
+            position: project_unit_direction(projection, *direction).unwrap_or([f32::NAN; 2]),
+            color: *color,
         })
         .collect();
     let mut indices = Vec::with_capacity(mesh.indices().len());

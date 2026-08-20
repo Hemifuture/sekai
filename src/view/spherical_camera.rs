@@ -119,12 +119,15 @@ pub struct MapCamera {
 }
 
 impl MapCamera {
-    /// Largest retained normalized pan magnitude on either screen axis.
+    /// Largest retained normalized pan magnitude at zoom 1; the retained
+    /// bound scales with zoom so anchored deep zooms stay reachable.
     pub const MAX_ABS_PAN: f64 = 4.0;
     /// Smallest supported map zoom.
     pub const MIN_ZOOM: f64 = 0.125;
-    /// Largest supported map zoom.
-    pub const MAX_ZOOM: f64 = 64.0;
+    /// Largest supported map zoom: deep enough to fill the screen with the
+    /// finest amplified display unit of every quality tier (plan Task 4R),
+    /// with headroom for the M2 distance-adaptive levels.
+    pub const MAX_ZOOM: f64 = 4096.0;
 
     /// Returns the retained normalized pan for `projection`.
     pub const fn pan(self, projection: SphericalProjectionKind) -> [f64; 2] {
@@ -142,14 +145,52 @@ impl MapCamera {
             return false;
         }
         let state = self.state_mut(projection);
+        let bound = Self::MAX_ABS_PAN * state.zoom.max(1.0);
         let next = [state.pan[0] + delta[0], state.pan[1] + delta[1]];
         if next
             .into_iter()
-            .any(|component| !component.is_finite() || component.abs() > Self::MAX_ABS_PAN)
+            .any(|component| !component.is_finite() || component.abs() > bound)
         {
             return false;
         }
         state.pan = next;
+        true
+    }
+
+    /// Multiplies one projection's zoom about an NDC anchor point.
+    ///
+    /// The pan is adjusted so the world point under the anchor stays exactly
+    /// under it: with the presenter mapping `ndc = (w - c)·fit·zoom + 2·pan`,
+    /// the invariant gives `pan' = pan·factor + anchor·(1 - factor)/2`.
+    pub fn zoom_about(
+        &mut self,
+        projection: SphericalProjectionKind,
+        factor: f64,
+        anchor_ndc: [f64; 2],
+    ) -> bool {
+        if !factor.is_finite()
+            || factor <= 0.0
+            || anchor_ndc
+                .into_iter()
+                .any(|component| !component.is_finite())
+        {
+            return false;
+        }
+        let state = self.state_mut(projection);
+        let next = state.zoom * factor;
+        if !next.is_finite() || !(Self::MIN_ZOOM..=Self::MAX_ZOOM).contains(&next) {
+            return false;
+        }
+        let bound = Self::MAX_ABS_PAN * next.max(1.0);
+        let pan = [
+            (state.pan[0] * factor + anchor_ndc[0] * (1.0 - factor) * 0.5).clamp(-bound, bound),
+            (state.pan[1] * factor + anchor_ndc[1] * (1.0 - factor) * 0.5).clamp(-bound, bound),
+        ];
+        if pan.into_iter().any(|component| !component.is_finite()) {
+            return false;
+        }
+        state.zoom = next;
+        state.pan = pan;
         true
     }
 
@@ -206,8 +247,9 @@ impl Default for GlobeCamera {
 impl GlobeCamera {
     /// Smallest supported visible-globe scale.
     pub const MIN_SCALE: f64 = 0.55;
-    /// Largest supported visible-globe scale.
-    pub const MAX_SCALE: f64 = 8.0;
+    /// Largest supported visible-globe scale (regional close-ups; the map
+    /// presenter carries the deep zoom).
+    pub const MAX_SCALE: f64 = 64.0;
 
     /// Returns the normalized world-to-camera quaternion as `[x, y, z, w]`.
     pub const fn orientation_xyzw(self) -> [f64; 4] {

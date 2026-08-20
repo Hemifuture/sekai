@@ -17,7 +17,10 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use crate::generators::natural::{AmplificationLod, TerrainAmplifier};
-use crate::view::{built_in_palette, sample_palette, AmplifiedSurfaceMesh, PaletteId};
+use crate::view::{
+    built_in_palette, sample_palette, AmplifiedSurfaceMesh, PaletteId, RiverPolylineSegment,
+};
+use crate::world::natural::SphericalHydrologySnapshot;
 use crate::world::spatial::{SphericalSurfaceCell, SphericalSurfaceSnapshot, UnitVector3};
 
 /// Global triangle budget for the uniform first LOD step (plan Task 4R).
@@ -104,6 +107,33 @@ pub(super) fn build_amplified_surface_mesh(
         indices.extend(cell_triangles.iter().map(|&index| base + index));
     }
     AmplifiedSurfaceMesh::new(directions, colors, indices).ok()
+}
+
+/// Converts the published river network into display polylines (Task 5).
+pub(super) fn river_display_polylines(
+    surface: &SphericalSurfaceSnapshot,
+    hydrology: &SphericalHydrologySnapshot,
+) -> Vec<RiverPolylineSegment> {
+    let cells = surface.cells();
+    hydrology
+        .river_segments()
+        .iter()
+        .filter_map(|segment| {
+            let from = cells
+                .get(segment.from().raw() as usize)?
+                .centroid
+                .components();
+            let to = cells
+                .get(segment.to().raw() as usize)?
+                .centroid
+                .components();
+            Some(RiverPolylineSegment {
+                start: [from[0] as f32, from[1] as f32, from[2] as f32],
+                end: [to[0] as f32, to[1] as f32, to[2] as f32],
+                strahler_order: segment.strahler_order(),
+            })
+        })
+        .collect()
 }
 
 /// Per-patch evaluation parameters shared by the whole bake.

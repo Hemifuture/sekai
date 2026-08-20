@@ -4,8 +4,8 @@ mod renderer;
 
 pub use callback::SphericalPaintCallback;
 pub use renderer::{
-    SphericalFieldRenderer, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
-    SphericalUploadCounters,
+    RiverGlobeSegment, RiverMapSegment, SphericalFieldRenderer, SphericalGpuPacket,
+    SphericalRenderError, SphericalRenderMode, SphericalUploadCounters,
 };
 
 #[cfg(test)]

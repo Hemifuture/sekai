@@ -81,6 +81,31 @@ struct GpuMapVertex {
     cell: u32,
 }
 
+/// One projected river reach ready for the map presenter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RiverMapSegment {
+    /// Projected upstream endpoint.
+    pub start: [f32; 2],
+    /// Projected downstream endpoint.
+    pub end: [f32; 2],
+    /// Symbolic line width in pixels (Strahler-scaled).
+    pub width_px: f32,
+}
+
+/// One river reach ready for the globe presenter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RiverGlobeSegment {
+    /// Upstream unit direction.
+    pub start: [f32; 3],
+    /// Downstream unit direction.
+    pub end: [f32; 3],
+    /// Symbolic line width in pixels (Strahler-scaled).
+    pub width_px: f32,
+}
+
+/// Linear-space river blue shared by both presenters.
+const RIVER_COLOR: [f32; 4] = [0.05, 0.18, 0.45, 0.9];
+
 /// One amplified map vertex: projected position plus pre-lit sRGB color.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -869,6 +894,12 @@ pub struct SphericalFieldRenderer {
     amplified_globe_index_buffer: Option<wgpu::Buffer>,
     amplified_globe_index_count: u32,
     amplified_visible: bool,
+    river_map_pipeline: wgpu::RenderPipeline,
+    river_globe_pipeline: wgpu::RenderPipeline,
+    river_map_buffer: Option<wgpu::Buffer>,
+    river_map_instance_count: u32,
+    river_globe_buffer: Option<wgpu::Buffer>,
+    river_globe_instance_count: u32,
     map_bind_group: wgpu::BindGroup,
     globe_bind_group: wgpu::BindGroup,
     map_pipeline: wgpu::RenderPipeline,
@@ -993,6 +1024,21 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Map,
+            "fs_overlay",
+        );
+        let river_map_pipeline = create_overlay_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Map,
+            "fs_river",
+        );
+        let river_globe_pipeline = create_overlay_pipeline(
+            device,
+            target_format,
+            &bind_group_layout,
+            SphericalRenderMode::Globe,
+            "fs_river",
         );
         let amplified_map_pipeline = create_amplified_pipeline(
             device,
@@ -1011,6 +1057,7 @@ impl SphericalFieldRenderer {
             target_format,
             &bind_group_layout,
             SphericalRenderMode::Globe,
+            "fs_overlay",
         );
         Self {
             map_vertex_buffer,
@@ -1049,6 +1096,12 @@ impl SphericalFieldRenderer {
             amplified_globe_index_buffer: None,
             amplified_globe_index_count: 0,
             amplified_visible: false,
+            river_map_pipeline,
+            river_globe_pipeline,
+            river_map_buffer: None,
+            river_map_instance_count: 0,
+            river_globe_buffer: None,
+            river_globe_instance_count: 0,
             installed_source: None,
             installed_revisions: None,
             installed_packet_key: None,
@@ -1575,6 +1628,61 @@ impl SphericalFieldRenderer {
         );
     }
 
+    /// Installs (or replaces) the display river polylines.
+    pub fn set_river_segments(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        map: &[RiverMapSegment],
+        globe: &[RiverGlobeSegment],
+    ) {
+        let map_instances: Vec<GpuMapOverlayInstance> = map
+            .iter()
+            .map(|segment| GpuMapOverlayInstance {
+                start: segment.start,
+                end: segment.end,
+                color: RIVER_COLOR,
+                width: segment.width_px,
+                kind: 0,
+                padding: [0; 2],
+            })
+            .collect();
+        let globe_instances: Vec<GpuGlobeOverlayInstance> = globe
+            .iter()
+            .map(|segment| GpuGlobeOverlayInstance {
+                start: segment.start,
+                width: segment.width_px,
+                end_or_direction: segment.end,
+                length: 0.0,
+                color: RIVER_COLOR,
+                kind: 0,
+                padding: [0; 3],
+            })
+            .collect();
+        (self.river_map_buffer, self.river_map_instance_count) = upload_instance_buffer(
+            device,
+            queue,
+            "Spherical River Map Instances",
+            bytemuck::cast_slice(&map_instances),
+            map_instances.len(),
+        );
+        (self.river_globe_buffer, self.river_globe_instance_count) = upload_instance_buffer(
+            device,
+            queue,
+            "Spherical River Globe Instances",
+            bytemuck::cast_slice(&globe_instances),
+            globe_instances.len(),
+        );
+    }
+
+    /// Drops the display river polylines.
+    pub fn clear_river_segments(&mut self) {
+        self.river_map_buffer = None;
+        self.river_map_instance_count = 0;
+        self.river_globe_buffer = None;
+        self.river_globe_instance_count = 0;
+    }
+
     /// Drops both amplified meshes (worlds without an amplified product).
     pub fn clear_amplified_meshes(&mut self) {
         self.amplified_map_vertex_buffer = None;
@@ -1640,6 +1748,15 @@ impl SphericalFieldRenderer {
                     );
                     pass.draw_indexed(0..self.map_index_count, 0, 0..1);
                 }
+                if let (true, Some(instances)) = (
+                    self.amplified_visible && self.river_map_instance_count > 0,
+                    &self.river_map_buffer,
+                ) {
+                    pass.set_pipeline(&self.river_map_pipeline);
+                    pass.set_bind_group(0, &self.map_bind_group, &[]);
+                    pass.set_vertex_buffer(0, instances.slice(..));
+                    pass.draw(0..9, 0..self.river_map_instance_count);
+                }
                 if self.map_overlay_instance_count > 0 {
                     pass.set_pipeline(&self.map_overlay_pipeline);
                     pass.set_bind_group(0, &self.map_bind_group, &[]);
@@ -1670,6 +1787,15 @@ impl SphericalFieldRenderer {
                         wgpu::IndexFormat::Uint32,
                     );
                     pass.draw_indexed(0..self.globe_index_count, 0, 0..1);
+                }
+                if let (true, Some(instances)) = (
+                    self.amplified_visible && self.river_globe_instance_count > 0,
+                    &self.river_globe_buffer,
+                ) {
+                    pass.set_pipeline(&self.river_globe_pipeline);
+                    pass.set_bind_group(0, &self.globe_bind_group, &[]);
+                    pass.set_vertex_buffer(0, instances.slice(..));
+                    pass.draw(0..9, 0..self.river_globe_instance_count);
                 }
                 if self.globe_overlay_instance_count > 0 {
                     pass.set_pipeline(&self.globe_overlay_pipeline);
@@ -2186,6 +2312,30 @@ fn storage_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Uploads one instance buffer, or clears it for empty input.
+fn upload_instance_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &'static str,
+    bytes: &[u8],
+    count: usize,
+) -> (Option<wgpu::Buffer>, u32) {
+    let Ok(count) = u32::try_from(count) else {
+        return (None, 0);
+    };
+    if bytes.is_empty() {
+        return (None, 0);
+    }
+    let buffer = create_buffer(
+        device,
+        label,
+        bytes.len() as u64,
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    );
+    queue.write_buffer(&buffer, 0, bytes);
+    (Some(buffer), count)
+}
+
 /// Uploads one amplified vertex/index pair, or clears it for empty input.
 fn upload_amplified_buffers(
     device: &wgpu::Device,
@@ -2409,6 +2559,7 @@ fn create_overlay_pipeline(
     target_format: wgpu::TextureFormat,
     bind_group_layout: &wgpu::BindGroupLayout,
     mode: SphericalRenderMode,
+    fragment_entry: &'static str,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Spherical Overlay Shader"),
@@ -2465,7 +2616,7 @@ fn create_overlay_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some("fs_overlay"),
+            entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),

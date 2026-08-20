@@ -38,8 +38,9 @@ pub enum SphericalCanvasAction {
     SetCentralMeridianRadians(f64),
     /// Pans only the active projection camera in normalized canvas units.
     PanMap { delta: [f64; 2] },
-    /// Multiplies only the active projection camera zoom.
-    ZoomMap { factor: f64 },
+    /// Multiplies only the active projection camera zoom about an NDC
+    /// anchor, so the point under the cursor stays under the cursor.
+    ZoomMap { factor: f64, anchor: [f64; 2] },
     /// Resets only the active projection camera.
     ResetMap,
     /// Applies a deterministic trackball drag to the globe camera.
@@ -216,8 +217,11 @@ impl SphericalCanvasState {
                 }
                 Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
             }
-            SphericalCanvasAction::ZoomMap { factor } => {
-                if !self.map_camera.zoom_by(self.projection.kind(), factor) {
+            SphericalCanvasAction::ZoomMap { factor, anchor } => {
+                if !self
+                    .map_camera
+                    .zoom_about(self.projection.kind(), factor, anchor)
+                {
                     return Err(SphericalUiError::InvalidCameraInput);
                 }
                 Ok(self.camera_invalidation())
@@ -702,7 +706,7 @@ impl MapCamerasWire {
                 self.equirectangular_zoom,
             ),
         ] {
-            if !camera.pan_by(kind, pan) || !camera.zoom_by(kind, zoom) {
+            if !camera.zoom_by(kind, zoom) || !camera.pan_by(kind, pan) {
                 return Err(SphericalUiError::InvalidPersistedCamera);
             }
         }
@@ -1100,8 +1104,17 @@ pub fn interact_spherical_canvas(
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll != 0.0 {
             let factor = f64::from((scroll * 0.002).exp());
+            let anchor = response
+                .hover_pos()
+                .map(|position| {
+                    [
+                        2.0 * f64::from(position.x - rect.min.x) / canvas_size[0] - 1.0,
+                        1.0 - 2.0 * f64::from(position.y - rect.min.y) / canvas_size[1],
+                    ]
+                })
+                .unwrap_or([0.0, 0.0]);
             actions.push(match state.view_mode() {
-                SphericalViewMode::Map => SphericalCanvasAction::ZoomMap { factor },
+                SphericalViewMode::Map => SphericalCanvasAction::ZoomMap { factor, anchor },
                 SphericalViewMode::Globe => SphericalCanvasAction::ZoomGlobe { factor },
             });
         }

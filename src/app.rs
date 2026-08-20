@@ -174,12 +174,18 @@ struct PendingWorldBuild {
     replacement: bool,
 }
 
+/// Everything the worker bakes for the amplified display of one world.
+struct AmplifiedDisplayBundle {
+    mesh: crate::view::AmplifiedSurfaceMesh,
+    rivers: Vec<crate::view::RiverPolylineSegment>,
+}
+
 /// Everything one finished worker build hands back to the UI thread.
 struct WorldBuildCompletion {
     result: Result<SphericalPresentationCandidate, String>,
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
-    amplified: Option<crate::view::AmplifiedSurfaceMesh>,
+    amplified: Option<AmplifiedDisplayBundle>,
 }
 
 /// Persisted provenance of the currently authored world.
@@ -325,6 +331,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
     #[serde(skip)]
+    river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
+    #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
     #[serde(skip)]
     canvas_widget: Canvas,
@@ -376,6 +384,7 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
+            river_polylines: None,
             formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
@@ -616,7 +625,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
-        amplified: Option<crate::view::AmplifiedSurfaceMesh>,
+        amplified: Option<AmplifiedDisplayBundle>,
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
@@ -629,9 +638,8 @@ impl TemplateApp {
             &render_state.device,
             render_state.target_format,
         );
-        let amplified = amplified.map(std::sync::Arc::new);
-        self.upload_amplified_meshes(&mut renderer, render_state, amplified.as_deref());
-        self.amplified_mesh = amplified;
+        self.store_amplified_bundle(amplified);
+        self.upload_amplified_display(&mut renderer, render_state);
         let published = {
             let mut gpu = SphericalRendererPreparer::new(
                 &mut renderer,
@@ -677,14 +685,27 @@ impl TemplateApp {
         Ok(())
     }
 
-    /// Uploads (or clears) both amplified presenter meshes for one publication.
-    fn upload_amplified_meshes(
+    /// Stores (or clears) the worker's amplified display bundle.
+    fn store_amplified_bundle(&mut self, amplified: Option<AmplifiedDisplayBundle>) {
+        match amplified {
+            Some(bundle) => {
+                self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
+                self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
+            }
+            None => {
+                self.amplified_mesh = None;
+                self.river_polylines = None;
+            }
+        }
+    }
+
+    /// Uploads (or clears) the amplified meshes and river polylines.
+    fn upload_amplified_display(
         &self,
         renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
         render_state: &RenderState,
-        amplified: Option<&crate::view::AmplifiedSurfaceMesh>,
     ) {
-        match amplified {
+        match self.amplified_mesh.as_deref() {
             Some(mesh) => {
                 let projection = self
                     .spherical_canvas_state
@@ -701,6 +722,53 @@ impl TemplateApp {
             }
             None => renderer.clear_amplified_meshes(),
         }
+        self.upload_river_segments(renderer, render_state);
+    }
+
+    /// Uploads (or clears) both presenters' river polyline instances.
+    fn upload_river_segments(
+        &self,
+        renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
+        render_state: &RenderState,
+    ) {
+        let Some(rivers) = self.river_polylines.as_deref() else {
+            renderer.clear_river_segments();
+            return;
+        };
+        let projection = self
+            .spherical_canvas_state
+            .presentation_view_state()
+            .projection();
+        let bounds = projection.bounds();
+        let half_width = ((bounds.max_x() - bounds.min_x()) * 0.5) as f32;
+        let mut map = Vec::with_capacity(rivers.len());
+        let mut globe = Vec::with_capacity(rivers.len());
+        for segment in rivers {
+            let width_px =
+                (1.2 + 0.7 * f32::from(segment.strahler_order.saturating_sub(1))).min(6.0);
+            globe.push(crate::gpu::spherical::RiverGlobeSegment {
+                start: segment.start,
+                end: segment.end,
+                width_px,
+            });
+            let (Some(start), Some(end)) = (
+                crate::view::project_unit_direction(projection, segment.start),
+                crate::view::project_unit_direction(projection, segment.end),
+            ) else {
+                continue;
+            };
+            // Seam-crossing reaches drop from the map: a reach is one cell
+            // spacing long, so the gap is a sliver at the outline edge.
+            if (start[0] - end[0]).abs() > half_width {
+                continue;
+            }
+            map.push(crate::gpu::spherical::RiverMapSegment {
+                start,
+                end,
+                width_px,
+            });
+        }
+        renderer.set_river_segments(&render_state.device, &render_state.queue, &map, &globe);
     }
 
     /// Returns the cached formation profile surface, rebuilding it when the
@@ -842,12 +910,17 @@ impl TemplateApp {
                             root_seed,
                         )
                         .ok()?;
-                    amplified_mesh::build_amplified_surface_mesh(
+                    let mesh = amplified_mesh::build_amplified_surface_mesh(
                         &amplifier,
                         document.surface(),
                         sea_level_m,
                         display_radius_m,
-                    )
+                    )?;
+                    let rivers = amplified_mesh::river_display_polylines(
+                        document.surface(),
+                        document.formation_snapshot().hydrology(),
+                    );
+                    Some(AmplifiedDisplayBundle { mesh, rivers })
                 })
             };
             let _ = sender.send(WorldBuildCompletion {
@@ -992,7 +1065,7 @@ impl TemplateApp {
         &mut self,
         candidate: SphericalPresentationCandidate,
         render_state: &RenderState,
-        amplified: Option<crate::view::AmplifiedSurfaceMesh>,
+        amplified: Option<AmplifiedDisplayBundle>,
     ) -> Result<(), AppRuntimeError> {
         let stage_ids = candidate
             .report()
@@ -1017,9 +1090,8 @@ impl TemplateApp {
             current.try_replace(candidate, &mut gpu)?;
             Ok::<_, AppRuntimeError>(current.state().clone())
         })?;
-        let amplified = amplified.map(std::sync::Arc::new);
-        self.upload_amplified_meshes(renderer, render_state, amplified.as_deref());
-        self.amplified_mesh = amplified;
+        self.store_amplified_bundle(amplified);
+        self.upload_amplified_display(renderer, render_state);
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
@@ -1094,6 +1166,7 @@ impl TemplateApp {
                             &indices,
                         );
                     }
+                    self.upload_river_segments(renderer, &render_state);
                 }
                 self.spherical_runtime_error = None;
             }
@@ -2758,7 +2831,10 @@ mod natural_app_tests {
             app.apply_spherical_action(SphericalCanvasAction::SetProjectionKind(kind));
             app.apply_spherical_action(SphericalCanvasAction::ResetMap);
             if zoom != 1.0 {
-                app.apply_spherical_action(SphericalCanvasAction::ZoomMap { factor: zoom });
+                app.apply_spherical_action(SphericalCanvasAction::ZoomMap {
+                    factor: zoom,
+                    anchor: [0.0, 0.0],
+                });
             }
             let (edge, base, normal) = app.spherical_presentation.read_resource(|current| {
                 map_edge_pick_fixture(
@@ -3161,7 +3237,10 @@ mod natural_app_tests {
             })
             .unwrap();
         state
-            .apply(SphericalCanvasAction::ZoomMap { factor: 1.5 })
+            .apply(SphericalCanvasAction::ZoomMap {
+                factor: 1.5,
+                anchor: [0.0, 0.0],
+            })
             .unwrap();
         state
             .apply(SphericalCanvasAction::SetProjectionKind(
@@ -3177,7 +3256,10 @@ mod natural_app_tests {
             })
             .unwrap();
         state
-            .apply(SphericalCanvasAction::ZoomMap { factor: 2.5 })
+            .apply(SphericalCanvasAction::ZoomMap {
+                factor: 2.5,
+                anchor: [0.0, 0.0],
+            })
             .unwrap();
         state
             .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))

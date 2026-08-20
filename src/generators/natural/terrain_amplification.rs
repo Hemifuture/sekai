@@ -9,6 +9,8 @@
 //! seeding, and the Fibonacci probe fingerprint. River carving arrives with
 //! plan Task 5 and is intentionally absent here.
 
+use std::collections::BTreeMap;
+
 use blake3::Hasher;
 use rand::RngCore;
 use rand_chacha::rand_core::SeedableRng;
@@ -20,7 +22,8 @@ use super::morphology::noise::{GaborKernel, SphericalNoise3d};
 use crate::generators::spatial::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 use crate::world::natural::{
     formation_annual_precipitation_mm, GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot,
-    SphericalOrogenyKind, SphericalTectonicSnapshot, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_FLOODPLAIN_ACCOMMODATION_M,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::RootSeed;
@@ -48,6 +51,22 @@ const HURST_PLAIN: f64 = 0.8;
 /// C1: local-relief normalization (metres of neighbour drop for full detail).
 const RELIEF_REFERENCE_M: f64 = 900.0;
 const RELIEF_FLOOR: f64 = 0.05;
+
+// River carving (spec §7, amendment A4). Hydraulic geometry after
+// Leopold & Maddock 1953: width w = a·Q^0.5, depth d ∝ Q^0.4; the
+// Strahler modulation is the spec's explicit extra term.
+const RIVER_WIDTH_COEFFICIENT: f64 = 5.0;
+const RIVER_ORDER_GAIN: f64 = 0.1;
+const RIVER_DEPTH_COEFFICIENT: f64 = 2.0;
+const RIVER_DEPTH_EXPONENT: f64 = 0.4;
+const RIVER_DEPTH_MIN_M: f64 = 3.0;
+const RIVER_DEPTH_MAX_M: f64 = 80.0;
+const RIVER_WIDTH_MIN_M: f64 = 2.0;
+const RIVER_WIDTH_MAX_M: f64 = 5_000.0;
+/// V-shaped valley wall (~19°) in high relief.
+const VALLEY_SLOPE_STEEP: f64 = 0.35;
+/// Near-flat floodplain apron in low relief.
+const VALLEY_SLOPE_FLOODPLAIN: f64 = 0.01;
 /// C4: amplitude floor for the most erodible substrate.
 const ERODIBILITY_AMPLITUDE_FLOOR: f64 = 0.4;
 /// C5: Langbein–Schumm dissection peak and width (mm/yr equivalents).
@@ -165,6 +184,17 @@ pub enum TerrainAmplificationError {
         /// Cells expected.
         expected: usize,
     },
+    /// A river segment references a cell outside the surface.
+    #[error("river segment touches cell {cell} but the surface has {cell_count} cells")]
+    RiverSegmentOutOfRange {
+        /// The offending cell index.
+        cell: u32,
+        /// Cells available.
+        cell_count: usize,
+    },
+    /// The published river network contains a cycle.
+    #[error("the river network contains a cycle")]
+    RiverNetworkCycle,
     /// The cell count is not a class-I geodesic count (10·f²+2).
     #[error("cell count {cell_count} is not a geodesic 10·f²+2 lattice")]
     NotGeodesic {
@@ -223,6 +253,10 @@ pub struct TerrainAmplifier {
     local_relief_norm: Vec<f32>,
     age_gradient_norm: Vec<f32>,
     land: Vec<f32>,
+    // River carving tables (spec §7): empty when no network is attached.
+    reaches: Vec<RiverReach>,
+    reach_offsets: Vec<u32>,
+    reach_indices: Vec<u32>,
     // Noise layers, one instance per manual octave.
     warp: NoiseLayer,
     continental: NoiseLayer,
@@ -354,6 +388,9 @@ impl TerrainAmplifier {
             local_relief_norm,
             age_gradient_norm,
             land,
+            reaches: Vec::new(),
+            reach_offsets: Vec::new(),
+            reach_indices: Vec::new(),
             warp: NoiseLayer::from_label(&root, WARP_LABEL, 4),
             continental: NoiseLayer::from_label(&root, CONTINENTAL_DETAIL_LABEL, MAX_LAYER_OCTAVES),
             dissection: NoiseLayer::from_label(&root, DISSECTION_LABEL, MAX_LAYER_OCTAVES),
@@ -396,7 +433,229 @@ impl TerrainAmplifier {
                 orogeny_age_myr: compatibility.orogeny_age_myr(),
             },
             root_seed,
-        )
+        )?
+        .with_rivers(surface, formation.hydrology().river_segments())
+    }
+
+    /// Attaches the published river network for §7 carving (amendment A4).
+    ///
+    /// Node beds are the T0 elevations minus a hydraulic-geometry incision
+    /// depth, made monotone along flow by a running minimum in topological
+    /// order; reaches interpolate those beds linearly, so a carved bed can
+    /// never rise downstream, and carving as a whole only ever lowers the
+    /// surface through `min` — it can never dam.
+    pub fn with_rivers(
+        mut self,
+        surface: &SphericalSurfaceSnapshot,
+        segments: &[RiverSegment],
+    ) -> Result<Self, TerrainAmplificationError> {
+        if segments.is_empty() {
+            return Ok(self);
+        }
+        let cells = surface.cells();
+        let cell_count = cells.len();
+        let mut depth_m: BTreeMap<u32, f64> = BTreeMap::new();
+        let mut upstream_count: BTreeMap<u32, u32> = BTreeMap::new();
+        for segment in segments {
+            for node in [segment.from().raw(), segment.to().raw()] {
+                if node as usize >= cell_count {
+                    return Err(TerrainAmplificationError::RiverSegmentOutOfRange {
+                        cell: node,
+                        cell_count,
+                    });
+                }
+            }
+            let discharge = f64::from(segment.mean_discharge_m3_s()).max(0.0);
+            let depth = (RIVER_DEPTH_COEFFICIENT * discharge.powf(RIVER_DEPTH_EXPONENT))
+                .clamp(RIVER_DEPTH_MIN_M, RIVER_DEPTH_MAX_M);
+            for node in [segment.from().raw(), segment.to().raw()] {
+                let slot = depth_m.entry(node).or_insert(0.0);
+                *slot = slot.max(depth);
+            }
+            *upstream_count.entry(segment.to().raw()).or_insert(0) += 1;
+            upstream_count.entry(segment.from().raw()).or_insert(0);
+        }
+        let mut bed_m: BTreeMap<u32, f64> = depth_m
+            .iter()
+            .map(|(&node, &depth)| (node, f64::from(self.elevation_m[node as usize]) - depth))
+            .collect();
+        let mut outgoing: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (index, segment) in segments.iter().enumerate() {
+            outgoing
+                .entry(segment.from().raw())
+                .or_default()
+                .push(index);
+        }
+        let mut queue: Vec<u32> = upstream_count
+            .iter()
+            .filter(|(_, &count)| count == 0)
+            .map(|(&node, _)| node)
+            .collect();
+        let mut remaining = upstream_count.clone();
+        let mut head = 0;
+        while head < queue.len() {
+            let node = queue[head];
+            head += 1;
+            let node_bed = bed_m[&node];
+            if let Some(list) = outgoing.get(&node) {
+                for &segment_index in list {
+                    let to = segments[segment_index].to().raw();
+                    let entry = bed_m
+                        .get_mut(&to)
+                        .expect("every segment endpoint has a bed entry");
+                    *entry = entry.min(node_bed);
+                    let pending = remaining
+                        .get_mut(&to)
+                        .expect("every segment endpoint has an upstream count");
+                    *pending -= 1;
+                    if *pending == 0 {
+                        queue.push(to);
+                    }
+                }
+            }
+        }
+        if head != upstream_count.len() {
+            return Err(TerrainAmplificationError::RiverNetworkCycle);
+        }
+
+        let mut reaches = Vec::with_capacity(segments.len());
+        let mut touching: Vec<Vec<u32>> = vec![Vec::new(); cell_count];
+        for segment in segments {
+            let from = segment.from().raw();
+            let to = segment.to().raw();
+            let discharge = f64::from(segment.mean_discharge_m3_s()).max(0.0);
+            let order = f64::from(segment.strahler_order());
+            let width = (RIVER_WIDTH_COEFFICIENT
+                * discharge.sqrt()
+                * (1.0 + RIVER_ORDER_GAIN * (order - 1.0)))
+                .clamp(RIVER_WIDTH_MIN_M, RIVER_WIDTH_MAX_M);
+            let bed_from = bed_m[&from];
+            let index = u32::try_from(reaches.len()).map_err(|_| {
+                TerrainAmplificationError::RiverSegmentOutOfRange {
+                    cell: from,
+                    cell_count,
+                }
+            })?;
+            reaches.push(RiverReach {
+                from: cells[from as usize].centroid.components(),
+                to: cells[to as usize].centroid.components(),
+                bed_from_m: bed_from,
+                bed_to_m: bed_m[&to].min(bed_from),
+                half_width_m: width * 0.5,
+            });
+            touching[from as usize].push(index);
+            touching[to as usize].push(index);
+        }
+        let mut reach_offsets = Vec::with_capacity(cell_count + 1);
+        let mut reach_indices = Vec::new();
+        reach_offsets.push(0_u32);
+        for list in &touching {
+            reach_indices.extend_from_slice(list);
+            let offset = u32::try_from(reach_indices.len())
+                .map_err(|_| TerrainAmplificationError::RiverNetworkCycle)?;
+            reach_offsets.push(offset);
+        }
+        self.reaches = reaches;
+        self.reach_offsets = reach_offsets;
+        self.reach_indices = reach_indices;
+        Ok(self)
+    }
+
+    /// Returns the §7 valley carve elevation at one authoritative position.
+    ///
+    /// Valley walls blend from floodplain aprons to V-shaped slopes as the
+    /// local relief crosses the floodplain accommodation band; the chord
+    /// approximation to the reach arc is exact to well under a metre at
+    /// cell-spacing scales.
+    fn river_carve_m(&self, position: UnitVector3, local_relief_norm: f64) -> Option<f64> {
+        let (corners, _) = self.locator.locate(position);
+        let p = position.components();
+        let wall_slope = VALLEY_SLOPE_FLOODPLAIN
+            + (VALLEY_SLOPE_STEEP - VALLEY_SLOPE_FLOODPLAIN)
+                * smoothstep(
+                    0.0,
+                    2.0 * FORMATION_FLOODPLAIN_ACCOMMODATION_M / RELIEF_REFERENCE_M,
+                    local_relief_norm,
+                );
+        let mut carve: Option<f64> = None;
+        for &cell in &corners {
+            let start = self.reach_offsets[cell as usize] as usize;
+            let end = self.reach_offsets[cell as usize + 1] as usize;
+            for &reach_index in &self.reach_indices[start..end] {
+                let reach = &self.reaches[reach_index as usize];
+                // Exact great-circle geometry: project onto the reach plane,
+                // renormalize, and fall back to the nearer endpoint when the
+                // projection leaves the arc. A raw chord would sag hundreds
+                // of metres below the arc at cell-spacing scales and miss
+                // the bed entirely.
+                let normal = [
+                    reach.from[1] * reach.to[2] - reach.from[2] * reach.to[1],
+                    reach.from[2] * reach.to[0] - reach.from[0] * reach.to[2],
+                    reach.from[0] * reach.to[1] - reach.from[1] * reach.to[0],
+                ];
+                let normal_len =
+                    (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+                if normal_len <= f64::EPSILON {
+                    continue;
+                }
+                let normal = [
+                    normal[0] / normal_len,
+                    normal[1] / normal_len,
+                    normal[2] / normal_len,
+                ];
+                let sine = p[0] * normal[0] + p[1] * normal[1] + p[2] * normal[2];
+                let projected = [
+                    p[0] - sine * normal[0],
+                    p[1] - sine * normal[1],
+                    p[2] - sine * normal[2],
+                ];
+                let projected_len = (projected[0] * projected[0]
+                    + projected[1] * projected[1]
+                    + projected[2] * projected[2])
+                    .sqrt();
+                if projected_len <= f64::EPSILON {
+                    continue;
+                }
+                let onto = [
+                    projected[0] / projected_len,
+                    projected[1] / projected_len,
+                    projected[2] / projected_len,
+                ];
+                let cross_toward = |a: [f64; 3], b: [f64; 3]| {
+                    (a[1] * b[2] - a[2] * b[1]) * normal[0]
+                        + (a[2] * b[0] - a[0] * b[2]) * normal[1]
+                        + (a[0] * b[1] - a[1] * b[0]) * normal[2]
+                };
+                let arc_angle = |a: [f64; 3], b: [f64; 3]| {
+                    (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+                        .clamp(-1.0, 1.0)
+                        .acos()
+                };
+                let within = cross_toward(reach.from, onto) >= -f64::EPSILON
+                    && cross_toward(onto, reach.to) >= -f64::EPSILON;
+                let (along, lateral_m) = if within {
+                    let total = arc_angle(reach.from, reach.to);
+                    let fraction = if total <= f64::EPSILON {
+                        0.0
+                    } else {
+                        (arc_angle(reach.from, onto) / total).clamp(0.0, 1.0)
+                    };
+                    (fraction, sine.clamp(-1.0, 1.0).abs().asin() * self.radius_m)
+                } else {
+                    let to_from = arc_angle(p, reach.from);
+                    let to_to = arc_angle(p, reach.to);
+                    if to_from <= to_to {
+                        (0.0, to_from * self.radius_m)
+                    } else {
+                        (1.0, to_to * self.radius_m)
+                    }
+                };
+                let bed = reach.bed_from_m + along * (reach.bed_to_m - reach.bed_from_m);
+                let value = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
+                carve = Some(carve.map_or(value, |current: f64| current.min(value)));
+            }
+        }
+        carve
     }
 
     /// The base detail wavelength λ₀ = 2 × mean cell spacing (spec §6).
@@ -434,8 +693,16 @@ impl TerrainAmplifier {
         let interp = self.interpolate(warped);
         let weights = interp.weights;
         let detail = self.detail_m(warped, &interp, lod);
-        let elevation = (interp.elevation_m + detail)
+        let mut elevation = (interp.elevation_m + detail)
             .clamp(f64::from(ELEVATION_MIN_M), f64::from(ELEVATION_MAX_M));
+        // Phase 3 (spec §7, amendment A4): river carving on the
+        // authoritative, unwarped geometry so valleys align with the
+        // published network. Carving only lowers (min): it can never dam.
+        if !self.reaches.is_empty() {
+            if let Some(carve) = self.river_carve_m(position, raw.local_relief) {
+                elevation = elevation.min(carve.max(f64::from(ELEVATION_MIN_M)));
+            }
+        }
         AmplifiedSample {
             elevation_m: elevation as f32,
             regime: weights.dominant(),
@@ -636,6 +903,16 @@ impl TerrainAmplifier {
             weights,
         }
     }
+}
+
+/// One carve-ready river reach with monotone interpolated bed ends.
+#[derive(Debug, Clone)]
+struct RiverReach {
+    from: [f64; 3],
+    to: [f64; 3],
+    bed_from_m: f64,
+    bed_to_m: f64,
+    half_width_m: f64,
 }
 
 struct Interpolated {
@@ -1293,5 +1570,122 @@ mod tests {
         }
         let drift = (f64::from(t0_land) - f64::from(amplified_land)).abs() / total as f64;
         assert!(drift <= 0.02, "land fraction drift {drift}");
+    }
+
+    #[test]
+    fn river_carving_only_lowers_with_monotone_beds() {
+        use crate::world::natural::{RiverSegment, RiverSegmentKind};
+        use crate::world::RiverSegmentId;
+
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface, 800.0, 0.0);
+        let plain = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9)).unwrap();
+        let edge = &surface.edges()[0];
+        let (a, b) = (edge.cells[0], edge.cells[1]);
+        let next = surface
+            .edges()
+            .iter()
+            .find(|candidate| candidate.cells.contains(&b) && !candidate.cells.contains(&a))
+            .unwrap();
+        let c = if next.cells[0] == b {
+            next.cells[1]
+        } else {
+            next.cells[0]
+        };
+        let segments = vec![
+            RiverSegment::new(
+                RiverSegmentId::from_raw(0),
+                a,
+                b,
+                RiverSegmentKind::Channel,
+                1,
+                120.0,
+            )
+            .unwrap(),
+            RiverSegment::new(
+                RiverSegmentId::from_raw(1),
+                b,
+                c,
+                RiverSegmentKind::Channel,
+                2,
+                260.0,
+            )
+            .unwrap(),
+        ];
+        let carved = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
+            .unwrap()
+            .with_rivers(&surface, &segments)
+            .unwrap();
+
+        // Beds never rise downstream (spec §7 invariant, built structurally).
+        for reach in &carved.reaches {
+            assert!(reach.bed_from_m >= reach.bed_to_m);
+        }
+
+        // The carve surface itself descends monotonically along the chain.
+        let chain = [a, b, c].map(|cell| surface.cells()[cell.raw() as usize].centroid);
+        let mut previous = f64::INFINITY;
+        for leg in 0..2 {
+            let from = chain[leg].components();
+            let to = chain[leg + 1].components();
+            for step in 0..=24 {
+                let t = f64::from(step) / 24.0;
+                let direction = UnitVector3::new(
+                    from[0] + t * (to[0] - from[0]),
+                    from[1] + t * (to[1] - from[1]),
+                    from[2] + t * (to[2] - from[2]),
+                )
+                .unwrap();
+                let carve = carved.river_carve_m(direction, 0.0).unwrap();
+                assert!(carve <= previous + 1e-6, "carve rose: {carve} > {previous}");
+                previous = carve;
+            }
+        }
+
+        // Carving only ever lowers the amplified surface (min semantics).
+        let lod = AmplificationLod::new(3);
+        for index in 0..512 {
+            let probe = fibonacci_probe(index, 512);
+            let with_rivers = carved.sample(probe, lod).elevation_m;
+            let without = plain.sample(probe, lod).elevation_m;
+            assert!(with_rivers <= without + 1e-3);
+        }
+    }
+
+    #[test]
+    fn river_network_cycles_are_rejected() {
+        use crate::world::natural::{RiverSegment, RiverSegmentKind};
+        use crate::world::RiverSegmentId;
+
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface, 800.0, 0.0);
+        let edge = &surface.edges()[0];
+        let (a, b) = (edge.cells[0], edge.cells[1]);
+        let segments = vec![
+            RiverSegment::new(
+                RiverSegmentId::from_raw(0),
+                a,
+                b,
+                RiverSegmentKind::Channel,
+                1,
+                10.0,
+            )
+            .unwrap(),
+            RiverSegment::new(
+                RiverSegmentId::from_raw(1),
+                b,
+                a,
+                RiverSegmentKind::Channel,
+                1,
+                10.0,
+            )
+            .unwrap(),
+        ];
+        assert!(matches!(
+            TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
+                .unwrap()
+                .with_rivers(&surface, &segments),
+            Err(TerrainAmplificationError::RiverNetworkCycle)
+        ));
     }
 }

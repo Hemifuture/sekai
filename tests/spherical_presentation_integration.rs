@@ -820,7 +820,10 @@ fn spherical_canvas_state_round_trips_and_rejects_invalid_runtime_numbers() {
         })
         .unwrap();
     state
-        .apply(SphericalCanvasAction::ZoomMap { factor: 1.5 })
+        .apply(SphericalCanvasAction::ZoomMap {
+            factor: 1.5,
+            anchor: [0.0, 0.0],
+        })
         .unwrap();
     state
         .apply(SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe))
@@ -1008,8 +1011,8 @@ fn map_camera_rejects_gpu_unrenderable_and_out_of_product_bounds_atomically() {
     camera.reset(projection);
     assert!(camera.zoom_by(projection, 0.125));
     assert_eq!(camera.zoom(projection), 0.125);
-    assert!(camera.zoom_by(projection, 512.0));
-    assert_eq!(camera.zoom(projection), 64.0);
+    assert!(camera.zoom_by(projection, MapCamera::MAX_ZOOM / 0.125));
+    assert_eq!(camera.zoom(projection), MapCamera::MAX_ZOOM);
     let zoom_boundary = camera;
     assert!(!camera.zoom_by(projection, 1.000_001));
     assert_eq!(camera, zoom_boundary);
@@ -1021,7 +1024,10 @@ fn map_camera_rejects_gpu_unrenderable_and_out_of_product_bounds_atomically() {
         SphericalCanvasAction::PanMap {
             delta: [1.0e300, 0.0],
         },
-        SphericalCanvasAction::ZoomMap { factor: 1.0e300 },
+        SphericalCanvasAction::ZoomMap {
+            factor: 1.0e300,
+            anchor: [0.0, 0.0],
+        },
     ] {
         let before = canvas.clone();
         assert!(canvas.apply(action).is_err());
@@ -1092,7 +1098,10 @@ fn declarative_canvas_actions_preserve_shared_state_and_invalidate_exactly() {
         .apply(SphericalCanvasAction::PanMap { delta: [-0.4, 0.2] })
         .unwrap();
     state
-        .apply(SphericalCanvasAction::ZoomMap { factor: 1.75 })
+        .apply(SphericalCanvasAction::ZoomMap {
+            factor: 1.75,
+            anchor: [0.0, 0.0],
+        })
         .unwrap();
     let equirectangular_camera = state.map_camera();
 
@@ -1184,7 +1193,10 @@ fn switching_active_camera_family_reconciles_vector_lod_when_zoom_band_changes()
         ))
         .unwrap();
     state
-        .apply(SphericalCanvasAction::ZoomMap { factor: 3.0 })
+        .apply(SphericalCanvasAction::ZoomMap {
+            factor: 3.0,
+            anchor: [0.0, 0.0],
+        })
         .unwrap();
     state
         .apply(SphericalCanvasAction::SetProjectionKind(
@@ -1766,7 +1778,10 @@ fn public_canvas_packet_action_paints_the_published_packet_in_the_same_frame() {
 
     for action in [
         SphericalCanvasAction::SelectEntity(Some(SelectedSurfaceEntity::Cell(CellId::from_raw(0)))),
-        SphericalCanvasAction::ZoomMap { factor: 4.0 },
+        SphericalCanvasAction::ZoomMap {
+            factor: 4.0,
+            anchor: [0.0, 0.0],
+        },
     ] {
         let output = context.run(spherical_raw_input(Vec::new()), |context| {
             egui::CentralPanel::default().show(context, |ui| {
