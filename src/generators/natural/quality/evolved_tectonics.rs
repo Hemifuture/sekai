@@ -6,8 +6,7 @@ use std::f64::consts::PI;
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::world::natural::{
     BoundaryKind, CrustKind, EvolvedTectonicSnapshot, NaturalQualityReport, QualityMetricId,
-    QualityMetricStatus, MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR,
-    MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR,
+    MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR, MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, project_tangent, SphericalSurfaceSnapshot,
@@ -32,15 +31,6 @@ const EXPECTED_METRIC_NAMES: [&str; 13] = [
     "subduction-causality-fraction",
     "transform-to-convergent-uplift-ratio",
 ];
-const CORPUS_SCOPED_METRICS: [&str; 6] = [
-    "collision-causality-fraction",
-    "continental-area-fraction",
-    "ocean-age-depth-spearman",
-    "regular-triple-junction-angle-fraction",
-    "subduction-causality-fraction",
-    "transform-to-convergent-uplift-ratio",
-];
-
 /// Evaluates every intrinsic P2 gate against one authoritative V5 snapshot.
 ///
 /// Event-conditioned corpus metrics are explicitly unavailable when a single
@@ -368,17 +358,12 @@ pub(crate) fn validate_evolved_tectonic_quality_report(
                 METRIC_VERSION
             ));
         }
-        if !CORPUS_SCOPED_METRICS.contains(&expected_name)
-            && metric.status() != QualityMetricStatus::Pass
-        {
-            return Err(format!(
-                "per-world P2 metric {}.{}.v{} returned {:?}",
-                metric.id().namespace(),
-                metric.id().name(),
-                metric.id().version(),
-                metric.status()
-            ));
-        }
+        // Per-world metric statuses are measurements of this world, not
+        // gates: any recorded status is legal evidence and the runtime never
+        // rejects a world for its statistics (user ruling, 2026-08-20).
+        // Structural checks - binding, metric set, locked bounds, sample
+        // counts - stay hard because failing them means the evidence itself
+        // is corrupt.
     }
     Ok(())
 }

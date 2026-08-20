@@ -671,28 +671,16 @@ pub(crate) fn validate_surface_formation_quality_report(
                 metric.bounds().max()
             ));
         }
-        let conditionally_unavailable = matches!(
-            expected_name,
-            "deposited-sediment-enrichment-ratio"
-                | "fluvial-incision-support-enrichment-ratio"
-                | "land-outlet-path-area-fraction"
-                | "largest-network-strahler-order"
-                | "river-reach-count"
-        ) && metric.status() == QualityMetricStatus::Unavailable
-            && matches!(
-                metric.reason(),
-                Some(NO_LAND_REASON)
-                    | Some(NO_NETWORK_LAND_REASON)
-                    | Some(NO_DEPOSIT_REASON)
-                    | Some(NO_INCISION_REASON)
-            );
-        if metric.status() != QualityMetricStatus::Pass && !conditionally_unavailable {
-            return Err(format!(
-                "P5 metric {expected_name} returned {:?}",
-                metric.status()
-            ));
+        // Per-world metric statuses are measurements of this world, not
+        // gates: any recorded status is legal evidence and the runtime never
+        // rejects a world for its statistics (user ruling, 2026-08-20).
+        // Structural checks - binding, metric set, locked bounds, sample
+        // counts - stay hard because failing them means the evidence itself
+        // is corrupt.
+        if metric.status() == QualityMetricStatus::Unavailable {
+            continue;
         }
-        if !conditionally_unavailable && metric.sample_count() > expected_surface.cell_count() {
+        if metric.sample_count() > expected_surface.cell_count() {
             return Err(format!(
                 "P5 metric {expected_name} reports {} samples; maximum is {}",
                 metric.sample_count(),

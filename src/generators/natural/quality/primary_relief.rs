@@ -27,16 +27,6 @@ const EXPECTED_METRIC_NAMES: [&str; 14] = [
     "upstream-p2-hard-failure-count",
     "water-volume-relative-error",
 ];
-const CORPUS_METRIC_NAMES: [&str; 8] = [
-    "coast-plate-boundary-overlap",
-    "continental-ocean-median-separation-m",
-    "convergent-positive-dynamic-fraction",
-    "hotspot-positive-construction-fraction",
-    "old-young-ocean-depth-separation-m",
-    "physical-land-area-fraction",
-    "regional-detail-rms-ratio",
-    "subduction-negative-dynamic-fraction",
-];
 const P2_CORPUS_SCOPED_NAMES: [&str; 6] = [
     "collision-causality-fraction",
     "continental-area-fraction",
@@ -664,14 +654,12 @@ pub(crate) fn validate_primary_relief_quality_report(
         {
             return Err(format!("unexpected P3 metric {}", metric.id().name()));
         }
-        if !CORPUS_METRIC_NAMES.contains(&expected_name)
-            && metric.status() != QualityMetricStatus::Pass
-        {
-            return Err(format!(
-                "per-world hard P3 metric {expected_name} returned {:?}",
-                metric.status()
-            ));
-        }
+        // Per-world metric statuses are measurements of this world, not
+        // gates: any recorded status is legal evidence and the runtime never
+        // rejects a world for its statistics (user ruling, 2026-08-20).
+        // Structural checks - binding, metric set, locked bounds, sample
+        // counts - stay hard because failing them means the evidence itself
+        // is corrupt.
     }
     Ok(())
 }

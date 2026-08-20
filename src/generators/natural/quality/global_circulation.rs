@@ -1305,18 +1305,13 @@ pub(crate) fn validate_global_circulation_quality_report(
                 bounds.max()
             ));
         }
-        let conditionally_unavailable = matches!(
-            expected_name,
-            "seasonal-hemisphere-phase-correlation" | "seasonal-hemisphere-phase-fraction"
-        ) && metric.status() == QualityMetricStatus::Unavailable
-            && metric.reason() == Some(NO_RESOLVED_SEASONAL_FORCING_REASON);
-        if metric.status() != QualityMetricStatus::Pass && !conditionally_unavailable {
-            return Err(format!(
-                "per-world P4 metric {expected_name} returned {:?}",
-                metric.status()
-            ));
-        }
-        if conditionally_unavailable {
+        // Per-world metric statuses are measurements of this world, not
+        // gates: any recorded status is legal evidence and the runtime never
+        // rejects a world for its statistics (user ruling, 2026-08-20).
+        // Structural checks - binding, metric set, locked bounds, sample
+        // counts - stay hard because failing them means the evidence itself
+        // is corrupt.
+        if metric.status() == QualityMetricStatus::Unavailable {
             continue;
         }
         if metric.sample_count() > maximum_monthly_samples {
