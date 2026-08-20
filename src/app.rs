@@ -891,7 +891,20 @@ impl TemplateApp {
                     &mut stage_cache,
                     &worker_cancellation,
                 )
-                .map_err(|error| error.to_string())
+                .map_err(|error| {
+                    // Surface the report's error diagnostics: "inspect the
+                    // report diagnostics" is useless if nothing displays them.
+                    let mut message = error.to_string();
+                    if let crate::app::SphericalPresentationError::Build(failure) = &error {
+                        for diagnostic in failure.report.diagnostics().iter().filter(|diagnostic| {
+                            diagnostic.severity() == crate::engine::DiagnosticSeverity::Error
+                        }) {
+                            message.push('\n');
+                            message.push_str(diagnostic.message());
+                        }
+                    }
+                    message
+                })
             })();
             // The amplified subdivision bake rides the same worker: it only
             // exists for formation worlds and never blocks the UI thread.
