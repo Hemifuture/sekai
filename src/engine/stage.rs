@@ -195,7 +195,9 @@ impl<S: Stage> ErasedStage for ErasedStageAdapter<S> {
             .stage
             .run(inputs, rng, diagnostics)
             .map_err(ErasedStageError::Stage)?;
-        let stored = StoredArtifact::new(output).map_err(ErasedStageError::Output)?;
+        let cancellation = rng.cancellation_signal();
+        let stored = StoredArtifact::new_cancellable(output, &cancellation)
+            .map_err(ErasedStageError::Output)?;
         self.output_type
             .publish_into(stored.clone(), artifacts)
             .map_err(ErasedStageError::Publication)?;

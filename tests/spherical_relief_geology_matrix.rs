@@ -4,9 +4,10 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BedrockKind, GeologicSpec, MantleActivity, MantleFormationBias, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
-    COMPONENT_IDENTITY_TOLERANCE_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    BedrockKind, GeologicSpec, MantleActivity, MantleFormationBias, ReliefSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+    WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M, ELEVATION_MAX_M,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -38,8 +39,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "c88766ca2693c0146eee4408803b288ff7786d1ebaf45a8e27ff0602c059d8f4",
-        expected_geology_hash: "b61c39e0df6d7c39658d433a8a5078b841ed02d5615c15a0ffc30fb1ba0fc1a7",
+        expected_relief_hash: "fa85419891fe6f2f8c3c37b61da201b23886abbe2ec26368efc110c06b592d71",
+        expected_geology_hash: "6aa14ee4096ac47d2e54811939a8f18fb47f792de4d5034af98a4870a4c90f76",
     },
     MatrixCase {
         name: "regional-great-island",
@@ -52,8 +53,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "4425c3202f6d85288e11ed87998f1b3146f58bceae7c54a20eace2a4292f0ade",
-        expected_geology_hash: "a3555806fe66eec5b2508bd9e80231134520e814c92495f085abfdb7f892feba",
+        expected_relief_hash: "f42e3a97cc75f11f4b6bf1f3f419974df454975238c9c8d11f439b0012934fed",
+        expected_geology_hash: "d92f52b3f9150991ae39268ed6720b4726b6fe22146a0d13bba6aee634a7326a",
     },
     MatrixCase {
         name: "earth-continents",
@@ -66,8 +67,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "e1bdd2f43f3ac5495a81f91bc586f54729989e4c8cfa3e118df8b1dd743278b9",
-        expected_geology_hash: "20870e5522a429f91aa971d4b4b921a9a2fba8638a49c3b9dd63cab8ae3c5c4e",
+        expected_relief_hash: "6bfcb5bf6ed744a78e35e81bfd46972ddae24a61eed38ce5c907b31cd1f5d833",
+        expected_geology_hash: "a9ec78a29218bd1ff4ff4033e16b72ed189ff74a20fea098d336d0555be628d5",
     },
     MatrixCase {
         name: "maximum-radius-volcanic",
@@ -80,8 +81,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_relief_hash: "5cb52cc0c50d804d53292ead817d95045952d3a9bb177a2ea1f8b8d04d0c6073",
-        expected_geology_hash: "a1e82e23df49ef044f5659849bc6543d920246284ed62f2ea812027d28c05cca",
+        expected_relief_hash: "f2e2e0d681668a14cdb517ca6f1f056fbf097890ad64615bf1893586fab6d445",
+        expected_geology_hash: "4ee3b4650a98d4983acd617f0b6bba621e2376c778e78242a4a4a1671e4728c8",
     },
 ];
 
@@ -148,6 +149,7 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
             &surface,
             &tectonic,
             &mantle,
+            &ReliefSpec::default(),
             &mut stage_rng(case.seed, "matrix.relief"),
             &mut diagnostics,
         )
@@ -157,6 +159,7 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
             &surface,
             &tectonic,
             &mantle,
+            &ReliefSpec::default(),
             &mut stage_rng(case.seed, "matrix.relief"),
             &mut repeated_diagnostics,
         )
@@ -217,23 +220,17 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
         }
         for hotspot in mantle.hotspots() {
             let index = hotspot.source_cell().raw() as usize;
-            assert!(relief.volcanic_offset_m().values()[index] > 0.0);
+            let volcanic = relief.volcanic_offset_m().values()[index];
+            assert!(
+                volcanic > 0.0 || relief.elevation_m().values()[index] == ELEVATION_MAX_M,
+                "{}: hotspot source lost its volcanic component without positive safety clamping",
+                case.name,
+            );
             assert_eq!(
                 geology.bedrock_kind(hotspot.source_cell()),
                 Some(BedrockKind::Volcanic)
             );
         }
-        let weighted_regional_mean = surface
-            .cells()
-            .iter()
-            .enumerate()
-            .map(|(index, cell)| {
-                f64::from(relief.regional_offset_m().values()[index]) * cell.area.get()
-            })
-            .sum::<f64>()
-            / surface.total_cell_area().get();
-        assert!(weighted_regional_mean.abs() < 0.05, "{}", case.name);
-
         let relief_hash = blake3::hash(&serde_json::to_vec(&relief).unwrap())
             .to_hex()
             .to_string();

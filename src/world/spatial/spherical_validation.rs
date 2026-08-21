@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use thiserror::Error;
 
 use super::sphere_geometry::{add, cross, dot, norm, subtract};
 use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
-    UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1,
+    UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
 };
 use crate::world::{
     CellId, EdgeId, SurfaceVertexId, UnitError, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
@@ -15,14 +17,16 @@ const VECTOR_ANGLE_TOLERANCE: f64 = 1.0e-10;
 const METRIC_RELATIVE_TOLERANCE: f64 = 1.0e-10;
 const AREA_RELATIVE_TOLERANCE: f64 = 1.0e-10;
 const ABSOLUTE_SCALE_ULPS: f64 = 16.0;
+type ValidationCancellation<'a> = Option<&'a dyn Fn() -> bool>;
 
 /// Stable failures for malformed or scientifically inconsistent spherical snapshots.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalSurfaceValidationError {
+    /// A caller cancelled a long-running validation scan.
+    #[error("spherical surface validation was cancelled")]
+    Cancelled,
     /// The snapshot uses a schema version that this engine does not support.
-    #[error(
-        "unsupported spherical surface schema version {found}; supported version is {supported}"
-    )]
+    #[error("unsupported spherical surface schema version {found}; latest supported version is {supported}")]
     UnsupportedSchema { found: u16, supported: u16 },
     /// The snapshot radius is not finite and strictly positive.
     #[error("spherical surface radius must be finite and positive, got {found}")]
@@ -205,31 +209,56 @@ pub enum SphericalSurfaceValidationError {
 impl SphericalSurfaceSnapshot {
     /// Validates a constructed or deserialized closed spherical surface in deterministic order.
     pub fn validate(&self) -> Result<(), SphericalSurfaceValidationError> {
+        self.validate_impl(None)
+    }
+
+    /// Validates the complete topology and geometry while polling long scans.
+    pub fn validate_cancellable(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        self.validate_impl(Some(cancelled))
+    }
+
+    fn validate_impl(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        check_validation_cancelled(cancellation)?;
         self.validate_header()?;
-        self.validate_ids_and_vectors()?;
-        self.validate_cell_shapes()?;
-        self.validate_cell_references()?;
-        self.validate_canonical_boundary_starts()?;
-        self.validate_edge_references()?;
-        self.validate_cyclic_sides()?;
-        self.validate_incidence()?;
+        self.validate_ids_and_vectors(cancellation)?;
+        self.validate_cell_shapes(cancellation)?;
+        self.validate_cell_references(cancellation)?;
+        self.validate_canonical_boundary_starts(cancellation)?;
+        self.validate_edge_references(cancellation)?;
+        self.validate_cyclic_sides(cancellation)?;
+        self.validate_incidence(cancellation)?;
         self.validate_euler_characteristic()?;
-        self.validate_manifold_topology()?;
-        self.validate_edge_metrics()?;
-        self.validate_cell_metrics()?;
-        self.validate_orientation()?;
+        self.validate_manifold_topology(cancellation)?;
+        self.validate_edge_metrics(cancellation)?;
+        self.validate_cell_metrics(cancellation)?;
+        self.validate_orientation(cancellation)?;
         self.validate_global_area()?;
-        if self.fingerprint != self.canonical_fingerprint() {
+        check_validation_cancelled(cancellation)?;
+        let canonical = match cancellation {
+            Some(cancelled) => self.canonical_fingerprint_cancellable(cancelled)?,
+            None => self.canonical_fingerprint(),
+        };
+        if self.fingerprint != canonical {
             return Err(SphericalSurfaceValidationError::FingerprintMismatch);
         }
+        check_validation_cancelled(cancellation)?;
         Ok(())
     }
 
     fn validate_header(&self) -> Result<(), SphericalSurfaceValidationError> {
-        if self.schema_version != SPHERICAL_SURFACE_SCHEMA_V1 {
+        if !matches!(
+            self.schema_version,
+            SPHERICAL_SURFACE_SCHEMA_V1 | SPHERICAL_SURFACE_SCHEMA_V2
+        ) {
             return Err(SphericalSurfaceValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: SPHERICAL_SURFACE_SCHEMA_V1,
+                supported: SPHERICAL_SURFACE_SCHEMA_V2,
             });
         }
         validate_record_count(
@@ -246,8 +275,12 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_ids_and_vectors(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_ids_and_vectors(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         for (position, vertex) in self.vertices.iter().enumerate() {
+            poll_validation_cancelled(position, cancellation)?;
             if vertex.id.raw() as usize != position {
                 return Err(SphericalSurfaceValidationError::NonContiguousVertexId {
                     position,
@@ -257,6 +290,7 @@ impl SphericalSurfaceSnapshot {
             validate_unit(vertex.position, "vertex", vertex.id.raw(), "position")?;
         }
         for (position, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(position, cancellation)?;
             if cell.id.raw() as usize != position {
                 return Err(SphericalSurfaceValidationError::NonContiguousCellId {
                     position,
@@ -267,6 +301,7 @@ impl SphericalSurfaceSnapshot {
             validate_unit(cell.centroid, "cell", cell.id.raw(), "centroid")?;
         }
         for (position, edge) in self.edges.iter().enumerate() {
+            poll_validation_cancelled(position, cancellation)?;
             if edge.id.raw() as usize != position {
                 return Err(SphericalSurfaceValidationError::NonContiguousEdgeId {
                     position,
@@ -284,8 +319,12 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_cell_shapes(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for cell in &self.cells {
+    fn validate_cell_shapes(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             if cell.boundary_vertices.len() < 3 {
                 return Err(SphericalSurfaceValidationError::CellBoundaryTooSmall {
                     cell: cell.id,
@@ -314,8 +353,12 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_cell_references(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for cell in &self.cells {
+    fn validate_cell_references(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for (position, &vertex) in cell.boundary_vertices.iter().enumerate() {
                 if vertex.raw() as usize >= self.vertices.len() {
                     return Err(SphericalSurfaceValidationError::InvalidCellVertex {
@@ -348,8 +391,13 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_edge_references(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for edge in &self.edges {
+    fn validate_edge_references(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        let mut canonical_edges = HashMap::with_capacity(self.edges.len());
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for &vertex in &edge.vertices {
                 if vertex.raw() as usize >= self.vertices.len() {
                     return Err(SphericalSurfaceValidationError::InvalidEdgeVertex {
@@ -386,27 +434,22 @@ impl SphericalSurfaceSnapshot {
             if edge.cells[0] > edge.cells[1] {
                 return Err(SphericalSurfaceValidationError::UnsortedEdgeOwners { edge: edge.id });
             }
-        }
-
-        let mut canonical_edges = self
-            .edges
-            .iter()
-            .map(|edge| (edge.vertices, edge.id))
-            .collect::<Vec<_>>();
-        canonical_edges.sort_unstable();
-        for pair in canonical_edges.windows(2) {
-            if pair[0].0 == pair[1].0 {
+            if let Some(previous_edge) = canonical_edges.insert(edge.vertices, edge.id) {
                 return Err(SphericalSurfaceValidationError::DuplicateCanonicalEdge {
-                    edge: pair[1].1,
-                    previous_edge: pair[0].1,
+                    edge: edge.id,
+                    previous_edge,
                 });
             }
         }
         Ok(())
     }
 
-    fn validate_canonical_boundary_starts(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for cell in &self.cells {
+    fn validate_canonical_boundary_starts(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             let minimum = cell
                 .boundary_vertices
                 .iter()
@@ -423,8 +466,12 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_cyclic_sides(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for cell in &self.cells {
+    fn validate_cyclic_sides(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for side in 0..cell.boundary_vertices.len() {
                 let first = cell.boundary_vertices[side];
                 let second = cell.boundary_vertices[(side + 1) % cell.boundary_vertices.len()];
@@ -444,9 +491,13 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_incidence(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_incidence(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         let mut incidence = vec![[0_usize; 3]; self.edges.len()];
-        for cell in &self.cells {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for &edge_id in &cell.boundary_edges {
                 let edge = &self.edges[edge_id.raw() as usize];
                 let slot = if cell.id == edge.cells[0] {
@@ -459,7 +510,8 @@ impl SphericalSurfaceSnapshot {
                 incidence[edge_id.raw() as usize][slot] += 1;
             }
         }
-        for (edge, counts) in self.edges.iter().zip(incidence) {
+        for (index, (edge, counts)) in self.edges.iter().zip(incidence).enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             if counts != [1, 1, 0] {
                 return Err(SphericalSurfaceValidationError::EdgeIncidenceMismatch {
                     edge: edge.id,
@@ -472,15 +524,22 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_manifold_topology(&self) -> Result<(), SphericalSurfaceValidationError> {
-        self.validate_opposite_edge_traversal()?;
-        self.validate_vertex_links()?;
-        self.validate_cell_adjacency_connected()
+    fn validate_manifold_topology(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        self.validate_opposite_edge_traversal(cancellation)?;
+        self.validate_vertex_links(cancellation)?;
+        self.validate_cell_adjacency_connected(cancellation)
     }
 
-    fn validate_opposite_edge_traversal(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_opposite_edge_traversal(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         let mut directions = vec![[None; 2]; self.edges.len()];
-        for cell in &self.cells {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for side in 0..cell.boundary_vertices.len() {
                 let edge_id = cell.boundary_edges[side];
                 let edge = &self.edges[edge_id.raw() as usize];
@@ -489,7 +548,8 @@ impl SphericalSurfaceSnapshot {
                     Some(cell.boundary_vertices[side] == edge.vertices[0]);
             }
         }
-        for (edge, owners) in self.edges.iter().zip(directions) {
+        for (index, (edge, owners)) in self.edges.iter().zip(directions).enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             if owners[0] == owners[1] {
                 return Err(SphericalSurfaceValidationError::EdgeTraversalMismatch {
                     edge: edge.id,
@@ -499,9 +559,13 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_vertex_links(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_vertex_links(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         let mut degrees = vec![0_usize; self.vertices.len()];
-        for edge in &self.edges {
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for vertex in edge.vertices {
                 degrees[vertex.raw() as usize] += 1;
             }
@@ -509,12 +573,14 @@ impl SphericalSurfaceSnapshot {
 
         let mut offsets = Vec::with_capacity(self.vertices.len() + 1);
         offsets.push(0_usize);
-        for &degree in &degrees {
+        for (index, &degree) in degrees.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             offsets.push(offsets.last().copied().unwrap() + degree);
         }
         let mut cursors = offsets[..self.vertices.len()].to_vec();
         let mut edge_slots = vec![[0_u32; 2]; self.edges.len()];
-        for edge in &self.edges {
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for (endpoint, vertex) in edge.vertices.into_iter().enumerate() {
                 let vertex = vertex.raw() as usize;
                 edge_slots[edge.id.raw() as usize][endpoint] = cursors[vertex] as u32;
@@ -525,7 +591,8 @@ impl SphericalSurfaceSnapshot {
         let incidence_count = offsets.last().copied().unwrap_or(0);
         let mut link_neighbors = vec![[0_u32; 2]; incidence_count];
         let mut link_counts = vec![0_u8; incidence_count];
-        for cell in &self.cells {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for position in 0..cell.boundary_vertices.len() {
                 let vertex = cell.boundary_vertices[position];
                 let previous = cell.boundary_edges
@@ -558,6 +625,7 @@ impl SphericalSurfaceSnapshot {
         let mut reached = vec![false; incidence_count];
         let mut pending = Vec::new();
         for (vertex, &degree) in degrees.iter().enumerate() {
+            poll_validation_cancelled(vertex, cancellation)?;
             if degree == 0 {
                 return Err(SphericalSurfaceValidationError::VertexLinkNotSingleCycle {
                     vertex: SurfaceVertexId::from_raw(vertex as u32),
@@ -608,7 +676,10 @@ impl SphericalSurfaceSnapshot {
         Some(edge_slots[edge_position][endpoint] as usize)
     }
 
-    fn validate_cell_adjacency_connected(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_cell_adjacency_connected(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         if self.cells.is_empty() {
             return Ok(());
         }
@@ -616,7 +687,10 @@ impl SphericalSurfaceSnapshot {
         reached[0] = true;
         let mut reached_count = 1_usize;
         let mut pending = vec![CellId::from_raw(0)];
+        let mut visited = 0_usize;
         while let Some(cell) = pending.pop() {
+            poll_validation_cancelled(visited, cancellation)?;
+            visited += 1;
             for &edge_id in &self.cells[cell.raw() as usize].boundary_edges {
                 let owners = self.edges[edge_id.raw() as usize].cells;
                 let neighbor = if owners[0] == cell {
@@ -641,9 +715,13 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_edge_metrics(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_edge_metrics(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         let radius = self.radius.get();
-        for edge in &self.edges {
+        for (index, edge) in self.edges.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             let first_vertex = self.vertices[edge.vertices[0].raw() as usize].position;
             let second_vertex = self.vertices[edge.vertices[1].raw() as usize].position;
             let midpoint = normalized(add(first_vertex.components(), second_vertex.components()))
@@ -697,15 +775,22 @@ impl SphericalSurfaceSnapshot {
                 }
             }
 
-            let site_delta = subtract(second_site.components(), first_site.components());
-            let site_separation = norm(site_delta);
-            for endpoint in [first_vertex, second_vertex] {
-                let bisector_residual =
-                    dot(endpoint.components(), site_delta).abs() / site_separation;
-                if !bisector_residual.is_finite() || bisector_residual > VECTOR_ANGLE_TOLERANCE {
-                    return Err(SphericalSurfaceValidationError::EdgeNormalMismatch {
-                        edge: edge.id,
-                    });
+            // V1 is specifically a Voronoi dual and requires every shared arc
+            // to bisect its generating sites. V2 represents generic geodesic
+            // finite-volume meshes such as the cubed sphere, while retaining
+            // the manifold, metric, orientation, area, and normal checks.
+            if self.schema_version == SPHERICAL_SURFACE_SCHEMA_V1 {
+                let site_delta = subtract(second_site.components(), first_site.components());
+                let site_separation = norm(site_delta);
+                for endpoint in [first_vertex, second_vertex] {
+                    let bisector_residual =
+                        dot(endpoint.components(), site_delta).abs() / site_separation;
+                    if !bisector_residual.is_finite() || bisector_residual > VECTOR_ANGLE_TOLERANCE
+                    {
+                        return Err(SphericalSurfaceValidationError::EdgeNormalMismatch {
+                            edge: edge.id,
+                        });
+                    }
                 }
             }
 
@@ -718,9 +803,13 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_cell_metrics(&self) -> Result<(), SphericalSurfaceValidationError> {
+    fn validate_cell_metrics(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
         let radius = self.radius.get();
-        for cell in &self.cells {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             let polygon = cell
                 .boundary_vertices
                 .iter()
@@ -747,8 +836,12 @@ impl SphericalSurfaceSnapshot {
         Ok(())
     }
 
-    fn validate_orientation(&self) -> Result<(), SphericalSurfaceValidationError> {
-        for cell in &self.cells {
+    fn validate_orientation(
+        &self,
+        cancellation: ValidationCancellation<'_>,
+    ) -> Result<(), SphericalSurfaceValidationError> {
+        for (index, cell) in self.cells.iter().enumerate() {
+            poll_validation_cancelled(index, cancellation)?;
             for side in 0..cell.boundary_vertices.len() {
                 let first = self.vertices[cell.boundary_vertices[side].raw() as usize]
                     .position
@@ -818,6 +911,26 @@ fn validate_record_count(
         return Err(SphericalSurfaceValidationError::RecordCountOutOfRange { record, found, max });
     }
     Ok(())
+}
+
+fn poll_validation_cancelled(
+    index: usize,
+    cancellation: ValidationCancellation<'_>,
+) -> Result<(), SphericalSurfaceValidationError> {
+    if index % 256 == 0 {
+        check_validation_cancelled(cancellation)?;
+    }
+    Ok(())
+}
+
+fn check_validation_cancelled(
+    cancellation: ValidationCancellation<'_>,
+) -> Result<(), SphericalSurfaceValidationError> {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
+        Err(SphericalSurfaceValidationError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_unit(

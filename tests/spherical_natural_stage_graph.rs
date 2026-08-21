@@ -5,23 +5,24 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, ResolvedWorldFormationArtifact,
-    RulePackSetArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
-    SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
-    SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
+    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact, ReliefSpecArtifact,
+    ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
+    SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
+    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
     PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, TectonicSpec, WorldFormationPreset,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, ReliefSpec, TectonicSpec, WorldFormationPreset,
     WorldFormationSpec,
 };
 use sekai::world::spatial::SurfaceRef;
 use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
 
-const ALL_STAGE_IDS: [&str; 16] = [
+const ALL_STAGE_IDS: [&str; 17] = [
     "natural.resolve-climate-rules",
     "natural.project-climate-input",
     "natural.resolve-geologic-rules",
@@ -38,25 +39,27 @@ const ALL_STAGE_IDS: [&str; 16] = [
     "natural.spherical-geology",
     "natural.spherical-preliminary-climate",
     "natural.spherical-hydro-erosion",
+    "natural.spherical-quality",
 ];
 
-const SPHERE_STAGE_IDS: [&str; 6] = [
+const SPHERE_STAGE_IDS: [&str; 7] = [
     "natural.spherical-tectonics",
     "natural.spherical-mantle",
     "natural.spherical-relief",
     "natural.spherical-geology",
     "natural.spherical-preliminary-climate",
     "natural.spherical-hydro-erosion",
+    "natural.spherical-quality",
 ];
 
-const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
+const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     (
         "surface",
         "213c897cc3af183bfb7a47c421d768e41f2993bd93d05f347ddf86fbb35500ec",
     ),
     (
         "tectonic",
-        "4f77bb9e0c123d73c38ee48b6b6ff5468c1839f76e1e4b458d6c9bc2f9956ab9",
+        "06943a7b5289e3e61afb1141c7a047169a95517737b52ea8502c44ba6b9f80b0",
     ),
     (
         "mantle",
@@ -64,23 +67,27 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 8] = [
     ),
     (
         "relief",
-        "1e4649ba69af1f4cdc7e084a76a9d11ef72ed92603d569f18a8dde6bf4481494",
+        "71608b5d933d96afb83312f06ce48292884d9feebdfae40828ebba9fb4210c81",
     ),
     (
         "geology",
-        "492dff0e8cbcc81ab1fc856d1e981e03dbe1d406dafe36937402acbf16d3d803",
+        "df9ba223b639f83e053441747676a7b0d34aef3189a9e0970a697aacaafc5e60",
     ),
     (
         "climate",
-        "92ec685370c5547431235742c4937a3f73bb2d305d508d7a72abd3cd91c435cc",
+        "b4bb1c52ee178cbc32e72bee4dd768d22244587f69c5fb0f9fe84b1f72c3aeef",
     ),
     (
         "hydro",
-        "f9bcbb8ef4406caa5217f56eeba028caef06c861684b3fcbd74379542d091aa2",
+        "f5b84485badfbd0cd33d7ada6c556a9ab08749bc5de199813e993ea9e1245913",
+    ),
+    (
+        "quality",
+        "2ba841b927093f6a6a0e693ebd5b6c111a00f6acf205dfb30d6c316165fb06d6",
     ),
     (
         "result",
-        "22fe482b4243ce64cbd0ad2aee493710e69e1cf144a9e984a0378b163c7d21a3",
+        "30effcd5b29d9e40c4f519c725d6b5209a702c3073142a8ab3fc652782f2e2e8",
     ),
 ];
 
@@ -91,6 +98,7 @@ struct Inputs {
     geologic: GeologicSpec,
     climate: ClimateSpec,
     hydro: HydroErosionSpec,
+    relief: ReliefSpec,
     formation: WorldFormationSpec,
 }
 
@@ -102,6 +110,7 @@ impl Default for Inputs {
             geologic: GeologicSpec::default(),
             climate: ClimateSpec::default(),
             hydro: HydroErosionSpec::default(),
+            relief: ReliefSpec::default(),
             formation: WorldFormationSpec::default(),
         }
     }
@@ -114,6 +123,7 @@ enum Omit {
     Geologic,
     Climate,
     Hydro,
+    Relief,
     Formation,
     Rules,
     Constraints,
@@ -147,6 +157,11 @@ fn external(inputs: &Inputs, omit: Option<Omit>) -> ExternalArtifacts {
     if omit != Some(Omit::Hydro) {
         artifacts
             .insert(HydroErosionSpecArtifact::new(inputs.hydro.clone()))
+            .unwrap();
+    }
+    if omit != Some(Omit::Relief) {
+        artifacts
+            .insert(ReliefSpecArtifact::new(inputs.relief.clone()))
             .unwrap();
     }
     if omit != Some(Omit::Formation) {
@@ -208,18 +223,25 @@ fn graph_declares_the_authoritative_sphere_path() {
             .iter()
             .all(|key| { !matches!(key.as_str(), "spatial.planar-spec" | "world.spatial") }));
     }
+    let relief = graph
+        .descriptors()
+        .iter()
+        .find(|descriptor| descriptor.id().as_str() == "natural.spherical-relief")
+        .unwrap();
+    assert!(relief.dependencies().contains(&ReliefSpecArtifact::KEY));
 }
 
 #[test]
-fn graph_requires_exactly_the_eight_approved_external_artifacts() {
+fn graph_requires_exactly_the_nine_approved_external_artifacts() {
     let inputs = Inputs::default();
-    assert_eq!(external(&inputs, None).len(), 8);
+    assert_eq!(external(&inputs, None).len(), 9);
     for omitted in [
         Omit::Space,
         Omit::Tectonic,
         Omit::Geologic,
         Omit::Climate,
         Omit::Hydro,
+        Omit::Relief,
         Omit::Formation,
         Omit::Rules,
         Omit::Constraints,
@@ -259,17 +281,23 @@ fn graph_requires_exactly_the_eight_approved_external_artifacts() {
 }
 
 #[test]
+fn invalid_land_target_is_rejected_before_any_stage_runs() {
+    let invalid = ReliefSpec {
+        target_land_fraction: f32::NAN,
+        ..ReliefSpec::default()
+    };
+    let error = ExternalArtifacts::new()
+        .insert(ReliefSpecArtifact::new(invalid))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("natural.invalid-relief-spec"));
+}
+
+#[test]
 fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
-    let first = build(
-        RootSeed::new(42),
-        &Inputs::default(),
-        &mut MemoryStageCache::new(),
-    );
-    let repeated = build(
-        RootSeed::new(42),
-        &Inputs::default(),
-        &mut MemoryStageCache::new(),
-    );
+    let inputs = Inputs::default();
+    let first = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
+    let repeated = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
 
     let surface = first.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
     let formation = first
@@ -288,6 +316,7 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .artifacts
         .get::<SphericalHydroErosionArtifact>()
         .unwrap();
+    let quality = first.artifacts.get::<NaturalQualityArtifact>().unwrap();
 
     surface.snapshot().validate().unwrap();
     formation.formation().validate().unwrap();
@@ -325,6 +354,11 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
             climate.snapshot(),
         )
         .unwrap();
+    quality.report().validate().unwrap();
+    assert_eq!(
+        quality.report().surface_ref(),
+        SurfaceRef::for_spherical(surface.snapshot())
+    );
 
     let hashes = [
         (
@@ -383,6 +417,14 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
                 .unwrap()
                 .as_bytes()),
         ),
+        (
+            "quality",
+            hex(first
+                .artifacts
+                .hash::<NaturalQualityArtifact>()
+                .unwrap()
+                .as_bytes()),
+        ),
     ];
     let result_hash = hex(first.report.result_hash().unwrap().as_bytes());
     println!(
@@ -424,6 +466,7 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
                 .artifacts
                 .hash::<SphericalHydroErosionArtifact>()
                 .unwrap(),
+            "quality" => repeated.artifacts.hash::<NaturalQualityArtifact>().unwrap(),
             _ => unreachable!(),
         };
         assert_eq!(*hash, hex(repeated_hash.as_bytes()));
@@ -436,6 +479,30 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .chain(std::iter::once(("result", result_hash.as_str())))
         .collect::<Vec<_>>();
     assert_eq!(actual, EXPECTED_GRAPH_HASHES);
+}
+
+#[test]
+fn whole_graph_accepts_an_evolved_final_plate_count() {
+    let mut inputs = Inputs::default();
+    inputs.tectonic.plate_count = 7;
+    inputs.tectonic.continental_crust_fraction = 0.28;
+    inputs.formation = WorldFormationSpec {
+        preset: WorldFormationPreset::GreatIsland,
+        ..WorldFormationSpec::default()
+    };
+
+    let outcome = build(RootSeed::new(1), &inputs, &mut MemoryStageCache::new());
+    let tectonic = outcome
+        .artifacts
+        .get::<SphericalTectonicArtifact>()
+        .unwrap();
+
+    assert_ne!(
+        tectonic.snapshot().plates().len(),
+        usize::from(inputs.tectonic.plate_count),
+        "this graph fixture must exercise an evolved final plate count"
+    );
+    assert_eq!(outcome.report.stage_ids(), ALL_STAGE_IDS);
 }
 
 #[test]
@@ -470,6 +537,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -485,6 +553,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -500,6 +569,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -512,6 +582,7 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.project-climate-input",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 
@@ -523,7 +594,108 @@ fn cache_invalidation_matches_each_independent_input() {
             "natural.resolve-hydro-erosion-rules",
             "natural.project-hydro-erosion-input",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
+    );
+
+    let mut relief = Inputs::default();
+    relief.relief.target_land_fraction = 0.55;
+    exact_misses(
+        &changed_build(relief, RootSeed::new(42)),
+        &[
+            "natural.spherical-relief",
+            "natural.spherical-geology",
+            "natural.spherical-preliminary-climate",
+            "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
+        ],
+    );
+}
+
+#[test]
+fn land_target_changes_only_sea_level_and_downstream_land_classification() {
+    fn land_fraction(outcome: &BuildOutcome) -> f64 {
+        let surface = outcome.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
+        let relief = outcome.artifacts.get::<SphericalReliefArtifact>().unwrap();
+        let land_area = surface
+            .snapshot()
+            .cells()
+            .iter()
+            .zip(relief.snapshot().land_ocean().raw_values())
+            .filter_map(|(cell, &kind)| (kind == 1).then_some(cell.area.get()))
+            .sum::<f64>();
+        land_area / surface.snapshot().total_cell_area().get()
+    }
+
+    let low_inputs = Inputs {
+        relief: ReliefSpec {
+            target_land_fraction: 0.25,
+            ..ReliefSpec::default()
+        },
+        ..Inputs::default()
+    };
+    let high_inputs = Inputs {
+        relief: ReliefSpec {
+            target_land_fraction: 0.60,
+            ..ReliefSpec::default()
+        },
+        ..Inputs::default()
+    };
+    let low = build(RootSeed::new(42), &low_inputs, &mut MemoryStageCache::new());
+    let high = build(
+        RootSeed::new(42),
+        &high_inputs,
+        &mut MemoryStageCache::new(),
+    );
+
+    for key in ["surface", "tectonic", "mantle"] {
+        let equal = match key {
+            "surface" => {
+                low.artifacts.hash::<SphericalSurfaceArtifact>().unwrap()
+                    == high.artifacts.hash::<SphericalSurfaceArtifact>().unwrap()
+            }
+            "tectonic" => {
+                low.artifacts.hash::<SphericalTectonicArtifact>().unwrap()
+                    == high.artifacts.hash::<SphericalTectonicArtifact>().unwrap()
+            }
+            "mantle" => {
+                low.artifacts.hash::<SphericalMantleArtifact>().unwrap()
+                    == high.artifacts.hash::<SphericalMantleArtifact>().unwrap()
+            }
+            _ => unreachable!(),
+        };
+        assert!(equal, "{key} changed with a relief-only author edit");
+    }
+    let low_relief = low.artifacts.get::<SphericalReliefArtifact>().unwrap();
+    let high_relief = high.artifacts.get::<SphericalReliefArtifact>().unwrap();
+    assert_eq!(
+        low_relief.snapshot().crust_base_elevation_m(),
+        high_relief.snapshot().crust_base_elevation_m()
+    );
+    assert_eq!(
+        low_relief.snapshot().tectonic_offset_m(),
+        high_relief.snapshot().tectonic_offset_m()
+    );
+    assert_eq!(
+        low_relief.snapshot().volcanic_offset_m(),
+        high_relief.snapshot().volcanic_offset_m()
+    );
+    assert_eq!(
+        low_relief.snapshot().regional_offset_m(),
+        high_relief.snapshot().regional_offset_m()
+    );
+    assert_eq!(
+        low_relief.snapshot().elevation_m(),
+        high_relief.snapshot().elevation_m()
+    );
+    assert!(low_relief.snapshot().sea_level_m() > high_relief.snapshot().sea_level_m());
+    let low_actual = land_fraction(&low);
+    let high_actual = land_fraction(&high);
+    assert!(low_actual < high_actual);
+    assert!((low_actual - 0.25).abs() <= 0.02, "low actual={low_actual}");
+    assert!(
+        (high_actual - 0.60).abs() <= 0.02,
+        "high actual={high_actual}"
     );
 }
 
@@ -565,6 +737,7 @@ fn cache_isolates_same_count_surfaces_with_different_radii() {
             "natural.spherical-geology",
             "natural.spherical-preliminary-climate",
             "natural.spherical-hydro-erosion",
+            "natural.spherical-quality",
         ],
     );
 

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use thiserror::Error;
 
+use super::cancellation::BuildCancellation;
+
 use crate::engine::diagnostics::is_valid_identifier;
 
 const INVALID_VALIDATION_CODE: &str = "engine.invalid-artifact-validation-code";
@@ -82,6 +84,9 @@ impl ArtifactValidationError {
 /// Errors returned while storing or reading typed artifacts.
 #[derive(Debug, Error)]
 pub enum ArtifactError {
+    /// Artifact preparation observed cooperative build cancellation.
+    #[error("artifact `{artifact_key:?}` preparation was cancelled")]
+    Cancelled { artifact_key: ArtifactKey },
     /// Artifact validation failed before hashing or storage.
     #[error("artifact `{artifact_key:?}` failed validation: {source}")]
     Validation {
@@ -130,6 +135,30 @@ pub trait Artifact: Serialize + Send + Sync + 'static {
     /// Implementations must reject non-finite numbers and use deterministic
     /// collection types for serialized maps.
     fn validate(&self) -> Result<(), ArtifactValidationError>;
+
+    /// Cancellation-aware validation used between stage execution and atomic
+    /// publication. Dense artifacts should override this method and poll from
+    /// inside their field scans; compact artifacts inherit the bracketed
+    /// default.
+    fn validate_cancellable(
+        &self,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), ArtifactValidationError> {
+        if cancellation.is_cancelled() {
+            return Err(ArtifactValidationError::new(
+                "engine.cancelled",
+                "artifact validation was cancelled",
+            ));
+        }
+        self.validate()?;
+        if cancellation.is_cancelled() {
+            return Err(ArtifactValidationError::new(
+                "engine.cancelled",
+                "artifact validation was cancelled",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -205,6 +234,48 @@ impl StoredArtifact {
             artifact_key: T::KEY,
             source,
         })?;
+        Ok(Self {
+            key: T::KEY,
+            value: Arc::new(value),
+            hash,
+        })
+    }
+
+    pub(crate) fn new_cancellable<T: Artifact>(
+        value: T,
+        cancellation: &BuildCancellation,
+    ) -> Result<Self, ArtifactError> {
+        if cancellation.is_cancelled() {
+            return Err(ArtifactError::Cancelled {
+                artifact_key: T::KEY,
+            });
+        }
+        if let Err(source) = value.validate_cancellable(cancellation) {
+            return if cancellation.is_cancelled() {
+                Err(ArtifactError::Cancelled {
+                    artifact_key: T::KEY,
+                })
+            } else {
+                Err(ArtifactError::Validation {
+                    artifact_key: T::KEY,
+                    source,
+                })
+            };
+        }
+        let hash = match stream_hash_cancellable(&value, cancellation) {
+            Ok(hash) => hash,
+            Err(_source) if cancellation.is_cancelled() => {
+                return Err(ArtifactError::Cancelled {
+                    artifact_key: T::KEY,
+                });
+            }
+            Err(source) => {
+                return Err(ArtifactError::Serialization {
+                    artifact_key: T::KEY,
+                    source,
+                });
+            }
+        };
         Ok(Self {
             key: T::KEY,
             value: Arc::new(value),
@@ -300,11 +371,67 @@ fn stream_hash<T: Serialize>(value: &T) -> Result<ContentHash, serde_json::Error
     Ok(ContentHash::new(*hasher.finalize().as_bytes()))
 }
 
+fn stream_hash_cancellable<T: Serialize>(
+    value: &T,
+    cancellation: &BuildCancellation,
+) -> Result<ContentHash, serde_json::Error> {
+    let mut hasher = blake3::Hasher::new();
+    let mut writer = CancellableHasherWriter {
+        hasher: &mut hasher,
+        cancellation,
+        bytes_since_poll: 0,
+    };
+    writer.check_cancelled().map_err(serde_json::Error::io)?;
+    serde_json::to_writer(&mut writer, value)?;
+    writer.check_cancelled().map_err(serde_json::Error::io)?;
+    Ok(ContentHash::new(*hasher.finalize().as_bytes()))
+}
+
 struct HasherWriter<'a>(&'a mut blake3::Hasher);
 
 impl Write for HasherWriter<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         self.0.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct CancellableHasherWriter<'a> {
+    hasher: &'a mut blake3::Hasher,
+    cancellation: &'a BuildCancellation,
+    bytes_since_poll: usize,
+}
+
+impl CancellableHasherWriter<'_> {
+    const POLL_BYTES: usize = 64 * 1024;
+
+    fn check_cancelled(&mut self) -> io::Result<()> {
+        self.bytes_since_poll = 0;
+        if self.cancellation.is_cancelled() {
+            // `Write::write_all` transparently retries `Interrupted`. Using
+            // that kind here would therefore serialize the entire artifact
+            // after cancellation and only fail at the final explicit poll.
+            Err(io::Error::other("artifact hashing was cancelled"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Write for CancellableHasherWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.bytes_since_poll >= Self::POLL_BYTES {
+            self.check_cancelled()?;
+        }
+        self.hasher.update(buffer);
+        self.bytes_since_poll = self.bytes_since_poll.saturating_add(buffer.len());
+        if self.bytes_since_poll >= Self::POLL_BYTES {
+            self.check_cancelled()?;
+        }
         Ok(buffer.len())
     }
 

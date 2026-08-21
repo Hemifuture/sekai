@@ -79,6 +79,11 @@ pub enum LandOceanKind {
 }
 
 impl LandOceanKind {
+    /// Returns the centimeter-quantized classification coordinate used by V1.
+    pub(crate) fn quantized_centimeters(elevation_m: f32) -> i64 {
+        quantized_centimeters(elevation_m)
+    }
+
     /// Decodes the stable V1 category value.
     pub fn try_from_raw(raw: u32) -> Result<Self, ReliefValidationError> {
         match raw {

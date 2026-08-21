@@ -8,8 +8,8 @@ use thiserror::Error;
 use super::{
     classify_boundary_kinematics, BoundaryClassification, BoundaryKind, BoundaryKinematics,
     BoundaryRecord, CrustKind, CrustKindField, PlateIdField, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_PLATE_COUNT, OCEANIC_CRUST_MAX_THICKNESS_KM,
-    OCEANIC_CRUST_MIN_THICKNESS_KM,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
+    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -21,8 +21,14 @@ use crate::world::{
     MAX_SPHERICAL_EDGE_COUNT,
 };
 
-/// The supported schema for surface-bound spherical tectonic snapshots.
-pub const TECTONIC_SNAPSHOT_SCHEMA_V2: u16 = 2;
+/// The supported schema for present-day, surface-bound spherical tectonic snapshots.
+pub const TECTONIC_SNAPSHOT_SCHEMA_V3: u16 = 3;
+/// The canonical age stored for continental crust, whose formation age is not modeled here.
+pub const CONTINENTAL_CRUST_AGE_SENTINEL_MYR: f32 = -1.0;
+/// The canonical age stored when no current orogeny is present.
+pub const NO_OROGENY_AGE_SENTINEL_MYR: f32 = -1.0;
+/// The oldest oceanic crust or active orogeny representable by the current-state contract.
+pub const MAX_CRUST_AGE_MYR: f32 = 512.0;
 /// The maximum supported local rigid-plate speed, in millimeters per year.
 pub const MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR: f64 = 120.0;
 /// The largest representable angular rate, sized for 120 mm/year on a one-meter sphere.
@@ -37,6 +43,7 @@ const MAX_RELATIVE_SPEED_MM_PER_YEAR: f32 = 240.0;
 const MAX_SPHERICAL_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;
 const MAX_SPHERICAL_PLATES: usize = MAX_PLATE_COUNT as usize;
+const LINEATION_NORM_TOLERANCE: f32 = 1.0e-4;
 
 /// One rigid spherical plate rotation about an Euler pole.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -157,8 +164,7 @@ impl<'de> Deserialize<'de> for SphericalPlateRotation {
                 "Euler pole must be a unit vector, got norm {norm}"
             )));
         }
-        let pole =
-            UnitVector3::new(wire.pole[0], wire.pole[1], wire.pole[2]).map_err(D::Error::custom)?;
+        let pole = UnitVector3::from_verified_unit_components(wire.pole);
         Self::new(pole, wire.angular_rate_prad_per_year).map_err(D::Error::custom)
     }
 }
@@ -351,6 +357,248 @@ impl From<StrictBoundaryRecordWire> for BoundaryRecord {
     }
 }
 
+/// The active mountain-building regime recorded at one current crust sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SphericalOrogenyKind {
+    /// No active or inherited orogenic signal is stored.
+    None,
+    /// Oceanic subduction beneath overriding crust produced an Andean-style signal.
+    Andean,
+    /// Continental collision produced a Himalayan-style signal.
+    Himalayan,
+}
+
+/// Dense material and tectonic attributes for the one published current crust state.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SphericalCrustState {
+    kinds: CrustKindField,
+    thickness_km: Vec<f32>,
+    age_myr: Vec<f32>,
+    tectonic_elevation_m: Vec<f32>,
+    lineation_east: Vec<f32>,
+    lineation_north: Vec<f32>,
+    orogeny_kind: Vec<SphericalOrogenyKind>,
+    orogeny_age_myr: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SphericalCrustStateWire {
+    #[serde(deserialize_with = "deserialize_spherical_cell_u32_values")]
+    kinds: Vec<u32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    thickness_km: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    age_myr: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    tectonic_elevation_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    lineation_east: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    lineation_north: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_orogeny_values")]
+    orogeny_kind: Vec<SphericalOrogenyKind>,
+    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
+    orogeny_age_myr: Vec<f32>,
+}
+
+impl SphericalCrustState {
+    /// Constructs and validates one complete present-day crust field set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        kinds: CrustKindField,
+        thickness_km: Vec<f32>,
+        age_myr: Vec<f32>,
+        tectonic_elevation_m: Vec<f32>,
+        lineation_east: Vec<f32>,
+        lineation_north: Vec<f32>,
+        orogeny_kind: Vec<SphericalOrogenyKind>,
+        orogeny_age_myr: Vec<f32>,
+    ) -> Result<Self, SphericalTectonicValidationError> {
+        let state = Self {
+            kinds,
+            thickness_km,
+            age_myr,
+            tectonic_elevation_m,
+            lineation_east,
+            lineation_north,
+            orogeny_kind,
+            orogeny_age_myr,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// Rechecks dense lengths and all material-state invariants.
+    pub fn validate(&self) -> Result<(), SphericalTectonicValidationError> {
+        let cell_count = self.kinds.len();
+        validate_allocation_limit("crust.kinds", cell_count, MAX_SPHERICAL_CELLS)?;
+        for (field, found) in [
+            ("thickness_km", self.thickness_km.len()),
+            ("age_myr", self.age_myr.len()),
+            ("tectonic_elevation_m", self.tectonic_elevation_m.len()),
+            ("lineation_east", self.lineation_east.len()),
+            ("lineation_north", self.lineation_north.len()),
+            ("orogeny_kind", self.orogeny_kind.len()),
+            ("orogeny_age_myr", self.orogeny_age_myr.len()),
+        ] {
+            validate_length(field, found, cell_count)?;
+        }
+
+        for index in 0..cell_count {
+            let cell = CellId::from_raw(index as u32);
+            let raw_kind = self.kinds.raw_values()[index];
+            let kind = CrustKind::try_from_raw(raw_kind).map_err(|_| {
+                SphericalTectonicValidationError::InvalidCrustKind {
+                    cell,
+                    found: raw_kind,
+                }
+            })?;
+            let thickness = self.thickness_km[index];
+            let (min, max) = crust_thickness_range(kind);
+            if !thickness.is_finite() || !(min..=max).contains(&thickness) {
+                return Err(SphericalTectonicValidationError::CrustThicknessOutOfRange {
+                    cell,
+                    kind,
+                    found: thickness,
+                    min,
+                    max,
+                });
+            }
+
+            let age = self.age_myr[index];
+            let valid_age = match kind {
+                CrustKind::Oceanic => age.is_finite() && (0.0..=MAX_CRUST_AGE_MYR).contains(&age),
+                CrustKind::Continental => age == CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+            };
+            if !valid_age {
+                return Err(SphericalTectonicValidationError::CrustAgeOutOfRange {
+                    cell,
+                    kind,
+                    found: age,
+                });
+            }
+
+            let elevation = self.tectonic_elevation_m[index];
+            if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+                return Err(
+                    SphericalTectonicValidationError::TectonicElevationOutOfRange {
+                        cell,
+                        found: elevation,
+                        min: ELEVATION_MIN_M,
+                        max: ELEVATION_MAX_M,
+                    },
+                );
+            }
+
+            let east = self.lineation_east[index];
+            let north = self.lineation_north[index];
+            let is_zero = east == 0.0 && north == 0.0;
+            let norm = east.hypot(north);
+            if !is_zero
+                && (!east.is_finite()
+                    || !north.is_finite()
+                    || (norm - 1.0).abs() > LINEATION_NORM_TOLERANCE)
+            {
+                return Err(SphericalTectonicValidationError::InvalidCrustLineation {
+                    cell,
+                    east,
+                    north,
+                });
+            }
+
+            let orogeny = self.orogeny_kind[index];
+            let orogeny_age = self.orogeny_age_myr[index];
+            let valid_orogeny_age = match orogeny {
+                SphericalOrogenyKind::None => orogeny_age == NO_OROGENY_AGE_SENTINEL_MYR,
+                SphericalOrogenyKind::Andean | SphericalOrogenyKind::Himalayan => {
+                    orogeny_age.is_finite() && (0.0..=MAX_CRUST_AGE_MYR).contains(&orogeny_age)
+                }
+            };
+            if !valid_orogeny_age {
+                return Err(SphericalTectonicValidationError::OrogenyAgeOutOfRange {
+                    cell,
+                    kind: orogeny,
+                    found: orogeny_age,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the number of current crust samples.
+    pub fn len(&self) -> usize {
+        self.kinds.len()
+    }
+
+    /// Returns whether the current crust contains no samples.
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+
+    /// Returns dense crust categories without copying.
+    pub const fn kinds(&self) -> &CrustKindField {
+        &self.kinds
+    }
+
+    /// Returns dense current crust thickness in kilometers.
+    pub fn thickness_km(&self) -> &[f32] {
+        &self.thickness_km
+    }
+
+    /// Returns dense current material age in millions of years.
+    pub fn age_myr(&self) -> &[f32] {
+        &self.age_myr
+    }
+
+    /// Returns dense tectonic elevation in meters.
+    pub fn tectonic_elevation_m(&self) -> &[f32] {
+        &self.tectonic_elevation_m
+    }
+
+    /// Returns the east component of the dense unit-or-zero lineation field.
+    pub fn lineation_east(&self) -> &[f32] {
+        &self.lineation_east
+    }
+
+    /// Returns the north component of the dense unit-or-zero lineation field.
+    pub fn lineation_north(&self) -> &[f32] {
+        &self.lineation_north
+    }
+
+    /// Returns the dense current orogeny category field.
+    pub fn orogeny_kind(&self) -> &[SphericalOrogenyKind] {
+        &self.orogeny_kind
+    }
+
+    /// Returns dense current orogeny age in millions of years.
+    pub fn orogeny_age_myr(&self) -> &[f32] {
+        &self.orogeny_age_myr
+    }
+}
+
+impl<'de> Deserialize<'de> for SphericalCrustState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SphericalCrustStateWire::deserialize(deserializer)?;
+        let kinds = CrustKindField::from_raw(wire.kinds).map_err(D::Error::custom)?;
+        Self::new(
+            kinds,
+            wire.thickness_km,
+            wire.age_myr,
+            wire.tectonic_elevation_m,
+            wire.lineation_east,
+            wire.lineation_north,
+            wire.orogeny_kind,
+            wire.orogeny_age_myr,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
 /// Immutable surface-bound spherical plates, crust, and current boundary events.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -359,8 +607,7 @@ pub struct SphericalTectonicSnapshot {
     surface_ref: SurfaceRef,
     plates: Vec<SphericalPlate>,
     cell_plates: PlateIdField,
-    crust_kinds: CrustKindField,
-    crust_thickness_km: Vec<f32>,
+    crust: SphericalCrustState,
     boundaries: Vec<BoundaryRecord>,
     boundary_segments: Vec<SphericalBoundarySegment>,
 }
@@ -374,10 +621,7 @@ struct SphericalTectonicSnapshotWire {
     plates: Vec<SphericalPlate>,
     #[serde(deserialize_with = "deserialize_spherical_cell_u32_values")]
     cell_plates: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_spherical_cell_u32_values")]
-    crust_kinds: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_spherical_cell_f32_values")]
-    crust_thickness_km: Vec<f32>,
+    crust: SphericalCrustState,
     #[serde(deserialize_with = "deserialize_spherical_boundaries")]
     boundaries: Vec<StrictBoundaryRecordWire>,
     #[serde(deserialize_with = "deserialize_boundary_segments")]
@@ -399,6 +643,15 @@ where
 }
 
 fn deserialize_spherical_cell_f32_values<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELLS>(deserializer)
+}
+
+fn deserialize_spherical_cell_orogeny_values<'de, D>(
+    deserializer: D,
+) -> Result<Vec<SphericalOrogenyKind>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -501,8 +754,7 @@ impl SphericalTectonicSnapshot {
         surface_ref: SurfaceRef,
         mut plates: Vec<SphericalPlate>,
         cell_plates: PlateIdField,
-        crust_kinds: CrustKindField,
-        crust_thickness_km: Vec<f32>,
+        crust: SphericalCrustState,
         boundaries: Vec<BoundaryRecord>,
         mut boundary_segments: Vec<SphericalBoundarySegment>,
     ) -> Result<Self, SphericalTectonicValidationError> {
@@ -513,8 +765,7 @@ impl SphericalTectonicSnapshot {
             surface_ref,
             plates,
             cell_plates,
-            crust_kinds,
-            crust_thickness_km,
+            crust,
             boundaries,
             boundary_segments,
         };
@@ -524,10 +775,10 @@ impl SphericalTectonicSnapshot {
 
     /// Rechecks all invariants that do not require the referenced surface records.
     pub fn validate(&self) -> Result<(), SphericalTectonicValidationError> {
-        if self.schema_version != TECTONIC_SNAPSHOT_SCHEMA_V2 {
+        if self.schema_version != TECTONIC_SNAPSHOT_SCHEMA_V3 {
             return Err(SphericalTectonicValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: TECTONIC_SNAPSHOT_SCHEMA_V2,
+                supported: TECTONIC_SNAPSHOT_SCHEMA_V3,
             });
         }
         self.surface_ref.validate()?;
@@ -577,12 +828,8 @@ impl SphericalTectonicSnapshot {
         }
 
         validate_length("cell_plates", self.cell_plates.len(), cell_count)?;
-        validate_length("crust_kinds", self.crust_kinds.len(), cell_count)?;
-        validate_length(
-            "crust_thickness_km",
-            self.crust_thickness_km.len(),
-            cell_count,
-        )?;
+        validate_length("crust", self.crust.len(), cell_count)?;
+        self.crust.validate()?;
         validate_length("boundaries", self.boundaries.len(), edge_count)?;
         for index in 0..cell_count {
             let cell = CellId::from_raw(index as u32);
@@ -592,24 +839,6 @@ impl SphericalTectonicSnapshot {
                 .expect("dense plate field length was validated");
             if plate.raw() as usize >= self.plates.len() {
                 return Err(SphericalTectonicValidationError::InvalidCellPlate { cell, plate });
-            }
-            let raw_kind = self.crust_kinds.raw_values()[index];
-            let kind = CrustKind::try_from_raw(raw_kind).map_err(|_| {
-                SphericalTectonicValidationError::InvalidCrustKind {
-                    cell,
-                    found: raw_kind,
-                }
-            })?;
-            let thickness = self.crust_thickness_km[index];
-            let (min, max) = crust_thickness_range(kind);
-            if !thickness.is_finite() || !(min..=max).contains(&thickness) {
-                return Err(SphericalTectonicValidationError::CrustThicknessOutOfRange {
-                    cell,
-                    kind,
-                    found: thickness,
-                    min,
-                    max,
-                });
             }
         }
         self.validate_segments_and_boundaries()
@@ -656,7 +885,7 @@ impl SphericalTectonicSnapshot {
         Ok(())
     }
 
-    /// Returns the V2 schema version.
+    /// Returns the V3 current-state schema version.
     pub const fn schema_version(&self) -> u16 {
         self.schema_version
     }
@@ -678,12 +907,47 @@ impl SphericalTectonicSnapshot {
 
     /// Returns the dense crust-category field.
     pub const fn crust_kinds(&self) -> &CrustKindField {
-        &self.crust_kinds
+        self.crust.kinds()
     }
 
     /// Returns crust thickness values in kilometers.
     pub fn crust_thickness_km(&self) -> &[f32] {
-        &self.crust_thickness_km
+        self.crust.thickness_km()
+    }
+
+    /// Returns the complete dense current crust state.
+    pub const fn crust_state(&self) -> &SphericalCrustState {
+        &self.crust
+    }
+
+    /// Returns current material ages in millions of years.
+    pub fn crust_age_myr(&self) -> &[f32] {
+        self.crust.age_myr()
+    }
+
+    /// Returns current tectonic elevation in meters.
+    pub fn tectonic_elevation_m(&self) -> &[f32] {
+        self.crust.tectonic_elevation_m()
+    }
+
+    /// Returns east components of current crust lineation.
+    pub fn lineation_east(&self) -> &[f32] {
+        self.crust.lineation_east()
+    }
+
+    /// Returns north components of current crust lineation.
+    pub fn lineation_north(&self) -> &[f32] {
+        self.crust.lineation_north()
+    }
+
+    /// Returns current orogeny categories.
+    pub fn orogeny_kind(&self) -> &[SphericalOrogenyKind] {
+        self.crust.orogeny_kind()
+    }
+
+    /// Returns current orogeny ages in millions of years.
+    pub fn orogeny_age_myr(&self) -> &[f32] {
+        self.crust.orogeny_age_myr()
     }
 
     /// Returns edge-aligned current boundary events.
@@ -703,12 +967,12 @@ impl SphericalTectonicSnapshot {
 
     /// Returns the crust kind at one surface cell.
     pub fn crust_kind(&self, cell: CellId) -> Option<CrustKind> {
-        self.crust_kinds.get(cell.raw() as usize)
+        self.crust.kinds().get(cell.raw() as usize)
     }
 
     /// Returns crust thickness at one surface cell in kilometers.
     pub fn crust_thickness_for_cell(&self, cell: CellId) -> Option<f32> {
-        self.crust_thickness_km.get(cell.raw() as usize).copied()
+        self.crust.thickness_km().get(cell.raw() as usize).copied()
     }
 
     fn validate_segments_and_boundaries(&self) -> Result<(), SphericalTectonicValidationError> {
@@ -858,11 +1122,12 @@ impl SphericalTectonicSnapshot {
             radius,
             edge,
             cell_indices.map(|index| {
-                self.crust_kinds
+                self.crust
+                    .kinds()
                     .get(index)
                     .expect("validated crust kind field is cell aligned")
             }),
-            cell_indices.map(|index| self.crust_thickness_km[index]),
+            cell_indices.map(|index| self.crust.thickness_km()[index]),
         )?;
         if record.kind != expected.kind
             || record.subducting_plate != expected.subducting_plate
@@ -924,14 +1189,12 @@ impl<'de> Deserialize<'de> for SphericalTectonicSnapshot {
         D: Deserializer<'de>,
     {
         let wire = SphericalTectonicSnapshotWire::deserialize(deserializer)?;
-        let crust_kinds = CrustKindField::from_raw(wire.crust_kinds).map_err(D::Error::custom)?;
         Self::new(
             wire.schema_version,
             wire.surface_ref,
             wire.plates,
             PlateIdField::from_raw(wire.cell_plates),
-            crust_kinds,
-            wire.crust_thickness_km,
+            wire.crust,
             wire.boundaries.into_iter().map(Into::into).collect(),
             wire.boundary_segments,
         )
@@ -1077,7 +1340,7 @@ fn validate_radius(radius: Meters) -> Result<(), SphericalTectonicValidationErro
 /// Failures in surface-bound spherical tectonic contracts.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalTectonicValidationError {
-    /// The snapshot schema is not the supported surface-bound V2 contract.
+    /// The snapshot schema is not the supported present-day surface-bound contract.
     #[error("unsupported spherical tectonic schema {found}; supported schema is {supported}")]
     UnsupportedSchema { found: u16, supported: u16 },
     /// The stored surface identity is internally invalid.
@@ -1148,6 +1411,31 @@ pub enum SphericalTectonicValidationError {
         found: f32,
         min: f32,
         max: f32,
+    },
+    /// Oceanic age is outside the budget, or continental age is not the canonical sentinel.
+    #[error("cell {cell:?} {kind:?} crust age {found} Myr is invalid")]
+    CrustAgeOutOfRange {
+        cell: CellId,
+        kind: CrustKind,
+        found: f32,
+    },
+    /// Current tectonic elevation is non-finite or outside the shared relief range.
+    #[error("cell {cell:?} tectonic elevation {found} is outside {min}..={max} m")]
+    TectonicElevationOutOfRange {
+        cell: CellId,
+        found: f32,
+        min: f32,
+        max: f32,
+    },
+    /// Current lineation is neither exactly absent nor a finite unit tangent direction.
+    #[error("cell {cell:?} crust lineation [{east}, {north}] is neither zero nor unit length")]
+    InvalidCrustLineation { cell: CellId, east: f32, north: f32 },
+    /// Orogeny age is inconsistent with its current orogeny category.
+    #[error("cell {cell:?} {kind:?} orogeny age {found} Myr is invalid")]
+    OrogenyAgeOutOfRange {
+        cell: CellId,
+        kind: SphericalOrogenyKind,
+        found: f32,
     },
     /// A boundary strength is non-finite or outside zero to one.
     #[error("edge {edge:?} boundary strength {found} is outside 0..=1")]

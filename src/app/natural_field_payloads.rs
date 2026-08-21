@@ -319,10 +319,13 @@ impl<'a> NaturalFieldPayloadBundle<'a> {
 }
 
 /// Returns the shared natural-field range preference for a current surface.
+///
+/// `elevation_display_radius_m` is the document-precomputed percentile radius
+/// so per-frame reconciliation never re-sorts the elevation field.
 pub(super) fn natural_preferred_range(
     registry: &FieldRegistry,
     sea_level_m: f32,
-    surface_elevation_m: &[f32],
+    elevation_display_radius_m: Option<f32>,
     field: &FieldId,
 ) -> Option<DisplayRangeMode> {
     if [
@@ -337,13 +340,25 @@ pub(super) fn natural_preferred_range(
     {
         return Some(DisplayRangeMode::Data);
     }
-    (field == &surface_elevation_m_field_id()).then_some(())?;
+    (field == &surface_elevation_m_field_id() || field == &elevation_field_id()).then_some(())?;
     registry.get(field)?;
-    let radius = surface_elevation_m
-        .iter()
-        .map(|value| (value - sea_level_m).abs())
-        .fold(0.0_f32, f32::max);
+    let radius = elevation_display_radius_m?;
     ValueRange::new(sea_level_m - radius, sea_level_m + radius)
         .ok()
         .map(DisplayRangeMode::Manual)
+}
+
+/// Returns the symmetric hypsometric display radius around sea level.
+///
+/// The radius is the fixed absolute range the stepped hypsometric class
+/// palette is defined over (M2 Task 5): colours mean absolute metres
+/// above or below sea level, so world statistics no longer stretch or
+/// compress the ramp; values beyond the radius clamp to the end
+/// classes. The radius stays symmetric because the palette crosses from
+/// water to land exactly at its midpoint.
+pub(super) fn elevation_display_radius_m(
+    _sea_level_m: f32,
+    surface_elevation_m: &[f32],
+) -> Option<f32> {
+    (!surface_elevation_m.is_empty()).then_some(crate::view::HYPSOMETRIC_DISPLAY_RADIUS_M)
 }

@@ -5,13 +5,24 @@ use crate::world::fields::{EntityKind, FieldDomain, FieldValueType, StableIdKind
 
 const NATURAL_FIELD_PREFIX: &str = "field.sekai.core.natural.";
 
-pub(super) fn localized_field_key(key: &str) -> Cow<'_, str> {
+pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let Some(tail) = key.strip_prefix(NATURAL_FIELD_PREFIX) else {
         return Cow::Borrowed(key);
     };
     let label = match tail {
         "annual_local_runoff_mm" => "本地年径流量",
         "bedrock_kind" => "基岩类型",
+        "circulation_annual_precipitation_mm" => "年降水量（环流）",
+        "circulation_mean_air_temperature_c" => "年均气温（环流）",
+        "circulation_prevailing_wind_m_s" => "盛行风（环流）",
+        "coastal_deposition_m" => "海岸沉积量",
+        "coastal_erosion_m" => "海岸侵蚀量",
+        "hillslope_deposition_m" => "坡面堆积量",
+        "hillslope_erosion_m" => "坡面侵蚀量",
+        "isostatic_response_m" => "均衡响应",
+        "primary_elevation_m" => "初级地形高程",
+        "routed_sediment_deposition_m" => "河道输沙沉积",
+        "tectonic_displacement_m" => "构造位移量",
         "boundary_kind" => "构造边界类型",
         "boundary_strength" => "构造边界强度",
         "crust_base_elevation_m" => "地壳基准高程",
@@ -124,5 +135,7 @@ pub(super) const fn localized_palette(palette: PaletteId) -> &'static str {
         PaletteId::Sequential => "顺序",
         PaletteId::Diverging => "发散",
         PaletteId::Categorical => "分类",
+        PaletteId::Hypsometric => "等高地形",
+        PaletteId::LandOcean => "海陆",
     }
 }

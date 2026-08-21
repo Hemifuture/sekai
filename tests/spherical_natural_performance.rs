@@ -96,6 +96,12 @@ fn release_spherical_tectonic_and_mantle_budget() {
         + size_of_val(tectonic.cell_plates().raw_values())
         + size_of_val(tectonic.crust_kinds().raw_values())
         + size_of_val(tectonic.crust_thickness_km())
+        + size_of_val(tectonic.crust_age_myr())
+        + size_of_val(tectonic.tectonic_elevation_m())
+        + size_of_val(tectonic.lineation_east())
+        + size_of_val(tectonic.lineation_north())
+        + size_of_val(tectonic.orogeny_kind())
+        + size_of_val(tectonic.orogeny_age_myr())
         + size_of_val(tectonic.boundaries())
         + size_of_val(tectonic.boundary_segments())
         + tectonic

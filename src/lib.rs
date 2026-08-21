@@ -3,13 +3,14 @@
 #![allow(clippy::let_and_return)]
 #![allow(clippy::derivable_impls)]
 
-mod app;
+pub mod app;
 pub mod delaunay;
 /// Domain-neutral deterministic generation services.
 pub mod engine;
 /// Deterministic world-generation pipelines.
 pub mod generators;
-mod gpu;
+/// GPU presentation backends.
+pub mod gpu;
 mod map_layer;
 pub mod models;
 mod resource;
@@ -17,7 +18,7 @@ mod resource;
 pub mod rules;
 pub mod spatial;
 pub mod terrain;
-mod ui;
+pub mod ui;
 /// Renderer-neutral, read-only world presentation contracts.
 pub mod view;
 pub mod world;

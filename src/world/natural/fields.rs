@@ -468,7 +468,7 @@ fn schemas(
             custom_unit("meter", "m"),
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
-            FieldPaletteHint::Diverging,
+            FieldPaletteHint::Hypsometric,
             0,
             vec![
                 crust_base,
@@ -477,7 +477,7 @@ fn schemas(
                 regional_offset,
             ],
         )?,
-        category_schema_with_dependencies(
+        category_schema_with_palette(
             land_ocean.clone(),
             FieldDomain::Cells,
             BTreeMap::from([
@@ -485,6 +485,7 @@ fn schemas(
                 (1, "field.sekai.core.natural.land_ocean.land".into()),
             ]),
             vec![elevation.clone()],
+            FieldPaletteHint::LandOcean,
         )?,
         category_schema_with_dependencies(
             bedrock_kind.clone(),
@@ -680,7 +681,7 @@ fn schemas(
             custom_unit("meter", "m"),
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
-            FieldPaletteHint::Diverging,
+            FieldPaletteHint::Hypsometric,
             0,
             vec![
                 elevation,
@@ -763,6 +764,389 @@ fn schemas(
     ])
 }
 
+/// Returns the stable P5 primary (pre-formation) elevation field ID.
+pub fn primary_elevation_m_field_id() -> FieldId {
+    field_id("primary_elevation_m")
+}
+
+/// Returns the stable P5 cumulative tectonic displacement field ID.
+pub fn tectonic_displacement_m_field_id() -> FieldId {
+    field_id("tectonic_displacement_m")
+}
+
+/// Returns the stable P5 hillslope erosion component field ID.
+pub fn hillslope_erosion_m_field_id() -> FieldId {
+    field_id("hillslope_erosion_m")
+}
+
+/// Returns the stable P5 hillslope deposition component field ID.
+pub fn hillslope_deposition_m_field_id() -> FieldId {
+    field_id("hillslope_deposition_m")
+}
+
+/// Returns the stable P5 routed sediment deposition component field ID.
+pub fn routed_sediment_deposition_m_field_id() -> FieldId {
+    field_id("routed_sediment_deposition_m")
+}
+
+/// Returns the stable P5 coastal erosion component field ID.
+pub fn coastal_erosion_m_field_id() -> FieldId {
+    field_id("coastal_erosion_m")
+}
+
+/// Returns the stable P5 coastal deposition component field ID.
+pub fn coastal_deposition_m_field_id() -> FieldId {
+    field_id("coastal_deposition_m")
+}
+
+/// Returns the stable P5 isostatic response component field ID.
+pub fn isostatic_response_m_field_id() -> FieldId {
+    field_id("isostatic_response_m")
+}
+
+/// Returns the stable P4 circulation annual precipitation field ID.
+pub fn circulation_annual_precipitation_mm_field_id() -> FieldId {
+    field_id("circulation_annual_precipitation_mm")
+}
+
+/// Returns the stable P4 circulation mean air temperature field ID.
+pub fn circulation_mean_air_temperature_c_field_id() -> FieldId {
+    field_id("circulation_mean_air_temperature_c")
+}
+
+/// Returns the stable P4 circulation prevailing near-surface wind field ID.
+pub fn circulation_prevailing_wind_m_s_field_id() -> FieldId {
+    field_id("circulation_prevailing_wind_m_s")
+}
+
+/// Builds the V1 formation-product field registry with sphere-area-safe limits.
+///
+/// The registry covers the P2v5→P5 product surface: evolved crust identity,
+/// the retained formation elevation components, the atomic current surface
+/// with its hydrology, and the published circulation climatology summaries.
+pub fn spherical_formation_field_registry(
+    plate_count: u16,
+    total_surface_area_m2: f64,
+) -> Result<FieldRegistry, NaturalFieldRegistryError> {
+    validate_plate_count(plate_count)?;
+    if !total_surface_area_m2.is_finite() || total_surface_area_m2 <= 0.0 {
+        return Err(NaturalFieldRegistryError::InvalidTotalSurfaceArea {
+            found: total_surface_area_m2,
+        });
+    }
+    let max_drainage_area_km2 = total_surface_area_m2 / 1_000_000.0;
+    let max_mean_annual_discharge_m3_s = total_surface_area_m2
+        * (f64::from(ANNUAL_PRECIPITATION_MAX_MM) / 1_000.0)
+        / CLIMATOLOGICAL_YEAR_SECONDS;
+    if !max_drainage_area_km2.is_finite()
+        || max_drainage_area_km2 > f64::from(f32::MAX)
+        || !max_mean_annual_discharge_m3_s.is_finite()
+        || max_mean_annual_discharge_m3_s > f64::from(f32::MAX)
+    {
+        return Err(NaturalFieldRegistryError::SphericalFieldRangeOverflow {
+            total_surface_area_m2,
+        });
+    }
+    let mut builder = FieldRegistryBuilder::new();
+    for schema in formation_schemas(
+        plate_count,
+        NaturalFieldRegistryLimits {
+            max_drainage_area_km2: max_drainage_area_km2 as f32,
+            max_mean_annual_discharge_m3_s: max_mean_annual_discharge_m3_s as f32,
+        },
+    )? {
+        builder.register(schema)?;
+    }
+    Ok(builder.build()?)
+}
+
+fn formation_schemas(
+    plate_count: u16,
+    limits: NaturalFieldRegistryLimits,
+) -> Result<Vec<FieldSchema>, FieldSchemaError> {
+    let plate_id = plate_id_field_id();
+    let crust_kind = crust_kind_field_id();
+    let crust_thickness = crust_thickness_field_id();
+    let primary_elevation = primary_elevation_m_field_id();
+    let tectonic_displacement = tectonic_displacement_m_field_id();
+    let fluvial_erosion_depth = fluvial_erosion_depth_m_field_id();
+    let hillslope_erosion = hillslope_erosion_m_field_id();
+    let hillslope_deposition = hillslope_deposition_m_field_id();
+    let routed_sediment_deposition = routed_sediment_deposition_m_field_id();
+    let coastal_erosion = coastal_erosion_m_field_id();
+    let coastal_deposition = coastal_deposition_m_field_id();
+    let isostatic_response = isostatic_response_m_field_id();
+    let sediment_deposition_thickness = sediment_deposition_thickness_m_field_id();
+    let surface_elevation = surface_elevation_m_field_id();
+    let land_ocean = land_ocean_field_id();
+    let annual_precipitation = circulation_annual_precipitation_mm_field_id();
+    let mean_air_temperature = circulation_mean_air_temperature_c_field_id();
+    let prevailing_wind = circulation_prevailing_wind_m_s_field_id();
+    let annual_local_runoff = annual_local_runoff_mm_field_id();
+    let lake_depth = lake_depth_m_field_id();
+    let surface_water_kind = surface_water_kind_field_id();
+    let mean_annual_discharge = mean_annual_discharge_m3_s_field_id();
+    let drainage_area = drainage_area_km2_field_id();
+    let strahler_stream_order = strahler_stream_order_field_id();
+
+    Ok(vec![
+        category_schema(
+            plate_id.clone(),
+            FieldDomain::Cells,
+            (0..u32::from(plate_count))
+                .map(|plate| {
+                    (
+                        plate,
+                        format!("field.sekai.core.natural.plate_id.plate-{plate:02}"),
+                    )
+                })
+                .collect(),
+        )?,
+        category_schema(
+            crust_kind.clone(),
+            FieldDomain::Cells,
+            BTreeMap::from([
+                (0, "field.sekai.core.natural.crust_kind.oceanic".into()),
+                (1, "field.sekai.core.natural.crust_kind.continental".into()),
+            ]),
+        )?,
+        scalar_schema(
+            crust_thickness.clone(),
+            FieldDomain::Cells,
+            custom_unit("kilometer", "km"),
+            OCEANIC_CRUST_MIN_THICKNESS_KM,
+            CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![crust_kind.clone()],
+        )?,
+        scalar_schema(
+            primary_elevation.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            ELEVATION_MIN_M,
+            ELEVATION_MAX_M,
+            FieldPaletteHint::Hypsometric,
+            0,
+            vec![crust_kind.clone(), crust_thickness.clone()],
+        )?,
+        scalar_schema(
+            tectonic_displacement.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            -MAX_DEPOSITION_THICKNESS_M,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Diverging,
+            1,
+            vec![plate_id.clone()],
+        )?,
+        scalar_schema(
+            fluvial_erosion_depth.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_EROSION_DEPTH_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![primary_elevation.clone()],
+        )?,
+        scalar_schema(
+            hillslope_erosion.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_EROSION_DEPTH_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![primary_elevation.clone()],
+        )?,
+        scalar_schema(
+            hillslope_deposition.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![hillslope_erosion.clone()],
+        )?,
+        scalar_schema(
+            routed_sediment_deposition.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![fluvial_erosion_depth.clone()],
+        )?,
+        scalar_schema(
+            coastal_erosion.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_EROSION_DEPTH_M,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![primary_elevation.clone()],
+        )?,
+        scalar_schema(
+            coastal_deposition.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![coastal_erosion.clone()],
+        )?,
+        scalar_schema(
+            isostatic_response.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            -MAX_DEPOSITION_THICKNESS_M,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Diverging,
+            1,
+            vec![fluvial_erosion_depth.clone()],
+        )?,
+        scalar_schema(
+            sediment_deposition_thickness.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_DEPOSITION_THICKNESS_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![
+                routed_sediment_deposition.clone(),
+                hillslope_deposition.clone(),
+            ],
+        )?,
+        scalar_schema(
+            surface_elevation.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            ELEVATION_MIN_M,
+            ELEVATION_MAX_M,
+            FieldPaletteHint::Hypsometric,
+            0,
+            vec![
+                primary_elevation.clone(),
+                fluvial_erosion_depth.clone(),
+                sediment_deposition_thickness.clone(),
+            ],
+        )?,
+        category_schema_with_palette(
+            land_ocean.clone(),
+            FieldDomain::Cells,
+            BTreeMap::from([
+                (0, "field.sekai.core.natural.land_ocean.ocean".into()),
+                (1, "field.sekai.core.natural.land_ocean.land".into()),
+            ]),
+            vec![surface_elevation.clone()],
+            FieldPaletteHint::LandOcean,
+        )?,
+        scalar_schema(
+            annual_precipitation.clone(),
+            FieldDomain::Cells,
+            custom_unit("millimeter-per-year", "mm/year"),
+            0.0,
+            ANNUAL_PRECIPITATION_MAX_MM,
+            FieldPaletteHint::Sequential,
+            0,
+            Vec::new(),
+        )?,
+        scalar_schema(
+            mean_air_temperature.clone(),
+            FieldDomain::Cells,
+            custom_unit("degree-celsius", "°C"),
+            AIR_TEMPERATURE_MIN_C,
+            AIR_TEMPERATURE_MAX_C,
+            FieldPaletteHint::Diverging,
+            1,
+            Vec::new(),
+        )?,
+        vector_schema(
+            prevailing_wind.clone(),
+            custom_unit("meter-per-second", "m/s"),
+            Vec::new(),
+        )?,
+        scalar_schema(
+            annual_local_runoff.clone(),
+            FieldDomain::Cells,
+            custom_unit("millimeter-per-year", "mm/year"),
+            0.0,
+            ANNUAL_PRECIPITATION_MAX_MM,
+            FieldPaletteHint::Sequential,
+            0,
+            vec![annual_precipitation.clone()],
+        )?,
+        scalar_schema(
+            lake_depth.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter", "m"),
+            0.0,
+            MAX_LAKE_DEPTH_M,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![surface_elevation.clone()],
+        )?,
+        category_schema_with_dependencies(
+            surface_water_kind.clone(),
+            FieldDomain::Cells,
+            BTreeMap::from([
+                (
+                    0,
+                    "field.sekai.core.natural.surface_water_kind.dry_land".into(),
+                ),
+                (
+                    1,
+                    "field.sekai.core.natural.surface_water_kind.ocean".into(),
+                ),
+                (2, "field.sekai.core.natural.surface_water_kind.lake".into()),
+            ]),
+            vec![lake_depth, surface_elevation],
+        )?,
+        scalar_schema(
+            mean_annual_discharge.clone(),
+            FieldDomain::Cells,
+            custom_unit("cubic-meter-per-second", "m³/s"),
+            0.0,
+            limits.max_mean_annual_discharge_m3_s,
+            FieldPaletteHint::Sequential,
+            2,
+            vec![annual_local_runoff],
+        )?,
+        scalar_schema(
+            drainage_area,
+            FieldDomain::Cells,
+            custom_unit("square-kilometer", "km²"),
+            0.0,
+            limits.max_drainage_area_km2,
+            FieldPaletteHint::Sequential,
+            1,
+            Vec::new(),
+        )?,
+        category_schema_with_dependencies(
+            strahler_stream_order,
+            FieldDomain::Cells,
+            std::iter::once((
+                0,
+                "field.sekai.core.natural.strahler_stream_order.none".into(),
+            ))
+            .chain((1..=u32::from(MAX_STRAHLER_ORDER)).map(|order| {
+                (
+                    order,
+                    format!("field.sekai.core.natural.strahler_stream_order.order-{order:03}"),
+                )
+            }))
+            .collect(),
+            vec![mean_annual_discharge, surface_water_kind],
+        )?,
+    ])
+}
+
 fn field_id(name: &str) -> FieldId {
     FieldId::new(NAMESPACE, name, SCHEMA_VERSION).expect("engine-owned natural field ID is valid")
 }
@@ -801,8 +1185,24 @@ fn category_schema_with_dependencies(
     category_labels: BTreeMap<u32, String>,
     dependencies: Vec<FieldId>,
 ) -> Result<FieldSchema, FieldSchemaError> {
+    category_schema_with_palette(
+        id,
+        domain,
+        category_labels,
+        dependencies,
+        FieldPaletteHint::Categorical,
+    )
+}
+
+fn category_schema_with_palette(
+    id: FieldId,
+    domain: FieldDomain,
+    category_labels: BTreeMap<u32, String>,
+    dependencies: Vec<FieldId>,
+    palette: FieldPaletteHint,
+) -> Result<FieldSchema, FieldSchemaError> {
     Ok(FieldSchema {
-        display: display(&id, FieldPaletteHint::Categorical, 0)?,
+        display: display(&id, palette, 0)?,
         id,
         domain,
         value_type: FieldValueType::CategoryU32,

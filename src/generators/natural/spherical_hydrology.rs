@@ -1,9 +1,11 @@
 use thiserror::Error;
 
 use super::hydrology::{
-    generate_hydrology_core, DrainageOutletPolicy, HydrologyGenerationError, HydrologyGenerator,
+    generate_formation_hydrology_core, generate_hydrology_core, DrainageOutletPolicy,
+    HydrologyGenerationError, HydrologyGenerator,
 };
 use super::topology::NaturalTopologyIndex;
+use crate::engine::BuildCancellation;
 use crate::world::natural::{
     ElevationField, HydroErosionSpec, HydroErosionSpecError, SphericalClimateValidationError,
     SphericalGeologicSnapshot, SphericalGeologicValidationError, SphericalHydrologySnapshot,
@@ -70,6 +72,40 @@ pub(crate) fn generate_spherical_from_validated_inputs(
         spec,
         DrainageOutletPolicy::ClosedLocalMinima,
     )?;
+    wrap_spherical_hydrology(surface_snapshot, surface, topology, hydrology)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_formation_spherical_from_validated_inputs(
+    surface_snapshot: &SphericalSurfaceSnapshot,
+    surface: &SphericalNaturalSurface<'_>,
+    topology: &NaturalTopologyIndex,
+    surface_elevation_m: &ElevationField,
+    sea_level_m: f32,
+    relative_permeability: &[f32],
+    monthly_precipitation_mm_day: &[[f32; crate::world::natural::CLIMATE_MONTH_COUNT]],
+    spec: &HydroErosionSpec,
+    cancellation: &BuildCancellation,
+) -> Result<SphericalHydrologySnapshot, SphericalHydrologyGenerationError> {
+    let hydrology = generate_formation_hydrology_core(
+        surface,
+        topology,
+        surface_elevation_m,
+        sea_level_m,
+        relative_permeability,
+        monthly_precipitation_mm_day,
+        spec,
+        cancellation,
+    )?;
+    wrap_spherical_hydrology(surface_snapshot, surface, topology, hydrology)
+}
+
+fn wrap_spherical_hydrology(
+    surface_snapshot: &SphericalSurfaceSnapshot,
+    surface: &SphericalNaturalSurface<'_>,
+    topology: &NaturalTopologyIndex,
+    hydrology: crate::world::natural::HydrologySnapshot,
+) -> Result<SphericalHydrologySnapshot, SphericalHydrologyGenerationError> {
     let river_segment_length_m = hydrology
         .river_segments()
         .iter()

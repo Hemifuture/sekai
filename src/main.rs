@@ -1,6 +1,45 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+#[cfg(not(target_arch = "wasm32"))]
+const DEFAULT_NATIVE_VIEWPORT_INNER_SIZE: [f32; 2] = [1600.0, 900.0];
+#[cfg(not(target_arch = "wasm32"))]
+const ACCEPTANCE_NATIVE_VIEWPORT_INNER_SIZE: [f32; 2] = [1280.0, 720.0];
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_acceptance_viewport_requested(
+    frame_stats: Option<&str>,
+    acceptance_viewport: Option<&str>,
+) -> bool {
+    frame_stats == Some("1") && acceptance_viewport == Some("1280x720")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_viewport_inner_size(
+    frame_stats: Option<&str>,
+    acceptance_viewport: Option<&str>,
+) -> [f32; 2] {
+    if native_acceptance_viewport_requested(frame_stats, acceptance_viewport) {
+        ACCEPTANCE_NATIVE_VIEWPORT_INNER_SIZE
+    } else {
+        DEFAULT_NATIVE_VIEWPORT_INNER_SIZE
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_viewport_decorated(frame_stats: Option<&str>, acceptance_viewport: Option<&str>) -> bool {
+    !native_acceptance_viewport_requested(frame_stats, acceptance_viewport)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_viewport_app_id(
+    frame_stats: Option<&str>,
+    acceptance_viewport: Option<&str>,
+) -> Option<&'static str> {
+    native_acceptance_viewport_requested(frame_stats, acceptance_viewport)
+        .then_some("sekai-frame-stats-acceptance")
+}
+
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
@@ -10,8 +49,32 @@ fn main() -> eframe::Result {
 
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
+    let frame_stats = std::env::var("SEKAI_FRAME_STATS").ok();
+    let frame_stats_viewport = std::env::var("SEKAI_FRAME_STATS_VIEWPORT").ok();
+    let viewport_inner_size =
+        native_viewport_inner_size(frame_stats.as_deref(), frame_stats_viewport.as_deref());
+    let acceptance_viewport_requested =
+        viewport_inner_size == ACCEPTANCE_NATIVE_VIEWPORT_INNER_SIZE;
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size(viewport_inner_size)
+        .with_decorations(native_viewport_decorated(
+            frame_stats.as_deref(),
+            frame_stats_viewport.as_deref(),
+        ))
+        .with_min_inner_size([800.0, 600.0])
+        .with_icon(
+            // NOTE: Adding an icon is optional
+            eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
+                .expect("Failed to load icon"),
+        );
+    if let Some(app_id) =
+        native_viewport_app_id(frame_stats.as_deref(), frame_stats_viewport.as_deref())
+    {
+        viewport = viewport.with_app_id(app_id);
+    }
     let native_options = eframe::NativeOptions {
         vsync: true,
+        persist_window: !acceptance_viewport_requested,
         wgpu_options: egui_wgpu::WgpuConfiguration {
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: Some(1),
@@ -33,14 +96,7 @@ fn main() -> eframe::Result {
             //     }),
             // }),
         },
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1600.0, 900.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_icon(
-                // NOTE: Adding an icon is optional
-                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                    .expect("Failed to load icon"),
-            ),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -95,4 +151,46 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{native_viewport_app_id, native_viewport_decorated, native_viewport_inner_size};
+
+    #[test]
+    fn acceptance_viewport_is_only_enabled_with_the_frame_sampler() {
+        assert_eq!(
+            native_viewport_inner_size(Some("1"), Some("1280x720")),
+            [1280.0, 720.0]
+        );
+        assert_eq!(
+            native_viewport_inner_size(None, Some("1280x720")),
+            [1600.0, 900.0]
+        );
+        assert_eq!(
+            native_viewport_inner_size(Some("0"), Some("1280x720")),
+            [1600.0, 900.0]
+        );
+        assert!(!native_viewport_decorated(Some("1"), Some("1280x720")));
+        assert!(native_viewport_decorated(None, Some("1280x720")));
+        assert_eq!(
+            native_viewport_app_id(Some("1"), Some("1280x720")),
+            Some("sekai-frame-stats-acceptance")
+        );
+        assert_eq!(native_viewport_app_id(None, Some("1280x720")), None);
+    }
+
+    #[test]
+    fn default_and_malformed_acceptance_viewports_preserve_the_product_default() {
+        assert_eq!(native_viewport_inner_size(None, None), [1600.0, 900.0]);
+        assert_eq!(native_viewport_inner_size(Some("1"), None), [1600.0, 900.0]);
+        assert_eq!(
+            native_viewport_inner_size(Some("1"), Some("1280X720")),
+            [1600.0, 900.0]
+        );
+        assert_eq!(
+            native_viewport_inner_size(Some("1"), Some("1920x1080")),
+            [1600.0, 900.0]
+        );
+    }
 }

@@ -1,43 +1,58 @@
-use rand::RngCore;
 use thiserror::Error;
 
-use super::random::{
-    LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL,
-    RELIEF_REGIONAL_LABEL,
-};
-use super::relief::{
-    reconcile_final_safety, synthesize_crust_base, synthesize_tectonic_offset_core,
-    ReliefGenerator, SEA_LEVEL_M,
-};
-use super::relief_noise::{FractalProfile, ReliefNoise3d};
-use super::spherical_island_relief::{
-    synthesize_spherical_hotspot_offset, synthesize_spherical_oceanic_arc_peaks,
-};
-use super::topology::NaturalTopologyIndex;
+use super::land_fraction::{select_area_weighted_sea_level, LandFractionSelectionError};
+use super::random::{LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL};
+use super::relief::{reconcile_final_safety, ReliefGenerator};
+use super::spherical_island_relief::synthesize_spherical_hotspot_offset;
 use crate::engine::{Diagnostic, StageRng};
 use crate::world::natural::{
-    CrustKind, ElevationField, LandOceanField, ReliefValidationError, SphericalMantleSnapshot,
-    SphericalMantleValidationError, SphericalReliefSnapshot, SphericalReliefValidationError,
-    SphericalTectonicSnapshot, SphericalTectonicValidationError, REGIONAL_OFFSET_MAX_M,
-    REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V4, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    ElevationField, LandOceanField, ReliefSpec, ReliefSpecError, ReliefValidationError,
+    SphericalMantleSnapshot, SphericalMantleValidationError, SphericalReliefSnapshot,
+    SphericalReliefValidationError, SphericalTectonicSnapshot, SphericalTectonicValidationError,
+    RELIEF_SCHEMA_V4,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
     SphericalSurfaceValidationError, SurfaceRefError,
 };
 
-const SPHERICAL_REGIONAL_PROFILE: FractalProfile = FractalProfile {
-    octaves: 6,
-    frequency: 1.1,
-    lacunarity: 2.03,
-    persistence: 0.52,
-};
-const SPHERICAL_REGIONAL_RIDGES: FractalProfile = FractalProfile {
-    octaves: 5,
-    frequency: 1.7,
-    lacunarity: 2.07,
-    persistence: 0.47,
-};
+mod directed_noise;
+mod tectonic_heightmap;
+
+use directed_noise::DirectedDetailNoise;
+use tectonic_heightmap::{build_tectonic_heightmap, TectonicHeightmapError};
+
+pub(super) fn synthesize_conditioned_regional_detail(
+    surface: &SphericalSurfaceSnapshot,
+    tectonic: &SphericalTectonicSnapshot,
+    streams: &LabeledSubstreams,
+) -> Result<Vec<f32>, crate::engine::BuildCancellationError> {
+    let sample_spacing_m = (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
+    let detail_noise =
+        DirectedDetailNoise::from_streams(streams, surface.radius().get(), sample_spacing_m);
+    let mut detail = Vec::with_capacity(surface.cells().len());
+    for (index, surface_cell) in surface.cells().iter().enumerate() {
+        if index % 256 == 0 {
+            streams.check_cancelled()?;
+        }
+        let cell = crate::world::CellId::from_raw(index as u32);
+        detail.push(
+            detail_noise.sample_m(
+                surface_cell.centroid,
+                tectonic
+                    .crust_kind(cell)
+                    .expect("validated spherical crust is cell aligned"),
+                tectonic.crust_age_myr()[index],
+                tectonic.lineation_east()[index],
+                tectonic.lineation_north()[index],
+                tectonic.orogeny_kind()[index],
+                tectonic.orogeny_age_myr()[index],
+            ),
+        );
+    }
+    streams.check_cancelled()?;
+    Ok(detail)
+}
 
 impl ReliefGenerator {
     /// Generates explainable V4 relief directly on a closed spherical surface.
@@ -45,42 +60,26 @@ impl ReliefGenerator {
         surface: &SphericalSurfaceSnapshot,
         tectonic: &SphericalTectonicSnapshot,
         mantle: &SphericalMantleSnapshot,
+        relief_spec: &ReliefSpec,
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<SphericalReliefSnapshot, SphericalReliefGenerationError> {
         surface.validate()?;
         tectonic.validate_against_validated_surface(surface)?;
         mantle.validate_against_validated_surface(surface)?;
+        relief_spec.validate()?;
 
         let view = SphericalNaturalSurface::from_validated(surface)?;
-        let topology = NaturalTopologyIndex::from_surface(&view);
         let streams = LabeledSubstreams::capture(rng);
-        let mut crust_base = synthesize_crust_base(
-            &topology,
-            tectonic.crust_kinds(),
-            tectonic.crust_thickness_km(),
-        );
-        let mut tectonic_offset = synthesize_tectonic_offset_core(
-            &topology,
-            tectonic.cell_plates(),
-            tectonic.boundaries(),
-            &streams,
-        );
-        let mut island_arc_rng = streams.stream(RELIEF_ISLAND_ARC_LABEL);
-        let island_arc = synthesize_spherical_oceanic_arc_peaks(
-            surface,
-            &topology,
-            tectonic,
-            island_arc_rng.next_u32(),
-        );
-        for (value, peak) in tectonic_offset.iter_mut().zip(island_arc) {
-            *value = (*value + peak).clamp(TECTONIC_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M);
-        }
+        let components = build_tectonic_heightmap(surface, tectonic, &streams)?;
+        let mut crust_base = components.crust_base_m;
+        let mut tectonic_offset = components.tectonic_offset_m;
 
+        use rand::RngCore as _;
         let mut hotspot_rng = streams.stream(RELIEF_HOTSPOT_MORPHOLOGY_LABEL);
         let mut volcanic_offset =
             synthesize_spherical_hotspot_offset(surface, tectonic, mantle, hotspot_rng.next_u32());
-        let mut regional_offset = synthesize_spherical_regional_offset(surface, tectonic, &streams);
+        let mut regional_offset = components.directed_detail_m;
         let elevation = reconcile_final_safety(
             &mut crust_base,
             &mut tectonic_offset,
@@ -94,11 +93,32 @@ impl ReliefGenerator {
         let volcanic_offset = ElevationField::from_values(volcanic_offset)?;
         let regional_offset = ElevationField::from_values(regional_offset)?;
         let elevation = ElevationField::from_values(elevation)?;
-        let land_ocean = LandOceanField::classify(&elevation, SEA_LEVEL_M);
+        let cell_areas = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .collect::<Vec<_>>();
+        let selection = select_area_weighted_sea_level(
+            &cell_areas,
+            elevation.values(),
+            f64::from(relief_spec.target_land_fraction),
+        )?;
+        let land_ocean = LandOceanField::classify(&elevation, selection.sea_level_m);
+        debug_assert_eq!(
+            selection.target_land_fraction,
+            f64::from(relief_spec.target_land_fraction)
+        );
+        let classified_fraction = cell_areas
+            .iter()
+            .zip(land_ocean.raw_values())
+            .filter_map(|(&area, &kind)| (kind == 1).then_some(area))
+            .sum::<f64>()
+            / surface.total_cell_area().get();
+        debug_assert!((classified_fraction - selection.actual_land_fraction).abs() <= 1.0e-12);
         let snapshot = SphericalReliefSnapshot::new(
             RELIEF_SCHEMA_V4,
             view.surface_ref(),
-            SEA_LEVEL_M,
+            selection.sea_level_m,
             crust_base,
             tectonic_offset,
             volcanic_offset,
@@ -111,59 +131,12 @@ impl ReliefGenerator {
     }
 }
 
-fn synthesize_spherical_regional_offset(
-    surface: &SphericalSurfaceSnapshot,
-    tectonic: &SphericalTectonicSnapshot,
-    streams: &LabeledSubstreams,
-) -> Vec<f32> {
-    let mut rng = streams.stream(RELIEF_REGIONAL_LABEL);
-    let noise = ReliefNoise3d::new(rng.next_u32());
-    let sample_spacing_m = (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
-    let profile =
-        SPHERICAL_REGIONAL_PROFILE.limited_to_resolution(surface.radius().get(), sample_spacing_m);
-    let ridges =
-        SPHERICAL_REGIONAL_RIDGES.limited_to_resolution(surface.radius().get(), sample_spacing_m);
-    let mut result = surface
-        .cells()
-        .iter()
-        .map(|cell| {
-            let point = cell.centroid.components();
-            let broad = noise.fbm(point, profile);
-            let ridge = noise.ridged(point, ridges) - 0.5;
-            let signal = (0.82 * broad + 0.18 * ridge).clamp(-1.0, 1.0);
-            let amplitude = match tectonic
-                .crust_kind(cell.id)
-                .expect("validated tectonic field is cell aligned")
-            {
-                CrustKind::Oceanic => 300.0,
-                CrustKind::Continental => 450.0,
-            };
-            (signal * amplitude) as f32
-        })
-        .collect::<Vec<_>>();
-    area_weighted_center_and_bound(surface, &mut result);
-    result
-}
-
-fn area_weighted_center_and_bound(surface: &SphericalSurfaceSnapshot, values: &mut [f32]) {
-    let total_area = surface.total_cell_area().get();
-    for _ in 0..2 {
-        let mean = surface
-            .cells()
-            .iter()
-            .enumerate()
-            .map(|(index, cell)| f64::from(values[index]) * cell.area.get())
-            .sum::<f64>()
-            / total_area;
-        for value in values.iter_mut() {
-            *value = (*value - mean as f32).clamp(REGIONAL_OFFSET_MIN_M, REGIONAL_OFFSET_MAX_M);
-        }
-    }
-}
-
 /// Errors returned while generating surface-bound spherical relief.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalReliefGenerationError {
+    /// The authored target-land request is invalid.
+    #[error("invalid relief spec: {0}")]
+    InvalidSpec(#[from] ReliefSpecError),
     /// The authoritative spherical surface is invalid.
     #[error("invalid spherical surface: {0}")]
     InvalidSurface(#[from] SphericalSurfaceValidationError),
@@ -176,10 +149,32 @@ pub enum SphericalReliefGenerationError {
     /// The supplied mantle snapshot is incompatible with the surface.
     #[error("invalid spherical mantle input: {0}")]
     InvalidMantle(#[from] SphericalMantleValidationError),
+    /// Current crust attributes could not be converted into bounded height components.
+    #[error("invalid tectonic heightmap input: {message}")]
+    InvalidHeightmap { message: String },
+    /// The generated height field could not be classified by authoritative area.
+    #[error("invalid land-area selection: {message}")]
+    InvalidLandFraction { message: String },
     /// A generated dense field violated the shared relief semantics.
     #[error("invalid generated relief field: {0}")]
     InvalidReliefField(#[from] ReliefValidationError),
     /// The completed surface-bound snapshot violated its V4 contract.
     #[error("invalid generated spherical relief snapshot: {0}")]
     InvalidSnapshot(#[from] SphericalReliefValidationError),
+}
+
+impl From<LandFractionSelectionError> for SphericalReliefGenerationError {
+    fn from(error: LandFractionSelectionError) -> Self {
+        Self::InvalidLandFraction {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<TectonicHeightmapError> for SphericalReliefGenerationError {
+    fn from(error: TectonicHeightmapError) -> Self {
+        Self::InvalidHeightmap {
+            message: error.to_string(),
+        }
+    }
 }

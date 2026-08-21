@@ -122,7 +122,9 @@ pub fn show_field_inspector(
 fn palette_for_hint(hint: FieldPaletteHint) -> PaletteId {
     match hint {
         FieldPaletteHint::Diverging => PaletteId::Diverging,
+        FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
+        FieldPaletteHint::LandOcean => PaletteId::LandOcean,
         FieldPaletteHint::Sequential | FieldPaletteHint::Boolean | FieldPaletteHint::Vector => {
             PaletteId::Sequential
         }

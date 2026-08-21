@@ -37,6 +37,7 @@ pub(super) struct LegacyPlanarNaturalFieldDocument {
     mesh: Arc<PreparedCellMesh>,
     diagnostics: Vec<OwnedViewDiagnostic>,
     display_cache: NaturalFieldDisplayCache,
+    elevation_display_radius_m: Option<f32>,
 }
 
 impl LegacyPlanarNaturalFieldDocument {
@@ -82,6 +83,15 @@ impl LegacyPlanarNaturalFieldDocument {
         )?);
         let diagnostics = owned_view_diagnostics(report);
         let display_cache = NaturalFieldDisplayCache::new(tectonic.snapshot());
+        let elevation_display_radius_m =
+            crate::app::natural_field_payloads::elevation_display_radius_m(
+                relief.snapshot().sea_level_m(),
+                hydro_erosion
+                    .snapshot()
+                    .surface()
+                    .surface_elevation_m()
+                    .values(),
+            );
         let document = Self {
             spatial,
             formation,
@@ -95,6 +105,7 @@ impl LegacyPlanarNaturalFieldDocument {
             mesh,
             diagnostics,
             display_cache,
+            elevation_display_radius_m,
         };
         document.catalog()?;
         Ok(document)
@@ -198,11 +209,7 @@ impl FieldDocument for LegacyPlanarNaturalFieldDocument {
         natural_preferred_range(
             &self.registry,
             self.relief.snapshot().sea_level_m(),
-            self.hydro_erosion
-                .snapshot()
-                .surface()
-                .surface_elevation_m()
-                .values(),
+            self.elevation_display_radius_m,
             field,
         )
     }
@@ -684,15 +691,16 @@ mod tests {
         };
         let sea_level = document.relief.snapshot().sea_level_m();
         assert!(((range.min() + range.max()) * 0.5 - sea_level).abs() < 0.001);
-        let expected_radius = document
-            .hydro_erosion
-            .snapshot()
-            .surface()
-            .surface_elevation_m()
-            .values()
-            .iter()
-            .map(|value| (value - sea_level).abs())
-            .fold(0.0_f32, f32::max);
+        let expected_radius = crate::app::natural_field_payloads::elevation_display_radius_m(
+            sea_level,
+            document
+                .hydro_erosion
+                .snapshot()
+                .surface()
+                .surface_elevation_m()
+                .values(),
+        )
+        .expect("finite elevations produce a percentile display radius");
         assert!((range.max() - sea_level - expected_radius).abs() < 0.001);
     }
 }

@@ -3,10 +3,13 @@ use std::sync::Arc;
 use crate::engine::{BuildReport, DiagnosticSeverity};
 use crate::ui::field::FieldControlAction;
 use crate::view::{
-    built_in_palette, prepare_cell_field, resolve_display_range, DisplayPrepareError,
-    DisplayRangeMode, DisplayRevisionClock, DisplayRevisions, FieldCatalog, FieldDisplayState,
-    FieldView, FieldViewError, LinearRgba, OwnedViewDiagnostic, PaletteId, PreparedCellField,
-    PreparedCellMesh, PreparedDiagnosticMask, PreparedFieldDisplay, ViewDiagnosticSeverity,
+    built_in_palette, prepare_cell_field, prepare_spherical_field_layers, resolve_display_range,
+    update_spherical_field_layers, DisplayPrepareError, DisplayRangeMode, DisplayRevisionClock,
+    DisplayRevisions, FieldCatalog, FieldDisplayState, FieldView, FieldViewError, GlobeCamera,
+    LinearRgba, MapCamera, OwnedViewDiagnostic, PaletteId, PreparedCellField, PreparedCellMesh,
+    PreparedDiagnosticMask, PreparedFieldDisplay, PreparedFieldLayers, SphericalFieldDisplayState,
+    SphericalPresentationSource, SphericalProjectionKind, SphericalViewMode,
+    ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldId, FieldPaletteHint};
 
@@ -21,6 +24,115 @@ pub(super) trait FieldDocument {
 /// Field document that also owns a mesh suitable for the current presenter.
 pub(super) trait PresentedFieldDocument: FieldDocument {
     fn mesh(&self) -> &Arc<PreparedCellMesh>;
+}
+
+/// Field document metadata needed to build geometry-free spherical field layers.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) trait SphericalFieldLayerDocument: FieldDocument {
+    fn presentation_source(&self) -> SphericalPresentationSource;
+    fn spherical_cell_count(&self) -> usize;
+    fn spherical_edge_count(&self) -> usize;
+}
+
+/// Prepares the shared spherical field packet directly from its owning document.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn prepare_spherical_document_layers<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<PreparedFieldLayers, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
+    let catalog = document.catalog()?;
+    let layers = prepare_spherical_field_layers(
+        document.presentation_source(),
+        &catalog,
+        document.spherical_cell_count(),
+        document.spherical_edge_count(),
+        document.diagnostics(),
+        document.preferred_field(),
+        |field| document.preferred_range(field),
+        &mut candidate_state,
+        clock,
+    )?;
+    *state = candidate_state;
+    Ok(layers)
+}
+
+/// Reconciles shared spherical field layers after consuming the active camera's real zoom.
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_spherical_document_layers<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    current: &PreparedFieldLayers,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<PreparedFieldLayers, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
+    let catalog = document.catalog()?;
+    let layers = update_spherical_field_layers(
+        current,
+        document.presentation_source(),
+        &catalog,
+        document.spherical_cell_count(),
+        document.spherical_edge_count(),
+        document.diagnostics(),
+        document.preferred_field(),
+        |field| document.preferred_range(field),
+        &mut candidate_state,
+        clock,
+    )?;
+    *state = candidate_state;
+    Ok(layers)
+}
+
+/// Reconciles a camera-only event without scanning document data inside one LOD band.
+///
+/// The raw active-camera zoom is always published. Catalog construction and full layer
+/// reconciliation are deferred while source identity, layer-bearing state, and effective glyph
+/// density remain unchanged, so callers retain the exact outer packet identity on the ordinary
+/// camera fast path. Source or pending non-camera state changes fall through to the general path.
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconcile_spherical_document_camera<D: SphericalFieldLayerDocument + ?Sized>(
+    document: &D,
+    current: &Arc<PreparedFieldLayers>,
+    mode: SphericalViewMode,
+    projection: SphericalProjectionKind,
+    map_camera: MapCamera,
+    globe_camera: GlobeCamera,
+    state: &mut SphericalFieldDisplayState,
+    clock: &mut DisplayRevisionClock,
+) -> Result<Arc<PreparedFieldLayers>, DisplayPrepareError> {
+    let mut candidate_state = state.clone();
+    candidate_state.sync_vector_view_zoom_from_cameras(mode, projection, map_camera, globe_camera);
+    if current.source() == &document.presentation_source()
+        && current.matches_camera_only_state(&candidate_state)
+    {
+        *state = candidate_state;
+        return Ok(Arc::clone(current));
+    }
+
+    update_spherical_document_layers(
+        document,
+        current,
+        mode,
+        projection,
+        map_camera,
+        globe_camera,
+        state,
+        clock,
+    )
+    .map(Arc::new)
 }
 
 /// Copies engine diagnostics into renderer-independent, document-owned values.
@@ -228,7 +340,9 @@ fn prepare_palette(
     let schema_palette = match schema.display.palette() {
         FieldPaletteHint::Sequential => PaletteId::Sequential,
         FieldPaletteHint::Diverging => PaletteId::Diverging,
+        FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
+        FieldPaletteHint::LandOcean => PaletteId::LandOcean,
         FieldPaletteHint::Boolean | FieldPaletteHint::Vector => {
             return Err(DisplayPrepareError::UnsupportedCellFill {
                 field: schema.id.clone(),

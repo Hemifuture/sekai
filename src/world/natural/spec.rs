@@ -3,9 +3,9 @@ use thiserror::Error;
 
 /// The supported version of the serialized tectonic specification schema.
 pub const TECTONIC_SPEC_SCHEMA_V1: u16 = 1;
-/// The smallest supported number of tectonic plates.
+/// The smallest supported initial number of tectonic plates.
 pub const MIN_PLATE_COUNT: u16 = 2;
-/// The largest supported number of tectonic plates.
+/// The largest supported initial number of tectonic plates.
 pub const MAX_PLATE_COUNT: u16 = 64;
 /// The smallest supported share of continental crust.
 pub const MIN_CONTINENTAL_CRUST_FRACTION: f32 = 0.10;
@@ -28,9 +28,9 @@ pub enum TectonicActivity {
 pub struct TectonicSpec {
     /// The schema version used to interpret this specification.
     pub schema_version: u16,
-    /// The requested number of generated tectonic plates.
+    /// The requested initial plate count before bounded evolution and rifting.
     pub plate_count: u16,
-    /// The target share of spatial cells assigned continental crust.
+    /// The requested initial share of authoritative area assigned continental crust.
     pub continental_crust_fraction: f32,
     /// The broad strength of generated plate motion.
     pub activity: TectonicActivity,

@@ -68,7 +68,7 @@ impl OwnedViewDiagnostic {
 }
 
 /// Which field-associated diagnostics participate in the cell overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiagnosticScope {
     /// Global diagnostics and diagnostics for the selected field.
     SelectedField,
@@ -142,5 +142,10 @@ impl PreparedDiagnosticMask {
     /// Returns whether the mask represents no cells.
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+    }
+
+    /// Returns owned heap bytes using the diagnostic vector capacity.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        super::resident::capacity_bytes::<u32>(self.cells.capacity(), "prepared diagnostic mask")
     }
 }

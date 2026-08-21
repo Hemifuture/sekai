@@ -1,0 +1,2425 @@
+//! Deterministic moving-crust resampling and final plate canonicalization.
+
+#![cfg_attr(not(test), allow(dead_code))]
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, VecDeque};
+
+use thiserror::Error;
+
+use super::contacts::ContactError;
+use super::model::{
+    CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn, MaterialColumnError,
+    TectonicState,
+};
+use super::passive_margin::relax_passive_margins;
+use super::workspace::TectonicWorkspace;
+use crate::generators::natural::topology::NaturalTopologyIndex;
+use crate::world::natural::{
+    CrustKind, PlateIdField, SphericalOrogenyKind, SphericalPlate,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_PLATE_COUNT, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
+};
+use crate::world::spatial::{
+    canonical_east_north_basis, spherical_triangle_area_unit, SphericalSurfaceSnapshot, UnitVector3,
+};
+use crate::world::{CellId, PlateId};
+
+const DEFAULT_DELTA_YEARS: f64 = 2_000_000.0;
+const TARGET_ANGULAR_DISPLACEMENT_RAD: f64 = 0.25;
+const MINIMUM_RESAMPLE_INTERVAL: u16 = 10;
+const MAXIMUM_RESAMPLE_INTERVAL: u16 = 60;
+const MAXIMUM_TRIANGLE_CANDIDATES: usize = 12;
+const TRIANGLE_AREA_EPSILON: f64 = 1.0e-14;
+const DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION: f64 = 1.0;
+// Volume-preserving MBO threshold dynamics: three bounded Jacobi heat steps remove
+// grid-scale categorical aliasing before the occupied-area threshold is applied.
+// The radius stays local (a few authoritative cells) and no material history is kept.
+const MATERIAL_HEAT_STEPS: usize = 3;
+const MATERIAL_HEAT_NEIGHBOR_SHARE: f64 = 0.5;
+
+#[derive(Debug)]
+pub(super) struct CanonicalTectonicState {
+    pub(super) samples: Vec<CrustSample>,
+    pub(super) plates: Vec<SphericalPlate>,
+    pub(super) cell_plates: PlateIdField,
+}
+
+#[derive(Debug, Clone, PartialEq, Error)]
+pub(super) enum ResampleError {
+    #[error("surface has {surface_cells} cells but topology has {topology_cells}")]
+    CardinalityMismatch {
+        surface_cells: usize,
+        topology_cells: usize,
+    },
+    #[error("coverage construction failed: {0}")]
+    Coverage(#[from] ContactError),
+    #[error("authoritative cell {cell:?} remains uncovered after spreading")]
+    UnresolvedCoverageGap { cell: CellId },
+    #[error("coverage references sample {sample}, but only {samples} samples exist")]
+    InvalidCoverageSample { sample: usize, samples: usize },
+    #[error("final state has {samples} samples for {surface_cells} authoritative cells")]
+    StateCardinalityMismatch {
+        samples: usize,
+        surface_cells: usize,
+    },
+    #[error("final sample {sample} references invalid anchor {anchor:?}")]
+    InvalidFinalAnchor { sample: usize, anchor: CellId },
+    #[error("more than one final sample is bound to {cell:?}")]
+    DuplicateFinalAnchor { cell: CellId },
+    #[error("final state has no sample bound to {cell:?}")]
+    MissingFinalAnchor { cell: CellId },
+    #[error("final component references missing lineage {lineage:?}")]
+    UnknownLineage { lineage: LineageId },
+    #[error("final active plate count {found} is outside {min}..={max}")]
+    FinalPlateCountOutOfRange {
+        found: usize,
+        min: usize,
+        max: usize,
+    },
+    #[error("moving crust has no live lineage with material samples")]
+    NoLiveLineages,
+    #[error(
+        "cannot place unique markers for {lineages} live lineages on {cells} authoritative cells"
+    )]
+    DomainMarkerCapacityExceeded { lineages: usize, cells: usize },
+    #[error("evidence-guided domain reconstruction did not reach {cell:?}")]
+    UnassignedDomainCell { cell: CellId },
+    #[error("current moving crust has no {kind:?} material source for conservative remapping")]
+    MissingMaterialSource { kind: CrustKind },
+    #[error("material operation failed: {0}")]
+    Material(#[from] MaterialColumnError),
+    #[error("continental reference area {area_m2} exceeds spherical area {sphere_area_m2}")]
+    ContinentalAreaExceedsSphere { area_m2: f64, sphere_area_m2: f64 },
+    #[error(
+        "{kind:?} volume {volume_m3} is outside bounded feasible interval {minimum_m3}..={maximum_m3}"
+    )]
+    InfeasibleMaterialVolume {
+        kind: CrustKind,
+        volume_m3: f64,
+        minimum_m3: f64,
+        maximum_m3: f64,
+    },
+    #[error("bounded {kind:?} volume allocation left residual {residual_m3}")]
+    MaterialVolumeResidual { kind: CrustKind, residual_m3: f64 },
+}
+
+pub(super) fn resampling_interval_steps(state: &TectonicState) -> u16 {
+    let maximum_step_angle = state
+        .plates
+        .iter()
+        .map(|plate| plate.rotation.angular_rate_rad_per_year() * DEFAULT_DELTA_YEARS)
+        .fold(0.0_f64, f64::max);
+    if maximum_step_angle <= f64::EPSILON {
+        return MAXIMUM_RESAMPLE_INTERVAL;
+    }
+    let unconstrained = (TARGET_ANGULAR_DISPLACEMENT_RAD / maximum_step_angle).floor();
+    (unconstrained as u16).clamp(MINIMUM_RESAMPLE_INTERVAL, MAXIMUM_RESAMPLE_INTERVAL)
+}
+
+pub(super) fn resample_current_state(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    workspace: &mut TectonicWorkspace,
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if topology.cell_count() != cell_count {
+        return Err(ResampleError::CardinalityMismatch {
+            surface_cells: cell_count,
+            topology_cells: topology.cell_count(),
+        });
+    }
+
+    workspace
+        .coverage
+        .rebuild(cell_count, &workspace.current.samples)?;
+    workspace
+        .next
+        .copy_plate_table_into_reusable_next(&workspace.current);
+    workspace.next.samples.clear();
+    workspace.next.samples.reserve(cell_count);
+    let mut local_candidates = Vec::with_capacity(32);
+
+    for cell in surface.cells() {
+        let sample = resample_cell(
+            surface,
+            topology,
+            &workspace.current.samples,
+            &workspace.coverage,
+            cell.id,
+            &mut local_candidates,
+        )?;
+        workspace.next.samples.push(sample);
+    }
+
+    reconstruct_connected_plate_domains(
+        surface,
+        topology,
+        &workspace.current.samples,
+        &workspace.coverage,
+        &mut workspace.next,
+        &mut local_candidates,
+    )?;
+    conservative_material_remap(
+        surface,
+        topology,
+        &workspace.current.samples,
+        &mut workspace.next.samples,
+    )?;
+
+    std::mem::swap(&mut workspace.current, &mut workspace.next);
+    workspace.next.samples.clear();
+    workspace.next.plates.clear();
+    workspace.events.clear();
+    workspace.mark_resampled();
+    Ok(())
+}
+
+/// V5 geometry follows the retained moving-sample reconstruction, while its
+/// material solve is extensive and ledgered instead of occupied-anchor MBO.
+pub(super) fn resample_current_state_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    workspace: &mut TectonicWorkspace,
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if topology.cell_count() != cell_count {
+        return Err(ResampleError::CardinalityMismatch {
+            surface_cells: cell_count,
+            topology_cells: topology.cell_count(),
+        });
+    }
+
+    workspace
+        .coverage
+        .rebuild(cell_count, &workspace.current.samples)?;
+    workspace
+        .next
+        .copy_plate_table_into_reusable_next(&workspace.current);
+    workspace.next.samples.clear();
+    workspace.next.samples.reserve(cell_count);
+    let mut local_candidates = Vec::with_capacity(32);
+    for cell in surface.cells() {
+        let sample = resample_cell(
+            surface,
+            topology,
+            &workspace.current.samples,
+            &workspace.coverage,
+            cell.id,
+            &mut local_candidates,
+        )?;
+        workspace.next.samples.push(sample);
+    }
+    reconstruct_connected_plate_domains_v5(
+        surface,
+        topology,
+        &workspace.current.samples,
+        &workspace.coverage,
+        &mut workspace.next,
+        &mut local_candidates,
+    )?;
+    conservative_material_resample_v5(
+        surface,
+        topology,
+        &workspace.current,
+        &mut workspace.next.samples,
+        ledger,
+    )?;
+
+    std::mem::swap(&mut workspace.current, &mut workspace.next);
+    workspace.next.samples.clear();
+    workspace.next.plates.clear();
+    workspace.events.clear();
+    workspace.mark_resampled();
+    Ok(())
+}
+
+fn conservative_material_resample_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source: &TectonicState,
+    remapped: &mut [CrustSample],
+    ledger: &mut EvolutionMaterialLedger,
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if remapped.len() != cell_count {
+        return Err(ResampleError::StateCardinalityMismatch {
+            samples: remapped.len(),
+            surface_cells: cell_count,
+        });
+    }
+    let source_totals = source.material_totals()?;
+    let continental_area = source_totals.continental().reference_area_m2();
+    let continental_volume = source_totals.continental().volume_m3();
+    let source_oceanic_area = source_totals.oceanic().reference_area_m2();
+    let source_oceanic_volume = source_totals.oceanic().volume_m3();
+    let sphere_area = surface.total_cell_area().get();
+    let area_tolerance = sphere_area * 1.0e-12;
+    if continental_area > sphere_area + area_tolerance {
+        return Err(ResampleError::ContinentalAreaExceedsSphere {
+            area_m2: continental_area,
+            sphere_area_m2: sphere_area,
+        });
+    }
+    let continental_area = continental_area.min(sphere_area);
+
+    let order = material_allocation_order(surface, topology, &source.samples, remapped)?;
+    let mut continental_areas = vec![0.0; cell_count];
+    let mut remaining = continental_area;
+    for index in order {
+        if remaining <= 0.0 {
+            break;
+        }
+        let area = surface.cells()[index].area.get();
+        let allocated = remaining.min(area);
+        continental_areas[index] = allocated;
+        remaining -= allocated;
+    }
+    if remaining.abs() > area_tolerance {
+        return Err(ResampleError::ContinentalAreaExceedsSphere {
+            area_m2: continental_area,
+            sphere_area_m2: sphere_area,
+        });
+    }
+    // Close the final ulp on the last eligible cell so the compensated total
+    // matches the incoming extensive tracer rather than a rounded cell count.
+    let allocated = compensated_sum(&continental_areas);
+    let correction = continental_area - allocated;
+    if correction != 0.0 {
+        let pivot = continental_areas
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, area)| {
+                **area > 0.0
+                    && **area + correction >= 0.0
+                    && **area + correction <= surface.cells()[*index].area.get()
+            })
+            .map(|(index, _)| index)
+            .ok_or(ResampleError::MaterialVolumeResidual {
+                kind: CrustKind::Continental,
+                residual_m3: correction,
+            })?;
+        continental_areas[pivot] += correction;
+    }
+    let oceanic_areas = surface
+        .cells()
+        .iter()
+        .zip(&continental_areas)
+        .map(|(cell, continental)| (cell.area.get() - continental).max(0.0))
+        .collect::<Vec<_>>();
+    let target_oceanic_area = compensated_sum(&oceanic_areas);
+    let oceanic_area_delta = target_oceanic_area - source_oceanic_area;
+    let target_oceanic_volume = coverage_closed_oceanic_volume(
+        source_oceanic_area,
+        source_oceanic_volume,
+        target_oceanic_area,
+    );
+    let oceanic_volume_delta = target_oceanic_volume - source_oceanic_volume;
+
+    let continental_preferences = remapped
+        .iter()
+        .map(|sample| {
+            sample
+                .material
+                .continental_thickness_km()
+                .map(f64::from)
+                .unwrap_or(35.0)
+        })
+        .collect::<Vec<_>>();
+    let oceanic_preferences = remapped
+        .iter()
+        .map(|sample| {
+            sample
+                .material
+                .oceanic_thickness_km()
+                .map(f64::from)
+                .unwrap_or(7.0)
+        })
+        .collect::<Vec<_>>();
+    let continental_volumes = bounded_volume_water_fill(
+        CrustKind::Continental,
+        &continental_areas,
+        &continental_preferences,
+        continental_volume,
+        f64::from(CONTINENTAL_CRUST_MIN_THICKNESS_KM),
+        f64::from(CONTINENTAL_CRUST_MAX_THICKNESS_KM),
+    )?;
+    let oceanic_volumes = bounded_volume_water_fill(
+        CrustKind::Oceanic,
+        &oceanic_areas,
+        &oceanic_preferences,
+        target_oceanic_volume,
+        f64::from(OCEANIC_CRUST_MIN_THICKNESS_KM),
+        f64::from(OCEANIC_CRUST_MAX_THICKNESS_KM),
+    )?;
+
+    for index in 0..cell_count {
+        remapped[index].material = MaterialColumn::new(
+            continental_areas[index],
+            continental_volumes[index],
+            oceanic_areas[index],
+            oceanic_volumes[index],
+        )?;
+        let previous_kind = remapped[index].kind;
+        remapped[index].synchronize_compatibility_from_material();
+        if remapped[index].kind == CrustKind::Continental {
+            remapped[index].age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
+        } else if previous_kind == CrustKind::Continental {
+            remapped[index].age_myr = 0.0;
+        }
+    }
+    ledger.record_coverage_change(oceanic_area_delta, oceanic_volume_delta)?;
+    Ok(())
+}
+
+fn material_allocation_order(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source: &[CrustSample],
+    remapped: &[CrustSample],
+) -> Result<Vec<usize>, ResampleError> {
+    let phase = diffuse_extensive_material_phase(topology, remapped);
+    let mut order = (0..surface.cells().len()).collect::<Vec<_>>();
+    let has_continental = source
+        .iter()
+        .any(|sample| sample.material.continental_reference_area_m2() > 0.0);
+    let has_oceanic = source
+        .iter()
+        .any(|sample| sample.material.oceanic_reference_area_m2() > 0.0);
+    if !has_continental || !has_oceanic {
+        order.sort_by(|&first, &second| {
+            phase[second]
+                .total_cmp(&phase[first])
+                .then_with(|| first.cmp(&second))
+        });
+        return Ok(order);
+    }
+    let continental = nearest_component_map(surface, topology, source, CrustKind::Continental)?;
+    let oceanic = nearest_component_map(surface, topology, source, CrustKind::Oceanic)?;
+    order.sort_by(|&first, &second| {
+        phase[second]
+            .total_cmp(&phase[first])
+            .then_with(|| {
+                geometric_material_affinity(surface, source, &continental, &oceanic, second)
+                    .total_cmp(&geometric_material_affinity(
+                        surface,
+                        source,
+                        &continental,
+                        &oceanic,
+                        first,
+                    ))
+            })
+            .then_with(|| {
+                material_affinity(&continental, &oceanic, second).cmp(&material_affinity(
+                    &continental,
+                    &oceanic,
+                    first,
+                ))
+            })
+            .then_with(|| continental.source[first].cmp(&continental.source[second]))
+            .then_with(|| oceanic.source[first].cmp(&oceanic.source[second]))
+            .then_with(|| first.cmp(&second))
+    });
+    Ok(order)
+}
+
+fn diffuse_extensive_material_phase(
+    topology: &NaturalTopologyIndex,
+    remapped: &[CrustSample],
+) -> Vec<f64> {
+    let current = remapped
+        .iter()
+        .map(|sample| {
+            let continental = sample.material.continental_reference_area_m2();
+            let oceanic = sample.material.oceanic_reference_area_m2();
+            let total = continental + oceanic;
+            if total > 0.0 {
+                (continental - oceanic) / total
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
+    diffuse_phase_values(topology, current)
+}
+
+fn coverage_closed_oceanic_volume(
+    source_area_m2: f64,
+    source_volume_m3: f64,
+    target_area_m2: f64,
+) -> f64 {
+    if target_area_m2 == 0.0 {
+        return 0.0;
+    }
+    if source_area_m2 == 0.0 {
+        return target_area_m2 * 7_000.0;
+    }
+    let area_delta = target_area_m2 - source_area_m2;
+    if area_delta > 0.0 {
+        source_volume_m3 + area_delta * 7_000.0
+    } else {
+        source_volume_m3 * (target_area_m2 / source_area_m2)
+    }
+}
+
+fn bounded_volume_water_fill(
+    kind: CrustKind,
+    areas_m2: &[f64],
+    preferred_thickness_km: &[f64],
+    target_volume_m3: f64,
+    minimum_thickness_km: f64,
+    maximum_thickness_km: f64,
+) -> Result<Vec<f64>, ResampleError> {
+    debug_assert_eq!(areas_m2.len(), preferred_thickness_km.len());
+    let total_area = compensated_sum(areas_m2);
+    if total_area == 0.0 {
+        if target_volume_m3 == 0.0 {
+            return Ok(vec![0.0; areas_m2.len()]);
+        }
+        return Err(ResampleError::InfeasibleMaterialVolume {
+            kind,
+            volume_m3: target_volume_m3,
+            minimum_m3: 0.0,
+            maximum_m3: 0.0,
+        });
+    }
+    let minimum_m3 = total_area * minimum_thickness_km * 1_000.0;
+    let maximum_m3 = total_area * maximum_thickness_km * 1_000.0;
+    let tolerance = maximum_m3.abs().max(1.0) * 1.0e-12;
+    if target_volume_m3 < minimum_m3 - tolerance || target_volume_m3 > maximum_m3 + tolerance {
+        return Err(ResampleError::InfeasibleMaterialVolume {
+            kind,
+            volume_m3: target_volume_m3,
+            minimum_m3,
+            maximum_m3,
+        });
+    }
+    let target_volume_m3 = target_volume_m3.clamp(minimum_m3, maximum_m3);
+    let mut low = preferred_thickness_km
+        .iter()
+        .map(|preferred| minimum_thickness_km - preferred)
+        .fold(f64::INFINITY, f64::min);
+    let mut high = preferred_thickness_km
+        .iter()
+        .map(|preferred| maximum_thickness_km - preferred)
+        .fold(f64::NEG_INFINITY, f64::max);
+    for _ in 0..96 {
+        let shift = (low + high) * 0.5;
+        let volume = compensated_sum_iter(areas_m2.iter().zip(preferred_thickness_km).map(
+            |(area, preferred)| {
+                area * (preferred + shift).clamp(minimum_thickness_km, maximum_thickness_km)
+                    * 1_000.0
+            },
+        ));
+        if volume < target_volume_m3 {
+            low = shift;
+        } else {
+            high = shift;
+        }
+    }
+    let shift = (low + high) * 0.5;
+    let mut volumes = areas_m2
+        .iter()
+        .zip(preferred_thickness_km)
+        .map(|(area, preferred)| {
+            if *area == 0.0 {
+                0.0
+            } else {
+                area * (preferred + shift).clamp(minimum_thickness_km, maximum_thickness_km)
+                    * 1_000.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut residual = target_volume_m3 - compensated_sum(&volumes);
+    for index in (0..volumes.len()).rev() {
+        if residual == 0.0 || areas_m2[index] == 0.0 {
+            continue;
+        }
+        let lower = areas_m2[index] * minimum_thickness_km * 1_000.0;
+        let upper = areas_m2[index] * maximum_thickness_km * 1_000.0;
+        let correction = residual.clamp(lower - volumes[index], upper - volumes[index]);
+        volumes[index] += correction;
+        residual -= correction;
+    }
+    if residual.abs() > tolerance {
+        return Err(ResampleError::MaterialVolumeResidual {
+            kind,
+            residual_m3: residual,
+        });
+    }
+    Ok(volumes)
+}
+
+fn compensated_sum(values: &[f64]) -> f64 {
+    compensated_sum_iter(values.iter().copied())
+}
+
+fn compensated_sum_iter(values: impl Iterator<Item = f64>) -> f64 {
+    let mut sum = 0.0_f64;
+    let mut correction = 0.0_f64;
+    for value in values {
+        let next = sum + value;
+        correction += if sum.abs() >= value.abs() {
+            (sum - next) + value
+        } else {
+            (value - next) + sum
+        };
+        sum = next;
+    }
+    sum + correction
+}
+
+/// Applies a conservative categorical correction after semi-Lagrangian
+/// resampling.
+///
+/// Nearest-sample resampling supplies the data term. A bounded graph-heat step
+/// followed by an occupied-area threshold is the volume-preserving MBO method:
+/// it removes cell-scale categorical aliasing while preserving continental
+/// area to within one target cell. This avoids both pinning crust to its
+/// original Voronoi cells and losing a minority material through repeated
+/// semi-Lagrangian resampling.
+fn conservative_material_remap(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source: &[CrustSample],
+    remapped: &mut [CrustSample],
+) -> Result<(), ResampleError> {
+    let cell_count = surface.cells().len();
+    if remapped.len() != cell_count {
+        return Err(ResampleError::StateCardinalityMismatch {
+            samples: remapped.len(),
+            surface_cells: cell_count,
+        });
+    }
+    let target_continental_area = occupied_material_area(surface, source, CrustKind::Continental)?;
+    let total_area = surface.total_cell_area().get();
+    let mut selected = vec![false; cell_count];
+
+    let (continental_nearest, oceanic_nearest) = if target_continental_area <= 0.0 {
+        (
+            None,
+            Some(nearest_material_map(
+                surface,
+                topology,
+                source,
+                CrustKind::Oceanic,
+            )?),
+        )
+    } else if target_continental_area >= total_area {
+        (
+            Some(nearest_material_map(
+                surface,
+                topology,
+                source,
+                CrustKind::Continental,
+            )?),
+            None,
+        )
+    } else {
+        let continental = nearest_material_map(surface, topology, source, CrustKind::Continental)?;
+        let oceanic = nearest_material_map(surface, topology, source, CrustKind::Oceanic)?;
+        let material_phase = diffuse_material_phase(topology, remapped);
+        let mut order = (0..cell_count).collect::<Vec<_>>();
+        order.sort_by(|&first, &second| {
+            material_phase[second]
+                .total_cmp(&material_phase[first])
+                .then_with(|| {
+                    geometric_material_affinity(surface, source, &continental, &oceanic, second)
+                        .total_cmp(&geometric_material_affinity(
+                            surface,
+                            source,
+                            &continental,
+                            &oceanic,
+                            first,
+                        ))
+                })
+                .then_with(|| {
+                    material_affinity(&continental, &oceanic, second).cmp(&material_affinity(
+                        &continental,
+                        &oceanic,
+                        first,
+                    ))
+                })
+                .then_with(|| first.cmp(&second))
+        });
+        let mut area = 0.0;
+        for index in order {
+            let next_area = area + surface.cells()[index].area.get();
+            if next_area <= target_continental_area
+                || (next_area - target_continental_area).abs()
+                    <= (area - target_continental_area).abs()
+            {
+                selected[index] = true;
+                area = next_area;
+            } else {
+                break;
+            }
+        }
+        (Some(continental), Some(oceanic))
+    };
+    if target_continental_area >= total_area {
+        selected.fill(true);
+    }
+
+    for (index, sample) in remapped.iter_mut().enumerate() {
+        let desired = if selected[index] {
+            CrustKind::Continental
+        } else {
+            CrustKind::Oceanic
+        };
+        if sample.kind == desired {
+            continue;
+        }
+        let nearest = match desired {
+            CrustKind::Continental => continental_nearest
+                .as_ref()
+                .expect("positive continental area has a nearest-material map"),
+            CrustKind::Oceanic => oceanic_nearest
+                .as_ref()
+                .expect("non-total continental area has an oceanic map"),
+        };
+        let source_sample = source[nearest.source[index]];
+        let owner = sample.owner;
+        let cell = &surface.cells()[index];
+        *sample = source_sample;
+        sample.owner = owner;
+        sample.position = cell.centroid;
+        sample.anchor = cell.id;
+        sample.lineation = transport_lineation(&source_sample, cell.centroid);
+    }
+    Ok(())
+}
+
+fn diffuse_material_phase(topology: &NaturalTopologyIndex, remapped: &[CrustSample]) -> Vec<f64> {
+    let current = remapped
+        .iter()
+        .map(|sample| match sample.kind {
+            CrustKind::Continental => 1.0,
+            CrustKind::Oceanic => -1.0,
+        })
+        .collect::<Vec<_>>();
+    diffuse_phase_values(topology, current)
+}
+
+fn diffuse_phase_values(topology: &NaturalTopologyIndex, mut current: Vec<f64>) -> Vec<f64> {
+    let mut next = vec![0.0; current.len()];
+    for _ in 0..MATERIAL_HEAT_STEPS {
+        for (index, arcs) in topology.arcs().iter().enumerate() {
+            let mut weighted_sum = 0.0;
+            let mut weight_sum = 0.0;
+            for arc in arcs {
+                let weight = 1.0 / arc.traversal_cost.max(1) as f64;
+                weighted_sum += weight * current[arc.neighbor.raw() as usize];
+                weight_sum += weight;
+            }
+            let neighbor_mean = if weight_sum > 0.0 {
+                weighted_sum / weight_sum
+            } else {
+                current[index]
+            };
+            next[index] = current[index] * (1.0 - MATERIAL_HEAT_NEIGHBOR_SHARE)
+                + neighbor_mean * MATERIAL_HEAT_NEIGHBOR_SHARE;
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    current
+}
+
+fn occupied_material_area(
+    surface: &SphericalSurfaceSnapshot,
+    samples: &[CrustSample],
+    kind: CrustKind,
+) -> Result<f64, ResampleError> {
+    let mut occupied = vec![false; surface.cells().len()];
+    let mut area = 0.0;
+    for (sample_index, sample) in samples.iter().enumerate() {
+        if sample.kind != kind {
+            continue;
+        }
+        let index = sample.anchor.raw() as usize;
+        let cell = surface
+            .cells()
+            .get(index)
+            .ok_or(ResampleError::InvalidFinalAnchor {
+                sample: sample_index,
+                anchor: sample.anchor,
+            })?;
+        if !occupied[index] {
+            occupied[index] = true;
+            area += cell.area.get();
+        }
+    }
+    Ok(area)
+}
+
+struct NearestMaterialMap {
+    distance: Vec<u64>,
+    source: Vec<usize>,
+}
+
+fn nearest_material_map(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    kind: CrustKind,
+) -> Result<NearestMaterialMap, ResampleError> {
+    let mut distance = vec![u64::MAX; surface.cells().len()];
+    let mut nearest = vec![usize::MAX; surface.cells().len()];
+    let mut pending = BinaryHeap::new();
+    for (sample_index, sample) in samples.iter().enumerate() {
+        if sample.kind != kind {
+            continue;
+        }
+        let cell_index = sample.anchor.raw() as usize;
+        if cell_index >= surface.cells().len() {
+            return Err(ResampleError::InvalidFinalAnchor {
+                sample: sample_index,
+                anchor: sample.anchor,
+            });
+        }
+        if (0, sample_index) < (distance[cell_index], nearest[cell_index]) {
+            distance[cell_index] = 0;
+            nearest[cell_index] = sample_index;
+            pending.push(Reverse((0_u64, sample_index, sample.anchor.raw())));
+        }
+    }
+    if pending.is_empty() {
+        return Err(ResampleError::MissingMaterialSource { kind });
+    }
+
+    while let Some(Reverse((cost, source_index, raw_cell))) = pending.pop() {
+        let cell_index = raw_cell as usize;
+        if (distance[cell_index], nearest[cell_index]) != (cost, source_index) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell_index] {
+            let neighbor = arc.neighbor.raw() as usize;
+            let candidate = (cost.saturating_add(arc.traversal_cost), source_index);
+            if candidate < (distance[neighbor], nearest[neighbor]) {
+                distance[neighbor] = candidate.0;
+                nearest[neighbor] = candidate.1;
+                pending.push(Reverse((candidate.0, candidate.1, arc.neighbor.raw())));
+            }
+        }
+    }
+
+    Ok(NearestMaterialMap {
+        distance,
+        source: nearest,
+    })
+}
+
+fn nearest_component_map(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    kind: CrustKind,
+) -> Result<NearestMaterialMap, ResampleError> {
+    let mut distance = vec![u64::MAX; surface.cells().len()];
+    let mut nearest = vec![usize::MAX; surface.cells().len()];
+    let mut pending = BinaryHeap::new();
+    for (sample_index, sample) in samples.iter().enumerate() {
+        let present = match kind {
+            CrustKind::Continental => sample.material.continental_reference_area_m2() > 0.0,
+            CrustKind::Oceanic => sample.material.oceanic_reference_area_m2() > 0.0,
+        };
+        if !present {
+            continue;
+        }
+        let cell_index = sample.anchor.raw() as usize;
+        if cell_index >= surface.cells().len() {
+            return Err(ResampleError::InvalidFinalAnchor {
+                sample: sample_index,
+                anchor: sample.anchor,
+            });
+        }
+        if (0, sample_index) < (distance[cell_index], nearest[cell_index]) {
+            distance[cell_index] = 0;
+            nearest[cell_index] = sample_index;
+            pending.push(Reverse((0_u64, sample_index, sample.anchor.raw())));
+        }
+    }
+    if pending.is_empty() {
+        return Err(ResampleError::MissingMaterialSource { kind });
+    }
+    while let Some(Reverse((cost, source_index, raw_cell))) = pending.pop() {
+        let cell_index = raw_cell as usize;
+        if (distance[cell_index], nearest[cell_index]) != (cost, source_index) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell_index] {
+            let neighbor = arc.neighbor.raw() as usize;
+            let candidate = (cost.saturating_add(arc.traversal_cost), source_index);
+            if candidate < (distance[neighbor], nearest[neighbor]) {
+                distance[neighbor] = candidate.0;
+                nearest[neighbor] = candidate.1;
+                pending.push(Reverse((candidate.0, candidate.1, arc.neighbor.raw())));
+            }
+        }
+    }
+    Ok(NearestMaterialMap {
+        distance,
+        source: nearest,
+    })
+}
+
+fn material_affinity(
+    continental: &NearestMaterialMap,
+    oceanic: &NearestMaterialMap,
+    cell: usize,
+) -> i128 {
+    i128::from(oceanic.distance[cell]) - i128::from(continental.distance[cell])
+}
+
+fn geometric_material_affinity(
+    surface: &SphericalSurfaceSnapshot,
+    samples: &[CrustSample],
+    continental: &NearestMaterialMap,
+    oceanic: &NearestMaterialMap,
+    cell: usize,
+) -> f64 {
+    let target = surface.cells()[cell].centroid;
+    let continental_distance = target
+        .dot(samples[continental.source[cell]].position)
+        .clamp(-1.0, 1.0)
+        .acos();
+    let oceanic_distance = target
+        .dot(samples[oceanic.source[cell]].position)
+        .clamp(-1.0, 1.0)
+        .acos();
+    oceanic_distance - continental_distance
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DomainMarker {
+    lineage: LineageId,
+    cell: CellId,
+}
+
+/// Reconstructs one connected material domain per live lineage using a
+/// marker-based watershed on the authoritative spherical adjacency graph.
+///
+/// The per-cell resampling above remains the data term: crossing into a cell
+/// whose locally strongest moved sample belongs to another lineage pays one
+/// short-cell penalty.  A single reliable marker per lineage supplies the
+/// topological constraint.  This is the graph analogue of marker-controlled
+/// watershed/Potts regularization, and avoids turning the result back into a
+/// fresh geometric Voronoi partition.
+fn reconstruct_connected_plate_domains(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source_samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    next: &mut TectonicState,
+    local_candidates: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    let provisional = next
+        .samples
+        .iter()
+        .map(|sample| sample.owner)
+        .collect::<Vec<_>>();
+    let markers = select_domain_markers(surface, source_samples, &mut next.plates)?;
+    if markers.is_empty() {
+        return Err(ResampleError::NoLiveLineages);
+    }
+
+    let owners = evidence_guided_watershed(topology, &provisional, &markers)?;
+    for (cell_index, owner) in owners.into_iter().enumerate() {
+        if provisional[cell_index] == owner {
+            continue;
+        }
+        let cell = CellId::from_raw(cell_index as u32);
+        next.samples[cell_index] = resample_cell_for_owner(
+            surface,
+            topology,
+            source_samples,
+            coverage,
+            cell,
+            owner,
+            local_candidates,
+        )?;
+    }
+    Ok(())
+}
+
+/// V5 keeps the advected ownership evidence dominant and uses the watershed
+/// only to repair connectivity. V4's one-cell mismatch penalty repeatedly
+/// regrew near-geometric marker Voronoi domains and erased warped boundaries.
+fn reconstruct_connected_plate_domains_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    source_samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    next: &mut TectonicState,
+    local_candidates: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    let provisional = next
+        .samples
+        .iter()
+        .map(|sample| sample.owner)
+        .collect::<Vec<_>>();
+    let markers = select_domain_markers(surface, source_samples, &mut next.plates)?;
+    if markers.is_empty() {
+        return Err(ResampleError::NoLiveLineages);
+    }
+    let owners = evidence_guided_watershed_with_penalty(topology, &provisional, &markers, 12.0)?;
+    for (cell_index, owner) in owners.into_iter().enumerate() {
+        if provisional[cell_index] == owner {
+            continue;
+        }
+        let cell = CellId::from_raw(cell_index as u32);
+        next.samples[cell_index] = resample_cell_for_owner(
+            surface,
+            topology,
+            source_samples,
+            coverage,
+            cell,
+            owner,
+            local_candidates,
+        )?;
+    }
+    Ok(())
+}
+
+fn select_domain_markers(
+    surface: &SphericalSurfaceSnapshot,
+    samples: &[CrustSample],
+    plates: &mut Vec<super::model::ActivePlate>,
+) -> Result<Vec<DomainMarker>, ResampleError> {
+    let live_lineages = plates
+        .iter()
+        .filter(|plate| samples.iter().any(|sample| sample.owner == plate.lineage))
+        .count();
+    if live_lineages > surface.cells().len() {
+        return Err(ResampleError::DomainMarkerCapacityExceeded {
+            lineages: live_lineages,
+            cells: surface.cells().len(),
+        });
+    }
+    let mut used_cells = vec![false; surface.cells().len()];
+    let mut markers = Vec::with_capacity(plates.len());
+    plates.retain_mut(|plate| {
+        let mut candidates = samples
+            .iter()
+            .enumerate()
+            .filter(|(_, sample)| sample.owner == plate.lineage)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return false;
+        }
+        candidates.sort_by(|(first_index, first), (second_index, second)| {
+            let first_target = surface.cells()[first.anchor.raw() as usize].centroid;
+            let second_target = surface.cells()[second.anchor.raw() as usize].centroid;
+            second
+                .position
+                .dot(second_target)
+                .total_cmp(&first.position.dot(first_target))
+                .then_with(|| first.anchor.cmp(&second.anchor))
+                .then_with(|| first_index.cmp(second_index))
+        });
+
+        let preferred = candidates
+            .iter()
+            .find(|(_, sample)| !used_cells[sample.anchor.raw() as usize])
+            .map(|(_, sample)| sample.anchor);
+        let cell = preferred.unwrap_or_else(|| {
+            let direction = candidates[0].1.position;
+            surface
+                .cells()
+                .iter()
+                .filter(|cell| !used_cells[cell.id.raw() as usize])
+                .max_by(|first, second| {
+                    first
+                        .centroid
+                        .dot(direction)
+                        .total_cmp(&second.centroid.dot(direction))
+                        .then_with(|| second.id.cmp(&first.id))
+                })
+                .expect("live lineages cannot outnumber material cells")
+                .id
+        });
+        used_cells[cell.raw() as usize] = true;
+        plate.representative = cell;
+        markers.push(DomainMarker {
+            lineage: plate.lineage,
+            cell,
+        });
+        true
+    });
+    Ok(markers)
+}
+
+fn evidence_guided_watershed(
+    topology: &NaturalTopologyIndex,
+    provisional: &[LineageId],
+    markers: &[DomainMarker],
+) -> Result<Vec<LineageId>, ResampleError> {
+    evidence_guided_watershed_with_penalty(
+        topology,
+        provisional,
+        markers,
+        DOMAIN_EVIDENCE_PENALTY_SHORT_SIDE_FRACTION,
+    )
+}
+
+fn evidence_guided_watershed_with_penalty(
+    topology: &NaturalTopologyIndex,
+    provisional: &[LineageId],
+    markers: &[DomainMarker],
+    penalty_short_side_fraction: f64,
+) -> Result<Vec<LineageId>, ResampleError> {
+    let cell_count = topology.cell_count();
+    let mut costs = vec![u64::MAX; cell_count];
+    let mut owners = vec![None; cell_count];
+    let mut pending = BinaryHeap::new();
+    for marker in markers {
+        let index = marker.cell.raw() as usize;
+        costs[index] = 0;
+        owners[index] = Some(marker.lineage);
+        pending.push(Reverse((0_u64, marker.lineage.raw(), marker.cell.raw())));
+    }
+    let mismatch_penalty = topology
+        .quantized_short_side_fraction(penalty_short_side_fraction)
+        .max(1);
+
+    while let Some(Reverse((cost, raw_lineage, raw_cell))) = pending.pop() {
+        let cell_index = raw_cell as usize;
+        let lineage = LineageId::from_raw(raw_lineage);
+        if costs[cell_index] != cost || owners[cell_index] != Some(lineage) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell_index] {
+            let neighbor = arc.neighbor.raw() as usize;
+            let data_cost = if provisional[neighbor] == lineage {
+                0
+            } else {
+                mismatch_penalty
+            };
+            let candidate_cost = cost
+                .saturating_add(arc.traversal_cost)
+                .saturating_add(data_cost);
+            let candidate_key = (candidate_cost, raw_lineage);
+            let current_key = (
+                costs[neighbor],
+                owners[neighbor].map_or(u32::MAX, LineageId::raw),
+            );
+            if candidate_key < current_key {
+                costs[neighbor] = candidate_cost;
+                owners[neighbor] = Some(lineage);
+                pending.push(Reverse((candidate_cost, raw_lineage, arc.neighbor.raw())));
+            }
+        }
+    }
+
+    owners
+        .into_iter()
+        .enumerate()
+        .map(|(index, owner)| {
+            owner.ok_or(ResampleError::UnassignedDomainCell {
+                cell: CellId::from_raw(index as u32),
+            })
+        })
+        .collect()
+}
+
+fn resample_cell(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    local_candidates: &mut Vec<usize>,
+) -> Result<CrustSample, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
+    let exact = coverage.sample_indices(cell);
+    if exact.is_empty() {
+        return Err(ResampleError::UnresolvedCoverageGap { cell });
+    }
+    let mut winner_index = exact[0] as usize;
+    let mut winner_score = sample_score(samples, winner_index, target)?;
+    for &raw_index in &exact[1..] {
+        let index = raw_index as usize;
+        let score = sample_score(samples, index, target)?;
+        if score > winner_score || (score == winner_score && index < winner_index) {
+            winner_index = index;
+            winner_score = score;
+        }
+    }
+    let winner = samples[winner_index];
+
+    resample_cell_from_winner(
+        surface,
+        topology,
+        samples,
+        coverage,
+        cell,
+        winner_index,
+        winner,
+        local_candidates,
+    )
+}
+
+fn resample_cell_for_owner(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    owner: LineageId,
+    local_candidates: &mut Vec<usize>,
+) -> Result<CrustSample, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
+    local_candidates.clear();
+    append_owner_candidates(coverage, samples, cell, owner, local_candidates)?;
+    for arc in &topology.arcs()[cell.raw() as usize] {
+        append_owner_candidates(coverage, samples, arc.neighbor, owner, local_candidates)?;
+    }
+    if local_candidates.is_empty() {
+        for (index, sample) in samples.iter().enumerate() {
+            if sample.owner == owner {
+                local_candidates.push(index);
+            }
+        }
+    }
+    let winner_index = local_candidates
+        .iter()
+        .copied()
+        .max_by(|&first, &second| {
+            samples[first]
+                .position
+                .dot(target)
+                .total_cmp(&samples[second].position.dot(target))
+                .then_with(|| second.cmp(&first))
+        })
+        .expect("every watershed lineage has at least one source sample");
+    let winner = samples[winner_index];
+    resample_cell_from_winner(
+        surface,
+        topology,
+        samples,
+        coverage,
+        cell,
+        winner_index,
+        winner,
+        local_candidates,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resample_cell_from_winner(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    winner_index: usize,
+    winner: CrustSample,
+    local_candidates: &mut Vec<usize>,
+) -> Result<CrustSample, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
+
+    local_candidates.clear();
+    local_candidates.push(winner_index);
+    append_compatible_candidates(coverage, samples, cell, winner, local_candidates)?;
+    for arc in &topology.arcs()[cell.raw() as usize] {
+        append_compatible_candidates(coverage, samples, arc.neighbor, winner, local_candidates)?;
+    }
+    if local_candidates.len() < 3 {
+        for arc in &topology.arcs()[cell.raw() as usize] {
+            for second in &topology.arcs()[arc.neighbor.raw() as usize] {
+                append_compatible_candidates(
+                    coverage,
+                    samples,
+                    second.neighbor,
+                    winner,
+                    local_candidates,
+                )?;
+            }
+        }
+    }
+    let mut result = interpolate_from_candidates(target, winner, samples, local_candidates);
+    result.position = target;
+    result.anchor = cell;
+    Ok(result)
+}
+
+pub(super) fn interpolate_dense_control_material(
+    target: UnitVector3,
+    winner_cell: CellId,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    local_candidates: &mut Vec<usize>,
+) -> CrustSample {
+    let winner_index = winner_cell.raw() as usize;
+    let winner = samples[winner_index];
+    local_candidates.clear();
+    local_candidates.push(winner_index);
+    for arc in &topology.arcs()[winner_index] {
+        append_dense_compatible_candidate(samples, arc.neighbor, winner, local_candidates);
+    }
+    if local_candidates.len() < 3 {
+        for arc in &topology.arcs()[winner_index] {
+            for second in &topology.arcs()[arc.neighbor.raw() as usize] {
+                append_dense_compatible_candidate(
+                    samples,
+                    second.neighbor,
+                    winner,
+                    local_candidates,
+                );
+            }
+        }
+    }
+    interpolate_from_candidates(target, winner, samples, local_candidates)
+}
+
+fn append_dense_compatible_candidate(
+    samples: &[CrustSample],
+    cell: CellId,
+    winner: CrustSample,
+    output: &mut Vec<usize>,
+) {
+    let index = cell.raw() as usize;
+    let sample = samples[index];
+    if sample.owner == winner.owner
+        && sample.kind == winner.kind
+        && sample.orogeny == winner.orogeny
+        && !output.contains(&index)
+    {
+        output.push(index);
+    }
+}
+
+fn interpolate_from_candidates(
+    target: UnitVector3,
+    winner: CrustSample,
+    samples: &[CrustSample],
+    local_candidates: &mut Vec<usize>,
+) -> CrustSample {
+    local_candidates.sort_by(|&first, &second| {
+        samples[second]
+            .position
+            .dot(target)
+            .total_cmp(&samples[first].position.dot(target))
+            .then_with(|| first.cmp(&second))
+    });
+    local_candidates.truncate(MAXIMUM_TRIANGLE_CANDIDATES);
+
+    if let Some((indices, weights)) = containing_triangle(target, samples, local_candidates) {
+        interpolate_material(target, winner, samples, indices, weights)
+    } else {
+        winner
+    }
+}
+
+fn append_owner_candidates(
+    coverage: &super::contacts::CoverageScratch,
+    samples: &[CrustSample],
+    cell: CellId,
+    owner: LineageId,
+    output: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    for &raw_index in coverage.sample_indices(cell) {
+        let index = raw_index as usize;
+        let sample = samples
+            .get(index)
+            .ok_or(ResampleError::InvalidCoverageSample {
+                sample: index,
+                samples: samples.len(),
+            })?;
+        if sample.owner == owner && !output.contains(&index) {
+            output.push(index);
+        }
+    }
+    Ok(())
+}
+
+fn sample_score(
+    samples: &[CrustSample],
+    index: usize,
+    target: UnitVector3,
+) -> Result<f64, ResampleError> {
+    samples
+        .get(index)
+        .map(|sample| sample.position.dot(target))
+        .ok_or(ResampleError::InvalidCoverageSample {
+            sample: index,
+            samples: samples.len(),
+        })
+}
+
+fn append_compatible_candidates(
+    coverage: &super::contacts::CoverageScratch,
+    samples: &[CrustSample],
+    cell: CellId,
+    winner: CrustSample,
+    output: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    for &raw_index in coverage.sample_indices(cell) {
+        let index = raw_index as usize;
+        let sample = samples
+            .get(index)
+            .ok_or(ResampleError::InvalidCoverageSample {
+                sample: index,
+                samples: samples.len(),
+            })?;
+        if sample.owner == winner.owner
+            && sample.kind == winner.kind
+            && sample.orogeny == winner.orogeny
+            && !output.contains(&index)
+        {
+            output.push(index);
+        }
+    }
+    Ok(())
+}
+
+fn containing_triangle(
+    target: UnitVector3,
+    samples: &[CrustSample],
+    candidates: &[usize],
+) -> Option<([usize; 3], [f64; 3])> {
+    for first in 0..candidates.len() {
+        for second in first + 1..candidates.len() {
+            for third in second + 1..candidates.len() {
+                let indices = [candidates[first], candidates[second], candidates[third]];
+                let points = indices.map(|index| samples[index].position);
+                let area = spherical_triangle_area_unit(points[0], points[1], points[2]);
+                if !area.is_finite() || area <= TRIANGLE_AREA_EPSILON {
+                    continue;
+                }
+                let mut weights = [
+                    spherical_triangle_area_unit(target, points[1], points[2]) / area,
+                    spherical_triangle_area_unit(points[0], target, points[2]) / area,
+                    spherical_triangle_area_unit(points[0], points[1], target) / area,
+                ];
+                let sum = weights.iter().sum::<f64>();
+                let tolerance = (area * 1.0e-6).max(1.0e-12);
+                if weights
+                    .iter()
+                    .all(|weight| weight.is_finite() && *weight >= 0.0)
+                    && (sum - 1.0).abs() <= tolerance / area
+                {
+                    for weight in &mut weights {
+                        *weight /= sum;
+                    }
+                    return Some((indices, weights));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn interpolate_material(
+    target: UnitVector3,
+    winner: CrustSample,
+    samples: &[CrustSample],
+    indices: [usize; 3],
+    weights: [f64; 3],
+) -> CrustSample {
+    let blend = |field: fn(&CrustSample) -> f32| -> f32 {
+        indices
+            .into_iter()
+            .zip(weights)
+            .map(|(index, weight)| f64::from(field(&samples[index])) * weight)
+            .sum::<f64>() as f32
+    };
+    let lineation = interpolate_lineation(target, samples, indices, weights);
+    CrustSample {
+        position: target,
+        anchor: winner.anchor,
+        owner: winner.owner,
+        kind: winner.kind,
+        thickness_km: blend(|sample| sample.thickness_km),
+        age_myr: match winner.kind {
+            CrustKind::Continental => winner.age_myr,
+            CrustKind::Oceanic => blend(|sample| sample.age_myr),
+        },
+        tectonic_elevation_m: blend(|sample| sample.tectonic_elevation_m),
+        lineation,
+        orogeny: winner.orogeny,
+        orogeny_age_myr: match winner.orogeny {
+            SphericalOrogenyKind::None => winner.orogeny_age_myr,
+            SphericalOrogenyKind::Andean | SphericalOrogenyKind::Himalayan => {
+                blend(|sample| sample.orogeny_age_myr)
+            }
+        },
+        material: winner.material,
+    }
+}
+
+fn interpolate_lineation(
+    target: UnitVector3,
+    samples: &[CrustSample],
+    indices: [usize; 3],
+    weights: [f64; 3],
+) -> [f32; 2] {
+    let mut global = [0.0; 3];
+    for (index, weight) in indices.into_iter().zip(weights) {
+        let direction = global_lineation(&samples[index]);
+        for axis in 0..3 {
+            global[axis] += weight * direction[axis];
+        }
+    }
+    lineation_at(target, global)
+}
+
+pub(super) fn transport_lineation(sample: &CrustSample, target: UnitVector3) -> [f32; 2] {
+    lineation_at(target, global_lineation(sample))
+}
+
+fn global_lineation(sample: &CrustSample) -> [f64; 3] {
+    let (east, north) = canonical_east_north_basis(sample.position);
+    std::array::from_fn(|axis| {
+        east[axis] * f64::from(sample.lineation[0]) + north[axis] * f64::from(sample.lineation[1])
+    })
+}
+
+fn lineation_at(target: UnitVector3, mut global: [f64; 3]) -> [f32; 2] {
+    let radial = target.components();
+    let radial_component = dot(global, radial);
+    for axis in 0..3 {
+        global[axis] -= radial_component * radial[axis];
+    }
+    let (east, north) = canonical_east_north_basis(target);
+    let components = [dot(global, east), dot(global, north)];
+    let length = components[0].hypot(components[1]);
+    if length <= f64::EPSILON {
+        [0.0; 2]
+    } else {
+        [
+            (components[0] / length) as f32,
+            (components[1] / length) as f32,
+        ]
+    }
+}
+
+pub(super) fn canonicalize_final_plates(
+    surface: &SphericalSurfaceSnapshot,
+    state: TectonicState,
+) -> Result<CanonicalTectonicState, ResampleError> {
+    let cell_count = surface.cells().len();
+    if state.samples.len() != cell_count {
+        return Err(ResampleError::StateCardinalityMismatch {
+            samples: state.samples.len(),
+            surface_cells: cell_count,
+        });
+    }
+    let plate_table = state.plates;
+
+    let mut dense = vec![None; cell_count];
+    for (index, sample) in state.samples.into_iter().enumerate() {
+        let cell = sample.anchor.raw() as usize;
+        if cell >= cell_count {
+            return Err(ResampleError::InvalidFinalAnchor {
+                sample: index,
+                anchor: sample.anchor,
+            });
+        }
+        if dense[cell].replace(sample).is_some() {
+            return Err(ResampleError::DuplicateFinalAnchor {
+                cell: sample.anchor,
+            });
+        }
+    }
+    let mut samples = dense
+        .into_iter()
+        .enumerate()
+        .map(|(index, sample)| {
+            sample.ok_or(ResampleError::MissingFinalAnchor {
+                cell: CellId::from_raw(index as u32),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    relax_passive_margins(surface, &mut samples);
+
+    let mut adjacency = vec![Vec::new(); cell_count];
+    for edge in surface.edges() {
+        adjacency[edge.cells[0].raw() as usize].push(edge.cells[1]);
+        adjacency[edge.cells[1].raw() as usize].push(edge.cells[0]);
+    }
+    for neighbors in &mut adjacency {
+        neighbors.sort_unstable();
+    }
+
+    let mut reached = vec![false; cell_count];
+    let mut components = Vec::new();
+    for start in 0..cell_count {
+        if reached[start] {
+            continue;
+        }
+        let lineage = samples[start].owner;
+        let mut cells = Vec::new();
+        let mut queue = VecDeque::from([CellId::from_raw(start as u32)]);
+        reached[start] = true;
+        while let Some(cell) = queue.pop_front() {
+            cells.push(cell);
+            for &neighbor in &adjacency[cell.raw() as usize] {
+                let index = neighbor.raw() as usize;
+                if !reached[index] && samples[index].owner == lineage {
+                    reached[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        cells.sort_unstable();
+        let representative = representative_cell(surface, &cells);
+        let rotation = plate_table
+            .binary_search_by_key(&lineage, |plate| plate.lineage)
+            .ok()
+            .map(|index| plate_table[index].rotation)
+            .ok_or(ResampleError::UnknownLineage { lineage })?;
+        components.push((lineage, representative, cells, rotation));
+    }
+    components.sort_by_key(|(lineage, representative, _, _)| (*lineage, *representative));
+
+    let minimum = 2;
+    let maximum = MAX_PLATE_COUNT as usize;
+    if !(minimum..=maximum).contains(&components.len()) {
+        return Err(ResampleError::FinalPlateCountOutOfRange {
+            found: components.len(),
+            min: minimum,
+            max: maximum,
+        });
+    }
+
+    let mut raw_owners = vec![0; cell_count];
+    let mut plates = Vec::with_capacity(components.len());
+    for (index, (_, representative, cells, rotation)) in components.into_iter().enumerate() {
+        let plate = PlateId::from_raw(index as u32);
+        let canonical_lineage = LineageId::from_raw(index as u32);
+        for cell in cells {
+            let cell_index = cell.raw() as usize;
+            raw_owners[cell_index] = plate.raw();
+            samples[cell_index].owner = canonical_lineage;
+        }
+        plates.push(SphericalPlate::new(plate, representative, rotation));
+    }
+
+    Ok(CanonicalTectonicState {
+        samples,
+        plates,
+        cell_plates: PlateIdField::from_raw(raw_owners),
+    })
+}
+
+fn representative_cell(surface: &SphericalSurfaceSnapshot, cells: &[CellId]) -> CellId {
+    let mut weighted = [0.0; 3];
+    let mut total_area = 0.0;
+    for &cell in cells {
+        let record = &surface.cells()[cell.raw() as usize];
+        let area = record.area.get();
+        total_area += area;
+        for (slot, component) in weighted.iter_mut().zip(record.centroid.components()) {
+            *slot += area * component;
+        }
+    }
+    let length = dot(weighted, weighted).sqrt();
+    let degenerate_tolerance = total_area * 64.0 * f64::EPSILON;
+    if !length.is_finite() || length <= degenerate_tolerance {
+        return *cells
+            .iter()
+            .min()
+            .expect("a connected component always contains a cell");
+    }
+    let direction = weighted.map(|component| component / length);
+    cells.iter().copied().fold(cells[0], |best, candidate| {
+        let candidate_score = dot(
+            surface.cells()[candidate.raw() as usize]
+                .centroid
+                .components(),
+            direction,
+        );
+        let best_score = dot(
+            surface.cells()[best.raw() as usize].centroid.components(),
+            direction,
+        );
+        if candidate_score > best_score || (candidate_score == best_score && candidate < best) {
+            candidate
+        } else {
+            best
+        }
+    })
+}
+
+fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
+    first.into_iter().zip(second).map(|(a, b)| a * b).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        bounded_volume_water_fill, canonicalize_final_plates, conservative_material_remap,
+        conservative_material_resample_v5, occupied_material_area, resample_current_state,
+        resampling_interval_steps, ResampleError,
+    };
+    use crate::generators::natural::spherical_tectonics::model::{
+        ActivePlate, CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn, TectonicState,
+    };
+    use crate::generators::natural::spherical_tectonics::workspace::TectonicWorkspace;
+    use crate::generators::natural::topology::{
+        farthest_point_seeds, multi_source_ownership, NaturalTopologyIndex,
+    };
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::world::natural::{
+        CrustKind, SphericalOrogenyKind, SphericalPlateRotation,
+        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+        NO_OROGENY_AGE_SENTINEL_MYR,
+    };
+    use crate::world::spatial::{
+        canonical_east_north_basis, SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3,
+    };
+    use crate::world::{CellId, Meters, PlateId, SphericalSpaceSpec};
+
+    fn fixture(cells: u32) -> (SphericalSurfaceSnapshot, NaturalTopologyIndex) {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: cells,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        (surface, topology)
+    }
+
+    fn rotation(lineage: u32, rate: u64) -> SphericalPlateRotation {
+        let axis = match lineage % 3 {
+            0 => UnitVector3::new(1.0, 0.0, 0.0).unwrap(),
+            1 => UnitVector3::new(0.0, 1.0, 0.0).unwrap(),
+            _ => UnitVector3::new(0.0, 0.0, 1.0).unwrap(),
+        };
+        SphericalPlateRotation::new(axis, rate).unwrap()
+    }
+
+    fn owners_for(surface: &SphericalSurfaceSnapshot, count: usize) -> Vec<LineageId> {
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let seeds = farthest_point_seeds(&topology, count, 0);
+        multi_source_ownership(&topology, &seeds)
+            .owners
+            .into_iter()
+            .map(LineageId::from_raw)
+            .collect()
+    }
+
+    fn sample(cell: CellId, position: UnitVector3, owner: LineageId, marker: u32) -> CrustSample {
+        let kind = if marker % 3 == 0 {
+            CrustKind::Continental
+        } else {
+            CrustKind::Oceanic
+        };
+        CrustSample {
+            position,
+            anchor: cell,
+            owner,
+            kind,
+            thickness_km: match kind {
+                CrustKind::Continental => 30.0 + (marker % 16) as f32 * 0.5,
+                CrustKind::Oceanic => 5.0 + (marker % 5) as f32 * 0.5,
+            },
+            age_myr: match kind {
+                CrustKind::Continental => CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+                CrustKind::Oceanic => (marker % 200) as f32,
+            },
+            tectonic_elevation_m: -4_000.0 + marker as f32 * 7.0,
+            lineation: if marker % 4 == 0 {
+                [1.0, 0.0]
+            } else {
+                [0.0; 2]
+            },
+            orogeny: SphericalOrogenyKind::None,
+            orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+            material: MaterialColumn::pure(
+                kind,
+                1.0,
+                match kind {
+                    CrustKind::Continental => 30.0 + (marker % 16) as f32 * 0.5,
+                    CrustKind::Oceanic => 5.0 + (marker % 5) as f32 * 0.5,
+                },
+            )
+            .unwrap(),
+        }
+    }
+
+    fn state_from_owners(
+        surface: &SphericalSurfaceSnapshot,
+        owners: &[LineageId],
+        plate_lineages: &[LineageId],
+    ) -> TectonicState {
+        let samples = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| sample(cell.id, cell.centroid, owners[index], index as u32))
+            .collect();
+        let plates = plate_lineages
+            .iter()
+            .copied()
+            .map(|lineage| {
+                let representative = owners
+                    .iter()
+                    .position(|&owner| owner == lineage)
+                    .map_or(CellId::from_raw(0), |index| CellId::from_raw(index as u32));
+                ActivePlate::new(lineage, representative, rotation(lineage.raw(), 10_000))
+            })
+            .collect();
+        let next = plate_lineages
+            .iter()
+            .map(|lineage| lineage.raw())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        TectonicState::new(samples, plates, next).unwrap()
+    }
+
+    #[test]
+    fn conservative_remap_cannot_erase_current_continental_material() {
+        let (surface, topology) = fixture(42);
+        let owner = LineageId::from_raw(0);
+        let mut source = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| sample(cell.id, cell.centroid, owner, index as u32 + 1))
+            .collect::<Vec<_>>();
+        for (index, material) in source.iter_mut().enumerate() {
+            if index < 12 {
+                material.kind = CrustKind::Continental;
+                material.thickness_km = 38.0;
+                material.age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
+            } else {
+                material.kind = CrustKind::Oceanic;
+                material.thickness_km = 7.0;
+                material.age_myr = 48.0;
+            }
+        }
+        let mut remapped = source.clone();
+        for material in &mut remapped {
+            material.kind = CrustKind::Oceanic;
+            material.thickness_km = 7.0;
+            material.age_myr = 48.0;
+        }
+        let owners_before = remapped
+            .iter()
+            .map(|sample| sample.owner)
+            .collect::<Vec<_>>();
+
+        conservative_material_remap(&surface, &topology, &source, &mut remapped).unwrap();
+
+        let expected_area = surface.cells()[..12]
+            .iter()
+            .map(|cell| cell.area.get())
+            .sum::<f64>();
+        let actual_area = surface
+            .cells()
+            .iter()
+            .zip(&remapped)
+            .filter(|(_, sample)| sample.kind == CrustKind::Continental)
+            .map(|(cell, _)| cell.area.get())
+            .sum::<f64>();
+        let maximum_cell_area = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .fold(0.0, f64::max);
+        assert!((actual_area - expected_area).abs() <= maximum_cell_area);
+        assert_eq!(
+            remapped
+                .iter()
+                .map(|sample| sample.owner)
+                .collect::<Vec<_>>(),
+            owners_before
+        );
+        for (cell, sample) in surface.cells().iter().zip(&remapped) {
+            assert_eq!(sample.anchor, cell.id);
+            assert_eq!(sample.position, cell.centroid);
+        }
+    }
+
+    #[test]
+    fn v4_occupied_anchors_lose_overlap_but_v5_closes_all_extensive_material() {
+        let (surface, topology) = fixture(42);
+        let owner = LineageId::from_raw(0);
+        let mut source_samples = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 1);
+                let kind = if index < 2 {
+                    CrustKind::Continental
+                } else {
+                    CrustKind::Oceanic
+                };
+                let thickness = if kind == CrustKind::Continental {
+                    38.0
+                } else {
+                    7.0
+                };
+                value.kind = kind;
+                value.thickness_km = thickness;
+                value.age_myr = if kind == CrustKind::Continental {
+                    CONTINENTAL_CRUST_AGE_SENTINEL_MYR
+                } else {
+                    40.0
+                };
+                value.material = MaterialColumn::pure(kind, cell.area.get(), thickness).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        source_samples[1].anchor = source_samples[0].anchor;
+        source_samples[1].position = source_samples[0].position;
+        let plate = ActivePlate::new(owner, CellId::from_raw(0), rotation(0, 10_000));
+        let source = TectonicState::new(source_samples, vec![plate], 1).unwrap();
+        let expected = source.material_totals().unwrap();
+        let legacy_area =
+            occupied_material_area(&surface, &source.samples, CrustKind::Continental).unwrap();
+        assert!(legacy_area < expected.continental().reference_area_m2());
+
+        let mut remapped = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 2);
+                value.kind = CrustKind::Oceanic;
+                value.thickness_km = 7.0;
+                value.age_myr = 40.0;
+                value.material =
+                    MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&source).unwrap();
+        conservative_material_resample_v5(&surface, &topology, &source, &mut remapped, &mut ledger)
+            .unwrap();
+        let remapped_state = TectonicState::new(remapped.clone(), vec![plate], 1).unwrap();
+        assert_eq!(remapped_state.material_totals().unwrap(), expected);
+        assert!(
+            remapped
+                .iter()
+                .filter(|sample| {
+                    sample.material.continental_reference_area_m2() > 0.0
+                        && sample.material.oceanic_reference_area_m2() > 0.0
+                })
+                .count()
+                <= 1
+        );
+        ledger.control_budget(&remapped_state).unwrap();
+
+        let mut repeated = surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 2);
+                value.kind = CrustKind::Oceanic;
+                value.thickness_km = 7.0;
+                value.age_myr = 40.0;
+                value.material =
+                    MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0).unwrap();
+                value
+            })
+            .collect::<Vec<_>>();
+        let mut repeated_ledger = EvolutionMaterialLedger::capture_initial(&source).unwrap();
+        conservative_material_resample_v5(
+            &surface,
+            &topology,
+            &source,
+            &mut repeated,
+            &mut repeated_ledger,
+        )
+        .unwrap();
+        assert_eq!(
+            remapped
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>(),
+            repeated
+                .iter()
+                .map(|sample| sample.material.bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn bounded_water_fill_closes_exactly_and_rejects_infeasible_component_volume() {
+        let areas = [1.0, 2.0, 0.0, 4.0];
+        let preferences = [20.0, 80.0, 35.0, 42.0];
+        let target = 315_000.0;
+        let first = bounded_volume_water_fill(
+            CrustKind::Continental,
+            &areas,
+            &preferences,
+            target,
+            20.0,
+            80.0,
+        )
+        .unwrap();
+        let second = bounded_volume_water_fill(
+            CrustKind::Continental,
+            &areas,
+            &preferences,
+            target,
+            20.0,
+            80.0,
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(super::compensated_sum(&first), target);
+        for (area, volume) in areas.into_iter().zip(first) {
+            if area == 0.0 {
+                assert_eq!(volume, 0.0);
+            } else {
+                assert!((20_000.0 * area..=80_000.0 * area).contains(&volume));
+            }
+        }
+        assert!(matches!(
+            bounded_volume_water_fill(
+                CrustKind::Continental,
+                &areas,
+                &preferences,
+                100_000.0,
+                20.0,
+                80.0,
+            ),
+            Err(ResampleError::InfeasibleMaterialVolume { .. })
+        ));
+    }
+
+    fn material_bits(sample: &CrustSample) -> (u32, [u32; 6], SphericalOrogenyKind) {
+        (
+            sample.kind.raw(),
+            [
+                sample.thickness_km.to_bits(),
+                sample.age_myr.to_bits(),
+                sample.tectonic_elevation_m.to_bits(),
+                sample.lineation[0].to_bits(),
+                sample.lineation[1].to_bits(),
+                sample.orogeny_age_myr.to_bits(),
+            ],
+            sample.orogeny,
+        )
+    }
+
+    fn offset(radial: UnitVector3, azimuth: f64, distance: f64) -> UnitVector3 {
+        let (east, north) = canonical_east_north_basis(radial);
+        let tangent = [
+            east[0] * azimuth.cos() + north[0] * azimuth.sin(),
+            east[1] * azimuth.cos() + north[1] * azimuth.sin(),
+            east[2] * azimuth.cos() + north[2] * azimuth.sin(),
+        ];
+        let source = radial.components();
+        UnitVector3::new(
+            source[0] * distance.cos() + tangent[0] * distance.sin(),
+            source[1] * distance.cos() + tangent[1] * distance.sin(),
+            source[2] * distance.cos() + tangent[2] * distance.sin(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn interval_tracks_maximum_displacement_and_stays_inside_paper_bounds() {
+        let (surface, _) = fixture(42);
+        let owners = owners_for(&surface, 2);
+        let lineages = [LineageId::from_raw(0), LineageId::from_raw(1)];
+        let mut slow = state_from_owners(&surface, &owners, &lineages);
+        for plate in &mut slow.plates {
+            plate.rotation = rotation(plate.lineage.raw(), 1);
+        }
+        assert_eq!(resampling_interval_steps(&slow), 60);
+
+        let mut fast = state_from_owners(&surface, &owners, &lineages);
+        fast.plates[0].rotation = rotation(
+            fast.plates[0].lineage.raw(),
+            MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+        );
+        assert_eq!(resampling_interval_steps(&fast), 10);
+    }
+
+    #[test]
+    fn resampling_handles_one_overlap_gap_ties_and_reuses_the_other_buffer() {
+        let (surface, topology) = fixture(42);
+        let owners = owners_for(&surface, 2);
+        let lineages = [LineageId::from_raw(0), LineageId::from_raw(1)];
+
+        let unique_owners = (0..surface.cells().len())
+            .map(|index| LineageId::from_raw(index as u32))
+            .collect::<Vec<_>>();
+        let unique_lineages = unique_owners.clone();
+        let mut unique = state_from_owners(&surface, &unique_owners, &unique_lineages);
+        // Keep this buffer-reuse/identity fixture single-phase. Mixed checkerboard
+        // material is intentionally regularized by the conservative MBO pass and
+        // has its own area/provenance tests below.
+        for sample in &mut unique.samples {
+            sample.kind = CrustKind::Oceanic;
+            sample.thickness_km = 7.0;
+            sample.age_myr = 50.0;
+        }
+        let expected = unique.samples.clone();
+        let mut workspace = TectonicWorkspace::from_initial(unique);
+        let reused = workspace.next.samples.as_ptr();
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+        assert_eq!(workspace.current.samples.len(), surface.cells().len());
+        assert_eq!(workspace.current.samples.as_ptr(), reused);
+        for (actual, expected) in workspace.current.samples.iter().zip(expected) {
+            assert_eq!(actual.anchor, expected.anchor);
+            assert_eq!(material_bits(actual), material_bits(&expected));
+        }
+
+        let mut overlap = state_from_owners(&surface, &owners, &lineages);
+        let target = surface.cells()[0].centroid;
+        overlap.samples[0].position = surface.cells()[1].centroid;
+        overlap.samples[0].thickness_km = 6.0;
+        let mut nearer = overlap.samples[0];
+        nearer.position = target;
+        nearer.thickness_km = 8.0;
+        overlap.samples.push(nearer);
+        let mut workspace = TectonicWorkspace::from_initial(overlap);
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+        assert_eq!(
+            workspace.current.samples[0].thickness_km.to_bits(),
+            8.0_f32.to_bits()
+        );
+
+        let mut tied = state_from_owners(&surface, &owners, &lineages);
+        tied.samples[0].position = target;
+        tied.samples[0].thickness_km = 6.25;
+        let mut later = tied.samples[0];
+        later.owner = if tied.samples[0].owner == lineages[0] {
+            lineages[1]
+        } else {
+            lineages[0]
+        };
+        later.thickness_km = 7.75;
+        tied.samples.push(later);
+        let mut workspace = TectonicWorkspace::from_initial(tied);
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+        assert_eq!(
+            workspace.current.samples[0].thickness_km.to_bits(),
+            6.25_f32.to_bits()
+        );
+
+        let mut filled = state_from_owners(&surface, &owners, &lineages);
+        filled.samples.remove(0);
+        let mut ridge = filled.samples[0];
+        ridge.anchor = CellId::from_raw(0);
+        ridge.position = target;
+        ridge.kind = CrustKind::Oceanic;
+        ridge.thickness_km = 7.0;
+        ridge.age_myr = 0.0;
+        ridge.tectonic_elevation_m = -1_000.0;
+        filled.samples.push(ridge);
+        let mut workspace = TectonicWorkspace::from_initial(filled);
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+        assert_eq!(
+            workspace.current.samples[0].age_myr.to_bits(),
+            0.0_f32.to_bits()
+        );
+        assert_eq!(workspace.current.samples[0].tectonic_elevation_m, -1_000.0);
+    }
+
+    #[test]
+    fn resampling_uses_spherical_barycentric_material_interpolation_and_rejects_gaps() {
+        let (surface, topology) = fixture(42);
+        let owners = owners_for(&surface, 2);
+        let lineages = [LineageId::from_raw(0), LineageId::from_raw(1)];
+        let mut state = state_from_owners(&surface, &owners, &lineages);
+        let target = surface.cells()[0].centroid;
+        let owner = state.samples[0].owner;
+        state.samples.remove(0);
+        for (index, value) in [6.0_f32, 7.0, 8.0].into_iter().enumerate() {
+            let mut vertex = sample(
+                CellId::from_raw(0),
+                offset(target, index as f64 * std::f64::consts::TAU / 3.0, 0.03),
+                owner,
+                1,
+            );
+            vertex.kind = CrustKind::Oceanic;
+            vertex.thickness_km = value;
+            vertex.age_myr = value * 10.0;
+            vertex.tectonic_elevation_m = value * 100.0;
+            vertex.lineation = [1.0, 0.0];
+            state.samples.push(vertex);
+        }
+        let mut workspace = TectonicWorkspace::from_initial(state);
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+        let result = workspace.current.samples[0];
+        assert!((result.thickness_km - 7.0).abs() <= 1.0e-5);
+        assert!((result.age_myr - 70.0).abs() <= 1.0e-4);
+        assert!((result.tectonic_elevation_m - 700.0).abs() <= 1.0e-3);
+        assert!((result.lineation[0] - 1.0).abs() <= 1.0e-6);
+        assert!(result.lineation[1].abs() <= 1.0e-6);
+
+        let mut unresolved = state_from_owners(&surface, &owners, &lineages);
+        unresolved.samples.remove(0);
+        let mut workspace = TectonicWorkspace::from_initial(unresolved);
+        assert!(matches!(
+            resample_current_state(&surface, &topology, &mut workspace),
+            Err(ResampleError::UnresolvedCoverageGap { cell }) if cell == CellId::from_raw(0)
+        ));
+        assert_eq!(workspace.current.samples.len(), surface.cells().len() - 1);
+
+        let (_, wrong_topology) = fixture(162);
+        assert!(matches!(
+            resample_current_state(&surface, &wrong_topology, &mut workspace),
+            Err(ResampleError::CardinalityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn resampling_reconstructs_each_active_plate_as_one_evidence_guided_domain() {
+        let (surface, topology) = fixture(42);
+        let lineages = [LineageId::from_raw(0), LineageId::from_raw(1)];
+        let mut owners = surface
+            .cells()
+            .iter()
+            .map(|_| lineages[1])
+            .collect::<Vec<_>>();
+        owners[0] = lineages[0];
+        let remote = surface
+            .cells()
+            .iter()
+            .filter(|cell| {
+                cell.id != CellId::from_raw(0)
+                    && !topology.arcs()[0].iter().any(|arc| arc.neighbor == cell.id)
+            })
+            .min_by(|first, second| {
+                first
+                    .centroid
+                    .dot(surface.cells()[0].centroid)
+                    .total_cmp(&second.centroid.dot(surface.cells()[0].centroid))
+            })
+            .unwrap()
+            .id;
+        owners[remote.raw() as usize] = lineages[0];
+        let state = state_from_owners(&surface, &owners, &lineages);
+        let mut workspace = TectonicWorkspace::from_initial(state);
+
+        resample_current_state(&surface, &topology, &mut workspace).unwrap();
+
+        for lineage in lineages {
+            let owned = workspace
+                .current
+                .samples
+                .iter()
+                .filter(|sample| sample.owner == lineage)
+                .count();
+            assert!(owned > 0);
+            let start = workspace
+                .current
+                .samples
+                .iter()
+                .position(|sample| sample.owner == lineage)
+                .unwrap();
+            let mut reached = vec![false; surface.cells().len()];
+            let mut pending = vec![start];
+            reached[start] = true;
+            let mut count = 0;
+            while let Some(cell) = pending.pop() {
+                count += 1;
+                for arc in &topology.arcs()[cell] {
+                    let neighbor = arc.neighbor.raw() as usize;
+                    if !reached[neighbor] && workspace.current.samples[neighbor].owner == lineage {
+                        reached[neighbor] = true;
+                        pending.push(neighbor);
+                    }
+                }
+            }
+            assert_eq!(count, owned, "lineage {lineage:?} remained fragmented");
+        }
+    }
+
+    #[test]
+    fn resampling_rejects_more_live_lineages_than_authoritative_cells() {
+        let (surface, topology) = fixture(42);
+        let owners = (0..surface.cells().len() as u32)
+            .map(LineageId::from_raw)
+            .collect::<Vec<_>>();
+        let lineages = (0..=surface.cells().len() as u32)
+            .map(LineageId::from_raw)
+            .collect::<Vec<_>>();
+        let mut state = state_from_owners(&surface, &owners, &lineages);
+        state.samples.push(sample(
+            CellId::from_raw(0),
+            surface.cells()[0].centroid,
+            *lineages.last().unwrap(),
+            99,
+        ));
+        let mut workspace = TectonicWorkspace::from_initial(state);
+
+        assert!(matches!(
+            resample_current_state(&surface, &topology, &mut workspace),
+            Err(ResampleError::DomainMarkerCapacityExceeded {
+                lineages: 43,
+                cells: 42
+            })
+        ));
+    }
+
+    #[test]
+    fn canonicalization_splits_domains_drops_empty_lineages_and_preserves_material_bits() {
+        let (surface, topology) = fixture(42);
+        let first = LineageId::from_raw(3);
+        let second = LineageId::from_raw(9);
+        let empty = LineageId::from_raw(17);
+        let mut owners = vec![second; surface.cells().len()];
+        let origin = CellId::from_raw(0);
+        let remote = surface
+            .cells()
+            .iter()
+            .filter(|cell| {
+                cell.id != origin
+                    && !topology.arcs()[origin.raw() as usize]
+                        .iter()
+                        .any(|arc| arc.neighbor == cell.id)
+            })
+            .min_by(|first_cell, second_cell| {
+                first_cell
+                    .centroid
+                    .dot(surface.cells()[0].centroid)
+                    .total_cmp(&second_cell.centroid.dot(surface.cells()[0].centroid))
+                    .then_with(|| first_cell.id.cmp(&second_cell.id))
+            })
+            .unwrap()
+            .id;
+        owners[origin.raw() as usize] = first;
+        owners[remote.raw() as usize] = first;
+        let state = state_from_owners(&surface, &owners, &[first, second, empty]);
+        let before = state.samples.iter().map(material_bits).collect::<Vec<_>>();
+        let canonical = canonicalize_final_plates(&surface, state).unwrap();
+
+        assert_eq!(canonical.plates.len(), 3);
+        assert_eq!(canonical.cell_plates.len(), surface.cells().len());
+        assert_ne!(
+            canonical.cell_plates.get(origin.raw() as usize),
+            canonical.cell_plates.get(remote.raw() as usize)
+        );
+        assert_eq!(
+            canonical
+                .samples
+                .iter()
+                .map(material_bits)
+                .collect::<Vec<_>>(),
+            before
+        );
+        for (index, plate) in canonical.plates.iter().enumerate() {
+            assert_eq!(plate.id(), PlateId::from_raw(index as u32));
+            assert_eq!(
+                canonical.cell_plates.get(plate.seed_cell().raw() as usize),
+                Some(plate.id())
+            );
+        }
+        assert!(!canonical
+            .plates
+            .iter()
+            .any(|plate| plate.rotation() == rotation(empty.raw(), 10_000)));
+    }
+
+    #[test]
+    fn representative_rule_and_final_plate_bounds_are_exact() {
+        let (surface, _) = fixture(162);
+        for count in [2_usize, 64] {
+            let owners = owners_for(&surface, count);
+            let lineages = (0..count as u32)
+                .map(LineageId::from_raw)
+                .collect::<Vec<_>>();
+            let state = state_from_owners(&surface, &owners, &lineages);
+            let expected_material = state.samples.iter().map(material_bits).collect::<Vec<_>>();
+            let canonical = canonicalize_final_plates(&surface, state).unwrap();
+            assert_eq!(canonical.plates.len(), count);
+            assert_eq!(
+                canonical
+                    .samples
+                    .iter()
+                    .map(material_bits)
+                    .collect::<Vec<_>>(),
+                expected_material
+            );
+            for plate in &canonical.plates {
+                let members = surface
+                    .cells()
+                    .iter()
+                    .filter(|cell| {
+                        canonical.cell_plates.get(cell.id.raw() as usize) == Some(plate.id())
+                    })
+                    .collect::<Vec<_>>();
+                let sum = members.iter().fold([0.0; 3], |mut sum, cell| {
+                    let area = cell.area.get();
+                    for (slot, value) in sum.iter_mut().zip(cell.centroid.components()) {
+                        *slot += value * area;
+                    }
+                    sum
+                });
+                let norm = sum
+                    .into_iter()
+                    .map(|value| value * value)
+                    .sum::<f64>()
+                    .sqrt();
+                let expected = if norm <= f64::EPSILON {
+                    members.iter().map(|cell| cell.id).min().unwrap()
+                } else {
+                    let mean = sum.map(|value| value / norm);
+                    members
+                        .iter()
+                        .max_by(|first, second| {
+                            first
+                                .centroid
+                                .components()
+                                .into_iter()
+                                .zip(mean)
+                                .map(|(a, b)| a * b)
+                                .sum::<f64>()
+                                .total_cmp(
+                                    &second
+                                        .centroid
+                                        .components()
+                                        .into_iter()
+                                        .zip(mean)
+                                        .map(|(a, b)| a * b)
+                                        .sum::<f64>(),
+                                )
+                                .then_with(|| second.id.cmp(&first.id))
+                        })
+                        .unwrap()
+                        .id
+                };
+                assert_eq!(plate.seed_cell(), expected);
+            }
+        }
+
+        let one = vec![LineageId::from_raw(0); surface.cells().len()];
+        let state = state_from_owners(&surface, &one, &[LineageId::from_raw(0)]);
+        assert!(matches!(
+            canonicalize_final_plates(&surface, state),
+            Err(ResampleError::FinalPlateCountOutOfRange {
+                found: 1,
+                min: 2,
+                max: 64
+            })
+        ));
+
+        let owners = (0..surface.cells().len())
+            .map(|index| LineageId::from_raw((index % 65) as u32))
+            .collect::<Vec<_>>();
+        let lineages = (0..65_u32).map(LineageId::from_raw).collect::<Vec<_>>();
+        let state = state_from_owners(&surface, &owners, &lineages);
+        assert!(matches!(
+            canonicalize_final_plates(&surface, state),
+            Err(ResampleError::FinalPlateCountOutOfRange { found, min: 2, max: 64 }) if found > 64
+        ));
+    }
+}

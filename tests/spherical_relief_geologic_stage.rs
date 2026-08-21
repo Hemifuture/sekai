@@ -3,7 +3,7 @@ use sekai::engine::{
     Stage, StageGraph, StageGraphBuilder, StageIdentity, StageRng,
 };
 use sekai::generators::natural::{
-    GeologicGenerator, MantleGenerator, ReliefGenerator, ResolvedGeologicInput,
+    GeologicGenerator, MantleGenerator, ReliefGenerator, ReliefSpecArtifact, ResolvedGeologicInput,
     ResolvedGeologicInputArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
     ResolvedWorldFormationArtifact, SphericalGeologicArtifact, SphericalGeologicStage,
     SphericalMantleArtifact, SphericalMantleStage, SphericalReliefArtifact, SphericalReliefStage,
@@ -12,7 +12,7 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceArtifact};
 use sekai::rules::{GeologicModel, TectonicModel};
 use sekai::world::natural::{
-    GeologicSpec, MantleActivity, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    GeologicSpec, MantleActivity, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
     TectonicActivity, TectonicSpec, WorldFormationPreset, MAX_HOTSPOT_COUNT,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
@@ -52,9 +52,15 @@ fn formation() -> ResolvedWorldFormation {
 }
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
+    let version = match stage_id {
+        "natural.spherical-tectonics" => 4,
+        "natural.spherical-relief" => 3,
+        "natural.spherical-mantle" | "natural.spherical-geology" => 1,
+        _ => panic!("unexpected spherical stage {stage_id}"),
+    };
     StageRng::from_seed(derive_stage_seed(
         root_seed,
-        StageIdentity::new(stage_id, 1, "sekai.core"),
+        StageIdentity::new(stage_id, version, "sekai.core"),
     ))
 }
 
@@ -64,6 +70,7 @@ fn graph() -> StageGraph {
         .external::<ResolvedTectonicInputArtifact>()
         .external::<ResolvedGeologicInputArtifact>()
         .external::<ResolvedWorldFormationArtifact>()
+        .external::<ReliefSpecArtifact>()
         .stage(SphericalTectonicStage)
         .stage(SphericalMantleStage)
         .stage(SphericalReliefStage)
@@ -91,6 +98,9 @@ fn external(surface: &sekai::world::spatial::SphericalSurfaceSnapshot) -> Extern
         .insert(ResolvedWorldFormationArtifact::new(formation()))
         .unwrap();
     artifacts
+        .insert(ReliefSpecArtifact::new(ReliefSpec::default()))
+        .unwrap();
+    artifacts
 }
 
 #[test]
@@ -111,7 +121,7 @@ fn stages_publish_exact_identities_and_dependencies() {
         SphericalGeologicStage.id().as_str(),
         "natural.spherical-geology"
     );
-    assert_eq!(SphericalReliefStage.version(), 1);
+    assert_eq!(SphericalReliefStage.version(), 3);
     assert_eq!(SphericalGeologicStage.version(), 1);
     assert_eq!(SphericalReliefStage.namespace(), "sekai.core");
     assert_eq!(SphericalGeologicStage.namespace(), "sekai.core");
@@ -129,6 +139,7 @@ fn stages_publish_exact_identities_and_dependencies() {
             .map(|key| key.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "natural.relief-spec",
             "world.spherical-mantle",
             "world.spherical-surface",
             "world.spherical-tectonics",
@@ -159,7 +170,9 @@ fn stages_publish_exact_identities_and_dependencies() {
 
 #[test]
 fn stages_forward_science_diagnostics_and_strict_surface_bound_wires() {
-    let root_seed = RootSeed::new(49);
+    // This fixed seed intentionally exercises bounded-elevation reconciliation so the stage
+    // contract proves that non-empty scientific diagnostics are forwarded unchanged.
+    let root_seed = RootSeed::new(0);
     let surface = surface(6_371_000.0);
     let outcome = BuildEngine::new(graph())
         .build(root_seed, external(&surface), &mut MemoryStageCache::new())
@@ -184,6 +197,7 @@ fn stages_forward_science_diagnostics_and_strict_surface_bound_wires() {
         &surface,
         &tectonic,
         &mantle,
+        &ReliefSpec::default(),
         &mut rng(root_seed, "natural.spherical-relief"),
         &mut expected_diagnostics,
     )
@@ -281,6 +295,7 @@ fn relief_rejects_equal_count_upstreams_from_another_surface() {
         .external::<SphericalSurfaceArtifact>()
         .external::<SphericalTectonicArtifact>()
         .external::<SphericalMantleArtifact>()
+        .external::<ReliefSpecArtifact>()
         .stage(SphericalReliefStage)
         .build()
         .unwrap();
@@ -293,6 +308,9 @@ fn relief_rejects_equal_count_upstreams_from_another_surface() {
         .unwrap();
     external
         .insert(SphericalMantleArtifact::new(mantle))
+        .unwrap();
+    external
+        .insert(ReliefSpecArtifact::new(ReliefSpec::default()))
         .unwrap();
 
     let failure = BuildEngine::new(graph)

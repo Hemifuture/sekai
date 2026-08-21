@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use super::{CellFillKind, FieldView, FieldViewError};
+use super::{FieldView, FieldViewError};
 use crate::world::fields::{FieldId, ValueRange};
 use crate::world::CellId;
 
@@ -31,7 +31,7 @@ impl LinearRgba {
 }
 
 /// Built-in renderer palettes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaletteId {
     /// Dark water through pale parchment.
     Sequential,
@@ -39,10 +39,14 @@ pub enum PaletteId {
     Diverging,
     /// Twelve discrete colors for stable category indices.
     Categorical,
+    /// Sea-anchored terrain colors: water depths below the midpoint, land heights above.
+    Hypsometric,
+    /// Two fixed semantic colors: ocean water then land.
+    LandOcean,
 }
 
 /// How a scalar display range is selected.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DisplayRangeMode {
     /// Use the field schema's declared valid range.
     Schema,
@@ -152,6 +156,18 @@ impl PreparedCellField {
     pub fn category_keys(&self) -> &[u32] {
         &self.category_keys
     }
+
+    /// Returns owned heap bytes using vector and string capacities with checked arithmetic.
+    pub fn resident_bytes(&self) -> Result<usize, super::ResidentBytesError> {
+        let context = "prepared cell field";
+        let total = self
+            .field_id
+            .resident_bytes()
+            .ok_or(super::ResidentBytesError { context })?;
+        let total =
+            super::resident::add_capacity::<u32>(total, self.raw_values.capacity(), context)?;
+        super::resident::add_capacity::<u32>(total, self.category_keys.capacity(), context)
+    }
 }
 
 /// Failures returned while preparing renderer-neutral display data.
@@ -183,11 +199,37 @@ pub enum DisplayPrepareError {
         /// The supplied field count.
         actual: usize,
     },
+    /// Prepared values did not match the required cardinality for their schema domain.
+    #[error("field {field:?} payload has {actual} {domain:?} values, expected {expected}")]
+    FieldCardinalityMismatch {
+        /// The field whose payload length was rejected.
+        field: FieldId,
+        /// The domain whose cardinality was required.
+        domain: crate::world::fields::FieldDomain,
+        /// The required value count.
+        expected: usize,
+        /// The supplied value count.
+        actual: usize,
+    },
     /// The field cannot be rendered as a V1 cell fill.
     #[error("field {field:?} cannot be rendered as a V1 cell fill")]
     UnsupportedCellFill {
         /// The unsupported field.
         field: FieldId,
+    },
+    /// The field cannot be rendered by a spherical fill or overlay channel.
+    #[error("field {field:?} cannot be rendered by a spherical presentation channel")]
+    UnsupportedSphericalChannel {
+        /// The unsupported field.
+        field: FieldId,
+    },
+    /// A vector payload component or its magnitude was not finite.
+    #[error("field {field:?} has non-finite vector data at index {index}")]
+    NonFiniteVector {
+        /// The vector field whose values were rejected.
+        field: FieldId,
+        /// The rejected vector index.
+        index: usize,
     },
     /// A category payload contained a key absent from its schema.
     #[error("field {field:?} contains undeclared category key {key}")]
@@ -351,6 +393,81 @@ const CATEGORICAL: [LinearRgba; 12] = [
     LinearRgba::new(0.540, 0.255, 0.095, 1.0),
 ];
 
+/// The fixed hypsometric display half-range around sea level in metres.
+///
+/// Elevation classes are absolute (atlas practice — Imhof's cartographic
+/// relief school and the ETOPO ramps): a colour always means the same
+/// metres-above-sea, worlds are comparable, and one extreme trench or
+/// peak can no longer compress everything else (values beyond the range
+/// clamp to the end classes). Hypsometric display ranges must stay
+/// symmetric around sea level so the water-to-land break sits exactly at
+/// t = 0.5.
+pub const HYPSOMETRIC_DISPLAY_RADIUS_M: f32 = 6_000.0;
+/// Entry granularity of the expanded class table in metres. Every class
+/// boundary below must be a multiple of this lattice.
+const HYPSOMETRIC_STEP_M: f32 = 100.0;
+/// Entry count: one per lattice step across ±HYPSOMETRIC_DISPLAY_RADIUS_M.
+const HYPSOMETRIC_ENTRIES: usize = 121;
+
+/// Sea-anchored hypsometric elevation classes: `(lower bound in metres,
+/// class colour)`, deep abyss to summit snow. Boundaries follow classic
+/// atlas banding (finer near sea level on both sides, where most of the
+/// world lives; coarser toward the extremes).
+const HYPSOMETRIC_CLASSES: [(f32, LinearRgba); 18] = [
+    (-6_000.0, LinearRgba::new(0.008, 0.020, 0.065, 1.0)),
+    (-4_000.0, LinearRgba::new(0.015, 0.045, 0.120, 1.0)),
+    (-3_000.0, LinearRgba::new(0.030, 0.090, 0.200, 1.0)),
+    (-2_000.0, LinearRgba::new(0.055, 0.140, 0.280, 1.0)),
+    (-1_000.0, LinearRgba::new(0.085, 0.195, 0.350, 1.0)),
+    (-500.0, LinearRgba::new(0.120, 0.260, 0.420, 1.0)),
+    (-200.0, LinearRgba::new(0.170, 0.330, 0.490, 1.0)),
+    (-100.0, LinearRgba::new(0.230, 0.410, 0.550, 1.0)),
+    (0.0, LinearRgba::new(0.155, 0.310, 0.135, 1.0)),
+    (100.0, LinearRgba::new(0.220, 0.340, 0.140, 1.0)),
+    (200.0, LinearRgba::new(0.290, 0.365, 0.145, 1.0)),
+    (500.0, LinearRgba::new(0.375, 0.390, 0.155, 1.0)),
+    (1_000.0, LinearRgba::new(0.430, 0.400, 0.170, 1.0)),
+    (1_500.0, LinearRgba::new(0.465, 0.370, 0.165, 1.0)),
+    (2_000.0, LinearRgba::new(0.470, 0.330, 0.160, 1.0)),
+    (3_000.0, LinearRgba::new(0.380, 0.240, 0.140, 1.0)),
+    (4_000.0, LinearRgba::new(0.420, 0.360, 0.320, 1.0)),
+    (5_000.0, LinearRgba::new(0.880, 0.870, 0.850, 1.0)),
+];
+
+/// The class table expanded onto the uniform lattice `sample_palette`
+/// consumes: entry i sits at −radius + i·step and carries its class
+/// colour. Class interiors stay flat; each boundary gets one lattice
+/// step of blend (the linear segment between the two adjacent entries),
+/// a soft edge in place of a hard contour line. Entry 60 is elevation 0,
+/// so the water-to-land break lands exactly at t = 0.5.
+const HYPSOMETRIC: [LinearRgba; HYPSOMETRIC_ENTRIES] = build_stepped_hypsometric();
+
+const fn build_stepped_hypsometric() -> [LinearRgba; HYPSOMETRIC_ENTRIES] {
+    let mut table = [HYPSOMETRIC_CLASSES[0].1; HYPSOMETRIC_ENTRIES];
+    let mut entry = 0;
+    while entry < HYPSOMETRIC_ENTRIES {
+        let elevation_m = -HYPSOMETRIC_DISPLAY_RADIUS_M + entry as f32 * HYPSOMETRIC_STEP_M;
+        let mut class = 0;
+        let mut candidate = 0;
+        while candidate < HYPSOMETRIC_CLASSES.len() {
+            if elevation_m >= HYPSOMETRIC_CLASSES[candidate].0 {
+                class = candidate;
+            }
+            candidate += 1;
+        }
+        table[entry] = HYPSOMETRIC_CLASSES[class].1;
+        entry += 1;
+    }
+    table
+}
+
+/// Fixed semantic pair for land/ocean category fields: index 0 is ocean water,
+/// index 1 is land, matching the stable land/ocean category encoding.
+const LAND_OCEAN: [LinearRgba; 2] = [
+    LinearRgba::new(0.055, 0.150, 0.290, 1.0),
+    LinearRgba::new(0.320, 0.360, 0.180, 1.0),
+];
+
 /// Linear-light color for an informational diagnostic.
 pub const DIAGNOSTIC_INFO_COLOR: LinearRgba = LinearRgba::new(0.130, 0.430, 0.720, 1.0);
 /// Linear-light color for a warning diagnostic.
@@ -364,6 +481,8 @@ pub const fn built_in_palette(id: PaletteId) -> &'static [LinearRgba] {
         PaletteId::Sequential => &SEQUENTIAL,
         PaletteId::Diverging => &DIVERGING,
         PaletteId::Categorical => &CATEGORICAL,
+        PaletteId::Hypsometric => &HYPSOMETRIC,
+        PaletteId::LandOcean => &LAND_OCEAN,
     }
 }
 
@@ -433,28 +552,47 @@ pub fn prepare_cell_field(
             actual: field.len(),
         });
     }
+    let prepared = prepare_scalar_or_category_field(
+        field,
+        crate::world::fields::FieldDomain::Cells,
+        range_mode,
+    )
+    .map_err(map_cell_fill_error)?;
+    Ok(PreparedCellField {
+        field_id: prepared.field_id,
+        kind: prepared.kind,
+        raw_values: prepared.raw_values,
+        source_range: prepared.source_range,
+        display_range: prepared.display_range,
+        category_keys: prepared.category_keys,
+    })
+}
 
-    let kind = field.cell_fill_kind().map_err(|error| match error {
-        FieldViewError::UnsupportedCellFill { field, .. }
-        | FieldViewError::TypeMismatch { field, .. }
-        | FieldViewError::UnknownPayload { field }
-        | FieldViewError::DuplicatePayload { field } => {
-            DisplayPrepareError::UnsupportedCellFill { field }
-        }
-    })?;
-
-    match kind {
-        CellFillKind::Scalar => {
-            let values = field
-                .scalar_values()
-                .expect("cell-fill kind guarantees scalar values");
+/// Shared scalar/category packing used by cell fills and spherical edge overlays.
+pub(crate) fn prepare_scalar_or_category_field(
+    field: &FieldView<'_>,
+    domain: crate::world::fields::FieldDomain,
+    range_mode: DisplayRangeMode,
+) -> Result<PreparedPackedField, DisplayPrepareError> {
+    if field.schema().domain != domain {
+        return Err(DisplayPrepareError::UnsupportedSphericalChannel {
+            field: field.schema().id.clone(),
+        });
+    }
+    match field.schema().value_type {
+        crate::world::fields::FieldValueType::ScalarF32 => {
+            let values = field.scalar_values().ok_or_else(|| {
+                DisplayPrepareError::UnsupportedSphericalChannel {
+                    field: field.schema().id.clone(),
+                }
+            })?;
             let source_range = finite_min_max(values).ok_or_else(|| {
                 DisplayPrepareError::NoFiniteScalarValues {
                     field: field.schema().id.clone(),
                 }
             })?;
             let display_range = resolve_display_range(field, range_mode)?;
-            Ok(PreparedCellField {
+            Ok(PreparedPackedField {
                 field_id: field.schema().id.clone(),
                 kind: PreparedFieldKind::Scalar,
                 raw_values: values.iter().map(|value| value.to_bits()).collect(),
@@ -463,10 +601,12 @@ pub fn prepare_cell_field(
                 category_keys: Vec::new(),
             })
         }
-        CellFillKind::Category => {
-            let values = field
-                .category_values()
-                .expect("cell-fill kind guarantees category values");
+        crate::world::fields::FieldValueType::CategoryU32 => {
+            let values = field.category_values().ok_or_else(|| {
+                DisplayPrepareError::UnsupportedSphericalChannel {
+                    field: field.schema().id.clone(),
+                }
+            })?;
             let field_id = field.schema().id.clone();
             let category_keys: Vec<_> = field.schema().category_labels.keys().copied().collect();
             let compact = category_keys
@@ -493,7 +633,7 @@ pub fn prepare_cell_field(
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(PreparedCellField {
+            Ok(PreparedPackedField {
                 field_id,
                 kind: PreparedFieldKind::Category,
                 raw_values,
@@ -502,6 +642,28 @@ pub fn prepare_cell_field(
                 category_keys,
             })
         }
+        _ => Err(DisplayPrepareError::UnsupportedSphericalChannel {
+            field: field.schema().id.clone(),
+        }),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedPackedField {
+    pub(crate) field_id: FieldId,
+    pub(crate) kind: PreparedFieldKind,
+    pub(crate) raw_values: Vec<u32>,
+    pub(crate) source_range: Option<ResolvedDisplayRange>,
+    pub(crate) display_range: Option<ResolvedDisplayRange>,
+    pub(crate) category_keys: Vec<u32>,
+}
+
+fn map_cell_fill_error(error: DisplayPrepareError) -> DisplayPrepareError {
+    match error {
+        DisplayPrepareError::UnsupportedSphericalChannel { field } => {
+            DisplayPrepareError::UnsupportedCellFill { field }
+        }
+        other => other,
     }
 }
 

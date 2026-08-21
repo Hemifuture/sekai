@@ -18,6 +18,7 @@ const INVALID_SPEC_CODE: &str = "spherical-spatial.invalid-spec";
 const BUILD_FAILED_CODE: &str = "spherical-spatial.build-failed";
 const INVALID_SNAPSHOT_CODE: &str = "spherical-spatial.invalid-snapshot";
 const RESOLVED_CELL_COUNT_CODE: &str = "spherical-spatial.resolved-cell-count";
+const CANCELLED_CODE: &str = "engine.cancelled";
 
 /// Engine transport wrapper for an externally supplied spherical-space specification.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -145,12 +146,13 @@ impl Stage for SphericalSurfaceStage {
     fn run(
         &self,
         inputs: Self::Inputs,
-        _rng: &mut StageRng,
+        rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         let space = inputs.space.space();
         space.validate().map_err(invalid_spec)?;
-        let snapshot = GeodesicVoronoiBuilder::build(space).map_err(builder_failure)?;
+        let snapshot = GeodesicVoronoiBuilder::build_cancellable(space, || rng.is_cancelled())
+            .map_err(builder_failure)?;
         snapshot.validate().map_err(invalid_snapshot)?;
 
         if space.resolved_cell_count() != space.target_cell_count {
@@ -198,6 +200,10 @@ fn invalid_spec(error: SphericalSpecError) -> StageError {
 
 fn builder_failure(error: SphericalSurfaceBuildError) -> StageError {
     match error {
+        SphericalSurfaceBuildError::Cancelled => StageError::new(
+            CANCELLED_CODE,
+            "spherical surface construction was cancelled",
+        ),
         SphericalSurfaceBuildError::InvalidSpec(error) => invalid_spec(error),
         SphericalSurfaceBuildError::InvalidSnapshot(error) => invalid_snapshot(error),
         error => build_failure(error),
@@ -221,10 +227,11 @@ fn invalid_snapshot(error: SphericalSurfaceValidationError) -> StageError {
 #[cfg(test)]
 mod tests {
     use super::{
-        builder_failure, invalid_spec, BUILD_FAILED_CODE, INVALID_SNAPSHOT_CODE, INVALID_SPEC_CODE,
+        builder_failure, invalid_spec, BUILD_FAILED_CODE, CANCELLED_CODE, INVALID_SNAPSHOT_CODE,
+        INVALID_SPEC_CODE,
     };
     use crate::generators::spatial::SphericalSurfaceBuildError;
-    use crate::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V1};
+    use crate::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V2};
     use crate::world::{SphericalSpecError, MIN_SPHERICAL_CELL_COUNT};
 
     #[test]
@@ -259,17 +266,28 @@ mod tests {
     }
 
     #[test]
+    fn spherical_cancellation_uses_the_engine_wide_stable_code() {
+        let error = builder_failure(SphericalSurfaceBuildError::Cancelled);
+
+        assert_eq!(error.code(), CANCELLED_CODE);
+        assert_eq!(
+            error.message(),
+            "spherical surface construction was cancelled"
+        );
+    }
+
+    #[test]
     fn spherical_snapshot_failures_have_a_stable_distinct_stage_error() {
         let source = SphericalSurfaceValidationError::UnsupportedSchema {
-            found: SPHERICAL_SURFACE_SCHEMA_V1 + 1,
-            supported: SPHERICAL_SURFACE_SCHEMA_V1,
+            found: SPHERICAL_SURFACE_SCHEMA_V2 + 1,
+            supported: SPHERICAL_SURFACE_SCHEMA_V2,
         };
         let error = builder_failure(SphericalSurfaceBuildError::InvalidSnapshot(source));
 
         assert_eq!(error.code(), INVALID_SNAPSHOT_CODE);
         assert_eq!(
             error.message(),
-            "generated spherical surface failed validation: unsupported spherical surface schema version 2; supported version is 1"
+            "generated spherical surface failed validation: unsupported spherical surface schema version 3; latest supported version is 2"
         );
     }
 }

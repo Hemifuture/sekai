@@ -39,8 +39,19 @@ pub enum ResolvedWorldFormationPreset {
 }
 
 impl ResolvedWorldFormationPreset {
-    /// Returns the authoring recommendation paired with this concrete morphology.
+    /// Returns the initial continental-crust recommendation paired with this morphology.
     pub const fn recommended_continental_crust_fraction(self) -> f32 {
+        match self {
+            Self::Continents => 0.38,
+            Self::Archipelago => 0.26,
+            Self::Supercontinent => 0.42,
+            Self::GreatIsland => 0.28,
+            Self::VolcanicIslands => 0.16,
+        }
+    }
+
+    /// Returns the emergent-land recommendation paired with this morphology.
+    pub const fn recommended_land_fraction(self) -> f32 {
         match self {
             Self::Continents => 0.38,
             Self::Archipelago => 0.26,
@@ -168,9 +179,14 @@ impl ResolvedWorldFormation {
         }
     }
 
-    /// Returns the visible authoring recommendation for continental-crust share.
+    /// Returns the visible initial continental-crust recommendation.
     pub const fn recommended_continental_crust_fraction(&self) -> f32 {
         self.resolved.recommended_continental_crust_fraction()
+    }
+
+    /// Returns the visible emergent-land recommendation.
+    pub const fn recommended_land_fraction(&self) -> f32 {
+        self.resolved.recommended_land_fraction()
     }
 }
 

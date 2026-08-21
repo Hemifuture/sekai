@@ -2,12 +2,12 @@ use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    BoundaryKind, GeologicSpec, MantleFormationBias, ResolvedWorldFormation,
+    BoundaryKind, CrustKind, GeologicSpec, MantleFormationBias, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, SphericalMantleSnapshot, SphericalReliefSnapshot,
     SphericalTectonicSnapshot, TectonicSpec, WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
-    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M, ELEVATION_MIN_M, REGIONAL_OFFSET_MAX_M,
+    REGIONAL_OFFSET_MIN_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1, TECTONIC_OFFSET_MAX_M,
+    TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use sekai::world::spatial::{central_angle, project_tangent, UnitVector3};
 use sekai::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
@@ -68,6 +68,7 @@ fn generate(
         surface,
         tectonic,
         mantle,
+        &ReliefSpec::default(),
         &mut stage_rng("spherical-relief", seed),
         &mut diagnostics,
     )
@@ -132,24 +133,11 @@ fn spherical_relief_is_deterministic_explainable_bounded_and_seed_sensitive() {
 }
 
 #[test]
-fn spherical_regional_relief_has_area_weighted_zero_mean_and_no_cut_or_pole_jump() {
+fn spherical_directed_detail_has_no_cut_or_pole_jump() {
     let sphere = surface(642);
     let (tectonic, mantle) = upstream(&sphere, 0x000A_11CE);
     let (relief, _) = generate(&sphere, &tectonic, &mantle, 101);
     let regional = relief.regional_offset_m().values();
-
-    let total_area = sphere.total_cell_area().get();
-    let weighted_mean = sphere
-        .cells()
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| f64::from(regional[index]) * cell.area.get())
-        .sum::<f64>()
-        / total_area;
-    assert!(
-        weighted_mean.abs() < 0.05,
-        "area-weighted mean={weighted_mean}"
-    );
 
     let mut all_jumps = Vec::new();
     let mut cut_jumps = Vec::new();
@@ -183,6 +171,7 @@ fn boundary_relief_has_causal_sides_and_hotspots_keep_current_centers_and_plate_
     let sphere = surface(642);
     let (tectonic, mantle) = upstream(&sphere, 0xC0_A57);
     let (relief, _) = generate(&sphere, &tectonic, &mantle, 113);
+    let crust_base = relief.crust_base_elevation_m().values();
     let offsets = relief.tectonic_offset_m().values();
     let mut collision = Vec::new();
     let mut ridge = Vec::new();
@@ -200,7 +189,12 @@ fn boundary_relief_has_causal_sides_and_hotspots_keep_current_centers_and_plate_
             BoundaryKind::ContinentalCollision => collision.push(pair_mean),
             BoundaryKind::OceanicRidge => ridge.push(pair_mean),
             BoundaryKind::ContinentalRift => {
-                rift.push(-pair_mean);
+                let coarse_pair_mean = (crust_base[first.raw() as usize]
+                    + offsets[first.raw() as usize]
+                    + crust_base[second.raw() as usize]
+                    + offsets[second.raw() as usize])
+                    * 0.5;
+                rift.push(-coarse_pair_mean);
             }
             BoundaryKind::Subduction => {
                 let subducting = record.subducting_plate.unwrap();
@@ -233,6 +227,26 @@ fn boundary_relief_has_causal_sides_and_hotspots_keep_current_centers_and_plate_
             "{kind:?} never produced its expected relief sign"
         );
     }
+
+    let rift_continental_thickness = sphere
+        .edges()
+        .iter()
+        .filter(|edge| {
+            tectonic.boundaries()[edge.id.raw() as usize].kind == BoundaryKind::ContinentalRift
+        })
+        .flat_map(|edge| edge.cells)
+        .filter(|cell| tectonic.crust_kind(*cell) == Some(CrustKind::Continental))
+        .map(|cell| tectonic.crust_thickness_km()[cell.raw() as usize])
+        .collect::<Vec<_>>();
+    assert!(!rift_continental_thickness.is_empty());
+    assert!(
+        rift_continental_thickness
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min)
+            <= CONTINENTAL_CRUST_MIN_THICKNESS_KM + 5.0,
+        "active continental rifts never preserved pure-shear thinning in current crust"
+    );
 
     let volcanic = relief.volcanic_offset_m().values();
     for hotspot in mantle.hotspots() {

@@ -45,12 +45,18 @@ rayon = "1.10"
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3.70"           # to access the DOM (to hide the loading text)
+web-sys = { version = "0.3.70", features = ["Location", "Performance", "Window"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 opt-level = 2 # fast and small wasm

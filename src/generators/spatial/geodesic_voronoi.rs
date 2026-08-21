@@ -16,8 +16,9 @@ use crate::world::{
 };
 
 const GOLDEN_RATIO: f64 = 1.618_033_988_749_895;
+const CANCELLATION_POLL_INTERVAL: usize = 256;
 
-const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
+pub(crate) const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
     [-1.0, GOLDEN_RATIO, 0.0],
     [1.0, GOLDEN_RATIO, 0.0],
     [-1.0, -GOLDEN_RATIO, 0.0],
@@ -32,7 +33,7 @@ const BASE_VERTEX_COMPONENTS: [[f64; 3]; 12] = [
     [-GOLDEN_RATIO, 0.0, 1.0],
 ];
 
-const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
+pub(crate) const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
     [0, 11, 5],
     [0, 5, 1],
     [0, 1, 7],
@@ -58,6 +59,9 @@ const BASE_FACE_VERTICES: [[u8; 3]; 20] = [
 /// Stable failures returned while constructing an authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SphericalSurfaceBuildError {
+    /// The owning build requested cooperative cancellation.
+    #[error("spherical surface construction was cancelled")]
+    Cancelled,
     /// The requested spherical space violates its numerical or allocation budget.
     #[error("invalid spherical space: {0}")]
     InvalidSpec(#[from] SphericalSpecError),
@@ -105,10 +109,79 @@ impl GeodesicVoronoiBuilder {
     pub fn build(
         space: &SphericalSpaceSpec,
     ) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+        Self::build_cancellable(space, || false)
+    }
+
+    /// Constructs a snapshot while polling a cancellation predicate at bounded intervals.
+    pub fn build_cancellable(
+        space: &SphericalSpaceSpec,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+        let mut cancellation = CancellationPoll::new(&mut is_cancelled);
+        cancellation.check_surface()?;
         space.validate()?;
-        let mesh = GeodesicMesh::build(space.resolved_frequency())
-            .map_err(|_| SphericalSurfaceBuildError::MeshConstruction)?;
-        build_surface(space.radius, &mesh)
+        let mesh = GeodesicMesh::build_cancellable(space.resolved_frequency(), &mut cancellation)
+            .map_err(|error| match error {
+            GeodesicMeshError::Cancelled => SphericalSurfaceBuildError::Cancelled,
+            _ => SphericalSurfaceBuildError::MeshConstruction,
+        })?;
+        build_surface(space.radius, &mesh, &mut cancellation)
+    }
+}
+
+struct CancellationPoll<'a> {
+    is_cancelled: &'a mut dyn FnMut() -> bool,
+    work_since_poll: usize,
+}
+
+impl<'a> CancellationPoll<'a> {
+    fn new(is_cancelled: &'a mut dyn FnMut() -> bool) -> Self {
+        Self {
+            is_cancelled,
+            work_since_poll: 0,
+        }
+    }
+
+    fn checkpoint(&mut self) -> bool {
+        self.work_since_poll = 0;
+        (self.is_cancelled)()
+    }
+
+    fn work(&mut self) -> bool {
+        self.work_since_poll += 1;
+        self.work_since_poll >= CANCELLATION_POLL_INTERVAL && self.checkpoint()
+    }
+
+    fn check_surface(&mut self) -> Result<(), SphericalSurfaceBuildError> {
+        if self.checkpoint() {
+            Err(SphericalSurfaceBuildError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_mesh(&mut self) -> Result<(), GeodesicMeshError> {
+        if self.checkpoint() {
+            Err(GeodesicMeshError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn work_surface(&mut self) -> Result<(), SphericalSurfaceBuildError> {
+        if self.work() {
+            Err(SphericalSurfaceBuildError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn work_mesh(&mut self) -> Result<(), GeodesicMeshError> {
+        if self.work() {
+            Err(GeodesicMeshError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -153,6 +226,7 @@ struct GeodesicMesh {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GeodesicMeshError {
+    Cancelled,
     FrequencyOutOfRange,
     CountOverflow,
     InvalidBaseVertex,
@@ -164,7 +238,18 @@ enum GeodesicMeshError {
 
 impl GeodesicMesh {
     fn build(frequency: u32) -> Result<Self, GeodesicMeshError> {
+        let mut never_cancelled = || false;
+        let mut cancellation = CancellationPoll::new(&mut never_cancelled);
+        Self::build_cancellable(frequency, &mut cancellation)
+    }
+
+    fn build_cancellable(
+        frequency: u32,
+        cancellation: &mut CancellationPoll<'_>,
+    ) -> Result<Self, GeodesicMeshError> {
+        cancellation.check_mesh()?;
         let (expected_sites, expected_edges, expected_triangles) = expected_counts(frequency)?;
+        cancellation.check_mesh()?;
         let base_vertices = base_vertices()?;
         let faces = oriented_faces(&base_vertices);
         let mut site_keys = BTreeSet::new();
@@ -175,6 +260,7 @@ impl GeodesicMesh {
                 u8::try_from(face_index).map_err(|_| GeodesicMeshError::CountOverflow)?;
             for first_weight in 0..=frequency {
                 for second_weight in 0..=(frequency - first_weight) {
+                    cancellation.work_mesh()?;
                     let third_weight = frequency - first_weight - second_weight;
                     site_keys.insert(site_key(
                         face_index,
@@ -186,6 +272,7 @@ impl GeodesicMesh {
 
             for second_weight in 0..frequency {
                 for third_weight in 0..(frequency - second_weight) {
+                    cancellation.work_mesh()?;
                     let first_weight = frequency - second_weight - third_weight;
                     triangle_keys.push([
                         site_key(
@@ -227,6 +314,7 @@ impl GeodesicMesh {
                 }
             }
         }
+        cancellation.check_mesh()?;
 
         if site_keys.len() != expected_sites || triangle_keys.len() != expected_triangles {
             return Err(GeodesicMeshError::CountMismatch);
@@ -235,6 +323,7 @@ impl GeodesicMesh {
         let mut site_ids = BTreeMap::new();
         let mut sites = Vec::with_capacity(expected_sites);
         for (index, key) in site_keys.into_iter().enumerate() {
+            cancellation.work_mesh()?;
             let raw_id = u32::try_from(index).map_err(|_| GeodesicMeshError::CountOverflow)?;
             let id = CellId::from_raw(raw_id);
             let direction = direction_for_key(key, frequency, &base_vertices, &faces)?;
@@ -244,6 +333,7 @@ impl GeodesicMesh {
 
         let mut triangles = Vec::with_capacity(expected_triangles);
         for keys in triangle_keys {
+            cancellation.work_mesh()?;
             let triangle_sites = keys.map(|key| site_ids.get(&key).copied());
             let [Some(a), Some(b), Some(c)] = triangle_sites else {
                 return Err(GeodesicMeshError::MissingSite);
@@ -261,8 +351,9 @@ impl GeodesicMesh {
             }
             triangles.push(OrientedTriangle { sites: ids });
         }
+        cancellation.check_mesh()?;
 
-        let edge_incidence = build_edge_incidence(&triangles, expected_edges)?;
+        let edge_incidence = build_edge_incidence(&triangles, expected_edges, cancellation)?;
         if triangles.len() != expected_triangles || edge_incidence.len() != expected_edges {
             return Err(GeodesicMeshError::CountMismatch);
         }
@@ -278,56 +369,73 @@ impl GeodesicMesh {
 fn build_surface(
     radius: Meters,
     mesh: &GeodesicMesh,
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
-    let vertices = build_voronoi_vertices(mesh)?;
-    let boundaries = order_cell_boundaries(mesh, &vertices)?;
-    let edges = build_voronoi_edges(radius, mesh, &vertices)?;
-    let cells = build_voronoi_cells(radius, mesh, &vertices, boundaries, &edges.ids)?;
-    SphericalSurfaceSnapshot::new(
+    cancellation.check_surface()?;
+    let vertices = build_voronoi_vertices(mesh, cancellation)?;
+    let boundaries = order_cell_boundaries(mesh, &vertices, cancellation)?;
+    let edges = build_voronoi_edges(radius, mesh, &vertices, cancellation)?;
+    let cells = build_voronoi_cells(
+        radius,
+        mesh,
+        &vertices,
+        boundaries,
+        &edges.ids,
+        cancellation,
+    )?;
+    cancellation.check_surface()?;
+    let snapshot = SphericalSurfaceSnapshot::new(
         SPHERICAL_SURFACE_SCHEMA_V1,
         radius,
         vertices,
         cells,
         edges.records,
     )
-    .map_err(SphericalSurfaceBuildError::from)
+    .map_err(SphericalSurfaceBuildError::from)?;
+    cancellation.check_surface()?;
+    Ok(snapshot)
 }
 
 fn build_voronoi_vertices(
     mesh: &GeodesicMesh,
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<Vec<SphericalSurfaceVertex>, SphericalSurfaceBuildError> {
-    mesh.triangles
-        .iter()
-        .enumerate()
-        .map(|(triangle_index, triangle)| {
-            let [a, b, c] = triangle
-                .sites
-                .map(|id| mesh.sites[id.raw() as usize].direction.components());
-            let mut normal = cross(subtract(b, a), subtract(c, a));
-            if dot(normal, add(add(a, b), c)) < 0.0 {
-                normal = scale(normal, -1.0);
+    cancellation.check_surface()?;
+    let mut vertices = Vec::with_capacity(mesh.triangles.len());
+    for (triangle_index, triangle) in mesh.triangles.iter().enumerate() {
+        cancellation.work_surface()?;
+        let [a, b, c] = triangle
+            .sites
+            .map(|id| mesh.sites[id.raw() as usize].direction.components());
+        let mut normal = cross(subtract(b, a), subtract(c, a));
+        if dot(normal, add(add(a, b), c)) < 0.0 {
+            normal = scale(normal, -1.0);
+        }
+        let position = UnitVector3::new(normal[0], normal[1], normal[2]).map_err(|_| {
+            SphericalSurfaceBuildError::DegenerateTriangle {
+                triangle: triangle_index,
             }
-            let position = UnitVector3::new(normal[0], normal[1], normal[2]).map_err(|_| {
-                SphericalSurfaceBuildError::DegenerateTriangle {
-                    triangle: triangle_index,
-                }
-            })?;
-            let raw_id = u32::try_from(triangle_index)
-                .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
-            Ok(SphericalSurfaceVertex {
-                id: SurfaceVertexId::from_raw(raw_id),
-                position,
-            })
-        })
-        .collect()
+        })?;
+        let raw_id = u32::try_from(triangle_index)
+            .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
+        vertices.push(SphericalSurfaceVertex {
+            id: SurfaceVertexId::from_raw(raw_id),
+            position,
+        });
+    }
+    cancellation.check_surface()?;
+    Ok(vertices)
 }
 
 fn order_cell_boundaries(
     mesh: &GeodesicMesh,
     vertices: &[SphericalSurfaceVertex],
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<Vec<Vec<SurfaceVertexId>>, SphericalSurfaceBuildError> {
+    cancellation.check_surface()?;
     let mut incident_triangles = vec![Vec::<SurfaceVertexId>::new(); mesh.sites.len()];
     for (triangle_index, triangle) in mesh.triangles.iter().enumerate() {
+        cancellation.work_surface()?;
         let raw_id = u32::try_from(triangle_index)
             .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
         let vertex_id = SurfaceVertexId::from_raw(raw_id);
@@ -337,6 +445,7 @@ fn order_cell_boundaries(
     }
 
     for (site, boundary) in mesh.sites.iter().zip(&mut incident_triangles) {
+        cancellation.work_surface()?;
         let (basis_x, basis_y) = deterministic_tangent_basis(site.direction)
             .ok_or(SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
         boundary.sort_by(|first_id, second_id| {
@@ -374,6 +483,7 @@ fn order_cell_boundaries(
             boundary.rotate_left(final_position);
         }
     }
+    cancellation.check_surface()?;
     Ok(incident_triangles)
 }
 
@@ -407,10 +517,13 @@ fn build_voronoi_edges(
     radius: Meters,
     mesh: &GeodesicMesh,
     vertices: &[SphericalSurfaceVertex],
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<BuiltVoronoiEdges, SphericalSurfaceBuildError> {
+    cancellation.check_surface()?;
     let mut edges = Vec::with_capacity(mesh.edge_incidence.len());
     let mut edge_ids = BTreeMap::new();
     for (edge_index, incidence) in mesh.edge_incidence.iter().enumerate() {
+        cancellation.work_surface()?;
         let raw_id = u32::try_from(edge_index)
             .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?;
         let edge_id = EdgeId::from_raw(raw_id);
@@ -459,6 +572,7 @@ fn build_voronoi_edges(
             normal_from_first,
         });
     }
+    cancellation.check_surface()?;
     Ok(BuiltVoronoiEdges {
         records: edges,
         ids: edge_ids,
@@ -478,49 +592,51 @@ fn build_voronoi_cells(
     vertices: &[SphericalSurfaceVertex],
     boundaries: Vec<Vec<SurfaceVertexId>>,
     edge_ids: &BTreeMap<[SurfaceVertexId; 2], EdgeId>,
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<Vec<SphericalSurfaceCell>, SphericalSurfaceBuildError> {
-    mesh.sites
-        .iter()
-        .zip(boundaries)
-        .map(|(site, boundary_vertices)| {
-            let polygon = boundary_vertices
-                .iter()
-                .map(|id| vertices[id.raw() as usize].position)
-                .collect::<Vec<_>>();
-            let (unit_area, centroid) = spherical_polygon_metrics(site.direction, &polygon)
-                .ok_or(SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
-            let area = SquareMeters::new(unit_area * radius.get() * radius.get())
-                .map_err(|_| SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
-            if area.get() <= 0.0 {
-                return Err(SphericalSurfaceBuildError::DegenerateCell { cell: site.id });
-            }
+    cancellation.check_surface()?;
+    let mut cells = Vec::with_capacity(mesh.sites.len());
+    for (site, boundary_vertices) in mesh.sites.iter().zip(boundaries) {
+        cancellation.work_surface()?;
+        let polygon = boundary_vertices
+            .iter()
+            .map(|id| vertices[id.raw() as usize].position)
+            .collect::<Vec<_>>();
+        let (unit_area, centroid) = spherical_polygon_metrics(site.direction, &polygon)
+            .ok_or(SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
+        let area = SquareMeters::new(unit_area * radius.get() * radius.get())
+            .map_err(|_| SphericalSurfaceBuildError::DegenerateCell { cell: site.id })?;
+        if area.get() <= 0.0 {
+            return Err(SphericalSurfaceBuildError::DegenerateCell { cell: site.id });
+        }
 
-            let mut boundary_edges = Vec::with_capacity(boundary_vertices.len());
-            for side in 0..boundary_vertices.len() {
-                let first = boundary_vertices[side];
-                let second = boundary_vertices[(side + 1) % boundary_vertices.len()];
-                let endpoints = if first < second {
-                    [first, second]
-                } else {
-                    [second, first]
-                };
-                boundary_edges.push(
-                    *edge_ids
-                        .get(&endpoints)
-                        .ok_or(SphericalSurfaceBuildError::MissingBoundaryEdge { cell: site.id })?,
-                );
-            }
+        let mut boundary_edges = Vec::with_capacity(boundary_vertices.len());
+        for side in 0..boundary_vertices.len() {
+            let first = boundary_vertices[side];
+            let second = boundary_vertices[(side + 1) % boundary_vertices.len()];
+            let endpoints = if first < second {
+                [first, second]
+            } else {
+                [second, first]
+            };
+            boundary_edges.push(
+                *edge_ids
+                    .get(&endpoints)
+                    .ok_or(SphericalSurfaceBuildError::MissingBoundaryEdge { cell: site.id })?,
+            );
+        }
 
-            Ok(SphericalSurfaceCell {
-                id: site.id,
-                site: site.direction,
-                centroid,
-                area,
-                boundary_vertices,
-                boundary_edges,
-            })
-        })
-        .collect()
+        cells.push(SphericalSurfaceCell {
+            id: site.id,
+            site: site.direction,
+            centroid,
+            area,
+            boundary_vertices,
+            boundary_edges,
+        });
+    }
+    cancellation.check_surface()?;
+    Ok(cells)
 }
 
 fn expected_counts(frequency: u32) -> Result<(usize, usize, usize), GeodesicMeshError> {
@@ -666,9 +782,12 @@ fn triangle_orientation(ids: [CellId; 3], sites: &[GeodesicSite]) -> f64 {
 fn build_edge_incidence(
     triangles: &[OrientedTriangle],
     expected_edges: usize,
+    cancellation: &mut CancellationPoll<'_>,
 ) -> Result<Vec<EdgeIncidence>, GeodesicMeshError> {
+    cancellation.check_mesh()?;
     let mut owners = BTreeMap::<[CellId; 2], [Option<u32>; 2]>::new();
     for (triangle_index, triangle) in triangles.iter().enumerate() {
+        cancellation.work_mesh()?;
         let triangle_id =
             u32::try_from(triangle_index).map_err(|_| GeodesicMeshError::CountOverflow)?;
         for [first, second] in [
@@ -694,6 +813,7 @@ fn build_edge_incidence(
 
     let mut incidence = Vec::with_capacity(expected_edges);
     for (sites, triangle_owners) in owners {
+        cancellation.work_mesh()?;
         let [Some(first), Some(second)] = triangle_owners else {
             return Err(GeodesicMeshError::NonManifoldEdge);
         };
@@ -704,6 +824,7 @@ fn build_edge_incidence(
         };
         incidence.push(EdgeIncidence { sites, triangles });
     }
+    cancellation.check_mesh()?;
     Ok(incidence)
 }
 

@@ -1,5 +1,6 @@
 mod support;
 
+use sekai::engine::BuildCancellation;
 use sekai::generators::natural::circulation::{
     CirculationOperatorError, CirculationOperators, CubedSphereGrid, SphericalEdge,
 };
@@ -28,6 +29,19 @@ fn divergent_flow(grid: &CubedSphereGrid, speed_scale: f32) -> Vec<[f32; 3]> {
             ]
         })
         .collect()
+}
+
+#[test]
+fn cancellable_gradient_reports_the_typed_cancelled_error() {
+    let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
+    let cancellation = BuildCancellation::new();
+    cancellation.cancel();
+
+    let error = CirculationOperators::new(&grid)
+        .gradient_cancellable(&vec![1.0; grid.cell_count()], &cancellation)
+        .unwrap_err();
+
+    assert_eq!(error, CirculationOperatorError::Cancelled);
 }
 
 fn total_layer_tracer(grid: &CubedSphereGrid, layer: &[f32], tracer: &[f32]) -> f64 {

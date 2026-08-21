@@ -1,5 +1,6 @@
 use rand::RngCore;
 
+use crate::engine::cancellation::{BuildCancellation, BuildCancellationError};
 use crate::world::RootSeed;
 
 /// Identifies a versioned generation stage within an owning namespace.
@@ -48,28 +49,53 @@ impl StageSeed {
 }
 
 /// A private-ChaCha deterministic random stream derived from a stage seed.
-pub struct StageRng(rand_chacha::ChaCha8Rng);
+pub struct StageRng {
+    random: rand_chacha::ChaCha8Rng,
+    cancellation: BuildCancellation,
+}
 
 impl StageRng {
     /// Creates a deterministic random stream from a full 32-byte stage seed.
     pub fn from_seed(seed: StageSeed) -> Self {
+        Self::from_seed_with_cancellation(seed, &BuildCancellation::new())
+    }
+
+    /// Creates a deterministic stream linked to a cooperative cancellation signal.
+    pub fn from_seed_with_cancellation(seed: StageSeed, cancellation: &BuildCancellation) -> Self {
         use rand::SeedableRng;
 
-        Self(rand_chacha::ChaCha8Rng::from_seed(seed.into_bytes()))
+        Self {
+            random: rand_chacha::ChaCha8Rng::from_seed(seed.into_bytes()),
+            cancellation: cancellation.clone(),
+        }
+    }
+
+    /// Returns whether the owning build has requested cooperative cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+
+    /// Returns a stable error when the owning build requested cancellation.
+    pub fn check_cancelled(&self) -> Result<(), BuildCancellationError> {
+        self.cancellation.check_cancelled()
+    }
+
+    pub(crate) fn cancellation_signal(&self) -> BuildCancellation {
+        self.cancellation.clone()
     }
 }
 
 impl RngCore for StageRng {
     fn next_u32(&mut self) -> u32 {
-        self.0.next_u32()
+        self.random.next_u32()
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.0.next_u64()
+        self.random.next_u64()
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        self.0.fill_bytes(dest);
+        self.random.fill_bytes(dest);
     }
 }
 

@@ -6,7 +6,7 @@ use sekai::generators::spatial::{
     spherical_foundation_graph, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
 use sekai::world::{
-    Meters, RootSeed, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
+    Meters, RootSeed, SphericalSpaceSpec, MAX_SPHERICAL_TARGET_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
 };
 
 const RADIUS: f64 = 6_371_000.0;
@@ -100,7 +100,7 @@ fn spherical_artifact_wrappers_round_trip_with_strict_validation() {
     assert_eq!(error.code(), "spherical-spatial.invalid-snapshot");
     assert_eq!(
         error.message(),
-        "unsupported spherical surface schema version 65535; supported version is 1"
+        "unsupported spherical surface schema version 65535; latest supported version is 2"
     );
 }
 
@@ -187,7 +187,10 @@ fn resolution_emits_one_stable_info_diagnostic_without_semantic_contamination() 
 
 #[test]
 fn external_spherical_specs_outside_both_budget_edges_are_rejected_before_stage_execution() {
-    for target_cell_count in [MIN_SPHERICAL_CELL_COUNT - 1, MAX_SPHERICAL_CELL_COUNT + 1] {
+    for target_cell_count in [
+        MIN_SPHERICAL_CELL_COUNT - 1,
+        MAX_SPHERICAL_TARGET_CELL_COUNT + 1,
+    ] {
         let mut inputs = ExternalArtifacts::new();
         let error = inputs
             .insert(SphericalSpaceArtifact::new(space(target_cell_count)))
@@ -203,7 +206,7 @@ fn external_spherical_specs_outside_both_budget_edges_are_rejected_before_stage_
                 assert_eq!(
                     source.message(),
                     format!(
-                        "cell count {target_cell_count} is outside {MIN_SPHERICAL_CELL_COUNT}..={MAX_SPHERICAL_CELL_COUNT}"
+                        "cell count {target_cell_count} is outside {MIN_SPHERICAL_CELL_COUNT}..={MAX_SPHERICAL_TARGET_CELL_COUNT}"
                     )
                 );
             }
