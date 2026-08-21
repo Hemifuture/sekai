@@ -110,6 +110,10 @@ impl DetailBatch {
         4_usize.pow(u32::from(self.extra))
     }
 
+    /// Test-only since rivers read [`DetailSelection::cell_levels`]:
+    /// batch levels understate walked cells (hidden subtrees collapse
+    /// to shallow single leaves).
+    #[cfg(test)]
     fn leaf_level(&self) -> u8 {
         1 + self.prefix.steps().len() as u8 + self.extra
     }
@@ -122,9 +126,18 @@ pub(super) struct DetailSelection {
     pub(super) leaves: usize,
     /// Order-sensitive content hash for latest-wins scheduling.
     pub(super) hash: u64,
+    /// Every cell's classified leaf level, indexed by cell id — the
+    /// nominal level authority for consumers that must not depend on
+    /// batch shapes (hidden subtrees collapse to shallow single-leaf
+    /// batches, so batch levels understate a walked cell).
+    cell_levels: Vec<u8>,
 }
 
-fn finish_selection(batches: Vec<DetailBatch>, leaves: usize) -> DetailSelection {
+fn finish_selection(
+    batches: Vec<DetailBatch>,
+    leaves: usize,
+    cell_levels: Vec<u8>,
+) -> DetailSelection {
     let mut hasher = DefaultHasher::new();
     for batch in &batches {
         batch.hash(&mut hasher);
@@ -133,6 +146,7 @@ fn finish_selection(batches: Vec<DetailBatch>, leaves: usize) -> DetailSelection
         hash: hasher.finish(),
         batches,
         leaves,
+        cell_levels,
     }
 }
 
@@ -156,7 +170,8 @@ pub(super) fn uniform_selection(
             batches.push(batch);
         }
     }
-    finish_selection(batches, leaves)
+    let cell_levels = vec![leaf_level; context.evaluator.cell_count()];
+    finish_selection(batches, leaves, cell_levels)
 }
 
 /// The initial selection installed with a freshly built world.
@@ -425,9 +440,10 @@ pub(super) fn select_detail_batches(
     let cap = ViewCap::new(probe.as_ref(), canvas_size);
     let mut shrink = 0_u8;
     loop {
-        let (batches, leaves) = classify_cells_striped(context, &cap, view_level, shrink);
+        let (batches, leaves, cell_levels) =
+            classify_cells_striped(context, &cap, view_level, shrink);
         if leaves <= VIEW_LEAF_BUDGET || shrink >= view_level {
-            return finish_selection(batches, leaves);
+            return finish_selection(batches, leaves, cell_levels);
         }
         shrink += 1;
     }
@@ -486,7 +502,7 @@ fn classify_cells_striped(
     cap: &ViewCap,
     view_level: u8,
     shrink: u8,
-) -> (Vec<DetailBatch>, usize) {
+) -> (Vec<DetailBatch>, usize, Vec<u8>) {
     const SELECT_CHUNKS: usize = 64;
     let evaluator = &context.evaluator;
     let cell_count = evaluator.cell_count();
@@ -497,10 +513,12 @@ fn classify_cells_striped(
         let mut leaves = 0_usize;
         let start = chunk * chunk_len;
         let end = (start + chunk_len).min(cell_count);
+        let mut levels = Vec::with_capacity(end - start);
         for cell_index in start as u32..end as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
             let level = cell_leaf_level(cap, corners, view_level, shrink);
+            levels.push(level);
             for sector in 0..evaluator.sector_count(cell) as u8 {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
@@ -524,17 +542,18 @@ fn classify_cells_striped(
                 }
             }
         }
-        (batches, leaves)
+        (batches, leaves, levels)
     };
     let workers = std::thread::available_parallelism()
         .map(|cores| cores.get().saturating_sub(1).max(1))
         .unwrap_or(1)
         .min(chunk_count)
         .min(12);
-    let chunks: Vec<(Vec<DetailBatch>, usize)> = if workers <= 1 {
+    type ChunkResult = (Vec<DetailBatch>, usize, Vec<u8>);
+    let chunks: Vec<ChunkResult> = if workers <= 1 {
         (0..chunk_count).map(classify_chunk).collect()
     } else {
-        let mut striped: Vec<Vec<(Vec<DetailBatch>, usize)>> = std::thread::scope(|scope| {
+        let mut striped: Vec<Vec<ChunkResult>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|worker| {
                     let classify_chunk = &classify_chunk;
@@ -555,13 +574,15 @@ fn classify_cells_striped(
             .map(|chunk| std::mem::take(&mut striped[chunk % workers][chunk / workers]))
             .collect()
     };
-    let mut batches = Vec::with_capacity(chunks.iter().map(|(chunk, _)| chunk.len()).sum());
+    let mut batches = Vec::with_capacity(chunks.iter().map(|(chunk, _, _)| chunk.len()).sum());
     let mut leaves = 0_usize;
-    for (chunk_batches, chunk_leaves) in chunks {
+    let mut cell_levels = Vec::with_capacity(cell_count);
+    for (chunk_batches, chunk_leaves, chunk_levels) in chunks {
         batches.extend(chunk_batches);
         leaves += chunk_leaves;
+        cell_levels.extend(chunk_levels);
     }
-    (batches, leaves)
+    (batches, leaves, cell_levels)
 }
 
 /// One cell's leaf level: the zoom-mapped `view_level` when the cell
@@ -989,14 +1010,21 @@ pub(super) fn build_river_polylines(
     if context.river_cells.is_empty() {
         return Vec::new();
     }
-    let mut cell_level: HashMap<u32, u8> = HashMap::new();
-    for batch in &selection.batches {
-        let level = batch.leaf_level();
-        cell_level
-            .entry(batch.cell)
-            .and_modify(|current| *current = (*current).max(level))
-            .or_insert(level);
-    }
+    // The reach follows the classified level of its deeper endpoint cell
+    // (never the batch shapes: a walked cell's hidden subtrees collapse
+    // to shallow single-leaf batches, and at deep zoom one endpoint of an
+    // 80 km reach is always off-screen — reading batches made the river
+    // coarser than its terrain and unstable under small pans). The
+    // deeper endpoint governs so the visible portion always matches the
+    // terrain; the off-screen half over-subdivides harmlessly (paths are
+    // memoized per reach).
+    let cell_level = |cell: u32| {
+        selection
+            .cell_levels
+            .get(cell as usize)
+            .copied()
+            .unwrap_or(1)
+    };
     let mut polylines = Vec::with_capacity(context.river_cells.len());
     for (reach, (&(from, to), &order)) in context
         .river_cells
@@ -1004,11 +1032,7 @@ pub(super) fn build_river_polylines(
         .zip(&context.river_orders)
         .enumerate()
     {
-        let level = cell_level
-            .get(&from)
-            .copied()
-            .unwrap_or(1)
-            .min(cell_level.get(&to).copied().unwrap_or(1));
+        let level = cell_level(from).max(cell_level(to));
         let path = context
             .evaluator
             .river_path(reach as u32, level.saturating_sub(1));
@@ -1178,6 +1202,30 @@ mod tests {
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
         let mid = deeper[(1 << 3) - 1].end;
         assert_eq!(mid, deeper[1 << 3].start);
+    }
+
+    /// Symptom regression (user acceptance, 2026-08-21): a reach follows
+    /// the classified level of its *deeper* endpoint cell. At deep zoom
+    /// one endpoint of an 80 km reach is always off-screen; reading the
+    /// batch soup (or the shallower endpoint) rendered rivers coarser
+    /// than their terrain and unstable under small pans.
+    #[test]
+    fn river_depth_follows_the_deeper_endpoint() {
+        let context = river_context();
+        let (from, _) = context.river_cells[0];
+        let mut cell_levels = vec![1_u8; context.evaluator.cell_count()];
+        cell_levels[from as usize] = 4;
+        let selection = DetailSelection {
+            batches: Vec::new(),
+            leaves: 0,
+            hash: 0,
+            cell_levels,
+        };
+        let polylines = build_river_polylines(&context, &selection);
+        // Reach 0 renders at its deeper endpoint (level 4 → 8
+        // sub-segments) although its other endpoint sits at level 1;
+        // reach 1 touches no deep cell and stays the L0 chord.
+        assert_eq!(polylines.len(), 8 + 1);
     }
 
     fn map_view(zoom: f64) -> SphericalPresentationViewState {
