@@ -1445,35 +1445,80 @@ pub fn project_amplified_map(
             color: *color,
         })
         .collect();
-    let mut indices = Vec::with_capacity(mesh.indices().len());
-    for triangle in mesh.indices().chunks_exact(TRIANGLE_VERTEX_COUNT) {
-        let corners = [triangle[0], triangle[1], triangle[2]];
-        let positions = corners.map(|index| vertices[index as usize].position);
-        let finite = positions
-            .iter()
-            .all(|position| position[0].is_finite() && position[1].is_finite());
-        let span = positions
-            .iter()
-            .map(|p| p[0])
-            .fold(f64::NEG_INFINITY, f64::max)
-            - positions.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-        if finite && span <= half_width {
-            indices.extend_from_slice(triangle);
-        } else {
-            append_seam_cut_triangle(
-                mesh,
-                corners,
-                projection,
-                central_meridian,
-                &mut vertices,
-                &mut indices,
-            );
+    // The triangle pass runs in order-preserving parallel chunks: plain
+    // triangles reference the shared vertex table directly, seam cuts
+    // push their fragment vertices into a chunk-local list and mark the
+    // indices with SEAM_LOCAL_FLAG; the sequential merge then appends
+    // each chunk's extras and rewrites the marked indices. Same
+    // triangles, same positions and colors as the sequential pass —
+    // only the appended-vertex order differs.
+    let chunk_triangles = 32_768 * TRIANGLE_VERTEX_COUNT;
+    let process_chunk = |chunk: &[u32]| {
+        let mut local_indices = Vec::with_capacity(chunk.len());
+        let mut extra = Vec::new();
+        for triangle in chunk.chunks_exact(TRIANGLE_VERTEX_COUNT) {
+            let corners = [triangle[0], triangle[1], triangle[2]];
+            let positions = corners.map(|index| vertices[index as usize].position);
+            let finite = positions
+                .iter()
+                .all(|position| position[0].is_finite() && position[1].is_finite());
+            let span = positions
+                .iter()
+                .map(|p| p[0])
+                .fold(f64::NEG_INFINITY, f64::max)
+                - positions.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+            if finite && span <= half_width {
+                local_indices.extend_from_slice(triangle);
+            } else {
+                append_seam_cut_triangle(
+                    mesh,
+                    corners,
+                    projection,
+                    central_meridian,
+                    &mut extra,
+                    &mut local_indices,
+                );
+            }
         }
+        (local_indices, extra)
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let chunks: Vec<(Vec<u32>, Vec<AmplifiedMapVertex>)> = mesh
+        .indices()
+        .par_chunks(chunk_triangles)
+        .map(process_chunk)
+        .collect();
+    #[cfg(target_arch = "wasm32")]
+    let chunks: Vec<(Vec<u32>, Vec<AmplifiedMapVertex>)> = mesh
+        .indices()
+        .chunks(chunk_triangles)
+        .map(process_chunk)
+        .collect();
+    let mut indices = Vec::with_capacity(mesh.indices().len());
+    for (local_indices, extra) in chunks {
+        let Ok(base) = u32::try_from(vertices.len()) else {
+            return (vertices, indices);
+        };
+        indices.extend(local_indices.into_iter().map(|index| {
+            if index & SEAM_LOCAL_FLAG != 0 {
+                base + (index & !SEAM_LOCAL_FLAG)
+            } else {
+                index
+            }
+        }));
+        vertices.extend(extra);
     }
     (vertices, indices)
 }
 
+/// Marks a triangle index as referencing a chunk-local seam vertex until
+/// the merge rebases it onto the shared vertex table.
+const SEAM_LOCAL_FLAG: u32 = 1 << 31;
+
 /// Re-cuts one seam- or pole-adjacent subdivision triangle for the map.
+///
+/// Fragment vertices go to the chunk-local `vertices` list and their
+/// indices carry [`SEAM_LOCAL_FLAG`] for the caller's merge.
 fn append_seam_cut_triangle(
     mesh: &AmplifiedSurfaceMesh,
     corners: [u32; 3],
@@ -1515,9 +1560,10 @@ fn append_seam_cut_triangle(
         if projected.len() < TRIANGLE_VERTEX_COUNT {
             continue;
         }
-        let Ok(base) = u32::try_from(vertices.len()) else {
+        if vertices.len() + projected.len() >= SEAM_LOCAL_FLAG as usize {
             return;
-        };
+        }
+        let base = SEAM_LOCAL_FLAG | vertices.len() as u32;
         for (point, _direction) in &projected {
             vertices.push(AmplifiedMapVertex {
                 position: [point.x(), point.y()],

@@ -196,15 +196,22 @@ struct DetailRebuildRequest {
     serial: u64,
 }
 
-/// One worker answer: a fresh mesh with its level-matched river
-/// polylines, or `None` when the resolved selection matched the mesh
-/// already on screen.
+/// One worker answer: a fresh mesh with its pre-projected map geometry
+/// and level-matched river polylines, or `None` when the resolved
+/// selection matched the mesh already on screen.
 struct DetailRebuildResult {
-    refreshed: Option<(
-        crate::view::AmplifiedSurfaceMesh,
-        Vec<crate::view::RiverPolylineSegment>,
-    )>,
+    refreshed: Option<AmplifiedDetailPayload>,
     serial: u64,
+}
+
+/// Everything one fresh detail rebuild hands the UI thread. The map
+/// projection (including its seam cutting) runs on the worker so the
+/// UI thread only rebases and uploads.
+struct AmplifiedDetailPayload {
+    mesh: crate::view::AmplifiedSurfaceMesh,
+    map_vertices: Vec<crate::view::AmplifiedMapVertex>,
+    map_indices: Vec<u32>,
+    rivers: Vec<crate::view::RiverPolylineSegment>,
 }
 
 /// The camera-driven incremental rebuild worker of the amplified display
@@ -244,10 +251,14 @@ fn spawn_amplified_detail_engine(
                     continue;
                 };
                 installed_hash = selection.hash;
-                Some((
+                let (map_vertices, map_indices) =
+                    crate::view::project_amplified_map(&mesh, request.view.projection());
+                Some(AmplifiedDetailPayload {
+                    map_vertices,
+                    map_indices,
+                    rivers: amplified_mesh::build_river_polylines(&context, &selection),
                     mesh,
-                    amplified_mesh::build_river_polylines(&context, &selection),
-                ))
+                })
             };
             if result_sender
                 .send(DetailRebuildResult {
@@ -423,6 +434,11 @@ pub struct TemplateApp {
     amplified_detail: Option<AmplifiedDetailEngine>,
     #[serde(skip)]
     river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
+    /// The active mesh's pre-projected map geometry (worker-produced;
+    /// recomputed on the UI thread only when the projection changes).
+    #[serde(skip)]
+    amplified_map_projected:
+        Option<std::sync::Arc<(Vec<crate::view::AmplifiedMapVertex>, Vec<u32>)>>,
     #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
     #[serde(skip)]
@@ -475,6 +491,7 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
+            amplified_map_projected: None,
             amplified_detail: None,
             river_polylines: None,
             formation_quality_profile: default_formation_quality_profile(),
@@ -783,6 +800,7 @@ impl TemplateApp {
         match amplified {
             Some(bundle) => {
                 self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
+                self.amplified_map_projected = None;
                 self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
                 self.amplified_detail = Some(spawn_amplified_detail_engine(
                     bundle.detail,
@@ -791,6 +809,7 @@ impl TemplateApp {
             }
             None => {
                 self.amplified_mesh = None;
+                self.amplified_map_projected = None;
                 self.amplified_detail = None;
                 self.river_polylines = None;
             }
@@ -810,9 +829,13 @@ impl TemplateApp {
             }
             awaiting = engine.sent_serial != engine.answered_serial;
         }
-        if let Some((mesh, rivers)) = fresh {
-            self.amplified_mesh = Some(std::sync::Arc::new(mesh));
-            self.river_polylines = Some(std::sync::Arc::new(rivers));
+        if let Some(payload) = fresh {
+            self.amplified_mesh = Some(std::sync::Arc::new(payload.mesh));
+            self.amplified_map_projected = Some(std::sync::Arc::new((
+                payload.map_vertices,
+                payload.map_indices,
+            )));
+            self.river_polylines = Some(std::sync::Arc::new(payload.rivers));
             if let Some(render_state) = self.render_state.clone() {
                 let mut egui_renderer = render_state.renderer.write();
                 if let Some(renderer) = egui_renderer
@@ -910,17 +933,28 @@ impl TemplateApp {
     ) {
         match self.amplified_mesh.as_deref() {
             Some(mesh) => {
-                let projection = self
-                    .spherical_canvas_state
-                    .presentation_view_state()
-                    .projection();
                 let (map_origin, globe_anchor) = self.amplified_detail_anchors();
-                let (vertices, indices) = crate::view::project_amplified_map(mesh, projection);
+                // The worker pre-projects each fresh mesh; only meshes
+                // installed without a worker payload (world install,
+                // renderer recreation) project here.
+                let computed;
+                let (vertices, indices): (&[crate::view::AmplifiedMapVertex], &[u32]) =
+                    match self.amplified_map_projected.as_deref() {
+                        Some((vertices, indices)) => (vertices, indices),
+                        None => {
+                            let projection = self
+                                .spherical_canvas_state
+                                .presentation_view_state()
+                                .projection();
+                            computed = crate::view::project_amplified_map(mesh, projection);
+                            (&computed.0, &computed.1)
+                        }
+                    };
                 renderer.set_amplified_map_mesh(
                     &render_state.device,
                     &render_state.queue,
-                    &vertices,
-                    &indices,
+                    vertices,
+                    indices,
                     map_origin,
                 );
                 renderer.set_amplified_globe_mesh(
@@ -1406,6 +1440,10 @@ impl TemplateApp {
                             &indices,
                             map_origin,
                         );
+                        // Keep the stored projection in step with the
+                        // new map geometry for later re-uploads.
+                        self.amplified_map_projected =
+                            Some(std::sync::Arc::new((vertices, indices)));
                     }
                     self.upload_river_segments(renderer, &render_state);
                 }

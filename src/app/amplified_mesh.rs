@@ -307,12 +307,41 @@ pub(super) fn select_detail_batches(
     let target_px = (canvas_size[0] / UNITS_ACROSS_VIEW).max(1.0);
     let mut shrink = 0_u8;
     loop {
+        let (batches, leaves) =
+            classify_cells_striped(context, &mapper, target_px, floor_level, shrink);
+        if leaves <= VIEW_LEAF_BUDGET || shrink >= floor_level {
+            return finish_selection(batches, leaves);
+        }
+        shrink += 1;
+    }
+}
+
+/// One classification pass over every cell, striped across the cores
+/// in contiguous chunks (chunk `c` goes to worker `c mod workers`, so
+/// the deep-zoom hotspot spreads); chunks merge back in index order,
+/// keeping the batch order — and therefore the selection hash —
+/// bit-identical to the sequential pass.
+fn classify_cells_striped(
+    context: &AmplifiedDetailContext,
+    mapper: &ScreenMapper,
+    target_px: f64,
+    floor_level: u8,
+    shrink: u8,
+) -> (Vec<DetailBatch>, usize) {
+    const SELECT_CHUNKS: usize = 64;
+    let evaluator = &context.evaluator;
+    let cell_count = evaluator.cell_count();
+    let chunk_len = cell_count.div_ceil(SELECT_CHUNKS).max(1);
+    let chunk_count = cell_count.div_ceil(chunk_len);
+    let classify_chunk = |chunk: usize| {
         let mut batches = Vec::new();
         let mut leaves = 0_usize;
-        for cell_index in 0..evaluator.cell_count() as u32 {
+        let start = chunk * chunk_len;
+        let end = (start + chunk_len).min(cell_count);
+        for cell_index in start as u32..end as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
-            let level = cell_leaf_level(&mapper, corners, target_px, floor_level, shrink);
+            let level = cell_leaf_level(mapper, corners, target_px, floor_level, shrink);
             for sector in 0..evaluator.sector_count(cell) as u8 {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
@@ -325,7 +354,7 @@ pub(super) fn select_detail_batches(
                     batches.push(batch);
                 } else {
                     walk_sector_subtrees(
-                        &mapper,
+                        mapper,
                         evaluator.sector_corners(cell, sector),
                         cell_index,
                         sector,
@@ -336,11 +365,44 @@ pub(super) fn select_detail_batches(
                 }
             }
         }
-        if leaves <= VIEW_LEAF_BUDGET || shrink >= floor_level {
-            return finish_selection(batches, leaves);
-        }
-        shrink += 1;
+        (batches, leaves)
+    };
+    let workers = std::thread::available_parallelism()
+        .map(|cores| cores.get().saturating_sub(1).max(1))
+        .unwrap_or(1)
+        .min(chunk_count)
+        .min(12);
+    let chunks: Vec<(Vec<DetailBatch>, usize)> = if workers <= 1 {
+        (0..chunk_count).map(classify_chunk).collect()
+    } else {
+        let mut striped: Vec<Vec<(Vec<DetailBatch>, usize)>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|worker| {
+                    let classify_chunk = &classify_chunk;
+                    scope.spawn(move || {
+                        (worker..chunk_count)
+                            .step_by(workers)
+                            .map(classify_chunk)
+                            .collect()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("a cell classifier thread panicked"))
+                .collect()
+        });
+        (0..chunk_count)
+            .map(|chunk| std::mem::take(&mut striped[chunk % workers][chunk / workers]))
+            .collect()
+    };
+    let mut batches = Vec::with_capacity(chunks.iter().map(|(chunk, _)| chunk.len()).sum());
+    let mut leaves = 0_usize;
+    for (chunk_batches, chunk_leaves) in chunks {
+        batches.extend(chunk_batches);
+        leaves += chunk_leaves;
     }
+    (batches, leaves)
 }
 
 /// One cell's leaf level from its projected first-sector size.
@@ -547,25 +609,36 @@ impl BatchCache {
 ///
 /// Deterministic: identical selections yield bit-identical meshes, cold
 /// or cached; the cache only accelerates (spec §6 caching semantics).
+/// Missing batches build in parallel across the available cores — each
+/// batch is a pure function of the context, so striping only shares
+/// the load, never the outcome.
 pub(super) fn build_detail_mesh(
     context: &AmplifiedDetailContext,
     selection: &DetailSelection,
     cache: &mut BatchCache,
 ) -> Option<AmplifiedSurfaceMesh> {
     cache.generation += 1;
+    let missing: Vec<DetailBatch> = selection
+        .batches
+        .iter()
+        .filter(|batch| !cache.entries.contains_key(batch))
+        .copied()
+        .collect();
+    for (batch, built) in missing
+        .iter()
+        .zip(build_batches_striped(context, &missing)?)
+    {
+        cache.cached_leaves += built.leaves as usize;
+        cache.entries.insert(*batch, built);
+    }
     let mut directions = Vec::with_capacity(selection.leaves * 2);
     let mut colors = Vec::with_capacity(selection.leaves * 2);
     let mut indices = Vec::with_capacity(selection.leaves * TRIANGLE_CORNERS);
     for batch in &selection.batches {
-        if !cache.entries.contains_key(batch) {
-            let built = build_batch(context, batch)?;
-            cache.cached_leaves += built.leaves as usize;
-            cache.entries.insert(*batch, built);
-        }
         let entry = cache
             .entries
             .get_mut(batch)
-            .expect("the batch was just ensured");
+            .expect("missing batches were just built");
         entry.last_used = cache.generation;
         let base = u32::try_from(directions.len()).ok()?;
         directions.extend_from_slice(&entry.directions);
@@ -574,6 +647,51 @@ pub(super) fn build_detail_mesh(
     }
     cache.evict_unused();
     AmplifiedSurfaceMesh::new(directions, colors, indices).ok()
+}
+
+/// Builds the missing batches with interleaved striping over the
+/// available cores: batch `i` goes to worker `i mod workers`, so
+/// river-dense hotspots spread instead of landing on one straggler.
+/// Results return in input order; per-reach path memo locks serialize
+/// same-reach materialization across workers and share it after.
+fn build_batches_striped(
+    context: &AmplifiedDetailContext,
+    batches: &[DetailBatch],
+) -> Option<Vec<CachedBatch>> {
+    let workers = std::thread::available_parallelism()
+        .map(|cores| cores.get().saturating_sub(1).max(1))
+        .unwrap_or(1)
+        .min(batches.len())
+        .min(12);
+    if workers <= 1 {
+        return batches
+            .iter()
+            .map(|batch| build_batch(context, batch))
+            .collect();
+    }
+    let mut striped: Vec<Vec<Option<CachedBatch>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                scope.spawn(move || {
+                    batches
+                        .iter()
+                        .skip(worker)
+                        .step_by(workers)
+                        .map(|batch| build_batch(context, batch))
+                        .collect()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("a batch builder thread panicked"))
+            .collect()
+    });
+    let mut ordered = Vec::with_capacity(batches.len());
+    for index in 0..batches.len() {
+        ordered.push(striped[index % workers][index / workers].take()?);
+    }
+    Some(ordered)
 }
 
 /// Builds one batch: geometry by recursive midpoint subdivision, colors
