@@ -393,24 +393,73 @@ const CATEGORICAL: [LinearRgba; 12] = [
     LinearRgba::new(0.540, 0.255, 0.095, 1.0),
 ];
 
-/// Sea-anchored terrain table: six water stops, the coastal stop exactly at the
-/// midpoint, and six land stops. Display ranges for hypsometric fields must be
-/// symmetric around sea level so the water-to-land break stays at t = 0.5.
-const HYPSOMETRIC: [LinearRgba; 13] = [
-    LinearRgba::new(0.008, 0.020, 0.065, 1.0),
-    LinearRgba::new(0.015, 0.045, 0.120, 1.0),
-    LinearRgba::new(0.030, 0.090, 0.200, 1.0),
-    LinearRgba::new(0.070, 0.165, 0.300, 1.0),
-    LinearRgba::new(0.140, 0.280, 0.420, 1.0),
-    LinearRgba::new(0.280, 0.440, 0.540, 1.0),
-    LinearRgba::new(0.180, 0.290, 0.130, 1.0),
-    LinearRgba::new(0.290, 0.365, 0.145, 1.0),
-    LinearRgba::new(0.430, 0.400, 0.170, 1.0),
-    LinearRgba::new(0.470, 0.330, 0.160, 1.0),
-    LinearRgba::new(0.380, 0.240, 0.140, 1.0),
-    LinearRgba::new(0.420, 0.360, 0.320, 1.0),
-    LinearRgba::new(0.880, 0.870, 0.850, 1.0),
+/// The fixed hypsometric display half-range around sea level in metres.
+///
+/// Elevation classes are absolute (atlas practice — Imhof's cartographic
+/// relief school and the ETOPO ramps): a colour always means the same
+/// metres-above-sea, worlds are comparable, and one extreme trench or
+/// peak can no longer compress everything else (values beyond the range
+/// clamp to the end classes). Hypsometric display ranges must stay
+/// symmetric around sea level so the water-to-land break sits exactly at
+/// t = 0.5.
+pub const HYPSOMETRIC_DISPLAY_RADIUS_M: f32 = 6_000.0;
+/// Entry granularity of the expanded class table in metres. Every class
+/// boundary below must be a multiple of this lattice.
+const HYPSOMETRIC_STEP_M: f32 = 100.0;
+/// Entry count: one per lattice step across ±HYPSOMETRIC_DISPLAY_RADIUS_M.
+const HYPSOMETRIC_ENTRIES: usize = 121;
+
+/// Sea-anchored hypsometric elevation classes: `(lower bound in metres,
+/// class colour)`, deep abyss to summit snow. Boundaries follow classic
+/// atlas banding (finer near sea level on both sides, where most of the
+/// world lives; coarser toward the extremes).
+const HYPSOMETRIC_CLASSES: [(f32, LinearRgba); 18] = [
+    (-6_000.0, LinearRgba::new(0.008, 0.020, 0.065, 1.0)),
+    (-4_000.0, LinearRgba::new(0.015, 0.045, 0.120, 1.0)),
+    (-3_000.0, LinearRgba::new(0.030, 0.090, 0.200, 1.0)),
+    (-2_000.0, LinearRgba::new(0.055, 0.140, 0.280, 1.0)),
+    (-1_000.0, LinearRgba::new(0.085, 0.195, 0.350, 1.0)),
+    (-500.0, LinearRgba::new(0.120, 0.260, 0.420, 1.0)),
+    (-200.0, LinearRgba::new(0.170, 0.330, 0.490, 1.0)),
+    (-100.0, LinearRgba::new(0.230, 0.410, 0.550, 1.0)),
+    (0.0, LinearRgba::new(0.155, 0.310, 0.135, 1.0)),
+    (100.0, LinearRgba::new(0.220, 0.340, 0.140, 1.0)),
+    (200.0, LinearRgba::new(0.290, 0.365, 0.145, 1.0)),
+    (500.0, LinearRgba::new(0.375, 0.390, 0.155, 1.0)),
+    (1_000.0, LinearRgba::new(0.430, 0.400, 0.170, 1.0)),
+    (1_500.0, LinearRgba::new(0.465, 0.370, 0.165, 1.0)),
+    (2_000.0, LinearRgba::new(0.470, 0.330, 0.160, 1.0)),
+    (3_000.0, LinearRgba::new(0.380, 0.240, 0.140, 1.0)),
+    (4_000.0, LinearRgba::new(0.420, 0.360, 0.320, 1.0)),
+    (5_000.0, LinearRgba::new(0.880, 0.870, 0.850, 1.0)),
 ];
+
+/// The class table expanded onto the uniform lattice `sample_palette`
+/// consumes: entry i sits at −radius + i·step and carries its class
+/// colour. Class interiors stay flat; each boundary gets one lattice
+/// step of blend (the linear segment between the two adjacent entries),
+/// a soft edge in place of a hard contour line. Entry 60 is elevation 0,
+/// so the water-to-land break lands exactly at t = 0.5.
+const HYPSOMETRIC: [LinearRgba; HYPSOMETRIC_ENTRIES] = build_stepped_hypsometric();
+
+const fn build_stepped_hypsometric() -> [LinearRgba; HYPSOMETRIC_ENTRIES] {
+    let mut table = [HYPSOMETRIC_CLASSES[0].1; HYPSOMETRIC_ENTRIES];
+    let mut entry = 0;
+    while entry < HYPSOMETRIC_ENTRIES {
+        let elevation_m = -HYPSOMETRIC_DISPLAY_RADIUS_M + entry as f32 * HYPSOMETRIC_STEP_M;
+        let mut class = 0;
+        let mut candidate = 0;
+        while candidate < HYPSOMETRIC_CLASSES.len() {
+            if elevation_m >= HYPSOMETRIC_CLASSES[candidate].0 {
+                class = candidate;
+            }
+            candidate += 1;
+        }
+        table[entry] = HYPSOMETRIC_CLASSES[class].1;
+        entry += 1;
+    }
+    table
+}
 
 /// Fixed semantic pair for land/ocean category fields: index 0 is ocean water,
 /// index 1 is land, matching the stable land/ocean category encoding.

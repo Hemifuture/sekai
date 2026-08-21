@@ -376,12 +376,12 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "b27a18d36197f1b620e6c586f8e6c97fd0585d7ca6a6a10de9151cb89be2fbc6",
+            "f0d53bebf0f7bd3a1b4269a9264a7dd9ec72bd4ef4a670ef77ff21ce6ed57ea4",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "54ced66ec5d3e84d977498b30574c12452358e56ec4405820fe6ef6d2ae1d819",
+            "f887e52ccb9ccbb4f242f415e3f343995348eb65d751e0491d0f9ab282599290",
         ),
         (
             "map_category_fill",
@@ -396,52 +396,52 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "f863e356d5710b2b6f231e73e19111a5379efad47922ba3fc0d9e4c40ca916ab",
+            "735dba92aca377432f7f6c6a67e3e2b9c69e864909735beeb7d39aa69cd513e9",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "c155a60c39c88ebdc833991910cb714a3a983d93f7ceaa7965523bb5f7dad70f",
+            "1a41b85d4ad72dc6a1b3dba3179882143905350e1d71d985b3c65792b916c111",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "1d63547ff8d27eab9473ccdebb9ff73226a1d8e761da0e52752d5dc29b0f744c",
+            "8e1fffd5448c078eeb06b1798c041d4469b651165acc78499ae10354b24e8468",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "820da0ffd47698185ec0d9737ec3c9968d95b954765087867432371e4553a6f6",
+            "eb007dd9d09faee3502dc2a4b9f519af0851415abefcf3489872539a065e3692",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "427f0524aacecf23c1c0730cff11018d2dc38ec522acf743e956166dc5049dee",
+            "df74002b510fbd251e71e6d1e1bcd8ce3a0ac299853d2703587ed9fe01089df8",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "923239d7e2cb26787ea337708ddae8977766719361285ad97063972fb1c751da",
+            "d7d5bc90df2e2c7f0d5936e7f7c2ea344ec1ff90b56d51cfba72c9545b153f95",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "abbb8b8825048f50cd4751b51e08e9b1a1316a16a0a4cca2cab2a85e347eb46b",
+            "4681c3ef91bad5adb5b7b6de15e36186912ce94109d40804bb390af09fa4583f",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "df659dfab10f61907b16020da00acda639edfc264f3e34a1732cf479708a1e1a",
+            "3a9bbc8a4059b1d77877d18a31bdf841e9650f8ef3a5ae3c563002b963bf141d",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "7a12ef1cb83894ea141c54753a60e74c82d4af82074a0b93b3e729056aac73c0",
+            "4c466d895bc5fb6c2c9122a8d0b2f69f49e7ad9d20a5dc829f6273c0be612a76",
         ),
         (
             "map_poles",
             &map_poles,
-            "28742ca44dc7bffe8694e2d711815abb1d4c8a34fa384e97850d8dbbce9089e3",
+            "1488a9780bf2da82954428f7ee5f69dc0b712242a339ec858c867c44c0fcca9e",
         ),
         (
             "globe_front_visibility",
