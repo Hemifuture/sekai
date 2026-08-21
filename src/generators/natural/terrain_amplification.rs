@@ -250,6 +250,7 @@ pub struct TerrainAmplifier {
     lineation_east: Vec<f32>,
     lineation_north: Vec<f32>,
     orogeny_factor: Vec<f32>,
+    local_relief_m: Vec<f32>,
     local_relief_norm: Vec<f32>,
     age_gradient_norm: Vec<f32>,
     land: Vec<f32>,
@@ -310,16 +311,24 @@ impl TerrainAmplifier {
             neighbours[b.raw() as usize].push(a.raw());
         }
 
-        // C1 driver: local relief as the largest neighbour elevation drop.
-        let local_relief_norm: Vec<f32> = (0..cell_count)
+        // C1 driver: local relief as the largest neighbour elevation drop,
+        // kept both in metres (the v2 spectral-continuation amplitude
+        // source, amendment A7) and normalized (the Hurst/wall channels).
+        // The norm divides the unrounded f64 relief so the M1 bit path
+        // stays exactly as frozen.
+        let local_relief_f64: Vec<f64> = (0..cell_count)
             .map(|index| {
                 let here = f64::from(fields.final_elevation_m[index]);
-                let relief = neighbours[index]
+                neighbours[index]
                     .iter()
                     .map(|&n| (here - f64::from(fields.final_elevation_m[n as usize])).abs())
-                    .fold(0.0_f64, f64::max);
-                ((relief / RELIEF_REFERENCE_M).clamp(RELIEF_FLOOR, 1.0)) as f32
+                    .fold(0.0_f64, f64::max)
             })
+            .collect();
+        let local_relief_m: Vec<f32> = local_relief_f64.iter().map(|&r| r as f32).collect();
+        let local_relief_norm: Vec<f32> = local_relief_f64
+            .iter()
+            .map(|&relief| ((relief / RELIEF_REFERENCE_M).clamp(RELIEF_FLOOR, 1.0)) as f32)
             .collect();
 
         // C8 driver: crust-age gradient magnitude as the spreading-rate proxy.
@@ -385,6 +394,7 @@ impl TerrainAmplifier {
             lineation_east: fields.lineation_east.to_vec(),
             lineation_north: fields.lineation_north.to_vec(),
             orogeny_factor,
+            local_relief_m,
             local_relief_norm,
             age_gradient_norm,
             land,
@@ -613,6 +623,7 @@ impl TerrainAmplifier {
         ConditioningView {
             elevation_m: &self.elevation_m,
             sea_level_m: self.sea_level_m,
+            local_relief_m: &self.local_relief_m,
             local_relief_norm: &self.local_relief_norm,
             erodibility_norm: &self.erodibility_norm,
             sediment_norm: &self.sediment_norm,
@@ -893,6 +904,7 @@ impl TerrainAmplifier {
 pub(super) struct ConditioningView<'a> {
     pub(super) elevation_m: &'a [f32],
     pub(super) sea_level_m: f64,
+    pub(super) local_relief_m: &'a [f32],
     pub(super) local_relief_norm: &'a [f32],
     pub(super) erodibility_norm: &'a [f32],
     pub(super) sediment_norm: &'a [f32],

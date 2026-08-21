@@ -38,9 +38,27 @@ const GUIDANCE_LEVEL_AHEAD: u8 = 2;
 const GUIDANCE_LEVEL_CAP: u8 = 8;
 /// Path depth never exceeds the primitive path cap.
 const PATH_DEPTH_LIMIT: u8 = 16;
+/// Smooth refinement below the meander cutoff (amendment A8): levels of
+/// four-point interpolatory subdivision past the stochastic cap, so a
+/// close-up channel reads as the smooth bend the meander vertices trace
+/// (Langbein–Leopold sine-generated curves) instead of λ/2 chords.
+const SMOOTH_DEPTH_EXTRA: u8 = 4;
+/// Multiplicative and absolute safety margins on the per-node deviation
+/// bounds (floating-point slack; keeps pruning provably conservative).
+const NODE_BOUND_SAFETY: f64 = 1.0 + 1.0e-9;
+const NODE_BOUND_SAFETY_M: f64 = 1.0e-6;
 
-/// Lazy per-reach memo of the A6 path tree: the bit-exact node points
-/// of the deepest depth materialized so far (`2^d + 1` of them).
+/// One reach's materialized path tree: the node points of the deepest
+/// depth so far (`2^d + 1`) and, for every internal node (identified by
+/// its midpoint index), a proven upper bound in metres on how far any
+/// deeper path point strays from that node's chord — the exact pruning
+/// bound of the nearest-point descent.
+pub(super) struct ReachPathData {
+    points: Vec<[f64; 3]>,
+    bounds: Vec<f64>,
+}
+
+/// Lazy per-reach memo of the A6/A8 path tree.
 ///
 /// The tree is a pure function of the reach and the frozen seeds, and
 /// deeper levels never move shallower nodes, so one array serves every
@@ -50,7 +68,7 @@ const PATH_DEPTH_LIMIT: u8 = 16;
 /// produced.
 #[derive(Default)]
 pub(super) struct ReachPathCache {
-    deepest: RwLock<Option<Arc<Vec<[f64; 3]>>>>,
+    deepest: RwLock<Option<Arc<ReachPathData>>>,
 }
 
 /// One cache slot per reach, all empty (engine construction).
@@ -60,37 +78,98 @@ pub(super) fn fresh_reach_path_caches(reach_count: usize) -> Vec<ReachPathCache>
         .collect()
 }
 
-/// The reach's path points at `depth` or deeper (`depth` pre-clamped to
-/// the reach cap and ≥ 1), deepening the memo level by level.
+/// The deepest refinable depth of one reach: the stochastic meander cap
+/// plus the A8 smooth-refinement levels (degenerate reaches stay flat).
+fn smooth_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32) -> u8 {
+    let cap = path_depth_cap(evaluator, reach_index);
+    if cap == 0 {
+        return 0;
+    }
+    (cap + SMOOTH_DEPTH_EXTRA).min(PATH_DEPTH_LIMIT)
+}
+
+/// The A8 smooth midpoint of segment `k → k+1`: four-point
+/// interpolatory subdivision (Dyn–Levin–Gregory 1987, w = 1/16) with
+/// clamped endpoints, renormalized onto the sphere. Deterministic,
+/// keeps every existing vertex, and converges to a C¹ curve through
+/// the meander points.
+fn four_point_midpoint(points: &[[f64; 3]], k: usize) -> [f64; 3] {
+    let p0 = points[k.saturating_sub(1)];
+    let p1 = points[k];
+    let p2 = points[k + 1];
+    let p3 = points[(k + 2).min(points.len() - 1)];
+    normalized([
+        9.0 * (p1[0] + p2[0]) - (p0[0] + p3[0]),
+        9.0 * (p1[1] + p2[1]) - (p0[1] + p3[1]),
+        9.0 * (p1[2] + p2[2]) - (p0[2] + p3[2]),
+    ])
+    .or_else(|| normalized(add(p1, p2)))
+    .expect("reach sub-segments stay strictly inside one hemisphere")
+}
+
+/// Proven per-node deviation bounds, bottom-up: for the node spanning
+/// `i..j` with midpoint `m`, every deeper path point stays within
+/// `d(points[m], chord(i,j)) + max(child bounds)` of the node's chord —
+/// the distance to a short great-arc chord is quasi-convex along
+/// another short arc, so a child chord's worst deviation is at its
+/// endpoints, which are the node's endpoints (0) and its midpoint.
+fn node_bounds(points: &[[f64; 3]], radius_m: f64) -> Vec<f64> {
+    let mut bounds = vec![0.0_f64; points.len()];
+    let mut span = 2_usize;
+    while span < points.len() {
+        let mut start = 0_usize;
+        while start + span < points.len() {
+            let end = start + span;
+            let middle = (start + end) / 2;
+            let lateral = arc_nearest_point(points[start], points[end], points[middle], radius_m)
+                .map_or(0.0, |(lateral, _)| lateral);
+            let children = if span >= 4 {
+                bounds[(start + middle) / 2].max(bounds[(middle + end) / 2])
+            } else {
+                0.0
+            };
+            bounds[middle] = (lateral + children) * NODE_BOUND_SAFETY + NODE_BOUND_SAFETY_M;
+            start = end;
+        }
+        span *= 2;
+    }
+    bounds
+}
+
+/// The reach's path data at `depth` or deeper (`depth` pre-clamped to
+/// the smooth cap and ≥ 1), deepening the memo level by level:
+/// stochastic meander midpoints up to the wavelength cap (A6), smooth
+/// interpolatory midpoints beyond it (A8), then fresh node bounds.
 fn cached_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
     reach: &RiverReach,
     depth: u8,
-) -> Arc<Vec<[f64; 3]>> {
+) -> Arc<ReachPathData> {
     let slot = evaluator
         .river_path_slot(reach_index)
         .expect("reach indices come from the engine's own reach lists");
     let needed = (1_usize << depth) + 1;
     let lock_clean = "the reach path lock only guards infallible derivation";
-    if let Some(points) = slot
+    if let Some(data) = slot
         .deepest
         .read()
         .expect(lock_clean)
         .as_ref()
-        .filter(|points| points.len() >= needed)
+        .filter(|data| data.points.len() >= needed)
     {
-        return Arc::clone(points);
+        return Arc::clone(data);
     }
     let mut guard = slot.deepest.write().expect(lock_clean);
-    if let Some(points) = guard.as_ref().filter(|points| points.len() >= needed) {
-        return Arc::clone(points);
+    if let Some(data) = guard.as_ref().filter(|data| data.points.len() >= needed) {
+        return Arc::clone(data);
     }
     let mut points: Vec<[f64; 3]> = guard
         .as_ref()
-        .map(|points| points.as_ref().clone())
+        .map(|data| data.points.clone())
         .unwrap_or_else(|| vec![reach.from, reach.to]);
     if let Some(walk) = ReachWalk::new(evaluator, reach_index, reach) {
+        let meander_cap = path_depth_cap(evaluator, reach_index);
         while points.len() < needed {
             // The nodes between consecutive points of the depth-d array
             // sit at depth d, enumerated left to right — which is
@@ -99,15 +178,20 @@ fn cached_path(
             let mut next = Vec::with_capacity(points.len() * 2 - 1);
             for (bits, pair) in points.windows(2).enumerate() {
                 next.push(pair[0]);
-                next.push(walk.node_midpoint(pair[0], pair[1], parent_depth, bits as u32));
+                if parent_depth < meander_cap {
+                    next.push(walk.node_midpoint(pair[0], pair[1], parent_depth, bits as u32));
+                } else {
+                    next.push(four_point_midpoint(&points, bits));
+                }
             }
             next.push(*points.last().expect("a path holds both endpoints"));
             points = next;
         }
     }
-    let points = Arc::new(points);
-    *guard = Some(Arc::clone(&points));
-    points
+    let bounds = node_bounds(&points, evaluator.amplifier().radius_m());
+    let data = Arc::new(ReachPathData { points, bounds });
+    *guard = Some(Arc::clone(&data));
+    data
 }
 
 /// Everything constant per reach during a tree walk.
@@ -221,7 +305,8 @@ pub(super) fn path_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32
 }
 
 /// Materializes one reach's rerouted polyline at `depth` (clamped to
-/// the reach cap): `2^depth + 1` points, endpoints the cell centroids.
+/// the A8 smooth cap): `2^depth + 1` points, endpoints the cell
+/// centroids; depths beyond the meander cap refine the smooth curve.
 pub(super) fn materialize_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
@@ -231,19 +316,19 @@ pub(super) fn materialize_path(
     let Some(reach) = reaches.get(reach_index as usize) else {
         return Vec::new();
     };
-    let depth = depth.min(path_depth_cap(evaluator, reach_index));
+    let depth = depth.min(smooth_depth_cap(evaluator, reach_index));
     let as_unit = |p: [f64; 3]| {
         UnitVector3::new(p[0], p[1], p[2]).expect("reach path points are unit directions")
     };
     if depth == 0 {
         return vec![as_unit(reach.from), as_unit(reach.to)];
     }
-    let points = cached_path(evaluator, reach_index, reach, depth);
+    let data = cached_path(evaluator, reach_index, reach, depth);
     // A degenerate reach memoizes only its chord; read what exists.
-    let depth = u32::from(depth).min((points.len() - 1).trailing_zeros());
-    let stride = (points.len() - 1) >> depth;
+    let depth = u32::from(depth).min((data.points.len() - 1).trailing_zeros());
+    let stride = (data.points.len() - 1) >> depth;
     (0..=(1_usize << depth))
-        .map(|index| as_unit(points[index * stride]))
+        .map(|index| as_unit(data.points[index * stride]))
         .collect()
 }
 
@@ -274,7 +359,7 @@ pub(super) fn carve_elevation_m(
             let reach = &reaches[reach_index as usize];
             let depth = leaf_level
                 .saturating_sub(1)
-                .min(path_depth_cap(evaluator, reach_index));
+                .min(smooth_depth_cap(evaluator, reach_index));
             let Some((lateral_m, fraction)) =
                 nearest_on_path(evaluator, reach_index, reach, depth, p)
             else {
@@ -302,18 +387,18 @@ fn nearest_on_path(
     if depth == 0 {
         return arc_nearest_point(reach.from, reach.to, p, radius_m);
     }
-    let points = cached_path(evaluator, reach_index, reach, depth);
+    let data = cached_path(evaluator, reach_index, reach, depth);
     // A degenerate reach memoizes only its chord.
-    let depth = u32::from(depth).min((points.len() - 1).trailing_zeros());
+    let depth = u32::from(depth).min((data.points.len() - 1).trailing_zeros());
     if depth == 0 {
         return arc_nearest_point(reach.from, reach.to, p, radius_m);
     }
-    let stride = (points.len() - 1) >> depth;
+    let stride = (data.points.len() - 1) >> depth;
     let mut best: Option<(f64, f64)> = None;
     descend_nearest(
-        &points,
+        &data,
         stride,
-        (0, points.len() - 1),
+        (0, data.points.len() - 1),
         (0.0, 1.0),
         p,
         radius_m,
@@ -323,7 +408,7 @@ fn nearest_on_path(
 }
 
 fn descend_nearest(
-    points: &[[f64; 3]],
+    data: &ReachPathData,
     stride: usize,
     (start, end): (usize, usize),
     (fraction_a, fraction_b): (f64, f64),
@@ -331,6 +416,7 @@ fn descend_nearest(
     radius_m: f64,
     best: &mut Option<(f64, f64)>,
 ) {
+    let points = &data.points;
     let a = points[start];
     let b = points[end];
     let Some((chord_lateral, chord_along)) = arc_nearest_point(a, b, p, radius_m) else {
@@ -343,15 +429,14 @@ fn descend_nearest(
         }
         return;
     }
-    // Every deeper displacement stays within the geometric series
-    // Σ 0.25·ℓ/2^k = 0.25·ℓ of this segment's arc.
-    let slack_m = MEANDER_SINUOSITY_FRACTION * arc_angle(a, b) * radius_m;
+    let middle = (start + end) / 2;
+    // Exact pruning: no deeper path point of this span strays farther
+    // than the node's proven bound from its chord.
     if let Some((current, _)) = best {
-        if chord_lateral - slack_m > *current {
+        if chord_lateral - data.bounds[middle] > *current {
             return;
         }
     }
-    let middle = (start + end) / 2;
     let mid_fraction = 0.5 * (fraction_a + fraction_b);
     // Visit the nearer half first so the bound prunes the other.
     let first_distance = arc_nearest_point(a, points[middle], p, radius_m)
@@ -366,7 +451,7 @@ fn descend_nearest(
         [second, first]
     };
     for (span, fractions) in ordered {
-        descend_nearest(points, stride, span, fractions, p, radius_m, best);
+        descend_nearest(data, stride, span, fractions, p, radius_m, best);
     }
 }
 
@@ -576,8 +661,10 @@ mod tests {
         }
     }
 
-    /// Amendment A6.4: no path point strays beyond the corridor fraction
-    /// of the chord from the chord's great circle.
+    /// Amendment A6.4 (+A8): no stochastic vertex strays beyond the
+    /// corridor fraction of the chord; smooth refinements may overshoot
+    /// only by the four-point scheme's bounded margin (≪ one cap-level
+    /// amplitude).
     #[test]
     fn paths_stay_inside_the_parent_corridor() {
         let (evaluator, _surface) = evaluator_with_rivers();
@@ -587,25 +674,36 @@ mod tests {
             let reach = &reaches[reach_index as usize];
             let normal = normalized(cross(reach.from, reach.to)).unwrap();
             let chord_rad = arc_angle(reach.from, reach.to);
-            let bound_rad = MEANDER_CORRIDOR_FRACTION * chord_rad + 1.0e-12;
-            let depth = evaluator.river_path_depth_cap(reach_index).min(8);
-            for point in evaluator.river_path(reach_index, depth) {
-                let lateral = dot(point.components(), normal)
-                    .clamp(-1.0, 1.0)
-                    .asin()
-                    .abs();
-                assert!(
-                    lateral <= bound_rad,
-                    "point strays {:.1} m beyond the corridor",
-                    (lateral - bound_rad) * radius
-                );
+            let cap = evaluator.river_path_depth_cap(reach_index);
+            let corridor_rad = MEANDER_CORRIDOR_FRACTION * chord_rad;
+            for (depth, margin_rad) in [
+                (cap.min(8), 1.0e-12),
+                (
+                    smooth_depth_cap(&evaluator, reach_index),
+                    0.1 * chord_rad / f64::from(1_u32 << cap.min(30)),
+                ),
+            ] {
+                let bound_rad = corridor_rad + margin_rad;
+                for point in evaluator.river_path(reach_index, depth) {
+                    let lateral = dot(point.components(), normal)
+                        .clamp(-1.0, 1.0)
+                        .asin()
+                        .abs();
+                    assert!(
+                        lateral <= bound_rad,
+                        "point strays {:.1} m beyond the corridor at depth {depth}",
+                        (lateral - bound_rad) * radius
+                    );
+                }
             }
         }
     }
 
-    /// Amendment A6.2: the wavelength cutoff — the wide reach caps
-    /// shallower than the narrow one, and beyond the cap the polyline
-    /// stops changing.
+    /// Amendment A6.2 + A8: the wavelength cutoff stops *stochastic*
+    /// refinement — the wide reach caps shallower than the narrow one —
+    /// while the A8 smooth refinement below the cap keeps every meander
+    /// vertex bit-exactly (interpolatory) and freezes past the smooth
+    /// cap.
     #[test]
     fn wavelength_cutoff_caps_the_tree() {
         let (evaluator, _surface) = evaluator_with_rivers();
@@ -616,9 +714,24 @@ mod tests {
             "narrow {narrow_cap} must out-refine wide {wide_cap}"
         );
         let capped = evaluator.river_path(1, wide_cap);
-        let beyond = evaluator.river_path(1, wide_cap + 3);
-        assert_eq!(capped.len(), beyond.len());
-        for (left, right) in capped.iter().zip(&beyond) {
+        let smooth_cap = smooth_depth_cap(&evaluator, 1);
+        assert_eq!(
+            smooth_cap,
+            (wide_cap + SMOOTH_DEPTH_EXTRA).min(PATH_DEPTH_LIMIT)
+        );
+        let smooth = evaluator.river_path(1, smooth_cap);
+        let stride = 1_usize << (smooth_cap - wide_cap);
+        assert_eq!(smooth.len(), (capped.len() - 1) * stride + 1);
+        for (index, vertex) in capped.iter().enumerate() {
+            assert_eq!(
+                vertex.components().map(f64::to_bits),
+                smooth[index * stride].components().map(f64::to_bits),
+                "smooth refinement must interpolate the meander vertices"
+            );
+        }
+        let beyond = evaluator.river_path(1, smooth_cap + 3);
+        assert_eq!(smooth.len(), beyond.len());
+        for (left, right) in smooth.iter().zip(&beyond) {
             assert_eq!(
                 left.components().map(f64::to_bits),
                 right.components().map(f64::to_bits)
@@ -699,22 +812,28 @@ mod tests {
             }
         }
 
-        // Deep carve along the deep path: bed-dominated and monotone
-        // downstream on the wide reach.
+        // Deep carve along the deep path: the reach's OWN bed-plus-wall
+        // stays monotone downstream. (The displayed carve is the min
+        // over every nearby reach, and walking a tributary through a
+        // junction overlap can legitimately climb a neighbour's rising
+        // valley wall — the invariant belongs to the reach itself.)
         let reach_index = 1_u32;
         let reach = &reaches[reach_index as usize];
-        let depth = evaluator.river_path_depth_cap(reach_index);
+        let depth = smooth_depth_cap(&evaluator, reach_index);
         let path = evaluator.river_path(reach_index, depth);
-        let level = depth + 1;
+        let wall_slope = TerrainAmplifier::carve_wall_slope(0.0);
         let mut previous = f64::INFINITY;
         for point in &path {
-            let carve = carve_elevation_m(&evaluator, *point, level, 0.0)
-                .expect("points on the channel are inside the carve corridor");
+            let (lateral_m, fraction) =
+                nearest_on_path(&evaluator, reach_index, reach, depth, point.components())
+                    .expect("a path point projects onto its own path");
+            let bed = reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m);
+            let own = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
             assert!(
-                carve <= previous + 1.0e-6,
-                "carve rose downstream: {carve} > {previous}"
+                own <= previous + 1.0e-6,
+                "own carve rose downstream: {own} > {previous}"
             );
-            previous = carve;
+            previous = own;
         }
         assert!(reach.bed_from_m >= reach.bed_to_m);
     }

@@ -22,8 +22,7 @@ use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
     surface_roughness_hurst, AmplificationFieldsView, ConditioningView, SurfaceRegime,
-    TerrainAmplificationError, TerrainAmplifier, BADLANDS_AMPLITUDE_M, LAND_BASE_AMPLITUDE_M,
-    RIDGE_AMPLITUDE_M, SHELF_BASE_AMPLITUDE_M, SHELF_TRANSITION_M,
+    TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M, SHELF_TRANSITION_M,
 };
 use crate::world::natural::{
     GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot, RiverSegment,
@@ -44,6 +43,18 @@ const PROBE_PATH_DEPTHS: [usize; 4] = [0, 2, 5, 9];
 /// Probes per depth block: 64 cells spread evenly over the surface.
 const PROBE_CELL_BLOCK: usize = HIERARCHICAL_PROBE_COUNT / PROBE_PATH_DEPTHS.len();
 
+/// C1 v3 gain from the T0 neighbour-relief range to the land A0
+/// (spec §10 amendment A7): the increment ladder continues the T0
+/// spectrum where the lattice ends. The range of ~6 ring samples
+/// estimates σ ≈ range/2.5, and the uniform increment noise carries
+/// σ = A/√3, so A0 = √3/2.5 · range ≈ 0.7 · range.
+const SPECTRAL_CONTINUATION: f64 = 0.7;
+/// A7 floor in metres: plains keep a whisper of fine texture (their
+/// real fine relief is dissection-driven, deferred to T1 v3 drainage).
+const LAND_A0_FLOOR_M: f64 = 30.0;
+/// C6 badlands amplitude share on top of the continued spectrum
+/// (legacy 60/320 ratio, amendment A7).
+const BADLANDS_A0_SHARE: f64 = 0.2;
 /// C4 Hurst channel starting value: weaker substrate is rougher at fine
 /// scales (calibrated in plan Task 5).
 const HURST_ERODIBILITY_DELTA: f64 = 0.1;
@@ -816,6 +827,7 @@ impl HierarchicalEvaluator {
 /// selects the amplitude family.
 fn cell_conditions(view: &ConditioningView<'_>, index: usize) -> Conditions {
     let relief = f64::from(view.local_relief_norm[index]);
+    let relief_m = f64::from(view.local_relief_m[index]);
     let orogeny = f64::from(view.orogeny_factor[index]);
     let erodibility = f64::from(view.erodibility_norm[index]);
     let damping = sediment_damping(f64::from(view.sediment_norm[index]));
@@ -825,16 +837,17 @@ fn cell_conditions(view: &ConditioningView<'_>, index: usize) -> Conditions {
     let baseline_hurst = surface_roughness_hurst(relief.max(orogeny));
     let (a0_m, hurst) = match regime {
         SurfaceRegime::LandInterior | SurfaceRegime::CoastalBand => {
-            // C1 relief gain, C2 orogenic gain, C4 amplitude channel,
-            // C6 joint badlands peak, C7 sediment damping.
-            let a0 = LAND_BASE_AMPLITUDE_M
-                * relief
-                * (1.0 + RIDGE_AMPLITUDE_M / LAND_BASE_AMPLITUDE_M * orogeny)
+            // C1 v3 spectral continuation (amendment A7): A0 in metres
+            // from the measured T0 neighbour relief, so a 3 km orogen
+            // and a 300 m hill land scale apart instead of saturating
+            // one normalized knob; orogeny no longer multiplies the
+            // amplitude (the relief already carries it) and stays a
+            // Hurst driver only. C4 amplitude channel, C6 joint
+            // badlands peak, and C7 sediment damping modify around it.
+            let a0 = (SPECTRAL_CONTINUATION * relief_m).max(LAND_A0_FLOOR_M)
                 * erodibility_amplitude(erodibility)
                 * damping
-                * (1.0
-                    + BADLANDS_AMPLITUDE_M / LAND_BASE_AMPLITUDE_M
-                        * badlands_gate(erodibility, dissection));
+                * (1.0 + BADLANDS_A0_SHARE * badlands_gate(erodibility, dissection));
             let hurst = if matches!(regime, SurfaceRegime::CoastalBand) {
                 // C9: the fractal-coastline anchor D = 2 − H
                 // (spec §9.2), rugged coasts rough and low-H.
