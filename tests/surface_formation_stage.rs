@@ -112,6 +112,68 @@ fn p4_external(climate_spec: ClimateSpec) -> ExternalArtifacts {
     artifacts
 }
 
+/// On-demand per-seed convergence check through the exact app externals
+/// (`SEKAI_P5_SEED`, `SEKAI_P5_PROFILE`; `SEKAI_P5_TRACE=1` prints the
+/// per-iteration residual vector). Fails with the report diagnostics
+/// when the seed does not build.
+#[test]
+#[ignore = "on-demand single-seed P5 convergence probe"]
+fn probe_formation_fixed_point_seed() {
+    let seed: u64 = std::env::var("SEKAI_P5_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3_945_477_593_443_907_072);
+    let profile = match std::env::var("SEKAI_P5_PROFILE").as_deref() {
+        Ok("standard") => NaturalQualityProfile::Standard,
+        Ok("high") => NaturalQualityProfile::High,
+        _ => NaturalQualityProfile::Draft,
+    };
+    let built;
+    let probe_surface = if profile == NaturalQualityProfile::Draft {
+        surface()
+    } else {
+        built = ProfileSurfaceBuilder::build(
+            profile,
+            Meters::new(6_371_000.0).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap()
+        .authoritative_surface()
+        .clone();
+        &built
+    };
+    let root_seed = RootSeed::new(seed);
+    let external = sekai::app::build_spherical_formation_external_artifacts(
+        root_seed,
+        profile,
+        probe_surface,
+        &sekai::world::natural::WorldFormationSpec::default(),
+        &TectonicSpec::default(),
+        &ReliefSpec::default(),
+        &GeologicSpec::default(),
+    )
+    .unwrap();
+    let result = BuildEngine::new(surface_formation_graph().unwrap()).build(
+        root_seed,
+        external,
+        &mut MemoryStageCache::new(),
+    );
+    match &result {
+        Ok(_) => println!("seed {seed}: CONVERGED"),
+        Err(failure) => {
+            for diagnostic in failure.report.diagnostics() {
+                println!(
+                    "  [{:?}] {}: {}",
+                    diagnostic.severity(),
+                    diagnostic.code(),
+                    diagnostic.message()
+                );
+            }
+            panic!("seed {seed}: {failure}");
+        }
+    }
+}
+
 #[test]
 fn the_p5_stage_publishes_a_locked_key_identity_and_exact_dependency_boundary() {
     assert_eq!(

@@ -504,3 +504,48 @@ compound formation equation to add C3 clouds, surface energy/moisture exchange,
 snow, sea ice, and glaciers, then runs the required final non-mutating climate
 and hydrology consistency passes. It must not reinterpret the P5 effective
 runoff proxy as final evapotranspiration or groundwater truth.
+
+## 15. 修订
+
+### A1（2026-08-21）：外层定点迭代预算 4 → 8
+
+- **动因（用户报告的产品缺陷）**：标准档重建可因
+  `formation fixed point did not converge in 4 outer iterations` 整体失败
+  （用户实机复现，normalized residual 1.388；同参数随机种子在隔离实例
+  亦复现）。实测轨迹为干净的几何收缩——draft 档种子
+  3945477593443907072 的四轮 normalized_max 为 24.30 → 4.16 → 1.23 →
+  0.96，尾部由 `log1p(discharge)` 慢模态主导（每轮 ≈ 0.78）；标准档
+  同种子在第 4 轮停在 1.39，属预算不足而非发散。
+- **变更**：`SURFACE_FORMATION_MAX_OUTER_ITERATIONS` 由 4 改为 8。
+  §6 的"at most four outer iterations"与 §13.3 的
+  "within four outer iterations"相应读作 eight。收敛判据、残差刻度、
+  每轮语义（自 P3 重启的完整八宏步求解）均不变。
+- **兼容性**：在旧预算内收敛的种子逐位不变（循环在同一迭代点提前
+  退出）；`surface_formation_model_fingerprint()` 因常量参与哈希而
+  变化，属预期的模型身份刷新（缓存失效、无冻结十六进制钉住该值）。
+- **随附**：`NotConverged` 错误按 §6"typed failure carrying the best
+  report"补齐——携带末轮 `FormationResiduals` 五分量并全部呈现在
+  错误文案中，不再只报一个聚合数。
+
+### A2（2026-08-21）：流量残差刻度 0.24 容差相干化（0.15 → 0.25）
+
+- **动因**：A1 提升预算后仍有种子失败（22 种子草稿档普查：5、8、16），
+  且失败形态一致——`log1p(discharge)` RMS 停摆在 0.151–0.181 的平台，
+  其余四分量均已收敛到各自刻度的 1–3%。根因是判据不相干：流量由 P4
+  降水直接驱动，而 P4 形成解自身只收敛到相对状态残差
+  `FORMATION_RESIDUAL_TARGET = 0.24`——对气候边缘态世界，相邻两轮
+  气候解在湿盆地的降水差异天然为该量级，比驱动者更严的下游容差
+  不可达。
+- **变更**：`FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE` 由 0.15 改为
+  0.25（§6 清单中 "divided by 0.15" 相应读作 0.25）。新增编译期
+  const 断言钉住排序不变量：流量残差刻度必须严格大于 P4 气候收敛
+  目标。
+- **兼容性**：判据只会更早满足，已收敛种子的退出轮次要么不变要么
+  提前。冻结指纹种子 42（草稿档）实测两种刻度下均在第 3 轮退出
+  （第 2 轮 logq 0.298 → 0.298/0.25 = 1.19 仍 > 1），产品逐位不变，
+  冻结 T1 指纹门禁不受影响；种子 43 提前一轮退出（第 2 轮
+  logq 0.216 ≤ 0.25 且其余分量达标），属判据相干化后的合法收敛点，
+  §13.3 形态门禁按新产品复核。`surface_formation_model_fingerprint()`
+  因常量参与哈希而刷新（与 A1 同批）。
+- **实测**：22 种子草稿档普查由 19/22 收敛升至 22/22
+  （5、8、16 转为收敛；42/83 退出轮次不变）。

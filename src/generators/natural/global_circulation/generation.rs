@@ -31,6 +31,14 @@ pub(super) const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
 pub(super) const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 pub(super) const FORMATION_RESIDUAL_TARGET: f64 = 0.24;
 
+// The P5 fixed point measures discharge that this solve's precipitation
+// drives, so P5's discharge tolerance must sit above the climate
+// convergence target — a tighter downstream tolerance is unreachable
+// noise-chasing (P5 spec amendment A2).
+const _: () = assert!(
+    crate::world::natural::FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE > FORMATION_RESIDUAL_TARGET
+);
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlobalCirculationGenerator;
 

@@ -240,15 +240,15 @@ fn a_reduced_iteration_budget_fails_deterministically_without_publishing() {
     let (first_iterations, first_residual) = match first {
         Err(SurfaceFormationGenerationError::NotConverged {
             outer_iterations,
-            normalized_residual,
-        }) => (outer_iterations, normalized_residual),
+            residuals,
+        }) => (outer_iterations, residuals.normalized_max()),
         other => panic!("a single outer iteration must not converge: {other:?}"),
     };
     let (second_iterations, second_residual) = match second {
         Err(SurfaceFormationGenerationError::NotConverged {
             outer_iterations,
-            normalized_residual,
-        }) => (outer_iterations, normalized_residual),
+            residuals,
+        }) => (outer_iterations, residuals.normalized_max()),
         other => panic!("a single outer iteration must not converge: {other:?}"),
     };
     assert_eq!(first_iterations, 1);

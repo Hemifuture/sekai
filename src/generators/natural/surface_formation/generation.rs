@@ -144,6 +144,18 @@ impl SurfaceFormationGenerator {
                 cancellation,
             )?;
             residuals.push(residual);
+            if std::env::var_os("SEKAI_P5_TRACE").is_some() {
+                eprintln!(
+                    "[p5-fp] iter {} elev_rms {:.3} m recv {:.5} logq {:.5} sed_rms {:.3} m coast {:.6} -> normalized_max {:.4}",
+                    residuals.len(),
+                    residual.elevation_rms_m(),
+                    residual.receiver_changed_fraction(),
+                    residual.log_discharge_rms(),
+                    residual.sediment_thickness_rms_m(),
+                    residual.coastline_area_changed_fraction(),
+                    residual.normalized_max()
+                );
+            }
             if residual.normalized_max() <= 1.0 {
                 return publish(
                     surface,
@@ -163,11 +175,12 @@ impl SurfaceFormationGenerator {
             climate = candidate_climate;
         }
 
+        let last = *residuals
+            .last()
+            .expect("the validated budget runs at least one outer iteration");
         Err(SurfaceFormationGenerationError::NotConverged {
             outer_iterations: residuals.len() as u8,
-            normalized_residual: residuals
-                .last()
-                .map_or(f64::INFINITY, FormationResiduals::normalized_max),
+            residuals: last,
         })
     }
 }
@@ -824,13 +837,24 @@ pub enum SurfaceFormationGenerationError {
     #[error("outer iteration limit {found} is outside 1..={maximum}")]
     InvalidIterationLimit { found: u8, maximum: u8 },
     /// The bounded fixed point did not close within its iteration budget.
+    ///
+    /// Carries the final residual vector (spec §6: the typed failure
+    /// carries the best report), so the panel names the failing
+    /// component instead of one opaque number.
     #[error(
         "formation fixed point did not converge in {outer_iterations} outer iterations \
-         (normalized residual {normalized_residual})"
+         (normalized residual {:.4}: elevation_rms {:.2} m, receiver_changed {:.5}, \
+         log_discharge_rms {:.4}, sediment_rms {:.2} m, coastline_changed {:.6})",
+        residuals.normalized_max(),
+        residuals.elevation_rms_m(),
+        residuals.receiver_changed_fraction(),
+        residuals.log_discharge_rms(),
+        residuals.sediment_thickness_rms_m(),
+        residuals.coastline_area_changed_fraction()
     )]
     NotConverged {
         outer_iterations: u8,
-        normalized_residual: f64,
+        residuals: FormationResiduals,
     },
     /// An upstream product belongs to a different authoritative surface.
     #[error("{role} belongs to surface {found:?} instead of {expected:?}")]

@@ -23,7 +23,14 @@ pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V1: u16 = 1;
 /// The fixed number of retained sediment-source provenance channels.
 pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
 /// The bounded outer climate/terrain fixed-point iteration count.
-pub const SURFACE_FORMATION_MAX_OUTER_ITERATIONS: u8 = 4;
+///
+/// Raised 4 → 8 (spec amendment A1, 2026-08-21): observed trajectories
+/// contract geometrically with the slow mode in `log1p(discharge)`, and
+/// standard-tier worlds can need 5–7 iterations where draft sneaks in at
+/// 4 (measured seed 3945477593443907072: draft 0.96 at iteration 4,
+/// standard 1.39 and failing). Seeds converging within the old budget
+/// keep bit-identical products — the loop exits on the same iterate.
+pub const SURFACE_FORMATION_MAX_OUTER_ITERATIONS: u8 = 8;
 /// The complete geomorphic solve count within one outer iteration.
 pub const SURFACE_FORMATION_MACRO_STEPS: u16 = 8;
 /// The declared coarse-grained geomorphic formation horizon.
@@ -114,7 +121,17 @@ pub const FORMATION_ELEVATION_RESIDUAL_SCALE_M: f64 = 100.0;
 /// Receiver-change scale used by the outer fixed-point residual.
 pub const FORMATION_RECEIVER_RESIDUAL_SCALE: f64 = 0.05;
 /// Log-discharge RMS scale used by the outer fixed-point residual.
-pub const FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE: f64 = 0.15;
+///
+/// Raised 0.15 → 0.25 (spec amendment A2, 2026-08-21): discharge is a
+/// direct projection of the P4 precipitation, and the P4 formation solve
+/// itself only converges to `FORMATION_RESIDUAL_TARGET = 0.24` relative
+/// state change — successive climate solves on a settled terrain can
+/// legitimately wobble wet-basin discharge by that order. A tolerance
+/// tighter than the driver's is unreachable for climatically marginal
+/// worlds (observed plateaus 0.151–0.181 with every other component at
+/// 1–3 % of its scale), so the downstream tolerance must sit above the
+/// upstream one; a unit test pins that ordering.
+pub const FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE: f64 = 0.25;
 /// Sediment-thickness RMS scale used by the outer fixed-point residual.
 pub const FORMATION_SEDIMENT_RESIDUAL_SCALE_M: f64 = 10.0;
 /// Coastline area-change scale used by the outer fixed-point residual.
