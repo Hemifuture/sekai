@@ -218,11 +218,15 @@ impl SphericalCanvasState {
                 Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
             }
             SphericalCanvasAction::ZoomMap { factor, anchor } => {
+                let before = self.map_camera;
                 if !self
                     .map_camera
                     .zoom_about(self.projection.kind(), factor, anchor)
                 {
                     return Err(SphericalUiError::InvalidCameraInput);
+                }
+                if self.map_camera == before {
+                    return Ok(SphericalCanvasInvalidation::NONE);
                 }
                 Ok(self.camera_invalidation())
             }
@@ -241,8 +245,12 @@ impl SphericalCanvasState {
                 Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
             }
             SphericalCanvasAction::ZoomGlobe { factor } => {
+                let before = self.globe_camera;
                 if !self.globe_camera.zoom_by(factor) {
                     return Err(SphericalUiError::InvalidCameraInput);
+                }
+                if self.globe_camera == before {
+                    return Ok(SphericalCanvasInvalidation::NONE);
                 }
                 Ok(self.camera_invalidation())
             }

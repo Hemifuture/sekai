@@ -1025,14 +1025,49 @@ fn map_camera_rejects_gpu_unrenderable_and_out_of_product_bounds_atomically() {
             delta: [1.0e300, 0.0],
         },
         SphericalCanvasAction::ZoomMap {
-            factor: 1.0e300,
+            factor: f64::INFINITY,
             anchor: [0.0, 0.0],
+        },
+        SphericalCanvasAction::ZoomMap {
+            factor: -2.0,
+            anchor: [0.0, 0.0],
+        },
+        SphericalCanvasAction::ZoomMap {
+            factor: 2.0,
+            anchor: [f64::NAN, 0.0],
         },
     ] {
         let before = canvas.clone();
         assert!(canvas.apply(action).is_err());
         assert_eq!(canvas, before);
     }
+
+    // A finite wheel step past a zoom bound saturates exactly at the bound
+    // (the globe camera's contract) and reports a no-op once pinned there,
+    // instead of rejecting the user's input at maximum zoom.
+    canvas
+        .apply(SphericalCanvasAction::ZoomMap {
+            factor: 1.0e300,
+            anchor: [0.25, -0.5],
+        })
+        .unwrap();
+    assert_eq!(
+        canvas
+            .map_camera()
+            .zoom(SphericalProjectionKind::EqualEarth),
+        MapCamera::MAX_ZOOM
+    );
+    let saturated = canvas.clone();
+    assert_eq!(
+        canvas
+            .apply(SphericalCanvasAction::ZoomMap {
+                factor: 1.5,
+                anchor: [0.25, -0.5],
+            })
+            .unwrap(),
+        SphericalCanvasInvalidation::NONE
+    );
+    assert_eq!(canvas, saturated);
 
     let encoded = serde_json::to_value(SphericalCanvasState::default()).unwrap();
     for (path, value) in [

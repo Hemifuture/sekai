@@ -158,11 +158,14 @@ impl MapCamera {
         true
     }
 
-    /// Multiplies one projection's zoom about an NDC anchor point.
+    /// Multiplies one projection's zoom about an NDC anchor point,
+    /// saturating at the supported bounds like the globe camera (a wheel
+    /// step at the boundary is a plain no-op, not invalid input).
     ///
-    /// The pan is adjusted so the world point under the anchor stays exactly
-    /// under it: with the presenter mapping `ndc = (w - c)·fit·zoom + 2·pan`,
-    /// the invariant gives `pan' = pan·factor + anchor·(1 - factor)/2`.
+    /// The pan is adjusted with the effective (post-clamp) factor so the
+    /// world point under the anchor stays exactly under it: with the
+    /// presenter mapping `ndc = (w - c)·fit·zoom + 2·pan`, the invariant
+    /// gives `pan' = pan·factor + anchor·(1 - factor)/2`.
     pub fn zoom_about(
         &mut self,
         projection: SphericalProjectionKind,
@@ -178,24 +181,24 @@ impl MapCamera {
             return false;
         }
         let state = self.state_mut(projection);
-        let next = state.zoom * factor;
-        if !next.is_finite() || !(Self::MIN_ZOOM..=Self::MAX_ZOOM).contains(&next) {
-            return false;
-        }
+        let next = (state.zoom * factor).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        let effective = next / state.zoom;
         let bound = Self::MAX_ABS_PAN * next.max(1.0);
-        let pan = [
-            (state.pan[0] * factor + anchor_ndc[0] * (1.0 - factor) * 0.5).clamp(-bound, bound),
-            (state.pan[1] * factor + anchor_ndc[1] * (1.0 - factor) * 0.5).clamp(-bound, bound),
+        state.pan = [
+            (state.pan[0] * effective + anchor_ndc[0] * (1.0 - effective) * 0.5)
+                .clamp(-bound, bound),
+            (state.pan[1] * effective + anchor_ndc[1] * (1.0 - effective) * 0.5)
+                .clamp(-bound, bound),
         ];
-        if pan.into_iter().any(|component| !component.is_finite()) {
-            return false;
-        }
         state.zoom = next;
-        state.pan = pan;
         true
     }
 
-    /// Multiplies one projection's zoom by a finite positive factor.
+    /// Multiplies one projection's zoom by a finite positive factor,
+    /// rejecting results outside the supported range.
+    ///
+    /// This entry stays strict (no saturation) because it validates
+    /// persisted cameras; the interactive wheel path is [`Self::zoom_about`].
     pub fn zoom_by(&mut self, projection: SphericalProjectionKind, factor: f64) -> bool {
         if !factor.is_finite() || factor <= 0.0 {
             return false;
