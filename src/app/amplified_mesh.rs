@@ -10,13 +10,15 @@
 //! the cell spacing down to [`MIN_PRIMITIVE_EDGE_M`], each level engaging
 //! when [`UNITS_ACROSS_VIEW`] primitives span the viewport (one level per
 //! zoom octave), so the camera zooms past the ladder floor and the deepest
-//! atoms become plainly visible. Cell sizes are measured by projected
-//! sector **area** (orientation-free and exact under equal-area
-//! projections, so levels stay uniform across the map), off-viewport
-//! cells fall off geometrically with distance toward
-//! [`OFFSCREEN_LEAF_LEVEL`], very near cells subdivide per subtree so only
-//! their visible portion deepens, and everything is bounded by
-//! [`VIEW_LEAF_BUDGET`]. Selections compile into batches — one subtree
+//! atoms become plainly visible. The level is one explicit function of
+//! the camera zoom — the mean §5 primitive size sampled once at the
+//! view-centre direction ([`view_leaf_level`]) — so every visible cell
+//! displays the same level and zooming in never coarsens the view (user
+//! guarantee, 2026-08-21). Off-viewport cells fall off geometrically with
+//! distance toward [`OFFSCREEN_LEAF_LEVEL`], very near cells subdivide
+//! per subtree so only their visible portion deepens, and everything is
+//! bounded by [`VIEW_LEAF_BUDGET`] by demoting only off-viewport cells.
+//! Selections compile into batches — one subtree
 //! each — that a worker thread evaluates through
 //! `HierarchicalEvaluator::for_each_leaf_value` (paired by the shared
 //! depth-first child order 0..4) and caches for incremental rebuilds.
@@ -200,13 +202,6 @@ impl ScreenMapper {
         })
     }
 
-    fn canvas_size(&self) -> [f64; 2] {
-        match self {
-            ScreenMapper::Map { transform, .. } => transform.canvas_size(),
-            ScreenMapper::Globe { canvas_size, .. } => *canvas_size,
-        }
-    }
-
     /// The screen position of one direction; `None` when hidden (globe
     /// far side) or unprojectable.
     fn screen(&self, direction: UnitVector3) -> Option<[f64; 2]> {
@@ -230,17 +225,6 @@ impl ScreenMapper {
         }
     }
 
-    /// The wrap-aware screen distance between two projected points.
-    fn distance_px(&self, a: [f64; 2], b: [f64; 2]) -> f64 {
-        let mut dx = (a[0] - b[0]).abs();
-        if let ScreenMapper::Map { wrap_px, .. } = self {
-            if *wrap_px > 0.0 && dx > *wrap_px * 0.5 {
-                dx = *wrap_px - dx;
-            }
-        }
-        dx.hypot(a[1] - b[1])
-    }
-
     /// Shifts `x` by whole seam wraps until it lies nearest `reference`,
     /// so seam-straddling geometry measures contiguously on the map.
     fn unwrap_x_toward(&self, reference: f64, x: f64) -> f64 {
@@ -253,41 +237,172 @@ impl ScreenMapper {
         x
     }
 
-    /// The screen-space distance from a span around `screen` to the
-    /// padded viewport (zero when they intersect), wrap-aware on the map.
-    ///
-    /// The half-extent makes this a rectangle test, so a primitive much
-    /// larger than the viewport (its anchor far outside) still measures
-    /// zero — the deep-zoom containment case.
-    fn distance_to_padded_viewport(&self, screen: [f64; 2], half_extent_px: f64) -> f64 {
-        let [width, height] = self.canvas_size();
-        let margin_x = width * VIEW_MARGIN_FRACTION + half_extent_px;
-        let margin_y = height * VIEW_MARGIN_FRACTION + half_extent_px;
-        let overhang = |value: f64, low: f64, high: f64| (low - value).max(value - high).max(0.0);
-        let overhang_x = |x: f64| overhang(x, -margin_x, width + margin_x);
-        let dx = match self {
-            ScreenMapper::Map { wrap_px, .. } if *wrap_px > 0.0 => overhang_x(screen[0])
-                .min(overhang_x(screen[0] - wrap_px))
-                .min(overhang_x(screen[0] + wrap_px)),
-            _ => overhang_x(screen[0]),
-        };
-        dx.hypot(overhang(screen[1], -margin_y, height + margin_y))
+    /// The world direction under the canvas centre: the map's inverse
+    /// projection of the centre pixel (falling back to the outline
+    /// centre when the camera pans past the world), or the globe front
+    /// direction.
+    fn view_center_direction(&self) -> Option<UnitVector3> {
+        match self {
+            ScreenMapper::Map {
+                projection,
+                transform,
+                ..
+            } => {
+                let [width, height] = transform.canvas_size();
+                let center = transform.to_projection([width * 0.5, height * 0.5]);
+                projection.inverse(center).ok().or_else(|| {
+                    let bounds = projection.bounds();
+                    projection
+                        .inverse(ProjectionPoint::new(
+                            (bounds.min_x() + bounds.max_x()) * 0.5,
+                            (bounds.min_y() + bounds.max_y()) * 0.5,
+                        ))
+                        .ok()
+                })
+            }
+            ScreenMapper::Globe { camera, .. } => {
+                let [x, y, z] = camera.front_direction();
+                UnitVector3::new(x, y, z).ok()
+            }
+        }
     }
 
-    /// Whether a screen-space span around `screen` intersects the padded
-    /// viewport, wrap-aware on the map.
-    fn span_visible(&self, screen: [f64; 2], half_extent_px: f64) -> bool {
-        self.distance_to_padded_viewport(screen, half_extent_px) == 0.0
+    /// Samples the view-centre scale: a probe triangle with orthonormal
+    /// [`CENTER_PROBE_RADIANS`] tangent legs at the view-centre direction
+    /// is projected (seam-unwrapped on the map), yielding the local area
+    /// scale and both leg scales where the user is looking.
+    fn center_probe(&self) -> Option<CenterProbe> {
+        let center = self.view_center_direction()?;
+        let [cx, cy, cz] = center.components();
+        let helper = if cx.abs() < 0.6 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let u = [
+            cy * helper[2] - cz * helper[1],
+            cz * helper[0] - cx * helper[2],
+            cx * helper[1] - cy * helper[0],
+        ];
+        let u_length = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+        let u = [u[0] / u_length, u[1] / u_length, u[2] / u_length];
+        let v = [
+            cy * u[2] - cz * u[1],
+            cz * u[0] - cx * u[2],
+            cx * u[1] - cy * u[0],
+        ];
+        let offset = |tangent: [f64; 3]| {
+            UnitVector3::new(
+                cx + CENTER_PROBE_RADIANS * tangent[0],
+                cy + CENTER_PROBE_RADIANS * tangent[1],
+                cz + CENTER_PROBE_RADIANS * tangent[2],
+            )
+            .ok()
+        };
+        let a = self.screen(center)?;
+        let b = self.screen(offset(u)?)?;
+        let c = self.screen(offset(v)?)?;
+        let b = [self.unwrap_x_toward(a[0], b[0]), b[1]];
+        let c = [self.unwrap_x_toward(a[0], c[0]), c[1]];
+        let doubled = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+        let legs = [
+            (b[0] - a[0]).hypot(b[1] - a[1]),
+            (c[0] - a[0]).hypot(c[1] - a[1]),
+        ];
+        (doubled.is_finite() && legs.iter().all(|leg| leg.is_finite())).then_some(CenterProbe {
+            center,
+            doubled_area_px: doubled,
+            leg_px: legs,
+        })
+    }
+}
+
+/// The view-centre scale sample backing both the zoom→level authority
+/// and the viewport's spherical footprint.
+struct CenterProbe {
+    /// The unit direction under the canvas centre.
+    center: UnitVector3,
+    /// Doubled projected area of the ε-leg probe triangle, in px².
+    doubled_area_px: f64,
+    /// Projected length of each ε tangent leg, in px.
+    leg_px: [f64; 2],
+}
+
+/// The padded viewport's spherical footprint: visibility and distance
+/// tests run against this cap with plain dot products, never against
+/// projected spans.
+///
+/// Screen-space span tests break down at the map projection's poles —
+/// Equal Earth maps each pole to a line half the outline wide, so a
+/// pole-touching node projects with corners smeared across it and an
+/// unbounded "extent" that defeated every span test: the pole ring of
+/// cells expanded to millions of leaves regardless of where the camera
+/// looked (probe 2026-08-21: 12.9 M of 13.4 M leaves). On the sphere
+/// every node is genuinely small, so the cap test is singularity-free —
+/// and seam wrap and the globe's far side come out right with no special
+/// cases.
+struct ViewCap {
+    /// The unit direction under the canvas centre.
+    center: [f64; 3],
+    /// Conservative angular radius of the padded viewport footprint.
+    radius_rad: f64,
+    /// The angular span of one viewport width at the centre scale — the
+    /// distance-falloff octave unit.
+    width_rad: f64,
+}
+
+impl ViewCap {
+    /// Safety factor on the footprint radius: covers the probe legs not
+    /// aligning with the projection's principal axes (≤ √2) and the
+    /// scale drifting away from the centre across the footprint.
+    const RADIUS_SAFETY: f64 = 2.0;
+
+    /// Builds the footprint from the centre probe; without a probe the
+    /// whole sphere is visible (the conservative fallback).
+    ///
+    /// The *smaller* leg scale converts pixels to angle, which yields
+    /// the *larger* — conservative — radius; at a pole-centred viewport
+    /// the longitude-smeared leg is the large one, so the footprint
+    /// stays anchored to the healthy meridian scale.
+    fn new(probe: Option<&CenterProbe>, canvas_size: [f64; 2]) -> Self {
+        let Some(probe) = probe else {
+            return Self {
+                center: [0.0, 0.0, 1.0],
+                radius_rad: std::f64::consts::PI,
+                width_rad: std::f64::consts::FRAC_PI_2,
+            };
+        };
+        let min_px_per_rad =
+            (probe.leg_px[0].min(probe.leg_px[1]) / CENTER_PROBE_RADIANS).max(f64::MIN_POSITIVE);
+        let [width, height] = canvas_size;
+        let padded_half_diagonal = 0.5
+            * (width * (1.0 + 2.0 * VIEW_MARGIN_FRACTION))
+                .hypot(height * (1.0 + 2.0 * VIEW_MARGIN_FRACTION));
+        Self {
+            center: probe.center.components(),
+            radius_rad: (Self::RADIUS_SAFETY * padded_half_diagonal / min_px_per_rad)
+                .min(std::f64::consts::PI),
+            width_rad: (width / min_px_per_rad).min(std::f64::consts::PI),
+        }
+    }
+
+    /// The angle between the cap centre and one unit direction.
+    fn angle_to(&self, direction: UnitVector3) -> f64 {
+        let [x, y, z] = direction.components();
+        (self.center[0] * x + self.center[1] * y + self.center[2] * z)
+            .clamp(-1.0, 1.0)
+            .acos()
     }
 }
 
 /// Resolves the camera-driven selection for the active view.
 ///
-/// Every cell's leaf level tracks its projected size toward the target
-/// leaf pixel size; off-viewport cells stay shallow; cells past
+/// Every visible cell displays the zoom-mapped [`view_leaf_level`];
+/// off-viewport cells stay shallow; cells past
 /// [`CELL_UNIFORM_MAX_LEVEL`] subdivide per subtree with hidden subtrees
-/// pruned coarse. When the budget still overflows, every level demotes
-/// uniformly until it fits — the "budget depth" the plan verifies.
+/// pruned coarse. When the budget overflows, only the off-viewport
+/// falloff demotes until it fits — visible levels are never reduced, so
+/// zooming in cannot merge the view (user guarantee, 2026-08-21).
 pub(super) fn select_detail_batches(
     context: &AmplifiedDetailContext,
     view: &SphericalPresentationViewState,
@@ -305,15 +420,60 @@ pub(super) fn select_detail_batches(
             .ceil())
     .clamp(1.0, 1.0 + HIERARCHICAL_PATH_DEPTH_MAX as f64) as u8;
     let target_px = (canvas_size[0] / UNITS_ACROSS_VIEW).max(1.0);
+    let probe = mapper.center_probe();
+    let view_level = view_leaf_level(evaluator, probe.as_ref(), target_px, floor_level);
+    let cap = ViewCap::new(probe.as_ref(), canvas_size);
     let mut shrink = 0_u8;
     loop {
-        let (batches, leaves) =
-            classify_cells_striped(context, &mapper, target_px, floor_level, shrink);
-        if leaves <= VIEW_LEAF_BUDGET || shrink >= floor_level {
+        let (batches, leaves) = classify_cells_striped(context, &cap, view_level, shrink);
+        if leaves <= VIEW_LEAF_BUDGET || shrink >= view_level {
             return finish_selection(batches, leaves);
         }
         shrink += 1;
     }
+}
+
+/// Probe leg angle for the view-centre scale sample: small enough to
+/// read the local projection scale, large enough for well-conditioned
+/// f64 differences at every supported zoom.
+const CENTER_PROBE_RADIANS: f64 = 1e-3;
+
+/// The single zoom↔level authority: the leaf level every visible cell
+/// displays under the current camera (user requirement, 2026-08-21).
+///
+/// The mean spec §5 primitive size is sampled once at the view-centre
+/// direction: a probe triangle with orthonormal [`CENTER_PROBE_RADIANS`]
+/// tangent legs reads the local px²-per-steradian scale where the user
+/// is looking (exact everywhere under the equal-area map; centre-anchored
+/// on the globe and the equirectangular map so the focused region sits on
+/// the physical ladder). One level engages per zoom octave, clamped to
+/// the physical floor. Deriving the level from the camera zoom alone —
+/// instead of per-cell measurements — removes per-cell threshold
+/// patchwork and makes the level monotone in zoom by construction.
+fn view_leaf_level(
+    evaluator: &HierarchicalEvaluator,
+    probe: Option<&CenterProbe>,
+    target_px: f64,
+    floor_level: u8,
+) -> u8 {
+    let Some(doubled_area_px) = probe.map(|probe| probe.doubled_area_px) else {
+        return 1;
+    };
+    let total_sectors: usize = (0..evaluator.cell_count() as u32)
+        .map(|cell| evaluator.sector_count(CellId::from_raw(cell)))
+        .sum();
+    if total_sectors == 0 {
+        return 1;
+    }
+    // The mean doubled sector area is 8π/N steradians; the probe scale
+    // turns it into the same `√(2·area)` pixel measure the classifier
+    // used per cell before. The sphere radius cancels.
+    let size_px = (8.0 * std::f64::consts::PI / total_sectors as f64 * doubled_area_px).sqrt()
+        / CENTER_PROBE_RADIANS;
+    if !size_px.is_finite() || size_px <= target_px {
+        return 1;
+    }
+    (1.0 + (size_px / target_px).log2().ceil()).clamp(1.0, f64::from(floor_level)) as u8
 }
 
 /// One classification pass over every cell, striped across the cores
@@ -323,9 +483,8 @@ pub(super) fn select_detail_batches(
 /// bit-identical to the sequential pass.
 fn classify_cells_striped(
     context: &AmplifiedDetailContext,
-    mapper: &ScreenMapper,
-    target_px: f64,
-    floor_level: u8,
+    cap: &ViewCap,
+    view_level: u8,
     shrink: u8,
 ) -> (Vec<DetailBatch>, usize) {
     const SELECT_CHUNKS: usize = 64;
@@ -341,7 +500,7 @@ fn classify_cells_striped(
         for cell_index in start as u32..end as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
-            let level = cell_leaf_level(mapper, corners, target_px, floor_level, shrink);
+            let level = cell_leaf_level(cap, corners, view_level, shrink);
             for sector in 0..evaluator.sector_count(cell) as u8 {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
@@ -354,7 +513,7 @@ fn classify_cells_striped(
                     batches.push(batch);
                 } else {
                     walk_sector_subtrees(
-                        mapper,
+                        cap,
                         evaluator.sector_corners(cell, sector),
                         cell_index,
                         sector,
@@ -405,66 +564,47 @@ fn classify_cells_striped(
     (batches, leaves)
 }
 
-/// One cell's leaf level from its projected first-sector size.
-///
-/// The size measure is the sector triangle's projected **area**
-/// (`√(2·area)`), which is orientation-free and exact under the
-/// equal-area Equal Earth projection — a single edge length would read
-/// up to a level low or high depending on how the edge happens to align
-/// with the projection's latitude-dependent stretch, leaving persistent
-/// level patches that panning cannot heal.
+/// One cell's leaf level: the zoom-mapped `view_level` when the cell
+/// reaches the viewport footprint cap, the distance falloff below it
+/// when it does not — all measured on the sphere, so the map
+/// projection's poles and seam and the globe's far side need no cases.
 ///
 /// Off-viewport cells fall off smoothly instead of collapsing to the
 /// floor: [`DISTANCE_FALLOFF_LEVELS_PER_OCTAVE`] levels per doubling of
 /// their distance in viewport widths (chunked-LOD distance falloff), so
 /// zoom-out reveals and pans land on near-correct coarse content while
-/// the far side of the world still costs almost nothing.
-fn cell_leaf_level(
-    mapper: &ScreenMapper,
-    corners: [UnitVector3; 3],
-    target_px: f64,
-    floor_level: u8,
-    shrink: u8,
-) -> u8 {
-    let (Some(a), Some(b), Some(c)) = (
-        mapper.screen(corners[0]),
-        mapper.screen(corners[1]),
-        mapper.screen(corners[2]),
-    ) else {
-        return OFFSCREEN_LEAF_LEVEL;
-    };
-    let b = [mapper.unwrap_x_toward(a[0], b[0]), b[1]];
-    let c = [mapper.unwrap_x_toward(a[0], c[0]), c[1]];
-    let doubled_area = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
-    let size_px = doubled_area.sqrt();
-    let extent_px = mapper.distance_px(a, b).max(mapper.distance_px(a, c));
-    if !size_px.is_finite() || !extent_px.is_finite() {
-        return OFFSCREEN_LEAF_LEVEL;
+/// the far side of the world still costs almost nothing. The budget
+/// `shrink` demotes only this off-viewport arm; a visible cell always
+/// keeps the full `view_level`.
+fn cell_leaf_level(cap: &ViewCap, corners: [UnitVector3; 3], view_level: u8, shrink: u8) -> u8 {
+    // Twice the first sector's circumradius covers the whole cell (the
+    // sector fans from the cell anchor), so a cell containing the
+    // deep-zoom viewport measures distance zero.
+    let circumradius_rad =
+        angle_between(corners[0], corners[1]).max(angle_between(corners[0], corners[2])) * 2.0;
+    let distance_rad = cap.angle_to(corners[0]) - circumradius_rad - cap.radius_rad;
+    if distance_rad <= 0.0 {
+        return view_level;
     }
-    let measured = if size_px <= target_px {
-        1.0
-    } else {
-        (1.0 + (size_px / target_px).log2().ceil()).clamp(1.0, f64::from(floor_level))
-    };
-    // Twice the sector extent covers the whole cell, so a cell containing
-    // the deep-zoom viewport measures distance zero.
-    let distance_px = mapper.distance_to_padded_viewport(a, 2.0 * extent_px);
-    let falloff = if distance_px <= 0.0 {
-        0.0
-    } else {
-        let viewport_width = mapper.canvas_size()[0].max(1.0);
-        (DISTANCE_FALLOFF_LEVELS_PER_OCTAVE * (1.0 + distance_px / viewport_width).log2()).ceil()
-    };
-    ((measured - falloff).max(f64::from(OFFSCREEN_LEAF_LEVEL)) as u8)
+    let falloff =
+        (DISTANCE_FALLOFF_LEVELS_PER_OCTAVE * (1.0 + distance_rad / cap.width_rad).log2()).ceil();
+    ((f64::from(view_level) - falloff).max(f64::from(OFFSCREEN_LEAF_LEVEL)) as u8)
         .saturating_sub(shrink)
-        .max(1)
+        .max(OFFSCREEN_LEAF_LEVEL)
+}
+
+/// The angle in radians between two unit directions.
+fn angle_between(a: UnitVector3, b: UnitVector3) -> f64 {
+    let [ax, ay, az] = a.components();
+    let [bx, by, bz] = b.components();
+    (ax * bx + ay * by + az * bz).clamp(-1.0, 1.0).acos()
 }
 
 /// Emits the sub-cell batches of one very near sector: visible subtrees
 /// split until [`WALK_BATCH_EXTRA`] levels above the target, hidden
 /// subtrees emit one coarse leaf so the mosaic stays complete.
 fn walk_sector_subtrees(
-    mapper: &ScreenMapper,
+    cap: &ViewCap,
     corners: [UnitVector3; 3],
     cell: u32,
     sector: u8,
@@ -474,7 +614,7 @@ fn walk_sector_subtrees(
 ) {
     let mut prefix = [0_u8; 16];
     walk_node(
-        mapper,
+        cap,
         corners,
         cell,
         sector,
@@ -488,7 +628,7 @@ fn walk_sector_subtrees(
 
 #[allow(clippy::too_many_arguments)]
 fn walk_node(
-    mapper: &ScreenMapper,
+    cap: &ViewCap,
     corners: [UnitVector3; 3],
     cell: u32,
     sector: u8,
@@ -509,12 +649,19 @@ fn walk_node(
         *leaves += batch.leaves();
         batches.push(batch);
     };
-    if node_level + WALK_BATCH_EXTRA >= target_level {
-        emit(target_level - node_level, batches, leaves);
+    // Visibility prunes before the depth check emits: a hidden subtree
+    // collapses to one coarse leaf at any depth. With the checks the
+    // other way round, every node reached at `target − WALK_BATCH_EXTRA`
+    // emitted its full 4^extra block unseen, and a deep viewport paid
+    // ~256 leaves apiece for strips of off-screen nodes — the budget
+    // overflow that used to demote the whole view (probe, 2026-08-21:
+    // 3.2M of 3.7M leaves at maximum zoom).
+    if !node_intersects_viewport(cap, &corners) {
+        emit(0, batches, leaves);
         return;
     }
-    if !node_intersects_viewport(mapper, &corners) {
-        emit(0, batches, leaves);
+    if node_level + WALK_BATCH_EXTRA >= target_level {
+        emit(target_level - node_level, batches, leaves);
         return;
     }
     let ab = direction_midpoint(corners[0], corners[1]);
@@ -529,7 +676,7 @@ fn walk_node(
     for (child, child_corners) in children.into_iter().enumerate() {
         prefix[usize::from(depth)] = child as u8;
         walk_node(
-            mapper,
+            cap,
             child_corners,
             cell,
             sector,
@@ -542,27 +689,16 @@ fn walk_node(
     }
 }
 
-/// Conservative visibility: any projectable corner within the padded
-/// viewport inflated by the node's own screen extent keeps the node, so
-/// a subtree containing the viewport never prunes; a node with no
-/// projectable corner (globe far side) is hidden.
-fn node_intersects_viewport(mapper: &ScreenMapper, corners: &[UnitVector3; 3]) -> bool {
-    let projected: Vec<[f64; 2]> = corners
-        .iter()
-        .filter_map(|&corner| mapper.screen(corner))
-        .collect();
-    if projected.is_empty() {
-        return false;
-    }
-    let mut extent = 0.0_f64;
-    for (index, a) in projected.iter().enumerate() {
-        for b in &projected[index + 1..] {
-            extent = extent.max(mapper.distance_px(*a, *b));
-        }
-    }
-    projected
-        .iter()
-        .any(|&screen| mapper.span_visible(screen, extent))
+/// Conservative spherical visibility: the node's anchored circumcap
+/// (every triangle point lies within the anchor-to-corner angles)
+/// against the viewport footprint cap. A subtree containing the view
+/// centre never prunes — the centre's angle to the anchor is at most
+/// the circumradius. Plain dot products, no projection: immune to the
+/// map's pole singularity and seam and to the globe's far side.
+fn node_intersects_viewport(cap: &ViewCap, corners: &[UnitVector3; 3]) -> bool {
+    let circumradius_rad =
+        angle_between(corners[0], corners[1]).max(angle_between(corners[0], corners[2]));
+    cap.angle_to(corners[0]) <= circumradius_rad + cap.radius_rad
 }
 
 /// One cached batch mesh in local index space.
@@ -1117,11 +1253,11 @@ mod tests {
         assert_eq!(selection.batches, again.batches);
     }
 
-    /// Symptom regression (user acceptance, 2026-08-20): the level must be
-    /// a location-fair function of physical size — under the equal-area
-    /// projection every same-sized cell reads the same level regardless of
-    /// its latitude or its ring orientation, so no region can lag behind
-    /// its neighbours in a way panning cannot heal.
+    /// Symptom regression (user acceptance, 2026-08-20, strengthened
+    /// 2026-08-21): the level is one explicit function of the camera —
+    /// with the whole world in the viewport, every cell (polar wedges
+    /// included) displays exactly the same level, no per-cell threshold
+    /// patchwork.
     #[test]
     fn visible_levels_are_uniform_across_the_equal_area_map() {
         let context = test_context();
@@ -1134,22 +1270,11 @@ mod tests {
                 .and_modify(|current| *current = (*current).max(level))
                 .or_insert(level);
         }
-        // Polar wedges bend so strongly on this 20°-cell fixture that the
-        // straight-edge triangle undercounts their area; the fairness
-        // property under test is the low- and mid-latitude field.
-        let mut low_mid = per_cell.iter().filter(|(cell, _)| {
-            let corners = context
-                .evaluator
-                .sector_corners(CellId::from_raw(**cell), 0);
-            corners[0].components()[2].abs() <= 0.7
-        });
-        let first = *low_mid.next().unwrap().1;
-        let (min, max) = low_mid.fold((first, first), |(min, max), (_, &level)| {
-            (min.min(level), max.max(level))
-        });
+        let mut levels = per_cell.values();
+        let first = *levels.next().unwrap();
         assert!(
-            max - min <= 1,
-            "same-sized cells must sit within one ceil bucket, got {min}..{max}"
+            levels.all(|&level| level == first),
+            "the global view must display one uniform level"
         );
     }
 
@@ -1178,10 +1303,11 @@ mod tests {
             let mut previous: Option<(u8, bool)> = None;
             for &zoom in &zooms {
                 let mapper = ScreenMapper::new(&map_view(zoom), CANVAS).unwrap();
-                let level = cell_leaf_level(&mapper, corners, target_px, floor_level, 0);
-                let inside = mapper
-                    .screen(corners[0])
-                    .is_some_and(|screen| mapper.distance_to_padded_viewport(screen, 0.0) == 0.0);
+                let probe = mapper.center_probe();
+                let view_level = view_leaf_level(evaluator, probe.as_ref(), target_px, floor_level);
+                let cap = ViewCap::new(probe.as_ref(), CANVAS);
+                let level = cell_leaf_level(&cap, corners, view_level, 0);
+                let inside = cap.angle_to(corners[0]) <= cap.radius_rad;
                 if let Some((previous_level, previous_inside)) = previous {
                     if inside && previous_inside {
                         assert!(
@@ -1194,6 +1320,57 @@ mod tests {
                 previous = Some((level, inside));
             }
         }
+    }
+
+    /// Symptom regression (user acceptance, 2026-08-21): zooming in must
+    /// never merge the view. Through the full selector — budget pass
+    /// included — the deepest displayed level equals the zoom-mapped view
+    /// level exactly at every zoom, monotone all the way up the ladder to
+    /// the physical floor: the budget may demote only off-viewport cells.
+    #[test]
+    fn zooming_in_never_coarsens_and_reaches_the_ladder_floor() {
+        let context = test_context();
+        let evaluator = &context.evaluator;
+        let floor_level = (1.0
+            + (evaluator.cell_spacing_m() / MIN_PRIMITIVE_EDGE_M)
+                .log2()
+                .ceil())
+        .clamp(1.0, 1.0 + HIERARCHICAL_PATH_DEPTH_MAX as f64) as u8;
+        let target_px = CANVAS[0] / UNITS_ACROSS_VIEW;
+        let mut previous_max = 0_u8;
+        let mut zoom = 1.0_f64;
+        while zoom <= MapCamera::MAX_ZOOM {
+            let view = map_view(zoom);
+            let mapper = ScreenMapper::new(&view, CANVAS).unwrap();
+            let view_level = view_leaf_level(
+                evaluator,
+                mapper.center_probe().as_ref(),
+                target_px,
+                floor_level,
+            );
+            let selection = select_detail_batches(&context, &view, CANVAS);
+            assert!(selection.leaves <= VIEW_LEAF_BUDGET, "budget at {zoom}x");
+            let max_level = selection
+                .batches
+                .iter()
+                .map(DetailBatch::leaf_level)
+                .max()
+                .unwrap();
+            assert_eq!(
+                max_level, view_level,
+                "the deepest displayed level must be the zoom-mapped level at {zoom}x"
+            );
+            assert!(
+                max_level >= previous_max,
+                "zooming in to {zoom}x merged {previous_max} -> {max_level}"
+            );
+            previous_max = max_level;
+            zoom *= 2.0_f64.sqrt();
+        }
+        assert_eq!(
+            previous_max, floor_level,
+            "maximum zoom must reach the physical ladder floor"
+        );
     }
 
     #[test]
