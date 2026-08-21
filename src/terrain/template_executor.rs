@@ -63,6 +63,8 @@ impl TemplateExecutor {
         #[cfg(debug_assertions)]
         println!("执行地形模板: {} - {}", template.name, template.description);
 
+        // 序号仅用于 debug 构建的日志，release 下静默。
+        #[allow(clippy::unused_enumerate_index)]
         for (_idx, command) in template.commands.iter().enumerate() {
             #[cfg(debug_assertions)]
             println!("  [{}] 执行命令: {:?}", _idx + 1, command);

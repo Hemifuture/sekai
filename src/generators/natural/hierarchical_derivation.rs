@@ -18,6 +18,7 @@
 
 use blake3::Hasher;
 
+use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
     surface_roughness_hurst, AmplificationFieldsView, ConditioningView, SurfaceRegime,
@@ -201,6 +202,10 @@ pub struct HierarchicalEvaluator {
     /// The M1 amplifier doubles as the fact source for conditioning
     /// drivers, the geodesic locator, and §7 river carving.
     amplifier: TerrainAmplifier,
+    /// Per-reach memo of the A6 path tree (spec §6: caches only
+    /// accelerate — every point is the pure derivation's bit-exact
+    /// value, deepened lazily as queries demand).
+    river_paths: Vec<ReachPathCache>,
     root_seed_raw: u64,
     // Self-contained copies of the validated surface geometry.
     ring_offsets: Vec<u32>,
@@ -250,6 +255,7 @@ impl HierarchicalEvaluator {
         segments: &[RiverSegment],
     ) -> Result<Self, TerrainAmplificationError> {
         self.amplifier = self.amplifier.with_rivers(surface, segments)?;
+        self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
     }
 
@@ -301,6 +307,7 @@ impl HierarchicalEvaluator {
             .collect();
 
         Self {
+            river_paths: fresh_reach_path_caches(amplifier.river_reaches().len()),
             amplifier,
             root_seed_raw: root_seed.raw(),
             ring_offsets,
@@ -381,6 +388,11 @@ impl HierarchicalEvaluator {
     /// hierarchical river module shares (reaches, beds, carve laws).
     pub(super) fn amplifier(&self) -> &TerrainAmplifier {
         &self.amplifier
+    }
+
+    /// The memo slot of one reach's path tree (reach-list aligned).
+    pub(super) fn river_path_slot(&self, reach: u32) -> Option<&ReachPathCache> {
+        self.river_paths.get(reach as usize)
     }
 
     /// The number of published river reaches (segment-order aligned).

@@ -13,6 +13,8 @@
 //! level's path through a bound-pruned descent of the same tree, so
 //! valleys and displayed channels stay one geometry.
 
+use std::sync::{Arc, RwLock};
+
 use super::hierarchical_derivation::{signed_unit_noise, HierarchicalEvaluator};
 use super::terrain_amplification::{arc_nearest_point, RiverReach, TerrainAmplifier};
 use crate::world::spatial::UnitVector3;
@@ -37,13 +39,75 @@ const GUIDANCE_LEVEL_CAP: u8 = 8;
 /// Path depth never exceeds the primitive path cap.
 const PATH_DEPTH_LIMIT: u8 = 16;
 
-/// One sub-segment of a reach's path tree.
-#[derive(Clone, Copy)]
-struct PathSegment {
-    a: [f64; 3],
-    b: [f64; 3],
-    fraction_a: f64,
-    fraction_b: f64,
+/// Lazy per-reach memo of the A6 path tree: the bit-exact node points
+/// of the deepest depth materialized so far (`2^d + 1` of them).
+///
+/// The tree is a pure function of the reach and the frozen seeds, and
+/// deeper levels never move shallower nodes, so one array serves every
+/// depth up to its own through a stride — and deepening only computes
+/// the new levels' midpoints. Purely an accelerator (spec §6): every
+/// consumer keeps deriving exactly the values the uncached recursion
+/// produced.
+#[derive(Default)]
+pub(super) struct ReachPathCache {
+    deepest: RwLock<Option<Arc<Vec<[f64; 3]>>>>,
+}
+
+/// One cache slot per reach, all empty (engine construction).
+pub(super) fn fresh_reach_path_caches(reach_count: usize) -> Vec<ReachPathCache> {
+    (0..reach_count)
+        .map(|_| ReachPathCache::default())
+        .collect()
+}
+
+/// The reach's path points at `depth` or deeper (`depth` pre-clamped to
+/// the reach cap and ≥ 1), deepening the memo level by level.
+fn cached_path(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    reach: &RiverReach,
+    depth: u8,
+) -> Arc<Vec<[f64; 3]>> {
+    let slot = evaluator
+        .river_path_slot(reach_index)
+        .expect("reach indices come from the engine's own reach lists");
+    let needed = (1_usize << depth) + 1;
+    let lock_clean = "the reach path lock only guards infallible derivation";
+    if let Some(points) = slot
+        .deepest
+        .read()
+        .expect(lock_clean)
+        .as_ref()
+        .filter(|points| points.len() >= needed)
+    {
+        return Arc::clone(points);
+    }
+    let mut guard = slot.deepest.write().expect(lock_clean);
+    if let Some(points) = guard.as_ref().filter(|points| points.len() >= needed) {
+        return Arc::clone(points);
+    }
+    let mut points: Vec<[f64; 3]> = guard
+        .as_ref()
+        .map(|points| points.as_ref().clone())
+        .unwrap_or_else(|| vec![reach.from, reach.to]);
+    if let Some(walk) = ReachWalk::new(evaluator, reach_index, reach) {
+        while points.len() < needed {
+            // The nodes between consecutive points of the depth-d array
+            // sit at depth d, enumerated left to right — which is
+            // exactly their `bits` path word.
+            let parent_depth = (points.len() - 1).trailing_zeros() as u8;
+            let mut next = Vec::with_capacity(points.len() * 2 - 1);
+            for (bits, pair) in points.windows(2).enumerate() {
+                next.push(pair[0]);
+                next.push(walk.node_midpoint(pair[0], pair[1], parent_depth, bits as u32));
+            }
+            next.push(*points.last().expect("a path holds both endpoints"));
+            points = next;
+        }
+    }
+    let points = Arc::new(points);
+    *guard = Some(Arc::clone(&points));
+    points
 }
 
 /// Everything constant per reach during a tree walk.
@@ -82,10 +146,10 @@ impl ReachWalk<'_> {
     ///
     /// `depth` is the node's depth (0 splits the chord) and `bits` the
     /// binary path from the root, both part of the canonical seed.
-    fn node_midpoint(&self, segment: &PathSegment, depth: u8, bits: u32) -> [f64; 3] {
-        let geometric = normalized(add(segment.a, segment.b))
-            .expect("reach sub-segments stay strictly inside one hemisphere");
-        let length_m = arc_angle(segment.a, segment.b) * self.radius_m;
+    fn node_midpoint(&self, a: [f64; 3], b: [f64; 3], depth: u8, bits: u32) -> [f64; 3] {
+        let geometric =
+            normalized(add(a, b)).expect("reach sub-segments stay strictly inside one hemisphere");
+        let length_m = arc_angle(a, b) * self.radius_m;
         if length_m < self.wavelength_m * 0.5 {
             return geometric;
         }
@@ -93,7 +157,7 @@ impl ReachWalk<'_> {
         // For a point on the arc, the segment's great-circle normal lies
         // in that point's tangent plane and is perpendicular to the arc —
         // it *is* the lateral displacement direction.
-        let Some(segment_normal) = normalized(cross(segment.a, segment.b)) else {
+        let Some(segment_normal) = normalized(cross(a, b)) else {
             return geometric;
         };
         let guidance_level = (depth + 1 + GUIDANCE_LEVEL_AHEAD).min(GUIDANCE_LEVEL_CAP);
@@ -171,70 +235,16 @@ pub(super) fn materialize_path(
     let as_unit = |p: [f64; 3]| {
         UnitVector3::new(p[0], p[1], p[2]).expect("reach path points are unit directions")
     };
-    let mut points = Vec::with_capacity((1_usize << depth) + 1);
-    points.push(as_unit(reach.from));
-    let Some(walk) = ReachWalk::new(evaluator, reach_index, reach) else {
-        points.push(as_unit(reach.to));
-        return points;
-    };
-    fn descend(
-        walk: &ReachWalk<'_>,
-        segment: PathSegment,
-        remaining: u8,
-        depth: u8,
-        bits: u32,
-        out: &mut Vec<UnitVector3>,
-    ) {
-        if remaining == 0 {
-            out.push(
-                UnitVector3::new(segment.b[0], segment.b[1], segment.b[2])
-                    .expect("reach path points are unit directions"),
-            );
-            return;
-        }
-        let midpoint = walk.node_midpoint(&segment, depth, bits);
-        let mid_fraction = 0.5 * (segment.fraction_a + segment.fraction_b);
-        descend(
-            walk,
-            PathSegment {
-                a: segment.a,
-                b: midpoint,
-                fraction_a: segment.fraction_a,
-                fraction_b: mid_fraction,
-            },
-            remaining - 1,
-            depth + 1,
-            bits << 1,
-            out,
-        );
-        descend(
-            walk,
-            PathSegment {
-                a: midpoint,
-                b: segment.b,
-                fraction_a: mid_fraction,
-                fraction_b: segment.fraction_b,
-            },
-            remaining - 1,
-            depth + 1,
-            (bits << 1) | 1,
-            out,
-        );
+    if depth == 0 {
+        return vec![as_unit(reach.from), as_unit(reach.to)];
     }
-    descend(
-        &walk,
-        PathSegment {
-            a: reach.from,
-            b: reach.to,
-            fraction_a: 0.0,
-            fraction_b: 1.0,
-        },
-        depth,
-        0,
-        0,
-        &mut points,
-    );
-    points
+    let points = cached_path(evaluator, reach_index, reach, depth);
+    // A degenerate reach memoizes only its chord; read what exists.
+    let depth = u32::from(depth).min((points.len() - 1).trailing_zeros());
+    let stride = (points.len() - 1) >> depth;
+    (0..=(1_usize << depth))
+        .map(|index| as_unit(points[index * stride]))
+        .collect()
 }
 
 /// The §4/A4 carve elevation at one position for a primitive of
@@ -292,19 +302,19 @@ fn nearest_on_path(
     if depth == 0 {
         return arc_nearest_point(reach.from, reach.to, p, radius_m);
     }
-    let walk = ReachWalk::new(evaluator, reach_index, reach)?;
+    let points = cached_path(evaluator, reach_index, reach, depth);
+    // A degenerate reach memoizes only its chord.
+    let depth = u32::from(depth).min((points.len() - 1).trailing_zeros());
+    if depth == 0 {
+        return arc_nearest_point(reach.from, reach.to, p, radius_m);
+    }
+    let stride = (points.len() - 1) >> depth;
     let mut best: Option<(f64, f64)> = None;
     descend_nearest(
-        &walk,
-        PathSegment {
-            a: reach.from,
-            b: reach.to,
-            fraction_a: 0.0,
-            fraction_b: 1.0,
-        },
-        depth,
-        0,
-        0,
+        &points,
+        stride,
+        (0, points.len() - 1),
+        (0.0, 1.0),
         p,
         radius_m,
         &mut best,
@@ -312,23 +322,22 @@ fn nearest_on_path(
     best
 }
 
-#[allow(clippy::too_many_arguments)]
 fn descend_nearest(
-    walk: &ReachWalk<'_>,
-    segment: PathSegment,
-    remaining: u8,
-    depth: u8,
-    bits: u32,
+    points: &[[f64; 3]],
+    stride: usize,
+    (start, end): (usize, usize),
+    (fraction_a, fraction_b): (f64, f64),
     p: [f64; 3],
     radius_m: f64,
     best: &mut Option<(f64, f64)>,
 ) {
-    let Some((chord_lateral, chord_along)) = arc_nearest_point(segment.a, segment.b, p, radius_m)
-    else {
+    let a = points[start];
+    let b = points[end];
+    let Some((chord_lateral, chord_along)) = arc_nearest_point(a, b, p, radius_m) else {
         return;
     };
-    if remaining == 0 {
-        let fraction = segment.fraction_a + chord_along * (segment.fraction_b - segment.fraction_a);
+    if end - start <= stride {
+        let fraction = fraction_a + chord_along * (fraction_b - fraction_a);
         if best.is_none_or(|(current, _)| chord_lateral < current) {
             *best = Some((chord_lateral, fraction));
         }
@@ -336,47 +345,28 @@ fn descend_nearest(
     }
     // Every deeper displacement stays within the geometric series
     // Σ 0.25·ℓ/2^k = 0.25·ℓ of this segment's arc.
-    let slack_m = MEANDER_SINUOSITY_FRACTION * arc_angle(segment.a, segment.b) * radius_m;
+    let slack_m = MEANDER_SINUOSITY_FRACTION * arc_angle(a, b) * radius_m;
     if let Some((current, _)) = best {
         if chord_lateral - slack_m > *current {
             return;
         }
     }
-    let midpoint = walk.node_midpoint(&segment, depth, bits);
-    let mid_fraction = 0.5 * (segment.fraction_a + segment.fraction_b);
-    let first = PathSegment {
-        a: segment.a,
-        b: midpoint,
-        fraction_a: segment.fraction_a,
-        fraction_b: mid_fraction,
-    };
-    let second = PathSegment {
-        a: midpoint,
-        b: segment.b,
-        fraction_a: mid_fraction,
-        fraction_b: segment.fraction_b,
-    };
+    let middle = (start + end) / 2;
+    let mid_fraction = 0.5 * (fraction_a + fraction_b);
     // Visit the nearer half first so the bound prunes the other.
-    let first_distance = arc_nearest_point(first.a, first.b, p, radius_m)
+    let first_distance = arc_nearest_point(a, points[middle], p, radius_m)
         .map_or(f64::INFINITY, |(lateral, _)| lateral);
-    let second_distance = arc_nearest_point(second.a, second.b, p, radius_m)
+    let second_distance = arc_nearest_point(points[middle], b, p, radius_m)
         .map_or(f64::INFINITY, |(lateral, _)| lateral);
+    let first = ((start, middle), (fraction_a, mid_fraction));
+    let second = ((middle, end), (mid_fraction, fraction_b));
     let ordered = if first_distance <= second_distance {
-        [(first, bits << 1), (second, (bits << 1) | 1)]
+        [first, second]
     } else {
-        [(second, (bits << 1) | 1), (first, bits << 1)]
+        [second, first]
     };
-    for (half, half_bits) in ordered {
-        descend_nearest(
-            walk,
-            half,
-            remaining - 1,
-            depth + 1,
-            half_bits,
-            p,
-            radius_m,
-            best,
-        );
+    for (span, fractions) in ordered {
+        descend_nearest(points, stride, span, fractions, p, radius_m, best);
     }
 }
 
@@ -552,6 +542,40 @@ mod tests {
         }
     }
 
+    /// The memo is pure acceleration: whichever order depths are asked
+    /// in — shallow-first (deepening) or deep-first (stride reads) —
+    /// every path and every carve stays bit-identical.
+    #[test]
+    fn memo_results_are_query_order_independent() {
+        let (shallow_first, surface) = evaluator_with_rivers();
+        let (deep_first, _surface) = evaluator_with_rivers();
+        for reach_index in 0..shallow_first.river_reach_count() as u32 {
+            let cap = shallow_first.river_path_depth_cap(reach_index).min(6);
+            let ascending: Vec<_> = (0..=cap)
+                .map(|depth| shallow_first.river_path(reach_index, depth))
+                .collect();
+            let mut descending: Vec<_> = (0..=cap)
+                .rev()
+                .map(|depth| deep_first.river_path(reach_index, depth))
+                .collect();
+            descending.reverse();
+            for (left, right) in ascending.iter().zip(&descending) {
+                assert_eq!(left.len(), right.len());
+                for (a, b) in left.iter().zip(right) {
+                    assert_eq!(
+                        a.components().map(f64::to_bits),
+                        b.components().map(f64::to_bits)
+                    );
+                }
+            }
+        }
+        for cell in surface.cells().iter().step_by(7) {
+            let ours = carve_elevation_m(&shallow_first, cell.centroid, 7, 0.3);
+            let theirs = carve_elevation_m(&deep_first, cell.centroid, 7, 0.3);
+            assert_eq!(ours.map(f64::to_bits), theirs.map(f64::to_bits));
+        }
+    }
+
     /// Amendment A6.4: no path point strays beyond the corridor fraction
     /// of the chord from the chord's great circle.
     #[test]
@@ -614,13 +638,7 @@ mod tests {
             let Some(walk) = ReachWalk::new(&evaluator, reach_index, reach) else {
                 continue;
             };
-            let root = PathSegment {
-                a: reach.from,
-                b: reach.to,
-                fraction_a: 0.0,
-                fraction_b: 1.0,
-            };
-            let chosen = walk.node_midpoint(&root, 0, 0);
+            let chosen = walk.node_midpoint(reach.from, reach.to, 0, 0);
             let geometric = normalized(add(reach.from, reach.to)).unwrap();
             let length_m = arc_angle(reach.from, reach.to) * walk.radius_m;
             if length_m < walk.wavelength_m * 0.5 {
