@@ -194,6 +194,10 @@ struct DetailRebuildRequest {
     view: crate::view::SphericalPresentationViewState,
     canvas_size: [f64; 2],
     serial: u64,
+    /// The selection hash the UI actually has on the GPU — the single
+    /// source of truth the worker compares fresh selections against, so
+    /// no worker-side mirror can silently drift from the screen.
+    installed_hash: u64,
 }
 
 /// One worker answer: a fresh mesh with its pre-projected map geometry
@@ -201,6 +205,9 @@ struct DetailRebuildRequest {
 /// selection matched the mesh already on screen.
 struct DetailRebuildResult {
     refreshed: Option<AmplifiedDetailPayload>,
+    /// A caught rebuild failure to surface; the worker survives it and
+    /// the display keeps the last installed mesh.
+    error: Option<String>,
     serial: u64,
 }
 
@@ -212,6 +219,9 @@ struct AmplifiedDetailPayload {
     map_vertices: Vec<crate::view::AmplifiedMapVertex>,
     map_indices: Vec<u32>,
     rivers: Vec<crate::view::RiverPolylineSegment>,
+    /// The built selection's hash; the UI records it as installed only
+    /// after the GPU upload actually ran.
+    selection_hash: u64,
 }
 
 /// The camera-driven incremental rebuild worker of the amplified display
@@ -224,6 +234,9 @@ struct AmplifiedDetailEngine {
     sent_serial: u64,
     answered_serial: u64,
     last_probe: Option<AmplifiedDetailProbe>,
+    /// The selection hash actually uploaded to the GPU (advanced only
+    /// after a successful upload); echoed to the worker in every request.
+    installed_hash: u64,
 }
 
 fn spawn_amplified_detail_engine(
@@ -234,35 +247,56 @@ fn spawn_amplified_detail_engine(
     let (result_sender, results) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut cache = amplified_mesh::BatchCache::default();
-        let mut installed_hash = installed_hash;
         while let Ok(mut request) = request_receiver.recv() {
             // Latest wins: a burst of camera changes resolves once.
             while let Ok(newer) = request_receiver.try_recv() {
                 request = newer;
             }
-            let selection =
-                amplified_mesh::select_detail_batches(&context, &request.view, request.canvas_size);
-            let refreshed = if selection.hash == installed_hash {
-                None
-            } else {
+            // One rebuild failure must never kill the engine: an uncaught
+            // panic here used to end the thread silently and freeze the
+            // display on the last installed mesh forever (giant stale
+            // leaves once the camera zoomed on). Catch it, surface it,
+            // and keep serving the next camera snapshot.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let selection = amplified_mesh::select_detail_batches(
+                    &context,
+                    &request.view,
+                    request.canvas_size,
+                );
+                if selection.hash == request.installed_hash {
+                    return Ok(None);
+                }
                 let Some(mesh) =
                     amplified_mesh::build_detail_mesh(&context, &selection, &mut cache)
                 else {
-                    continue;
+                    return Err("细节网格装配失败".to_owned());
                 };
-                installed_hash = selection.hash;
                 let (map_vertices, map_indices) =
                     crate::view::project_amplified_map(&mesh, request.view.projection());
-                Some(AmplifiedDetailPayload {
+                Ok(Some(AmplifiedDetailPayload {
                     map_vertices,
                     map_indices,
                     rivers: amplified_mesh::build_river_polylines(&context, &selection),
+                    selection_hash: selection.hash,
                     mesh,
-                })
+                }))
+            }));
+            let (refreshed, error) = match outcome {
+                Ok(Ok(refreshed)) => (refreshed, None),
+                Ok(Err(message)) => (None, Some(message)),
+                Err(panic) => {
+                    let message = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("未知 panic");
+                    (None, Some(format!("细节重建 panic：{message}")))
+                }
             };
             if result_sender
                 .send(DetailRebuildResult {
                     refreshed,
+                    error,
                     serial: request.serial,
                 })
                 .is_err()
@@ -277,6 +311,7 @@ fn spawn_amplified_detail_engine(
         sent_serial: 0,
         answered_serial: 0,
         last_probe: None,
+        installed_hash,
     }
 }
 
@@ -820,22 +855,31 @@ impl TemplateApp {
     fn poll_amplified_detail(&mut self, ctx: &egui::Context) {
         let mut fresh = None;
         let mut awaiting = false;
+        let mut failure = None;
         if let Some(engine) = &mut self.amplified_detail {
             while let Ok(result) = engine.results.try_recv() {
                 engine.answered_serial = engine.answered_serial.max(result.serial);
                 if let Some(refreshed) = result.refreshed {
                     fresh = Some(refreshed);
                 }
+                if let Some(error) = result.error {
+                    failure = Some(error);
+                }
             }
             awaiting = engine.sent_serial != engine.answered_serial;
         }
+        if let Some(failure) = failure {
+            self.spherical_runtime_error = Some(failure);
+        }
         if let Some(payload) = fresh {
+            let selection_hash = payload.selection_hash;
             self.amplified_mesh = Some(std::sync::Arc::new(payload.mesh));
             self.amplified_map_projected = Some(std::sync::Arc::new((
                 payload.map_vertices,
                 payload.map_indices,
             )));
             self.river_polylines = Some(std::sync::Arc::new(payload.rivers));
+            let mut uploaded = false;
             if let Some(render_state) = self.render_state.clone() {
                 let mut egui_renderer = render_state.renderer.write();
                 if let Some(renderer) = egui_renderer
@@ -843,6 +887,18 @@ impl TemplateApp {
                     .get_mut::<crate::gpu::spherical::SphericalFieldRenderer>()
                 {
                     self.upload_amplified_display(renderer, &render_state);
+                    uploaded = true;
+                }
+            }
+            if let Some(engine) = &mut self.amplified_detail {
+                if uploaded {
+                    // The screen now shows this selection.
+                    engine.installed_hash = selection_hash;
+                } else {
+                    // Nothing reached the GPU; forget the probe so the next
+                    // frame re-requests and the install retries instead of
+                    // freezing on the stale mesh.
+                    engine.last_probe = None;
                 }
             }
             ctx.request_repaint();
@@ -886,11 +942,20 @@ impl TemplateApp {
         }
         engine.last_probe = Some(probe);
         engine.sent_serial += 1;
-        let _ = engine.request.send(DetailRebuildRequest {
-            view,
-            canvas_size,
-            serial: engine.sent_serial,
-        });
+        if engine
+            .request
+            .send(DetailRebuildRequest {
+                view,
+                canvas_size,
+                serial: engine.sent_serial,
+                installed_hash: engine.installed_hash,
+            })
+            .is_err()
+        {
+            // The engine thread is gone; say so instead of freezing the
+            // display on a stale mesh without a word.
+            self.spherical_runtime_error = Some("细节重建线程已退出".to_owned());
+        }
     }
 
     /// The camera-relative rebase anchors for detail uploads: the map
@@ -1983,6 +2048,20 @@ impl eframe::App for TemplateApp {
                     if let Some(status) = self.spherical_runtime_error.as_deref() {
                         ui.separator();
                         ui.colored_label(egui::Color32::LIGHT_RED, status);
+                    }
+                    // A pending detail rebuild is visible state, not a
+                    // mystery: under heavy load (a world rebuild solving on
+                    // this process's cores, or another program saturating
+                    // the machine) a rebuild can take seconds, and the
+                    // stale mesh on screen looks like giant primitives at
+                    // deep zoom until the swap lands.
+                    if self
+                        .amplified_detail
+                        .as_ref()
+                        .is_some_and(|engine| engine.sent_serial != engine.answered_serial)
+                    {
+                        ui.separator();
+                        ui.weak("细节重建中…");
                     }
                 });
             });
