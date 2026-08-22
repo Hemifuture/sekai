@@ -97,14 +97,14 @@ fn resolved_formation_round_trips_and_rejects_invalid_wire_data() {
 #[test]
 fn resolved_profiles_expose_literal_recommendations_and_narrow_mantle_biases() {
     let cases = [
-        (ResolvedWorldFormationPreset::Continents, 0.38),
-        (ResolvedWorldFormationPreset::Archipelago, 0.26),
-        (ResolvedWorldFormationPreset::Supercontinent, 0.42),
-        (ResolvedWorldFormationPreset::GreatIsland, 0.28),
-        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16),
+        (ResolvedWorldFormationPreset::Continents, 0.38, 0.20),
+        (ResolvedWorldFormationPreset::Archipelago, 0.26, 0.22),
+        (ResolvedWorldFormationPreset::Supercontinent, 0.42, 0.17),
+        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 0.23),
+        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16, 0.16),
     ];
 
-    for (resolved, expected_fraction) in cases {
+    for (resolved, expected_crust_fraction, expected_land_fraction) in cases {
         let formation = ResolvedWorldFormation::new(
             RESOLVED_WORLD_FORMATION_SCHEMA_V1,
             WorldFormationPreset::Random,
@@ -115,7 +115,11 @@ fn resolved_profiles_expose_literal_recommendations_and_narrow_mantle_biases() {
         assert_eq!(formation.resolved(), resolved);
         assert_eq!(
             formation.recommended_continental_crust_fraction(),
-            expected_fraction
+            expected_crust_fraction
+        );
+        assert_eq!(
+            formation.recommended_land_fraction(),
+            expected_land_fraction
         );
         assert_eq!(
             formation.mantle_bias(),

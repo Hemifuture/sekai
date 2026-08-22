@@ -95,6 +95,33 @@ fn target_land_fraction_inventory_reaches_p5_without_changing_the_default_produc
         .find(|metric| metric.id().name() == "water-inventory-ratio")
         .and_then(|metric| metric.value())
         .expect("P3 publishes the implicit target-mode water ratio");
+    let p3_artifact_hash = blake3::hash(&serde_json::to_vec(primary.as_ref()).unwrap())
+        .to_hex()
+        .to_string();
+    let p5_artifact_hash = blake3::hash(&serde_json::to_vec(formation.as_ref()).unwrap())
+        .to_hex()
+        .to_string();
+    assert_eq!(
+        p3_artifact_hash,
+        "8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27"
+    );
+    assert_eq!(
+        p5_artifact_hash,
+        "95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8"
+    );
+    println!(
+        "target_driver_seed42 p3_artifact={} p5_artifact={} implicit_water_ratio={implicit_ratio:.12} p3_sea_level_m={:.6} p3_land_fraction={:.9} p5_sea_level_m={:.6} p5_land_fraction={:.9}",
+        p3_artifact_hash,
+        p5_artifact_hash,
+        primary.snapshot().sea_level_m(),
+        primary.snapshot().physical_land_fraction(),
+        formation.snapshot().terrain_fields().sea_level_m(),
+        sekai::world::natural::physical_land_fraction(
+            surface(),
+            formation.snapshot().terrain_fields().land_ocean(),
+        )
+        .unwrap(),
+    );
     let document =
         sekai::app::SphericalFormationFieldDocument::from_build_outcome(&target).unwrap();
     assert_eq!(

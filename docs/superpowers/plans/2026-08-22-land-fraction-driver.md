@@ -36,7 +36,7 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
       滑块、摘要行"海水量 = r × 地球"与提示（带外、露出洋底）、
       `FormationAreaSummary::water_inventory_ratio`；应用测试（持久化
       往返、锁定语义）。验证：用户在 UI 上按规格 §7 走一遍。
-- [ ] Task 5 —— 预设标称陆地重钉 + 指纹/证据：按冻结值改
+- [x] Task 5 —— 预设标称陆地重钉 + 指纹/证据：按冻结值改
       `recommended_land_fraction`；实测哪些冻结值因 `ReliefSpec` wire
       改变而变（原则：输出哈希不变者不动）；目标模式证据
       （Continents / seed 42 / 0.38）入 P3、P5 完成记录修订条目；

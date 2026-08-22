@@ -307,7 +307,8 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 1. `cargo run --release`；Continents、seed 42、草稿档，默认驱动重建：
    画面与 T0 交付一致（陆地 ≈ 20%）。
 2. 驱动切到"陆地占比"，滑块拨到 38%，重建：海岸线外推、陆架露出；
-   摘要显示 `海水量 ≈ 0.9 × 地球`（Task 1 实测后填精确值）。
+   摘要显示 `海水量 ≈ 0.693 × 地球`（Task 5 的 Continents / seed 42 /
+   目标 0.38 Release 实测）。
 3. 拨到 60%：提示"将露出洋底"，深海平原成为低地；拨到 10%：内陆海
    淹没，仅高地露出。
 4. 切回陆壳驱动：回到 1 的画面，陆地滑块锁定并显示实测值。
@@ -343,6 +344,40 @@ Task 1 实测（§2.4）后钉下的数值（用户确认，2026-08-22，R3 冻�
 ## 9. 修订记录
 
 - R0（2026-08-22）：草案。
+- R4（2026-08-22，Task 5）：实现证据修订，不改变 R3 设计裁定。预设标称
+  陆地按 §8 冻结中位落地；§7 填入目标模式实测隐含水量；下列指纹审计
+  记录“只刷新确实改变的输出”：
+  - **改变**：`ReliefSpec` wire / 输入缓存身份随 schema V2 改变；P3 报告
+    新增无界测量 `water-inventory-ratio`，因此完整 P3 `evidence.json` /
+    `metrics.csv` 刷新为 86,089 B / 31,529 B，BLAKE3
+    `fa4bac425c1c040d4bc7e07fe3c39b107a1e43b3055c20b4181b252889b67590` /
+    `a7917feebe7d0aa1bbf6c4a9bc3c96071f2323ab8b6ef8c120ce940ff5114738`；
+    seed 42 默认 P3 工件因报告封装扩展变为
+    `18aff524ca7637abf59757e42e2c5f6ee2e000ecce09ec6fe0cc4a6a37079330`。
+  - **默认物理输出未变**：剔除唯一新增测量后的 T0 P3 证据投影仍逐位得到
+    `ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2` /
+    `b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1`；
+    默认 P3 快照 JSON 为
+    `051d0907261112e80b59f0c4f014b6a0a9f1d9a5f142b2a74c160ab675b3aede`；
+    默认 P5 seed 42 工件仍为
+    `83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90`，
+    checkpoint / state 仍为
+    `a980562acf3d0c1186f0c8245a45e68189e235692507e7736ba06a2a4398ed14` /
+    `9c8cc9ebc2d0463c553bf416046ce6b0e047f081a841a94c952dc67a864cf12f`；
+    P4 证据仍为
+    `01007ae263fed76c9901f6fa0ba9d7a30cc16caa30fa0ecd7411516d620c2920` /
+    `c0670df941fb1f872f70f70f7d3e6ec5f21001ca2069395b38ef8ab3ed0e1206`。
+  - **目标模式新增**：Continents / seed 42 / 目标 0.38 的隐含水量比
+    `0.693323320384`，P3/P5 工件为
+    `8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27` /
+    `95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8`；
+    P3 陆地 `0.380047381`，P5 陆地 `0.379413068`。
+  - **呈现输出未变**：legacy 全图结果哈希仍为
+    `18d0c1b4fef960847ad4b5d2c20b24c7a5fc0bdbd88477a4858ac194bdb4494c`，
+    字段哈希仍为
+    `0d9ac9bf0a984aa2c94757bc030e70edfdcff4054a01a918a45447ad2b34158d`；
+    `EXPECTED_SAMPLED_IDS` 与经审计 RTX 4080 SUPER / Vulkan 的 16 幅
+    RGBA8 GPU 金样全部逐位不变，故未改任何呈现 golden。
 - R3（2026-08-22，Task 2）：**冻结**。§8 常量表经用户确认钉入 §3.1 /
   §3.3 / §3.4 / §3.5。
 - R2（2026-08-22，Task 1）：§2.4 实测入档，§2.1/§2.2 结论改按实测表述，

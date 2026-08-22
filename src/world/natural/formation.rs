@@ -50,13 +50,16 @@ impl ResolvedWorldFormationPreset {
         }
     }
 
-    /// Returns the emergent-land recommendation paired with this morphology.
+    /// Returns the measured median emergent-land recommendation for this morphology.
+    ///
+    /// Values are the frozen medians from the T0b 17-seed WaterInventory probe
+    /// recorded in the land-fraction-driver design §2.4 and §8.
     pub const fn recommended_land_fraction(self) -> f32 {
         match self {
-            Self::Continents => 0.38,
-            Self::Archipelago => 0.26,
-            Self::Supercontinent => 0.42,
-            Self::GreatIsland => 0.28,
+            Self::Continents => 0.20,
+            Self::Archipelago => 0.22,
+            Self::Supercontinent => 0.17,
+            Self::GreatIsland => 0.23,
             Self::VolcanicIslands => 0.16,
         }
     }

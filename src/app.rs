@@ -4288,17 +4288,18 @@ mod natural_app_tests {
         let mut formation = WorldFormationSpec::default();
         let mut tectonic = TectonicSpec::default();
         let mut relief = ReliefSpec::default();
-        for (preset, expected) in [
-            (WorldFormationPreset::Continents, 0.38),
-            (WorldFormationPreset::Archipelago, 0.26),
-            (WorldFormationPreset::Supercontinent, 0.42),
-            (WorldFormationPreset::GreatIsland, 0.28),
-            (WorldFormationPreset::VolcanicIslands, 0.16),
+        for (preset, expected_crust, expected_land) in [
+            (WorldFormationPreset::Continents, 0.38, 0.20),
+            (WorldFormationPreset::Archipelago, 0.26, 0.22),
+            (WorldFormationPreset::Supercontinent, 0.42, 0.17),
+            (WorldFormationPreset::GreatIsland, 0.28, 0.23),
+            (WorldFormationPreset::VolcanicIslands, 0.16, 0.16),
         ] {
             apply_formation_preset_selection(&mut formation, &mut tectonic, &mut relief, preset);
             assert_eq!(formation.preset, preset);
-            assert_eq!(tectonic.continental_crust_fraction, expected);
-            assert_eq!(relief.target_land_fraction, expected);
+            assert_eq!(tectonic.continental_crust_fraction, expected_crust);
+            assert_eq!(relief.target_land_fraction, expected_land);
+            assert_eq!(relief.sea_level_policy, SeaLevelPolicy::WaterInventory);
         }
 
         tectonic.continental_crust_fraction = 0.33;
