@@ -42,6 +42,30 @@
 - 新能力优先做成平行的正交单元，经枚举 / trait 接入点挂载，而不是在
   既有路径里加分支（先例：`SphericalWorldFieldDocument`）。
 
+## 出处纪律：决策必须有最佳实践背书（用户指令，2026-08-22）
+
+- 任何算法、公式、常量、阈值、验收包络与门禁边界——**尤其是地形与自然
+  管线**——都必须有学术界或工业界的既有最佳实践背书，并在设计规格中写明
+  出处（作者与年份、数据集及其版本，或可复核的工业实现）。禁止凭感觉
+  自创机制、自拟系数。
+- 每份计划以"每项承重技术的出处"一节收尾，逐项列出该里程碑依赖的技术与
+  来源；规格里的每个杠杆、每条恒等式同样逐项标注（先例：T0、T0b）。
+- 数值常量归 `src/world/`，文档注释必须写明来源与取值过程（先例：
+  `CRUST1_PLATFORM_THICKNESS_QUANTILES_KM` 取自 CRUST1.0 稳定台地分位表；
+  `EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M`、`EARTH_OCEAN_CRUST_MEAN_AGE_MYR`
+  同理）。自行从公开数据集算出的值，要记录数据版本、处理方法与校验和。
+- **先测后钉**：需要新常量时，先用生产算子测量现状（探针、语料实测），
+  把数字写进规格，再据实测与文献钉值；不得先拍一个数字再倒补理由。
+- **过程成因，不做事后修形**：一切位移必须由过程或有出处的常量产生。
+  禁止后处理直方图重映射、为凑指标而设的经验曲线与魔法系数——指标不达标
+  时要找成因，不是改结果。
+- 找不到直接对口出处时：给出最接近的一手依据加上明确的类比论证，并把该
+  项作为**开放问题**写进规格交用户裁定，不得以"看起来合理"落地（先例：
+  T0 §11.4 陆地占比、T0b §8 常量表）。
+- 世界设定可以偏离地球（水量、陆地占比等由用户决定），但机制必须守
+  物理：偏离的是参数取值，不是方程（用户裁定：过程守物理，结果归玩家，
+  系统只给建议值）。
+
 ## 验收纪律：算法必须与 UI 同步交付（用户指令，2026-08-19）
 
 - 算法与生成管线的验收一定要与 UI 同步：任何一条生成链路、任何算法改动
@@ -82,7 +106,21 @@ production helpers); high cohesion & low coupling (module = domain, layers
 talk only through validated snapshots/artifacts, minimal visibility);
 orthogonal features (compose without mutual knowledge; new capabilities
 mount through enum/trait seams like `SphericalWorldFieldDocument` instead
-of branching existing paths). Acceptance: algorithm work is delivered only
+of branching existing paths). Provenance: every algorithm, formula,
+constant, threshold, acceptance envelope and gate bound — terrain and the
+natural pipeline above all — must rest on established academic or industry
+practice, cited in the spec (author and year, dataset and version, or a
+checkable industrial implementation); plans close with a "sources for each
+load-bearing technique" section, constants in `src/world/` document where
+their value came from, and a constant is measured with production operators
+before it is pinned, never picked first and justified afterwards. Every
+displacement must come from a process or a sourced constant: no post-hoc
+histogram remapping, no fitted curves or magic coefficients to hit a
+number — a missed metric is a cause to find, not a result to edit. Where no
+source fits, record it as an open question for the user instead of inventing
+one. A world may leave Earth's parameter values (water inventory, land
+fraction); its mechanisms may not leave physics. Acceptance: algorithm work
+is delivered only
 when it reaches the UI and the user personally verifies it; agent
 self-checks are necessary but never sufficient. Workflow: task-per-commit
 plans in docs/superpowers/plans, frozen specs with explicit amendments,
