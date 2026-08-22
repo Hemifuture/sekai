@@ -200,15 +200,35 @@ struct DetailRebuildRequest {
     installed_hash: u64,
 }
 
-/// One worker answer: a fresh mesh with its pre-projected map geometry
-/// and level-matched river polylines, or `None` when the resolved
-/// selection matched the mesh already on screen.
-struct DetailRebuildResult {
-    refreshed: Option<AmplifiedDetailPayload>,
+/// One worker answer to one coalesced camera snapshot.
+enum DetailRebuildAnswer {
+    /// A fresh mesh with its pre-projected map geometry and level-matched
+    /// river polylines, for a selection that differed from the echoed
+    /// installed hash.
+    Refreshed(AmplifiedDetailPayload),
+    /// The resolved selection's hash matched the installed hash the
+    /// request echoed; the UI checks that premise still holds.
+    AlreadyInstalled(u64),
     /// A caught rebuild failure to surface; the worker survives it and
     /// the display keeps the last installed mesh.
-    error: Option<String>,
+    Failed(String),
+}
+
+struct DetailRebuildResult {
+    answer: DetailRebuildAnswer,
     serial: u64,
+}
+
+/// What one drain of the worker answers tells the UI thread to do.
+struct DetailPoll {
+    /// The newest answer's fresh mesh, when it carried one.
+    install: Option<AmplifiedDetailPayload>,
+    /// The most recent failure in the batch, to surface on the panel.
+    error: Option<String>,
+    /// The newest answer skipped against a hash the screen no longer
+    /// shows: an install landed after that request echoed its premise,
+    /// so the current camera snapshot must be re-requested.
+    stale_skip: bool,
 }
 
 /// Everything one fresh detail rebuild hands the UI thread. The map
@@ -237,6 +257,44 @@ struct AmplifiedDetailEngine {
     /// The selection hash actually uploaded to the GPU (advanced only
     /// after a successful upload); echoed to the worker in every request.
     installed_hash: u64,
+}
+
+impl AmplifiedDetailEngine {
+    /// Drains the finished answers. Only the newest one decides what the
+    /// screen does: an older payload was built for a camera snapshot the
+    /// camera has since left, and installing it over a newer "already
+    /// installed" answer parked the display on the wrong mesh (a fast
+    /// zoom-and-return froze on the zoomed-in mesh that way, with no
+    /// further request until the camera moved again).
+    fn drain_answers(&mut self) -> DetailPoll {
+        let mut newest: Option<DetailRebuildResult> = None;
+        let mut error = None;
+        while let Ok(result) = self.results.try_recv() {
+            self.answered_serial = self.answered_serial.max(result.serial);
+            if let DetailRebuildAnswer::Failed(message) = &result.answer {
+                error = Some(message.clone());
+            }
+            if newest
+                .as_ref()
+                .is_none_or(|current| result.serial > current.serial)
+            {
+                newest = Some(result);
+            }
+        }
+        let mut poll = DetailPoll {
+            install: None,
+            error,
+            stale_skip: false,
+        };
+        match newest.map(|result| result.answer) {
+            Some(DetailRebuildAnswer::Refreshed(payload)) => poll.install = Some(payload),
+            Some(DetailRebuildAnswer::AlreadyInstalled(hash)) => {
+                poll.stale_skip = hash != self.installed_hash;
+            }
+            Some(DetailRebuildAnswer::Failed(_)) | None => {}
+        }
+        poll
+    }
 }
 
 fn spawn_amplified_detail_engine(
@@ -270,12 +328,12 @@ fn spawn_amplified_detail_engine(
                         request.serial,
                         selection.hash
                     );
-                    return Ok(None);
+                    return DetailRebuildAnswer::AlreadyInstalled(selection.hash);
                 }
                 let Some(mesh) =
                     amplified_mesh::build_detail_mesh(&context, &selection, &mut cache)
                 else {
-                    return Err("细节网格装配失败".to_owned());
+                    return DetailRebuildAnswer::Failed("细节网格装配失败".to_owned());
                 };
                 let (map_vertices, map_indices) =
                     crate::view::project_amplified_map(&mesh, request.view.projection());
@@ -288,30 +346,25 @@ fn spawn_amplified_detail_engine(
                     selection.hash,
                     started.elapsed().as_secs_f64() * 1e3
                 );
-                Ok(Some(AmplifiedDetailPayload {
+                DetailRebuildAnswer::Refreshed(AmplifiedDetailPayload {
                     map_vertices,
                     map_indices,
                     rivers: amplified_mesh::build_river_polylines(&context, &selection),
                     selection_hash: selection.hash,
                     mesh,
-                }))
+                })
             }));
-            let (refreshed, error) = match outcome {
-                Ok(Ok(refreshed)) => (refreshed, None),
-                Ok(Err(message)) => (None, Some(message)),
-                Err(panic) => {
-                    let message = panic
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| panic.downcast_ref::<&str>().copied())
-                        .unwrap_or("未知 panic");
-                    (None, Some(format!("细节重建 panic：{message}")))
-                }
-            };
+            let answer = outcome.unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("未知 panic");
+                DetailRebuildAnswer::Failed(format!("细节重建 panic：{message}"))
+            });
             if result_sender
                 .send(DetailRebuildResult {
-                    refreshed,
-                    error,
+                    answer,
                     serial: request.serial,
                 })
                 .is_err()
@@ -327,6 +380,122 @@ fn spawn_amplified_detail_engine(
         answered_serial: 0,
         last_probe: None,
         installed_hash,
+    }
+}
+
+#[cfg(test)]
+mod amplified_detail_engine_tests {
+    use super::{
+        AmplifiedDetailEngine, AmplifiedDetailPayload, DetailRebuildAnswer, DetailRebuildResult,
+    };
+
+    const INSTALLED: u64 = 0xA;
+    const ZOOMED: u64 = 0xB;
+
+    /// A detached engine: the test plays the worker through `answers`.
+    fn detached_engine(
+        installed_hash: u64,
+        sent_serial: u64,
+    ) -> (
+        AmplifiedDetailEngine,
+        std::sync::mpsc::Sender<DetailRebuildResult>,
+    ) {
+        let (request, _) = std::sync::mpsc::channel();
+        let (answers, results) = std::sync::mpsc::channel();
+        (
+            AmplifiedDetailEngine {
+                request,
+                results,
+                sent_serial,
+                answered_serial: 0,
+                last_probe: None,
+                installed_hash,
+            },
+            answers,
+        )
+    }
+
+    fn refreshed(serial: u64, selection_hash: u64) -> DetailRebuildResult {
+        let mesh = crate::view::AmplifiedSurfaceMesh::new(
+            vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            vec![[0; 4]; 3],
+            vec![0, 1, 2],
+        )
+        .expect("one triangle is a valid amplified mesh");
+        DetailRebuildResult {
+            answer: DetailRebuildAnswer::Refreshed(AmplifiedDetailPayload {
+                mesh,
+                map_vertices: Vec::new(),
+                map_indices: Vec::new(),
+                rivers: Vec::new(),
+                selection_hash,
+            }),
+            serial,
+        }
+    }
+
+    fn already_installed(serial: u64, hash: u64) -> DetailRebuildResult {
+        DetailRebuildResult {
+            answer: DetailRebuildAnswer::AlreadyInstalled(hash),
+            serial,
+        }
+    }
+
+    /// Fast zoom-and-return: the zoomed-in payload (#1) and the return
+    /// snapshot's "already installed" (#2, echoed before #1 landed)
+    /// arrive in one drain. The newest answer wins, so the zoomed-in
+    /// mesh is never installed over the camera that already left it.
+    #[test]
+    fn a_newer_already_installed_answer_drops_an_older_payload() {
+        let (mut engine, answers) = detached_engine(INSTALLED, 2);
+        answers.send(refreshed(1, ZOOMED)).unwrap();
+        answers.send(already_installed(2, INSTALLED)).unwrap();
+
+        let poll = engine.drain_answers();
+
+        assert!(poll.install.is_none());
+        assert!(!poll.stale_skip);
+        assert!(poll.error.is_none());
+        assert_eq!(engine.answered_serial, 2);
+        assert_eq!(engine.installed_hash, INSTALLED);
+    }
+
+    /// The same race split across frames: #1's payload was installed in
+    /// an earlier drain, so #2's skip now names a hash the screen no
+    /// longer shows and must trigger a re-request.
+    #[test]
+    fn an_already_installed_answer_against_a_superseded_hash_is_stale() {
+        let (mut engine, answers) = detached_engine(ZOOMED, 2);
+        answers.send(already_installed(2, INSTALLED)).unwrap();
+
+        let poll = engine.drain_answers();
+
+        assert!(poll.install.is_none());
+        assert!(poll.stale_skip);
+        assert_eq!(engine.answered_serial, 2);
+    }
+
+    #[test]
+    fn the_newest_payload_installs_and_a_failure_in_the_batch_surfaces() {
+        let (mut engine, answers) = detached_engine(INSTALLED, 3);
+        answers
+            .send(DetailRebuildResult {
+                answer: DetailRebuildAnswer::Failed("boom".to_owned()),
+                serial: 1,
+            })
+            .unwrap();
+        answers.send(refreshed(2, 0xC)).unwrap();
+        answers.send(refreshed(3, ZOOMED)).unwrap();
+
+        let poll = engine.drain_answers();
+
+        assert_eq!(
+            poll.install.map(|payload| payload.selection_hash),
+            Some(ZOOMED)
+        );
+        assert!(!poll.stale_skip);
+        assert_eq!(poll.error.as_deref(), Some("boom"));
+        assert_eq!(engine.answered_serial, 3);
     }
 }
 
@@ -868,25 +1037,21 @@ impl TemplateApp {
 
     /// Installs finished camera-driven detail meshes without blocking.
     fn poll_amplified_detail(&mut self, ctx: &egui::Context) {
-        let mut fresh = None;
-        let mut awaiting = false;
-        let mut failure = None;
-        if let Some(engine) = &mut self.amplified_detail {
-            while let Ok(result) = engine.results.try_recv() {
-                engine.answered_serial = engine.answered_serial.max(result.serial);
-                if let Some(refreshed) = result.refreshed {
-                    fresh = Some(refreshed);
-                }
-                if let Some(error) = result.error {
-                    failure = Some(error);
-                }
-            }
-            awaiting = engine.sent_serial != engine.answered_serial;
+        let Some(engine) = &mut self.amplified_detail else {
+            return;
+        };
+        let poll = engine.drain_answers();
+        if poll.stale_skip {
+            // Forget the probe so the next frame re-requests the current
+            // camera snapshot against the hash the screen really shows.
+            engine.last_probe = None;
+            ctx.request_repaint();
         }
-        if let Some(failure) = failure {
+        let awaiting = engine.sent_serial != engine.answered_serial;
+        if let Some(failure) = poll.error {
             self.spherical_runtime_error = Some(failure);
         }
-        if let Some(payload) = fresh {
+        if let Some(payload) = poll.install {
             let selection_hash = payload.selection_hash;
             self.amplified_mesh = Some(std::sync::Arc::new(payload.mesh));
             self.amplified_map_projected = Some(std::sync::Arc::new((
