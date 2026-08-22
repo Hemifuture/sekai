@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    evaluate_surface_formation_quality, NaturalSurfaceFormationArtifact, PrimaryReliefGenerator,
-    QualityBuildError,
+    evaluate_surface_formation_corpus_hypsometry, evaluate_surface_formation_quality,
+    NaturalSurfaceFormationArtifact, PrimaryReliefGenerator, QualityBuildError,
 };
 use sekai::world::natural::{QualityMetricStatus, ReliefSpec};
 use sekai::world::RootSeed;
@@ -13,14 +13,22 @@ use sekai::world::RootSeed;
 use support::surface_formation::{published_formation, surface_formation_fixture};
 
 const METRIC_NAMESPACE: &str = "sekai.surface-formation-v1";
-const EXPECTED_METRIC_NAMES: [&str; 14] = [
+const EXPECTED_METRIC_NAMES: [&str; 22] = [
     "component-identity-mismatch-count",
     "deposited-sediment-enrichment-ratio",
     "final-land-fraction-absolute-change",
     "fixed-point-normalized-residual",
     "fluvial-incision-support-enrichment-ratio",
+    "land-area-share-below-100m",
     "land-outlet-path-area-fraction",
+    "land-relief-mean-m",
+    "land-relief-p05-m",
+    "land-relief-p25-m",
+    "land-relief-p50-m",
+    "land-relief-p75-m",
+    "land-relief-p95-m",
     "largest-network-strahler-order",
+    "ocean-depth-p50-m",
     "primary-final-elevation-correlation",
     "provenance-mass-relative-error",
     "receiver-adjacency-violation-count",
@@ -196,4 +204,53 @@ fn cancelled_quality_evaluation_publishes_no_partial_report() {
         Ok(report) => report.validate().unwrap(),
         Err(error) => assert_eq!(error, QualityBuildError::Cancelled),
     }
+}
+
+#[test]
+fn the_hypsometric_envelope_is_a_corpus_median_gate_over_unbounded_world_measurements() {
+    let fixture = surface_formation_fixture();
+    let report = evaluate_surface_formation_quality(
+        fixture.upstream.bundle.authoritative_surface(),
+        &fixture.upstream.relief,
+        published_formation(),
+    )
+    .unwrap();
+    let hypsometric = report
+        .metrics()
+        .iter()
+        .filter(|metric| {
+            metric.id().name().starts_with("land-relief-")
+                || metric.id().name() == "land-area-share-below-100m"
+                || metric.id().name() == "ocean-depth-p50-m"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(hypsometric.len(), 8);
+    assert!(hypsometric.iter().all(|metric| {
+        metric.bounds().min().is_none()
+            && metric.bounds().max().is_none()
+            && metric.status() == QualityMetricStatus::Pass
+            && metric.value().is_some()
+    }));
+
+    // A corpus of identical worlds has every median equal to the world value,
+    // and the corpus metrics carry the frozen envelope bounds.
+    let corpus =
+        evaluate_surface_formation_corpus_hypsometry(&[report.clone(), report.clone()]).unwrap();
+    assert_eq!(corpus.metrics().len(), 8);
+    for metric in corpus.metrics() {
+        let name = metric.id().name().strip_prefix("corpus-median-").unwrap();
+        let world = hypsometric
+            .iter()
+            .find(|candidate| candidate.id().name() == name)
+            .unwrap();
+        assert_eq!(metric.value(), world.value(), "{name}");
+        assert!(metric.bounds().min().is_some(), "{name}");
+        eprintln!(
+            "corpus hypsometry {name}: value={:?} bounds={:?} status={:?}",
+            metric.value(),
+            metric.bounds(),
+            metric.status()
+        );
+    }
+    assert!(evaluate_surface_formation_corpus_hypsometry(&[]).is_err());
 }

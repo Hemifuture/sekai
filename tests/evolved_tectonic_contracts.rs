@@ -95,6 +95,7 @@ fn evolved_snapshot() -> EvolvedTectonicSnapshot {
     let totals = material.totals();
     let processes = SphericalTectonicMaterialProcesses::new(
         0.0,
+        0.0,
         TectonicMaterialAmount::zero(),
         TectonicMaterialAmount::zero(),
         TectonicMaterialAmount::zero(),
@@ -289,6 +290,7 @@ fn material_and_lineage_budgets_enforce_exact_equations_and_error_limits() {
     );
     let processes = SphericalTectonicMaterialProcesses::new(
         3.0,
+        0.0,
         TectonicMaterialAmount::zero(),
         TectonicMaterialAmount::new(4.0, 28_000.0).unwrap(),
         TectonicMaterialAmount::new(6.0, 42_000.0).unwrap(),

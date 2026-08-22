@@ -629,6 +629,7 @@ impl<'de> Deserialize<'de> for SphericalTectonicForcingState {
 #[serde(deny_unknown_fields)]
 pub struct SphericalTectonicMaterialProcesses {
     rift_extension_continental_area_gain_m2: f64,
+    collision_shortening_continental_area_loss_m2: f64,
     continental_consumed: TectonicMaterialAmount,
     oceanic_subducted: TectonicMaterialAmount,
     oceanic_spreading_created: TectonicMaterialAmount,
@@ -640,6 +641,7 @@ pub struct SphericalTectonicMaterialProcesses {
 #[serde(deny_unknown_fields)]
 struct SphericalTectonicMaterialProcessesWire {
     rift_extension_continental_area_gain_m2: f64,
+    collision_shortening_continental_area_loss_m2: f64,
     continental_consumed: TectonicMaterialAmount,
     oceanic_subducted: TectonicMaterialAmount,
     oceanic_spreading_created: TectonicMaterialAmount,
@@ -652,6 +654,7 @@ impl SphericalTectonicMaterialProcesses {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rift_extension_continental_area_gain_m2: f64,
+        collision_shortening_continental_area_loss_m2: f64,
         continental_consumed: TectonicMaterialAmount,
         oceanic_subducted: TectonicMaterialAmount,
         oceanic_spreading_created: TectonicMaterialAmount,
@@ -662,8 +665,13 @@ impl SphericalTectonicMaterialProcesses {
             "rift_extension_continental_area_gain_m2",
             rift_extension_continental_area_gain_m2,
         )?;
+        validate_non_negative(
+            "collision_shortening_continental_area_loss_m2",
+            collision_shortening_continental_area_loss_m2,
+        )?;
         Ok(Self {
             rift_extension_continental_area_gain_m2,
+            collision_shortening_continental_area_loss_m2,
             continental_consumed,
             oceanic_subducted,
             oceanic_spreading_created,
@@ -675,6 +683,12 @@ impl SphericalTectonicMaterialProcesses {
     /// Returns pure-shear continental reference-area gain.
     pub const fn rift_extension_continental_area_gain_m2(self) -> f64 {
         self.rift_extension_continental_area_gain_m2
+    }
+
+    /// Returns pure-shear continental reference-area loss at collisions; the
+    /// volume stays in the shortened, thickened columns.
+    pub const fn collision_shortening_continental_area_loss_m2(self) -> f64 {
+        self.collision_shortening_continental_area_loss_m2
     }
 
     /// Returns explicitly named continental consumption.
@@ -711,6 +725,7 @@ impl<'de> Deserialize<'de> for SphericalTectonicMaterialProcesses {
         let wire = SphericalTectonicMaterialProcessesWire::deserialize(deserializer)?;
         Self::new(
             wire.rift_extension_continental_area_gain_m2,
+            wire.collision_shortening_continental_area_loss_m2,
             wire.continental_consumed,
             wire.oceanic_subducted,
             wire.oceanic_spreading_created,
@@ -1303,6 +1318,7 @@ fn expected_control_totals(
         "continental_reference_area_m2",
         initial.continental().reference_area_m2()
             + processes.rift_extension_continental_area_gain_m2()
+            - processes.collision_shortening_continental_area_loss_m2()
             - processes.continental_consumed().reference_area_m2(),
     )?;
     let continental_volume = validated_equation_total(

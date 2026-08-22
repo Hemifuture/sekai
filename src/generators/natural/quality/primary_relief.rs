@@ -578,7 +578,7 @@ fn median_observation(
     let mut ordered = values.to_vec();
     ordered.sort_by(f64::total_cmp);
     Ok(MetricObservation::Available {
-        value: median_sorted_f64(&ordered),
+        value: super::median_sorted_f64(&ordered),
         sample_count: count(ordered.len(), field)?,
     })
 }
@@ -591,15 +591,6 @@ fn median_f32(values: &[f32]) -> f64 {
         (f64::from(ordered[middle - 1]) + f64::from(ordered[middle])) * 0.5
     } else {
         f64::from(ordered[middle])
-    }
-}
-
-fn median_sorted_f64(values: &[f64]) -> f64 {
-    let middle = values.len() / 2;
-    if values.len() % 2 == 0 {
-        (values[middle - 1] + values[middle]) * 0.5
-    } else {
-        values[middle]
     }
 }
 

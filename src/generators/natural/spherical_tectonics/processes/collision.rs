@@ -5,18 +5,24 @@
 //! one-shot action only after actual overlap, matching the paper's slab-break
 //! and suturing event without retaining a transfer history.
 
+use super::spreading::MAXIMUM_STEP_STRETCH_FACTOR;
 use super::{
     bounded_elevation, constants, event_lineation, event_speed, ProcessActions, ProcessError,
     ProcessStats,
 };
 use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
 use crate::generators::natural::spherical_tectonics::model::{
-    FormationTectonicRecipe, TectonicState,
+    EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
 };
 use crate::world::natural::{CrustKind, SphericalOrogenyKind};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 const MAXIMUM_PUBLISHED_PLATE_AREA_FRACTION: f64 = 0.45;
+// Homogeneous pure-shear shortening expressed over one coarse orogenic belt,
+// the inverse of the rift-zone extension (England & McKenzie 1982 thin-sheet
+// thickening; Cortial et al. 2019 convergent thickening). The belt width is the
+// same coarse scale as the rift zone so the two processes stay symmetric.
+const CONTINENTAL_COLLISION_ZONE_WIDTH_M: f64 = 400_000.0;
 
 pub(super) fn collision_uplift_m(
     terrane_area_m2: f64,
@@ -151,12 +157,17 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision_v5(
     next: &mut TectonicState,
     actions: &mut ProcessActions,
     recipe: FormationTectonicRecipe,
+    ledger: &mut EvolutionMaterialLedger,
+    delta_myr: f32,
 ) -> Result<ProcessStats, ProcessError> {
     if current.samples.len() != next.samples.len() {
         return Err(ProcessError::StateCardinalityMismatch {
             current: current.samples.len(),
             next: next.samples.len(),
         });
+    }
+    if !delta_myr.is_finite() || delta_myr < 0.0 {
+        return Err(ProcessError::InvalidDeltaMyr { found: delta_myr });
     }
     actions.validate_for(next.samples.len())?;
     let average_plate_area = surface.total_cell_area().get() / next.plates.len() as f64;
@@ -176,6 +187,9 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision_v5(
         {
             return Err(ProcessError::NonContinentalCollision);
         }
+        let convergence = (-event.signed_normal_speed_mm_per_year).max(0.0);
+        actions.record_shortening_speed(first, convergence)?;
+        actions.record_shortening_speed(second, convergence)?;
         let (first_area_m2, second_area_m2) = {
             let scratch = actions.terrane_scratch(surface.cells().len());
             let first_area_m2 = terrane_members(
@@ -231,7 +245,57 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_collision_v5(
         stats.collision_events += 1;
         stats.affected_samples += 2;
     }
+    shorten_colliding_columns(next, actions, ledger, delta_myr)?;
     Ok(stats)
+}
+
+/// Thickens every continental column that converged this step by the bounded
+/// pure-shear factor of its recorded convergence, retiring the lost reference
+/// area into the ledger. Volume is preserved, so the crust root grows exactly as
+/// the rift process thins it. The compatibility elevation is left alone: P3
+/// derives the orogenic height from the thickened material through its Airy
+/// column, so writing the same uplift into the inherited elevation would count
+/// it twice.
+fn shorten_colliding_columns(
+    next: &mut TectonicState,
+    actions: &ProcessActions,
+    ledger: &mut EvolutionMaterialLedger,
+    delta_myr: f32,
+) -> Result<(), ProcessError> {
+    for (sample, &speed) in next
+        .samples
+        .iter_mut()
+        .zip(actions.shortening_speeds_mm_per_year())
+    {
+        if sample.material.continental_thickness_km().is_none() {
+            continue;
+        }
+        if speed <= 0.0 {
+            continue;
+        }
+        let shortening_m = f64::from(speed) * f64::from(delta_myr) * 1_000.0;
+        let requested_beta = (1.0 + shortening_m / CONTINENTAL_COLLISION_ZONE_WIDTH_M)
+            .clamp(1.0, MAXIMUM_STEP_STRETCH_FACTOR);
+        let remaining_area_loss = ledger.remaining_collision_shortening_area_m2();
+        if remaining_area_loss <= 0.0 {
+            continue;
+        }
+        let area = sample.material.continental_reference_area_m2();
+        let budget_beta = if remaining_area_loss < area {
+            area / (area - remaining_area_loss)
+        } else {
+            f64::INFINITY
+        };
+        let beta = requested_beta.min(budget_beta);
+        let (shortened, area_loss) = sample.material.shorten_continental_pure_shear(beta)?;
+        if area_loss <= 0.0 {
+            continue;
+        }
+        sample.material = shortened;
+        sample.synchronize_compatibility_from_material();
+        ledger.record_collision_shortening_area_loss(area_loss);
+    }
+    Ok(())
 }
 
 fn lineage_occupied_area(
@@ -383,7 +447,8 @@ mod tests {
     };
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
-        ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId,
+        MaterialColumn, TectonicState,
     };
     use crate::generators::natural::spherical_tectonics::processes::{
         commit_process_actions, constants, ProcessActions,
@@ -572,6 +637,8 @@ mod tests {
         };
         let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
         actions.begin_step(next.samples.len());
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&current).unwrap();
+        let material_before = current.material_totals().unwrap();
         let stats = apply_collision_v5(
             &surface,
             &[event],
@@ -579,6 +646,8 @@ mod tests {
             &mut next,
             &mut actions,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+            &mut ledger,
+            2.0,
         )
         .unwrap();
         commit_process_actions(&mut next, &mut actions).unwrap();
@@ -587,5 +656,40 @@ mod tests {
         assert_eq!(stats.transferred_samples, 0);
         assert_eq!(stats.terrane_transfer_events, 0);
         assert_eq!(next.samples[edge.cells[0].raw() as usize].owner, moving);
+
+        // Pure-shear shortening: both participants thicken by the bounded
+        // step factor (90 mm/yr over 2 Myr = 180 km against the 400 km belt
+        // asks for 1.45, capped at 1.2), volume is bit-preserved, and the
+        // retired area is exactly the ledger's recorded loss.
+        let totals_after = next.material_totals().unwrap();
+        assert_eq!(
+            totals_after.continental().volume_m3(),
+            material_before.continental().volume_m3()
+        );
+        let lost_area = material_before.continental().reference_area_m2()
+            - totals_after.continental().reference_area_m2();
+        assert!(lost_area > 0.0);
+        let processes = ledger.processes().unwrap();
+        assert!(
+            (processes.collision_shortening_continental_area_loss_m2() - lost_area).abs()
+                <= lost_area * 1.0e-12
+        );
+        for cell in edge.cells {
+            let sample = next.samples[cell.raw() as usize];
+            let thickness = sample.material.continental_thickness_km().unwrap();
+            assert!((thickness - 40.0 * 1.2).abs() <= 1.0e-3, "{thickness}");
+            assert!(sample.tectonic_elevation_m > 700.0);
+        }
+        let untouched = next
+            .samples
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !edge.cells.iter().any(|cell| cell.raw() as usize == *index))
+            .all(|(_, sample)| sample.material.continental_thickness_km() == Some(40.0));
+        assert!(untouched, "shortening must stay on the converging columns");
+        assert!(
+            ledger.remaining_collision_shortening_area_m2()
+                < material_before.continental().reference_area_m2() * 0.15
+        );
     }
 }

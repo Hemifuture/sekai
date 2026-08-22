@@ -3,7 +3,8 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_elevation_from_components, LandOceanKind, NaturalQualityProfile,
+    formation_elevation_from_components, hypsometric_mean, hypsometric_quantile,
+    hypsometric_share_below, sort_hypsometric_samples, LandOceanKind, NaturalQualityProfile,
     NaturalQualityReport, NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, QualityMetricId,
     QualityMetricStatus, SurfaceWaterKind, FORMATION_SHELF_BREAK_DEPTH_M,
     SEDIMENT_BUDGET_RELATIVE_ERROR_MAX, SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX,
@@ -20,18 +21,49 @@ const CENTIMETERS_PER_METER: f64 = 100.0;
 /// Land-area fraction below which a world cannot be asked for a deep network.
 const NETWORK_LAND_FRACTION_MIN: f64 = 0.10;
 const NO_LAND_REASON: &str = "the published world has no dry land";
+const NO_OCEAN_REASON: &str = "the published world has no ocean";
 const NO_NETWORK_LAND_REASON: &str = "dry land covers at most 10% of the published world";
 const NO_DEPOSIT_REASON: &str = "the solve deposited no sediment anywhere";
 const NO_INCISION_REASON: &str = "the solve produced no fluvial incision";
 
-const EXPECTED_METRIC_NAMES: [&str; 14] = [
+/// Ceiling above sea level of the reported coastal-lowland share.
+const LOWLAND_CEILING_M: f32 = 100.0;
+const NO_CORPUS_REASON: &str = "no world in the corpus reported this hypsometric measurement";
+const CORPUS_METRIC_PREFIX: &str = "corpus-median-";
+
+/// The per-world hypsometric measurements and the ETOPO1-anchored envelope
+/// their 17-seed corpus medians must satisfy (T0 calibration spec §3.2).
+/// Per-world reports carry the measurements unbounded: single-seed quantiles
+/// scatter by tens of percent, so the envelope is a corpus gate exactly like
+/// the P3 statistical gates.
+const HYPSOMETRY_ENVELOPE: [(&str, Option<f64>, Option<f64>); 8] = [
+    ("land-area-share-below-100m", Some(0.10), None),
+    ("land-relief-mean-m", Some(600.0), Some(1_000.0)),
+    ("land-relief-p05-m", Some(0.0), Some(80.0)),
+    ("land-relief-p25-m", Some(80.0), Some(350.0)),
+    ("land-relief-p50-m", Some(300.0), Some(700.0)),
+    ("land-relief-p75-m", Some(700.0), Some(1_400.0)),
+    ("land-relief-p95-m", Some(1_800.0), Some(3_400.0)),
+    ("ocean-depth-p50-m", Some(2_800.0), Some(4_800.0)),
+];
+
+/// Every per-world metric name in report (alphabetical) order.
+const EXPECTED_METRIC_NAMES: [&str; 22] = [
     "component-identity-mismatch-count",
     "deposited-sediment-enrichment-ratio",
     "final-land-fraction-absolute-change",
     "fixed-point-normalized-residual",
     "fluvial-incision-support-enrichment-ratio",
+    "land-area-share-below-100m",
     "land-outlet-path-area-fraction",
+    "land-relief-mean-m",
+    "land-relief-p05-m",
+    "land-relief-p25-m",
+    "land-relief-p50-m",
+    "land-relief-p75-m",
+    "land-relief-p95-m",
     "largest-network-strahler-order",
+    "ocean-depth-p50-m",
     "primary-final-elevation-correlation",
     "provenance-mass-relative-error",
     "receiver-adjacency-violation-count",
@@ -41,8 +73,10 @@ const EXPECTED_METRIC_NAMES: [&str; 14] = [
     "water-volume-relative-error",
 ];
 
-/// Returns the locked per-profile bounds in the canonical metric order.
-fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 14] {
+/// Returns the locked per-profile bounds in the canonical metric order; the
+/// hypsometric measurements are unbounded per world (see
+/// [`HYPSOMETRY_ENVELOPE`]).
+fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 22] {
     let strahler_min = match profile {
         NaturalQualityProfile::Draft => 3.0,
         NaturalQualityProfile::Standard | NaturalQualityProfile::High => 4.0,
@@ -53,8 +87,16 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
         (None, Some(0.03)),
         (None, Some(1.0)),
         (Some(1.50), None),
+        (None, None),
         (Some(0.95), None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, None),
         (Some(strahler_min), None),
+        (None, None),
         (Some(0.90), None),
         (None, Some(SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX)),
         (None, Some(0.0)),
@@ -63,6 +105,18 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
         (None, Some(0.0)),
         (None, Some(WATER_VOLUME_RELATIVE_TOLERANCE)),
     ]
+}
+
+/// Looks one locked per-world bound pair up by metric name.
+fn locked_bounds(
+    bounds: &[(Option<f64>, Option<f64>); 22],
+    name: &str,
+) -> (Option<f64>, Option<f64>) {
+    let position = EXPECTED_METRIC_NAMES
+        .iter()
+        .position(|&expected| expected == name)
+        .expect("locked metric names are exhaustive");
+    bounds[position]
 }
 
 /// Evaluates every locked P5 gate against one published formation product.
@@ -127,90 +181,171 @@ fn evaluate_impl(
     let state = FormationQualityState::collect(surface, relief, snapshot, cancellation)?;
     let mut builder = NaturalQualityReportBuilder::new(surface_ref);
     let bounds = expected_metric_bounds(snapshot.checkpoint().quality_profile());
+    let maximum = |name: &str| locked_bounds(&bounds, name).1.expect("locked maximum");
+    let minimum = |name: &str| locked_bounds(&bounds, name).0.expect("locked minimum");
     let cells = surface.cells().len() as u32;
 
+    let name = "component-identity-mismatch-count";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[0])?,
+        metric_id(name)?,
         state.component_identity_mismatch_count,
         cells,
-        bounds[0].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "deposited-sediment-enrichment-ratio";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[1])?,
+        metric_id(name)?,
         state.deposited_sediment_enrichment(),
-        bounds[1].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "final-land-fraction-absolute-change";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[2])?,
+        metric_id(name)?,
         state.land_fraction_absolute_change,
         cells,
-        bounds[2].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "fixed-point-normalized-residual";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[3])?,
+        metric_id(name)?,
         snapshot.solve_report().final_residual().normalized_max(),
         u32::from(snapshot.solve_report().outer_iterations()),
-        bounds[3].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "fluvial-incision-support-enrichment-ratio";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[4])?,
+        metric_id(name)?,
         state.fluvial_incision_enrichment(),
-        bounds[4].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "land-outlet-path-area-fraction";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[5])?,
+        metric_id(name)?,
         state.land_outlet_path_fraction(),
-        bounds[5].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "largest-network-strahler-order";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[6])?,
+        metric_id(name)?,
         state.largest_network_strahler_order(),
-        bounds[6].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "primary-final-elevation-correlation";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[7])?,
+        metric_id(name)?,
         available(state.primary_final_correlation, cells),
-        bounds[7].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "provenance-mass-relative-error";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[8])?,
+        metric_id(name)?,
         state.provenance_relative_error,
         cells,
-        bounds[8].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "receiver-adjacency-violation-count";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[9])?,
+        metric_id(name)?,
         state.receiver_adjacency_violation_count,
         cells,
-        bounds[9].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "river-reach-count";
     builder.record_observation_at_least(
-        metric_id(EXPECTED_METRIC_NAMES[10])?,
+        metric_id(name)?,
         state.river_reach_count(),
-        bounds[10].0.expect("locked minimum"),
+        minimum(name),
     )?;
+    let name = "sediment-mass-relative-error";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[11])?,
+        metric_id(name)?,
         snapshot.sediment_budget_report().global_relative_error(),
         cells,
-        bounds[11].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "through-ocean-land-river-count";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[12])?,
+        metric_id(name)?,
         state.through_ocean_land_river_count,
         cells,
-        bounds[12].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    let name = "water-volume-relative-error";
     builder.record_at_most(
-        metric_id(EXPECTED_METRIC_NAMES[13])?,
+        metric_id(name)?,
         state.water_volume_relative_error,
         cells,
-        bounds[13].1.expect("locked maximum"),
+        maximum(name),
     )?;
+    for (name, observation) in [
+        ("land-area-share-below-100m", state.lowland_share()),
+        ("land-relief-mean-m", state.land_relief_mean()),
+        ("land-relief-p05-m", state.land_relief_quantile(0.05)),
+        ("land-relief-p25-m", state.land_relief_quantile(0.25)),
+        ("land-relief-p50-m", state.land_relief_quantile(0.50)),
+        ("land-relief-p75-m", state.land_relief_quantile(0.75)),
+        ("land-relief-p95-m", state.land_relief_quantile(0.95)),
+        ("ocean-depth-p50-m", state.ocean_depth_median()),
+    ] {
+        builder.record_observation_unbounded(metric_id(name)?, observation)?;
+    }
 
     Ok(builder
         .finish()?
         .bind_subject_fingerprint(*snapshot.checkpoint().fingerprint())?)
+}
+
+/// Gates the T0 hypsometric envelope on the corpus medians of the per-world
+/// hypsometric measurements of every supplied report (the P3 corpus-gate
+/// precedent); each corpus metric is `corpus-median-<name>` with the frozen
+/// envelope bounds.
+pub fn evaluate_surface_formation_corpus_hypsometry(
+    reports: &[NaturalQualityReport],
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    let Some(first) = reports.first() else {
+        return Err(QualityBuildError::InvalidInput {
+            input: "surface-formation-corpus",
+            reason: "the hypsometry corpus is empty".to_owned(),
+        });
+    };
+    if reports
+        .iter()
+        .any(|report| report.surface_ref() != first.surface_ref())
+    {
+        return Err(QualityBuildError::InvalidInput {
+            input: "surface-formation-corpus",
+            reason: "the hypsometry corpus mixes authoritative surfaces".to_owned(),
+        });
+    }
+    let mut builder = NaturalQualityReportBuilder::new(first.surface_ref());
+    for (name, min, max) in HYPSOMETRY_ENVELOPE {
+        let mut values = reports
+            .iter()
+            .filter_map(|report| {
+                report
+                    .metrics()
+                    .iter()
+                    .find(|metric| metric.id().name() == name)
+                    .and_then(|metric| metric.value())
+            })
+            .collect::<Vec<_>>();
+        values.sort_by(f64::total_cmp);
+        let observation = if values.is_empty() {
+            unavailable(NO_CORPUS_REASON)
+        } else {
+            available(super::median_sorted_f64(&values), values.len() as u32)
+        };
+        let id = metric_id(&format!("{CORPUS_METRIC_PREFIX}{name}"))?;
+        match (min, max) {
+            (Some(min), Some(max)) => {
+                builder.record_observation_between(id, observation, min, max)?
+            }
+            (Some(min), None) => builder.record_observation_at_least(id, observation, min)?,
+            (None, Some(max)) => builder.record_observation_at_most(id, observation, max)?,
+            (None, None) => builder.record_observation_unbounded(id, observation)?,
+        }
+    }
+    builder.finish()
 }
 
 /// Every dense reduction the locked gates share, collected in one pass set.
@@ -236,6 +371,10 @@ struct FormationQualityState {
     land_cell_count: u32,
     eligible_cell_count: u32,
     support_cell_count: u32,
+    /// Land relief above the solved sea level with cell area, sorted by value.
+    land_relief_samples: Vec<(f32, f64)>,
+    /// Ocean depth below the solved sea level with cell area, sorted by value.
+    ocean_depth_samples: Vec<(f32, f64)>,
 }
 
 impl FormationQualityState {
@@ -284,6 +423,8 @@ impl FormationQualityState {
             land_cell_count: 0,
             eligible_cell_count: 0,
             support_cell_count: 0,
+            land_relief_samples: Vec::new(),
+            ocean_depth_samples: Vec::new(),
         };
 
         let outlet_paths = resolve_outlet_paths(hydrology.flow_receiver());
@@ -318,6 +459,12 @@ impl FormationQualityState {
             }
             let water = hydrology.surface_water().get(index);
             let is_land = terrain.land_ocean().raw_values()[index] == LandOceanKind::Land.raw();
+            let relief_m = elevation[index] - terrain.sea_level_m();
+            if is_land {
+                state.land_relief_samples.push((relief_m, area_m2));
+            } else {
+                state.ocean_depth_samples.push((-relief_m, area_m2));
+            }
             if is_land {
                 state.land_area_m2 += area_m2;
                 state.land_cell_count += 1;
@@ -400,7 +547,49 @@ impl FormationQualityState {
                 }
             }
         }
+        sort_hypsometric_samples(&mut state.land_relief_samples);
+        sort_hypsometric_samples(&mut state.ocean_depth_samples);
         Ok(state)
+    }
+
+    fn land_relief_quantile(&self, quantile: f64) -> MetricObservation {
+        if self.land_relief_samples.is_empty() {
+            return unavailable(NO_LAND_REASON);
+        }
+        available(
+            f64::from(hypsometric_quantile(&self.land_relief_samples, quantile)),
+            self.land_cell_count,
+        )
+    }
+
+    fn land_relief_mean(&self) -> MetricObservation {
+        if self.land_relief_samples.is_empty() {
+            return unavailable(NO_LAND_REASON);
+        }
+        available(
+            hypsometric_mean(&self.land_relief_samples),
+            self.land_cell_count,
+        )
+    }
+
+    fn lowland_share(&self) -> MetricObservation {
+        if self.land_relief_samples.is_empty() {
+            return unavailable(NO_LAND_REASON);
+        }
+        available(
+            hypsometric_share_below(&self.land_relief_samples, LOWLAND_CEILING_M),
+            self.land_cell_count,
+        )
+    }
+
+    fn ocean_depth_median(&self) -> MetricObservation {
+        if self.ocean_depth_samples.is_empty() {
+            return unavailable(NO_OCEAN_REASON);
+        }
+        available(
+            f64::from(hypsometric_quantile(&self.ocean_depth_samples, 0.5)),
+            self.ocean_depth_samples.len() as u32,
+        )
     }
 
     fn deposited_sediment_enrichment(&self) -> MetricObservation {

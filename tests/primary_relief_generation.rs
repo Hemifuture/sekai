@@ -3,14 +3,15 @@ use std::sync::OnceLock;
 use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
     causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
-    oceanic_isostatic_elevation_m, parsons_sclater_ocean_depth_m, EvolvedTectonicGenerator,
-    GeologicSubstrateGenerator, PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    gdh1_ocean_depth_m, oceanic_isostatic_elevation_m, oceanic_sediment_seafloor_rise_m,
+    EvolvedTectonicGenerator, GeologicSubstrateGenerator, PrimaryReliefGenerationError,
+    PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    EvolvedTectonicSnapshot, GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    CrustKind, EvolvedTectonicSnapshot, GeologicSpec, GeologicSubstrateSnapshot,
+    NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    TectonicSpec, WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -92,10 +93,11 @@ fn density_aware_airy_balance_is_monotone_and_has_the_reference_freeboard() {
 }
 
 #[test]
-fn parsons_sclater_depth_and_oceanic_buoyancy_keep_physical_ordering() {
-    assert_eq!(parsons_sclater_ocean_depth_m(0.0), 2_500.0);
-    assert!(parsons_sclater_ocean_depth_m(20.0) < parsons_sclater_ocean_depth_m(80.0));
-    assert!(parsons_sclater_ocean_depth_m(80.0) < parsons_sclater_ocean_depth_m(160.0));
+fn gdh1_depth_sediment_blanket_and_oceanic_buoyancy_keep_physical_ordering() {
+    assert_eq!(gdh1_ocean_depth_m(0.0), 2_600.0);
+    assert!((gdh1_ocean_depth_m(20.0) - gdh1_ocean_depth_m(20.000_01)).abs() <= 1.0);
+    assert!(gdh1_ocean_depth_m(20.0) < gdh1_ocean_depth_m(80.0));
+    assert!(gdh1_ocean_depth_m(80.0) < gdh1_ocean_depth_m(160.0));
     assert!(
         oceanic_isostatic_elevation_m(20.0, 7.0, 2_950.0)
             > oceanic_isostatic_elevation_m(100.0, 7.0, 2_950.0)
@@ -104,6 +106,12 @@ fn parsons_sclater_depth_and_oceanic_buoyancy_keep_physical_ordering() {
         oceanic_isostatic_elevation_m(80.0, 9.0, 2_900.0)
             > oceanic_isostatic_elevation_m(80.0, 6.0, 3_000.0)
     );
+    // The compensated pelagic blanket is zero at the ridge, grows with age, and
+    // reaches Earth's mean rise (659 m x (3300 - 2000) / (3300 - 1030)) at Earth's
+    // mean crustal age.
+    assert_eq!(oceanic_sediment_seafloor_rise_m(0.0), 0.0);
+    assert!(oceanic_sediment_seafloor_rise_m(40.0) < oceanic_sediment_seafloor_rise_m(120.0));
+    assert!((oceanic_sediment_seafloor_rise_m(64.2) - 377.4).abs() <= 0.5);
 }
 
 #[test]
@@ -172,14 +180,23 @@ fn generated_dynamic_component_preserves_v5_response_with_causal_sign_projection
     .unwrap();
     let forcing = fixture.evolved.forcing();
     let compatibility = fixture.evolved.compatibility();
+    // Continental crust inherits the causal V5 response; oceanic crust keeps
+    // only the rate response because its compatibility elevation is the same
+    // plate-cooling depth the Parsons-Sclater base already carries (T0
+    // calibration spec §4 L0).
     let matching = (0..surface.cells().len())
         .filter(|&index| {
-            let expected = dynamic_tectonic_response_m(
+            let inherited = if fixture.substrate.crust_kind(index) == Some(CrustKind::Oceanic) {
+                0.0
+            } else {
                 causal_accumulated_response_m(
                     compatibility.tectonic_elevation_m()[index],
                     forcing.uplift_rate_mm_per_year()[index],
                     forcing.subsidence_rate_mm_per_year()[index],
-                ),
+                )
+            };
+            let expected = dynamic_tectonic_response_m(
+                inherited,
                 forcing.uplift_rate_mm_per_year()[index],
                 forcing.subsidence_rate_mm_per_year()[index],
             );
@@ -191,6 +208,10 @@ fn generated_dynamic_component_preserves_v5_response_with_causal_sign_projection
         "only {matching}/{} dynamic cells preserve the causal V5 response",
         surface.cells().len()
     );
+    let oceanic_cells = (0..surface.cells().len())
+        .filter(|&index| fixture.substrate.crust_kind(index) == Some(CrustKind::Oceanic))
+        .count();
+    assert!(oceanic_cells > 0);
 }
 
 #[test]

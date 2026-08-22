@@ -34,7 +34,8 @@ pub(crate) use spherical::{
 };
 pub(crate) use surface_formation::validate_surface_formation_quality_report;
 pub use surface_formation::{
-    evaluate_surface_formation_quality, evaluate_surface_formation_quality_cancellable,
+    evaluate_surface_formation_corpus_hypsometry, evaluate_surface_formation_quality,
+    evaluate_surface_formation_quality_cancellable,
 };
 
 const NO_POSITIVE_WEIGHT_REASON: &str = "no positive finite sample weight";
@@ -191,6 +192,17 @@ impl NaturalQualityReportBuilder {
             self.surface_ref,
             self.metrics,
         )?)
+    }
+}
+
+/// Median of values already sorted ascending (even counts average the
+/// middle pair), shared by every corpus-level gate.
+pub(super) fn median_sorted_f64(values: &[f64]) -> f64 {
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) * 0.5
+    } else {
+        values[middle]
     }
 }
 

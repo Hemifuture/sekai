@@ -18,6 +18,15 @@ pub const OCEANIC_CRUST_MAX_THICKNESS_KM: f32 = 15.0;
 pub const CONTINENTAL_CRUST_MIN_THICKNESS_KM: f32 = 20.0;
 /// The thickest supported continental crust, in kilometers.
 pub const CONTINENTAL_CRUST_MAX_THICKNESS_KM: f32 = 80.0;
+/// CRUST1.0 (Laske et al. 2013) area-weighted thickness of the stable
+/// platform/shield/craton crustal types, in kilometers, at the 0%, 5%, ..., 100%
+/// area quantiles with the end knots at p01/p99. This is the frozen initial
+/// continental inventory of the T0 hypsometric calibration (spec 2026-08-21
+/// §4 L2); rifting and collision then thin and thicken it.
+pub const CRUST1_PLATFORM_THICKNESS_QUANTILES_KM: [f32; 21] = [
+    28.0, 32.0, 33.5, 34.5, 35.2, 36.0, 36.6, 37.0, 37.5, 38.0, 39.0, 39.0, 39.6, 40.2, 41.0, 41.0,
+    42.0, 43.0, 43.9, 45.7, 49.1,
+];
 
 const STRENGTH_TOLERANCE: f32 = 1.0e-5;
 

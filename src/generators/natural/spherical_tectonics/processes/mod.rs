@@ -70,6 +70,7 @@ pub(super) struct ProcessActions {
     spawned: Vec<CrustSample>,
     subduction_effects: Vec<SubductionEffect>,
     extensional_speeds_mm_per_year: Vec<f32>,
+    shortening_speeds_mm_per_year: Vec<f32>,
     spreading_divergence_by_cell: Vec<Option<usize>>,
     spreading_current_sample_by_cell: Vec<Option<usize>>,
     terrane_represented: Vec<u8>,
@@ -97,6 +98,7 @@ impl ProcessActions {
             spawned: Vec::with_capacity(sample_count / 16 + 1),
             subduction_effects: Vec::with_capacity(sample_count),
             extensional_speeds_mm_per_year: Vec::with_capacity(sample_count),
+            shortening_speeds_mm_per_year: Vec::with_capacity(sample_count),
             spreading_divergence_by_cell: Vec::with_capacity(sample_count),
             spreading_current_sample_by_cell: Vec::with_capacity(sample_count),
             terrane_represented: Vec::with_capacity(sample_count),
@@ -121,6 +123,8 @@ impl ProcessActions {
         self.extensional_speeds_mm_per_year.clear();
         self.extensional_speeds_mm_per_year
             .resize(sample_count, 0.0);
+        self.shortening_speeds_mm_per_year.clear();
+        self.shortening_speeds_mm_per_year.resize(sample_count, 0.0);
         self.pending_oceanic_subduction.clear();
         self.pending_oceanic_subduction.resize(sample_count, None);
     }
@@ -183,6 +187,26 @@ impl ProcessActions {
 
     pub(super) fn extensional_speeds_mm_per_year(&self) -> &[f32] {
         &self.extensional_speeds_mm_per_year
+    }
+
+    pub(super) fn record_shortening_speed(
+        &mut self,
+        sample: usize,
+        speed_mm_per_year: f32,
+    ) -> Result<(), ProcessError> {
+        let sample_count = self.shortening_speeds_mm_per_year.len();
+        let speed = self.shortening_speeds_mm_per_year.get_mut(sample).ok_or(
+            ProcessError::ActionIndexOutOfBounds {
+                sample,
+                actions: sample_count,
+            },
+        )?;
+        *speed = speed.max(speed_mm_per_year);
+        Ok(())
+    }
+
+    pub(super) fn shortening_speeds_mm_per_year(&self) -> &[f32] {
+        &self.shortening_speeds_mm_per_year
     }
 
     pub(super) fn spreading_scratch(

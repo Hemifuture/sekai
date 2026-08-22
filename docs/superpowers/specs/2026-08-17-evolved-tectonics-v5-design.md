@@ -448,3 +448,43 @@ P2 is complete only after all of the following are fresh and green:
   Important finding;
 - an inspectable P2 completion record containing exact hashes, metrics,
   timings, known limitations, and the P3 handoff.
+
+## 13. 修订记录
+
+- **A1（2026-08-22，T0 测高校准 L2，规格
+  `2026-08-21-t0-hypsometric-calibration-design.md` §4）。** 三处偏离本文的
+  冻结文本，均由该规格的 Task 1 诊断驱动（陆壳厚度谱坍缩为 32–35 km
+  尖峰、无造山根）：
+  1. **初始陆壳清单（§5.1 / `initial_crust_samples`）**：连续陆壳格元的
+     厚度不再是 `24 km + 28 km × fbm`，而是把同一 fbm 信号在陆壳格元上的
+     面积加权秩映射到 `CRUST1_PLATFORM_THICKNESS_QUANTILES_KM`（CRUST1.0
+     台地/地盾/克拉通类型群的 21 点分位表，world 层唯一事实源）。噪声仍决定
+     厚薄台地的位置；两个名义常量退役。该映射同时服务 legacy 球面控制面
+     路径（共用 `initial_crust_samples`）。
+  2. **碰撞缩短增厚（§5.3 具名过程规则新增一条）**：`apply_collision_v5`
+     在每个大陆碰撞事件上记录参与样本的法向汇聚速率，随后对每个汇聚样本
+     施加有界纯剪切缩短 `MaterialColumn::shorten_continental_pure_shear`
+     （`β = 1 + 汇聚量 / CONTINENTAL_COLLISION_ZONE_WIDTH_M`，上限
+     `MAXIMUM_STEP_STRETCH_FACTOR`，与裂谷拉张同一常量；厚度封顶
+     `CONTINENTAL_CRUST_MAX_THICKNESS_KM`）。面积损失记入账本新项
+     `collision_shortening_continental_area_loss_m2`（总量上限与裂谷增面
+     对称：初始陆壳面积的 15%），体积位守恒；兼容高程不随厚度抬升——造山高程由 P3 的 Airy 柱从
+     加厚的物质导出，再写进兼容高程会在 P3 的陆壳继承项上双计（首轮
+     实施曾如此，seed 59 的峰顶因此越过 `ELEVATION_MAX_M`）；拉张侧既有
+     的 Airy 沉降调整保留，记为不对称债务。§9.3 预算方程的陆壳面积项相应变为
+     `initial + rift_gain − collision_loss − consumed`。科学依据：England &
+     McKenzie 1982 薄粘性板增厚；Cortial et al. 2019 汇聚增厚；McKenzie
+     1978 纯剪切运动学（与拉张互为逆过程）。
+  3. **守恒重采样的陆壳体积分配（§5.4）**：原"赢家厚度偏好 + 均匀位移
+     闭合总体积"改为**锚点沉积**：每个源样本是一个整包，沉积到其锚点
+     格元；格元的半拉格朗日赢家先占位，其余同锚样本与超出格元配额的面积
+     作为整包、按自身厚度沿拓扑弧广度优先流向最近的欠填陆壳格元
+     （`deposit_continental_volumes`）。不再存在全局闭合位移，薄陆缘与
+     厚造山根得以跨重采样保留；洋壳体积分配不变。这是本文 §5.3"重叠陆壳
+     柱可在守恒重采样中堆叠"承诺的实现形式（一阶施主格守恒重映射）。
+  - **诊断**：`SEKAI_V5_TRACE=1` 在初始态、每次重采样后与终态打印面积加权
+    陆壳厚度清单（均值/sd/p05/p50/p95/极值）与沉积外流份额，与 P5 的
+    `SEKAI_P5_TRACE` 同例。
+  - 实测效果（草稿档 seed 42）：初始 sd 1.47 km → 4.14 km；终态 sd 2.63 →
+    4.55 km；碰撞增厚把最大厚度推到 57 km；重采样均匀位移
+    （每次 −0.2…−0.9 km）归零。P2/v5 全部指纹与证据按 T0 规格 §6 刷新。

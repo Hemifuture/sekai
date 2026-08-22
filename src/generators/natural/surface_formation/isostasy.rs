@@ -104,7 +104,12 @@ impl LocalAiryIsostasy {
             let area_m2 = surface.cells()[index].area.get();
             let adjustment = (removed_mass_kg[index] - deposited_mass_kg[index])
                 / (FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2);
-            let retained = adjustment as f32;
+            // The owning process yields at the publishable safety bound (P5
+            // design §5): the retained response is reduced so a column already
+            // at the bound does not leave the range; the mass ledger is not
+            // an elevation and stays exact.
+            let retained =
+                (adjustment as f32).clamp(ELEVATION_MIN_M - base, ELEVATION_MAX_M - base);
             let final_elevation = formation_elevation_from_components(
                 base, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, retained,
             );

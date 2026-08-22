@@ -223,3 +223,17 @@ preview wind, latitude-band climate substitute, or decorative ocean current.
 P3 relief is pre-erosion. Drainage, rivers, sediment redistribution, coastal
 response, glacier carving, and final spectral detail remain P5-P9 work, so P3
 is not compared visually with Gleba as a finished product.
+
+## 9. 修订记录
+
+- **A1（2026-08-22，T0 测高校准 L0，规格
+  `2026-08-21-t0-hypsometric-calibration-design.md` §4）。** §4.2 的
+  `accumulated_response` 在**衬底 `crust_kind == Oceanic` 的格元上恒为 0**，
+  只保留速率响应 `DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR × (U − S)`；
+  陆壳格元不变。原因：v5 兼容场 `tectonic_elevation_m` 在洋壳上由
+  `oceanic_plate_cooling_elevation_m` 初始化并在松弛中继续加深，是与 §4.1
+  Parsons–Sclater 基底同一物理量的第二次入账（实测被继承场在洋壳上均值
+  −2437 m，经权重与符号投影后动力项均值 −1470 m，使浴缸海面落到
+  −1374 m）；v5 设计 §7 亦明文该场只供 V3 兼容视图使用。§2 对 GDH1 的
+  引用更正：本文与代码采 Parsons & Sclater 1977。P3 十四项质量门禁的
+  锁定边界不变，证据数值按 T0 规格 §6 刷新。

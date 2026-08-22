@@ -114,6 +114,7 @@ pub(super) fn evolve_control_state_v5(
     streams.check_cancelled()?;
     let recipe = FormationTectonicRecipe::for_preset(formation);
     let initial = build_initial_state_v5(surface, topology, spec, recipe, streams)?;
+    trace_continental_inventory("initial", 0, &initial);
     streams.check_cancelled()?;
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
@@ -126,7 +127,16 @@ pub(super) fn evolve_control_state_v5(
         build_contacts(surface, topology, next, coverage, events)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe)?;
-        let collision = apply_collision_v5(surface, events, current, next, actions, recipe)?;
+        let collision = apply_collision_v5(
+            surface,
+            events,
+            current,
+            next,
+            actions,
+            recipe,
+            &mut material_ledger,
+            EVOLUTION_DELTA_MYR as f32,
+        )?;
         lineage_ledger.record_terrane_transfers(collision.terrane_transfer_events);
         apply_divergent_extension_v5(
             surface,
@@ -164,6 +174,7 @@ pub(super) fn evolve_control_state_v5(
         workspace.swap_current_next();
         if resample_due(&workspace) {
             resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
+            trace_continental_inventory("resampled", step, &workspace.current);
             mechanically_fragment_oversized_plates_v5(
                 step,
                 surface,
@@ -188,6 +199,7 @@ pub(super) fn evolve_control_state_v5(
             &mut lineage_ledger,
         )?;
     }
+    trace_continental_inventory("final", EVOLUTION_STEP_COUNT, &workspace.current);
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
     streams.check_cancelled()?;
@@ -209,6 +221,64 @@ pub(super) fn canonicalize_evolved_state(
 
 fn resample_due(workspace: &TectonicWorkspace) -> bool {
     workspace.steps_since_resample() >= resampling_interval_steps(&workspace.current)
+}
+
+/// Prints the area-weighted continental thickness inventory of one state when
+/// `SEKAI_V5_TRACE` is set (the P5 `SEKAI_P5_TRACE` precedent): the T0
+/// calibration diagnostic that locates where the thickness spread is lost.
+fn trace_continental_inventory(label: &str, step: u16, state: &TectonicState) {
+    if std::env::var_os("SEKAI_V5_TRACE").is_none() {
+        return;
+    }
+    let mut samples = state
+        .samples
+        .iter()
+        .filter_map(|sample| {
+            let area = sample.material.continental_reference_area_m2();
+            sample
+                .material
+                .continental_thickness_km()
+                .filter(|_| area > 0.0)
+                .map(|thickness| (f64::from(thickness), area))
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(|first, second| first.0.total_cmp(&second.0));
+    let total_area = samples.iter().map(|sample| sample.1).sum::<f64>();
+    if total_area <= 0.0 {
+        eprintln!("[v5-trace] {label} step {step}: no continental material");
+        return;
+    }
+    let mean = samples
+        .iter()
+        .map(|&(thickness, area)| thickness * area)
+        .sum::<f64>()
+        / total_area;
+    let sd = (samples
+        .iter()
+        .map(|&(thickness, area)| (thickness - mean).powi(2) * area)
+        .sum::<f64>()
+        / total_area)
+        .sqrt();
+    let quantile = |q: f64| {
+        let target = q * total_area;
+        let mut cumulative = 0.0;
+        samples
+            .iter()
+            .find(|&&(_, area)| {
+                cumulative += area;
+                cumulative >= target
+            })
+            .map_or(f64::NAN, |sample| sample.0)
+    };
+    eprintln!(
+        "[v5-trace] {label} step {step}: continental_samples={} area_m2={total_area:.4e} mean_km={mean:.2} sd_km={sd:.2} p05={:.1} p50={:.1} p95={:.1} min={:.1} max={:.1}",
+        samples.len(),
+        quantile(0.05),
+        quantile(0.50),
+        quantile(0.95),
+        samples.first().map_or(f64::NAN, |sample| sample.0),
+        samples.last().map_or(f64::NAN, |sample| sample.0),
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]

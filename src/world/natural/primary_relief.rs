@@ -39,6 +39,18 @@ pub const EARTH_OCEAN_VOLUME_M3: f64 = 1.335e18;
 pub const EARTH_WATER_REFERENCE_RADIUS_M: f64 = 6_371_000.0;
 /// Maximum relative error allowed after sea level is stored as `f32`.
 pub const WATER_VOLUME_RELATIVE_TOLERANCE: f64 = 1.0e-6;
+/// Area-weighted mean total sediment thickness over CRUST1.0 oceanic crustal
+/// types (Laske et al. 2013; computed in the T0 calibration spec §5.2), the
+/// Earth anchor of the P3 pelagic sediment blanket.
+pub const EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M: f32 = 659.0;
+/// Area-weighted mean age of Earth's ocean crust (Seton et al. 2020), paired
+/// with the mean sediment thickness to give the blanket's accumulation rate.
+pub const EARTH_OCEAN_CRUST_MEAN_AGE_MYR: f32 = 64.2;
+/// Bulk density of the compacting deep-sea sediment column (Hamilton 1976,
+/// 0-1 km average) used by the Sclater & Christie 1980 backstripping ratio.
+pub const OCEANIC_SEDIMENT_DENSITY_KG_M3: f32 = 2_000.0;
+/// Sea-water density in the backstripping ratio.
+pub const OCEAN_WATER_DENSITY_KG_M3: f32 = 1_030.0;
 /// Minimum author-constraint tolerance in physical area fraction.
 pub const MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE: f32 = 0.02;
 /// Safety bound for the separately published passive-margin component.

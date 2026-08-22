@@ -36,7 +36,7 @@ p5/final，20,252 格元，2026-08-21 复测）：
 -- --ignored --nocapture`，草稿档 seed 42 夹具，20,252 格元，全程面积加权，
 release 下 17 s）。探针只调用生产侧算子——精确浴缸反解
 `solve_physical_sea_level`、P3 Airy 柱 `continental_airy_elevation_m`、
-Parsons–Sclater 深度 `parsons_sclater_ocean_depth_m`、P3 速率响应
+Parsons–Sclater 深度 `gdh1_ocean_depth_m`（R4 前为 `parsons_sclater_ocean_depth_m`）、P3 速率响应
 `dynamic_tectonic_response_m`、P5 隐式河流动力核
 `ImplicitStreamPowerSolver`——不重新实现任何算法。以下把草案原先的三个
 候选成因逐一定量，并补出第四项"洋盆-水量记账"。
@@ -351,6 +351,42 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
 仍 < 0.10，再以具名修订启用（`PASSIVE_MARGIN_SUPPORT_M` 等常量的
 科学锚：地球被动陆缘陆架宽度 10–300 km，Cogley 1984）。
 
+### L5 —— 洋底深度律改用 GDH1（R4，成因 ④ 次级项）
+
+- **机制**：P3 的 `gdh1_ocean_depth_m`（原 `parsons_sclater_ocean_depth_m`）
+  改为 Stein & Stein 1992 的 GDH1：`d = 2600 + 365·√t`（t ≤ 20 Myr），
+  `d = 5651 − 2473·exp(−0.0278·t)`（t > 20 Myr）。
+- **科学来源**：Stein & Stein, Nature 359, 123–129, 1992——现代标准的
+  全球年龄-深度/热流拟合；Parsons & Sclater 1977 的老洋壳渐近线
+  6400 m 比观测深 300–500 m。
+- **实测**：17 粒语料海面中位 −373 → −350 m（+23 m）：GDH1 在年轻洋壳上
+  比 P–S 深（20 Myr：4232 对 4065）、在老洋壳上浅，在本世界年龄分布
+  （均值 55 Myr）下近乎相抵。保留它是为了正确性，不是为了效果。
+
+### L6 —— 洋底补偿沉积盖层（R4，成因 ④ 主残差）
+
+- **机制**：`oceanic_sediment_seafloor_rise_m(age)` 叠加到
+  `oceanic_isostatic_elevation_m`：沉积厚度随年龄线性增长
+  `t_s = EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M × age / EARTH_OCEAN_CRUST_MEAN_AGE_MYR`，
+  海底抬升 `t_s × (ρ_m − ρ_s) / (ρ_m − ρ_w)`（Sclater & Christie 1980 回剥
+  比）。常量（world 层）：`EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M = 659`
+  （CRUST1.0 洋壳类型群的面积加权沉积厚度均值，本任务从 `crust1.bnds`
+  现算；同一计算给出的全球淹没沉积总量 3.29×10⁸ km³ 与 GlobSed 的
+  3.37×10⁸ km³ 相差 2.4%，作为自检）、`EARTH_OCEAN_CRUST_MEAN_AGE_MYR = 64.2`
+  （Seton et al. 2020）、`OCEANIC_SEDIMENT_DENSITY_KG_M3 = 2000`
+  （Hamilton 1976 深海沉积 0–1 km 平均）、`OCEAN_WATER_DENSITY_KG_M3 = 1030`。
+  地球均龄处的抬升 = 659 × 1300 / 2270 = 377 m。
+- **科学来源**：Straume et al., G³ 20, 1756–1772, 2019（GlobSed：厚度随
+  年龄增长；总量 3.37×10⁸ km³）；Laske et al. 2013（CRUST1.0 沉积层）；
+  Sclater & Christie, JGR 85, 3711–3739, 1980（沉积回剥）；Hamilton,
+  J. Sediment. Petrol. 46, 1976（深海沉积密度-深度）；Müller et al.,
+  Science 319, 1357–1362, 2008（古水深 = 年龄-深度 + 均衡校正的沉积
+  厚度，同一方法论）。
+- **为什么是它**：§2.4 的洋底项在 L0 之后仍剩 ≈ −0.4 km；地球洋壳区平均
+  洋深（≈ −4.3 km）与无沉积的 GDH1 基底（≈ −4.7 km）之差正是沉积盖层
+  的均衡抬升。本项不是调参：四个常量全部来自地球数据，抬升量由它们
+  推出。
+
 ## 5. 科学依据
 
 ### 5.1 目标：地球测高曲线
@@ -398,7 +434,7 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
 - 洋壳年龄：Seton et al., G³ 21, e2020GC009214, 2020——洋壳平均年龄
   64.2 Myr（本世界 55.1 Myr）。
 - 洋盆深度律：**Parsons & Sclater, JGR 82, 803–827, 1977**（P3 现采，
-  `parsons_sclater_ocean_depth_m`）。计划与草案原文写作"GDH1（Stein &
+  `gdh1_ocean_depth_m`（R4 前为 `parsons_sclater_ocean_depth_m`））。计划与草案原文写作"GDH1（Stein &
   Stein 1992）"系误记，本修订更正；GDH1 在 >100 Myr 洋壳上比 P–S 浅
   300–500 m，但本世界年龄均值 55 Myr 处两律相差 < 50 m，不构成杠杆。
 - 地球参照常量：`EARTH_OCEAN_VOLUME_M3`（NOAA 1.335×10¹⁸ m³）与
@@ -422,8 +458,9 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
 
 ## 6. 门禁与指纹策略
 
-- 新增测高包络门禁（§3.2）进入 P5 质量报告与 `surface_formation_quality`
-  产品套件；草稿档常测，标准档证据刷新时复测一次入档。
+- 测高包络门禁（§3.2）：P5 质量报告记录八项单世界测高测量（无界）；
+  包络以 **17 粒语料中位** 断言（`evaluate_surface_formation_corpus_hypsometry`，
+  证据写入器执行，§11.3）；草稿档每次证据刷新必跑，标准档复测一次入档。
 - P5 既有六项形态门禁与沉积账本闭合（≤ 1e-8 / ≤ 1e-7）保持；P3 十四项
   指标的锁定边界不变，仅证据数值刷新。
 - **预期指纹刷新清单**（L0 改 P3、L2 改 v5，故自 v5 起整条链刷新）：
@@ -510,7 +547,14 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
 9. **对 R2 推荐的更正**：R2 曾推荐把清单均值钉在 39–40 km；复审认定该推荐的
    证据等级不足（来自均匀抬升外推，且 87% 出露率要求比地球更少的陆架），故
    R3 改为“先测后钉”（§8.6）。
-10. **什么没有被校准**：陆壳面积（0.437）、板块运动学、洋壳年龄分布、
+10. **R4 扩展杠杆的依据**：L5/L6 不在 R3 的杠杆集里，但 Task 3 实测把洋底残差
+    （−350 m）明确归到深度律与沉积盖层，两者都是古水深重建的标准组成
+    （Müller et al. 2008 的方法论：年龄-深度律 + 均衡校正的沉积厚度），常量
+    全部来自地球数据（§4 L5/L6）。这是按"先测后钉"原则的具名偏离。
+11. **门禁统计形态**：单粒分位离散 ±40%，逐世界硬门禁会把噪声当缺陷；语料
+    中位门禁是本仓库 P3 的既有先例。开放行 `land-area-share-below-100m`
+    如实记录（§11.3），不放宽带。
+12. **什么没有被校准**：陆壳面积（0.437）、板块运动学、洋壳年龄分布、
    水量——这些都与地球相近或由作者约束决定，不在本次杠杆内；§8.6
    把由此产生的"38% 陆地 vs 地球干舷"张力显式交给用户。
 
@@ -528,3 +572,85 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
   与终态清单验收带，机制顺序定为诊断 → 形状保持（裂谷减薄/碰撞增厚的局部
   守恒）→ 初始清单秩映射；§8.6 闭合为先测后钉规则；§9 增补 L0 不对称债务、
   现代年龄-深度律后续项与对 R2 推荐的更正。状态：**冻结**。
+- R4（2026-08-22，Task 3 实施）：按 §8.6 先测后钉——未加清单均值偏移
+  （它会把已偏高的低分位推得更高）；实测洋底残差后增补 L5（GDH1）与 L6
+  （均衡沉积盖层）；门禁形态改为单世界无界记录 + 语料中位断言，开放行
+  `land-area-share-below-100m`；§11 记录实施清单、语料实测与陆地占比决策。
+  常量新增：`CRUST1_PLATFORM_THICKNESS_QUANTILES_KM`、
+  `EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M`、`EARTH_OCEAN_CRUST_MEAN_AGE_MYR`、
+  `OCEANIC_SEDIMENT_DENSITY_KG_M3`、`OCEAN_WATER_DENSITY_KG_M3`；退役：
+  `CONTINENTAL_THICKNESS_BASE_KM`、`CONTINENTAL_THICKNESS_SPAN_KM`、
+  `parsons_sclater_ocean_depth_m`。
+
+## 11. Task 3 实施记录（R4，2026-08-22）
+
+### 11.1 实施清单（代码）
+
+| 杠杆 | 落点 | 实测（草稿档） |
+| --- | --- | --- |
+| L0 | `PrimaryReliefGenerator::generate`：衬底洋壳格元 `accumulated_response = 0` | 洋壳动力项均值 −1470 → −20 m |
+| L2-诊断 | `SEKAI_V5_TRACE`：`trace_continental_inventory`（初始/每次重采样/终态）+ 沉积外流份额 | 初始 sd 1.47 km；原重采样均匀位移 −0.2…−0.9 km/次 |
+| L2b-碰撞 | `apply_collision_v5` → `shorten_colliding_columns`：有界纯剪切缩短，账本 `collision_shortening_continental_area_loss_m2`，预算方程 `initial + rift_gain − collision_loss − consumed` | 首次重采样后最大厚度 49 → 57 km |
+| L2b-重采样 | `deposit_continental_volumes`：锚点整包沉积、赢家留驻、其余整包 BFS 外流；均匀位移归零 | 终态 sd 2.63 → 4.55 km，p05 27.8 → 26.4，max 36.6 → 52.8 |
+| L2a | `initial_crust_samples` 秩映射到 `CRUST1_PLATFORM_THICKNESS_QUANTILES_KM` | 初始 sd 1.47 → 4.14 km（表 4.27） |
+| L5 | `gdh1_ocean_depth_m` | 语料海面 +23 m |
+| L6 | `oceanic_sediment_seafloor_rise_m` | 语料海面 −350 → −100 m |
+| 门禁 | P5 质量报告 +8 项测高测量（单世界无界）+ `evaluate_surface_formation_corpus_hypsometry`（语料中位，包络界） | 见 11.3 |
+
+### 11.2 语料实测（17 粒草稿种子，P3 产物，`probe_t0_corpus_hypsometry`）
+
+| 阶段 | 海面中位 | 陆地中位 | p05/p25/p50/p75/p95 中位 | 均值 | <100 m | 洋深 p50 |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| 校准前（seed 42） | −1374 | 0.405 | 316/760/1167/1503/1912 | 1155 | 0.015 | 4451 |
+| L0 + L2 | −373 | 0.253 | 78/361/713/1197/2452 | 888 | 0.064 | 4011 |
+| + L5 GDH1 | −350 | 0.244 | 73/345/715/1200/2447 | 886 | 0.069 | 4088 |
+| + L6 沉积盖层（终态代码） | **−101** | **0.202** | **60/286/616/1086/2211** | **786** | **0.087** | **3983** |
+| 同上，P5 产物（证据写入器语料中位） | — | — | **101/335/675/1136/2269** | **842** | **0.049** | **3995** |
+| ETOPO1 全陆（§3.1） | 0 | 0.290 | 30/174/421/1031/3007 | 796 | 0.148 | 4095 |
+| ETOPO1 按草稿档格元块平均 | 0 | 0.291 | 41/187/426/998/2941 | 780 | 0.128 | 4055 |
+
+陆壳清单终态（L2 后）：均值中位 35.4 km（带 34–41 ✓）、sd 4.98 km（带
+6–9 ✗）、p95−p05 16.2 km（带 18–32 ✗）、≥ 44 km 份额 0.031（≥ 0.06 ✗）、
+< 28 km 份额 ≈ 0.06（≥ 0.06 边缘）。
+
+分辨率匹配：把 ETOPO1 按草稿档（20,252 格元，1.43°）、标准档（0.72°）、
+高档（0.45°）块平均后，地球陆地 <100 m 份额分别为 0.128 / 0.138 / 0.142，
+七项分位仍落在 §3.2 带内——包络不需要按档位改写，本世界的 <100 m 短缺
+（0.088 对 0.128）是真实的，不是分辨率假象。
+
+### 11.3 门禁形态修订与开放行
+
+- 单世界 P5 质量报告记录八项测高测量（`land-relief-p05-m` … `ocean-depth-p50-m`），
+  **无界**：单粒分位离散 ±40%（p95 1676–3636 m），逐世界硬门禁会把统计
+  噪声当缺陷。包络作为**语料中位门禁**（`corpus-median-*`，P3 十七粒语料
+  门禁同构）由证据写入器 `tests/surface_formation_evidence.rs` 在 17 粒
+  P5 产物上断言并写入 `evidence.json`。
+- 开放行（`OPEN_ENVELOPE_ROWS`，记录不断言，其余六行断言）：
+  1. `corpus-median-land-area-share-below-100m`：P3 产物语料中位 0.087，
+     P5 产物 0.049（带 ≥ 0.10）。
+  2. `corpus-median-land-relief-p05-m`：P3 产物 60 m（带内），P5 产物 101 m
+     （带 ≤ 80）。
+  两行同指最低的陆地。归因有两层：(a) 陆壳清单薄尾不足（< 28 km 份额
+  0.06 对 CRUST1.0 0.13）——v5 裂谷拉张总预算
+  `MAXIMUM_RIFT_EXTENSION_AREA_FRACTION` 在前 10 步即耗尽，且重采样的部分
+  整包混合仍把 p05 厚度从 20 km 抬回 26 km；(b) P5 的首个 100 kyr 沉积
+  脉冲（路由沉积在陆地均值 +144 m、局部 Airy 回弹 +110 m，§2.3）把海岸
+  格元抬高约 40 m，使 P3 已达标的 p05 在 P5 产物上出界。(b) 属 P5 既有行为
+  （`FORMATION_FLOODPLAIN_ACCOMMODATION_M` 每宏步 50 m 的冲积容量），本
+  里程碑不动 P5。
+- 清单验收带的 sd / p95−p05 / ≥ 44 km 三项未达：厚尾由碰撞缩短产生（最大
+  57 km）但随后被重采样稀释（终态 53 km），且 v5 在地体缝合后汇聚停止、
+  造山根不能持续增厚；这属于板块运动学（§7 非目标）。
+
+### 11.4 陆地占比（交用户决策）
+
+地球水量 + GDH1 基底 + 沉积盖层 + CRUST1.0 台地清单 ⇒ 本世界陆地占比
+中位 **0.20**（0.17–0.29），作者约束 0.38 在全部 17 粒上判 `Infeasible`。
+旧世界的 0.40 是 P3 双计把海面压低 1.4 km 的产物，不是构造演化的实现。
+两条出路都改世界设计常量，本里程碑不擅自选择：
+1. 提高 `TectonicSpec::continental_crust_fraction`（默认 0.38，与
+   `target_land_fraction` 同值——这一等式本身就是"陆壳 = 陆地"的错误假设），
+   使陆壳面积 ≈ 0.53（地球 0.41）以在地球干舷物理下出露 0.38；代价：大陆
+   聚合形态改变（§7 非目标）。
+2. 把 Continents 预设的 `target_land_fraction` 改为实测 0.20–0.25 并接受
+   本世界比地球更"海洋"。

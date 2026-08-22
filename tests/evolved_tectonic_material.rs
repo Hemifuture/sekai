@@ -12,6 +12,7 @@ fn named_material_sources_and_sinks_close_the_public_budget_equations() {
     let initial = CrustMaterialTotals::new(amount(100.0, 4_000_000.0), amount(200.0, 1_400_000.0));
     let processes = SphericalTectonicMaterialProcesses::new(
         10.0,
+        0.0,
         TectonicMaterialAmount::zero(),
         amount(20.0, 140_000.0),
         amount(10.0, 70_000.0),
@@ -43,6 +44,7 @@ fn named_material_sources_and_sinks_close_the_public_budget_equations() {
 fn unnamed_loss_cannot_be_hidden_in_a_material_budget() {
     let initial = CrustMaterialTotals::new(amount(100.0, 4_000_000.0), amount(200.0, 1_400_000.0));
     let processes = SphericalTectonicMaterialProcesses::new(
+        0.0,
         0.0,
         TectonicMaterialAmount::zero(),
         TectonicMaterialAmount::zero(),

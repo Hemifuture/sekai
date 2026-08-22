@@ -32,15 +32,13 @@ use crate::generators::natural::topology::{
 use crate::world::natural::{
     CrustKind, NaturalSpecError, SphericalOrogenyKind, SphericalPlateRotation,
     SphericalTectonicValidationError, TectonicActivity, TectonicSpec,
-    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_CRUST_AGE_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CRUST1_PLATFORM_THICKNESS_QUANTILES_KM, MAX_CRUST_AGE_MYR,
+    NO_OROGENY_AGE_SENTINEL_MYR,
 };
 use crate::world::spatial::{project_tangent, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::CellId;
 
 const MAXIMUM_SEED_WARP_RAD: f64 = 0.07;
-// Includes thinned passive-margin crust as well as stable continental interiors.
-const CONTINENTAL_THICKNESS_BASE_KM: f64 = 24.0;
-const CONTINENTAL_THICKNESS_SPAN_KM: f64 = 28.0;
 const OCEANIC_THICKNESS_BASE_KM: f64 = 5.0;
 const OCEANIC_THICKNESS_SPAN_KM: f64 = 5.0;
 const INITIAL_OCEANIC_AGE_MIN_MYR: f64 = 8.0;
@@ -437,20 +435,24 @@ fn initial_crust_samples(
         .map(|cell| crust_noise.fbm(cell.centroid, recipe.initial_crust_profile))
         .collect::<Vec<_>>();
     let continental = continental_quantile(surface, &scores, spec.continental_crust_fraction);
+    let thickness_signals = surface
+        .cells()
+        .iter()
+        .map(|cell| thickness_noise.fbm(cell.centroid, recipe.initial_crust_profile))
+        .collect::<Vec<_>>();
+    let platform_thickness_km =
+        platform_thickness_by_rank(surface, &thickness_signals, &continental);
 
     surface
         .cells()
         .iter()
         .enumerate()
         .map(|(index, cell)| {
-            let thickness_signal =
-                normalized_signal(thickness_noise.fbm(cell.centroid, recipe.initial_crust_profile));
+            let thickness_signal = normalized_signal(thickness_signals[index]);
             let age_signal =
                 normalized_signal(age_noise.fbm(cell.centroid, recipe.initial_crust_profile));
             let (kind, thickness_km, age_myr, tectonic_elevation_m) = if continental[index] {
-                let thickness_km = (CONTINENTAL_THICKNESS_BASE_KM
-                    + CONTINENTAL_THICKNESS_SPAN_KM * thickness_signal)
-                    as f32;
+                let thickness_km = platform_thickness_km[index];
                 (
                     CrustKind::Continental,
                     thickness_km,
@@ -485,6 +487,49 @@ fn initial_crust_samples(
             }
         })
         .collect()
+}
+
+/// Gives every continental cell the CRUST1.0 platform thickness at the
+/// area-weighted rank of its coherent thickness signal (cumulative-area cell
+/// midpoints), so the initial inventory reproduces the frozen stable-platform
+/// CDF while the noise still decides where the thicker and thinner platforms
+/// sit.
+fn platform_thickness_by_rank(
+    surface: &SphericalSurfaceSnapshot,
+    signals: &[f64],
+    continental: &[bool],
+) -> Vec<f32> {
+    let mut order = (0..signals.len())
+        .filter(|&index| continental[index])
+        .collect::<Vec<_>>();
+    order.sort_by(|&first, &second| {
+        signals[first]
+            .total_cmp(&signals[second])
+            .then_with(|| first.cmp(&second))
+    });
+    let total_area = order
+        .iter()
+        .map(|&index| surface.cells()[index].area.get())
+        .sum::<f64>();
+    let mut thickness = vec![0.0_f32; signals.len()];
+    let mut cumulative_area = 0.0;
+    for &index in &order {
+        let area = surface.cells()[index].area.get();
+        thickness[index] = platform_thickness_km((cumulative_area + area * 0.5) / total_area);
+        cumulative_area += area;
+    }
+    thickness
+}
+
+/// Interpolates the frozen CRUST1.0 platform quantile table at an area
+/// quantile in `[0, 1]`.
+fn platform_thickness_km(area_quantile: f64) -> f32 {
+    let knots = CRUST1_PLATFORM_THICKNESS_QUANTILES_KM;
+    let position = area_quantile.clamp(0.0, 1.0) * (knots.len() - 1) as f64;
+    let lower = (position.floor() as usize).min(knots.len() - 2);
+    let fraction = position - lower as f64;
+    let (start, end) = (f64::from(knots[lower]), f64::from(knots[lower + 1]));
+    (start + (end - start) * fraction) as f32
 }
 
 fn continental_quantile(
@@ -591,8 +636,9 @@ mod tests {
     use crate::world::natural::{
         CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, TectonicSpec,
         CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-        CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_CRUST_AGE_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
-        OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+        CONTINENTAL_CRUST_MIN_THICKNESS_KM, CRUST1_PLATFORM_THICKNESS_QUANTILES_KM,
+        MAX_CRUST_AGE_MYR, NO_OROGENY_AGE_SENTINEL_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM,
+        OCEANIC_CRUST_MIN_THICKNESS_KM,
     };
     use crate::world::spatial::SphericalNaturalSurface;
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
@@ -644,6 +690,63 @@ mod tests {
             }
         }
         count
+    }
+
+    #[test]
+    fn initial_continental_inventory_reproduces_the_platform_table() {
+        let (surface, topology) = fixture(642);
+        let spec = TectonicSpec::default();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let state =
+            build_initial_state_v5(&surface, &topology, &spec, recipe, &streams(42)).unwrap();
+        let mut samples = state
+            .samples
+            .iter()
+            .filter(|sample| sample.kind == CrustKind::Continental)
+            .map(|sample| {
+                (
+                    f64::from(sample.thickness_km),
+                    surface.cells()[sample.anchor.raw() as usize].area.get(),
+                )
+            })
+            .collect::<Vec<_>>();
+        samples.sort_by(|first, second| first.0.total_cmp(&second.0));
+        let total = samples.iter().map(|sample| sample.1).sum::<f64>();
+        let quantile = |q: f64| {
+            let mut cumulative = 0.0;
+            samples
+                .iter()
+                .find(|&&(_, area)| {
+                    cumulative += area;
+                    cumulative >= q * total
+                })
+                .map_or(f64::NAN, |sample| sample.0)
+        };
+        let table = CRUST1_PLATFORM_THICKNESS_QUANTILES_KM;
+        assert!(
+            (quantile(0.5) - f64::from(table[10])).abs() <= 0.6,
+            "{}",
+            quantile(0.5)
+        );
+        assert!(
+            (quantile(0.05) - f64::from(table[1])).abs() <= 1.0,
+            "{}",
+            quantile(0.05)
+        );
+        assert!(
+            (quantile(0.95) - f64::from(table[19])).abs() <= 1.0,
+            "{}",
+            quantile(0.95)
+        );
+        assert!(samples.first().unwrap().0 >= f64::from(table[0]));
+        assert!(samples.last().unwrap().0 <= f64::from(table[20]));
+        assert!(state
+            .samples
+            .iter()
+            .filter(|sample| sample.kind == CrustKind::Continental)
+            .all(|sample| {
+                sample.material.continental_thickness_km() == Some(sample.thickness_km)
+            }));
     }
 
     #[test]

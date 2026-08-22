@@ -14,8 +14,10 @@ use crate::world::natural::{
     PrimaryReliefSnapshot, PrimaryReliefValidationError, ReliefSpec, ReliefSpecError,
     ReliefValidationError, SphericalReliefSnapshot, SphericalReliefValidationError,
     WaterVolumeSolveError, CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M, CONTINENTAL_CRUST_DENSITY_KG_M3,
-    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    OCEANIC_CRUST_DENSITY_KG_M3, PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V1,
+    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
+    EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M, EARTH_OCEAN_CRUST_MEAN_AGE_MYR, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, OCEANIC_CRUST_DENSITY_KG_M3, OCEANIC_SEDIMENT_DENSITY_KG_M3,
+    OCEAN_WATER_DENSITY_KG_M3, PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V1,
     REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V4, TECTONIC_OFFSET_MAX_M,
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
@@ -105,11 +107,20 @@ impl PrimaryReliefGenerator {
                 / total_area as f32)
                 .clamp(CRUST_BASE_ELEVATION_MIN_M, CRUST_BASE_ELEVATION_MAX_M);
             let base = quantize(base);
-            let accumulated_response = causal_accumulated_response_m(
-                compatibility.tectonic_elevation_m()[index],
-                forcing.uplift_rate_mm_per_year()[index],
-                forcing.subsidence_rate_mm_per_year()[index],
-            );
+            // The V5 compatibility elevation on oceanic crust is the same
+            // plate-cooling depth the Parsons-Sclater base above already
+            // carries; inheriting it would count thermal subsidence twice
+            // (T0 calibration spec §4 L0). Continental crust keeps the
+            // inherited orogenic response.
+            let accumulated_response = if substrate.crust_kind(index) == Some(CrustKind::Oceanic) {
+                0.0
+            } else {
+                causal_accumulated_response_m(
+                    compatibility.tectonic_elevation_m()[index],
+                    forcing.uplift_rate_mm_per_year()[index],
+                    forcing.subsidence_rate_mm_per_year()[index],
+                )
+            };
             let dynamic = quantize(dynamic_tectonic_response_m(
                 accumulated_response,
                 forcing.uplift_rate_mm_per_year()[index],
@@ -232,16 +243,35 @@ pub fn continental_airy_elevation_m(thickness_km: f32, crust_density_kg_m3: f32)
             * 1_000.0
 }
 
-/// Parsons-Sclater empirical ocean depth in metres for age in Myr.
-pub fn parsons_sclater_ocean_depth_m(age_myr: f32) -> f32 {
-    if age_myr <= 70.0 {
-        2_500.0 + 350.0 * age_myr.max(0.0).sqrt()
+/// GDH1 empirical ocean basement depth in metres for age in Myr (Stein &
+/// Stein 1992): half-space cooling to 20 Myr, then the thinner, hotter plate
+/// asymptote that replaced the Parsons-Sclater 1977 law whose old-crust floor
+/// was 300-500 m too deep (T0 calibration spec §4 R4).
+pub fn gdh1_ocean_depth_m(age_myr: f32) -> f32 {
+    let age_myr = age_myr.max(0.0);
+    if age_myr <= 20.0 {
+        2_600.0 + 365.0 * age_myr.sqrt()
     } else {
-        6_400.0 - 3_200.0 * (-age_myr / 62.8).exp()
+        5_651.0 - 2_473.0 * (-0.0278 * age_myr).exp()
     }
 }
 
-/// Oceanic thermal depth plus density/thickness buoyancy relative to 7 km basalt.
+/// Seafloor rise above the GDH1 basement from the Airy-compensated pelagic
+/// sediment blanket of an oceanic column of the given age.
+///
+/// The blanket grows linearly with age at Earth's mean oceanic sediment
+/// thickness over Earth's mean crustal age (CRUST1.0 oceanic types and Seton
+/// et al. 2020) and is backstripped with the Sclater & Christie 1980 density
+/// ratio `(rho_mantle - rho_sediment) / (rho_mantle - rho_water)`.
+pub fn oceanic_sediment_seafloor_rise_m(age_myr: f32) -> f32 {
+    let thickness_m =
+        EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M * age_myr.max(0.0) / EARTH_OCEAN_CRUST_MEAN_AGE_MYR;
+    thickness_m * (MANTLE_DENSITY_KG_M3 - OCEANIC_SEDIMENT_DENSITY_KG_M3)
+        / (MANTLE_DENSITY_KG_M3 - OCEAN_WATER_DENSITY_KG_M3)
+}
+
+/// Oceanic thermal basement depth, density/thickness buoyancy relative to the
+/// 7 km basalt reference, and the compensated sediment blanket.
 pub fn oceanic_isostatic_elevation_m(
     age_myr: f32,
     thickness_km: f32,
@@ -251,7 +281,7 @@ pub fn oceanic_isostatic_elevation_m(
         - (MANTLE_DENSITY_KG_M3 - OCEANIC_CRUST_DENSITY_KG_M3) * OCEANIC_REFERENCE_THICKNESS_KM)
         / MANTLE_DENSITY_KG_M3
         * 1_000.0;
-    -parsons_sclater_ocean_depth_m(age_myr) + buoyancy
+    -gdh1_ocean_depth_m(age_myr) + buoyancy + oceanic_sediment_seafloor_rise_m(age_myr)
 }
 
 /// Converts long-lived relief and present V5 rates into the bounded P3 response.

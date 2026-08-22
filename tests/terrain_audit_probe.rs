@@ -6,6 +6,9 @@
 //! Outputs land-composition statistics to stdout and evidence renders to
 //! `target/natural-quality/audit/`.
 
+#[allow(dead_code)]
+#[path = "support/natural_quality.rs"]
+mod natural_quality;
 mod support;
 
 use std::collections::VecDeque;
@@ -13,25 +16,30 @@ use std::f64::consts::PI;
 use std::path::PathBuf;
 
 use image::{Rgb, RgbImage};
+use natural_quality::QUALITY_SEEDS;
 use sekai::app::default_spherical_space_spec;
 use sekai::engine::{BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    continental_airy_elevation_m, dynamic_tectonic_response_m, parsons_sclater_ocean_depth_m,
+    continental_airy_elevation_m, dynamic_tectonic_response_m, gdh1_ocean_depth_m,
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
     GeologicSpecArtifact, HydroErosionSpecArtifact, ImplicitStreamPowerSolver, ReliefSpecArtifact,
     RulePackSetArtifact, SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
     WorldFormationSpecArtifact,
 };
-use sekai::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
+use sekai::generators::spatial::{
+    ProfileSurfaceBuilder, SphericalSpaceArtifact, SphericalSurfaceArtifact,
+};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    solve_physical_sea_level, CrustKind, ElevationField, GeologicSpec, LandOceanField, ReliefSpec,
-    SurfaceWaterKind, TectonicActivity, TectonicSpec, WorldFormationSpec,
-    CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3, EARTH_WATER_REFERENCE_RADIUS_M,
-    SURFACE_FORMATION_HORIZON_YEARS,
+    hypsometric_mean, hypsometric_quantile, hypsometric_share_below, hypsometric_total_area,
+    solve_physical_sea_level, sort_hypsometric_samples, CrustKind, ElevationField, GeologicSpec,
+    LandOceanField, NaturalQualityProfile, ReliefSpec, SurfaceWaterKind, TectonicActivity,
+    TectonicSpec, WorldFormationSpec, CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3,
+    EARTH_WATER_REFERENCE_RADIUS_M, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
-use sekai::world::{CellId, RootSeed};
+use sekai::world::{CellId, Meters, RootSeed};
+use support::global_circulation::build_primary_relief;
 use support::surface_formation::{published_formation, surface_formation_fixture};
 
 /// The root seed of the world currently on the user's screen.
@@ -736,7 +744,8 @@ const CLOSURE_THICKENING_TRIALS_KM: [f32; 4] = [0.0, 2.0, 4.0, 6.0];
 const CLOSURE_TOLERANCE_M: f32 = 0.01;
 const CLOSURE_MAX_ITERATIONS: usize = 64;
 
-/// Weighted samples of one field over a cell subset, sorted by value.
+/// Weighted samples of one field over a cell subset, sorted by value; every
+/// statistic is the production hypsometry helper the P5 gate uses.
 struct Weighted(Vec<(f32, f64)>);
 
 impl Weighted {
@@ -748,20 +757,16 @@ impl Weighted {
             .filter(|&(index, _)| include(index))
             .map(|(_, (&value, &weight))| (value, weight))
             .collect();
-        samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+        sort_hypsometric_samples(&mut samples);
         Self(samples)
     }
 
     fn total(&self) -> f64 {
-        self.0.iter().map(|sample| sample.1).sum()
+        hypsometric_total_area(&self.0)
     }
 
     fn mean(&self) -> f64 {
-        self.0
-            .iter()
-            .map(|&(value, weight)| f64::from(value) * weight)
-            .sum::<f64>()
-            / self.total()
+        hypsometric_mean(&self.0)
     }
 
     fn std_dev(&self) -> f64 {
@@ -776,15 +781,7 @@ impl Weighted {
     }
 
     fn quantile(&self, q: f64) -> f32 {
-        let target = q * self.total();
-        let mut cumulative = 0.0;
-        for &(value, weight) in &self.0 {
-            cumulative += weight;
-            if cumulative >= target {
-                return value;
-            }
-        }
-        self.0.last().map_or(f32::NAN, |sample| sample.0)
+        hypsometric_quantile(&self.0, q)
     }
 
     fn quantiles(&self) -> [f32; 5] {
@@ -792,12 +789,7 @@ impl Weighted {
     }
 
     fn share_below(&self, ceiling: f32) -> f64 {
-        self.0
-            .iter()
-            .filter(|sample| sample.0 < ceiling)
-            .map(|sample| sample.1)
-            .sum::<f64>()
-            / self.total()
+        hypsometric_share_below(&self.0, ceiling)
     }
 
     fn share_between(&self, low: f32, high: f32) -> f64 {
@@ -1210,12 +1202,12 @@ fn probe_t0_hypsometric_attribution() {
     });
     print_quantiles("oceanic crust age Myr (oceanic-kind cells)", &ocean_age);
     println!(
-        "parsons_sclater_depth_m: at area-weighted mean age {:.1} Myr={:.0} | {}",
+        "gdh1_depth_m: at area-weighted mean age {:.1} Myr={:.0} | {}",
         ocean_age.mean(),
-        parsons_sclater_ocean_depth_m(ocean_age.mean() as f32),
+        gdh1_ocean_depth_m(ocean_age.mean() as f32),
         OCEAN_AGE_TABLE_MYR
             .iter()
-            .map(|&age| format!("{age:.0} Myr={:.0}", parsons_sclater_ocean_depth_m(age)))
+            .map(|&age| format!("{age:.0} Myr={:.0}", gdh1_ocean_depth_m(age)))
             .collect::<Vec<_>>()
             .join(" "),
     );
@@ -1343,4 +1335,113 @@ fn probe_t0_hypsometric_attribution() {
         0.0,
         terrain.sea_level_m(),
     );
+}
+
+// ---------------------------------------------------------------------------
+// T0 corpus hypsometry (calibration spec §8.6 "measure, then pin"): the P3
+// land hypsometry and the V5 continental inventory of every quality seed.
+// ---------------------------------------------------------------------------
+
+/// Thickness ceilings whose area shares bound the inventory tails (spec §4 L2).
+const INVENTORY_THIN_CEILING_KM: f32 = 28.0;
+const INVENTORY_THICK_FLOOR_KM: f32 = 44.0;
+
+fn corpus_summary(label: &str, values: &[f64]) {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    println!(
+        "{label}: min={:.3} median={:.3} max={:.3}",
+        sorted[0],
+        sorted[sorted.len() / 2],
+        sorted[sorted.len() - 1],
+    );
+}
+
+#[test]
+#[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
+fn probe_t0_corpus_hypsometry() {
+    let bundle = ProfileSurfaceBuilder::build(
+        NaturalQualityProfile::Draft,
+        Meters::new(6_371_000.0).unwrap(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let surface = bundle.authoritative_surface();
+    let n = surface.cells().len();
+    let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
+    let total_area: f64 = areas.iter().sum();
+    println!(
+        "== t0 corpus hypsometry (draft, {} seeds, {n} cells, P3 product) ==",
+        QUALITY_SEEDS.len()
+    );
+    println!(
+        "seed | sea_m | land | cont_area | p05 p25 p50 p75 p95 | mean | <100m | ocean_p50 | inv_mean inv_sd p95-p05 >=44 <28"
+    );
+    let mut columns: Vec<Vec<f64>> = vec![Vec::new(); 15];
+    for seed in QUALITY_SEEDS {
+        let (evolved, substrate, relief) = build_primary_relief(&bundle, seed);
+        let sea = relief.sea_level_m();
+        let land = relief.land_ocean().raw_values();
+        let relief_m: Vec<f32> = relief.elevation_m().iter().map(|&e| e - sea).collect();
+        let depth_m: Vec<f32> = relief_m.iter().map(|&r| -r).collect();
+        let land_relief = Weighted::collect(&relief_m, &areas, |i| land[i] == 1);
+        let ocean_depth = Weighted::collect(&depth_m, &areas, |i| land[i] == 0);
+        let material = evolved.material();
+        let thickness: Vec<f32> = (0..n)
+            .map(|i| material.compatibility_thickness_km(i).unwrap_or(f32::NAN))
+            .collect();
+        let inventory =
+            Weighted::collect(&thickness, material.continental_reference_area_m2(), |i| {
+                material.compatibility_kind(i) == Some(CrustKind::Continental)
+            });
+        let [p05, p25, p50, p75, p95] = land_relief.quantiles();
+        let row = [
+            f64::from(sea),
+            f64::from(relief.physical_land_fraction()),
+            inventory.total() / total_area,
+            f64::from(p05),
+            f64::from(p25),
+            f64::from(p50),
+            f64::from(p75),
+            f64::from(p95),
+            land_relief.mean(),
+            land_relief.share_below(LOWLAND_CEILINGS_M[0]),
+            f64::from(ocean_depth.quantile(0.5)),
+            inventory.mean(),
+            inventory.std_dev(),
+            f64::from(inventory.quantile(0.95) - inventory.quantile(0.05)),
+            1.0 - inventory.share_below(INVENTORY_THICK_FLOOR_KM),
+        ];
+        let thin_share = inventory.share_below(INVENTORY_THIN_CEILING_KM);
+        println!(
+            "{seed:>4} | {:+7.1} | {:.4} | {:.4} | {:.0} {:.0} {:.0} {:.0} {:.0} | {:.0} | {:.4} | {:.0} | {:.2} {:.2} {:.1} {:.3} {:.3}",
+            row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13], row[14], thin_share,
+        );
+        for (column, value) in columns.iter_mut().zip(row) {
+            column.push(value);
+        }
+        let _ = substrate;
+    }
+    for (label, column) in [
+        "sea_level_m",
+        "land_fraction",
+        "continental_area_fraction",
+        "land_p05_m",
+        "land_p25_m",
+        "land_p50_m",
+        "land_p75_m",
+        "land_p95_m",
+        "land_mean_m",
+        "land_share_below_100m",
+        "ocean_depth_p50_m",
+        "inventory_mean_km",
+        "inventory_sd_km",
+        "inventory_p95_minus_p05_km",
+        "inventory_share_ge_44km",
+    ]
+    .iter()
+    .zip(&columns)
+    {
+        corpus_summary(label, column);
+    }
 }

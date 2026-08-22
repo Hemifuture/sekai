@@ -5,9 +5,10 @@ use sekai::engine::{
     derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
 };
 use sekai::generators::natural::{
-    ClimateWorkDomainBuilder, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
-    GlobalCirculationGenerator, GlobalClimateForcingBuilder, NaturalSurfaceFormationArtifact,
-    PrimaryReliefGenerator, SurfaceFormationInputs,
+    evaluate_surface_formation_corpus_hypsometry, ClimateWorkDomainBuilder,
+    EvolvedTectonicGenerator, GeologicSubstrateGenerator, GlobalCirculationGenerator,
+    GlobalClimateForcingBuilder, NaturalSurfaceFormationArtifact, PrimaryReliefGenerator,
+    SurfaceFormationInputs,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -20,6 +21,14 @@ use sekai::world::{Meters, RootSeed};
 use serde::Serialize;
 
 const RADIUS_M: f64 = 6_371_000.0;
+/// Envelope rows the frozen T0 calibration spec records as open (§11.3 R4):
+/// their corpus medians are written to the evidence but not asserted. Both
+/// are the lowest land: the P3 product meets them (p05 60 m, share 0.087) and
+/// the first 100 kyr of P5 deposition raise the coastal cells by ~40 m.
+const OPEN_ENVELOPE_ROWS: [&str; 2] = [
+    "corpus-median-land-area-share-below-100m",
+    "corpus-median-land-relief-p05-m",
+];
 const SEEDS: [u64; 17] = [
     42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
 ];
@@ -39,6 +48,7 @@ struct P5Evidence {
     authoritative_fingerprint: String,
     seeds: Vec<SeedEvidence>,
     corpus_metrics: Vec<CorpusMetricEvidence>,
+    corpus_hypsometry: NaturalQualityReport,
 }
 
 /// The old two-pass modifier, recorded as the explicit negative baseline.
@@ -184,6 +194,35 @@ fn write_surface_formation_evidence() {
     assert!(corpus_metrics
         .iter()
         .all(|metric| metric.passing_seed_count == SEEDS.len()));
+    let corpus_hypsometry = evaluate_surface_formation_corpus_hypsometry(
+        &worlds
+            .iter()
+            .map(|world| world.artifact.quality_report().clone())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    for metric in corpus_hypsometry.metrics() {
+        eprintln!(
+            "P5 corpus hypsometry {} value={:?} bounds={:?} status={:?}",
+            metric.id().name(),
+            metric.value(),
+            metric.bounds(),
+            metric.status()
+        );
+    }
+    let unexpected = corpus_hypsometry
+        .metrics()
+        .iter()
+        .filter(|metric| {
+            metric.status() != QualityMetricStatus::Pass
+                && !OPEN_ENVELOPE_ROWS.contains(&metric.id().name())
+        })
+        .map(|metric| metric.id().name())
+        .collect::<Vec<_>>();
+    assert!(
+        unexpected.is_empty(),
+        "P5 corpus hypsometry rows outside the recorded open set failed their frozen envelope: {unexpected:?}"
+    );
 
     let evidence = P5Evidence {
         schema_version: 1,
@@ -214,6 +253,7 @@ fn write_surface_formation_evidence() {
         authoritative_fingerprint: hex(surface.fingerprint()),
         seeds,
         corpus_metrics,
+        corpus_hypsometry,
     };
 
     let json = serde_json::to_vec_pretty(&evidence).unwrap();

@@ -24,7 +24,9 @@ use crate::world::spatial::SphericalSurfaceSnapshot;
 // exhausting continental crust while repeated divergence can still reach the
 // public minimum-thickness contract.
 const CONTINENTAL_RIFT_ZONE_WIDTH_M: f64 = 400_000.0;
-const MAXIMUM_STEP_STRETCH_FACTOR: f64 = 1.2;
+/// Bound on the pure-shear factor of one step, shared by rift extension and its
+/// inverse, collision shortening.
+pub(super) const MAXIMUM_STEP_STRETCH_FACTOR: f64 = 1.2;
 
 pub(in crate::generators::natural::spherical_tectonics) fn apply_divergent_extension(
     surface: &SphericalSurfaceSnapshot,

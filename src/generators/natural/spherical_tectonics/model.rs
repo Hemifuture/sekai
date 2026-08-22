@@ -219,6 +219,37 @@ impl MaterialColumn {
         Ok((extended, gain))
     }
 
+    /// Applies bounded pure-shear shortening to continental material only: the
+    /// inverse of [`Self::extend_continental_pure_shear`]. Volume is
+    /// bit-preserved, the column thickens up to the public maximum, and the
+    /// returned value is the exact reference area lost by the column.
+    pub(super) fn shorten_continental_pure_shear(
+        self,
+        requested_beta: f64,
+    ) -> Result<(Self, f64), MaterialColumnError> {
+        if !requested_beta.is_finite() || requested_beta < 1.0 {
+            return Err(MaterialColumnError::InvalidStretchFactor {
+                found: requested_beta,
+            });
+        }
+        if self.continental_reference_area_m2 == 0.0 {
+            return Ok((self, 0.0));
+        }
+        let minimum_area =
+            self.continental_volume_m3 / (f64::from(CONTINENTAL_CRUST_MAX_THICKNESS_KM) * 1_000.0);
+        let shortened_area = (self.continental_reference_area_m2 / requested_beta)
+            .max(minimum_area)
+            .min(self.continental_reference_area_m2);
+        let loss = self.continental_reference_area_m2 - shortened_area;
+        let shortened = Self::new(
+            shortened_area,
+            self.continental_volume_m3,
+            self.oceanic_reference_area_m2,
+            self.oceanic_volume_m3,
+        )?;
+        Ok((shortened, loss))
+    }
+
     #[cfg(test)]
     pub(super) fn bits(self) -> [u64; 4] {
         [
@@ -449,6 +480,7 @@ impl TectonicState {
 pub(super) struct EvolutionMaterialLedger {
     initial_control: CrustMaterialTotals,
     rift_extension_continental_area_gain: CompensatedSum,
+    collision_shortening_continental_area_loss: CompensatedSum,
     continental_consumed: MaterialAccumulator,
     oceanic_subducted: MaterialAccumulator,
     oceanic_spreading_created: MaterialAccumulator,
@@ -458,11 +490,18 @@ pub(super) struct EvolutionMaterialLedger {
 
 impl EvolutionMaterialLedger {
     const MAXIMUM_RIFT_EXTENSION_AREA_FRACTION: f64 = 0.15 - 1.0e-12;
+    /// Collision shortening may retire at most the same share of the initial
+    /// continental area that rifting may add, so the two pure-shear processes
+    /// stay symmetric and the inventory area cannot collapse (Wise 1974
+    /// constant-area freeboard argument).
+    const MAXIMUM_COLLISION_SHORTENING_AREA_FRACTION: f64 =
+        Self::MAXIMUM_RIFT_EXTENSION_AREA_FRACTION;
 
     pub(super) fn capture_initial(state: &TectonicState) -> Result<Self, MaterialColumnError> {
         Ok(Self {
             initial_control: state.material_totals()?,
             rift_extension_continental_area_gain: CompensatedSum::default(),
+            collision_shortening_continental_area_loss: CompensatedSum::default(),
             continental_consumed: MaterialAccumulator::default(),
             oceanic_subducted: MaterialAccumulator::default(),
             oceanic_spreading_created: MaterialAccumulator::default(),
@@ -484,6 +523,17 @@ impl EvolutionMaterialLedger {
         let maximum = self.initial_control.continental().reference_area_m2()
             * Self::MAXIMUM_RIFT_EXTENSION_AREA_FRACTION;
         (maximum - self.rift_extension_continental_area_gain.total()).max(0.0)
+    }
+
+    pub(super) fn record_collision_shortening_area_loss(&mut self, area_m2: f64) {
+        debug_assert!(area_m2.is_finite() && area_m2 >= 0.0);
+        self.collision_shortening_continental_area_loss.add(area_m2);
+    }
+
+    pub(super) fn remaining_collision_shortening_area_m2(self) -> f64 {
+        let maximum = self.initial_control.continental().reference_area_m2()
+            * Self::MAXIMUM_COLLISION_SHORTENING_AREA_FRACTION;
+        (maximum - self.collision_shortening_continental_area_loss.total()).max(0.0)
     }
 
     pub(super) fn record_oceanic_subduction(&mut self, amount: TectonicMaterialAmount) {
@@ -522,6 +572,7 @@ impl EvolutionMaterialLedger {
     ) -> Result<SphericalTectonicMaterialProcesses, MaterialColumnError> {
         SphericalTectonicMaterialProcesses::new(
             self.rift_extension_continental_area_gain.total(),
+            self.collision_shortening_continental_area_loss.total(),
             self.continental_consumed.amount()?,
             self.oceanic_subducted.amount()?,
             self.oceanic_spreading_created.amount()?,
@@ -736,6 +787,29 @@ mod tests {
     };
     use crate::world::spatial::UnitVector3;
     use crate::world::CellId;
+
+    #[test]
+    fn pure_shear_shortening_thickens_volume_preserving_up_to_the_public_maximum() {
+        let column = MaterialColumn::pure(CrustKind::Continental, 1.0, 40.0).unwrap();
+        let (shortened, loss) = column.shorten_continental_pure_shear(1.2).unwrap();
+        assert_eq!(
+            shortened.continental_volume_m3(),
+            column.continental_volume_m3()
+        );
+        assert!((shortened.continental_reference_area_m2() - 1.0 / 1.2).abs() <= 1.0e-12);
+        assert!((loss - (1.0 - 1.0 / 1.2)).abs() <= 1.0e-12);
+        assert!((shortened.continental_thickness_km().unwrap() - 48.0).abs() <= 1.0e-3);
+
+        let (capped, capped_loss) = column.shorten_continental_pure_shear(10.0).unwrap();
+        assert_eq!(capped.continental_thickness_km(), Some(80.0));
+        assert!((capped_loss - (1.0 - 0.5)).abs() <= 1.0e-12);
+        assert!(column.shorten_continental_pure_shear(0.9).is_err());
+
+        let oceanic = MaterialColumn::pure(CrustKind::Oceanic, 1.0, 7.0).unwrap();
+        let (untouched, no_loss) = oceanic.shorten_continental_pure_shear(1.2).unwrap();
+        assert_eq!(untouched.bits(), oceanic.bits());
+        assert_eq!(no_loss, 0.0);
+    }
 
     #[test]
     fn pure_and_mixed_columns_derive_material_without_independent_thickness() {

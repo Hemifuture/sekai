@@ -144,8 +144,8 @@ pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use primary_relief::{
     causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
-    oceanic_isostatic_elevation_m, parsons_sclater_ocean_depth_m, PrimaryReliefGenerationError,
-    PrimaryReliefGenerator,
+    gdh1_ocean_depth_m, oceanic_isostatic_elevation_m, oceanic_sediment_seafloor_rise_m,
+    PrimaryReliefGenerationError, PrimaryReliefGenerator,
 };
 pub use primary_relief_stage::{
     primary_relief_graph, GeologicSubstrateArtifact, GeologicSubstrateStage,
@@ -157,8 +157,8 @@ pub use quality::{
     evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
     evaluate_profile_surface_quality, evaluate_spherical_foundation_quality,
-    evaluate_surface_formation_quality, evaluate_surface_formation_quality_cancellable,
-    PrimaryReliefQualitySample, QualityBuildError,
+    evaluate_surface_formation_corpus_hypsometry, evaluate_surface_formation_quality,
+    evaluate_surface_formation_quality_cancellable, PrimaryReliefQualitySample, QualityBuildError,
 };
 pub use relief::{ReliefGenerationError, ReliefGenerator};
 pub use relief_spec::ReliefSpecArtifact;
