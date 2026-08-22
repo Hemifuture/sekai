@@ -8,7 +8,16 @@ use crate::world::spatial::{
     ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
     SurfaceGeometryKind, SurfaceRef,
 };
-use crate::world::CellId;
+use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
+
+const MAX_GLOBAL_CIRCULATION_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
+
+fn deserialize_global_circulation_scalars<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_GLOBAL_CIRCULATION_CELLS>(deserializer)
+}
 
 /// The first strict schema for the reconstructable climate work domain.
 pub const CLIMATE_WORK_DOMAIN_SCHEMA_V1: u16 = 1;
@@ -36,13 +45,113 @@ pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
 /// integrator comparison recorded in
 /// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
 pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
+/// U.S. Standard Atmosphere 1976 tropospheric environmental lapse rate.
+///
+/// P4 applies this only to the overlap-weighted emergent-land elevation in
+/// its idealized lower-boundary forcing; it is not a resolved moist lapse
+/// rate or a claim about every generated atmosphere.
+pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
+/// Broadband open-ocean albedo used by the idealized P4 lower boundary.
+///
+/// Payne (1972), DOI `10.1175/1520-0469(1972)029<0959:AOTSS>2.0.CO;2`,
+/// measured `0.061 +/- 0.005` under heavily overcast skies. P4 rounds this
+/// to `0.06` because it has no solar-angle-dependent ocean BRDF.
+pub const P4_OPEN_OCEAN_SURFACE_ALBEDO: f64 = 0.06;
+/// Snow-free land increment above the P4 open-ocean albedo.
+///
+/// The resulting full-land value is `0.22`. It is the frozen V1 aggregate
+/// prior retained by the 17-seed calibration, not a universal vegetation
+/// observation. Operational land-surface schemes commonly use roughly
+/// `0.20` for crops and grasslands (Masson et al. 2003, DOI
+/// `10.1175/1520-0442(2003)016<1261:AGDOLS>2.0.CO;2`).
+pub const P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT: f64 = 0.16;
+/// Maximum highland brightening above the snow-free P4 land prior.
+///
+/// Full brightened land therefore reaches `0.57`, within the MODIS
+/// snow-covered ecosystem climatology reported by Moody et al. (2007), DOI
+/// `10.1016/j.rse.2007.07.002`. This is a static highland proxy because P4
+/// does not resolve snow mass, aging, impurities, clouds, or solar angle.
+pub const P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT: f64 = 0.35;
+/// Start of the frozen V1 geometric highland-brightening ramp in metres.
+///
+/// This authored terrain proxy is retained to preserve the measured P4
+/// calibration corpus. It is not a physical snowline or an evidence gate;
+/// snow accumulation and melt remain outside the P4 capability boundary.
+pub const P4_HIGHLAND_ALBEDO_RAMP_ONSET_M: f64 = 1_500.0;
+/// Elevation span of the frozen V1 geometric highland-brightening ramp.
+///
+/// Together with `P4_HIGHLAND_ALBEDO_RAMP_ONSET_M`, it reaches full
+/// brightening at 5 km. The limitations documented on the onset apply here.
+pub const P4_HIGHLAND_ALBEDO_RAMP_SPAN_M: f64 = 3_500.0;
+/// IAU 2015 Resolution B3 nominal total solar irradiance at 1 au.
+pub const EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2: f64 = 1_361.0;
+/// CERES EBAF Ed4 global-mean incoming shortwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 340.0;
+/// CERES EBAF Ed4 global-mean reflected shortwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 99.1;
+/// CERES EBAF Ed4 global-mean outgoing longwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 240.0;
+/// CERES EBAF Ed4 surface-up longwave flux (Kato et al. 2018).
+pub const CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 398.3;
+/// Earth planetary albedo derived from the two CERES TOA shortwave fluxes.
+pub const EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN: f64 =
+    CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2
+        / CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2;
+/// Area-weighted mean P4 surface albedo measured over the frozen 17-seed corpus.
+///
+/// The production probe and derivation are recorded in §2.2 of
+/// `2026-08-23-p4-physical-budget-correction-design.md`.
+pub const EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN: f64 = 0.094_949_501_628_588_96;
+/// Unresolved atmospheric shortwave reflectance calibrated to CERES albedo.
+///
+/// Derived as `(planetary - surface) / (1 - surface)` from the two constants
+/// above; it is not fitted to a generated temperature or precipitation field.
+pub const EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE: f64 = (EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN
+    - EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN)
+    / (1.0 - EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN);
+/// Stefan–Boltzmann constant from the 2018 CODATA/SI exact-constant relation.
+pub const STEFAN_BOLTZMANN_CONSTANT_W_M2_K4: f64 = 5.670_374_419e-8;
+/// Gray greenhouse temperature offset derived from CERES surface-up LW and ASR.
+///
+/// `34.19751176932721 K = (398.3/sigma)^0.25 - (240.9/sigma)^0.25` using
+/// Loeb et al. (2018), Kato et al. (2018), and the CODATA constant above.
+pub const EARTH_GRAY_GREENHOUSE_OFFSET_K: f64 = 34.197_511_769_327_21;
+/// Structural serialization ceiling for nonnegative radiative flux fields.
+///
+/// Twice the IAU nominal irradiance leaves room for transient OLR while
+/// rejecting corrupt infinities and implausible payloads; it is not a quality
+/// target or an Earth-climate tuning coefficient.
+pub const GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2: f64 =
+    2.0 * EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2;
 /// Locked dense-owner memory budget for the High C2 product.
 pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
+
+/// Combines the unresolved atmosphere and resolved surface without duplicating
+/// the CERES calibration formula in generators, tests, quality, or UI code.
+pub fn planetary_albedo_from_surface(surface_albedo: f64) -> f64 {
+    EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE
+        + (1.0 - EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE) * surface_albedo.clamp(0.0, 1.0)
+}
+
+/// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar
+/// geometry fraction and resolved surface albedo.
+pub fn absorbed_shortwave_w_m2(daily_mean_insolation_fraction: f64, surface_albedo: f64) -> f64 {
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
+        * daily_mean_insolation_fraction.max(0.0)
+        * (1.0 - planetary_albedo_from_surface(surface_albedo))
+}
+
+/// Gray-body equilibrium surface temperature implied by absorbed shortwave.
+pub fn gray_equilibrium_surface_temperature_c(absorbed_shortwave_w_m2: f64) -> f64 {
+    (absorbed_shortwave_w_m2.max(0.0) / STEFAN_BOLTZMANN_CONSTANT_W_M2_K4).powf(0.25)
+        + EARTH_GRAY_GREENHOUSE_OFFSET_K
+        - 273.15
+}
 
 pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64) {
     // Conservative simultaneous dense-owner upper bound:
     //
-    // states (7): generation state/before/previous-year plus split advanced
+    // states (7): generation state/before/previous-cycle plus split advanced
     // and RK3 stage-two/stage-three/result during assignment;
     // tendencies (5): retained full diagnostic plus the maximum nested
     // tendency construction allowance used by full/fast evaluation;
@@ -56,26 +165,27 @@ pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64)
 
 const fn global_circulation_dense_profile_inventory(
     profile: ClimateModelProfile,
-) -> (u64, u64, u64, u64, u64) {
+) -> (u64, u64, u64, u64, u64, u64) {
     match profile {
-        ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 13, 13),
-        // C2 work has three vector fields plus eleven scalar fields; depth is
-        // derived from the projected height anomaly and owns no work Vec.
-        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 20, 24),
+        ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 15, 15, 1),
+        // C2 work has three vector fields plus thirteen monthly scalar fields;
+        // thermocline depth is derived at publication. The static output is
+        // surface albedo.
+        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 22, 26, 1),
     }
 }
 
 pub(crate) fn global_circulation_tendency_cell_bytes(profile: ClimateModelProfile) -> u64 {
-    let (active_layers, humidity_fields, reservoir_fields, _, _) =
+    let (active_layers, humidity_fields, reservoir_fields, _, _, _) =
         global_circulation_dense_profile_inventory(profile);
     let f32_bytes = std::mem::size_of::<f32>() as u64;
     let f64_bytes = std::mem::size_of::<f64>() as u64;
     let layer_cell_bytes = 2 * f32_bytes + std::mem::size_of::<[f32; 3]>() as u64;
     active_layers * layer_cell_bytes
         + (humidity_fields + reservoir_fields + 2) * f32_bytes
-        // `LayeredClimateTendency::external_moisture_tendency_s_inv` retains
-        // the quantized physical source/sink contribution per cell in f64.
-        + f64_bytes
+        // The retained external moisture and radiative ledgers preserve the
+        // exact extensive contributions per cell in f64.
+        + 2 * f64_bytes
 }
 
 /// Returns the mechanically-derived conservative peak dense-owner inventory
@@ -97,8 +207,14 @@ pub fn expected_global_circulation_dense_state_bytes(
     let f64_bytes = std::mem::size_of::<f64>() as u64;
     let vector_f32_bytes = std::mem::size_of::<[f32; 3]>() as u64;
     let vector_f64_bytes = std::mem::size_of::<[f64; 3]>() as u64;
-    let (active_layers, humidity_fields, reservoir_fields, work_components, output_components) =
-        global_circulation_dense_profile_inventory(profile);
+    let (
+        active_layers,
+        humidity_fields,
+        reservoir_fields,
+        work_components,
+        monthly_output_components,
+        static_output_components,
+    ) = global_circulation_dense_profile_inventory(profile);
     let (state_owners, tendency_owners, derivative_owners, vector_temps) =
         global_circulation_owner_inventory();
 
@@ -141,8 +257,11 @@ pub fn expected_global_circulation_dense_state_bytes(
         .checked_add(workspace_bytes.checked_mul(2)?)?;
 
     let output_bytes = output_cells
-        .checked_mul(output_components)?
-        .checked_mul(months)?
+        .checked_mul(
+            monthly_output_components
+                .checked_mul(months)?
+                .checked_add(static_output_components)?,
+        )?
         .checked_mul(f32_bytes)?;
     let remap_scratch = climate_cells
         .checked_mul(std::mem::size_of::<[f64; 2]>() as u64 + f64_bytes)?
@@ -1413,6 +1532,9 @@ pub struct GlobalCirculationFields {
     surface_ocean_current_m_s: MonthlyVector3Field,
     monthly_air_temperature_c: MonthlyScalarField,
     monthly_sea_surface_temperature_c: MonthlyScalarField,
+    surface_albedo: Vec<f32>,
+    monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+    monthly_outgoing_longwave_w_m2: MonthlyScalarField,
     monthly_thermocline_temperature_c: Option<MonthlyScalarField>,
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
@@ -1434,6 +1556,10 @@ struct GlobalCirculationFieldsWire {
     surface_ocean_current_m_s: MonthlyVector3Field,
     monthly_air_temperature_c: MonthlyScalarField,
     monthly_sea_surface_temperature_c: MonthlyScalarField,
+    #[serde(deserialize_with = "deserialize_global_circulation_scalars")]
+    surface_albedo: Vec<f32>,
+    monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+    monthly_outgoing_longwave_w_m2: MonthlyScalarField,
     monthly_thermocline_temperature_c: Option<MonthlyScalarField>,
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
@@ -1453,6 +1579,9 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
@@ -1466,6 +1595,9 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: None,
             monthly_thermocline_depth_m: None,
             monthly_specific_humidity,
@@ -1487,6 +1619,9 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
@@ -1501,6 +1636,9 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: None,
             monthly_thermocline_depth_m: None,
             monthly_specific_humidity,
@@ -1528,6 +1666,9 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_thermocline_temperature_c: MonthlyScalarField,
         monthly_thermocline_depth_m: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
@@ -1546,6 +1687,9 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: Some(monthly_thermocline_temperature_c),
             monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
             monthly_specific_humidity,
@@ -1571,6 +1715,9 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_thermocline_temperature_c: MonthlyScalarField,
         monthly_thermocline_depth_m: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
@@ -1590,6 +1737,9 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: Some(monthly_thermocline_temperature_c),
             monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
             monthly_specific_humidity,
@@ -1700,6 +1850,27 @@ impl GlobalCirculationFields {
             &self.monthly_sea_surface_temperature_c,
             -5.0,
             60.0,
+            cancellation,
+        )?;
+        validate_scalar_values(
+            "surface_albedo",
+            &self.surface_albedo,
+            0.0,
+            1.0,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_absorbed_shortwave_w_m2",
+            &self.monthly_absorbed_shortwave_w_m2,
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_outgoing_longwave_w_m2",
+            &self.monthly_outgoing_longwave_w_m2,
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
             cancellation,
         )?;
         validate_monthly_scalar(
@@ -1822,6 +1993,15 @@ impl GlobalCirculationFields {
                 "monthly_sea_surface_temperature_c",
                 self.monthly_sea_surface_temperature_c.len(),
             ),
+            ("surface_albedo", self.surface_albedo.len()),
+            (
+                "monthly_absorbed_shortwave_w_m2",
+                self.monthly_absorbed_shortwave_w_m2.len(),
+            ),
+            (
+                "monthly_outgoing_longwave_w_m2",
+                self.monthly_outgoing_longwave_w_m2.len(),
+            ),
             (
                 "monthly_specific_humidity",
                 self.monthly_specific_humidity.len(),
@@ -1907,7 +2087,7 @@ impl GlobalCirculationFields {
     ) -> Result<[u8; 32], GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-circulation-state.v1\0");
+        hasher.update(b"sekai.global-circulation-state.v2\0");
         hash_monthly_vectors(
             &mut hasher,
             self.near_surface_wind_m_s.values(),
@@ -1924,9 +2104,12 @@ impl GlobalCirculationFields {
             self.surface_ocean_current_m_s.values(),
             cancellation,
         )?;
+        hash_scalar_values(&mut hasher, &self.surface_albedo, cancellation)?;
         for field in [
             &self.monthly_air_temperature_c,
             &self.monthly_sea_surface_temperature_c,
+            &self.monthly_absorbed_shortwave_w_m2,
+            &self.monthly_outgoing_longwave_w_m2,
             &self.monthly_specific_humidity,
             &self.monthly_precipitation_mm_day,
             &self.monthly_orographic_precipitation_mm_day,
@@ -1969,6 +2152,18 @@ impl GlobalCirculationFields {
 
     pub const fn monthly_sea_surface_temperature_c(&self) -> &MonthlyScalarField {
         &self.monthly_sea_surface_temperature_c
+    }
+
+    pub fn surface_albedo(&self) -> &[f32] {
+        &self.surface_albedo
+    }
+
+    pub const fn monthly_absorbed_shortwave_w_m2(&self) -> &MonthlyScalarField {
+        &self.monthly_absorbed_shortwave_w_m2
+    }
+
+    pub const fn monthly_outgoing_longwave_w_m2(&self) -> &MonthlyScalarField {
+        &self.monthly_outgoing_longwave_w_m2
     }
 
     pub const fn monthly_thermocline_temperature_c(&self) -> Option<&MonthlyScalarField> {
@@ -2025,6 +2220,9 @@ impl<'de> Deserialize<'de> for GlobalCirculationFields {
             surface_ocean_current_m_s: wire.surface_ocean_current_m_s,
             monthly_air_temperature_c: wire.monthly_air_temperature_c,
             monthly_sea_surface_temperature_c: wire.monthly_sea_surface_temperature_c,
+            surface_albedo: wire.surface_albedo,
+            monthly_absorbed_shortwave_w_m2: wire.monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2: wire.monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: wire.monthly_thermocline_temperature_c,
             monthly_thermocline_depth_m: wire.monthly_thermocline_depth_m,
             monthly_specific_humidity: wire.monthly_specific_humidity,
@@ -2056,6 +2254,31 @@ fn check_global_circulation_cancelled(
     } else {
         Ok(())
     }
+}
+
+fn validate_scalar_values(
+    field: &'static str,
+    values: &[f32],
+    minimum: f32,
+    maximum: f32,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (cell, value) in values.iter().copied().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        if !value.is_finite() || value < minimum || value > maximum {
+            return Err(GlobalCirculationValidationError::ScalarOutOfRange {
+                field,
+                cell,
+                month: 0,
+                found: value,
+                minimum,
+                maximum,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_monthly_scalar(
@@ -2199,6 +2422,20 @@ fn validate_orographic_precipitation_identity(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn hash_scalar_values(
+    hasher: &mut blake3::Hasher,
+    values: &[f32],
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (index, value) in values.iter().enumerate() {
+        if index % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        hasher.update(&value.to_bits().to_le_bytes());
     }
     Ok(())
 }

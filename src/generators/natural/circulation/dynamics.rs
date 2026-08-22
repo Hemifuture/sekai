@@ -698,6 +698,7 @@ mod tests {
             vec![0.0; grid.cell_count()],
             vec![0.3; grid.cell_count()],
             vec![1.0; grid.cell_count()],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
             temperature.clone(),
             temperature,
             vec![[0.005; CLIMATE_MONTH_COUNT]; grid.cell_count()],

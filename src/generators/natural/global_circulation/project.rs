@@ -30,6 +30,38 @@ impl ProjectedMonthlyScalar {
     }
 }
 
+/// Projects one time-invariant intensive scalar by bounded overlap averaging.
+pub(crate) fn project_intensive_scalar_cancellable(
+    domain: &ClimateWorkDomainSnapshot,
+    climate_values: &[f32],
+    cancellation: &BuildCancellation,
+) -> Result<Vec<f32>, ClimateProjectionError> {
+    check_projection_cancelled(Some(cancellation))?;
+    let expected = domain.climate_surface().cells().len();
+    if climate_values.len() != expected {
+        return Err(ClimateProjectionError::LengthMismatch {
+            field: "intensive_scalar",
+            found: climate_values.len(),
+            expected,
+        });
+    }
+    for (cell, value) in climate_values.iter().copied().enumerate() {
+        poll_projection_cancelled(cell, Some(cancellation))?;
+        if !value.is_finite() {
+            return Err(ClimateProjectionError::InvalidScalar {
+                field: "intensive_scalar",
+                cell,
+                month: 0,
+                found: value,
+            });
+        }
+    }
+    remap_intensive_f32_cancellable(domain.climate_to_source(), climate_values, &|| {
+        cancellation.is_cancelled()
+    })
+    .map_err(map_remap_error)
+}
+
 /// Projects a climate-grid intensive climatology by bounded overlap averaging.
 pub fn project_monthly_intensive_scalar(
     domain: &ClimateWorkDomainSnapshot,

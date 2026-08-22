@@ -6,17 +6,18 @@ use crate::generators::natural::circulation::{
 };
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
-    ClimateSpec, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
+    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c, ClimateSpec,
+    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
     FormationTerrainFields, LandOceanField, LandOceanKind, PlanetForcing, PrimaryReliefSnapshot,
-    PrimaryReliefValidationError, CLIMATE_MONTH_COUNT, PRIMARY_RELIEF_SCHEMA_V1,
+    PrimaryReliefValidationError, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
+    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, PRIMARY_RELIEF_SCHEMA_V1,
     WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
-/// Environmental lapse rate used only over the overlap-weighted emergent land column.
-pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
 const MONTH_PHASE_OFFSET: f64 = 0.5;
-const BASE_SEA_LEVEL_TEMPERATURE_C: f64 = 15.0;
 
 /// Exact P3-derived boundary and equilibrium forcing on the climate work grid.
 #[derive(Debug, Clone, PartialEq)]
@@ -190,6 +191,22 @@ impl GlobalClimateForcing {
                 field: "ocean_depth_m",
             });
         }
+        for cell in 0..cell_count {
+            poll_optional_cancelled(cell, cancellation)?;
+            for month in 0..CLIMATE_MONTH_COUNT {
+                let expected = absorbed_shortwave_w_m2(
+                    f64::from(self.monthly_insolation_fraction[cell][month]),
+                    f64::from(self.planet_forcing.surface_albedo()[cell]),
+                ) as f32;
+                if expected.to_bits()
+                    != self.planet_forcing.monthly_absorbed_shortwave_w_m2()[cell][month].to_bits()
+                {
+                    return Err(GlobalClimateForcingError::PayloadIdentityMismatch {
+                        field: "monthly_absorbed_shortwave_w_m2",
+                    });
+                }
+            }
+        }
         if self.fingerprint != self.calculate_fingerprint_impl(cancellation)? {
             return Err(GlobalClimateForcingError::FingerprintMismatch);
         }
@@ -203,7 +220,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v1\0");
+        hasher.update(b"sekai.global-climate-forcing.v2\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -411,6 +428,7 @@ impl GlobalClimateForcingBuilder {
         let mut equilibrium_specific_humidity = Vec::with_capacity(grid.cell_count());
         let mut surface_albedo = Vec::with_capacity(grid.cell_count());
         let mut surface_moisture_availability = Vec::with_capacity(grid.cell_count());
+        let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(grid.cell_count());
         for (index, cell) in grid.cells().iter().enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -418,8 +436,15 @@ impl GlobalClimateForcingBuilder {
             let latitude = cell.center_unit()[2].asin();
             let land = f64::from(land_fraction[index]);
             let orography = f64::from(relative_elevation_m[index].max(0.0)) * land;
-            let snow_prior = ((orography - 1_500.0) / 3_500.0).clamp(0.0, 1.0);
-            surface_albedo.push((0.06 + 0.16 * land + 0.35 * snow_prior * land) as f32);
+            let snow_prior = ((orography - P4_HIGHLAND_ALBEDO_RAMP_ONSET_M)
+                / P4_HIGHLAND_ALBEDO_RAMP_SPAN_M)
+                .clamp(0.0, 1.0);
+            surface_albedo.push(
+                (P4_OPEN_OCEAN_SURFACE_ALBEDO
+                    + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT * land
+                    + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land)
+                    as f32,
+            );
             let moisture = (1.0 - 0.72 * land + 0.12 * land * snow_prior).clamp(0.0, 1.0);
             surface_moisture_availability.push(moisture as f32);
 
@@ -427,19 +452,22 @@ impl GlobalClimateForcingBuilder {
             let mut surface_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut air_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut humidity = [0.0_f32; CLIMATE_MONTH_COUNT];
+            let mut absorbed_shortwave_months = [0.0_f32; CLIMATE_MONTH_COUNT];
             for month in 0..CLIMATE_MONTH_COUNT {
                 let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
                     / CLIMATE_MONTH_COUNT as f64;
                 let declination = axial_tilt_rad * (-phase.cos());
-                let daily = daily_mean_insolation(latitude, declination);
-                let normalized = (daily / 0.25).clamp(0.0, 2.0);
-                insolation[month] = normalized as f32;
-                let radiative =
-                    BASE_SEA_LEVEL_TEMPERATURE_C + temperature_offset_c + 32.0 * (normalized - 1.0)
-                        - 8.0 * land * (1.0 - normalized).max(0.0);
+                insolation[month] = daily_mean_insolation(latitude, declination) as f32;
+                let absorbed_shortwave = absorbed_shortwave_w_m2(
+                    f64::from(insolation[month]),
+                    f64::from(surface_albedo[index]),
+                );
+                absorbed_shortwave_months[month] = absorbed_shortwave as f32;
+                let radiative = gray_equilibrium_surface_temperature_c(absorbed_shortwave)
+                    + temperature_offset_c;
                 let surface_c = (radiative - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
                     .clamp(-90.0, 65.0);
-                let air_c = (surface_c - 1.5 - 0.5 * land).clamp(-100.0, 65.0);
+                let air_c = surface_c.clamp(-100.0, 65.0);
                 let saturation = (0.0038 * (0.07 * air_c).exp()).clamp(0.000_01, 0.08);
                 surface_temperature[month] = surface_c as f32;
                 air_temperature[month] = air_c as f32;
@@ -449,6 +477,7 @@ impl GlobalClimateForcingBuilder {
             equilibrium_surface_temperature_c.push(surface_temperature);
             equilibrium_air_temperature_c.push(air_temperature);
             equilibrium_specific_humidity.push(humidity);
+            monthly_absorbed_shortwave_w_m2.push(absorbed_shortwave_months);
         }
 
         let planet_forcing = PlanetForcing::new_cancellable_with_ocean_depth(
@@ -458,6 +487,7 @@ impl GlobalClimateForcingBuilder {
             ocean_depth_m.clone(),
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,

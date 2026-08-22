@@ -13,6 +13,14 @@ use sekai::world::natural::{
 };
 
 fn uniform_forcing(grid: &CubedSphereGrid, temperature_c: f32) -> PlanetForcing {
+    uniform_forcing_with_absorbed_shortwave(grid, temperature_c, 240.0)
+}
+
+fn uniform_forcing_with_absorbed_shortwave(
+    grid: &CubedSphereGrid,
+    temperature_c: f32,
+    absorbed_shortwave_w_m2: f32,
+) -> PlanetForcing {
     let count = grid.cell_count();
     PlanetForcing::new(
         *grid.fingerprint(),
@@ -20,6 +28,7 @@ fn uniform_forcing(grid: &CubedSphereGrid, temperature_c: f32) -> PlanetForcing 
         vec![0.0; count],
         vec![0.0; count],
         vec![1.0; count],
+        vec![[absorbed_shortwave_w_m2; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[0.008; 12]; count],
@@ -68,6 +77,7 @@ fn sharp_humidity_forcing(grid: &CubedSphereGrid) -> PlanetForcing {
         vec![0.0; grid.cell_count()],
         vec![0.0; grid.cell_count()],
         vec![1.0; grid.cell_count()],
+        vec![[240.0; 12]; grid.cell_count()],
         vec![[15.0; 12]; grid.cell_count()],
         vec![[15.0; 12]; grid.cell_count()],
         humidity,
@@ -124,6 +134,89 @@ fn all_integrators_preserve_the_exact_uniform_c1_equilibrium() {
     assert_eq!(imex.state(), &state);
     assert_eq!(split.state(), &state);
     assert_eq!(imex.diagnostics().final_linear_relative_residual(), 0.0);
+}
+
+#[test]
+fn retained_radiative_power_is_the_same_power_that_advances_temperature() {
+    let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+    let profile = ClimateModelProfile::C1SingleLayerV1;
+    let forcing = uniform_forcing(&grid, 18.0);
+    let mut initial = state(&grid, profile, &forcing);
+    let layout = ClimateLayerLayout::for_profile(profile);
+    for layer in layout
+        .layers()
+        .iter()
+        .filter(|layer| layer.dynamically_active())
+    {
+        for temperature in initial.temperature_c_mut(layer.role()).unwrap() {
+            *temperature -= 2.0;
+        }
+    }
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            7_200.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+
+    for cell in 0..grid.cell_count() {
+        let temperature_power_w_m2 = layout
+            .layers()
+            .iter()
+            .filter(|layer| layer.dynamically_active())
+            .map(|layer| {
+                layer.density_kg_m3()
+                    * layer.reference_thickness_m()
+                    * layer.heat_capacity_j_kg_k()
+                    * f64::from(tendency.temperature_tendency_k_s(layer.role()).unwrap()[cell])
+            })
+            .sum::<f64>();
+        let declared_power_w_m2 = tendency.external_radiative_heat_flux_w_m2()[cell];
+        let scale = declared_power_w_m2.abs().max(1.0);
+        assert!(
+            (temperature_power_w_m2 - declared_power_w_m2).abs() / scale <= 1.0e-5,
+            "cell {cell}: temperature power {temperature_power_w_m2}, declared radiative power {declared_power_w_m2}"
+        );
+    }
+}
+
+#[test]
+fn zero_absorbed_shortwave_prevents_positive_radiative_heating_in_the_equation() {
+    let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+    let profile = ClimateModelProfile::C1SingleLayerV1;
+    let forcing = uniform_forcing_with_absorbed_shortwave(&grid, 18.0, 0.0);
+    let mut initial = state(&grid, profile, &forcing);
+    for role in initial.active_roles().to_vec() {
+        for temperature in initial.temperature_c_mut(role).unwrap() {
+            *temperature -= 2.0;
+        }
+    }
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            7_200.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+
+    assert!(tendency
+        .external_radiative_heat_flux_w_m2()
+        .iter()
+        .all(|power| *power <= 0.0));
+    for role in initial.active_roles() {
+        assert!(tendency
+            .temperature_tendency_k_s(*role)
+            .unwrap()
+            .iter()
+            .all(|value| *value == 0.0));
+    }
 }
 
 #[test]

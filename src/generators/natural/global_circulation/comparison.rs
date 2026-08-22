@@ -101,6 +101,7 @@ pub fn run_closed_split_annual_mass_fixture(
         vec![0.0; count],
         vec![0.0; count],
         vec![1.0; count],
+        vec![[240.0; CLIMATE_MONTH_COUNT]; count],
         vec![[15.0; CLIMATE_MONTH_COUNT]; count],
         vec![[15.0; CLIMATE_MONTH_COUNT]; count],
         vec![[0.008; CLIMATE_MONTH_COUNT]; count],

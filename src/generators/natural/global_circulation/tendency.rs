@@ -68,7 +68,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v2\0");
+    hasher.update(b"sekai.global-circulation-equations.v3\0");
     hasher.update(&layout.fingerprint());
     for value in [
         EARTH_ROTATION_RATE_RAD_S,
@@ -138,6 +138,8 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         b"annual-mean-ape-eady-column-reynolds-stress-zero-torque-v5".as_slice(),
         b"paired-f32-exchange-projection-v2".as_slice(),
         b"depth-mean-boussinesq-steric-v1".as_slice(),
+        b"resolved-temperature-pressure-gradient-v1".as_slice(),
+        b"asr-limited-positive-radiative-heating-f32-projection-v1".as_slice(),
         b"signed-external-extensive-ledger-v2".as_slice(),
         b"fieldwise-area-weighted-formation-residual-v2".as_slice(),
     ] {
@@ -476,6 +478,7 @@ pub struct LayeredClimateTendency {
     upper_specific_humidity_tendency_s_inv: Option<Vec<f32>>,
     precipitation_rate_mm_s: Vec<f32>,
     orographic_precipitation_rate_mm_s: Vec<f32>,
+    external_radiative_heat_flux_w_m2: Vec<f64>,
     deep_ocean_temperature_tendency_k_s: Option<Vec<f32>>,
     budget: LayeredTendencyBudget,
 }
@@ -501,6 +504,7 @@ impl LayeredClimateTendency {
                 .map(|_| vec![0.0; count]),
             precipitation_rate_mm_s: vec![0.0; count],
             orographic_precipitation_rate_mm_s: vec![0.0; count],
+            external_radiative_heat_flux_w_m2: vec![0.0; count],
             deep_ocean_temperature_tendency_k_s: state
                 .deep_ocean_temperature_c()
                 .map(|_| vec![0.0; count]),
@@ -547,6 +551,10 @@ impl LayeredClimateTendency {
 
     pub fn orographic_precipitation_rate_mm_s(&self) -> &[f32] {
         &self.orographic_precipitation_rate_mm_s
+    }
+
+    pub fn external_radiative_heat_flux_w_m2(&self) -> &[f64] {
+        &self.external_radiative_heat_flux_w_m2
     }
 
     pub fn deep_ocean_temperature_tendency_k_s(&self) -> Option<&[f32]> {
@@ -961,53 +969,13 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 EARTH_ROTATION_RATE_RAD_S,
                 cancellation,
             )?;
-            let target = match role {
-                ClimateLayerRole::LowerAtmosphere => forcing.equilibrium_air_temperature_c(),
-                ClimateLayerRole::UpperAtmosphere => forcing.equilibrium_air_temperature_c(),
-                ClimateLayerRole::OceanMixedLayer | ClimateLayerRole::OceanThermocline => {
-                    forcing.equilibrium_surface_temperature_c()
-                }
-                ClimateLayerRole::DeepOceanReservoir => unreachable!(),
-            };
-            for (cell, scratch) in workspace.scalar_scratch.iter_mut().enumerate() {
-                if cell % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                let raw = target[cell][month]
-                    - if *role == ClimateLayerRole::UpperAtmosphere {
-                        UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C
-                    } else if *role == ClimateLayerRole::OceanThermocline {
-                        THERMOCLINE_EQUILIBRIUM_OFFSET_C
-                    } else {
-                        0.0
-                    };
-                *scratch = match role {
-                    ClimateLayerRole::OceanMixedLayer => {
-                        raw.clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
-                    }
-                    ClimateLayerRole::OceanThermocline => {
-                        raw.clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
-                    }
-                    _ => raw,
-                };
-            }
-            let pressure_temperature = if *role == ClimateLayerRole::OceanMixedLayer {
-                temperature
-            } else {
-                &workspace.scalar_scratch
-            };
             let thermal_gradient = operators.gradient_with_permeability_cancellable(
-                pressure_temperature,
+                temperature,
                 permeability,
                 cancellation,
             )?;
-            let (
-                reduced_gravity,
-                drag_s_inv,
-                height_relax_s,
-                thermal_relax_s,
-                thermal_gradient_acceleration,
-            ) = role_constants(state.profile(), *role);
+            let (reduced_gravity, drag_s_inv, height_relax_s, _, thermal_gradient_acceleration) =
+                role_constants(state.profile(), *role);
             horizontal_velocity_diffusion(
                 self.grid,
                 velocity,
@@ -1048,10 +1016,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 }
             }
             let mut external_amount_rate_m3_s = 0.0_f64;
-            let mut external_heat_rate_w = 0.0_f64;
-            let heat_capacity = heat_capacity_per_area(state, *role);
             {
-                let layer = tendency.layer_mut(*role).expect("active tendency role");
+                let layer = tendency
+                    .active_layers
+                    .iter_mut()
+                    .find(|layer| layer.role == *role)
+                    .expect("active tendency role");
                 for cell in 0..self.grid.cell_count() {
                     if cell % 256 == 0 {
                         check_cancelled(cancellation)?;
@@ -1095,17 +1065,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     }
                     acceleration = tangentize(acceleration, radial);
                     layer.velocity_tendency_m_s2[cell] = acceleration.map(|value| value as f32);
-                    let target_temperature = f64::from(workspace.scalar_scratch[cell]);
-                    let radiative =
-                        (target_temperature - f64::from(temperature[cell])) / thermal_relax_s;
-                    let before_temperature = layer.temperature_tendency_k_s[cell];
-                    layer.temperature_tendency_k_s[cell] += radiative as f32;
-                    let retained_external_temperature =
-                        f64::from(layer.temperature_tendency_k_s[cell])
-                            - f64::from(before_temperature);
-                    external_heat_rate_w += self.grid.cells()[cell].area_m2()
-                        * heat_capacity
-                        * retained_external_temperature;
                 }
             }
             if is_atmosphere_role(*role) {
@@ -1113,8 +1072,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
             } else {
                 tendency.budget.external_ocean_amount_rate_m3_s += external_amount_rate_m3_s;
             }
-            tendency.budget.external_heat_rate_w += external_heat_rate_w;
         }
+
+        self.apply_external_radiation(state, forcing, month, &mut tendency, cancellation)?;
 
         if include_explicit_transport_and_moisture
             && state.profile() == ClimateModelProfile::C2LayeredV1
@@ -1230,6 +1190,142 @@ impl<'grid> LayeredTendencySystem<'grid> {
         )?;
         self.validate_tendency(&tendency, cancellation)?;
         Ok(tendency)
+    }
+
+    /// Applies the gray-radiation source before internal heat exchanges.
+    /// Positive heating is limited by the same per-cell ASR later used to
+    /// publish OLR; negative radiative cooling remains unconstrained.
+    fn apply_external_radiation(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        month: usize,
+        tendency: &mut LayeredClimateTendency,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), LayeredTendencyError> {
+        let roles = state.active_roles();
+        debug_assert!(roles.len() <= 4);
+        for cell in 0..self.grid.cell_count() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let absorbed_shortwave =
+                f64::from(forcing.monthly_absorbed_shortwave_w_m2()[cell][month]);
+            let mut baselines = [0.0_f32; 4];
+            let mut radiative_tendencies = [0.0_f64; 4];
+            let mut heat_capacities = [0.0_f64; 4];
+            let mut positive_power = 0.0_f64;
+            let mut negative_power = 0.0_f64;
+
+            for (role_index, role) in roles.iter().copied().enumerate() {
+                let baseline = tendency
+                    .layer(role)
+                    .expect("active tendency role")
+                    .temperature_tendency_k_s[cell];
+                let target_temperature = radiative_target_temperature_c(forcing, role, cell, month);
+                let thermal_relax_s = role_constants(state.profile(), role).3;
+                let requested = (target_temperature
+                    - f64::from(state.temperature_c(role).unwrap()[cell]))
+                    / thermal_relax_s;
+                let candidate = baseline + requested as f32;
+                let retained = f64::from(candidate) - f64::from(baseline);
+                let heat_capacity = heat_capacity_per_area(state, role);
+                let power = heat_capacity * retained;
+                baselines[role_index] = baseline;
+                radiative_tendencies[role_index] = retained;
+                heat_capacities[role_index] = heat_capacity;
+                if power >= 0.0 {
+                    positive_power += power;
+                } else {
+                    negative_power += power;
+                }
+            }
+
+            let raw_net_power = positive_power + negative_power;
+            let positive_scale = if raw_net_power > absorbed_shortwave && positive_power > 0.0 {
+                // Preserve cooling and proportionally limit only heating.
+                ((absorbed_shortwave - negative_power) / positive_power).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+
+            let mut retained_power = 0.0_f64;
+            for (role_index, role) in roles.iter().copied().enumerate() {
+                let retained = radiative_tendencies[role_index];
+                let adjusted = if retained > 0.0 {
+                    retained * positive_scale
+                } else {
+                    retained
+                };
+                let target = &mut tendency
+                    .layer_mut(role)
+                    .expect("active tendency role")
+                    .temperature_tendency_k_s[cell];
+                *target = baselines[role_index] + adjusted as f32;
+                let actual_retained = f64::from(*target) - f64::from(baselines[role_index]);
+                retained_power += heat_capacities[role_index] * actual_retained;
+            }
+            // Scaling and composing a retained tendency each introduce at
+            // most one f32 rounding. Two deterministic ULP passes therefore
+            // project any boundary overshoot back into the representable
+            // feasible set without clipping the published flux afterward.
+            for _ in 0..2 {
+                if retained_power <= absorbed_shortwave {
+                    break;
+                }
+                for (role_index, role) in roles.iter().copied().enumerate() {
+                    if retained_power <= absorbed_shortwave {
+                        break;
+                    }
+                    let target = &mut tendency
+                        .layer_mut(role)
+                        .expect("active tendency role")
+                        .temperature_tendency_k_s[cell];
+                    if *target <= baselines[role_index] {
+                        continue;
+                    }
+                    let required_power_reduction = retained_power - absorbed_shortwave;
+                    let exact_target =
+                        f64::from(*target) - required_power_reduction / heat_capacities[role_index];
+                    let mut projected = exact_target as f32;
+                    if f64::from(projected) > exact_target {
+                        projected = next_f32_down(projected);
+                    }
+                    if projected >= *target {
+                        projected = next_f32_down(*target);
+                    }
+                    *target = projected.max(baselines[role_index]);
+                }
+                retained_power = roles
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(role_index, role)| {
+                        heat_capacities[role_index]
+                            * (f64::from(
+                                tendency
+                                    .layer(role)
+                                    .expect("active tendency role")
+                                    .temperature_tendency_k_s[cell],
+                            ) - f64::from(baselines[role_index]))
+                    })
+                    .sum();
+            }
+            if retained_power > absorbed_shortwave {
+                return Err(
+                    LayeredTendencyError::RadiativeHeatingExceedsAbsorbedShortwave {
+                        cell,
+                        month,
+                        retained_w_m2: retained_power,
+                        absorbed_w_m2: absorbed_shortwave,
+                    },
+                );
+            }
+            tendency.external_radiative_heat_flux_w_m2[cell] = retained_power;
+            tendency.budget.external_heat_rate_w +=
+                self.grid.cells()[cell].area_m2() * retained_power;
+        }
+        Ok(())
     }
 
     /// Evaluates the fast shallow-water/Coriolis operator plus conservative
@@ -2214,30 +2310,58 @@ fn is_atmosphere_role(role: ClimateLayerRole) -> bool {
     )
 }
 
-fn density(role: ClimateLayerRole) -> f64 {
-    match role {
-        ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere => 1.225,
-        ClimateLayerRole::OceanMixedLayer
-        | ClimateLayerRole::OceanThermocline
-        | ClimateLayerRole::DeepOceanReservoir => 1_025.0,
-    }
-}
-
-fn heat_capacity(role: ClimateLayerRole) -> f64 {
-    match role {
-        ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere => 1_004.0,
-        ClimateLayerRole::OceanMixedLayer
-        | ClimateLayerRole::OceanThermocline
-        | ClimateLayerRole::DeepOceanReservoir => 3_990.0,
-    }
+fn radiative_target_temperature_c(
+    forcing: &PlanetForcing,
+    role: ClimateLayerRole,
+    cell: usize,
+    month: usize,
+) -> f64 {
+    let raw = match role {
+        ClimateLayerRole::LowerAtmosphere => forcing.equilibrium_air_temperature_c()[cell][month],
+        ClimateLayerRole::UpperAtmosphere => {
+            forcing.equilibrium_air_temperature_c()[cell][month]
+                - UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C
+        }
+        ClimateLayerRole::OceanMixedLayer => {
+            forcing.equilibrium_surface_temperature_c()[cell][month]
+        }
+        ClimateLayerRole::OceanThermocline => {
+            forcing.equilibrium_surface_temperature_c()[cell][month]
+                - THERMOCLINE_EQUILIBRIUM_OFFSET_C
+        }
+        ClimateLayerRole::DeepOceanReservoir => unreachable!(),
+    };
+    f64::from(match role {
+        ClimateLayerRole::OceanMixedLayer => {
+            raw.clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
+        }
+        ClimateLayerRole::OceanThermocline => {
+            raw.clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
+        }
+        _ => raw,
+    })
 }
 
 fn mass_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {
-    density(role) * f64::from(state.reference_thickness_m(role).expect("active role"))
+    let layout = ClimateLayerLayout::for_profile(state.profile());
+    let layer = layout
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == role)
+        .expect("active role belongs to the profile layout");
+    layer.density_kg_m3() * f64::from(state.reference_thickness_m(role).expect("active role"))
 }
 
 fn heat_capacity_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {
-    mass_per_area(state, role) * heat_capacity(role)
+    let layout = ClimateLayerLayout::for_profile(state.profile());
+    let layer = layout
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == role)
+        .expect("active role belongs to the profile layout");
+    layer.density_kg_m3()
+        * f64::from(state.reference_thickness_m(role).expect("active role"))
+        * layer.heat_capacity_j_kg_k()
 }
 
 fn tangentize(vector: [f64; 3], radial: [f64; 3]) -> [f64; 3] {
@@ -2297,6 +2421,15 @@ pub enum LayeredTendencyError {
     NonFiniteTendency { role: ClimateLayerRole },
     #[error("moisture produced a non-finite tendency")]
     NonFiniteMoistureTendency,
+    #[error(
+        "radiative heating at [{cell}][{month}] retained {retained_w_m2} W/m2 above absorbed shortwave {absorbed_w_m2} W/m2"
+    )]
+    RadiativeHeatingExceedsAbsorbedShortwave {
+        cell: usize,
+        month: usize,
+        retained_w_m2: f64,
+        absorbed_w_m2: f64,
+    },
 }
 
 impl From<CirculationOperatorError> for LayeredTendencyError {
@@ -2312,7 +2445,7 @@ impl From<CirculationOperatorError> for LayeredTendencyError {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_balanced_pair_to_f32, apply_baroclinic_reynolds_stress_closure, density,
+        add_balanced_pair_to_f32, apply_baroclinic_reynolds_stress_closure,
         diagnose_axisymmetric_circulation, dot, horizontal_velocity_diffusion, next_f32_down,
         role_constants, tangentize, LayeredClimateTendency, LayeredTendencySystem,
     };
@@ -2425,6 +2558,7 @@ mod tests {
             vec![0.0; count],
             vec![0.0; count],
             vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; count],
             vec![[0.008; CLIMATE_MONTH_COUNT]; count],
@@ -2567,6 +2701,7 @@ mod tests {
             vec![0.0; count],
             vec![0.0; count],
             vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
             equilibrium.clone(),
             equilibrium,
             vec![[0.008; CLIMATE_MONTH_COUNT]; count],
@@ -2590,8 +2725,13 @@ mod tests {
             ClimateLayerRole::UpperAtmosphere,
         ] {
             let acceleration = tendency.velocity_tendency_m_s2(role).unwrap();
+            let layer = layout
+                .layers()
+                .iter()
+                .find(|layer| layer.role() == role)
+                .unwrap();
             let layer_mass_per_area =
-                density(role) * f64::from(state.reference_thickness_m(role).unwrap());
+                layer.density_kg_m3() * f64::from(state.reference_thickness_m(role).unwrap());
             let mut signed_torque = 0.0_f64;
             let mut absolute_torque = 0.0_f64;
             let mut tropical = (0.0_f64, 0_u32);
@@ -2636,6 +2776,7 @@ mod tests {
             vec![0.0; grid.cell_count()],
             vec![0.0; grid.cell_count()],
             vec![1.0; grid.cell_count()],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
             vec![[15.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
             vec![[15.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
             vec![[0.01; CLIMATE_MONTH_COUNT]; grid.cell_count()],

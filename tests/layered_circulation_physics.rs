@@ -18,11 +18,57 @@ fn forcing(grid: &CubedSphereGrid) -> PlanetForcing {
         vec![0.0; count],
         vec![0.1; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[18.0; 12]; count],
         vec![[0.008; 12]; count],
     )
     .unwrap()
+}
+
+#[test]
+fn radiative_target_gradient_does_not_bypass_resolved_temperature_pressure() {
+    let grid = CubedSphereGrid::new(3, 6_371_000.0).unwrap();
+    let count = grid.cell_count();
+    let target = grid
+        .cells()
+        .iter()
+        .map(|cell| [15.0 + 40.0 * cell.center_unit()[0] as f32; 12])
+        .collect::<Vec<_>>();
+    let forcing = PlanetForcing::new(
+        *grid.fingerprint(),
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.1; count],
+        vec![1.0; count],
+        vec![[240.0; 12]; count],
+        target.clone(),
+        target,
+        vec![[0.008; 12]; count],
+    )
+    .unwrap();
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
+    let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+    for role in state.active_roles().to_vec() {
+        state.temperature_c_mut(role).unwrap().fill(15.0);
+    }
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &state,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            7_200.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+
+    assert!(tendency
+        .velocity_tendency_m_s2(ClimateLayerRole::LowerAtmosphere)
+        .unwrap()
+        .iter()
+        .flatten()
+        .all(|value| *value == 0.0));
 }
 
 #[test]
@@ -115,6 +161,7 @@ fn final_c2_tendency_retains_mass_paired_vertical_moisture_exchange() {
         vec![0.0; count],
         vec![0.0; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[0.001; 12]; count],
@@ -328,6 +375,7 @@ fn fractional_coast_form_drag_lives_in_the_shared_momentum_tendency() {
             vec![land_fraction; count],
             vec![0.1; count],
             vec![1.0; count],
+            vec![[240.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[0.008; 12]; count],
@@ -404,6 +452,7 @@ fn physical_bathymetry_controls_shared_thermocline_bottom_drag() {
             vec![ocean_depth_m; count],
             vec![0.1; count],
             vec![1.0; count],
+            vec![[240.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[0.008; 12]; count],
@@ -477,6 +526,7 @@ fn warm_mixed_layer_steric_pressure_accelerates_toward_warm_water() {
         vec![0.0; count],
         vec![0.1; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[0.008; 12]; count],
@@ -550,6 +600,7 @@ fn two_layer_baroclinic_pressure_drives_low_level_return_and_upper_outflow() {
         vec![0.0; count],
         vec![0.1; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         air_temperature,
         vec![[15.0; 12]; count],
         vec![[0.008; 12]; count],

@@ -9,8 +9,18 @@ mod state;
 mod tendency;
 
 use crate::world::natural::{
-    ClimateModelProfile, CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    ClimateModelProfile, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2, CLIMATE_MONTH_COUNT,
+    EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
+    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_GRAY_GREENHOUSE_OFFSET_K,
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
+    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, STEFAN_BOLTZMANN_CONSTANT_W_M2_K4,
 };
+
+pub use crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M;
 
 pub use comparison::{
     annual_precipitation_total_bias, compare_climate_states,
@@ -24,10 +34,7 @@ pub use comparison::{
     LayerMassConservationDiagnostic, ProductionCandidateSelection,
     CLOSED_ANNUAL_LAYER_MASS_DRIFT_MAX, SELECTED_PRODUCTION_INTEGRATOR,
 };
-pub use forcing::{
-    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-};
+pub use forcing::{GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError};
 pub use generation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalCirculationPhase,
 };
@@ -52,9 +59,37 @@ pub use tendency::{
 /// Canonical identity of the locked shared equations and formation procedure.
 pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v2\0");
+    hasher.update(b"sekai.global-circulation-equations.v3\0");
     hasher.update(&tendency::layered_equation_model_fingerprint(profile));
     hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());
     hasher.update(&GLOBAL_CIRCULATION_MACRO_STEP_SECONDS.to_le_bytes());
+    for value in [
+        CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+        P4_OPEN_OCEAN_SURFACE_ALBEDO,
+        P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
+        P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
+        P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+        P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+        EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+        CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
+        CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2,
+        EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+        EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
+        EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE,
+        STEFAN_BOLTZMANN_CONSTANT_W_M2_K4,
+        EARTH_GRAY_GREENHOUSE_OFFSET_K,
+    ] {
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    for semantic_id in [
+        b"toa-gray-radiation-ledger.v1".as_slice(),
+        b"annual-mean-climatology-initial-state.v1".as_slice(),
+        b"surface-albedo-asr-olr-fields.v1".as_slice(),
+    ] {
+        hasher.update(&(semantic_id.len() as u32).to_le_bytes());
+        hasher.update(semantic_id);
+    }
     *hasher.finalize().as_bytes()
 }

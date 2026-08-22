@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use super::project::{
-    project_monthly_extensive_rate_cancellable, project_monthly_intensive_scalar_cancellable,
-    project_monthly_tangent_vectors_cancellable,
+    project_intensive_scalar_cancellable, project_monthly_extensive_rate_cancellable,
+    project_monthly_intensive_scalar_cancellable, project_monthly_tangent_vectors_cancellable,
 };
 use super::{
     ClimateIntegratorError, ClimateProjectionError, GlobalClimateForcing, LayeredClimateState,
@@ -158,9 +158,13 @@ impl GlobalCirculationGenerator {
         let fast_step_seconds = stable_fast_step_seconds(&grid);
         let integrator = SplitExplicitRk3Integrator::new(&grid, fast_step_seconds)?;
         let planet = forcing.planet_forcing();
-        let mut state =
-            LayeredClimateState::from_forcing_cancellable(&grid, &layout, planet, 0, cancellation)
-                .map_err(map_state_error)?;
+        let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(
+            &grid,
+            &layout,
+            planet,
+            cancellation,
+        )
+        .map_err(map_state_error)?;
         check_cancelled(cancellation)?;
         let mut previous_cycle = state
             .clone_cancellable(cancellation)
@@ -220,7 +224,7 @@ impl GlobalCirculationGenerator {
                     GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                     cancellation,
                 )?;
-                work.record_month(&state, &declared, month, cancellation)?;
+                work.record_month(&state, &declared, forcing, month, cancellation)?;
                 continuation_steps += 1;
                 fast_substeps += u64::from(diagnostics.fast_substeps());
                 maximum_cfl = maximum_cfl.max(diagnostics.maximum_cfl());
@@ -341,6 +345,8 @@ struct WorkClimatology {
     humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     precipitation: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     orographic_precipitation: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    absorbed_shortwave: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    outgoing_longwave: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     lower_height: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     upper_height: Option<Vec<[f32; CLIMATE_MONTH_COUNT]>>,
     sea_height: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -361,6 +367,8 @@ impl WorkClimatology {
             humidity: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             precipitation: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             orographic_precipitation: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+            absorbed_shortwave: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
+            outgoing_longwave: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             lower_height: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             upper_height: c2.then(|| vec![[0.0; CLIMATE_MONTH_COUNT]; count]),
             sea_height: vec![[0.0; CLIMATE_MONTH_COUNT]; count],
@@ -373,6 +381,7 @@ impl WorkClimatology {
         &mut self,
         state: &LayeredClimateState,
         tendency: &super::LayeredClimateTendency,
+        forcing: &GlobalClimateForcing,
         month: usize,
         cancellation: &BuildCancellation,
     ) -> Result<(), GlobalCirculationGenerationError> {
@@ -424,6 +433,29 @@ impl WorkClimatology {
                 check_cancelled(cancellation)?;
             }
             target[month] = *rate * 86_400.0;
+        }
+        for cell in 0..self.absorbed_shortwave.len() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let absorbed_shortwave =
+                f64::from(forcing.planet_forcing().monthly_absorbed_shortwave_w_m2()[cell][month]);
+            let outgoing_longwave =
+                absorbed_shortwave - tendency.external_radiative_heat_flux_w_m2()[cell];
+            if !absorbed_shortwave.is_finite()
+                || absorbed_shortwave < 0.0
+                || !outgoing_longwave.is_finite()
+                || outgoing_longwave < 0.0
+            {
+                return Err(GlobalCirculationGenerationError::InvalidRadiativeFlux {
+                    cell,
+                    month,
+                    absorbed_shortwave,
+                    outgoing_longwave,
+                });
+            }
+            self.absorbed_shortwave[cell][month] = absorbed_shortwave as f32;
+            self.outgoing_longwave[cell][month] = outgoing_longwave as f32;
         }
         for (cell, (target, rate)) in self
             .orographic_precipitation
@@ -554,6 +586,21 @@ impl WorkClimatology {
             &self.orographic_precipitation,
             cancellation,
         )?;
+        let surface_albedo = project_intensive_scalar_cancellable(
+            domain,
+            forcing.planet_forcing().surface_albedo(),
+            cancellation,
+        )?;
+        let absorbed_shortwave = project_monthly_extensive_rate_cancellable(
+            domain,
+            &self.absorbed_shortwave,
+            cancellation,
+        )?;
+        let outgoing_longwave = project_monthly_extensive_rate_cancellable(
+            domain,
+            &self.outgoing_longwave,
+            cancellation,
+        )?;
         let precipitation_relative_error = precipitation
             .max_relative_conservation_error()
             .max(orographic_precipitation.max_relative_conservation_error());
@@ -632,6 +679,15 @@ impl WorkClimatology {
                 MonthlyVector3Field::from_values_cancellable(ocean_current, &cancelled)?,
                 MonthlyScalarField::from_values_cancellable(air.into_values(), &cancelled)?,
                 MonthlyScalarField::from_values_cancellable(sea.into_values(), &cancelled)?,
+                surface_albedo,
+                MonthlyScalarField::from_values_cancellable(
+                    absorbed_shortwave.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(
+                    outgoing_longwave.into_values(),
+                    &cancelled,
+                )?,
                 MonthlyScalarField::from_values_cancellable(
                     thermocline_temperature.into_values(),
                     &cancelled,
@@ -673,6 +729,15 @@ impl WorkClimatology {
                 MonthlyVector3Field::from_values_cancellable(ocean_current, &cancelled)?,
                 MonthlyScalarField::from_values_cancellable(air.into_values(), &cancelled)?,
                 MonthlyScalarField::from_values_cancellable(sea.into_values(), &cancelled)?,
+                surface_albedo,
+                MonthlyScalarField::from_values_cancellable(
+                    absorbed_shortwave.into_values(),
+                    &cancelled,
+                )?,
+                MonthlyScalarField::from_values_cancellable(
+                    outgoing_longwave.into_values(),
+                    &cancelled,
+                )?,
                 MonthlyScalarField::from_values_cancellable(humidity.into_values(), &cancelled)?,
                 MonthlyScalarField::from_values_cancellable(
                     precipitation.into_values(),
@@ -1174,6 +1239,15 @@ pub enum GlobalCirculationGenerationError {
     InvalidLayout { reason: String },
     #[error("invalid climate forcing: {reason}")]
     InvalidForcing { reason: String },
+    #[error(
+        "invalid radiative flux at [{cell}][{month}]: ASR {absorbed_shortwave}, OLR {outgoing_longwave} W/m2"
+    )]
+    InvalidRadiativeFlux {
+        cell: usize,
+        month: usize,
+        absorbed_shortwave: f64,
+        outgoing_longwave: f64,
+    },
     #[error("annual formation residual increased from {initial} to {final_value}")]
     FormationResidualIncreased { initial: f64, final_value: f64 },
     #[error(
@@ -1300,12 +1374,12 @@ mod tests {
     };
 
     #[test]
-    fn c2_tendency_owner_formula_includes_the_f64_external_moisture_ledger() {
-        // Four layer tendency records (20 bytes each), five f32 scalar
-        // fields, and the retained external-moisture f64 ledger.
+    fn c2_tendency_owner_formula_includes_both_external_ledgers() {
+        // Four layer tendency records, five f32 scalar fields, and two
+        // retained f64 external ledgers.
         assert_eq!(
             global_circulation_tendency_cell_bytes(ClimateModelProfile::C2LayeredV1),
-            108
+            116
         );
     }
 
@@ -1324,6 +1398,7 @@ mod tests {
             vec![0.0; count],
             vec![0.0; count],
             vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
             vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             vec![[0.0; CLIMATE_MONTH_COUNT]; count],
             vec![[0.0; CLIMATE_MONTH_COUNT]; count],
@@ -1345,6 +1420,7 @@ mod tests {
             vec![0.0; cell_count],
             vec![0.0; cell_count],
             vec![1.0; cell_count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; cell_count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
             vec![[0.008; CLIMATE_MONTH_COUNT]; cell_count],

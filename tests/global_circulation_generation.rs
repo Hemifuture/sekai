@@ -6,8 +6,9 @@ use sekai::generators::natural::{
     GlobalCirculationPhase, GlobalClimateForcingBuilder, SELECTED_PRODUCTION_INTEGRATOR,
 };
 use sekai::world::natural::{
-    ClimateCapabilityAvailability, ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile,
-    ClimateWorkDomainSnapshot, LandOceanKind, NaturalQualityProfile,
+    expected_global_circulation_dense_state_bytes, ClimateCapabilityAvailability,
+    ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile, ClimateWorkDomainSnapshot,
+    LandOceanKind, NaturalQualityProfile,
 };
 use sekai::world::spatial::{ConservativeSurfaceMap, SurfaceOverlapWeight, TangentTransform};
 
@@ -29,12 +30,15 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     assert_eq!(snapshot.integrator(), SELECTED_PRODUCTION_INTEGRATOR);
     assert_eq!(snapshot.profile(), ClimateModelProfile::C2LayeredV1);
     assert_eq!(snapshot.fields().cell_count(), surface.cells().len());
-    let public_field_bytes = surface.cells().len() as u64 * 24 * 12 * size_of::<f32>() as u64;
-    assert!(
-        snapshot.solve_report().dense_state_bytes() >= public_field_bytes,
-        "dense allocation report {} is smaller than the {}-byte public C2 payload",
+    assert_eq!(
         snapshot.solve_report().dense_state_bytes(),
-        public_field_bytes
+        expected_global_circulation_dense_state_bytes(
+            NaturalQualityProfile::Draft,
+            ClimateModelProfile::C2LayeredV1,
+            surface.cells().len() as u32,
+        )
+        .unwrap(),
+        "the report must reuse the production dense-owner inventory"
     );
     assert!(snapshot.fields().upper_wind_m_s().is_some());
     assert!(snapshot.fields().vertical_wind_shear_m_s().is_some());
@@ -47,6 +51,26 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
         .fields()
         .monthly_deep_ocean_temperature_c()
         .is_some());
+    assert_eq!(
+        snapshot.fields().surface_albedo().len(),
+        surface.cells().len()
+    );
+    assert!(snapshot
+        .fields()
+        .surface_albedo()
+        .iter()
+        .all(|value| (0.0..=1.0).contains(value)));
+    for field in [
+        snapshot.fields().monthly_absorbed_shortwave_w_m2(),
+        snapshot.fields().monthly_outgoing_longwave_w_m2(),
+    ] {
+        assert_eq!(field.len(), surface.cells().len());
+        assert!(field
+            .values()
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite() && *value >= 0.0));
+    }
     assert_eq!(
         snapshot
             .capabilities()

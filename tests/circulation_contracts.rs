@@ -14,6 +14,7 @@ fn forcing(cell_count: usize) -> PlanetForcing {
         vec![0.0; cell_count],
         vec![0.3; cell_count],
         vec![1.0; cell_count],
+        vec![[240.0; CLIMATE_MONTH_COUNT]; cell_count],
         equilibrium_air_temperature_c,
         equilibrium_surface_temperature_c,
         equilibrium_specific_humidity,
@@ -79,6 +80,7 @@ fn forcing_is_dense_finite_and_content_addressed() {
     assert_eq!(first.land_fraction().len(), 24);
     assert_eq!(first.surface_albedo().len(), 24);
     assert_eq!(first.surface_moisture_availability().len(), 24);
+    assert_eq!(first.monthly_absorbed_shortwave_w_m2().len(), 24);
     assert_eq!(first.equilibrium_air_temperature_c().len(), 24);
     assert_eq!(first.equilibrium_surface_temperature_c().len(), 24);
     assert_eq!(first.equilibrium_specific_humidity().len(), 24);
@@ -93,6 +95,7 @@ fn forcing_rejects_length_nonfinite_and_fraction_violations() {
         vec![0.0; 1],
         vec![0.3; 2],
         vec![1.0; 2],
+        vec![[240.0; CLIMATE_MONTH_COUNT]; 2],
         monthly.clone(),
         monthly.clone(),
         vec![[0.01; CLIMATE_MONTH_COUNT]; 2],
@@ -107,6 +110,7 @@ fn forcing_rejects_length_nonfinite_and_fraction_violations() {
         vec![0.0; 2],
         vec![0.3; 2],
         vec![1.0; 2],
+        vec![[240.0; CLIMATE_MONTH_COUNT]; 2],
         monthly.clone(),
         monthly.clone(),
         vec![[0.01; CLIMATE_MONTH_COUNT]; 2],
@@ -119,6 +123,7 @@ fn forcing_rejects_length_nonfinite_and_fraction_violations() {
         vec![0.0; 2],
         vec![1.01; 2],
         vec![1.0; 2],
+        vec![[240.0; CLIMATE_MONTH_COUNT]; 2],
         monthly.clone(),
         monthly,
         vec![[0.01; CLIMATE_MONTH_COUNT]; 2],

@@ -58,8 +58,10 @@
 文件：
 
 - 修改：`src/world/natural/global_circulation.rs`
+- 修改：`src/world/natural/circulation/forcing.rs`
 - 修改：`src/world/natural/mod.rs`
 - 修改：`src/generators/natural/global_circulation/forcing.rs`
+- 修改：`src/generators/natural/global_circulation/state.rs`
 - 修改：`src/generators/natural/global_circulation/tendency.rs`
 - 修改：`src/generators/natural/global_circulation/generation.rs`
 - 修改：`src/generators/natural/global_circulation/project.rs`
@@ -68,23 +70,23 @@
 - 修改：`tests/global_circulation_contracts.rs`
 - 修改：`tests/global_circulation_generation.rs`
 
-- [ ] 先写 RED 解析测试：surface albedo 上升必使 ASR 降低；太阳辐照为零时
+- [x] 先写 RED 解析测试：surface albedo 上升必使 ASR 降低；太阳辐照为零时
   ASR 为零；CERES 参考 surface albedo 经生产 helper 得到参考 planetary
   albedo；辐射功率与温度 tendency 使用同一项。
-- [ ] 在 `world` 定义有文档出处与推导说明的 S0、CERES TOA 参考量、
+- [x] 在 `world` 定义有文档出处与推导说明的 S0、CERES TOA 参考量、
   atmospheric shortwave reflectance、Stefan–Boltzmann 常量、gray greenhouse
   offset、TOA closure 阈值和唯一 helper。
-- [ ] 用 `S0 × daily_mean_insolation`、surface/atmosphere 组合反照率生成逐格
+- [x] 用 `S0 × daily_mean_insolation`、surface/atmosphere 组合反照率生成逐格
   ASR；删除 `32 * normalized_insolation` 与陆地冬季经验惩罚，以灰体有效
   辐射温度 + greenhouse offset + 高程直减率 + authored offset 构造平衡温度。
-- [ ] 把实际 retained external heat 汇总为 `Q_radiative`；同一项推进状态、
+- [x] 把实际 retained external heat 汇总为 `Q_radiative`；同一项推进状态、
   进入数值 energy ledger 并生成 `OLR = ASR - Q_radiative`。
-- [ ] V2 fields 增加 `surface_albedo`、`monthly_absorbed_shortwave_w_m2`、
+- [x] V2 fields 增加 `surface_albedo`、`monthly_absorbed_shortwave_w_m2`、
   `monthly_outgoing_longwave_w_m2`；分别走 bounded-intensive 与
   extensive-flux 保守投影，并计入字段 fingerprint 与内存清单。
-- [ ] 跑 forcing/contracts/integrators/generation 的 focused Release 回归；禁止
+- [x] 跑 forcing/contracts/integrators/generation 的 focused Release 回归；禁止
   用输出缩放修正温度。
-- [ ] 跑三道门禁并提交。
+- [x] 跑三道门禁并提交。
 
 提交：`Close the P4 radiative energy budget`
 

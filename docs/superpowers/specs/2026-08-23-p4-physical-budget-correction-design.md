@@ -322,6 +322,15 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
   的理想化湿 GCM 先例。
 - Kopp, G. & Lean, J. L. (2011), SORCE/TIM total solar irradiance，DOI
   `10.1029/2010GL045777`；IAU 2015 Resolution B3：太阳辐照度事实源。
+- Payne (1972), DOI
+  `10.1175/1520-0469(1972)029<0959:AOTSS>2.0.CO;2`：开阔海面短波反照率；
+  Masson et al. (2003), DOI
+  `10.1175/1520-0442(2003)016<1261:AGDOLS>2.0.CO;2`：业务陆面方案中的
+  植被反照率量级；Moody et al. (2007), DOI `10.1016/j.rse.2007.07.002`：
+  MODIS 积雪覆盖生态系统反照率。P4 的静态高地亮化仍只是无雪量状态下的
+  冻结 V1 几何先验，不冒充物理雪线。
+- U.S. Standard Atmosphere 1976：P4 理想化下边界使用的标准对流层环境直减率；
+  它不是逐格湿绝热线率。
 - Loeb et al. (2018), CERES EBAF TOA Ed4，DOI
   `10.1175/JCLI-D-17-0208.1`；Kato et al. (2018), CERES EBAF Surface
   Ed4，DOI `10.1175/JCLI-D-17-0523.1`：TOA SW/LW/net、surface-up LW 与
@@ -357,3 +366,13 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
   边界。它显式替代旧 P4 规格中“一个 7,200 s step 即一个月 endpoint”可被
   称为 formation year、原经验 moisture relaxation 可代表物理水循环、以及
   原 energy ledger 足以证明地球能量预算的表述。
+- R2（2026-08-23）：Task 2 的真实生成 RED 暴露两条原设计未写出的必要
+  可行域约束。其一，局地 Newtonian 正加热不得超过同格同月 ASR，否则
+  `OLR = ASR - Q_radiative` 会变负；`PlanetForcing` 因而必须携带经生产 helper
+  计算的月 ASR，方程在状态推进前等比例限制正加热、保留负冷却，并以有界
+  f32 ULP 投影保证同一 retained tendency 同时进入状态、数值账本与公开 OLR。
+  这不是输出钳制。其二，压力梯度必须来自当前解析温度，辐射平衡目标只经
+  热 tendency 作用；否则极夜目标会绕过热容直接驱动风场。周期求解初值改为
+  十二 forcing phase 的逐格年均值，避免任意 January 相位获得动力学先手；
+  后续每月方程、时间步与收敛门槛不变。以上修订不增加用户旋钮或经验增益，
+  equation fingerprint 显式升级。

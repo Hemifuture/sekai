@@ -11,9 +11,13 @@ use sekai::generators::spatial::{
     remap_intensive_f32, ProfileSurfaceBuilder, ProfileSurfaceBundle,
 };
 use sekai::world::natural::{
+    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c, planetary_albedo_from_surface,
     ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, LandOceanKind,
     NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
     ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
+    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
@@ -101,6 +105,31 @@ fn fixture() -> &'static Fixture {
             forcing,
         }
     })
+}
+
+#[test]
+fn radiative_helpers_reproduce_the_ceres_calibration_and_analytic_limits() {
+    let measured_planetary =
+        planetary_albedo_from_surface(EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN);
+    assert!((measured_planetary - EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN).abs() <= 1.0e-12);
+    assert_eq!(
+        EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN.to_bits(),
+        (CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2
+            / CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2)
+            .to_bits()
+    );
+
+    assert_eq!(absorbed_shortwave_w_m2(0.0, 0.4), 0.0);
+    let dark = absorbed_shortwave_w_m2(0.25, 0.05);
+    let bright = absorbed_shortwave_w_m2(0.25, 0.75);
+    assert!(dark > bright && bright >= 0.0);
+    assert!(dark < EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2 * 0.25);
+
+    let ceres_asr = CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2
+        - CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2;
+    let reference_temperature = gray_equilibrium_surface_temperature_c(ceres_asr);
+    assert!((15.0..=18.0).contains(&reference_temperature));
+    assert!(gray_equilibrium_surface_temperature_c(ceres_asr * 1.1) > reference_temperature);
 }
 
 #[test]
