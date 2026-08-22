@@ -422,9 +422,9 @@ impl HierarchicalEvaluator {
         super::hierarchical_rivers::path_depth_cap(self, reach)
     }
 
-    /// Materializes one reach's rerouted polyline at `depth` (clamped to
-    /// the reach's cap): `2^depth + 1` points from the upstream to the
-    /// downstream cell centroid. Depth 0 is the L0 chain.
+    /// Materializes one reach's dry-land polyline at `depth` (clamped to
+    /// each leg's cap). The path is split at its authoritative shared-edge
+    /// portal and omits water-cell interiors.
     pub fn river_path(&self, reach: u32, depth: u8) -> Vec<UnitVector3> {
         super::hierarchical_rivers::materialize_path(self, reach, depth)
     }

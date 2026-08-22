@@ -617,8 +617,6 @@ impl TerrainAmplifier {
                 }
             })?;
             reaches.push(RiverReach {
-                from: from_center,
-                to: to_center,
                 bed_from_m: bed_from,
                 bed_to_m: bed_m[&to].min(bed_from),
                 width_m,
@@ -1001,8 +999,6 @@ pub(super) struct ConditioningView<'a> {
 /// truth (geometry, beds, and hydraulic width all come from here).
 #[derive(Debug, Clone)]
 pub(super) struct RiverReach {
-    pub(super) from: [f64; 3],
-    pub(super) to: [f64; 3],
     pub(super) bed_from_m: f64,
     pub(super) bed_to_m: f64,
     pub(super) width_m: f64,
@@ -1344,6 +1340,12 @@ pub(super) fn arc_angle(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// Each directed edge compares the point with the opposite vertex, so the
 /// test is independent of clockwise/counter-clockwise corner order.
 pub(super) fn spherical_triangle_contains(point: [f64; 3], triangle: [[f64; 3]; 3]) -> bool {
+    spherical_triangle_margin(point, triangle) >= -64.0 * f64::EPSILON
+}
+
+/// Smallest oriented half-space product for a spherical triangle.
+/// Positive values are strictly inside, zero is on an edge.
+pub(super) fn spherical_triangle_margin(point: [f64; 3], triangle: [[f64; 3]; 3]) -> f64 {
     let determinant = |a: [f64; 3], b: [f64; 3], p: [f64; 3]| {
         (a[1] * b[2] - a[2] * b[1]) * p[0]
             + (a[2] * b[0] - a[0] * b[2]) * p[1]
@@ -1352,9 +1354,8 @@ pub(super) fn spherical_triangle_contains(point: [f64; 3], triangle: [[f64; 3]; 
     let [a, b, c] = triangle;
     [(a, b, c), (b, c, a), (c, a, b)]
         .into_iter()
-        .all(|(from, to, inside)| {
-            determinant(from, to, point) * determinant(from, to, inside) >= -64.0 * f64::EPSILON
-        })
+        .map(|(from, to, inside)| determinant(from, to, point) * determinant(from, to, inside))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Exact great-circle nearest point of `p` on the arc `from → to`:

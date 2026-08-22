@@ -699,8 +699,8 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
     }
 
     // Spec §6: the frozen hierarchical probe fingerprint (value history
-    // in the spec amendments — A4 froze it; A6.7, A7, and A8 refreshed
-    // it).
+    // in the spec amendments — A4 froze it; A6.7, A7, A8, A9, and A10
+    // refreshed it).
     let fingerprint = evaluator.probe_fingerprint();
     let hex: String = fingerprint
         .iter()
@@ -708,7 +708,7 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
         .collect();
     eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
     assert_eq!(
-        hex, "cab6c758fe2ce2dac477e6d8fb674f73a3863ac66a96a7d411d6a86bc339c7b7",
+        hex, "c43a9a2dd66c241cc5d1695cfb7b972d744aba373df37d44dda564facce355c1",
         "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
     );
 

@@ -2,10 +2,11 @@
 //!
 //! Implements spec §10 amendment A6: river existence, topology,
 //! discharge, and the monotone beds stay L0/P5 authority (M1 §7 and A4
-//! untouched); levels below only refine the channel geometry along a
-//! binary path tree congruent with the primitive tree. Each L0 reach
-//! keeps its cell-centroid endpoints fixed and recursively displaces
-//! sub-segment midpoints laterally — candidates scored by the uncarved
+//! untouched); levels below only refine the channel geometry along binary
+//! path trees congruent with the primitive tree. Each L0 reach is split at
+//! its authoritative shared-edge portal into dry-land sector legs, whose
+//! fixed endpoints recursively receive lateral midpoint displacement —
+//! candidates scored by the uncarved
 //! derived field plus seeded jitter (valley-following on slopes, free
 //! meandering on plains) — with the amplitude cut off below half the
 //! Leopold–Wolman meander wavelength (≈12 channel widths) and the whole
@@ -16,7 +17,10 @@
 use std::sync::{Arc, RwLock};
 
 use super::hierarchical_derivation::{signed_unit_noise, HierarchicalEvaluator};
-use super::terrain_amplification::{arc_angle, arc_nearest_point, RiverReach, TerrainAmplifier};
+use super::terrain_amplification::{
+    arc_angle, arc_nearest_point, spherical_triangle_contains, spherical_triangle_margin, RiverLeg,
+    RiverReach, TerrainAmplifier,
+};
 use crate::world::spatial::UnitVector3;
 
 /// Lateral displacement amplitude as a fraction of the sub-segment
@@ -48,7 +52,7 @@ const SMOOTH_DEPTH_EXTRA: u8 = 4;
 const NODE_BOUND_SAFETY: f64 = 1.0 + 1.0e-9;
 const NODE_BOUND_SAFETY_M: f64 = 1.0e-6;
 
-/// One reach's materialized path tree: the node points of the deepest
+/// One leg's materialized path tree: the node points of the deepest
 /// depth so far (`2^d + 1`) and, for every internal node (identified by
 /// its midpoint index), a proven upper bound in metres on how far any
 /// deeper path point strays from that node's chord — the exact pruning
@@ -58,7 +62,7 @@ pub(super) struct ReachPathData {
     bounds: Vec<f64>,
 }
 
-/// Lazy per-reach memo of the A6/A8 path tree.
+/// Lazy per-reach memo of the two possible A10 leg path trees.
 ///
 /// The tree is a pure function of the reach and the frozen seeds, and
 /// deeper levels never move shallower nodes, so one array serves every
@@ -66,9 +70,22 @@ pub(super) struct ReachPathData {
 /// the new levels' midpoints. Purely an accelerator (spec §6): every
 /// consumer keeps deriving exactly the values the uncached recursion
 /// produced.
-#[derive(Default)]
 pub(super) struct ReachPathCache {
-    deepest: RwLock<Option<Arc<ReachPathData>>>,
+    deepest: [RwLock<Option<Arc<ReachPathData>>>; 2],
+}
+
+impl Default for ReachPathCache {
+    fn default() -> Self {
+        Self {
+            deepest: std::array::from_fn(|_| RwLock::new(None)),
+        }
+    }
+}
+
+impl ReachPathCache {
+    fn leg(&self, leg_index: usize) -> Option<&RwLock<Option<Arc<ReachPathData>>>> {
+        self.deepest.get(leg_index)
+    }
 }
 
 /// One cache slot per reach, all empty (engine construction).
@@ -81,11 +98,32 @@ pub(super) fn fresh_reach_path_caches(reach_count: usize) -> Vec<ReachPathCache>
 /// The deepest refinable depth of one reach: the stochastic meander cap
 /// plus the A8 smooth-refinement levels (degenerate reaches stay flat).
 fn smooth_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32) -> u8 {
-    let cap = path_depth_cap(evaluator, reach_index);
+    evaluator
+        .amplifier()
+        .river_reaches()
+        .get(reach_index as usize)
+        .map_or(0, |reach| {
+            reach
+                .legs
+                .iter()
+                .flatten()
+                .map(|leg| smooth_leg_depth_cap(evaluator, reach, leg))
+                .max()
+                .unwrap_or(0)
+        })
+}
+
+fn smooth_leg_depth_cap(
+    evaluator: &HierarchicalEvaluator,
+    reach: &RiverReach,
+    leg: &RiverLeg,
+) -> u8 {
+    let cap = leg_depth_cap(evaluator, reach, leg);
     if cap == 0 {
-        return 0;
+        0
+    } else {
+        (cap + SMOOTH_DEPTH_EXTRA).min(PATH_DEPTH_LIMIT)
     }
-    (cap + SMOOTH_DEPTH_EXTRA).min(PATH_DEPTH_LIMIT)
 }
 
 /// The A8 smooth midpoint of segment `k → k+1`: four-point
@@ -143,16 +181,20 @@ fn node_bounds(points: &[[f64; 3]], radius_m: f64) -> Vec<f64> {
 fn cached_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
+    leg_index: usize,
     reach: &RiverReach,
+    leg: &RiverLeg,
     depth: u8,
 ) -> Arc<ReachPathData> {
-    let slot = evaluator
+    let cache = evaluator
         .river_path_slot(reach_index)
         .expect("reach indices come from the engine's own reach lists");
+    let slot = cache
+        .leg(leg_index)
+        .expect("a reach has at most two authoritative legs");
     let needed = (1_usize << depth) + 1;
     let lock_clean = "the reach path lock only guards infallible derivation";
     if let Some(data) = slot
-        .deepest
         .read()
         .expect(lock_clean)
         .as_ref()
@@ -160,16 +202,16 @@ fn cached_path(
     {
         return Arc::clone(data);
     }
-    let mut guard = slot.deepest.write().expect(lock_clean);
+    let mut guard = slot.write().expect(lock_clean);
     if let Some(data) = guard.as_ref().filter(|data| data.points.len() >= needed) {
         return Arc::clone(data);
     }
     let mut points: Vec<[f64; 3]> = guard
         .as_ref()
         .map(|data| data.points.clone())
-        .unwrap_or_else(|| vec![reach.from, reach.to]);
-    if let Some(walk) = ReachWalk::new(evaluator, reach_index, reach) {
-        let meander_cap = path_depth_cap(evaluator, reach_index);
+        .unwrap_or_else(|| vec![leg.from, leg.to]);
+    if let Some(walk) = ReachWalk::new(evaluator, reach_index, leg_index, reach, leg) {
+        let meander_cap = leg_depth_cap(evaluator, reach, leg);
         while points.len() < needed {
             // The nodes between consecutive points of the depth-d array
             // sit at depth d, enumerated left to right — which is
@@ -182,7 +224,7 @@ fn cached_path(
                     next.push(walk.node_midpoint(pair[0], pair[1], parent_depth, bits as u32));
                 } else {
                     let smooth = four_point_midpoint(&points, bits);
-                    next.push(if walk.inside_corridor(smooth) {
+                    next.push(if walk.accepts(pair[0], pair[1], smooth) {
                         smooth
                     } else {
                         normalized(add(pair[0], pair[1]))
@@ -200,11 +242,70 @@ fn cached_path(
     data
 }
 
-/// Everything constant per reach during a tree walk.
+/// Gnomonic longitudinal frame for one authoritative dry-land leg.
+struct LegFrame {
+    center: [f64; 3],
+    axis: [f64; 3],
+    start: f64,
+    inverse_span: f64,
+}
+
+impl LegFrame {
+    fn new(leg: &RiverLeg) -> Option<Self> {
+        let center = leg.sector[0];
+        let portal = if leg.from == center { leg.to } else { leg.from };
+        let projected = [
+            portal[0] - dot(portal, center) * center[0],
+            portal[1] - dot(portal, center) * center[1],
+            portal[2] - dot(portal, center) * center[2],
+        ];
+        let axis = normalized(projected)?;
+        let coordinate = |point: [f64; 3]| {
+            let denominator = dot(point, center);
+            (denominator > f64::EPSILON).then(|| dot(point, axis) / denominator)
+        };
+        let start = coordinate(leg.from)?;
+        let end = coordinate(leg.to)?;
+        let span = end - start;
+        (span.abs() > f64::EPSILON).then_some(Self {
+            center,
+            axis,
+            start,
+            inverse_span: span.recip(),
+        })
+    }
+
+    fn progress(&self, point: [f64; 3]) -> Option<f64> {
+        let denominator = dot(point, self.center);
+        (denominator > f64::EPSILON)
+            .then(|| (dot(point, self.axis) / denominator - self.start) * self.inverse_span)
+    }
+
+    fn strictly_between(&self, a: [f64; 3], b: [f64; 3], point: [f64; 3]) -> bool {
+        let Some(a) = self.progress(a) else {
+            return false;
+        };
+        let Some(b) = self.progress(b) else {
+            return false;
+        };
+        let Some(point) = self.progress(point) else {
+            return false;
+        };
+        let lower = a.min(b);
+        let upper = a.max(b);
+        let tolerance = 64.0 * f64::EPSILON * (1.0 + lower.abs().max(upper.abs()));
+        point > lower + tolerance && point < upper - tolerance
+    }
+}
+
+/// Everything constant per leg during a tree walk.
 struct ReachWalk<'a> {
     evaluator: &'a HierarchicalEvaluator,
     reach_index: u32,
-    /// Great-circle normal of the L0 chord (corridor reference).
+    leg_index: usize,
+    frame: LegFrame,
+    sector: [[f64; 3]; 3],
+    /// Great-circle normal of the leg chord (corridor reference).
     chord_normal: [f64; 3],
     /// Corridor half-width in radians.
     corridor_rad: f64,
@@ -217,14 +318,19 @@ impl ReachWalk<'_> {
     fn new<'a>(
         evaluator: &'a HierarchicalEvaluator,
         reach_index: u32,
+        leg_index: usize,
         reach: &RiverReach,
+        leg: &RiverLeg,
     ) -> Option<ReachWalk<'a>> {
-        let chord_normal = normalized(cross(reach.from, reach.to))?;
+        let chord_normal = normalized(cross(leg.from, leg.to))?;
         let radius_m = evaluator.amplifier().radius_m();
-        let chord_rad = arc_angle(reach.from, reach.to);
+        let chord_rad = arc_angle(leg.from, leg.to);
         Some(ReachWalk {
             evaluator,
             reach_index,
+            leg_index,
+            frame: LegFrame::new(leg)?,
+            sector: leg.sector,
             chord_normal,
             corridor_rad: MEANDER_CORRIDOR_FRACTION * chord_rad,
             wavelength_m: MEANDER_WAVELENGTH_PER_WIDTH * 2.0 * reach.half_width_m(),
@@ -259,8 +365,7 @@ impl ReachWalk<'_> {
                 geometric[2] + segment_normal[2] * amplitude_rad * offset,
             ])
             .unwrap_or(geometric);
-            // Corridor: lateral distance to the L0 chord's great circle.
-            if offset != 0.0 && !self.inside_corridor(candidate) {
+            if !self.accepts(a, b, candidate) {
                 continue;
             }
             let direction = UnitVector3::new(candidate[0], candidate[1], candidate[2])
@@ -278,8 +383,10 @@ impl ReachWalk<'_> {
         best.map(|(_, point)| point).unwrap_or(geometric)
     }
 
-    fn inside_corridor(&self, point: [f64; 3]) -> bool {
-        dot(point, self.chord_normal).clamp(-1.0, 1.0).asin().abs() <= self.corridor_rad
+    fn accepts(&self, a: [f64; 3], b: [f64; 3], point: [f64; 3]) -> bool {
+        spherical_triangle_margin(point, self.sector) > 64.0 * f64::EPSILON
+            && self.frame.strictly_between(a, b, point)
+            && dot(point, self.chord_normal).clamp(-1.0, 1.0).asin().abs() <= self.corridor_rad
     }
 
     /// Canonical candidate seed: `blake3(域 ∥ "r" ∥ reach ∥ depth ∥
@@ -288,6 +395,7 @@ impl ReachWalk<'_> {
         let mut hasher = self.evaluator.seed_hasher();
         hasher.update(b"r");
         hasher.update(&self.reach_index.to_le_bytes());
+        hasher.update(&[self.leg_index as u8]);
         hasher.update(&[depth]);
         hasher.update(&bits.to_le_bytes());
         hasher.update(&[candidate]);
@@ -302,7 +410,17 @@ pub(super) fn path_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32
     let Some(reach) = reaches.get(reach_index as usize) else {
         return 0;
     };
-    let chord_m = arc_angle(reach.from, reach.to) * evaluator.amplifier().radius_m();
+    reach
+        .legs
+        .iter()
+        .flatten()
+        .map(|leg| leg_depth_cap(evaluator, reach, leg))
+        .max()
+        .unwrap_or(0)
+}
+
+fn leg_depth_cap(evaluator: &HierarchicalEvaluator, reach: &RiverReach, leg: &RiverLeg) -> u8 {
+    let chord_m = arc_angle(leg.from, leg.to) * evaluator.amplifier().radius_m();
     let half_wavelength = MEANDER_WAVELENGTH_PER_WIDTH * reach.half_width_m();
     if !(chord_m.is_finite() && half_wavelength.is_finite()) || chord_m < half_wavelength {
         return 0;
@@ -310,9 +428,8 @@ pub(super) fn path_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32
     ((chord_m / half_wavelength).log2().floor() as u8).min(PATH_DEPTH_LIMIT)
 }
 
-/// Materializes one reach's rerouted polyline at `depth` (clamped to
-/// the A8 smooth cap): `2^depth + 1` points, endpoints the cell
-/// centroids; depths beyond the meander cap refine the smooth curve.
+/// Materializes one reach's dry-land polyline at `depth`, concatenating
+/// its authoritative legs in flow order and welding their shared portal.
 pub(super) fn materialize_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
@@ -322,19 +439,41 @@ pub(super) fn materialize_path(
     let Some(reach) = reaches.get(reach_index as usize) else {
         return Vec::new();
     };
+    let as_unit = UnitVector3::from_verified_unit_components;
     let depth = depth.min(smooth_depth_cap(evaluator, reach_index));
-    let as_unit = |p: [f64; 3]| {
-        UnitVector3::new(p[0], p[1], p[2]).expect("reach path points are unit directions")
-    };
-    if depth == 0 {
-        return vec![as_unit(reach.from), as_unit(reach.to)];
+    let mut path = Vec::new();
+    for (leg_index, leg) in reach.legs.iter().enumerate() {
+        let Some(leg) = leg else {
+            continue;
+        };
+        let leg_depth = depth.min(smooth_leg_depth_cap(evaluator, reach, leg));
+        let points = materialize_leg(evaluator, reach_index, leg_index, reach, leg, leg_depth);
+        let skip = usize::from(
+            path.last()
+                .is_some_and(|last: &UnitVector3| last.components() == points[0]),
+        );
+        path.extend(points[skip..].iter().copied().map(as_unit));
     }
-    let data = cached_path(evaluator, reach_index, reach, depth);
-    // A degenerate reach memoizes only its chord; read what exists.
+    path
+}
+
+fn materialize_leg(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    leg_index: usize,
+    reach: &RiverReach,
+    leg: &RiverLeg,
+    depth: u8,
+) -> Vec<[f64; 3]> {
+    let depth = depth.min(smooth_leg_depth_cap(evaluator, reach, leg));
+    if depth == 0 {
+        return vec![leg.from, leg.to];
+    }
+    let data = cached_path(evaluator, reach_index, leg_index, reach, leg, depth);
     let depth = u32::from(depth).min((data.points.len() - 1).trailing_zeros());
     let stride = (data.points.len() - 1) >> depth;
     (0..=(1_usize << depth))
-        .map(|index| as_unit(data.points[index * stride]))
+        .map(|index| data.points[index * stride])
         .collect()
 }
 
@@ -363,9 +502,7 @@ pub(super) fn carve_elevation_m(
         let end = offsets[cell as usize + 1] as usize;
         for &reach_index in &indices[start..end] {
             let reach = &reaches[reach_index as usize];
-            let depth = leaf_level
-                .saturating_sub(1)
-                .min(smooth_depth_cap(evaluator, reach_index));
+            let depth = leaf_level.saturating_sub(1);
             let Some((lateral_m, fraction)) =
                 nearest_on_path(evaluator, reach_index, reach, depth, p)
             else {
@@ -379,9 +516,7 @@ pub(super) fn carve_elevation_m(
     carve
 }
 
-/// Nearest point of `p` on the reach's depth-`depth` path: a bound-
-/// pruned descent of the path tree — a subtree is skipped when even its
-/// remaining lateral slack cannot beat the current best (A6.5).
+/// Nearest point of `p` on the reach's dry-land legs at `depth`.
 fn nearest_on_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
@@ -389,15 +524,45 @@ fn nearest_on_path(
     depth: u8,
     p: [f64; 3],
 ) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, f64)> = None;
+    for (leg_index, leg) in reach.legs.iter().enumerate() {
+        let Some(leg) = leg else {
+            continue;
+        };
+        if !spherical_triangle_contains(p, leg.sector) {
+            continue;
+        }
+        let depth = depth.min(smooth_leg_depth_cap(evaluator, reach, leg));
+        let Some((lateral, local_fraction)) =
+            nearest_on_leg(evaluator, reach_index, leg_index, reach, leg, depth, p)
+        else {
+            continue;
+        };
+        let fraction = leg.fraction_from + local_fraction * (leg.fraction_to - leg.fraction_from);
+        if best.is_none_or(|(current, _)| lateral < current) {
+            best = Some((lateral, fraction));
+        }
+    }
+    best
+}
+
+fn nearest_on_leg(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    leg_index: usize,
+    reach: &RiverReach,
+    leg: &RiverLeg,
+    depth: u8,
+    p: [f64; 3],
+) -> Option<(f64, f64)> {
     let radius_m = evaluator.amplifier().radius_m();
     if depth == 0 {
-        return arc_nearest_point(reach.from, reach.to, p, radius_m);
+        return arc_nearest_point(leg.from, leg.to, p, radius_m);
     }
-    let data = cached_path(evaluator, reach_index, reach, depth);
-    // A degenerate reach memoizes only its chord.
+    let data = cached_path(evaluator, reach_index, leg_index, reach, leg, depth);
     let depth = u32::from(depth).min((data.points.len() - 1).trailing_zeros());
     if depth == 0 {
-        return arc_nearest_point(reach.from, reach.to, p, radius_m);
+        return arc_nearest_point(leg.from, leg.to, p, radius_m);
     }
     let stride = (data.points.len() - 1) >> depth;
     let mut best: Option<(f64, f64)> = None;
@@ -592,25 +757,167 @@ mod tests {
         (evaluator, surface)
     }
 
-    /// Amendment A6.1: depth 0 is exactly the L0 chain and endpoints stay
-    /// the cell centroids at every depth.
+    fn evaluator_with_water_transition(
+        from_water: SurfaceWaterKind,
+        to_water: SurfaceWaterKind,
+    ) -> (HierarchicalEvaluator, SphericalSurfaceSnapshot, usize) {
+        let surface = test_surface();
+        let fields = Fields::new(&surface);
+        let edge_index = 0;
+        let edge = &surface.edges()[edge_index];
+        let [from, to] = edge.cells;
+        let segment = RiverSegment::new(
+            RiverSegmentId::from_raw(0),
+            from,
+            to,
+            RiverSegmentKind::Channel,
+            1,
+            25.0,
+        )
+        .unwrap();
+        let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
+        water[from.raw() as usize] = from_water;
+        water[to.raw() as usize] = to_water;
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(13))
+            .unwrap()
+            .with_rivers(&surface, &[segment], &SurfaceWaterField::from_kinds(water))
+            .unwrap();
+        (evaluator, surface, edge_index)
+    }
+
+    #[test]
+    fn river_path_uses_shared_portal_and_omits_water_interiors() {
+        use SurfaceWaterKind::{DryLand, Lake};
+
+        for (from_water, to_water, expected_points) in [
+            (DryLand, DryLand, 3_usize),
+            (DryLand, Lake, 2),
+            (Lake, DryLand, 2),
+            (Lake, Lake, 0),
+        ] {
+            let (evaluator, surface, edge_index) =
+                evaluator_with_water_transition(from_water, to_water);
+            let edge = &surface.edges()[edge_index];
+            let [from, to] = edge.cells;
+            let path = evaluator.river_path(0, 0);
+            assert_eq!(path.len(), expected_points);
+            if from_water == DryLand {
+                assert_eq!(
+                    path.first().copied(),
+                    Some(surface.cells()[from.raw() as usize].centroid)
+                );
+            }
+            if to_water == DryLand {
+                assert_eq!(
+                    path.last().copied(),
+                    Some(surface.cells()[to.raw() as usize].centroid)
+                );
+            }
+            if expected_points > 0 {
+                assert!(
+                    path.contains(&edge.midpoint),
+                    "every rendered water transition is split at the shoreline portal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_path_segment_stays_in_one_authoritative_sector() {
+        let (evaluator, _surface) = evaluator_with_rivers();
+        for reach_index in 0..evaluator.river_reach_count() as u32 {
+            let reach = &evaluator.amplifier().river_reaches()[reach_index as usize];
+            let depth = smooth_depth_cap(&evaluator, reach_index).min(9);
+            let path = evaluator.river_path(reach_index, depth);
+            for pair in path.windows(2) {
+                assert!(
+                    reach.legs.iter().flatten().any(|leg| {
+                        super::super::terrain_amplification::spherical_triangle_contains(
+                            pair[0].components(),
+                            leg.sector,
+                        ) && super::super::terrain_amplification::spherical_triangle_contains(
+                            pair[1].components(),
+                            leg.sector,
+                        )
+                    }),
+                    "a path segment crossed an authoritative sector boundary"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn river_path_progress_is_strictly_monotone_inside_each_leg() {
+        let (evaluator, _surface) = evaluator_with_rivers();
+        for reach_index in 0..evaluator.river_reach_count() as u32 {
+            let reach = &evaluator.amplifier().river_reaches()[reach_index as usize];
+            let path = evaluator.river_path(reach_index, 9);
+            for leg in reach.legs.iter().flatten() {
+                let frame = LegFrame::new(leg).expect("a surface leg is non-degenerate");
+                let start = path
+                    .iter()
+                    .position(|point| point.components() == leg.from)
+                    .expect("materialized path includes the leg start");
+                let end = path
+                    .iter()
+                    .position(|point| point.components() == leg.to)
+                    .expect("materialized path includes the leg end");
+                let progress: Vec<_> = path[start..=end]
+                    .iter()
+                    .map(|point| frame.progress(point.components()).unwrap())
+                    .collect();
+                assert!(
+                    progress.windows(2).all(|pair| pair[0] < pair[1]),
+                    "a leg cut back in gnomonic longitudinal order"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn different_reaches_only_meet_at_authoritative_cell_nodes() {
+        let (evaluator, _surface) = evaluator_with_rivers();
+        let upstream = evaluator.river_path(0, 9);
+        let downstream = evaluator.river_path(1, 9);
+        let junction = *upstream.last().expect("the upstream reach is visible");
+        assert_eq!(downstream.first().copied(), Some(junction));
+
+        let shared: Vec<_> = upstream
+            .iter()
+            .filter(|point| downstream.contains(point))
+            .copied()
+            .collect();
+        assert_eq!(shared, vec![junction]);
+    }
+
+    /// Amendment A10: depth zero is the portal-split dry-land chain and
+    /// every leg endpoint stays fixed at all deeper levels.
     #[test]
     fn depth_zero_is_the_l0_chain_with_fixed_endpoints() {
         let (evaluator, _surface) = evaluator_with_rivers();
         let reaches = evaluator.amplifier().river_reaches();
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &reaches[reach_index as usize];
-            let from = UnitVector3::new(reach.from[0], reach.from[1], reach.from[2]).unwrap();
-            let to = UnitVector3::new(reach.to[0], reach.to[1], reach.to[2]).unwrap();
             let chain = evaluator.river_path(reach_index, 0);
-            assert_eq!(chain.len(), 2);
-            assert_eq!(chain[0], from);
-            assert_eq!(chain[1], to);
+            let mut expected = Vec::new();
+            for leg in reach.legs.iter().flatten() {
+                if expected.last().copied() != Some(leg.from) {
+                    expected.push(leg.from);
+                }
+                expected.push(leg.to);
+            }
+            assert_eq!(
+                chain
+                    .iter()
+                    .map(|point| point.components())
+                    .collect::<Vec<_>>(),
+                expected
+            );
             for depth in 1..=evaluator.river_path_depth_cap(reach_index).min(8) {
                 let path = evaluator.river_path(reach_index, depth);
-                assert_eq!(path.len(), (1 << depth) + 1);
-                assert_eq!(*path.first().unwrap(), from);
-                assert_eq!(*path.last().unwrap(), to);
+                for endpoint in &expected {
+                    assert!(path.iter().any(|point| point.components() == *endpoint));
+                }
             }
         }
     }
@@ -669,10 +976,8 @@ mod tests {
         }
     }
 
-    /// Amendment A6.4 (+A8): no stochastic vertex strays beyond the
-    /// corridor fraction of the chord; smooth refinements may overshoot
-    /// only by the four-point scheme's bounded margin (≪ one cap-level
-    /// amplitude).
+    /// Amendment A10: neither stochastic nor smooth vertices may leave
+    /// the authoritative leg corridor.
     #[test]
     fn paths_stay_inside_the_parent_corridor() {
         let (evaluator, _surface) = evaluator_with_rivers();
@@ -680,28 +985,25 @@ mod tests {
         let radius = evaluator.amplifier().radius_m();
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &reaches[reach_index as usize];
-            let normal = normalized(cross(reach.from, reach.to)).unwrap();
-            let chord_rad = arc_angle(reach.from, reach.to);
-            let cap = evaluator.river_path_depth_cap(reach_index);
-            let corridor_rad = MEANDER_CORRIDOR_FRACTION * chord_rad;
-            for (depth, margin_rad) in [
-                (cap.min(8), 1.0e-12),
-                (
-                    smooth_depth_cap(&evaluator, reach_index),
-                    0.1 * chord_rad / f64::from(1_u32 << cap.min(30)),
-                ),
-            ] {
-                let bound_rad = corridor_rad + margin_rad;
-                for point in evaluator.river_path(reach_index, depth) {
-                    let lateral = dot(point.components(), normal)
-                        .clamp(-1.0, 1.0)
-                        .asin()
-                        .abs();
-                    assert!(
-                        lateral <= bound_rad,
-                        "point strays {:.1} m beyond the corridor at depth {depth}",
-                        (lateral - bound_rad) * radius
-                    );
+            for (leg_index, leg) in reach.legs.iter().enumerate() {
+                let Some(leg) = leg else {
+                    continue;
+                };
+                let normal = normalized(cross(leg.from, leg.to)).unwrap();
+                let chord_rad = arc_angle(leg.from, leg.to);
+                let cap = leg_depth_cap(&evaluator, reach, leg);
+                let corridor_rad = MEANDER_CORRIDOR_FRACTION * chord_rad;
+                for depth in [cap.min(8), smooth_leg_depth_cap(&evaluator, reach, leg)] {
+                    for point in
+                        materialize_leg(&evaluator, reach_index, leg_index, reach, leg, depth)
+                    {
+                        let lateral = dot(point, normal).clamp(-1.0, 1.0).asin().abs();
+                        assert!(
+                            lateral <= corridor_rad + 1.0e-12,
+                            "point strays {:.1} m beyond the corridor at depth {depth}",
+                            (lateral - corridor_rad) * radius
+                        );
+                    }
                 }
             }
         }
@@ -721,29 +1023,26 @@ mod tests {
             narrow_cap > wide_cap,
             "narrow {narrow_cap} must out-refine wide {wide_cap}"
         );
-        let capped = evaluator.river_path(1, wide_cap);
-        let smooth_cap = smooth_depth_cap(&evaluator, 1);
-        assert_eq!(
-            smooth_cap,
-            (wide_cap + SMOOTH_DEPTH_EXTRA).min(PATH_DEPTH_LIMIT)
-        );
-        let smooth = evaluator.river_path(1, smooth_cap);
-        let stride = 1_usize << (smooth_cap - wide_cap);
-        assert_eq!(smooth.len(), (capped.len() - 1) * stride + 1);
-        for (index, vertex) in capped.iter().enumerate() {
-            assert_eq!(
-                vertex.components().map(f64::to_bits),
-                smooth[index * stride].components().map(f64::to_bits),
-                "smooth refinement must interpolate the meander vertices"
-            );
-        }
-        let beyond = evaluator.river_path(1, smooth_cap + 3);
-        assert_eq!(smooth.len(), beyond.len());
-        for (left, right) in smooth.iter().zip(&beyond) {
-            assert_eq!(
-                left.components().map(f64::to_bits),
-                right.components().map(f64::to_bits)
-            );
+        let reach = &evaluator.amplifier().river_reaches()[1];
+        for (leg_index, leg) in reach.legs.iter().enumerate() {
+            let Some(leg) = leg else {
+                continue;
+            };
+            let cap = leg_depth_cap(&evaluator, reach, leg);
+            let smooth_cap = smooth_leg_depth_cap(&evaluator, reach, leg);
+            let capped = materialize_leg(&evaluator, 1, leg_index, reach, leg, cap);
+            let smooth = materialize_leg(&evaluator, 1, leg_index, reach, leg, smooth_cap);
+            let stride = 1_usize << (smooth_cap - cap);
+            assert_eq!(smooth.len(), (capped.len() - 1) * stride + 1);
+            for (index, vertex) in capped.iter().enumerate() {
+                assert_eq!(
+                    vertex.map(f64::to_bits),
+                    smooth[index * stride].map(f64::to_bits),
+                    "smooth refinement must interpolate the meander vertices"
+                );
+            }
+            let beyond = materialize_leg(&evaluator, 1, leg_index, reach, leg, smooth_cap + 3);
+            assert_eq!(smooth, beyond);
         }
     }
 
@@ -756,45 +1055,54 @@ mod tests {
         let reaches = evaluator.amplifier().river_reaches();
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &reaches[reach_index as usize];
-            let Some(walk) = ReachWalk::new(&evaluator, reach_index, reach) else {
-                continue;
-            };
-            let chosen = walk.node_midpoint(reach.from, reach.to, 0, 0);
-            let geometric = normalized(add(reach.from, reach.to)).unwrap();
-            let length_m = arc_angle(reach.from, reach.to) * walk.radius_m;
-            if length_m < walk.wavelength_m * 0.5 {
-                assert_eq!(chosen, geometric);
-                continue;
+            for (leg_index, leg) in reach.legs.iter().enumerate() {
+                let Some(leg) = leg else {
+                    continue;
+                };
+                let Some(walk) = ReachWalk::new(&evaluator, reach_index, leg_index, reach, leg)
+                else {
+                    continue;
+                };
+                let chosen = walk.node_midpoint(leg.from, leg.to, 0, 0);
+                let geometric = normalized(add(leg.from, leg.to)).unwrap();
+                let length_m = arc_angle(leg.from, leg.to) * walk.radius_m;
+                if length_m < walk.wavelength_m * 0.5 {
+                    assert_eq!(chosen, geometric);
+                    continue;
+                }
+                let amplitude_rad = MEANDER_SINUOSITY_FRACTION * length_m / walk.radius_m;
+                let normal = normalized(cross(leg.from, leg.to)).unwrap();
+                let guidance_level = (1 + GUIDANCE_LEVEL_AHEAD).min(GUIDANCE_LEVEL_CAP);
+                let elevation_at = |point: [f64; 3]| {
+                    evaluator.uncarved_sample_elevation_m(
+                        UnitVector3::new(point[0], point[1], point[2]).unwrap(),
+                        guidance_level,
+                    )
+                };
+                let mut best = f64::INFINITY;
+                let mut matched = false;
+                for offset in [-1.0_f64, 0.0, 1.0] {
+                    let candidate = normalized([
+                        geometric[0] + normal[0] * amplitude_rad * offset,
+                        geometric[1] + normal[1] * amplitude_rad * offset,
+                        geometric[2] + normal[2] * amplitude_rad * offset,
+                    ])
+                    .unwrap();
+                    if !walk.accepts(leg.from, leg.to, candidate) {
+                        continue;
+                    }
+                    best = best.min(elevation_at(candidate));
+                    matched |= candidate
+                        .iter()
+                        .zip(&chosen)
+                        .all(|(a, b)| (a - b).abs() < 1.0e-15);
+                }
+                assert!(matched, "the chosen midpoint must be one of the candidates");
+                assert!(
+                    elevation_at(chosen) <= best + 2.0 * MEANDER_GUIDANCE_JITTER_M + 1.0e-6,
+                    "the choice can lose to the best candidate only within the jitter band"
+                );
             }
-            let amplitude_rad = MEANDER_SINUOSITY_FRACTION * length_m / walk.radius_m;
-            let normal = normalized(cross(reach.from, reach.to)).unwrap();
-            let guidance_level = (1 + GUIDANCE_LEVEL_AHEAD).min(GUIDANCE_LEVEL_CAP);
-            let elevation_at = |point: [f64; 3]| {
-                evaluator.uncarved_sample_elevation_m(
-                    UnitVector3::new(point[0], point[1], point[2]).unwrap(),
-                    guidance_level,
-                )
-            };
-            let mut best = f64::INFINITY;
-            let mut matched = false;
-            for offset in [-1.0_f64, 0.0, 1.0] {
-                let candidate = normalized([
-                    geometric[0] + normal[0] * amplitude_rad * offset,
-                    geometric[1] + normal[1] * amplitude_rad * offset,
-                    geometric[2] + normal[2] * amplitude_rad * offset,
-                ])
-                .unwrap();
-                best = best.min(elevation_at(candidate));
-                matched |= candidate
-                    .iter()
-                    .zip(&chosen)
-                    .all(|(a, b)| (a - b).abs() < 1.0e-15);
-            }
-            assert!(matched, "the chosen midpoint must be one of the candidates");
-            assert!(
-                elevation_at(chosen) <= best + 2.0 * MEANDER_GUIDANCE_JITTER_M + 1.0e-6,
-                "the choice can lose to the best candidate only within the jitter band"
-            );
         }
     }
 

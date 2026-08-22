@@ -1189,28 +1189,30 @@ mod tests {
         }
     }
 
-    /// Amendment A6.6: river polylines follow the selection's cell levels
-    /// — the L0 chain at level one, `2^(level−1)` sub-segments as the
-    /// terrain deepens, deterministically.
+    /// Amendments A6.6/A10: river polylines follow the selection's cell
+    /// levels while preserving portal-split dry-land legs.
     #[test]
     fn river_polylines_follow_selection_levels() {
         let context = river_context();
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
-        assert_eq!(coarse.len(), 2, "level one is the L0 chain");
+        let coarse_expected: usize = (0..context.evaluator.river_reach_count() as u32)
+            .map(|reach| context.evaluator.river_path(reach, 0).len() - 1)
+            .sum();
+        assert_eq!(coarse.len(), coarse_expected, "level one uses portal legs");
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
-        assert_eq!(
-            deeper.len(),
-            2 * (1 << 3),
-            "level four reroutes at depth three"
-        );
+        let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
+            .map(|reach| context.evaluator.river_path(reach, 3).len() - 1)
+            .sum();
+        assert_eq!(deeper.len(), deep_expected);
         for (first, second) in coarse.iter().zip(&coarse) {
             assert_eq!(first, second);
         }
         let again = build_river_polylines(&context, &uniform_selection(&context, 4));
         assert_eq!(deeper, again, "polylines are deterministic");
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
-        let mid = deeper[(1 << 3) - 1].end;
-        assert_eq!(mid, deeper[1 << 3].start);
+        let first_reach_segments = context.evaluator.river_path(0, 3).len() - 1;
+        let mid = deeper[first_reach_segments - 1].end;
+        assert_eq!(mid, deeper[first_reach_segments].start);
     }
 
     /// Symptom regression (user acceptance, 2026-08-21): a reach follows
@@ -1231,10 +1233,13 @@ mod tests {
             cell_levels,
         };
         let polylines = build_river_polylines(&context, &selection);
-        // Reach 0 renders at its deeper endpoint (level 4 → 8
-        // sub-segments) although its other endpoint sits at level 1;
-        // reach 1 touches no deep cell and stays the L0 chord.
-        assert_eq!(polylines.len(), 8 + 1);
+        // Reach 0 renders at its deeper endpoint (level 4 → depth 3)
+        // although its other endpoint sits at level 1; reach 1 touches
+        // no deep cell and stays at its portal-split depth-zero path.
+        let expected = context.evaluator.river_path(0, 3).len() - 1
+            + context.evaluator.river_path(1, 0).len()
+            - 1;
+        assert_eq!(polylines.len(), expected);
     }
 
     fn map_view(zoom: f64) -> SphericalPresentationViewState {
