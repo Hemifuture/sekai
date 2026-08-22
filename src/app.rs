@@ -220,6 +220,7 @@ struct PendingWorldBuild {
 struct AmplifiedDisplayBundle {
     mesh: crate::view::AmplifiedSurfaceMesh,
     rivers: Vec<crate::view::RiverPolylineSegment>,
+    river_radius_m: f64,
     detail: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
     initial_hash: u64,
 }
@@ -695,6 +696,8 @@ pub struct TemplateApp {
     amplified_detail: Option<AmplifiedDetailEngine>,
     #[serde(skip)]
     river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
+    #[serde(skip)]
+    river_radius_m: Option<f64>,
     /// The active mesh's pre-projected map geometry (worker-produced;
     /// recomputed on the UI thread only when the projection changes).
     #[serde(skip)]
@@ -755,6 +758,7 @@ impl Default for TemplateApp {
             amplified_map_projected: None,
             amplified_detail: None,
             river_polylines: None,
+            river_radius_m: None,
             formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
@@ -1063,6 +1067,7 @@ impl TemplateApp {
                 self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
                 self.amplified_map_projected = None;
                 self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
+                self.river_radius_m = Some(bundle.river_radius_m);
                 self.amplified_detail = Some(spawn_amplified_detail_engine(
                     bundle.detail,
                     bundle.initial_hash,
@@ -1073,6 +1078,7 @@ impl TemplateApp {
                 self.amplified_map_projected = None;
                 self.amplified_detail = None;
                 self.river_polylines = None;
+                self.river_radius_m = None;
             }
         }
     }
@@ -1269,7 +1275,8 @@ impl TemplateApp {
         renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
         render_state: &RenderState,
     ) {
-        let Some(rivers) = self.river_polylines.as_deref() else {
+        let (Some(rivers), Some(radius_m)) = (self.river_polylines.as_deref(), self.river_radius_m)
+        else {
             renderer.clear_river_segments();
             return;
         };
@@ -1282,12 +1289,19 @@ impl TemplateApp {
         let mut map = Vec::with_capacity(rivers.len());
         let mut globe = Vec::with_capacity(rivers.len());
         for segment in rivers {
-            let width_px =
-                (1.2 + 0.7 * f32::from(segment.strahler_order.saturating_sub(1))).min(6.0);
+            let Some(width_vectors) = crate::view::river_width_vectors(
+                projection,
+                segment.start,
+                segment.end,
+                segment.width_m,
+                radius_m,
+            ) else {
+                continue;
+            };
             globe.push(crate::gpu::spherical::RiverGlobeSegment {
                 start: segment.start,
                 end: segment.end,
-                width_px,
+                width_vector: width_vectors.globe,
             });
             let (Some(start), Some(end)) = (
                 crate::view::project_unit_direction(projection, segment.start),
@@ -1295,15 +1309,19 @@ impl TemplateApp {
             ) else {
                 continue;
             };
-            // Seam-crossing reaches drop from the map: a reach is one cell
-            // spacing long, so the gap is a sliver at the outline edge.
+            // Seam-crossing sub-segments drop from the map; the gap is a
+            // sliver at the projection outline rather than a world-spanning
+            // false line.
             if (start[0] - end[0]).abs() > half_width {
                 continue;
             }
+            let Some(width_vector) = width_vectors.map else {
+                continue;
+            };
             map.push(crate::gpu::spherical::RiverMapSegment {
                 start,
                 end,
-                width_px,
+                width_vector,
             });
         }
         renderer.set_river_segments(&render_state.device, &render_state.queue, &map, &globe);
@@ -1485,6 +1503,7 @@ impl TemplateApp {
                     Some(AmplifiedDisplayBundle {
                         mesh,
                         rivers,
+                        river_radius_m: detail.evaluator.radius_m(),
                         detail,
                         initial_hash: selection.hash,
                     })

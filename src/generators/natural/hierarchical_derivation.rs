@@ -415,6 +415,11 @@ impl HierarchicalEvaluator {
         self.amplifier.river_reaches().len()
     }
 
+    /// The authoritative physical planet radius used by metre-scale T1 laws.
+    pub fn radius_m(&self) -> f64 {
+        self.amplifier.radius_m()
+    }
+
     /// The production hydraulic width of one published reach, in metres.
     pub fn river_width_m(&self, reach: u32) -> Option<f32> {
         self.amplifier

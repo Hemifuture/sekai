@@ -8,7 +8,9 @@ use super::{
     ProjectionBounds, ProjectionPoint, SphericalPresentationSource, SphericalProjection,
     SphericalProjectionError,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError, UnitVector3};
+use crate::world::spatial::{
+    cross, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError, UnitVector3,
+};
 use crate::world::{
     CellId, EdgeId, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE, MAX_SPHERICAL_CELL_COUNT,
     MAX_SPHERICAL_EDGE_COUNT,
@@ -1385,8 +1387,68 @@ pub struct RiverPolylineSegment {
     pub end: [f64; 3],
     /// The production hydraulic width, in metres.
     pub width_m: f32,
-    /// The published Strahler order used by the current raster presenter.
-    pub strahler_order: u8,
+}
+
+/// Physical cross-channel vectors for the two presenters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RiverWidthVectors {
+    /// Projected full-width vector, absent at a projection singularity or seam.
+    pub map: Option<[f64; 2]>,
+    /// Full-width vector on the unit globe.
+    pub globe: [f64; 3],
+}
+
+/// Derives both presenter vectors from one pair of physical offsets whose
+/// spherical arc length is `width_m` at the authoritative `radius_m`.
+pub fn river_width_vectors(
+    projection: SphericalProjection,
+    start: [f64; 3],
+    end: [f64; 3],
+    width_m: f32,
+    radius_m: f64,
+) -> Option<RiverWidthVectors> {
+    let (left, right) = river_width_directions(start, end, width_m, radius_m)?;
+    let globe = [right[0] - left[0], right[1] - left[1], right[2] - left[2]];
+    let map = project_unit_direction(projection, left)
+        .zip(project_unit_direction(projection, right))
+        .and_then(|(left, right)| {
+            let vector = [right[0] - left[0], right[1] - left[1]];
+            let bounds = projection.bounds();
+            let half_width = (bounds.max_x() - bounds.min_x()) * 0.5;
+            (vector[0].abs() <= half_width).then_some(vector)
+        });
+    Some(RiverWidthVectors { map, globe })
+}
+
+fn river_width_directions(
+    start: [f64; 3],
+    end: [f64; 3],
+    width_m: f32,
+    radius_m: f64,
+) -> Option<([f64; 3], [f64; 3])> {
+    if !(width_m.is_finite() && width_m > 0.0 && radius_m.is_finite() && radius_m > 0.0) {
+        return None;
+    }
+    let midpoint = UnitVector3::new(start[0] + end[0], start[1] + end[1], start[2] + end[2])
+        .ok()?
+        .components();
+    let normal = cross(start, end);
+    let normal = UnitVector3::new(normal[0], normal[1], normal[2])
+        .ok()?
+        .components();
+    let half_angle = f64::from(width_m) / (2.0 * radius_m);
+    if !(half_angle.is_finite() && half_angle < PI * 0.5) {
+        return None;
+    }
+    let (sin, cos) = half_angle.sin_cos();
+    let offset = |sign: f64| {
+        [
+            midpoint[0] * cos + sign * normal[0] * sin,
+            midpoint[1] * cos + sign * normal[1] * sin,
+            midpoint[2] * cos + sign * normal[2] * sin,
+        ]
+    };
+    Some((offset(-1.0), offset(1.0)))
 }
 
 /// Projects one unit direction through the map's fast path.
@@ -1600,8 +1662,9 @@ mod tests {
 
     use super::{
         angular_edge, angular_fan_polygon, append_edge_fragments, project_angular,
-        split_polygon_at_seam, triangulate_fragment, AngularVertex, PreparedGlobeMesh,
-        PreparedProjectedMap, ProjectedMapVertex, SphericalMeshBudgets, SphericalMeshError,
+        river_width_directions, river_width_vectors, split_polygon_at_seam, triangulate_fragment,
+        AngularVertex, PreparedGlobeMesh, PreparedProjectedMap, ProjectedMapVertex,
+        SphericalMeshBudgets, SphericalMeshError,
     };
 
     const RADIUS: f64 = 6_371_000.0;
@@ -1613,6 +1676,52 @@ mod tests {
             target_cell_count: cell_count,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn river_width_vectors_preserve_the_production_arc_width() {
+        let start = [0.999_950_000_416_665_3, -0.009_999_833_334_166_664, 0.0];
+        let end = [0.999_950_000_416_665_3, 0.009_999_833_334_166_664, 0.0];
+        let width_m = 1_250.0;
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::Equirectangular, 0.0).unwrap();
+        let vector = river_width_vectors(projection, start, end, width_m, RADIUS)
+            .unwrap()
+            .globe;
+        let chord = vector
+            .iter()
+            .map(|component| component * component)
+            .sum::<f64>()
+            .sqrt();
+        let recovered_m = 2.0 * (0.5 * chord).asin() * RADIUS;
+        assert!((recovered_m - f64::from(width_m)).abs() < 1.0e-8);
+    }
+
+    #[test]
+    fn map_river_width_is_the_projection_of_the_same_physical_offsets() {
+        let projection =
+            SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.3).unwrap();
+        let start = [0.8, 0.6, 0.0];
+        let end = [0.788_094_465, 0.591_070_849, 0.15];
+        let end = UnitVector3::new(end[0], end[1], end[2])
+            .unwrap()
+            .components();
+        let width_m = 900.0;
+        let (left, right) = river_width_directions(start, end, width_m, RADIUS).unwrap();
+        let expected_left = super::project_unit_direction(projection, left).unwrap();
+        let expected_right = super::project_unit_direction(projection, right).unwrap();
+        let vector = river_width_vectors(projection, start, end, width_m, RADIUS)
+            .unwrap()
+            .map
+            .unwrap();
+        assert_eq!(
+            vector.map(f64::to_bits),
+            [
+                expected_right[0] - expected_left[0],
+                expected_right[1] - expected_left[1],
+            ]
+            .map(f64::to_bits)
+        );
     }
 
     fn source(surface: &SphericalSurfaceSnapshot) -> SphericalPresentationSource {

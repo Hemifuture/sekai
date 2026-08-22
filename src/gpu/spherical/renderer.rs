@@ -92,8 +92,8 @@ pub struct RiverMapSegment {
     pub start: [f64; 2],
     /// Projected downstream endpoint.
     pub end: [f64; 2],
-    /// Symbolic line width in pixels (Strahler-scaled).
-    pub width_px: f32,
+    /// Full physical cross-channel vector in projected map coordinates.
+    pub width_vector: [f64; 2],
 }
 
 /// One river reach ready for the globe presenter.
@@ -103,12 +103,55 @@ pub struct RiverGlobeSegment {
     pub start: [f64; 3],
     /// Downstream unit direction.
     pub end: [f64; 3],
-    /// Symbolic line width in pixels (Strahler-scaled).
-    pub width_px: f32,
+    /// Full physical cross-channel vector on the unit globe.
+    pub width_vector: [f64; 3],
 }
 
 /// Linear-space river blue shared by both presenters.
 const RIVER_COLOR: [f32; 4] = [0.05, 0.18, 0.45, 0.9];
+/// Minimum full rasterized river width; physical projection dominates once
+/// it spans more than one sample.
+const RIVER_RASTER_FLOOR_PX: f32 = 1.0;
+
+fn river_map_instance(segment: &RiverMapSegment, map_origin: [f64; 2]) -> GpuMapOverlayInstance {
+    GpuMapOverlayInstance {
+        start: [
+            (segment.start[0] - map_origin[0]) as f32,
+            (segment.start[1] - map_origin[1]) as f32,
+        ],
+        end: [
+            (segment.end[0] - map_origin[0]) as f32,
+            (segment.end[1] - map_origin[1]) as f32,
+        ],
+        color: RIVER_COLOR,
+        width: RIVER_RASTER_FLOOR_PX,
+        kind: 0,
+        width_vector: segment.width_vector.map(|component| component as f32),
+    }
+}
+
+fn river_globe_instance(
+    segment: &RiverGlobeSegment,
+    globe_anchor: [f64; 3],
+) -> GpuGlobeOverlayInstance {
+    GpuGlobeOverlayInstance {
+        start: [
+            (segment.start[0] - globe_anchor[0]) as f32,
+            (segment.start[1] - globe_anchor[1]) as f32,
+            (segment.start[2] - globe_anchor[2]) as f32,
+        ],
+        width: RIVER_RASTER_FLOOR_PX,
+        end_or_direction: [
+            (segment.end[0] - globe_anchor[0]) as f32,
+            (segment.end[1] - globe_anchor[1]) as f32,
+            (segment.end[2] - globe_anchor[2]) as f32,
+        ],
+        length: 0.0,
+        color: RIVER_COLOR,
+        kind: 0,
+        width_vector: segment.width_vector.map(|component| component as f32),
+    }
+}
 
 /// One amplified map vertex: projected position plus pre-lit sRGB color.
 #[repr(C)]
@@ -1701,40 +1744,11 @@ impl SphericalFieldRenderer {
         let globe_anchor = self.amplified_globe_anchor;
         let map_instances: Vec<GpuMapOverlayInstance> = map
             .iter()
-            .map(|segment| GpuMapOverlayInstance {
-                start: [
-                    (segment.start[0] - map_origin[0]) as f32,
-                    (segment.start[1] - map_origin[1]) as f32,
-                ],
-                end: [
-                    (segment.end[0] - map_origin[0]) as f32,
-                    (segment.end[1] - map_origin[1]) as f32,
-                ],
-                color: RIVER_COLOR,
-                width: segment.width_px,
-                kind: 0,
-                padding: [0; 2],
-            })
+            .map(|segment| river_map_instance(segment, map_origin))
             .collect();
         let globe_instances: Vec<GpuGlobeOverlayInstance> = globe
             .iter()
-            .map(|segment| GpuGlobeOverlayInstance {
-                start: [
-                    (segment.start[0] - globe_anchor[0]) as f32,
-                    (segment.start[1] - globe_anchor[1]) as f32,
-                    (segment.start[2] - globe_anchor[2]) as f32,
-                ],
-                width: segment.width_px,
-                end_or_direction: [
-                    (segment.end[0] - globe_anchor[0]) as f32,
-                    (segment.end[1] - globe_anchor[1]) as f32,
-                    (segment.end[2] - globe_anchor[2]) as f32,
-                ],
-                length: 0.0,
-                color: RIVER_COLOR,
-                kind: 0,
-                padding: [0; 3],
-            })
+            .map(|segment| river_globe_instance(segment, globe_anchor))
             .collect();
         (self.river_map_buffer, self.river_map_instance_count) = upload_instance_buffer(
             device,
@@ -2658,20 +2672,22 @@ fn create_overlay_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
         0 => Float32x2,
         1 => Float32x2,
         2 => Float32x4,
         3 => Float32,
-        4 => Uint32
+        4 => Uint32,
+        5 => Float32x2
     ];
-    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32,
         2 => Float32x3,
         3 => Float32,
         4 => Float32x4,
-        5 => Uint32
+        5 => Uint32,
+        6 => Float32x3
     ];
     let (label, default_entry, array_stride, attributes) = match mode {
         SphericalRenderMode::Map => (
@@ -2743,8 +2759,10 @@ mod tests {
         GpuMapOverlayInstance,
     };
     use super::{
-        validation_probe, wgpu, GpuGlobeVertex, GpuMapVertex, SphericalFieldRenderer,
+        river_globe_instance, river_map_instance, validation_probe, wgpu, GpuGlobeVertex,
+        GpuMapVertex, RiverGlobeSegment, RiverMapSegment, SphericalFieldRenderer,
         SphericalFrameUniform, SphericalGpuPacket, SphericalRenderError, SphericalRenderMode,
+        RIVER_RASTER_FLOOR_PX,
     };
     use crate::engine::BuildResultHash;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -2772,6 +2790,96 @@ mod tests {
         assert_eq!(std::mem::size_of::<GpuMapOverlayInstance>(), 48);
         assert_eq!(std::mem::size_of::<GpuGlobeOverlayInstance>(), 64);
         assert_eq!(std::mem::size_of::<SphericalFrameUniform>(), 192);
+    }
+
+    #[test]
+    fn river_instances_store_physical_vectors_and_the_raster_floor() {
+        let map = river_map_instance(
+            &RiverMapSegment {
+                start: [10.0, 20.0],
+                end: [11.0, 22.0],
+                width_vector: [0.025, -0.05],
+            },
+            [9.0, 18.0],
+        );
+        assert_eq!(map.start, [1.0, 2.0]);
+        assert_eq!(map.end, [2.0, 4.0]);
+        assert_eq!(map.width, RIVER_RASTER_FLOOR_PX);
+        assert_eq!(map.width_vector, [0.025, -0.05]);
+
+        let globe = river_globe_instance(
+            &RiverGlobeSegment {
+                start: [0.2, 0.4, 0.8],
+                end: [0.3, 0.5, 0.7],
+                width_vector: [0.001, -0.002, 0.003],
+            },
+            [0.1, 0.2, 0.3],
+        );
+        assert_eq!(globe.start, [0.1, 0.2, 0.5]);
+        assert_eq!(globe.end_or_direction, [0.2, 0.3, 0.4]);
+        assert_eq!(globe.width, RIVER_RASTER_FLOOR_PX);
+        assert_eq!(globe.width_vector, [0.001, -0.002, 0.003]);
+    }
+
+    #[test]
+    fn camera_zoom_projects_one_river_instance_to_a_wider_raster() {
+        let Some((device, queue)) = request_test_device() else {
+            return;
+        };
+        let fixture = packet_fixture(TestFieldKind::Scalar, 229);
+        let mut renderer =
+            SphericalFieldRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+        renderer
+            .prepare_packet(&device, &queue, &fixture.packet)
+            .unwrap();
+        renderer.set_river_segments(
+            &device,
+            &queue,
+            &[RiverMapSegment {
+                start: [-0.5, 0.0],
+                end: [0.5, 0.0],
+                width_vector: [0.0, 0.02],
+            }],
+            &[],
+        );
+        let viewport = [256, 256];
+        let visibility = SphericalLayerVisibility {
+            fill: false,
+            overlay: false,
+            amplified: true,
+        };
+        let render = |renderer: &mut SphericalFieldRenderer, camera| {
+            let mut uniform = SphericalFrameUniform::for_map_with_visibility(
+                &fixture.packet,
+                camera,
+                viewport,
+                visibility,
+            )
+            .unwrap();
+            uniform.diagnostics_enabled = 0;
+            renderer
+                .prepare_frame(&queue, SphericalRenderMode::Map, &uniform)
+                .unwrap();
+            readback_renderer(
+                &device,
+                &queue,
+                renderer,
+                SphericalRenderMode::Map,
+                viewport,
+            )
+        };
+        let low = render(&mut renderer, MapCamera::default());
+        let mut zoomed = MapCamera::default();
+        assert!(zoomed.zoom_by(SphericalProjectionKind::Equirectangular, 32.0));
+        let high = render(&mut renderer, zoomed);
+        let column_span = |pixels: &[u8]| {
+            let rows = (0..viewport[1] as usize)
+                .filter(|&row| pixels[(row * viewport[0] as usize + 128) * 4 + 3] != 0)
+                .collect::<Vec<_>>();
+            rows.last().unwrap() - rows.first().unwrap() + 1
+        };
+        assert!(column_span(&low) <= 2);
+        assert!(column_span(&high) >= 20);
     }
 
     #[test]

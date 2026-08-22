@@ -1047,7 +1047,6 @@ pub(super) fn build_river_polylines(
                 start: pair[0].components(),
                 end: pair[1].components(),
                 width_m,
-                strahler_order: order,
             });
         }
     }

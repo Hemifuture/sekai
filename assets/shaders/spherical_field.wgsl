@@ -233,6 +233,16 @@ fn expanded_overlay_vertex(
     return output;
 }
 
+fn projected_vector_width_pixels(center: vec4<f32>, vector: vec4<f32>) -> f32 {
+    let left = center - vector * 0.5;
+    let right = center + vector * 0.5;
+    if abs(left.w) <= 0.000001 || abs(right.w) <= 0.000001 {
+        return 0.0;
+    }
+    let delta_ndc = right.xy / right.w - left.xy / left.w;
+    return length(delta_ndc * frame.viewport_pixels * 0.5);
+}
+
 fn globe_overlay_from_clip(
     start_clip0: vec4<f32>,
     end_clip0: vec4<f32>,
@@ -310,11 +320,21 @@ fn vs_map_river(
     @location(2) color: vec4<f32>,
     @location(3) width: f32,
     @location(4) kind: u32,
+    @location(5) width_vector: vec2<f32>,
     @builtin(vertex_index) vertex: u32,
 ) -> OverlayOutput {
     let start_clip = frame.detail_transform * vec4<f32>(start, 0.0, 1.0);
     let end_clip = frame.detail_transform * vec4<f32>(end, 0.0, 1.0);
-    return expanded_overlay_vertex(start_clip, end_clip, width, color, kind, vertex);
+    let vector_clip = frame.detail_transform * vec4<f32>(width_vector, 0.0, 0.0);
+    let physical_width = projected_vector_width_pixels((start_clip + end_clip) * 0.5, vector_clip);
+    return expanded_overlay_vertex(
+        start_clip,
+        end_clip,
+        max(width, physical_width),
+        color,
+        kind,
+        vertex,
+    );
 }
 
 @vertex
@@ -325,11 +345,21 @@ fn vs_globe_river(
     @location(3) arrow_length: f32,
     @location(4) color: vec4<f32>,
     @location(5) kind: u32,
+    @location(6) width_vector: vec3<f32>,
     @builtin(vertex_index) vertex: u32,
 ) -> OverlayOutput {
     let start_clip = frame.detail_transform * vec4<f32>(start, 1.0);
     let end_clip = frame.detail_transform * vec4<f32>(end_or_direction, 1.0);
-    return globe_overlay_from_clip(start_clip, end_clip, width, color, kind, vertex);
+    let vector_clip = frame.detail_transform * vec4<f32>(width_vector, 0.0);
+    let physical_width = projected_vector_width_pixels((start_clip + end_clip) * 0.5, vector_clip);
+    return globe_overlay_from_clip(
+        start_clip,
+        end_clip,
+        max(width, physical_width),
+        color,
+        kind,
+        vertex,
+    );
 }
 
 // River polylines share the overlay expansion but ignore the overlay

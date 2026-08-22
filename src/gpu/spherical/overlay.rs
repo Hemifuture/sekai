@@ -60,7 +60,7 @@ pub(super) struct GpuMapOverlayInstance {
     pub(super) color: [f32; 4],
     pub(super) width: f32,
     pub(super) kind: u32,
-    pub(super) padding: [u32; 2],
+    pub(super) width_vector: [f32; 2],
 }
 
 #[repr(C)]
@@ -72,7 +72,7 @@ pub(super) struct GpuGlobeOverlayInstance {
     pub(super) length: f32,
     pub(super) color: [f32; 4],
     pub(super) kind: u32,
-    pub(super) padding: [u32; 3],
+    pub(super) width_vector: [f32; 3],
 }
 
 pub(super) struct PreparedMapOverlayInstances {
@@ -120,7 +120,7 @@ pub(super) fn prepare_map_overlay_instances(
                     color,
                     width,
                     kind: EDGE_KIND,
-                    padding: [0; 2],
+                    width_vector: [0.0; 2],
                 });
             }
             Ok(PreparedMapOverlayInstances {
@@ -151,7 +151,7 @@ pub(super) fn prepare_map_overlay_instances(
                         color: sample_palette(palette, glyph.color_position()).components(),
                         width: 2.0,
                         kind: VECTOR_KIND,
-                        padding: [0; 2],
+                        width_vector: [0.0; 2],
                     }
                 })
                 .collect::<Vec<_>>();
@@ -192,7 +192,7 @@ pub(super) fn prepare_globe_overlay_instances(
                     length: 0.0,
                     color,
                     kind: EDGE_KIND,
-                    padding: [0; 3],
+                    width_vector: [0.0; 3],
                 });
             }
             Ok(PreparedGlobeOverlayInstances {
@@ -219,7 +219,7 @@ pub(super) fn prepare_globe_overlay_instances(
                     length: glyph.length(),
                     color: sample_palette(palette, glyph.color_position()).components(),
                     kind: VECTOR_KIND,
-                    padding: [0; 3],
+                    width_vector: [0.0; 3],
                 })
                 .collect::<Vec<_>>();
             Ok(PreparedGlobeOverlayInstances {
@@ -413,7 +413,7 @@ mod tests {
             assert_eq!(actual.color.map(f32::to_bits), color.map(f32::to_bits));
             assert_eq!(actual.width.to_bits(), width.to_bits());
             assert_eq!(actual.kind, EDGE_KIND);
-            assert_eq!(actual.padding, [0; 2]);
+            assert_eq!(actual.width_vector, [0.0; 2]);
         }
 
         let expected_globe = candidate
@@ -442,7 +442,7 @@ mod tests {
             assert_eq!(actual.width.to_bits(), width.to_bits());
             assert_eq!(actual.length.to_bits(), 0.0_f32.to_bits());
             assert_eq!(actual.kind, EDGE_KIND);
-            assert_eq!(actual.padding, [0; 3]);
+            assert_eq!(actual.width_vector, [0.0; 3]);
         }
     }
 
@@ -522,7 +522,7 @@ mod tests {
             );
             assert_eq!(actual.width.to_bits(), 2.0_f32.to_bits());
             assert_eq!(actual.kind, VECTOR_KIND);
-            assert_eq!(actual.padding, [0; 2]);
+            assert_eq!(actual.width_vector, [0.0; 2]);
         }
 
         let actual_globe =
@@ -549,7 +549,7 @@ mod tests {
             );
             assert_eq!(actual.width.to_bits(), 2.0_f32.to_bits());
             assert_eq!(actual.kind, VECTOR_KIND);
-            assert_eq!(actual.padding, [0; 3]);
+            assert_eq!(actual.width_vector, [0.0; 3]);
         }
     }
 }

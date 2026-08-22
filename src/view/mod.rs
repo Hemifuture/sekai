@@ -57,9 +57,10 @@ pub use spherical_camera::{
     GlobeCamera, MapCamera, MapScreenTransform, SphericalPresentationViewState, SphericalViewMode,
 };
 pub use spherical_mesh::{
-    project_amplified_map, project_unit_direction, AmplifiedMapVertex, AmplifiedSurfaceMesh,
-    GlobeVertex, PreparedGlobeMesh, PreparedProjectedMap, ProjectedEdgeSegment, ProjectedMapVertex,
-    RiverPolylineSegment, SphericalMeshBudgets, SphericalMeshError,
+    project_amplified_map, project_unit_direction, river_width_vectors, AmplifiedMapVertex,
+    AmplifiedSurfaceMesh, GlobeVertex, PreparedGlobeMesh, PreparedProjectedMap,
+    ProjectedEdgeSegment, ProjectedMapVertex, RiverPolylineSegment, RiverWidthVectors,
+    SphericalMeshBudgets, SphericalMeshError,
 };
 pub use spherical_picking::{
     intersect_unit_sphere, RayError, RaySphereHit, SphericalEntityLocator, SphericalPickingError,
