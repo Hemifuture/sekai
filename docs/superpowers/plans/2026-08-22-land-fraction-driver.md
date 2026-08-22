@@ -24,7 +24,7 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
 - [x] Task 2 —— 规格冻结：§8 已由用户裁定（R1）；按 Task 1 钉预设
       `recommended_land_fraction` 实测值、水量比合法范围与建议带常量、
       陆地上限表；**停一次交用户确认**后冻结。
-- [ ] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy` 与
+- [x] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy` 与
       `water_inventory_ratio`（schema 升版、校验、序列化）；物理模式库存
       = 比值 × 地球缩放水量；目标解复用 `select_area_weighted_sea_level` +
       `water_volume_at_sea_level_m3` 隐含水量（互逆测试）；P3 `generate` 分派，快照 wire 不变；

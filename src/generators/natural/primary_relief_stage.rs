@@ -333,6 +333,7 @@ fn relief_failure(error: PrimaryReliefGenerationError) -> StageError {
         PrimaryReliefGenerationError::InvalidReliefField(_)
         | PrimaryReliefGenerationError::InvalidCompatibility(_)
         | PrimaryReliefGenerationError::InvalidWaterSolve(_)
+        | PrimaryReliefGenerationError::InvalidLandFractionSelection(_)
         | PrimaryReliefGenerationError::InvalidSnapshot(_) => {
             StageError::new(RELIEF_BUILD_FAILED_CODE, error.to_string())
         }

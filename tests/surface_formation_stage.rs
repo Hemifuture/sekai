@@ -17,8 +17,8 @@ use sekai::generators::spatial::{ProfileSurfaceBuilder, SphericalSurfaceArtifact
 use sekai::rules::{ClimateModel, GeologicModel, HydroErosionModel, TectonicModel};
 use sekai::world::natural::{
     ClimateSpec, GeologicSpec, HydroErosionSpec, NaturalQualityProfile, ReliefSpec,
-    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicSpec,
+    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -39,19 +39,71 @@ fn surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
 /// Builds the full draft-tier formation product the presentation-layer
 /// engines consume (shared by the frozen T1 fingerprint gates).
 fn draft_formation_outcome(root_seed: RootSeed) -> BuildOutcome {
+    draft_formation_outcome_with_relief(root_seed, &ReliefSpec::default())
+}
+
+fn draft_formation_outcome_with_relief(
+    root_seed: RootSeed,
+    relief_spec: &ReliefSpec,
+) -> BuildOutcome {
     let external = sekai::app::build_spherical_formation_external_artifacts(
         root_seed,
         NaturalQualityProfile::Draft,
         surface(),
         &sekai::world::natural::WorldFormationSpec::default(),
         &TectonicSpec::default(),
-        &ReliefSpec::default(),
+        relief_spec,
         &GeologicSpec::default(),
     )
     .unwrap();
     BuildEngine::new(surface_formation_graph().unwrap())
         .build(root_seed, external, &mut MemoryStageCache::new())
         .unwrap()
+}
+
+#[test]
+fn target_land_fraction_inventory_reaches_p5_without_changing_the_default_product() {
+    let default = draft_formation_outcome(RootSeed::new(42));
+    let default_formation = default
+        .artifacts
+        .get::<NaturalSurfaceFormationArtifact>()
+        .unwrap();
+    assert_eq!(
+        blake3::hash(&serde_json::to_vec(default_formation.as_ref()).unwrap())
+            .to_hex()
+            .to_string(),
+        "83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90"
+    );
+
+    let target = draft_formation_outcome_with_relief(
+        RootSeed::new(42),
+        &ReliefSpec {
+            target_land_fraction: 0.38,
+            sea_level_policy: SeaLevelPolicy::TargetLandFraction,
+            ..ReliefSpec::default()
+        },
+    );
+    let primary = target.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    let formation = target
+        .artifacts
+        .get::<NaturalSurfaceFormationArtifact>()
+        .unwrap();
+    assert_eq!(
+        formation
+            .snapshot()
+            .terrain_fields()
+            .water_inventory_m3()
+            .to_bits(),
+        primary.snapshot().water_inventory_m3().to_bits()
+    );
+    let drift = formation
+        .quality_report()
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == "final-land-fraction-absolute-change")
+        .and_then(|metric| metric.value())
+        .expect("P5 reports its production land-fraction drift gate");
+    assert!(drift <= 0.01, "target-mode P5 land-fraction drift {drift}");
 }
 
 fn p5_external(climate_spec: ClimateSpec, formation_spec: HydroErosionSpec) -> ExternalArtifacts {

@@ -13,8 +13,9 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceArtifact};
 use sekai::rules::{GeologicModel, TectonicModel};
 use sekai::world::natural::{
-    GeologicSpec, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, GeologicSpec,
+    LandFractionConstraintStatus, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicSpec, WorldFormationPreset,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
@@ -212,6 +213,106 @@ fn graph_builds_strict_artifacts_and_restores_all_three_stages_from_cache() {
             .hash::<GeologicSubstrateArtifact>()
             .unwrap(),
         first.artifacts.hash::<GeologicSubstrateArtifact>().unwrap()
+    );
+}
+
+#[test]
+fn sea_level_policies_preserve_the_default_and_solve_the_authored_driver() {
+    let engine = BuildEngine::new(primary_relief_graph().unwrap());
+    let mut cache = MemoryStageCache::new();
+    let default = engine
+        .build(
+            RootSeed::new(42),
+            external(ReliefSpec::default()),
+            &mut cache,
+        )
+        .unwrap();
+    let default_relief = default.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    let default_snapshot_hash =
+        blake3::hash(&serde_json::to_vec(default_relief.snapshot()).unwrap())
+            .to_hex()
+            .to_string();
+    assert_eq!(
+        default_snapshot_hash,
+        "051d0907261112e80b59f0c4f014b6a0a9f1d9a5f142b2a74c160ab675b3aede"
+    );
+
+    let total_area = draft_surface().total_cell_area().get();
+    let earth_inventory = scaled_earth_ocean_inventory_m3(total_area).unwrap();
+    assert_eq!(
+        default_relief.snapshot().water_inventory_m3().to_bits(),
+        earth_inventory.to_bits()
+    );
+
+    let half_water = engine
+        .build(
+            RootSeed::new(42),
+            external(ReliefSpec {
+                water_inventory_ratio: 0.5,
+                ..ReliefSpec::default()
+            }),
+            &mut cache,
+        )
+        .unwrap();
+    let half_water = half_water.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    assert_eq!(
+        half_water.snapshot().water_inventory_m3().to_bits(),
+        (earth_inventory * 0.5).to_bits()
+    );
+    assert!(half_water.snapshot().sea_level_m() < default_relief.snapshot().sea_level_m());
+    assert!(
+        half_water.snapshot().physical_land_fraction()
+            > default_relief.snapshot().physical_land_fraction()
+    );
+    assert_eq!(
+        half_water.snapshot().elevation_m(),
+        default_relief.snapshot().elevation_m()
+    );
+
+    let target_spec = ReliefSpec {
+        target_land_fraction: 0.38,
+        sea_level_policy: SeaLevelPolicy::TargetLandFraction,
+        ..ReliefSpec::default()
+    };
+    let target = engine
+        .build(RootSeed::new(42), external(target_spec), &mut cache)
+        .unwrap();
+    let target = target.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    let target_snapshot = target.snapshot();
+    assert_eq!(
+        target_snapshot.constraint_status(),
+        LandFractionConstraintStatus::Satisfied
+    );
+    assert!(
+        (target_snapshot.physical_land_fraction() - 0.38).abs()
+            <= target_snapshot.land_fraction_tolerance()
+    );
+    let inverse = solve_physical_sea_level(
+        target_snapshot.elevation_m(),
+        &draft_surface()
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .collect::<Vec<_>>(),
+        target_snapshot.water_inventory_m3(),
+    )
+    .unwrap();
+    assert_eq!(
+        inverse.sea_level_m().to_bits(),
+        target_snapshot.sea_level_m().to_bits()
+    );
+
+    let metric = target
+        .quality_report()
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == "water-inventory-ratio")
+        .expect("P3 reports the implicit target-mode water inventory");
+    assert_eq!(metric.bounds().min(), None);
+    assert_eq!(metric.bounds().max(), None);
+    assert_eq!(
+        metric.value().unwrap().to_bits(),
+        (target_snapshot.water_inventory_m3() / earth_inventory).to_bits()
     );
 }
 

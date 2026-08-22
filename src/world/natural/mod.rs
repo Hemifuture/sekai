@@ -165,8 +165,9 @@ pub use relief::{
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 pub use relief_spec::{
-    ReliefSpec, ReliefSpecError, MAX_TARGET_LAND_FRACTION, MIN_TARGET_LAND_FRACTION,
-    RELIEF_SPEC_SCHEMA_V1,
+    ReliefSpec, ReliefSpecError, SeaLevelPolicy, MAX_TARGET_LAND_FRACTION,
+    MAX_WATER_INVENTORY_RATIO, MIN_TARGET_LAND_FRACTION, MIN_WATER_INVENTORY_RATIO,
+    RELIEF_SPEC_SCHEMA_V2,
 };
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,

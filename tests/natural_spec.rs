@@ -5,8 +5,9 @@ use sekai::{
         natural::{
             NaturalSpecError, ReliefSpec, ReliefSpecError, TectonicActivity, TectonicSpec,
             MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MAX_TARGET_LAND_FRACTION,
-            MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT, MIN_TARGET_LAND_FRACTION,
-            RELIEF_SPEC_SCHEMA_V1, TECTONIC_SPEC_SCHEMA_V1,
+            MAX_WATER_INVENTORY_RATIO, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
+            MIN_TARGET_LAND_FRACTION, MIN_WATER_INVENTORY_RATIO, RELIEF_SPEC_SCHEMA_V2,
+            TECTONIC_SPEC_SCHEMA_V1,
         },
         BoundarySegmentId, PlateId,
     },
@@ -129,10 +130,43 @@ fn tectonic_spec_has_a_deterministic_json_round_trip() {
 fn default_relief_spec_is_a_valid_explicit_land_area_target() {
     let spec = ReliefSpec::default();
 
-    assert_eq!(spec.schema_version, RELIEF_SPEC_SCHEMA_V1);
+    assert_eq!(spec.schema_version, RELIEF_SPEC_SCHEMA_V2);
     assert_eq!(spec.target_land_fraction, 0.38);
     assert_eq!(spec.validate(), Ok(()));
     assert!(ReliefSpecArtifact::new(spec).validate().is_ok());
+}
+
+#[test]
+fn default_relief_spec_serializes_the_physical_water_inventory_driver() {
+    let encoded = serde_json::to_value(ReliefSpec::default()).unwrap();
+
+    assert_eq!(encoded["schema_version"], serde_json::json!(2));
+    assert_eq!(
+        encoded["sea_level_policy"],
+        serde_json::json!("WaterInventory")
+    );
+    assert_eq!(encoded["water_inventory_ratio"], serde_json::json!(1.0));
+}
+
+#[test]
+fn relief_spec_deserialization_enforces_the_water_inventory_ratio_range() {
+    let valid = serde_json::json!({
+        "schema_version": 2,
+        "target_land_fraction": 0.38,
+        "sea_level_policy": "TargetLandFraction",
+        "water_inventory_ratio": 0.05,
+    });
+    assert!(serde_json::from_value::<ReliefSpec>(valid.clone()).is_ok());
+
+    for ratio in [
+        serde_json::json!(0.049),
+        serde_json::json!(5.001),
+        serde_json::json!("NaN"),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["water_inventory_ratio"] = ratio;
+        assert!(serde_json::from_value::<ReliefSpec>(invalid).is_err());
+    }
 }
 
 #[test]
@@ -166,15 +200,45 @@ fn relief_spec_accepts_only_finite_inclusive_land_area_bounds() {
 
     assert_eq!(
         ReliefSpec {
-            schema_version: RELIEF_SPEC_SCHEMA_V1 + 1,
+            schema_version: RELIEF_SPEC_SCHEMA_V2 + 1,
             ..ReliefSpec::default()
         }
         .validate(),
         Err(ReliefSpecError::UnsupportedSchema {
-            found: RELIEF_SPEC_SCHEMA_V1 + 1,
-            supported: RELIEF_SPEC_SCHEMA_V1,
+            found: RELIEF_SPEC_SCHEMA_V2 + 1,
+            supported: RELIEF_SPEC_SCHEMA_V2,
         })
     );
+}
+
+#[test]
+fn relief_spec_accepts_only_finite_inclusive_water_inventory_bounds() {
+    for water_inventory_ratio in [MIN_WATER_INVENTORY_RATIO, MAX_WATER_INVENTORY_RATIO] {
+        assert_eq!(
+            ReliefSpec {
+                water_inventory_ratio,
+                ..ReliefSpec::default()
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    for water_inventory_ratio in [
+        f32::NAN,
+        f32::INFINITY,
+        MIN_WATER_INVENTORY_RATIO - 0.01,
+        MAX_WATER_INVENTORY_RATIO + 0.01,
+    ] {
+        assert!(matches!(
+            ReliefSpec {
+                water_inventory_ratio,
+                ..ReliefSpec::default()
+            }
+            .validate(),
+            Err(ReliefSpecError::WaterInventoryRatioOutOfRange { .. })
+        ));
+    }
 }
 
 #[test]
@@ -187,8 +251,8 @@ fn relief_spec_deserialization_validates_before_returning_a_value() {
     assert_eq!(serde_json::from_str::<ReliefSpec>(&encoded).unwrap(), spec);
 
     let invalid = format!(
-        r#"{{"schema_version":{},"target_land_fraction":0.38}}"#,
-        RELIEF_SPEC_SCHEMA_V1 + 1
+        r#"{{"schema_version":{},"target_land_fraction":0.38,"sea_level_policy":"WaterInventory","water_inventory_ratio":1.0}}"#,
+        RELIEF_SPEC_SCHEMA_V2 + 1
     );
     assert!(serde_json::from_str::<ReliefSpec>(&invalid).is_err());
 }

@@ -3,8 +3,8 @@ use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
     physical_land_fraction, scaled_earth_ocean_inventory_m3, solve_physical_sea_level,
     ElevationField, LandFractionConstraintStatus, LandOceanField, NaturalQualityProfile,
-    PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot, PRIMARY_RELIEF_SCHEMA_V1,
-    RELIEF_SCHEMA_V4,
+    PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy, SphericalReliefSnapshot,
+    PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::Meters;
@@ -139,5 +139,19 @@ fn surface_cross_validation_recomputes_area_weighted_constraint_status() {
     let stale: PrimaryReliefSnapshot = serde_json::from_value(encoded).unwrap();
     assert!(stale
         .validate_against_surface(&surface, &ReliefSpec::default())
+        .is_err());
+}
+
+#[test]
+fn target_policy_cross_validation_requires_the_authored_land_fraction_to_be_satisfied() {
+    let surface = surface();
+    let snapshot = valid_snapshot(&surface);
+    let target_spec = ReliefSpec {
+        sea_level_policy: SeaLevelPolicy::TargetLandFraction,
+        ..ReliefSpec::default()
+    };
+
+    assert!(snapshot
+        .validate_against_surface(&surface, &target_spec)
         .is_err());
 }

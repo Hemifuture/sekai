@@ -6,9 +6,9 @@ use super::geology::validate_bedrock_crust_compatibility;
 use super::{
     BedrockKind, BedrockKindField, CrustKind, CrustKindField, EvolvedTectonicSnapshot,
     EvolvedTectonicValidationError, GeologicValidationError, LandOceanField, LandOceanKind,
-    ReliefSpec, ReliefSpecError, SphericalMantleSnapshot, SphericalMantleValidationError,
-    SphericalReliefSnapshot, SphericalReliefValidationError, TectonicValidationError,
-    COMPONENT_IDENTITY_TOLERANCE_M, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    ReliefSpec, ReliefSpecError, SeaLevelPolicy, SphericalMantleSnapshot,
+    SphericalMantleValidationError, SphericalReliefSnapshot, SphericalReliefValidationError,
+    TectonicValidationError, COMPONENT_IDENTITY_TOLERANCE_M, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
     CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
     CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
     MAX_CRUST_AGE_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
@@ -930,9 +930,47 @@ impl PrimaryReliefSnapshot {
         surface: &SphericalSurfaceSnapshot,
         relief_spec: &ReliefSpec,
     ) -> Result<(), PrimaryReliefValidationError> {
+        self.validate_against_surface_measurements(surface)?;
+        relief_spec.validate()?;
+        if self.requested_land_fraction.to_bits() != relief_spec.target_land_fraction.to_bits() {
+            return Err(
+                PrimaryReliefValidationError::RequestedLandFractionMismatch {
+                    stored: self.requested_land_fraction,
+                    authored: relief_spec.target_land_fraction,
+                },
+            );
+        }
+        if relief_spec.sea_level_policy == SeaLevelPolicy::TargetLandFraction
+            && self.constraint_status != LandFractionConstraintStatus::Satisfied
+        {
+            return Err(
+                PrimaryReliefValidationError::TargetLandFractionNotSatisfied {
+                    requested: self.requested_land_fraction,
+                    actual: self.physical_land_fraction,
+                    tolerance: self.land_fraction_tolerance,
+                },
+            );
+        }
+        if relief_spec.sea_level_policy == SeaLevelPolicy::WaterInventory {
+            let total_area = compensated_sum(surface.cells().iter().map(|cell| cell.area.get()));
+            let expected_inventory = scaled_earth_ocean_inventory_m3(total_area)?
+                * f64::from(relief_spec.water_inventory_ratio);
+            validate_close_f64(
+                "water_inventory_m3",
+                self.water_inventory_m3,
+                expected_inventory,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Recomputes surface-bound measurements without an unavailable authoring policy.
+    pub(crate) fn validate_against_surface_measurements(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), PrimaryReliefValidationError> {
         self.validate()?;
         surface.validate()?;
-        relief_spec.validate()?;
         self.compatibility
             .validate_against_validated_surface(surface)?;
         let authoritative = SurfaceRef::for_spherical(surface);
@@ -942,27 +980,11 @@ impl PrimaryReliefSnapshot {
                 authoritative,
             });
         }
-        if self.requested_land_fraction.to_bits() != relief_spec.target_land_fraction.to_bits() {
-            return Err(
-                PrimaryReliefValidationError::RequestedLandFractionMismatch {
-                    stored: self.requested_land_fraction,
-                    authored: relief_spec.target_land_fraction,
-                },
-            );
-        }
-
         let areas = surface
             .cells()
             .iter()
             .map(|cell| cell.area.get())
             .collect::<Vec<_>>();
-        let total_area = compensated_sum(areas.iter().copied());
-        let expected_inventory = scaled_earth_ocean_inventory_m3(total_area)?;
-        validate_close_f64(
-            "water_inventory_m3",
-            self.water_inventory_m3,
-            expected_inventory,
-        )?;
         let realized = water_volume_at_sea_level_m3(
             &self.elevation_m,
             &areas,
@@ -1638,6 +1660,14 @@ pub enum PrimaryReliefValidationError {
     InvalidReliefSpec(#[from] ReliefSpecError),
     #[error("requested land fraction {stored} differs from authored {authored}")]
     RequestedLandFractionMismatch { stored: f32, authored: f32 },
+    #[error(
+        "target-driven sea level did not satisfy land fraction {requested}: actual {actual}, tolerance {tolerance}"
+    )]
+    TargetLandFractionNotSatisfied {
+        requested: f32,
+        actual: f32,
+        tolerance: f32,
+    },
     #[error("physical water solve is invalid: {0}")]
     InvalidWaterSolve(#[from] WaterVolumeSolveError),
     #[error("{field} stored {stored} differs from recomputed {recomputed} by {relative_error}")]

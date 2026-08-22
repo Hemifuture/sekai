@@ -1,12 +1,29 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-/// The supported serialized relief-authoring schema.
-pub const RELIEF_SPEC_SCHEMA_V1: u16 = 1;
+/// The current serialized relief-authoring schema.
+pub const RELIEF_SPEC_SCHEMA_V2: u16 = 2;
 /// The smallest supported authored share of emergent land.
 pub const MIN_TARGET_LAND_FRACTION: f32 = 0.05;
 /// The largest supported authored share of emergent land.
 pub const MAX_TARGET_LAND_FRACTION: f32 = 0.75;
+/// The T0b 17-seed water-response probe's lower authored-inventory bound.
+///
+/// The probe and bound selection are recorded in the T0b design §2.4 and §8.
+pub const MIN_WATER_INVENTORY_RATIO: f32 = 0.05;
+/// The T0b 17-seed water-response probe's upper authored-inventory bound.
+///
+/// The probe and bound selection are recorded in the T0b design §2.4 and §8.
+pub const MAX_WATER_INVENTORY_RATIO: f32 = 5.0;
+
+/// Selects which authored quantity determines global sea level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeaLevelPolicy {
+    /// Solves sea level from the authored water inventory.
+    WaterInventory,
+    /// Selects sea level from the authored emergent-land fraction.
+    TargetLandFraction,
+}
 
 /// A versioned author request for the final emergent land area.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -15,13 +32,19 @@ pub struct ReliefSpec {
     pub schema_version: u16,
     /// The requested share of authoritative spherical area above sea level.
     pub target_land_fraction: f32,
+    /// The authored quantity that determines sea level on the formation chain.
+    pub sea_level_policy: SeaLevelPolicy,
+    /// Surface-water volume relative to the area-scaled Earth inventory.
+    pub water_inventory_ratio: f32,
 }
 
 impl Default for ReliefSpec {
     fn default() -> Self {
         Self {
-            schema_version: RELIEF_SPEC_SCHEMA_V1,
+            schema_version: RELIEF_SPEC_SCHEMA_V2,
             target_land_fraction: 0.38,
+            sea_level_policy: SeaLevelPolicy::WaterInventory,
+            water_inventory_ratio: 1.0,
         }
     }
 }
@@ -29,10 +52,10 @@ impl Default for ReliefSpec {
 impl ReliefSpec {
     /// Validates the schema and finite land-area range.
     pub fn validate(&self) -> Result<(), ReliefSpecError> {
-        if self.schema_version != RELIEF_SPEC_SCHEMA_V1 {
+        if self.schema_version != RELIEF_SPEC_SCHEMA_V2 {
             return Err(ReliefSpecError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: RELIEF_SPEC_SCHEMA_V1,
+                supported: RELIEF_SPEC_SCHEMA_V2,
             });
         }
         if !self.target_land_fraction.is_finite()
@@ -45,6 +68,16 @@ impl ReliefSpec {
                 max: MAX_TARGET_LAND_FRACTION,
             });
         }
+        if !self.water_inventory_ratio.is_finite()
+            || !(MIN_WATER_INVENTORY_RATIO..=MAX_WATER_INVENTORY_RATIO)
+                .contains(&self.water_inventory_ratio)
+        {
+            return Err(ReliefSpecError::WaterInventoryRatioOutOfRange {
+                found: self.water_inventory_ratio,
+                min: MIN_WATER_INVENTORY_RATIO,
+                max: MAX_WATER_INVENTORY_RATIO,
+            });
+        }
         Ok(())
     }
 }
@@ -54,6 +87,8 @@ impl ReliefSpec {
 struct ReliefSpecWire {
     schema_version: u16,
     target_land_fraction: f32,
+    sea_level_policy: SeaLevelPolicy,
+    water_inventory_ratio: f32,
 }
 
 impl<'de> Deserialize<'de> for ReliefSpec {
@@ -65,6 +100,8 @@ impl<'de> Deserialize<'de> for ReliefSpec {
         let spec = Self {
             schema_version: wire.schema_version,
             target_land_fraction: wire.target_land_fraction,
+            sea_level_policy: wire.sea_level_policy,
+            water_inventory_ratio: wire.water_inventory_ratio,
         };
         spec.validate().map_err(serde::de::Error::custom)?;
         Ok(spec)
@@ -85,6 +122,16 @@ pub enum ReliefSpecError {
     /// The requested land share is non-finite or outside the product range.
     #[error("target land fraction {found} is outside {min}..={max}")]
     TargetLandFractionOutOfRange {
+        /// Invalid authored value.
+        found: f32,
+        /// Inclusive minimum.
+        min: f32,
+        /// Inclusive maximum.
+        max: f32,
+    },
+    /// The authored water inventory ratio is non-finite or outside the product range.
+    #[error("water inventory ratio {found} is outside {min}..={max}")]
+    WaterInventoryRatioOutOfRange {
         /// Invalid authored value.
         found: f32,
         /// Inclusive minimum.

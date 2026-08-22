@@ -115,9 +115,18 @@ fn per_world_report_has_the_exact_locked_inventory_and_all_hard_gates_pass() {
             "regional-detail-rms-ratio",
             "subduction-negative-dynamic-fraction",
             "upstream-p2-hard-failure-count",
+            "water-inventory-ratio",
             "water-volume-relative-error",
         ]
     );
+    let water_inventory = report
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == "water-inventory-ratio")
+        .unwrap();
+    assert_eq!(water_inventory.value(), Some(1.0));
+    assert_eq!(water_inventory.bounds().min(), None);
+    assert_eq!(water_inventory.bounds().max(), None);
     for hard in [
         "component-closure-max-error-m",
         "elevation-safety-violation-count",
@@ -192,7 +201,24 @@ fn corpus_report_contains_only_statistics_and_recomputes_from_raw_samples() {
     let corpus =
         evaluate_primary_relief_corpus_quality(fixture.bundle.authoritative_surface(), &samples)
             .unwrap();
-    assert_eq!(corpus.metrics().len(), 8);
+    assert_eq!(
+        corpus
+            .metrics()
+            .iter()
+            .map(|metric| metric.id().name())
+            .collect::<Vec<_>>(),
+        vec![
+            "coast-plate-boundary-overlap",
+            "continental-ocean-median-separation-m",
+            "convergent-positive-dynamic-fraction",
+            "hotspot-positive-construction-fraction",
+            "old-young-ocean-depth-separation-m",
+            "physical-land-area-fraction",
+            "regional-detail-rms-ratio",
+            "subduction-negative-dynamic-fraction",
+            "water-inventory-ratio",
+        ]
+    );
     for metric in corpus.metrics() {
         let per_world = single
             .metrics()
@@ -201,10 +227,13 @@ fn corpus_report_contains_only_statistics_and_recomputes_from_raw_samples() {
             .unwrap();
         assert_eq!(metric.value(), per_world.value(), "{}", metric.id().name());
     }
-    assert!(corpus
+    let water_inventory = corpus
         .metrics()
         .iter()
-        .all(|metric| !metric.id().name().contains("water-volume")));
+        .find(|metric| metric.id().name() == "water-inventory-ratio")
+        .unwrap();
+    assert_eq!(water_inventory.bounds().min(), None);
+    assert_eq!(water_inventory.bounds().max(), None);
 }
 
 #[test]

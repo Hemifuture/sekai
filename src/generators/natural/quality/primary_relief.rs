@@ -3,15 +3,15 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::generators::natural::evaluate_evolved_tectonic_quality;
 use crate::world::natural::{
-    BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
-    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus, ReliefSpec,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, RELIEF_SPEC_SCHEMA_V1,
+    scaled_earth_ocean_inventory_m3, BoundaryKind, CrustKind, EvolvedTectonicSnapshot,
+    GeologicSubstrateSnapshot, NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId,
+    QualityMetricStatus, ELEVATION_MAX_M, ELEVATION_MIN_M,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 const METRIC_NAMESPACE: &str = "sekai.primary-relief-v1";
 const METRIC_VERSION: u16 = 1;
-const EXPECTED_METRIC_NAMES: [&str; 14] = [
+const EXPECTED_METRIC_NAMES: [&str; 15] = [
     "coast-plate-boundary-overlap",
     "component-closure-max-error-m",
     "continental-ocean-median-separation-m",
@@ -25,6 +25,7 @@ const EXPECTED_METRIC_NAMES: [&str; 14] = [
     "regional-detail-rms-ratio",
     "subduction-negative-dynamic-fraction",
     "upstream-p2-hard-failure-count",
+    "water-inventory-ratio",
     "water-volume-relative-error",
 ];
 const P2_CORPUS_SCOPED_NAMES: [&str; 6] = [
@@ -127,7 +128,7 @@ pub fn evaluate_primary_relief_quality(
     Ok(report)
 }
 
-/// Evaluates only the eight statistical gates over original fixed-seed samples.
+/// Evaluates the statistical gates and measurements over original fixed-seed samples.
 pub fn evaluate_primary_relief_corpus_quality(
     surface: &SphericalSurfaceSnapshot,
     samples: &[PrimaryReliefQualitySample<'_>],
@@ -216,6 +217,14 @@ fn record_statistical_metrics(
         )?,
         0.80,
     )?;
+    builder.record_observation_unbounded(
+        metric_id("water-inventory-ratio")?,
+        median_observation(
+            &raw.water_inventory_ratios,
+            "no water-inventory samples",
+            "water-inventory-ratio",
+        )?,
+    )?;
     Ok(())
 }
 
@@ -233,6 +242,7 @@ struct RawReliefMetrics {
     hotspots: FractionAggregate,
     coast_overlaps: Vec<f64>,
     physical_land_fractions: Vec<f64>,
+    water_inventory_ratios: Vec<f64>,
 }
 
 impl RawReliefMetrics {
@@ -281,6 +291,10 @@ impl RawReliefMetrics {
         }
         raw.physical_land_fractions
             .push(f64::from(relief.physical_land_fraction()));
+        let earth_inventory = scaled_earth_ocean_inventory_m3(surface.total_cell_area().get())
+            .map_err(|error| invalid_input("water-inventory", error.to_string()))?;
+        raw.water_inventory_ratios
+            .push(relief.water_inventory_m3() / earth_inventory);
         Ok(raw)
     }
 
@@ -305,6 +319,8 @@ impl RawReliefMetrics {
         self.coast_overlaps.extend(other.coast_overlaps);
         self.physical_land_fractions
             .extend(other.physical_land_fractions);
+        self.water_inventory_ratios
+            .extend(other.water_inventory_ratios);
         Ok(())
     }
 
@@ -483,12 +499,8 @@ fn validate_inputs(
     substrate
         .validate_against(surface, evolved)
         .map_err(|error| invalid_input("geologic-substrate", error.to_string()))?;
-    let relief_spec = ReliefSpec {
-        schema_version: RELIEF_SPEC_SCHEMA_V1,
-        target_land_fraction: relief.requested_land_fraction(),
-    };
     relief
-        .validate_against(surface, substrate, &relief_spec)
+        .validate_against_surface_measurements(surface)
         .map_err(|error| invalid_input("primary-relief", error.to_string()))?;
     Ok(())
 }
