@@ -350,6 +350,41 @@ log1p(discharge) 慢模态主导，4 轮预算对慢收缩配置不足——外�
 退出轮次与产品逐位不变，冻结 T1 门禁不受影响；NotConverged 错误
 按规格补齐五分量明细。普查 19/22 → 22/22 收敛。
 
+## 里程碑后修正二（2026-08-22，用户再次报告）
+
+用户报告：上一批修正后，二维地图放大到接近最大倍数时画面仍变成几个
+盖住细分图元的大三角形。
+
+诊断（实机复现：以存档相机——zoom 274563、pan (40560, 26638)——启动
+即复现；worker 日志显示同一时刻已构建并上传 view level 14、50.6 万叶
+的正确选择，而上一会话对同一相机的离线 CPU 复现帧全屏均为 14 级）：
+选择、装配、投影与重定基均正确，错在 GPU 侧的地图帧变换。
+`SphericalFrameUniform::for_map_with_animation_and_visibility` 用四舍五入
+后的物理像素视口（1395×893）推导 fit，而拾取、细节调度与重定基原点
+都走逻辑画布上的 `MapScreenTransform`（1394.6875×893——侧栏分割留下
+的小数宽度）。二者纵横比相差 2.2e-4，乘上深放大时的 pan 项
+2·pan_y ≈ 5.3e4 NDC，得到 11.9 NDC ≈ 5300 px 的竖向位移：细节网格
+被画到离其选中视口数千像素之外，屏幕里填满的是视口外的粗叶片。
+位移 ∝ zoom·pan，故只在接近最大倍数、且远离地图中心时可见，且只在
+画布宽度为小数时出现——这正是离线复现永远抓不到它的原因。上一批
+"重建饥饿"诊断描述的是重负载下确实存在的次要现象，不是根因。
+
+修正：地图帧变换唯一事实源化——`MapScreenTransform` 暴露
+`ndc_scale()/ndc_translate()`，GPU 统一量的 `transform` 与
+`detail_transform` 均由它构造；绘制回调随 `viewport_pixels`（仅供像素
+线宽）一并携带逻辑 `canvas_size`。回归测试
+`map_uniform_places_the_logical_canvas_centre_at_the_viewport_centre`
+以小数画布 + 深放大 pan 断言细节原点恰落在视口中心（旧代码偏 11.9
+NDC）。细节 worker/装载侧保留 `log::debug!` 诊断行
+（`RUST_LOG=sekai=debug`）。上一会话未提交的离线帧复现测试
+（`replicate_deep_zoom_frames`，仅覆盖 CPU 路径）未纳入，补丁保存在
+`target/deep-zoom-frames/replicate_deep_zoom_frames.patch`。
+
+用户验证步骤：启动 `target/release/sekai.exe`（存档相机自动回到案发
+位置）→ 二维地图应直接是均匀的细分马赛克；继续滚轮放大到最大倍数
+（409600）并小幅平移，全程应保持均匀细分、面板无红字；缩小到全球再
+放大到任意远离地图中心的位置重复。
+
 ## 非目标（M2）
 
 - 不改 T0 产物、指纹与质量证据（去规则化清单留待末期统一执行）。

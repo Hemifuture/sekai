@@ -14,6 +14,8 @@ pub struct SphericalPaintCallback {
     map_camera: MapCamera,
     globe_camera: GlobeCamera,
     viewport_pixels: [u32; 2],
+    /// The logical canvas size the camera mapping is defined on.
+    canvas_size: [f64; 2],
     vector_animation: VectorAnimationUniform,
     layer_visibility: SphericalLayerVisibility,
     prepared_generation: AtomicU64,
@@ -27,6 +29,7 @@ impl SphericalPaintCallback {
         map_camera: MapCamera,
         globe_camera: GlobeCamera,
         viewport_pixels: [u32; 2],
+        canvas_size: [f64; 2],
     ) -> Self {
         Self {
             packet,
@@ -34,6 +37,7 @@ impl SphericalPaintCallback {
             map_camera,
             globe_camera,
             viewport_pixels,
+            canvas_size,
             vector_animation: VectorAnimationUniform::default(),
             layer_visibility: SphericalLayerVisibility::default(),
             prepared_generation: AtomicU64::new(0),
@@ -78,6 +82,7 @@ impl egui_wgpu::CallbackTrait for SphericalPaintCallback {
                     &self.packet,
                     self.map_camera,
                     self.viewport_pixels,
+                    self.canvas_size,
                     self.vector_animation,
                     self.layer_visibility,
                     map_origin,

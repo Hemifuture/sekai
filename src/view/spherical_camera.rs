@@ -286,11 +286,31 @@ impl MapScreenTransform {
         })
     }
 
+    /// The per-axis NDC scale of the presenter affine
+    /// (`ndc = point·scale + translate`) — the one mapping the GPU
+    /// presenter must apply so it places geometry exactly where picking
+    /// and the detail scheduler expect it.
+    pub fn ndc_scale(&self) -> [f64; 2] {
+        [self.fit[0] * self.zoom, self.fit[1] * self.zoom]
+    }
+
+    /// The per-axis NDC translation of the presenter affine (see
+    /// [`Self::ndc_scale`]).
+    pub fn ndc_translate(&self) -> [f64; 2] {
+        let scale = self.ndc_scale();
+        [
+            -self.center[0] * scale[0] + self.pan[0] * 2.0,
+            -self.center[1] * scale[1] + self.pan[1] * 2.0,
+        ]
+    }
+
     /// Maps one projection-plane point to logical screen pixels.
     pub fn to_screen(&self, point: ProjectionPoint) -> [f64; 2] {
+        let scale = self.ndc_scale();
+        let translate = self.ndc_translate();
         let ndc = [
-            (point.x() - self.center[0]) * self.fit[0] * self.zoom + self.pan[0] * 2.0,
-            (point.y() - self.center[1]) * self.fit[1] * self.zoom + self.pan[1] * 2.0,
+            point.x() * scale[0] + translate[0],
+            point.y() * scale[1] + translate[1],
         ];
         [
             (ndc[0] + 1.0) * self.canvas_size[0] * 0.5,

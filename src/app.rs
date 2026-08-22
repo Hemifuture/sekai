@@ -258,12 +258,18 @@ fn spawn_amplified_detail_engine(
             // leaves once the camera zoomed on). Catch it, surface it,
             // and keep serving the next camera snapshot.
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let started = std::time::Instant::now();
                 let selection = amplified_mesh::select_detail_batches(
                     &context,
                     &request.view,
                     request.canvas_size,
                 );
                 if selection.hash == request.installed_hash {
+                    log::debug!(
+                        "detail rebuild #{}: selection {:016x} already installed",
+                        request.serial,
+                        selection.hash
+                    );
                     return Ok(None);
                 }
                 let Some(mesh) =
@@ -273,6 +279,15 @@ fn spawn_amplified_detail_engine(
                 };
                 let (map_vertices, map_indices) =
                     crate::view::project_amplified_map(&mesh, request.view.projection());
+                log::debug!(
+                    "detail rebuild #{}: zoom {:.0}, canvas {:?}, {} leaves, selection {:016x}, {:.0} ms",
+                    request.serial,
+                    request.view.active_zoom(),
+                    request.canvas_size,
+                    selection.leaves,
+                    selection.hash,
+                    started.elapsed().as_secs_f64() * 1e3
+                );
                 Ok(Some(AmplifiedDetailPayload {
                     map_vertices,
                     map_indices,
@@ -891,6 +906,13 @@ impl TemplateApp {
                 }
             }
             if let Some(engine) = &mut self.amplified_detail {
+                log::debug!(
+                    "detail installed {:016x} (answered #{} of #{}, uploaded {})",
+                    selection_hash,
+                    engine.answered_serial,
+                    engine.sent_serial,
+                    uploaded
+                );
                 if uploaded {
                     // The screen now shows this selection.
                     engine.installed_hash = selection_hash;

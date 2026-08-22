@@ -1131,6 +1131,7 @@ pub fn queue_spherical_canvas_callback(
         state.map_camera(),
         state.globe_camera(),
         viewport,
+        [f64::from(rect.width()), f64::from(rect.height())],
     )
     .with_vector_animation(state.vector_animation())
     .with_layer_visibility(state.field_state().layer_visibility());

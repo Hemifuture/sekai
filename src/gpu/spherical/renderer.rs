@@ -8,10 +8,11 @@ use super::overlay::{
     GpuMapOverlayInstance, PreparedGlobeOverlayInstances, PreparedMapOverlayInstances,
 };
 use crate::view::{
-    DisplayRevision, GlobeCamera, LinearRgba, MapCamera, OwnedViewDiagnostic, PreparedFieldKind,
-    PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap, PreparedSphericalOverlay,
-    SphericalLayerVisibility, SphericalPresentationSource, VectorAnimationUniform,
-    DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR, DIAGNOSTIC_WARNING_COLOR,
+    DisplayRevision, GlobeCamera, LinearRgba, MapCamera, MapScreenTransform, OwnedViewDiagnostic,
+    PreparedFieldKind, PreparedFieldLayers, PreparedGlobeMesh, PreparedProjectedMap,
+    PreparedSphericalOverlay, SphericalLayerVisibility, SphericalPresentationSource,
+    VectorAnimationUniform, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR,
+    DIAGNOSTIC_WARNING_COLOR,
 };
 
 const MIN_BUFFER_BYTES: u64 = 16;
@@ -177,6 +178,7 @@ impl SphericalFrameUniform {
             packet,
             camera,
             viewport,
+            viewport.map(f64::from),
             animation,
             SphericalLayerVisibility::default(),
             [0.0; 2],
@@ -194,48 +196,38 @@ impl SphericalFrameUniform {
             packet,
             camera,
             viewport,
+            viewport.map(f64::from),
             VectorAnimationUniform::default(),
             visibility,
             [0.0; 2],
         )
     }
 
+    /// Builds the map frame uniform: `viewport` is the physical pixel
+    /// size (line widths), `canvas_size` the logical canvas the camera
+    /// mapping is defined on.
+    ///
+    /// The affine comes from [`MapScreenTransform`] — the single mapping
+    /// picking, the detail scheduler, and the rebase origin already use.
+    /// Deriving the fit from the rounded pixel viewport instead diverged
+    /// from it by ~1e-4 in aspect; multiplied by a deep-zoom pan of
+    /// ~1e5 NDC that drew the detail mesh thousands of pixels away from
+    /// its selected footprint, so maximum zoom showed the coarse
+    /// off-viewport leaves as giant triangles (user report, 2026-08-22).
     pub(super) fn for_map_with_animation_and_visibility(
         packet: &SphericalGpuPacket,
         camera: MapCamera,
         viewport: [u32; 2],
+        canvas_size: [f64; 2],
         animation: VectorAnimationUniform,
         visibility: SphericalLayerVisibility,
         detail_origin: [f64; 2],
     ) -> Result<Self, SphericalRenderError> {
         let [width, height] = validated_viewport(viewport)?;
-        let bounds = packet.map().bounds();
-        let bounds_width = bounds.max_x() - bounds.min_x();
-        let bounds_height = bounds.max_y() - bounds.min_y();
-        if !bounds_width.is_finite()
-            || !bounds_height.is_finite()
-            || bounds_width <= 0.0
-            || bounds_height <= 0.0
-        {
-            return Err(SphericalRenderError::InvalidGeometry {
-                resource: "projected map bounds",
-            });
-        }
-        let aspect = width / height;
-        let map_aspect = bounds_width / bounds_height;
-        let (fit_x, fit_y) = if aspect >= map_aspect {
-            (2.0 / (bounds_height * aspect), 2.0 / bounds_height)
-        } else {
-            (2.0 / bounds_width, 2.0 * aspect / bounds_width)
-        };
-        let zoom = camera.zoom(packet.map().projection().kind());
-        let pan = camera.pan(packet.map().projection().kind());
-        let scale_x = fit_x * zoom;
-        let scale_y = fit_y * zoom;
-        let center_x = (bounds.min_x() + bounds.max_x()) * 0.5;
-        let center_y = (bounds.min_y() + bounds.max_y()) * 0.5;
-        let translate_x = -center_x * scale_x + pan[0] * 2.0;
-        let translate_y = -center_y * scale_y + pan[1] * 2.0;
+        let mapping = MapScreenTransform::new(packet.map().projection(), camera, canvas_size)
+            .ok_or(SphericalRenderError::InvalidViewport)?;
+        let [scale_x, scale_y] = mapping.ndc_scale();
+        let [translate_x, translate_y] = mapping.ndc_translate();
         let transform = f64_matrix_to_f32([
             [scale_x, 0.0, 0.0, 0.0],
             [0.0, scale_y, 0.0, 0.0],
@@ -3135,6 +3127,47 @@ mod tests {
         );
         assert_eq!(after_frames.uniforms, after_upload.uniforms + 4);
         assert_eq!(validation_probe::snapshot(), after_validation);
+    }
+
+    /// Symptom regression (user report, 2026-08-22): the map frame
+    /// uniform must place the logical-canvas mapping's centre exactly at
+    /// the viewport centre. A panel split leaves a fractional canvas
+    /// (1394.6875 points beside a 1395-pixel viewport); deriving the fit
+    /// from the rounded pixel viewport diverged from the canvas mapping
+    /// by ~1e-4 in aspect, which a deep-zoom pan of ~1e5 NDC turned into
+    /// a displacement of thousands of pixels — the detail mesh drew far
+    /// from its selected footprint and maximum zoom showed the coarse
+    /// off-viewport leaves as giant triangles.
+    #[test]
+    fn map_uniform_places_the_logical_canvas_centre_at_the_viewport_centre() {
+        let fixture = packet_fixture(TestFieldKind::Scalar, 7);
+        let projection = fixture.packet.map().projection();
+        let kind = projection.kind();
+        let canvas_size = [1_394.687_5, 893.0];
+        let viewport = [1_395, 893];
+        let mut camera = MapCamera::default();
+        assert!(camera.zoom_by(kind, 274_563.19));
+        assert!(camera.pan_by(kind, [40_560.005, 26_637.82]));
+        let mapping =
+            crate::view::MapScreenTransform::new(projection, camera, canvas_size).unwrap();
+        let centre = mapping.to_projection([canvas_size[0] * 0.5, canvas_size[1] * 0.5]);
+        let uniform = SphericalFrameUniform::for_map_with_animation_and_visibility(
+            &fixture.packet,
+            camera,
+            viewport,
+            canvas_size,
+            VectorAnimationUniform::default(),
+            SphericalLayerVisibility::default(),
+            [centre.x(), centre.y()],
+        )
+        .unwrap();
+        // A rebased detail vertex at the origin (`p − origin = 0`) lands
+        // on the translation column, which must be the viewport centre.
+        let [dx, dy, _, _] = uniform.detail_transform[3];
+        assert!(
+            dx.abs() < 1e-3 && dy.abs() < 1e-3,
+            "the detail origin lands at NDC ({dx}, {dy}) instead of the viewport centre"
+        );
     }
 
     #[test]
