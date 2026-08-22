@@ -26,7 +26,8 @@ use super::terrain_amplification::{
 };
 use crate::world::natural::{
     GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot, RiverSegment,
-    SphericalTectonicSnapshot, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_SHELF_BREAK_DEPTH_M,
+    SphericalTectonicSnapshot, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FORMATION_SHELF_BREAK_DEPTH_M,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, RootSeed};
@@ -264,8 +265,11 @@ impl HierarchicalEvaluator {
         mut self,
         surface: &SphericalSurfaceSnapshot,
         segments: &[RiverSegment],
+        surface_water: &SurfaceWaterField,
     ) -> Result<Self, TerrainAmplificationError> {
-        self.amplifier = self.amplifier.with_rivers(surface, segments)?;
+        self.amplifier = self
+            .amplifier
+            .with_rivers(surface, segments, surface_water)?;
         self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
     }
@@ -960,7 +964,9 @@ mod tests {
     use super::*;
     use crate::generators::natural::fibonacci_probe;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{RiverSegmentKind, SphericalOrogenyKind};
+    use crate::world::natural::{
+        RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind,
+    };
     use crate::world::{Meters, RiverSegmentId, SphericalSpaceSpec};
 
     fn test_surface() -> SphericalSurfaceSnapshot {
@@ -976,6 +982,10 @@ mod tests {
             || false,
         )
         .unwrap()
+    }
+
+    fn dry_surface_water(surface: &SphericalSurfaceSnapshot) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()])
     }
 
     /// Northern sloped land, flat southern abyssal plain, and an
@@ -1274,7 +1284,7 @@ mod tests {
         ];
         let carved = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
             .unwrap();
 
         // The carve surface descends along the chain (M1 module criteria

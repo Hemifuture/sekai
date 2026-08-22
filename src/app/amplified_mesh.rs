@@ -1097,7 +1097,9 @@ mod tests {
 
     /// A context with a two-reach chain for the polyline builder tests.
     fn river_context() -> AmplifiedDetailContext {
-        use crate::world::natural::{RiverSegment, RiverSegmentKind};
+        use crate::world::natural::{
+            RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
+        };
         use crate::world::RiverSegmentId;
 
         let surface = GeodesicVoronoiBuilder::build_cancellable(
@@ -1163,7 +1165,14 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(
+                &surface,
+                &segments,
+                &SurfaceWaterField::from_kinds(vec![
+                    SurfaceWaterKind::DryLand;
+                    surface.cells().len()
+                ]),
+            )
             .unwrap();
         AmplifiedDetailContext {
             evaluator,

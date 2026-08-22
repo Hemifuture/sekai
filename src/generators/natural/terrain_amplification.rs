@@ -22,11 +22,11 @@ use super::morphology::noise::{GaborKernel, SphericalNoise3d};
 use crate::generators::spatial::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 use crate::world::natural::{
     formation_annual_precipitation_mm, GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot,
-    RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_FLOODPLAIN_ACCOMMODATION_M,
+    RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot, SurfaceWaterField,
+    SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_FLOODPLAIN_ACCOMMODATION_M,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
-use crate::world::RootSeed;
+use crate::world::{CellId, RootSeed};
 
 /// Domain separator for every T1 substream (mirrors the natural-substream
 /// discipline with a distinct domain so T0 streams can never collide).
@@ -52,11 +52,9 @@ const HURST_PLAIN: f64 = 0.8;
 const RELIEF_REFERENCE_M: f64 = 900.0;
 const RELIEF_FLOOR: f64 = 0.05;
 
-// River carving (spec §7, amendment A4). Hydraulic geometry after
-// Leopold & Maddock 1953: width w = a·Q^0.5, depth d ∝ Q^0.4; the
-// Strahler modulation is the spec's explicit extra term.
+// River carving (spec §7, amendment A4/A10). Hydraulic geometry after
+// Leopold & Maddock 1953: width w = a·Q^0.5, depth d ∝ Q^0.4.
 const RIVER_WIDTH_COEFFICIENT: f64 = 5.0;
-const RIVER_ORDER_GAIN: f64 = 0.1;
 const RIVER_DEPTH_COEFFICIENT: f64 = 2.0;
 const RIVER_DEPTH_EXPONENT: f64 = 0.4;
 const RIVER_DEPTH_MIN_M: f64 = 3.0;
@@ -191,6 +189,14 @@ pub enum TerrainAmplificationError {
         cell: u32,
         /// Cells available.
         cell_count: usize,
+    },
+    /// A river segment does not cross one authoritative shared surface edge.
+    #[error("river segment from cell {from:?} to {to:?} does not join adjacent cells")]
+    RiverSegmentNotAdjacent {
+        /// Published upstream cell.
+        from: CellId,
+        /// Published downstream cell.
+        to: CellId,
     },
     /// The published river network contains a cycle.
     #[error("the river network contains a cycle")]
@@ -444,7 +450,11 @@ impl TerrainAmplifier {
             },
             root_seed,
         )?
-        .with_rivers(surface, formation.hydrology().river_segments())
+        .with_rivers(
+            surface,
+            formation.hydrology().river_segments(),
+            formation.hydrology().surface_water(),
+        )
     }
 
     /// Attaches the published river network for §7 carving (amendment A4).
@@ -458,12 +468,14 @@ impl TerrainAmplifier {
         mut self,
         surface: &SphericalSurfaceSnapshot,
         segments: &[RiverSegment],
+        surface_water: &SurfaceWaterField,
     ) -> Result<Self, TerrainAmplificationError> {
         if segments.is_empty() {
             return Ok(self);
         }
         let cells = surface.cells();
         let cell_count = cells.len();
+        check_cardinality("surface_water", surface_water.len(), cell_count)?;
         let mut depth_m: BTreeMap<u32, f64> = BTreeMap::new();
         let mut upstream_count: BTreeMap<u32, u32> = BTreeMap::new();
         for segment in segments {
@@ -534,12 +546,70 @@ impl TerrainAmplifier {
             let from = segment.from().raw();
             let to = segment.to().raw();
             let discharge = f64::from(segment.mean_discharge_m3_s()).max(0.0);
-            let order = f64::from(segment.strahler_order());
-            let width = (RIVER_WIDTH_COEFFICIENT
-                * discharge.sqrt()
-                * (1.0 + RIVER_ORDER_GAIN * (order - 1.0)))
+            let width_m = (RIVER_WIDTH_COEFFICIENT * discharge.sqrt())
                 .clamp(RIVER_WIDTH_MIN_M, RIVER_WIDTH_MAX_M);
             let bed_from = bed_m[&from];
+            let from_id = segment.from();
+            let to_id = segment.to();
+            let shared_edge_id = cells[from as usize]
+                .boundary_edges
+                .iter()
+                .copied()
+                .find(|edge| cells[to as usize].boundary_edges.contains(edge))
+                .ok_or(TerrainAmplificationError::RiverSegmentNotAdjacent {
+                    from: from_id,
+                    to: to_id,
+                })?;
+            let shared_edge = surface.edge(shared_edge_id).ok_or(
+                TerrainAmplificationError::RiverSegmentNotAdjacent {
+                    from: from_id,
+                    to: to_id,
+                },
+            )?;
+            if !shared_edge.cells.contains(&from_id) || !shared_edge.cells.contains(&to_id) {
+                return Err(TerrainAmplificationError::RiverSegmentNotAdjacent {
+                    from: from_id,
+                    to: to_id,
+                });
+            }
+            let from_center = cells[from as usize].centroid.components();
+            let portal = shared_edge.midpoint.components();
+            let to_center = cells[to as usize].centroid.components();
+            let upstream_length = arc_angle(from_center, portal);
+            let downstream_length = arc_angle(portal, to_center);
+            let total_length = upstream_length + downstream_length;
+            let portal_fraction = if total_length > 0.0 {
+                upstream_length / total_length
+            } else {
+                0.5
+            };
+            let boundary = shared_edge.vertices.map(|vertex| {
+                surface.vertices()[vertex.raw() as usize]
+                    .position
+                    .components()
+            });
+            let from_water = surface_water
+                .get(from as usize)
+                .expect("surface-water cardinality was validated");
+            let to_water = surface_water
+                .get(to as usize)
+                .expect("surface-water cardinality was validated");
+            let legs = [
+                (from_water == SurfaceWaterKind::DryLand).then_some(RiverLeg {
+                    from: from_center,
+                    to: portal,
+                    sector: [from_center, boundary[0], boundary[1]],
+                    fraction_from: 0.0,
+                    fraction_to: portal_fraction,
+                }),
+                (to_water == SurfaceWaterKind::DryLand).then_some(RiverLeg {
+                    from: portal,
+                    to: to_center,
+                    sector: [to_center, boundary[0], boundary[1]],
+                    fraction_from: portal_fraction,
+                    fraction_to: 1.0,
+                }),
+            ];
             let index = u32::try_from(reaches.len()).map_err(|_| {
                 TerrainAmplificationError::RiverSegmentOutOfRange {
                     cell: from,
@@ -547,14 +617,19 @@ impl TerrainAmplifier {
                 }
             })?;
             reaches.push(RiverReach {
-                from: cells[from as usize].centroid.components(),
-                to: cells[to as usize].centroid.components(),
+                from: from_center,
+                to: to_center,
                 bed_from_m: bed_from,
                 bed_to_m: bed_m[&to].min(bed_from),
-                half_width_m: width * 0.5,
+                width_m,
+                legs,
             });
-            touching[from as usize].push(index);
-            touching[to as usize].push(index);
+            if from_water == SurfaceWaterKind::DryLand {
+                touching[from as usize].push(index);
+            }
+            if to_water == SurfaceWaterKind::DryLand {
+                touching[to as usize].push(index);
+            }
         }
         let mut reach_offsets = Vec::with_capacity(cell_count + 1);
         let mut reach_indices = Vec::new();
@@ -591,14 +666,21 @@ impl TerrainAmplifier {
             let end = self.reach_offsets[cell as usize + 1] as usize;
             for &reach_index in &self.reach_indices[start..end] {
                 let reach = &self.reaches[reach_index as usize];
-                let Some((lateral_m, along)) =
-                    arc_nearest_point(reach.from, reach.to, p, self.radius_m)
-                else {
-                    continue;
-                };
-                let bed = reach.bed_from_m + along * (reach.bed_to_m - reach.bed_from_m);
-                let value = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
-                carve = Some(carve.map_or(value, |current: f64| current.min(value)));
+                for leg in reach.legs.iter().flatten() {
+                    if !spherical_triangle_contains(p, leg.sector) {
+                        continue;
+                    }
+                    let Some((lateral_m, along)) =
+                        arc_nearest_point(leg.from, leg.to, p, self.radius_m)
+                    else {
+                        continue;
+                    };
+                    let fraction =
+                        leg.fraction_from + along * (leg.fraction_to - leg.fraction_from);
+                    let bed = reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m);
+                    let value = bed + (lateral_m - reach.half_width_m()).max(0.0) * wall_slope;
+                    carve = Some(carve.map_or(value, |current: f64| current.min(value)));
+                }
             }
         }
         carve
@@ -923,7 +1005,25 @@ pub(super) struct RiverReach {
     pub(super) to: [f64; 3],
     pub(super) bed_from_m: f64,
     pub(super) bed_to_m: f64,
-    pub(super) half_width_m: f64,
+    pub(super) width_m: f64,
+    pub(super) legs: [Option<RiverLeg>; 2],
+}
+
+impl RiverReach {
+    pub(super) fn half_width_m(&self) -> f64 {
+        self.width_m * 0.5
+    }
+}
+
+/// One directed dry-land portion of a published reach, bounded by the
+/// owning cell centroid and the authoritative shared-edge portal.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RiverLeg {
+    pub(super) from: [f64; 3],
+    pub(super) to: [f64; 3],
+    pub(super) sector: [[f64; 3]; 3],
+    pub(super) fraction_from: f64,
+    pub(super) fraction_to: f64,
 }
 
 struct Interpolated {
@@ -1232,6 +1332,31 @@ pub(super) fn badlands_gate(erodibility: f64, dissection: f64) -> f64 {
     smoothstep(0.55, 0.8, erodibility) * smoothstep(0.5, 0.8, dissection)
 }
 
+/// Minor-arc angle between two unit directions.
+pub(super) fn arc_angle(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+        .clamp(-1.0, 1.0)
+        .acos()
+}
+
+/// Whether `point` lies in the closed minor-arc spherical triangle.
+///
+/// Each directed edge compares the point with the opposite vertex, so the
+/// test is independent of clockwise/counter-clockwise corner order.
+pub(super) fn spherical_triangle_contains(point: [f64; 3], triangle: [[f64; 3]; 3]) -> bool {
+    let determinant = |a: [f64; 3], b: [f64; 3], p: [f64; 3]| {
+        (a[1] * b[2] - a[2] * b[1]) * p[0]
+            + (a[2] * b[0] - a[0] * b[2]) * p[1]
+            + (a[0] * b[1] - a[1] * b[0]) * p[2]
+    };
+    let [a, b, c] = triangle;
+    [(a, b, c), (b, c, a), (c, a, b)]
+        .into_iter()
+        .all(|(from, to, inside)| {
+            determinant(from, to, point) * determinant(from, to, inside) >= -64.0 * f64::EPSILON
+        })
+}
+
 /// Exact great-circle nearest point of `p` on the arc `from → to`:
 /// returns `(lateral distance in metres, fraction along the arc)`, with
 /// the nearer endpoint as the fallback when the projection leaves the
@@ -1278,11 +1403,6 @@ pub(super) fn arc_nearest_point(
         (a[1] * b[2] - a[2] * b[1]) * normal[0]
             + (a[2] * b[0] - a[0] * b[2]) * normal[1]
             + (a[0] * b[1] - a[1] * b[0]) * normal[2]
-    };
-    let arc_angle = |a: [f64; 3], b: [f64; 3]| {
-        (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
-            .clamp(-1.0, 1.0)
-            .acos()
     };
     let within =
         cross_toward(from, onto) >= -f64::EPSILON && cross_toward(onto, to) >= -f64::EPSILON;
@@ -1449,6 +1569,10 @@ mod tests {
         let fields = SyntheticFields::new(&surface, precipitation_mm, sediment_m);
         let amplifier = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(42)).unwrap();
         (amplifier, surface)
+    }
+
+    fn dry_surface_water(surface: &SphericalSurfaceSnapshot) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()])
     }
 
     #[test]
@@ -1679,6 +1803,150 @@ mod tests {
         assert!(drift <= 0.02, "land fraction drift {drift}");
     }
 
+    fn single_reach_with_water(
+        from_water: crate::world::natural::SurfaceWaterKind,
+        to_water: crate::world::natural::SurfaceWaterKind,
+        order: u8,
+        discharge_m3_s: f32,
+    ) -> (TerrainAmplifier, SphericalSurfaceSnapshot, usize) {
+        use crate::world::natural::{
+            RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
+        };
+        use crate::world::RiverSegmentId;
+
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface, 800.0, 0.0);
+        let edge_index = 0;
+        let edge = &surface.edges()[edge_index];
+        let [from, to] = edge.cells;
+        let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
+        water[from.raw() as usize] = from_water;
+        water[to.raw() as usize] = to_water;
+        let water = SurfaceWaterField::from_kinds(water);
+        let segments = [RiverSegment::new(
+            RiverSegmentId::from_raw(0),
+            from,
+            to,
+            RiverSegmentKind::Channel,
+            order,
+            discharge_m3_s,
+        )
+        .unwrap()];
+        let amplifier = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
+            .unwrap()
+            .with_rivers(&surface, &segments, &water)
+            .unwrap();
+        (amplifier, surface, edge_index)
+    }
+
+    #[test]
+    fn river_reaches_split_at_shared_edge_and_omit_water_legs() {
+        use crate::world::natural::SurfaceWaterKind::{DryLand, Lake};
+
+        let cases = [
+            (DryLand, DryLand, 2_usize),
+            (DryLand, Lake, 1),
+            (Lake, DryLand, 1),
+            (Lake, Lake, 0),
+        ];
+        for (from_water, to_water, expected_legs) in cases {
+            let (amplifier, surface, edge_index) =
+                single_reach_with_water(from_water, to_water, 1, 80.0);
+            let edge = &surface.edges()[edge_index];
+            let [from, to] = edge.cells;
+            let portal = edge.midpoint.components();
+            let reach = &amplifier.reaches[0];
+            let legs: Vec<_> = reach.legs.iter().flatten().collect();
+            assert_eq!(legs.len(), expected_legs);
+
+            if from_water == DryLand {
+                let leg = legs
+                    .iter()
+                    .find(|leg| {
+                        leg.from == surface.cells()[from.raw() as usize].centroid.components()
+                    })
+                    .expect("dry upstream cell owns one leg");
+                assert_eq!(
+                    leg.from,
+                    surface.cells()[from.raw() as usize].centroid.components()
+                );
+                assert_eq!(leg.to, portal);
+            }
+            if to_water == DryLand {
+                let leg = legs
+                    .iter()
+                    .find(|leg| leg.to == surface.cells()[to.raw() as usize].centroid.components())
+                    .expect("dry downstream cell owns one leg");
+                assert_eq!(leg.from, portal);
+                assert_eq!(
+                    leg.to,
+                    surface.cells()[to.raw() as usize].centroid.components()
+                );
+            }
+
+            for (cell, kind) in [(from, from_water), (to, to_water)] {
+                let start = amplifier.reach_offsets[cell.raw() as usize] as usize;
+                let end = amplifier.reach_offsets[cell.raw() as usize + 1] as usize;
+                assert_eq!(
+                    amplifier.reach_indices[start..end].contains(&0),
+                    kind == DryLand,
+                    "only dry owner cells index the reach"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn river_width_depends_on_discharge_not_strahler_order() {
+        use crate::world::natural::SurfaceWaterKind::DryLand;
+
+        let (first, _, _) = single_reach_with_water(DryLand, DryLand, 1, 160.0);
+        let (second, _, _) = single_reach_with_water(DryLand, DryLand, 7, 160.0);
+        assert_eq!(first.reaches[0].width_m, second.reaches[0].width_m);
+    }
+
+    #[test]
+    fn non_adjacent_river_segment_is_rejected() {
+        use crate::world::natural::{
+            RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
+        };
+        use crate::world::{CellId, RiverSegmentId};
+
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface, 800.0, 0.0);
+        let from = CellId::from_raw(0);
+        let neighbours: Vec<_> = surface.cells()[0]
+            .boundary_edges
+            .iter()
+            .flat_map(|edge| surface.edges()[edge.raw() as usize].cells)
+            .collect();
+        let to = (1..surface.cells().len() as u32)
+            .map(CellId::from_raw)
+            .find(|cell| !neighbours.contains(cell))
+            .expect("the test lattice has non-neighbouring cells");
+        let segment = RiverSegment::new(
+            RiverSegmentId::from_raw(0),
+            from,
+            to,
+            RiverSegmentKind::Channel,
+            1,
+            10.0,
+        )
+        .unwrap();
+        let water =
+            SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()]);
+
+        assert!(matches!(
+            TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
+                .unwrap()
+                .with_rivers(&surface, &[segment], &water),
+            Err(TerrainAmplificationError::RiverSegmentNotAdjacent {
+                from: found_from,
+                to: found_to,
+            }) if found_from == from && found_to == to
+        ));
+    }
+
     #[test]
     fn river_carving_only_lowers_with_monotone_beds() {
         use crate::world::natural::{RiverSegment, RiverSegmentKind};
@@ -1721,7 +1989,7 @@ mod tests {
         ];
         let carved = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
             .unwrap();
 
         // Beds never rise downstream (spec §7 invariant, built structurally).
@@ -1791,7 +2059,7 @@ mod tests {
         assert!(matches!(
             TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
                 .unwrap()
-                .with_rivers(&surface, &segments),
+                .with_rivers(&surface, &segments, &dry_surface_water(&surface)),
             Err(TerrainAmplificationError::RiverNetworkCycle)
         ));
     }

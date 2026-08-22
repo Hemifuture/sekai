@@ -16,7 +16,7 @@
 use std::sync::{Arc, RwLock};
 
 use super::hierarchical_derivation::{signed_unit_noise, HierarchicalEvaluator};
-use super::terrain_amplification::{arc_nearest_point, RiverReach, TerrainAmplifier};
+use super::terrain_amplification::{arc_angle, arc_nearest_point, RiverReach, TerrainAmplifier};
 use crate::world::spatial::UnitVector3;
 
 /// Lateral displacement amplitude as a fraction of the sub-segment
@@ -181,7 +181,13 @@ fn cached_path(
                 if parent_depth < meander_cap {
                     next.push(walk.node_midpoint(pair[0], pair[1], parent_depth, bits as u32));
                 } else {
-                    next.push(four_point_midpoint(&points, bits));
+                    let smooth = four_point_midpoint(&points, bits);
+                    next.push(if walk.inside_corridor(smooth) {
+                        smooth
+                    } else {
+                        normalized(add(pair[0], pair[1]))
+                            .expect("reach sub-segments stay strictly inside one hemisphere")
+                    });
                 }
             }
             next.push(*points.last().expect("a path holds both endpoints"));
@@ -221,7 +227,7 @@ impl ReachWalk<'_> {
             reach_index,
             chord_normal,
             corridor_rad: MEANDER_CORRIDOR_FRACTION * chord_rad,
-            wavelength_m: MEANDER_WAVELENGTH_PER_WIDTH * 2.0 * reach.half_width_m,
+            wavelength_m: MEANDER_WAVELENGTH_PER_WIDTH * 2.0 * reach.half_width_m(),
             radius_m,
         })
     }
@@ -254,11 +260,7 @@ impl ReachWalk<'_> {
             ])
             .unwrap_or(geometric);
             // Corridor: lateral distance to the L0 chord's great circle.
-            let lateral_rad = dot(candidate, self.chord_normal)
-                .clamp(-1.0, 1.0)
-                .asin()
-                .abs();
-            if offset != 0.0 && lateral_rad > self.corridor_rad {
+            if offset != 0.0 && !self.inside_corridor(candidate) {
                 continue;
             }
             let direction = UnitVector3::new(candidate[0], candidate[1], candidate[2])
@@ -274,6 +276,10 @@ impl ReachWalk<'_> {
             }
         }
         best.map(|(_, point)| point).unwrap_or(geometric)
+    }
+
+    fn inside_corridor(&self, point: [f64; 3]) -> bool {
+        dot(point, self.chord_normal).clamp(-1.0, 1.0).asin().abs() <= self.corridor_rad
     }
 
     /// Canonical candidate seed: `blake3(域 ∥ "r" ∥ reach ∥ depth ∥
@@ -297,7 +303,7 @@ pub(super) fn path_depth_cap(evaluator: &HierarchicalEvaluator, reach_index: u32
         return 0;
     };
     let chord_m = arc_angle(reach.from, reach.to) * evaluator.amplifier().radius_m();
-    let half_wavelength = MEANDER_WAVELENGTH_PER_WIDTH * reach.half_width_m;
+    let half_wavelength = MEANDER_WAVELENGTH_PER_WIDTH * reach.half_width_m();
     if !(chord_m.is_finite() && half_wavelength.is_finite()) || chord_m < half_wavelength {
         return 0;
     }
@@ -366,7 +372,7 @@ pub(super) fn carve_elevation_m(
                 continue;
             };
             let bed = reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m);
-            let value = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
+            let value = bed + (lateral_m - reach.half_width_m()).max(0.0) * wall_slope;
             carve = Some(carve.map_or(value, |current: f64| current.min(value)));
         }
     }
@@ -471,10 +477,6 @@ fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn arc_angle(a: [f64; 3], b: [f64; 3]) -> f64 {
-    dot(a, b).clamp(-1.0, 1.0).acos()
-}
-
 fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
     let len = dot(v, v).sqrt();
     (len > f64::EPSILON).then(|| [v[0] / len, v[1] / len, v[2] / len])
@@ -486,7 +488,9 @@ mod tests {
     use super::super::terrain_amplification::AmplificationFieldsView;
     use super::*;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{RiverSegment, RiverSegmentKind, SphericalOrogenyKind};
+    use crate::world::natural::{
+        RiverSegment, RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind,
+    };
     use crate::world::spatial::SphericalSurfaceSnapshot;
     use crate::world::{Meters, RiverSegmentId, RootSeed, SphericalSpaceSpec};
 
@@ -499,6 +503,10 @@ mod tests {
             || false,
         )
         .unwrap()
+    }
+
+    fn dry_surface_water(surface: &SphericalSurfaceSnapshot) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()])
     }
 
     struct Fields {
@@ -579,7 +587,7 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(11))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
             .unwrap();
         (evaluator, surface)
     }
@@ -828,7 +836,7 @@ mod tests {
                 nearest_on_path(&evaluator, reach_index, reach, depth, point.components())
                     .expect("a path point projects onto its own path");
             let bed = reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m);
-            let own = bed + (lateral_m - reach.half_width_m).max(0.0) * wall_slope;
+            let own = bed + (lateral_m - reach.half_width_m()).max(0.0) * wall_slope;
             assert!(
                 own <= previous + 1.0e-6,
                 "own carve rose downstream: {own} > {previous}"
