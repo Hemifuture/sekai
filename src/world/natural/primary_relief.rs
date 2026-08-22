@@ -1077,6 +1077,17 @@ impl PrimaryReliefSnapshot {
         self.water_inventory_m3
     }
 
+    /// Returns inventory relative to the area-scaled Earth ocean reference.
+    ///
+    /// The ratio definition is frozen in the T0b design §3.3; keeping it here
+    /// lets quality evidence and product presentation share the snapshot truth.
+    pub(crate) fn water_inventory_ratio(
+        &self,
+        total_surface_area_m2: f64,
+    ) -> Result<f64, PrimaryReliefValidationError> {
+        Ok(self.water_inventory_m3 / scaled_earth_ocean_inventory_m3(total_surface_area_m2)?)
+    }
+
     pub const fn realized_water_volume_m3(&self) -> f64 {
         self.realized_water_volume_m3
     }

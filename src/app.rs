@@ -78,8 +78,8 @@ use crate::{
         natural::{
             preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, ClimateSpec,
             GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError, ReliefSpec,
-            ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
-            WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
+            ResolvedWorldFormation, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity,
+            TectonicSpec, WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
             MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
             MIN_PLATE_COUNT,
         },
@@ -129,6 +129,48 @@ fn formation_surface_key_is_stale(
     radius_m: f64,
 ) -> bool {
     cached != Some((profile, radius_m))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FormationAuthoringControlState {
+    displayed_land_fraction: f32,
+    land_fraction_enabled: bool,
+    continental_fraction_enabled: bool,
+}
+
+/// Resolves reciprocal control locks from the authored policy and last publication.
+fn formation_authoring_control_state(
+    pipeline: WorldPipeline,
+    relief: &ReliefSpec,
+    published: Option<SphericalWorldAreaSummary>,
+) -> FormationAuthoringControlState {
+    if pipeline == WorldPipeline::LegacyFoundation {
+        return FormationAuthoringControlState {
+            displayed_land_fraction: relief.target_land_fraction,
+            land_fraction_enabled: true,
+            continental_fraction_enabled: true,
+        };
+    }
+    match relief.sea_level_policy {
+        SeaLevelPolicy::WaterInventory => {
+            let displayed_land_fraction = match published {
+                Some(SphericalWorldAreaSummary::Formation(summary)) => {
+                    summary.actual_land_fraction() as f32
+                }
+                _ => relief.target_land_fraction,
+            };
+            FormationAuthoringControlState {
+                displayed_land_fraction,
+                land_fraction_enabled: false,
+                continental_fraction_enabled: true,
+            }
+        }
+        SeaLevelPolicy::TargetLandFraction => FormationAuthoringControlState {
+            displayed_land_fraction: relief.target_land_fraction,
+            land_fraction_enabled: true,
+            continental_fraction_enabled: false,
+        },
+    }
 }
 
 /// Which authoritative generation chain the spherical canvas builds.
@@ -2028,6 +2070,11 @@ impl eframe::App for TemplateApp {
         let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
+        let published_area_summary = self.spherical_presentation.read_resource(|current| {
+            current
+                .as_ref()
+                .map(|presentation| presentation.document().area_summary())
+        });
         egui::SidePanel::left("control_panel")
             .resizable(true)
             .default_width(320.0)
@@ -2081,25 +2128,64 @@ impl eframe::App for TemplateApp {
                                 .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT),
                         );
                     });
-                    ui.add(
-                        egui::Slider::new(
-                            &mut self.tectonic_spec.continental_crust_fraction,
-                            MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
-                        )
-                        .text("初始大陆地壳比例")
-                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                    if self.world_pipeline == WorldPipeline::Formation {
+                        ui.horizontal(|ui| {
+                            ui.label("驱动");
+                            ui.radio_value(
+                                &mut self.relief_spec.sea_level_policy,
+                                SeaLevelPolicy::WaterInventory,
+                                "陆壳比例",
+                            )
+                            .on_hover_text("物理解：海平面由表层水量与地形共同决定");
+                            ui.radio_value(
+                                &mut self.relief_spec.sea_level_policy,
+                                SeaLevelPolicy::TargetLandFraction,
+                                "陆地占比",
+                            )
+                            .on_hover_text("按目标陆地占比求解海平面，并推算所需海水量");
+                        });
+                    }
+                    let controls = formation_authoring_control_state(
+                        self.world_pipeline,
+                        &self.relief_spec,
+                        published_area_summary,
                     );
-                    ui.add_enabled(
-                        self.world_pipeline == WorldPipeline::LegacyFoundation,
-                        egui::Slider::new(
-                            &mut self.relief_spec.target_land_fraction,
-                            crate::world::natural::MIN_TARGET_LAND_FRACTION
-                                ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
+                    if controls.land_fraction_enabled {
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.relief_spec.target_land_fraction,
+                                crate::world::natural::MIN_TARGET_LAND_FRACTION
+                                    ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
+                            )
+                            .text("陆地占比")
+                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                        );
+                    } else {
+                        let mut measured_land_fraction = controls.displayed_land_fraction;
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut measured_land_fraction, 0.0..=1.0)
+                                .text("陆地占比（上次构建实测）")
+                                .custom_formatter(|value, _| format!("{:.1}%", value * 100.0)),
                         )
-                        .text("目标陆地面积比例")
-                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                    )
-                    .on_disabled_hover_text("P5 形成链的海平面由全球水量反解，此滑杆仅作用于旧链");
+                        .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
+                    }
+                    ui.collapsing("高级", |ui| {
+                        ui.add_enabled(
+                            controls.continental_fraction_enabled,
+                            egui::Slider::new(
+                                &mut self.tectonic_spec.continental_crust_fraction,
+                                MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
+                            )
+                            .text(if controls.continental_fraction_enabled {
+                                "初始大陆地壳比例"
+                            } else {
+                                "初始大陆地壳比例（预设值）"
+                            })
+                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                        )
+                        .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                    });
                     egui::ComboBox::from_label("构造活动")
                         .selected_text(activity_label(self.tectonic_spec.activity))
                         .show_ui(ui, |ui| {
@@ -2319,9 +2405,32 @@ fn show_formation_area_summary(ui: &mut egui::Ui, summary: crate::app::Formation
             summary.evolved_continental_fraction() * 100.0,
         ));
         ui.label(format!(
-            "陆地面积：实际 {:.1}%（海平面由全球水量反解，无陆地目标）",
+            "陆地面积：目标 {:.1}%｜实际 {:.1}%｜偏差 {:+.1} 个百分点",
+            summary.target_land_fraction() * 100.0,
             summary.actual_land_fraction() * 100.0,
+            (summary.actual_land_fraction() - f64::from(summary.target_land_fraction())) * 100.0,
         ));
+        ui.label(format!(
+            "海水量 = {:.3} × 地球",
+            summary.water_inventory_ratio()
+        ));
+        if !(crate::world::natural::WATER_INVENTORY_RATIO_ADVISORY_MIN
+            ..=crate::world::natural::WATER_INVENTORY_RATIO_ADVISORY_MAX)
+            .contains(&summary.water_inventory_ratio())
+        {
+            ui.label(format!(
+                "提示：海水量超出建议带 {:.1}–{:.1} × 地球；数值保留，不会钳制",
+                crate::world::natural::WATER_INVENTORY_RATIO_ADVISORY_MIN,
+                crate::world::natural::WATER_INVENTORY_RATIO_ADVISORY_MAX,
+            ));
+        }
+        if summary.sea_level_policy() == SeaLevelPolicy::TargetLandFraction
+            && f64::from(summary.target_land_fraction())
+                > crate::world::natural::OCEAN_FLOOR_EXPOSURE_HINT_FRACTION
+                    * summary.evolved_continental_fraction()
+        {
+            ui.label("提示：该目标将露出洋底；过程仍按物理水线求解");
+        }
         ui.label(format!("海平面：{:.1} m", summary.sea_level_m()));
     });
 }
@@ -2598,11 +2707,12 @@ mod natural_app_tests {
 
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
-        configure_frame_stats_scenario, default_world_spec, formation_provenance_label,
-        show_spherical_area_summary, AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint,
-        NaturalWorldBuildError, PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
-        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
-        INITIAL_PLATE_COUNT_LABEL,
+        configure_frame_stats_scenario, default_world_spec, formation_authoring_control_state,
+        formation_provenance_label, show_formation_area_summary, show_spherical_area_summary,
+        AppRuntimeError, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
+        NaturalWorldBuildError, PersistedWorldOrigin, PublishedSphericalPresentation,
+        SphericalWorldAreaSummary, TemplateApp, WorldPipeline, CURRENT_SLICE_STATUS_TEXT,
+        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT, INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -2629,7 +2739,7 @@ mod natural_app_tests {
         boundary_strength_field_id, land_ocean_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
         surface_elevation_m_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity,
-        ReliefSpec, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+        ReliefSpec, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity, TectonicSpec,
         WorldFormationPreset, WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
@@ -3974,11 +4084,103 @@ mod natural_app_tests {
     fn application_roundtrip_preserves_manual_land_target() {
         let mut app = TemplateApp::default();
         app.relief_spec.target_land_fraction = 0.55;
+        app.relief_spec.sea_level_policy = SeaLevelPolicy::TargetLandFraction;
+        app.relief_spec.water_inventory_ratio = 1.75;
 
         let restored: TemplateApp =
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
 
         assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
+        assert_eq!(
+            restored.relief_spec.sea_level_policy,
+            SeaLevelPolicy::TargetLandFraction
+        );
+        assert_eq!(restored.relief_spec.water_inventory_ratio, 1.75);
+    }
+
+    #[test]
+    fn formation_driver_locks_the_derived_authoring_control_without_mutating_it() {
+        let published = SphericalWorldAreaSummary::Formation(FormationAreaSummary::new(
+            0.38,
+            0.40,
+            0.55,
+            0.21,
+            -80.0,
+            SeaLevelPolicy::WaterInventory,
+            1.0,
+        ));
+        let mut relief = ReliefSpec {
+            target_land_fraction: 0.55,
+            ..ReliefSpec::default()
+        };
+
+        let physical =
+            formation_authoring_control_state(WorldPipeline::Formation, &relief, Some(published));
+        assert!(!physical.land_fraction_enabled);
+        assert!(physical.continental_fraction_enabled);
+        assert_eq!(
+            physical.displayed_land_fraction.to_bits(),
+            0.21_f32.to_bits()
+        );
+        assert_eq!(relief.target_land_fraction, 0.55);
+
+        relief.sea_level_policy = SeaLevelPolicy::TargetLandFraction;
+        let target =
+            formation_authoring_control_state(WorldPipeline::Formation, &relief, Some(published));
+        assert!(target.land_fraction_enabled);
+        assert!(!target.continental_fraction_enabled);
+        assert_eq!(target.displayed_land_fraction, 0.55);
+
+        let legacy = formation_authoring_control_state(
+            WorldPipeline::LegacyFoundation,
+            &relief,
+            Some(published),
+        );
+        assert!(legacy.land_fraction_enabled);
+        assert!(legacy.continental_fraction_enabled);
+        assert_eq!(legacy.displayed_land_fraction, 0.55);
+    }
+
+    #[test]
+    fn formation_summary_reports_implicit_water_and_non_blocking_hints() {
+        fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
+            match shape {
+                egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect_text(shape, output);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let summary = FormationAreaSummary::new(
+            0.38,
+            0.50,
+            0.60,
+            0.59,
+            -1_200.0,
+            SeaLevelPolicy::TargetLandFraction,
+            2.5,
+        );
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                show_formation_area_summary(ui, summary);
+            });
+        });
+        let mut texts = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut texts);
+        }
+
+        assert!(texts.iter().any(|text| {
+            text == "陆地面积：目标 60.0%｜实际 59.0%｜偏差 -1.0 个百分点"
+        }));
+        assert!(texts.iter().any(|text| text == "海水量 = 2.500 × 地球"));
+        assert!(texts.iter().any(|text| text.contains("海水量超出建议带")));
+        assert!(texts.iter().any(|text| text.contains("将露出洋底")));
     }
 
     #[test]

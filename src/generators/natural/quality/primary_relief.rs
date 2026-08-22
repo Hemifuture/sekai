@@ -3,9 +3,9 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::generators::natural::evaluate_evolved_tectonic_quality;
 use crate::world::natural::{
-    scaled_earth_ocean_inventory_m3, BoundaryKind, CrustKind, EvolvedTectonicSnapshot,
-    GeologicSubstrateSnapshot, NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId,
-    QualityMetricStatus, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
+    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
+    ELEVATION_MAX_M, ELEVATION_MIN_M,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
@@ -291,10 +291,11 @@ impl RawReliefMetrics {
         }
         raw.physical_land_fractions
             .push(f64::from(relief.physical_land_fraction()));
-        let earth_inventory = scaled_earth_ocean_inventory_m3(surface.total_cell_area().get())
-            .map_err(|error| invalid_input("water-inventory", error.to_string()))?;
-        raw.water_inventory_ratios
-            .push(relief.water_inventory_m3() / earth_inventory);
+        raw.water_inventory_ratios.push(
+            relief
+                .water_inventory_ratio(surface.total_cell_area().get())
+                .map_err(|error| invalid_input("water-inventory", error.to_string()))?,
+        );
         Ok(raw)
     }
 

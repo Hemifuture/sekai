@@ -175,7 +175,7 @@ impl SphericalWorldFieldDocument {
 pub enum SphericalWorldAreaSummary {
     /// Legacy natural-foundation compliance (land target driven).
     NaturalFoundation(super::spherical_natural_display::SphericalNaturalAreaSummary),
-    /// Formation-product compliance (water-volume sea level, conserved crust).
+    /// Formation-product compliance (selected sea-level driver, conserved crust).
     Formation(super::spherical_formation_display::FormationAreaSummary),
 }
 

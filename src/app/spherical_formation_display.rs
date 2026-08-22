@@ -17,7 +17,8 @@ use crate::engine::{
 };
 use crate::generators::natural::{
     EvolvedTectonicArtifact, GeologicSubstrateArtifact, GlobalCirculationArtifact,
-    NaturalSurfaceFormationArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    NaturalSurfaceFormationArtifact, PrimaryReliefArtifact, ReliefSpecArtifact,
+    ResolvedTectonicInput, ResolvedTectonicInputArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::view::{
@@ -37,7 +38,8 @@ use crate::world::natural::{
     sediment_deposition_thickness_m_field_id, spherical_formation_field_registry,
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_displacement_m_field_id, GlobalCirculationFields, NaturalFieldRegistryError,
-    SphericalTectonicValidationError, SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
+    PrimaryReliefValidationError, SeaLevelPolicy, SphericalTectonicValidationError,
+    SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
@@ -92,11 +94,34 @@ impl SphericalFormationBuildIdentity {
 pub struct FormationAreaSummary {
     authored_continental_fraction: f32,
     evolved_continental_fraction: f64,
+    target_land_fraction: f32,
     actual_land_fraction: f64,
     sea_level_m: f32,
+    sea_level_policy: SeaLevelPolicy,
+    water_inventory_ratio: f64,
 }
 
 impl FormationAreaSummary {
+    pub(super) const fn new(
+        authored_continental_fraction: f32,
+        evolved_continental_fraction: f64,
+        target_land_fraction: f32,
+        actual_land_fraction: f64,
+        sea_level_m: f32,
+        sea_level_policy: SeaLevelPolicy,
+        water_inventory_ratio: f64,
+    ) -> Self {
+        Self {
+            authored_continental_fraction,
+            evolved_continental_fraction,
+            target_land_fraction,
+            actual_land_fraction,
+            sea_level_m,
+            sea_level_policy,
+            water_inventory_ratio,
+        }
+    }
+
     /// Returns the author-requested initial continental crust area fraction.
     pub const fn authored_continental_fraction(&self) -> f32 {
         self.authored_continental_fraction
@@ -107,14 +132,29 @@ impl FormationAreaSummary {
         self.evolved_continental_fraction
     }
 
+    /// Returns the authored nominal land fraction carried by the built relief spec.
+    pub const fn target_land_fraction(&self) -> f32 {
+        self.target_land_fraction
+    }
+
     /// Returns the area-weighted land fraction of the published surface.
     pub const fn actual_land_fraction(&self) -> f64 {
         self.actual_land_fraction
     }
 
-    /// Returns the water-volume-derived global sea level.
+    /// Returns the published global sea level selected by the active driver.
     pub const fn sea_level_m(&self) -> f32 {
         self.sea_level_m
+    }
+
+    /// Returns the sea-level driver used by the published build.
+    pub const fn sea_level_policy(&self) -> SeaLevelPolicy {
+        self.sea_level_policy
+    }
+
+    /// Returns P3 inventory relative to the area-scaled Earth ocean reference.
+    pub const fn water_inventory_ratio(&self) -> f64 {
+        self.water_inventory_ratio
     }
 }
 
@@ -210,6 +250,8 @@ impl SphericalFormationFieldDocument {
             outcome.artifacts.get::<ResolvedTectonicInputArtifact>()?,
             outcome.artifacts.get::<EvolvedTectonicArtifact>()?,
             outcome.artifacts.get::<GeologicSubstrateArtifact>()?,
+            outcome.artifacts.get::<ReliefSpecArtifact>()?,
+            outcome.artifacts.get::<PrimaryReliefArtifact>()?,
             outcome.artifacts.get::<GlobalCirculationArtifact>()?,
             outcome.artifacts.get::<NaturalSurfaceFormationArtifact>()?,
             &outcome.report,
@@ -222,6 +264,8 @@ impl SphericalFormationFieldDocument {
         resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
         tectonics: Arc<EvolvedTectonicArtifact>,
         substrate: Arc<GeologicSubstrateArtifact>,
+        relief_spec: Arc<ReliefSpecArtifact>,
+        primary_relief: Arc<PrimaryReliefArtifact>,
         circulation: Arc<GlobalCirculationArtifact>,
         formation: Arc<NaturalSurfaceFormationArtifact>,
         report: &BuildReport,
@@ -240,6 +284,11 @@ impl SphericalFormationFieldDocument {
                 authoritative,
             });
         }
+        primary_relief.snapshot().validate_against(
+            surface.snapshot(),
+            substrate.snapshot(),
+            relief_spec.spec(),
+        )?;
 
         let compatibility = tectonics.snapshot().compatibility();
         let plate_count = u16::try_from(compatibility.plates().len())
@@ -268,15 +317,17 @@ impl SphericalFormationFieldDocument {
                 land_area += cell.area.get();
             }
         }
-        let area_summary = FormationAreaSummary {
-            authored_continental_fraction: resolved_tectonic
-                .input()
-                .spec()
-                .continental_crust_fraction,
-            evolved_continental_fraction: continental_area / total_area,
-            actual_land_fraction: land_area / total_area,
-            sea_level_m: terrain.sea_level_m(),
-        };
+        let area_summary = FormationAreaSummary::new(
+            resolved_tectonic.input().spec().continental_crust_fraction,
+            continental_area / total_area,
+            relief_spec.spec().target_land_fraction,
+            land_area / total_area,
+            terrain.sea_level_m(),
+            relief_spec.spec().sea_level_policy,
+            primary_relief
+                .snapshot()
+                .water_inventory_ratio(total_area)?,
+        );
         let elevation_display_radius_m =
             elevation_display_radius_m(terrain.sea_level_m(), terrain.final_elevation_m());
         let identity = SphericalFormationBuildIdentity::new(&provenance, authoritative);
@@ -574,6 +625,8 @@ pub enum SphericalFormationDisplayError {
     Tectonic(#[from] SphericalTectonicValidationError),
     #[error(transparent)]
     Formation(#[from] SurfaceFormationValidationError),
+    #[error(transparent)]
+    PrimaryRelief(#[from] PrimaryReliefValidationError),
     #[error(transparent)]
     Registry(#[from] NaturalFieldRegistryError),
     #[error(transparent)]

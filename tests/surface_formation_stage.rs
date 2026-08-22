@@ -88,6 +88,23 @@ fn target_land_fraction_inventory_reaches_p5_without_changing_the_default_produc
         .artifacts
         .get::<NaturalSurfaceFormationArtifact>()
         .unwrap();
+    let implicit_ratio = primary
+        .quality_report()
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == "water-inventory-ratio")
+        .and_then(|metric| metric.value())
+        .expect("P3 publishes the implicit target-mode water ratio");
+    let document =
+        sekai::app::SphericalFormationFieldDocument::from_build_outcome(&target).unwrap();
+    assert_eq!(
+        document.area_summary().sea_level_policy(),
+        SeaLevelPolicy::TargetLandFraction
+    );
+    assert_eq!(
+        document.area_summary().water_inventory_ratio().to_bits(),
+        implicit_ratio.to_bits()
+    );
     assert_eq!(
         formation
             .snapshot()
@@ -520,6 +537,12 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
     let summary = document.area_summary();
     let sea = summary.sea_level_m();
     assert!(((range.min() + range.max()) * 0.5 - sea).abs() < 0.5);
+    assert_eq!(summary.sea_level_policy(), SeaLevelPolicy::WaterInventory);
+    assert_eq!(
+        summary.target_land_fraction().to_bits(),
+        ReliefSpec::default().target_land_fraction.to_bits()
+    );
+    assert_eq!(summary.water_inventory_ratio().to_bits(), 1.0_f64.to_bits());
     assert!(
         summary.evolved_continental_fraction() > 0.2,
         "v5 conserves continental area, got {}",

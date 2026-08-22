@@ -31,7 +31,7 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
       P3 报告新增无界测量 `water-inventory-ratio`；默认模式逐位不变
       的守门测试（P3 证据哈希 / P5 seed 42 工件哈希）。验证：单元 +
       `primary_relief_*` / `surface_formation_stage`（release）。
-- [ ] Task 4 —— 接入 UI：驱动单选（陆壳比例 / 陆地占比）、陆地占比
+- [x] Task 4 —— 接入 UI：驱动单选（陆壳比例 / 陆地占比）、陆地占比
       滑块在两条链上启用、互斥锁定并显示推算/实测值、高级组里的陆壳
       滑块、摘要行"海水量 = r × 地球"与提示（带外、露出洋底）、
       `FormationAreaSummary::water_inventory_ratio`；应用测试（持久化

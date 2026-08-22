@@ -15,6 +15,21 @@ pub const MIN_WATER_INVENTORY_RATIO: f32 = 0.05;
 ///
 /// The probe and bound selection are recorded in the T0b design §2.4 and §8.
 pub const MAX_WATER_INVENTORY_RATIO: f32 = 5.0;
+/// Lower edge of the non-blocking surface-water authoring guidance.
+///
+/// Frozen from the T0b 17-seed response probe and the order-of-magnitude
+/// planetary-water range cited in the T0b design §2.4, §3.3, and §5.
+pub const WATER_INVENTORY_RATIO_ADVISORY_MIN: f64 = 0.5;
+/// Upper edge of the non-blocking surface-water authoring guidance.
+///
+/// Frozen from the T0b 17-seed response probe and the order-of-magnitude
+/// planetary-water range cited in the T0b design §2.4, §3.3, and §5.
+pub const WATER_INVENTORY_RATIO_ADVISORY_MAX: f64 = 2.0;
+/// Fraction of evolved continental-crust area used for the ocean-floor hint.
+///
+/// This deliberately conservative UI threshold is the measured crust-exposure
+/// rule frozen from T0b design §2.4 reading 4 and §8; it is not a solver gate.
+pub const OCEAN_FLOOR_EXPOSURE_HINT_FRACTION: f64 = 0.9;
 
 /// Selects which authored quantity determines global sea level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
