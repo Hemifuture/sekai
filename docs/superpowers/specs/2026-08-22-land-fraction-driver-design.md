@@ -1,6 +1,7 @@
 # 陆地占比驱动与水线求解（T0b）设计草案
 
-状态：草案，§8 已由用户裁定（R1）；Task 1 实测后冻结。日期：2026-08-22。
+状态：**已冻结**（R3，2026-08-22，用户确认 §8 常量表）；实现期偏离只能以
+修订条目记录。日期：2026-08-22。
 前置：`2026-08-21-t0-hypsometric-calibration-design`（T0，已交付）。
 
 ## 1. 动机
@@ -162,8 +163,9 @@ pub enum SeaLevelPolicy {
 - `sea_level_policy: SeaLevelPolicy`；
 - `water_inventory_ratio: f32`——**世界表层水量**，以地球水量（按面积
   缩放，`scaled_earth_ocean_inventory_m3`）为单位的比值，默认 1.0，
-  合法范围 `MIN_WATER_INVENTORY_RATIO`–`MAX_WATER_INVENTORY_RATIO`
-  （世界常量，拟 0.05–5.0：下界保证存在海洋，上界远在"水世界"之外）。
+  合法范围 `MIN_WATER_INVENTORY_RATIO` = 0.05 –
+  `MAX_WATER_INVENTORY_RATIO` = 5.0（世界常量，冻结；下界仍保有海洋，
+  上界已是水世界，§2.4）。
   用户裁定（R1）：水量是一等世界参数，不绑定地球数值，只要求算法
   科学（体积守恒、浴缸恒等式、测高一致）；其 UI 旋钮**后期**再加，
   本里程碑只显示。`WaterInventory` 模式用它解海面；`TargetLandFraction`
@@ -210,16 +212,19 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - 露出洋壳（L 超过陆壳可露出上限）不禁止：P5 衬底把露出的洋壳当镁铁质
   基岩处理（今日火山岛/洋脊即如此），UI 给出提示（§3.5）。用户裁定
   （R1）：过程守物理，结果归玩家，系统只给建议值。
-- 水量建议带 `WATER_INVENTORY_RATIO_ADVISORY_MIN/MAX`（世界常量，拟
-  0.5–2.0）只用于 UI 提示，不钳制、不入门禁。
+- 水量建议带 `WATER_INVENTORY_RATIO_ADVISORY_MIN` = 0.5 /
+  `WATER_INVENTORY_RATIO_ADVISORY_MAX` = 2.0（世界常量，冻结）只用于
+  UI 提示，不钳制、不入门禁。
 
 ### 3.4 预设：陆壳携带几何，标称陆地按实测重钉
 
 - `recommended_continental_crust_fraction` 各预设值**不改**（几何与
   v5 语料门禁 `continental-area-fraction` 0.30–0.45 绑定，属非目标）。
 - `recommended_land_fraction` 重新定义为：该预设在 WaterInventory 模式
-  下的 **17 粒语料陆地中位（实测，Task 1 钉值）**。它是 UI 在自动模式
-  下显示的"预期陆地"，也是目标模式滑块的初值。
+  下的 **17 粒语料陆地中位**（§2.4 实测，冻结值）：Continents 0.20、
+  Archipelago 0.22、Supercontinent 0.17、GreatIsland 0.23、
+  VolcanicIslands 0.16。它是 UI 在物理模式下显示的"预期陆地"，也是
+  目标模式滑块的初值。
 - 本里程碑**不重定任何预设的陆壳值**（用户裁定 R1）：陆地占比由水线
   精确控制后，陆壳只剩几何职责，没有必要再为露出率去动它。
 
@@ -241,7 +246,8 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - "面积依从性"组：`陆地面积：目标 x%｜实际 y%｜海水量 = r × 地球`
   （r 在物理模式下即 `water_inventory_ratio`，目标模式下为隐含比值）；
   r 落在 §8.2 提示带之外时附一行提示；若目标超过"陆壳可露出上限"
-  （陆地 > 演化后陆壳面积 − 淹没陆架下限），提示"将露出洋底"。
+  （目标 > 0.9 × 演化后陆壳面积份额，§2.4 读数 4，冻结阈值常量
+  `OCEAN_FLOOR_EXPOSURE_HINT_FRACTION` = 0.9），提示"将露出洋底"。
   `FormationAreaSummary` 增加 `water_inventory_ratio`（由快照推导）。
 - legacy 链：滑块行为不变（始终目标驱动）。
 
@@ -318,7 +324,7 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
    可给建议值。**
 5. **标称陆地的来源**：改为实测中位。——**裁定：同意。**
 
-Task 1 实测（§2.4）后拟钉的数值（Task 2 冻结前交用户确认）：
+Task 1 实测（§2.4）后钉下的数值（用户确认，2026-08-22，R3 冻结）：
 
 | 常量 | 拟值 | 依据 |
 | --- | ---: | --- |
@@ -337,6 +343,8 @@ Task 1 实测（§2.4）后拟钉的数值（Task 2 冻结前交用户确认）�
 ## 9. 修订记录
 
 - R0（2026-08-22）：草案。
+- R3（2026-08-22，Task 2）：**冻结**。§8 常量表经用户确认钉入 §3.1 /
+  §3.3 / §3.4 / §3.5。
 - R2（2026-08-22，Task 1）：§2.4 实测入档，§2.1/§2.2 结论改按实测表述，
   §8 列出拟钉常量表。
 - R1（2026-08-22）：用户裁定 §8 五项；水量升格为一等世界参数
