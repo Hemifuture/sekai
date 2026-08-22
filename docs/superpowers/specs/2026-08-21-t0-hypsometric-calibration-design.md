@@ -668,6 +668,9 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
   12 幅哈希改变（审计适配器 NVIDIA GeForce RTX 4080 SUPER / Vulkan），
   矢量符号采样格元清单由 17 个改为 21 个——legacy 球面图与自然阶段图
   共用 `initial_crust_samples`，陆海分布随 L2 初始清单改变；
+- 库内冻结值：`src/app/spherical_natural_display.rs` 的字段目录字节
+  指纹 `EXPECTED_FIELD_HASH`（`0d80ce41…` → `0d9ac9bf…`），§6 清单
+  原未列出，由全量套件发现后补刷；
 - 证据：v5 / P3 / P4 / P5 完成记录各追加"T0 测高校准刷新"一节，
   记录新旧 BLAKE3 与语料门禁值；P3 `performance.json` 与 P4 基准
   工件属独立性能记录，未重录。
