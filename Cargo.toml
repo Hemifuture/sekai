@@ -1,5 +1,6 @@
 [package]
 name = "sekai"
+default-run = "sekai"
 version = "0.1.0"
 authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
 edition = "2021"
