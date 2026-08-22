@@ -9,8 +9,9 @@ use sekai::generators::natural::{
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    GeologicSpec, NaturalQualityProfile, QualityMetricStatus, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, SphericalReliefSnapshot, TectonicSpec, WorldFormationPreset,
+    GeologicSpec, NaturalQualityProfile, NaturalQualityReport, QualityBounds, QualityMetric,
+    QualityMetricStatus, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    SphericalReliefSnapshot, TectonicSpec, WorldFormationPreset, NATURAL_QUALITY_REPORT_SCHEMA_V1,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
@@ -131,8 +132,38 @@ fn quality_evaluator_rejects_a_different_authoritative_surface() {
     .unwrap();
     let report =
         evaluate_evolved_tectonic_quality(bundle().authoritative_surface(), &snapshot).unwrap();
+    // Per-world statuses are measurements, not gates: a report that records a
+    // failing transform-to-convergent ratio is still valid evidence.
+    let failing_metrics = report
+        .metrics()
+        .iter()
+        .map(|metric| {
+            if metric.id().name() == "transform-to-convergent-uplift-ratio" {
+                QualityMetric::new(
+                    metric.id().clone(),
+                    QualityMetricStatus::Fail,
+                    Some(0.75),
+                    metric.sample_count().max(1),
+                    QualityBounds::at_most(0.50).unwrap(),
+                    None,
+                )
+                .unwrap()
+            } else {
+                metric.clone()
+            }
+        })
+        .collect();
+    EvolvedTectonicArtifact::new(snapshot.clone(), report)
+        .validate()
+        .unwrap();
+    let failing_report = NaturalQualityReport::new(
+        NATURAL_QUALITY_REPORT_SCHEMA_V1,
+        snapshot.surface_ref(),
+        failing_metrics,
+    )
+    .unwrap();
     assert_eq!(
-        report
+        failing_report
             .metrics()
             .iter()
             .find(|metric| metric.id().name() == "transform-to-convergent-uplift-ratio")
@@ -140,11 +171,11 @@ fn quality_evaluator_rejects_a_different_authoritative_surface() {
             .status(),
         QualityMetricStatus::Fail
     );
-    EvolvedTectonicArtifact::new(snapshot.clone(), report)
+    EvolvedTectonicArtifact::new(snapshot.clone(), failing_report)
         .validate()
         .unwrap();
-    let empty_report = sekai::world::natural::NaturalQualityReport::new(
-        sekai::world::natural::NATURAL_QUALITY_REPORT_SCHEMA_V1,
+    let empty_report = NaturalQualityReport::new(
+        NATURAL_QUALITY_REPORT_SCHEMA_V1,
         snapshot.surface_ref(),
         Vec::new(),
     )
