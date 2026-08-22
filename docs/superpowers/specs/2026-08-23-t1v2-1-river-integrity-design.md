@@ -135,7 +135,8 @@ display_width_px = max(project_physical_width(width_m, camera, projection),
 
 `RIVER_RASTER_FLOOR_PX` 唯一取 1 像素：这是线段至少覆盖一个栅格样本的
 离散化下限，不是视觉调参。地图按当前投影在河段中点两侧投影真实横向
-偏移；球面按 `width_m / display_radius_m` 的角宽和当前相机投影求屏幕宽。
+偏移；球面按 `width_m / TerrainAmplifier::radius_m()` 的角宽和当前相机投影
+求屏幕宽。
 宽度随相机 uniform 连续变化，不因缩放重建或重传整张河网。
 
 ## 8. 尺度化河网选择
@@ -196,6 +197,12 @@ visible(order, leaf_level, max_order) ⇔ order + leaf_level − 1 ≥ max_order
 探针及包含河流的 GPU 金样是否变化，须由实现后的因果 diff 判定。实际刷新
 清单、旧值/新值和未变证据将在对应任务提交前追加到本节，禁止预写期望值。
 
+### R1 — 物理角宽半径勘误（2026-08-23，实施计划审计）
+
+§7 原文误写为用仅服务高程色标的 `display_radius_m` 换算球面角宽；实现必须
+使用权威 `TerrainAmplifier::radius_m()`。这是一处量纲/事实源勘误，不改变
+已冻结产品行为：米制河宽除以行星物理半径才得到弧度。
+
 ## 11. 每项承重技术的出处
 
 | 技术 | 出处 | 落点 |
@@ -207,4 +214,3 @@ visible(order, leaf_level, max_order) ⇔ order + leaf_level − 1 ≥ max_order
 | 河宽与流量的幂律，系数/指数随位置变化 | Leopold & Maddock (1953), USGS Professional Paper 252，<https://pubs.usgs.gov/publication/pp252> | §6 |
 | Strahler 河级定义 | Strahler (1957), *Transactions, AGU* 38(6), 913–920，<https://doi.org/10.1029/TR038i006p00913> | §8 层级抽稀 |
 | 河网制图须先做要素选择/密度控制再简化几何 | Stanislawski (2009), USGS SIR 2009-5202，<https://pubs.usgs.gov/sir/2009/5202/> | §8 |
-
