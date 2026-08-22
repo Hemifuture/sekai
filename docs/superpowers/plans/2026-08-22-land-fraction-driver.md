@@ -14,7 +14,7 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
 
 ## 任务
 
-- [ ] Task 1 —— 实测（不改产品代码）：扩展 `tests/terrain_audit_probe.rs`
+- [x] Task 1 —— 实测（不改产品代码）：扩展 `tests/terrain_audit_probe.rs`
       （a）v5 清单均值/离散度逐步轨迹与账本归因（`SEKAI_V5_TRACE` +
       `SphericalTectonicMaterialProcesses`：裂谷增面积、碰撞缩短、
       消耗）——回答 38.7 → 35.4 km 的 −3.3 km 与厚尾不足各由谁造成；

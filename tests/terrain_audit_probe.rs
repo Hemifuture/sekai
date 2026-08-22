@@ -32,14 +32,16 @@ use sekai::generators::spatial::{
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     hypsometric_mean, hypsometric_quantile, hypsometric_share_below, hypsometric_total_area,
-    solve_physical_sea_level, sort_hypsometric_samples, CrustKind, ElevationField, GeologicSpec,
-    LandOceanField, NaturalQualityProfile, ReliefSpec, SurfaceWaterKind, TectonicActivity,
-    TectonicSpec, WorldFormationSpec, CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3,
-    EARTH_WATER_REFERENCE_RADIUS_M, SURFACE_FORMATION_HORIZON_YEARS,
+    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, sort_hypsometric_samples,
+    water_volume_at_sea_level_m3, CrustKind, ElevationField, GeologicSpec, LandOceanField,
+    LandOceanKind, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormationPreset,
+    SurfaceWaterKind, TectonicActivity, TectonicSpec, WorldFormationSpec,
+    CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3, EARTH_WATER_REFERENCE_RADIUS_M,
+    SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, RootSeed};
-use support::global_circulation::build_primary_relief;
+use support::global_circulation::{build_primary_relief, build_primary_relief_for};
 use support::surface_formation::{published_formation, surface_formation_fixture};
 
 /// The root seed of the world currently on the user's screen.
@@ -1443,5 +1445,235 @@ fn probe_t0_corpus_hypsometry() {
     .zip(&columns)
     {
         corpus_summary(label, column);
+    }
+}
+
+const T0B_WATER_RATIOS: [f64; 6] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
+const T0B_TARGET_LAND: [f64; 4] = [0.29, 0.38, 0.50, 0.60];
+const T0B_PRESETS: [ResolvedWorldFormationPreset; 5] = [
+    ResolvedWorldFormationPreset::Continents,
+    ResolvedWorldFormationPreset::Archipelago,
+    ResolvedWorldFormationPreset::Supercontinent,
+    ResolvedWorldFormationPreset::GreatIsland,
+    ResolvedWorldFormationPreset::VolcanicIslands,
+];
+
+fn land_area_at(
+    elevation_m: &[f32],
+    areas: &[f64],
+    sea_level_m: f32,
+    include: impl Fn(usize) -> bool,
+) -> f64 {
+    elevation_m
+        .iter()
+        .zip(areas)
+        .enumerate()
+        .filter(|(index, (&elevation, _))| {
+            include(*index)
+                && LandOceanKind::classify(elevation, sea_level_m) == LandOceanKind::Land
+        })
+        .map(|(_, (_, &area))| area)
+        .sum()
+}
+
+/// T0b Task 1: (A) where the V5 continental inventory mean goes between the
+/// initial table and the P3-facing terminal state, by the material ledger;
+/// (B) land fraction against water inventory per formation preset, the
+/// exposure ratio, and the implied water ratio for candidate targets.
+#[test]
+#[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
+fn probe_t0b_land_fraction_driver() {
+    let bundle = ProfileSurfaceBuilder::build(
+        NaturalQualityProfile::Draft,
+        Meters::new(6_371_000.0).unwrap(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let surface = bundle.authoritative_surface();
+    let n = surface.cells().len();
+    let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
+    let total_area: f64 = areas.iter().sum();
+    let inventory = scaled_earth_ocean_inventory_m3(total_area).unwrap();
+    let h_km = inventory / total_area / 1000.0;
+    println!(
+        "== t0b part A: continental inventory attribution (Continents, {} seeds, {n} cells) ==",
+        QUALITY_SEEDS.len()
+    );
+    println!("earth water over the sphere h = {h_km:.3} km");
+    println!(
+        "seed | A0 | V0/A0 | rift+ | short- | consumed A V | A1 | V1/A1 | A2 | V2/A2 | dilution | volume | remap (km)"
+    );
+    let mut a_columns: Vec<Vec<f64>> = vec![Vec::new(); 9];
+    for seed in QUALITY_SEEDS {
+        let (evolved, _substrate, _relief) = build_primary_relief(&bundle, seed);
+        let budget = evolved.material_budget();
+        let c0 = budget.initial_control().continental();
+        let c1 = budget.final_control().continental();
+        let c2 = budget.final_authoritative().continental();
+        let processes = budget.processes();
+        let (a0, v0) = (c0.reference_area_m2(), c0.volume_m3());
+        let (a1, v1) = (c1.reference_area_m2(), c1.volume_m3());
+        let (a2, v2) = (c2.reference_area_m2(), c2.volume_m3());
+        let mean0 = v0 / a0 / 1000.0;
+        let mean1 = v1 / a1 / 1000.0;
+        let mean2 = v2 / a2 / 1000.0;
+        let dilution = v0 / a1 / 1000.0 - mean0;
+        let volume = (v1 - v0) / a1 / 1000.0;
+        let remap = mean2 - mean1;
+        let rift = processes.rift_extension_continental_area_gain_m2() / a0;
+        let shortening = processes.collision_shortening_continental_area_loss_m2() / a0;
+        let consumed = processes.continental_consumed();
+        let consumed_area = consumed.reference_area_m2() / a0;
+        let consumed_volume = consumed.volume_m3() / v0;
+        println!(
+            "{seed:>4} | {:.4} | {mean0:.2} | {rift:+.4} | {shortening:+.4} | {consumed_area:.4} {consumed_volume:.4} | {:.4} | {mean1:.2} | {:.4} | {mean2:.2} | {dilution:+.2} | {volume:+.2} | {remap:+.2}",
+            a0 / total_area,
+            a1 / total_area,
+            a2 / total_area,
+        );
+        for (column, value) in a_columns.iter_mut().zip([
+            mean0,
+            mean1,
+            mean2,
+            dilution,
+            volume,
+            remap,
+            rift,
+            shortening,
+            consumed_area,
+        ]) {
+            column.push(value);
+        }
+    }
+    for (label, column) in [
+        "initial_mean_km",
+        "final_control_mean_km",
+        "final_authoritative_mean_km",
+        "area_dilution_term_km",
+        "volume_loss_term_km",
+        "remap_term_km",
+        "rift_area_gain_fraction",
+        "shortening_area_loss_fraction",
+        "consumed_area_fraction",
+    ]
+    .iter()
+    .zip(&a_columns)
+    {
+        corpus_summary(label, column);
+    }
+
+    println!("== t0b part B: land fraction against water inventory per preset ==");
+    for preset in T0B_PRESETS {
+        let crust = preset.recommended_continental_crust_fraction();
+        let nominal = f64::from(preset.recommended_land_fraction());
+        let spec = TectonicSpec {
+            continental_crust_fraction: crust,
+            ..TectonicSpec::default()
+        };
+        println!("-- {preset:?}: crust {crust:.2}, nominal land {nominal:.2} --");
+        println!(
+            "seed | sea | L | cont | expo | D km | L(r=.25 .5 .75 1 1.5 2) | r(T=nom .29 .38 .50 .60) | oceanic land share at T"
+        );
+        let mut columns: Vec<Vec<f64>> = vec![Vec::new(); 21];
+        for seed in QUALITY_SEEDS {
+            let (_evolved, substrate, relief) =
+                build_primary_relief_for(&bundle, seed, preset, &spec);
+            let elevation = relief.elevation_m();
+            let sea = relief.sea_level_m();
+            let land = relief.land_ocean().raw_values();
+            let continental =
+                |index: usize| substrate.crust_kind(index) == Some(CrustKind::Continental);
+            let continental_area: f64 = (0..n).filter(|&i| continental(i)).map(|i| areas[i]).sum();
+            let land_area: f64 = (0..n).filter(|&i| land[i] == 1).map(|i| areas[i]).sum();
+            let land_on_continental: f64 = (0..n)
+                .filter(|&i| land[i] == 1 && continental(i))
+                .map(|i| areas[i])
+                .sum();
+            let l = land_area / total_area;
+            let exposure = land_on_continental / continental_area;
+            let depth_km = relief.water_inventory_m3() / (total_area - land_area) / 1000.0;
+            let mut row = vec![
+                f64::from(sea),
+                l,
+                continental_area / total_area,
+                exposure,
+                depth_km,
+            ];
+            for ratio in T0B_WATER_RATIOS {
+                let solved =
+                    solve_physical_sea_level(elevation, &areas, ratio * inventory).unwrap();
+                row.push(
+                    land_area_at(elevation, &areas, solved.sea_level_m(), |_| true) / total_area,
+                );
+            }
+            let mut samples: Vec<(f32, f64)> = elevation
+                .iter()
+                .copied()
+                .zip(areas.iter().copied())
+                .collect();
+            sort_hypsometric_samples(&mut samples);
+            let mut oceanic_shares = Vec::with_capacity(5);
+            for target in std::iter::once(nominal).chain(T0B_TARGET_LAND) {
+                let sea_t = hypsometric_quantile(&samples, 1.0 - target);
+                let volume = water_volume_at_sea_level_m3(elevation, &areas, sea_t).unwrap();
+                row.push(volume / inventory);
+                let land_t = land_area_at(elevation, &areas, sea_t, |_| true);
+                let oceanic_t = land_area_at(elevation, &areas, sea_t, |i| !continental(i));
+                oceanic_shares.push(if land_t > 0.0 {
+                    oceanic_t / land_t
+                } else {
+                    0.0
+                });
+            }
+            row.extend(oceanic_shares);
+            let fmt = |values: &[f64]| {
+                values
+                    .iter()
+                    .map(|v| format!("{v:.3}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            println!(
+                "{seed:>4} | {:+6.0} | {:.3} | {:.3} | {:.3} | {:.2} | {} | {} | {}",
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                fmt(&row[5..11]),
+                fmt(&row[11..16]),
+                fmt(&row[16..21]),
+            );
+            for (column, value) in columns.iter_mut().zip(row) {
+                column.push(value);
+            }
+        }
+        let labels = [
+            "sea_level_m".to_owned(),
+            "land_fraction_r1".to_owned(),
+            "continental_area_fraction".to_owned(),
+            "exposure_ratio".to_owned(),
+            "wet_mean_depth_km".to_owned(),
+        ]
+        .into_iter()
+        .chain(
+            T0B_WATER_RATIOS
+                .iter()
+                .map(|r| format!("land_fraction_r{r}")),
+        )
+        .chain(
+            std::iter::once(nominal)
+                .chain(T0B_TARGET_LAND)
+                .map(|t| format!("water_ratio_for_land_{t:.2}")),
+        )
+        .chain(
+            std::iter::once(nominal)
+                .chain(T0B_TARGET_LAND)
+                .map(|t| format!("oceanic_land_share_at_{t:.2}")),
+        )
+        .collect::<Vec<_>>();
+        for (label, column) in labels.iter().zip(&columns) {
+            corpus_summary(label, column);
+        }
     }
 }
