@@ -179,3 +179,32 @@ and thermocline ocean states, a slow deep-ocean heat reservoir, near-surface
 and upper winds, shear, surface currents, SST, thermocline depth, humidity, and
 precipitation. Climate may not rewrite P3 relief or replace physical sea level
 with an author percentile.
+
+## T0 测高校准刷新（2026-08-22，规格 `2026-08-21-t0-hypsometric-calibration-design` §6）
+
+P3 设计修订 A1（洋壳不再继承 v5 兼容高程；GDH1 深度律；均衡沉积盖层）
+与上游 v5 A1 共同改变了全部 P3 产物。刷新后的 17 粒 Release 语料门禁
+（`tests/primary_relief_quality.rs::fixed_p0_corpus_passes_every_locked_p3_statistical_gate`）：
+
+| Corpus metric | 刷新前 | 刷新后 | Gate | Result |
+|---|---:|---:|---:|---|
+| Coast/plate-boundary overlap | 0.2231 | `0.134304099294468` | `<= 0.35` | Pass |
+| Continental-ocean median separation | 5669.5 m | `4429.25 m` | `>= 2500 m` | Pass |
+| Convergent positive dynamic fraction | 0.99776 | `0.9974886991461577` | `>= 0.80` | Pass |
+| Hotspot positive construction fraction | 1.0 | `1.0` | `>= 0.80` | Pass |
+| Old-young ocean depth separation | 4125.75 m | `1361.0 m` | `>= 600 m` | Pass |
+| Physical land-area fraction median | 0.4025 | `0.20183590054512024` | `0.20..=0.55` | Pass |
+| Regional-detail RMS ratio | 0.02155 | `0.02952838622327347` | `0.01..=0.30` | Pass |
+| Subduction negative dynamic fraction | 1.0 | `0.9994493392070485` | `>= 0.80` | Pass |
+
+语料中位分量（参考零点系）：陆壳基底 / 动力 / 被动边缘 = 277.0 / −261.5 /
+0.0 m，洋壳 −4676.5 / 0.0 / 0.0 m，海面 −100.9 m。陆地占比中位 0.2018
+落在门禁带下沿附近：这是正确物理的结果（T0 规格 §11.4），作者约束 0.38
+在每一粒上判 `Infeasible`。
+
+证据哈希（`tests/primary_relief_evidence.rs`，2026-08-22）：
+
+- `evidence.json`：81,426 B，`ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2`（前 `8da45485…`）；
+- `metrics.csv`：29,964 B，`b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1`（前 `55a7dbe3…`）；
+- `performance.json` 由性能测试另行生成，本次未重录；
+- 上游 P2 证据刷新后 `c14fdbfd…` / `774f6040…`（见 v5 完成记录）。

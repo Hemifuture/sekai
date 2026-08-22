@@ -250,3 +250,18 @@ integration. It deliberately has no clouds, sea ice, soil moisture, snowpack,
 glaciers, vegetation feedback, ENSO-like variability, or resolved storms.
 Those capabilities remain unavailable until their owning stages implement and
 validate them.
+
+## T0 测高校准刷新（2026-08-22，规格 `2026-08-21-t0-hypsometric-calibration-design` §6）
+
+P4 消费 P3 地形，随 T0 校准刷新。17 粒 Release 证据
+（`tests/global_circulation_evidence.rs`，2026-08-22，全部锁定指标 Pass）：
+
+- `evidence.json`：91,139 B，BLAKE3
+  `01007ae263fed76c9901f6fa0ba9d7a30cc16caa30fa0ecd7411516d620c2920`
+  （前 `cd92d747…`）；
+- `metrics.csv`：35,117 B，BLAKE3
+  `c0670df941fb1f872f70f70f7d3e6ec5f21001ca2069395b38ef8ab3ed0e1206`
+  （前 `e095e467…`）。
+
+积分器比较工件 `93b9ee09…` 与五阶段图结果哈希 `6b7d925b…` 属独立
+基准/性能记录，本次未重录。

@@ -378,3 +378,26 @@ Open work handed forward:
 P6 receives the immutable final terrain and its causal components, formation
 climate, final hydrology, lakes, sediment mass and provenance, coastal and delta
 state, and the complete checkpoint identity.
+
+## 11. T0 测高校准刷新（2026-08-22，规格 `2026-08-21-t0-hypsometric-calibration-design` §6）
+
+上游 v5/P3 校准（L0、L2、L5、L6）改变了全部 P5 产物；P5 方程与常量
+不变，等静压核按设计 §5 在可发布界内自减（见 T0 规格 §11.1）。质量
+报告扩为 22 项：新增 8 项单世界测高测量（无界），包络以 17 粒语料中位
+断言（开放行见 T0 规格 §11.3）。刷新后（`tests/surface_formation_evidence.rs`，
+2026-08-22）：
+
+- `evidence.json`：130,959 B，BLAKE3
+  `0c89aac9ff989ee4d9891437d8995c0c49d99b1f42e4572df82ba8e6b936aa4c`
+  （前 `8b9b22b9…`）；
+- seed 42 工件：69,216,248 B，BLAKE3
+  `83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90`
+  （前 `a20d89ac…`）；checkpoint 指纹
+  `a980562acf3d0c1186f0c8245a45e68189e235692507e7736ba06a2a4398ed14`
+  （前 `21e5e263…`），state 指纹
+  `9c8cc9ebc2d0463c553bf416046ce6b0e047f081a841a94c952dc67a864cf12f`
+  （前 `7203c04a…`）；外循环 2 次；
+- seed 42 发布 1,461 个盆地、102 个湖、3,155 条河段（前 1,000 / 321 /
+  4,263）；P3 海面 −78.6 m、P5 海面 −68.4 m、P3 陆地 0.2145。
+- 语料测高中位（P5 产物）：p05/p25/p50/p75/p95 = 101/335/675/1136/2269 m，
+  均值 842 m，<100 m 份额 0.049，洋深 p50 3995 m。

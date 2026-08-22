@@ -39,8 +39,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "fa85419891fe6f2f8c3c37b61da201b23886abbe2ec26368efc110c06b592d71",
-        expected_geology_hash: "6aa14ee4096ac47d2e54811939a8f18fb47f792de4d5034af98a4870a4c90f76",
+        expected_relief_hash: "3ef4de5cdbcd58cba8594785121b8a1d62f4820dcac61393b336803491752f84",
+        expected_geology_hash: "71c95e6a386f92d079e659fafec2456e279590fdce451f9e8c50baa20b4bed1f",
     },
     MatrixCase {
         name: "regional-great-island",
@@ -53,8 +53,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "f42e3a97cc75f11f4b6bf1f3f419974df454975238c9c8d11f439b0012934fed",
-        expected_geology_hash: "d92f52b3f9150991ae39268ed6720b4726b6fe22146a0d13bba6aee634a7326a",
+        expected_relief_hash: "068ec9890519d7d0ada69ba6774716857185f48ec8ad86b43355a76e2d2edb99",
+        expected_geology_hash: "1e54d0c63413ba41b1272bc30e421c13b9b7dd6290aeec075849fe35e0aae184",
     },
     MatrixCase {
         name: "earth-continents",
@@ -67,8 +67,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "6bfcb5bf6ed744a78e35e81bfd46972ddae24a61eed38ce5c907b31cd1f5d833",
-        expected_geology_hash: "a9ec78a29218bd1ff4ff4033e16b72ed189ff74a20fea098d336d0555be628d5",
+        expected_relief_hash: "6c69a7ae67325b5713bbdb30e2b6f9fd13317fb31655626dd8f13f332e79a91e",
+        expected_geology_hash: "32424b37f247a850a11227fca8972ec2a38b8dad26b6cbebbdf77cd86a6559b1",
     },
     MatrixCase {
         name: "maximum-radius-volcanic",
@@ -81,8 +81,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_relief_hash: "f2e2e0d681668a14cdb517ca6f1f056fbf097890ad64615bf1893586fab6d445",
-        expected_geology_hash: "4ee3b4650a98d4983acd617f0b6bba621e2376c778e78242a4a4a1671e4728c8",
+        expected_relief_hash: "081b1352a5a40665517790cecfc7c8c27fe8a629de7ea228d868fa2f473cbbf9",
+        expected_geology_hash: "1f4835a164466c8d1a5fed033ba63312784df7606327bbc71fcb06248cf1552b",
     },
 ];
 

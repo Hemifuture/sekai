@@ -654,3 +654,20 @@ L2 的薄缘尾巴即陆架与海岸平原的物质来源；若 Task 3 实测 <1
    聚合形态改变（§7 非目标）。
 2. 把 Continents 预设的 `target_land_fraction` 改为实测 0.20–0.25 并接受
    本世界比地球更"海洋"。
+
+### 11.5 Task 4 记录（指纹与证据刷新，2026-08-22）
+
+§6 所列刷新链全部重录，无新增工件类型：
+
+- 阶段指纹：`tests/spherical_natural_stage_graph.rs` 6 值、
+  `tests/spherical_natural_matrix.rs` 4 值、
+  `tests/spherical_relief_geology_matrix.rs` 8 值、
+  `tests/surface_formation_stage.rs` T1/T1v2 探针各 1 值（T1 设计 A5、
+  T1v2 规格 A9）；
+- GPU 金样：`tests/spherical_presentation_gpu.rs` 16 幅 RGBA8 金样中
+  12 幅哈希改变（审计适配器 NVIDIA GeForce RTX 4080 SUPER / Vulkan），
+  矢量符号采样格元清单由 17 个改为 21 个——legacy 球面图与自然阶段图
+  共用 `initial_crust_samples`，陆海分布随 L2 初始清单改变；
+- 证据：v5 / P3 / P4 / P5 完成记录各追加"T0 测高校准刷新"一节，
+  记录新旧 BLAKE3 与语料门禁值；P3 `performance.json` 与 P4 基准
+  工件属独立性能记录，未重录。

@@ -376,12 +376,12 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "f0d53bebf0f7bd3a1b4269a9264a7dd9ec72bd4ef4a670ef77ff21ce6ed57ea4",
+            "cf6eed6fcda34baf87df656aacb68e61096e995f72c6c17d2a4c3c74f20101e8",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "f887e52ccb9ccbb4f242f415e3f343995348eb65d751e0491d0f9ab282599290",
+            "007d43626dc6e0f63ffd5124079938c00c7d0eb5f360fe6468235470c21f9eee",
         ),
         (
             "map_category_fill",
@@ -396,52 +396,52 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "735dba92aca377432f7f6c6a67e3e2b9c69e864909735beeb7d39aa69cd513e9",
+            "0442e45cbc6b51bed0f1172f6c66af828f36c3f6aa3b4aeced1231d6ed39cd22",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "1a41b85d4ad72dc6a1b3dba3179882143905350e1d71d985b3c65792b916c111",
+            "a8ce2272b90898dd71b60fddf503fca382e32e43c75dbfb1804255dc93527d4a",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "8e1fffd5448c078eeb06b1798c041d4469b651165acc78499ae10354b24e8468",
+            "932645da008738f62cc8174c55013572738572660fd76aa817097490a12b4431",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "eb007dd9d09faee3502dc2a4b9f519af0851415abefcf3489872539a065e3692",
+            "ef3ea43b416be8ccbab6217475c1606c26fd9f38c368c3e4ce284fb36b95789e",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "df74002b510fbd251e71e6d1e1bcd8ce3a0ac299853d2703587ed9fe01089df8",
+            "bfe37933afd9fa9485fefe432a7ff98c13da528632e79f24d9d9931d27f6a93d",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "d7d5bc90df2e2c7f0d5936e7f7c2ea344ec1ff90b56d51cfba72c9545b153f95",
+            "61794f059d1a04e82e38ff4a6a29bfd6ee30e0c8d008e9fc5a8996f9834fb437",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "4681c3ef91bad5adb5b7b6de15e36186912ce94109d40804bb390af09fa4583f",
+            "dddc9c656bdcdd94b1229e80532134b8f67c217860d299d7da771d7e1ab27b29",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "3a9bbc8a4059b1d77877d18a31bdf841e9650f8ef3a5ae3c563002b963bf141d",
+            "f63baca918fdde0b9033030bd75179aa5983359268a550bb411e04462091f47e",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "4c466d895bc5fb6c2c9122a8d0b2f69f49e7ad9d20a5dc829f6273c0be612a76",
+            "64288e48d9e61b29c0c56cf1919188fce221c100226aecc750eb2392c546e8ae",
         ),
         (
             "map_poles",
             &map_poles,
-            "1488a9780bf2da82954428f7ee5f69dc0b712242a339ec858c867c44c0fcca9e",
+            "1de9760cf9c80f57b5cb151b9ed7bfdda33893486d4ee7e2eb1ea633b518a4e2",
         ),
         (
             "globe_front_visibility",
@@ -676,7 +676,7 @@ fn assert_vector_glyph_semantics(
     glyphs: &PreparedVectorGlyphs,
 ) {
     const EXPECTED_SAMPLED_IDS: &[u32] = &[
-        5, 25, 29, 32, 38, 62, 65, 70, 76, 109, 118, 119, 125, 127, 129, 140, 141,
+        5, 11, 23, 37, 38, 42, 47, 53, 64, 66, 67, 81, 100, 101, 108, 125, 127, 129, 151, 155, 158,
     ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());

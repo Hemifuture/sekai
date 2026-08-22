@@ -247,3 +247,41 @@ measure downstream omissions, not the quality of the new causes.
 The next gate is P3 substrate and primary relief. Gleba comparison remains
 deferred until every P0-P9 scientific and visual contract passes, exactly as
 locked by the global design.
+
+## T0 测高校准刷新（2026-08-22，规格 `2026-08-21-t0-hypsometric-calibration-design` §6）
+
+v5 设计修订 A1（初始台地清单、碰撞缩短、整包沉积重采样）改变了全部
+17 粒草稿档工件。刷新前的值保留在上文作为历史；刷新后（Release 证据
+写入器 `tests/evolved_tectonic_evidence.rs`，2026-08-22）：
+
+- `evidence.json`：113,816 B，BLAKE3
+  `c14fdbfd1424a37e54e0ee15c297016d04d7824490cb2015c5e74d688b00dedc`
+  （前 `d6af0f68…`）；
+- `metrics.csv`：25,502 B，BLAKE3
+  `774f604076e8b1aae25c18e14d11ff7613abfa894ab2c5dc4e822784dabc6aca`
+  （前 `f8cbc4c5…`）；
+- 权威球面 `0d09df7a…` 与控制面 `beaf400d…` 不变。
+
+| Seed | Plates | JSON bytes | BLAKE3（刷新后） |
+| ---: | ---: | ---: | --- |
+| 42 | 9 | 7,605,076 | `fb3fb1a5afa33b8a4241b0a6569071fb7e7f0b4f636eda37363380a7a60f07ca` |
+| 3 | 11 | 7,558,373 | `a306f07766f2ad5d9987c0792d0a4e34aa55b29c003d33b34164ce903bf554ec` |
+| 7 | 8 | 7,510,011 | `02f962b19cdc8b1297ebbd5fe052ec70cb5b0f582e748d8b73b5befa0afba19c` |
+| 11 | 9 | 7,514,487 | `b7ed68c658f6312119bf339f45cc86a232205847a2c34a24755be799d19cdf5d` |
+| 19 | 7 | 7,536,194 | `f1279cfdfcf593d5c14f38b70852c4ee7089c4d1b802451a7c7058082ef601af` |
+| 23 | 12 | 7,589,405 | `c8b6a55d1ef301be174e4620c8b94a93ec596cb46691d0369d24081a0ea2b47d` |
+| 29 | 13 | 7,615,520 | `5442751d6cd2b782f8d07998c425286ea9dfb706f135896f65a86d128c5cd190` |
+| 31 | 6 | 7,439,149 | `e57d415be1e69c11b72e69a8977ebe15d82bf59d12c892e7f803a91b4f75c74b` |
+| 43 | 6 | 7,438,154 | `20fe3b52171b5b359ad6447fc367cf46843a40973cfb2b11217278fda53bd847` |
+| 47 | 7 | 7,584,219 | `f06ead15726f633a7d106de614371f526155d28053cce3bbdd00d52de8c4acbb` |
+| 59 | 12 | 7,693,573 | `9ac8f7523318db4420713c125fd2a9020334ffbb27609823d41a4cf5bf705af2` |
+| 61 | 8 | 7,497,069 | `38a4f55d07af514c265f9406006ae8f1b95fa9bc33bef4d6366636e7fedcce0a` |
+| 71 | 9 | 7,563,588 | `3d2144074435b2f3f149118e5258d4be9376b2d79306e5bd973f3a0c568bf9c7` |
+| 73 | 10 | 7,612,586 | `ae495ffb9666ac1569b5989666096a9f7e0d3385a4ef60bdf1a3b2367a8dc225` |
+| 83 | 6 | 7,466,510 | `820918438d0e40a4e8a29fe9425579a59a4d86acc41aaf8944ab691c198c6e4a` |
+| 89 | 9 | 7,574,093 | `6b2a85e2018698031ea97248abe107f2b7326b0789fe1ac77953be5eecac9747` |
+| 97 | 9 | 7,560,558 | `87c7e7249335999c439284ec69e51cb5f1cc5ad5508bcd12b27e25114da8fb16` |
+
+语料门禁全部仍为 Pass（同一写入器断言）。`SphericalTectonicMaterialProcesses`
+新增 `collision_shortening_continental_area_loss_m2` 字段，预算方程见 v5
+设计 A1。

@@ -522,7 +522,7 @@ fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
         lod.levels()
     );
     assert_eq!(
-        hex, "ab8bc747f493d4d61033c584e507628360b8497d9f92f9d27afafe1befe43e49",
+        hex, "20fb2405f60ea634b2153474a06f2103fc059073479ba8414ac297c164e36ea5",
         "the frozen T1 probe fingerprint changed; record an amendment in the T1 spec"
     );
 
@@ -597,7 +597,7 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
         .collect();
     eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
     assert_eq!(
-        hex, "a5584308af1d3429f51bd1aae0fdcbdcccfb366d463daa8321f78344f3fa74ed",
+        hex, "cab6c758fe2ce2dac477e6d8fb674f73a3863ac66a96a7d411d6a86bc339c7b7",
         "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
     );
 

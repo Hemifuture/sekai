@@ -381,3 +381,14 @@ A0 = max(SPECTRAL_CONTINUATION × relief_m, LAND_A0_FLOOR_M)
 `tests/surface_formation_stage.rs` 守门；产品级 L0 恒等与陆比
 漂移 ≤ 0.01 复核不变；M1 指纹 `ab8bc747…` 不受影响。A7 所记
 旧值自本修订起由本值取代。
+
+### A9 —— T0 测高校准后的指纹刷新（2026-08-22，T0 Task 4）
+
+T0 校准（规格 `2026-08-21-t0-hypsometric-calibration-design`：L0、L2、
+L5、L6）改变了 T0 输入，层级派生算法与常量未动。草稿档、种子 42 层级
+探针指纹刷新为
+`cab6c758fe2ce2dac477e6d8fb674f73a3863ac66a96a7d411d6a86bc339c7b7`
+（A8 所记 `a5584308…` 自本修订起由本值取代），由
+`tests/surface_formation_stage.rs` 守门；同测试复核产品级 L0 恒等
+（逐位不变）与陆比漂移 ≤ 0.01 仍成立。M1 放大器指纹同步刷新为
+`20fb2405…`（T1 设计 A5）。
