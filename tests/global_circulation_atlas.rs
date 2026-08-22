@@ -198,7 +198,7 @@ fn render_global_circulation_atlas() {
                 seed,
                 sea_level_m: world.relief.sea_level_m(),
                 physical_land_fraction: world.relief.physical_land_fraction(),
-                formation_cycles: climate.solve_report().formation_years(),
+                formation_cycles: climate.solve_report().formation_cycles(),
                 final_residual: climate.solve_report().final_residual(),
                 maximum_cfl: climate.solve_report().maximum_cfl(),
                 dense_state_bytes: climate.solve_report().dense_state_bytes(),

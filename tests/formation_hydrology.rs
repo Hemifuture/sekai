@@ -18,7 +18,7 @@ use sekai::world::natural::{
     LandOceanKind, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
     ProductionIntegratorId, SedimentSourceKind, SedimentSourceKindField, SphericalMantleSnapshot,
     CLIMATOLOGICAL_YEAR_SECONDS, FORMATION_TERRAIN_FIELDS_SCHEMA_V1, GEOLOGIC_SUBSTRATE_SCHEMA_V1,
-    GLOBAL_CIRCULATION_SCHEMA_V1, MANTLE_SNAPSHOT_SCHEMA_V2, SECONDS_PER_CLIMATOLOGICAL_MONTH,
+    GLOBAL_CIRCULATION_SCHEMA_V2, MANTLE_SNAPSHOT_SCHEMA_V2, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -163,7 +163,7 @@ fn climate(
     )
     .unwrap();
     GlobalCirculationSnapshot::new(
-        GLOBAL_CIRCULATION_SCHEMA_V1,
+        GLOBAL_CIRCULATION_SCHEMA_V2,
         SurfaceRef::for_spherical(surface),
         ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1),
         ProductionIntegratorId::SplitExplicitRk3V1,

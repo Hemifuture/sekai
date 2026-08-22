@@ -12,12 +12,12 @@ use crate::world::CellId;
 
 /// The first strict schema for the reconstructable climate work domain.
 pub const CLIMATE_WORK_DOMAIN_SCHEMA_V1: u16 = 1;
-/// The first public layered atmosphere-ocean climatology schema.
-pub const GLOBAL_CIRCULATION_SCHEMA_V1: u16 = 1;
+/// The physical-budget layered atmosphere-ocean climatology schema.
+pub const GLOBAL_CIRCULATION_SCHEMA_V2: u16 = 2;
 /// The first fixed-layout schema.
 pub const CLIMATE_LAYER_LAYOUT_SCHEMA_V1: u16 = 1;
-/// The first resumable climate-checkpoint identity schema.
-pub const CLIMATE_CHECKPOINT_SCHEMA_V1: u16 = 1;
+/// The forcing-phase continuation checkpoint identity schema.
+pub const CLIMATE_CHECKPOINT_SCHEMA_V2: u16 = 2;
 /// Maximum accepted radial component after publishing an `f32` tangent vector.
 pub const GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S: f64 = 1.0e-4;
 /// Maximum solver-reported relative mass, volume, moisture, or exchange error.
@@ -27,7 +27,15 @@ pub const GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX: f64 = 1.0e-5;
 /// Public convergence threshold; generation uses a stricter 0.24 guard.
 pub const GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX: f64 = 0.25;
 /// Absolute public ceiling across Draft/Standard/High formation cycles.
-pub const GLOBAL_CIRCULATION_FORMATION_YEARS_MAX: u16 = 12;
+pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
+/// SI integration time advanced for one climatological forcing phase.
+///
+/// This is a numerical stability choice, not the duration of a calendar month.
+/// The V2 time contract records it separately from the twelve forcing phases.
+/// Its value is the measured stable production step selected by the P4
+/// integrator comparison recorded in
+/// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
+pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
 /// Locked dense-owner memory budget for the High C2 product.
 pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
 
@@ -632,7 +640,7 @@ pub struct ClimateCheckpoint {
     model_fingerprint: [u8; 32],
     input_fingerprint: [u8; 32],
     quantization: ClimateQuantizationId,
-    completed_months: u32,
+    completed_phase_steps: u32,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -649,7 +657,7 @@ struct ClimateCheckpointWire {
     model_fingerprint: [u8; 32],
     input_fingerprint: [u8; 32],
     quantization: ClimateQuantizationId,
-    completed_months: u32,
+    completed_phase_steps: u32,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -665,11 +673,11 @@ impl ClimateCheckpoint {
         model_fingerprint: [u8; 32],
         input_fingerprint: [u8; 32],
         quantization: ClimateQuantizationId,
-        completed_months: u32,
+        completed_phase_steps: u32,
         state_fingerprint: [u8; 32],
     ) -> Result<Self, ClimateCheckpointError> {
         let mut checkpoint = Self {
-            schema_version: CLIMATE_CHECKPOINT_SCHEMA_V1,
+            schema_version: CLIMATE_CHECKPOINT_SCHEMA_V2,
             quality_profile,
             profile,
             integrator,
@@ -678,7 +686,7 @@ impl ClimateCheckpoint {
             model_fingerprint,
             input_fingerprint,
             quantization,
-            completed_months,
+            completed_phase_steps,
             state_fingerprint,
             fingerprint: [0; 32],
         };
@@ -697,10 +705,10 @@ impl ClimateCheckpoint {
     }
 
     fn validate_identity(&self) -> Result<(), ClimateCheckpointError> {
-        if self.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V1 {
+        if self.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V2 {
             return Err(ClimateCheckpointError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: CLIMATE_CHECKPOINT_SCHEMA_V1,
+                supported: CLIMATE_CHECKPOINT_SCHEMA_V2,
             });
         }
         for (field, fingerprint) in [
@@ -714,22 +722,22 @@ impl ClimateCheckpoint {
                 return Err(ClimateCheckpointError::ZeroFingerprint { field });
             }
         }
-        if self.completed_months == 0
-            || self.completed_months % u32::try_from(CLIMATE_MONTH_COUNT).unwrap_or(12) != 0
+        if self.completed_phase_steps == 0
+            || self.completed_phase_steps % u32::try_from(CLIMATE_MONTH_COUNT).unwrap_or(12) != 0
         {
-            return Err(ClimateCheckpointError::InvalidCompletedMonths {
-                found: self.completed_months,
+            return Err(ClimateCheckpointError::InvalidCompletedPhaseSteps {
+                found: self.completed_phase_steps,
             });
         }
-        let maximum_months = u32::from(
+        let maximum_phase_steps = u32::from(
             self.quality_profile
-                .global_circulation_formation_years_max(),
+                .global_circulation_formation_cycles_max(),
         ) * CLIMATE_MONTH_COUNT as u32;
-        if self.completed_months > maximum_months {
-            return Err(ClimateCheckpointError::CompletedMonthsExceedProfile {
+        if self.completed_phase_steps > maximum_phase_steps {
+            return Err(ClimateCheckpointError::CompletedPhaseStepsExceedProfile {
                 profile: self.quality_profile,
-                found: self.completed_months,
-                maximum: maximum_months,
+                found: self.completed_phase_steps,
+                maximum: maximum_phase_steps,
             });
         }
         Ok(())
@@ -737,7 +745,7 @@ impl ClimateCheckpoint {
 
     fn canonical_fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.climate-checkpoint.v1\0");
+        hasher.update(b"sekai.climate-checkpoint.v2\0");
         hasher.update(&self.schema_version.to_le_bytes());
         hasher.update(&[natural_quality_profile_tag(self.quality_profile)]);
         hasher.update(&[model_profile_tag(self.profile)]);
@@ -747,7 +755,7 @@ impl ClimateCheckpoint {
         hasher.update(&self.model_fingerprint);
         hasher.update(&self.input_fingerprint);
         hasher.update(&[quantization_tag(self.quantization)]);
-        hasher.update(&self.completed_months.to_le_bytes());
+        hasher.update(&self.completed_phase_steps.to_le_bytes());
         hasher.update(&self.state_fingerprint);
         *hasher.finalize().as_bytes()
     }
@@ -780,8 +788,8 @@ impl ClimateCheckpoint {
         &self.input_fingerprint
     }
 
-    pub const fn completed_months(&self) -> u32 {
-        self.completed_months
+    pub const fn completed_phase_steps(&self) -> u32 {
+        self.completed_phase_steps
     }
 
     pub const fn state_fingerprint(&self) -> &[u8; 32] {
@@ -808,15 +816,15 @@ impl<'de> Deserialize<'de> for ClimateCheckpoint {
             wire.model_fingerprint,
             wire.input_fingerprint,
             wire.quantization,
-            wire.completed_months,
+            wire.completed_phase_steps,
             wire.state_fingerprint,
         )
         .map_err(D::Error::custom)?;
-        if wire.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V1 {
+        if wire.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V2 {
             return Err(D::Error::custom(
                 ClimateCheckpointError::UnsupportedSchema {
                     found: wire.schema_version,
-                    supported: CLIMATE_CHECKPOINT_SCHEMA_V1,
+                    supported: CLIMATE_CHECKPOINT_SCHEMA_V2,
                 },
             ));
         }
@@ -836,10 +844,14 @@ pub enum ClimateCheckpointError {
     UnsupportedSchema { found: u16, supported: u16 },
     #[error("checkpoint {field} cannot be zero")]
     ZeroFingerprint { field: &'static str },
-    #[error("checkpoint completed months {found} must be a positive whole number of years")]
-    InvalidCompletedMonths { found: u32 },
-    #[error("checkpoint completed months {found} exceeds {profile:?} formation maximum {maximum}")]
-    CompletedMonthsExceedProfile {
+    #[error(
+        "checkpoint completed phase steps {found} must be a positive whole forcing-phase cycle"
+    )]
+    InvalidCompletedPhaseSteps { found: u32 },
+    #[error(
+        "checkpoint completed phase steps {found} exceeds {profile:?} formation maximum {maximum}"
+    )]
+    CompletedPhaseStepsExceedProfile {
         profile: NaturalQualityProfile,
         found: u32,
         maximum: u32,
@@ -890,8 +902,9 @@ const fn quantization_tag(quantization: ClimateQuantizationId) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClimateSolveReport {
-    formation_years: u16,
-    macro_steps: u64,
+    formation_cycles: u16,
+    continuation_steps: u64,
+    integrated_model_seconds: u64,
     fast_substeps: u64,
     linear_iterations: u64,
     initial_residual: f64,
@@ -903,8 +916,9 @@ pub struct ClimateSolveReport {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClimateSolveReportWire {
-    formation_years: u16,
-    macro_steps: u64,
+    formation_cycles: u16,
+    continuation_steps: u64,
+    integrated_model_seconds: u64,
     fast_substeps: u64,
     linear_iterations: u64,
     initial_residual: f64,
@@ -916,8 +930,8 @@ struct ClimateSolveReportWire {
 impl ClimateSolveReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        formation_years: u16,
-        macro_steps: u64,
+        formation_cycles: u16,
+        continuation_steps: u64,
         fast_substeps: u64,
         linear_iterations: u64,
         initial_residual: f64,
@@ -925,9 +939,15 @@ impl ClimateSolveReport {
         maximum_cfl: f64,
         dense_state_bytes: u64,
     ) -> Result<Self, ClimateReportError> {
+        let integrated_model_seconds = continuation_steps
+            .checked_mul(GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "integrated_model_seconds",
+            })?;
         let report = Self {
-            formation_years,
-            macro_steps,
+            formation_cycles,
+            continuation_steps,
+            integrated_model_seconds,
             fast_substeps,
             linear_iterations,
             initial_residual,
@@ -952,21 +972,46 @@ impl ClimateSolveReport {
                 });
             }
         }
-        if self.formation_years == 0 {
+        if self.formation_cycles == 0 {
             return Err(ClimateReportError::ZeroWork {
-                field: "formation_years",
+                field: "formation_cycles",
             });
         }
-        if self.formation_years > GLOBAL_CIRCULATION_FORMATION_YEARS_MAX {
+        if self.formation_cycles > GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX {
             return Err(ClimateReportError::StatisticAboveMaximum {
-                field: "formation_years",
-                found: f64::from(self.formation_years),
-                maximum: f64::from(GLOBAL_CIRCULATION_FORMATION_YEARS_MAX),
+                field: "formation_cycles",
+                found: f64::from(self.formation_cycles),
+                maximum: f64::from(GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX),
             });
         }
-        if self.macro_steps == 0 {
+        if self.continuation_steps == 0 {
             return Err(ClimateReportError::ZeroWork {
-                field: "macro_steps",
+                field: "continuation_steps",
+            });
+        }
+        let expected_steps = u64::from(self.formation_cycles)
+            .checked_mul(CLIMATE_MONTH_COUNT as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "continuation_steps",
+            })?;
+        if self.continuation_steps != expected_steps {
+            return Err(ClimateReportError::WorkMismatch {
+                field: "continuation_steps",
+                found: self.continuation_steps,
+                expected: expected_steps,
+            });
+        }
+        let expected_seconds = self
+            .continuation_steps
+            .checked_mul(GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "integrated_model_seconds",
+            })?;
+        if self.integrated_model_seconds != expected_seconds {
+            return Err(ClimateReportError::WorkMismatch {
+                field: "integrated_model_seconds",
+                found: self.integrated_model_seconds,
+                expected: expected_seconds,
             });
         }
         if self.fast_substeps == 0 {
@@ -1009,12 +1054,16 @@ impl ClimateSolveReport {
         Ok(())
     }
 
-    pub const fn formation_years(&self) -> u16 {
-        self.formation_years
+    pub const fn formation_cycles(&self) -> u16 {
+        self.formation_cycles
     }
 
-    pub const fn macro_steps(&self) -> u64 {
-        self.macro_steps
+    pub const fn continuation_steps(&self) -> u64 {
+        self.continuation_steps
+    }
+
+    pub const fn integrated_model_seconds(&self) -> u64 {
+        self.integrated_model_seconds
     }
 
     pub const fn fast_substeps(&self) -> u64 {
@@ -1044,9 +1093,9 @@ impl<'de> Deserialize<'de> for ClimateSolveReport {
         D: Deserializer<'de>,
     {
         let wire = ClimateSolveReportWire::deserialize(deserializer)?;
-        Self::new(
-            wire.formation_years,
-            wire.macro_steps,
+        let report = Self::new(
+            wire.formation_cycles,
+            wire.continuation_steps,
             wire.fast_substeps,
             wire.linear_iterations,
             wire.initial_residual,
@@ -1054,7 +1103,15 @@ impl<'de> Deserialize<'de> for ClimateSolveReport {
             wire.maximum_cfl,
             wire.dense_state_bytes,
         )
-        .map_err(D::Error::custom)
+        .map_err(D::Error::custom)?;
+        if wire.integrated_model_seconds != report.integrated_model_seconds {
+            return Err(D::Error::custom(ClimateReportError::WorkMismatch {
+                field: "integrated_model_seconds",
+                found: wire.integrated_model_seconds,
+                expected: report.integrated_model_seconds,
+            }));
+        }
+        Ok(report)
     }
 }
 
@@ -1328,6 +1385,14 @@ pub enum ClimateReportError {
     InvalidStatistic { field: &'static str, found: f64 },
     #[error("climate report {field} is zero")]
     ZeroWork { field: &'static str },
+    #[error("climate report {field} work count overflowed")]
+    WorkOverflow { field: &'static str },
+    #[error("climate report {field} is {found}, expected {expected}")]
+    WorkMismatch {
+        field: &'static str,
+        found: u64,
+        expected: u64,
+    },
     #[error("climate residual increased from {initial} to {final_value}")]
     ResidualIncreased { initial: f64, final_value: f64 },
     #[error("climate report {field} is {found}, maximum {maximum}")]
@@ -2332,10 +2397,10 @@ impl GlobalCirculationSnapshot {
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
-        if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V1 {
+        if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V2 {
             return Err(GlobalCirculationValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: GLOBAL_CIRCULATION_SCHEMA_V1,
+                supported: GLOBAL_CIRCULATION_SCHEMA_V2,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2408,19 +2473,19 @@ impl GlobalCirculationSnapshot {
                 },
             );
         }
-        let expected_months = u32::from(self.solve_report.formation_years())
+        let expected_phase_steps = u32::from(self.solve_report.formation_cycles())
             .checked_mul(CLIMATE_MONTH_COUNT as u32)
             .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "formation_years",
+                field: "formation_cycles",
             })?;
-        if self.checkpoint.completed_months() != expected_months {
+        if self.checkpoint.completed_phase_steps() != expected_phase_steps {
             return Err(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "completed_months",
+                field: "completed_phase_steps",
             });
         }
-        if self.solve_report.macro_steps() != u64::from(expected_months) {
+        if self.solve_report.continuation_steps() != u64::from(expected_phase_steps) {
             return Err(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "macro_steps",
+                field: "continuation_steps",
             });
         }
         if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
@@ -2430,11 +2495,13 @@ impl GlobalCirculationSnapshot {
                 field: "linear_iterations",
             });
         }
-        let minimum_fast_substeps = self.solve_report.macro_steps().checked_mul(6).ok_or(
-            GlobalCirculationValidationError::SolveWorkMismatch {
+        let minimum_fast_substeps = self
+            .solve_report
+            .continuation_steps()
+            .checked_mul(6)
+            .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
                 field: "fast_substeps",
-            },
-        )?;
+            })?;
         if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
             && self.solve_report.fast_substeps() < minimum_fast_substeps
         {

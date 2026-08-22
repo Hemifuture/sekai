@@ -20,11 +20,10 @@ use crate::world::natural::{
     ClimateSolveReport, ClimateValidationError, ClimateWorkDomainSnapshot,
     ClimateWorkDomainValidationError, GlobalCirculationFields, GlobalCirculationSnapshot,
     GlobalCirculationValidationError, MonthlyScalarField, MonthlyVector3Field, CLIMATE_MONTH_COUNT,
-    GLOBAL_CIRCULATION_SCHEMA_V1,
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_SCHEMA_V2,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
-pub(super) const MACRO_STEP_SECONDS: f64 = 7_200.0;
 pub(super) const MAXIMUM_FAST_STEP_SECONDS: f64 = 1_200.0;
 pub(super) const FAST_CFL_TARGET: f64 = 0.20;
 pub(super) const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
@@ -155,7 +154,7 @@ impl GlobalCirculationGenerator {
             .map_err(|error| GlobalCirculationGenerationError::InvalidLayout {
                 reason: error.to_string(),
             })?;
-        let maximum_formation_cycles = maximum_formation_cycles(domain);
+        let maximum_formation_cycles = domain.profile().global_circulation_formation_cycles_max();
         let fast_step_seconds = stable_fast_step_seconds(&grid);
         let integrator = SplitExplicitRk3Integrator::new(&grid, fast_step_seconds)?;
         let planet = forcing.planet_forcing();
@@ -163,12 +162,12 @@ impl GlobalCirculationGenerator {
             LayeredClimateState::from_forcing_cancellable(&grid, &layout, planet, 0, cancellation)
                 .map_err(map_state_error)?;
         check_cancelled(cancellation)?;
-        let mut previous_annual = state
+        let mut previous_cycle = state
             .clone_cancellable(cancellation)
             .map_err(map_state_error)?;
         let mut initial_residual = 0.0_f64;
         let mut final_residual = 0.0_f64;
-        let mut macro_steps = 0_u64;
+        let mut continuation_steps = 0_u64;
         let mut fast_substeps = 0_u64;
         let mut maximum_cfl = 0.0_f64;
         let mut budgets = BudgetAccumulator::new(&grid, &layout, &state, cancellation)?;
@@ -177,8 +176,8 @@ impl GlobalCirculationGenerator {
         observer(GlobalCirculationPhase::SolverEntered);
         check_cancelled(cancellation)?;
 
-        let mut formation_years = 0_u16;
-        for year in 0..maximum_formation_cycles {
+        let mut formation_cycles = 0_u16;
+        for cycle in 0..maximum_formation_cycles {
             for month in 0..CLIMATE_MONTH_COUNT {
                 check_cancelled(cancellation)?;
                 let before = state
@@ -191,7 +190,7 @@ impl GlobalCirculationGenerator {
                     planet,
                     forcing.ocean_edge_permeability(),
                     month,
-                    MACRO_STEP_SECONDS,
+                    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                     cancellation,
                 )?;
                 observer(GlobalCirculationPhase::TransportCompleted);
@@ -200,7 +199,7 @@ impl GlobalCirculationGenerator {
                     planet,
                     forcing.ocean_edge_permeability(),
                     month,
-                    MACRO_STEP_SECONDS,
+                    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                     cancellation,
                     &mut observer,
                 )?;
@@ -218,21 +217,21 @@ impl GlobalCirculationGenerator {
                     &before,
                     &state,
                     &declared,
-                    MACRO_STEP_SECONDS,
+                    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                     cancellation,
                 )?;
                 work.record_month(&state, &declared, month, cancellation)?;
-                macro_steps += 1;
+                continuation_steps += 1;
                 fast_substeps += u64::from(diagnostics.fast_substeps());
                 maximum_cfl = maximum_cfl.max(diagnostics.maximum_cfl());
             }
-            let residual = relative_state_residual(&grid, &previous_annual, &state, cancellation)?;
-            if year == 0 {
+            let residual = relative_state_residual(&grid, &previous_cycle, &state, cancellation)?;
+            if cycle == 0 {
                 initial_residual = residual;
             }
             final_residual = residual;
-            formation_years = year + 1;
-            previous_annual = state
+            formation_cycles = cycle + 1;
+            previous_cycle = state
                 .clone_cancellable(cancellation)
                 .map_err(map_state_error)?;
             if final_residual <= FORMATION_RESIDUAL_TARGET {
@@ -249,7 +248,7 @@ impl GlobalCirculationGenerator {
         }
         if final_residual > FORMATION_RESIDUAL_TARGET {
             return Err(GlobalCirculationGenerationError::FormationNotConverged {
-                cycles: formation_years,
+                cycles: formation_cycles,
                 residual: final_residual,
                 target: FORMATION_RESIDUAL_TARGET,
             });
@@ -267,8 +266,8 @@ impl GlobalCirculationGenerator {
         )
         .ok_or(GlobalCirculationGenerationError::AllocationOverflow)?;
         let solve_report = ClimateSolveReport::new(
-            formation_years,
-            macro_steps,
+            formation_cycles,
+            continuation_steps,
             fast_substeps,
             0,
             initial_residual,
@@ -293,11 +292,11 @@ impl GlobalCirculationGenerator {
             super::global_circulation_model_fingerprint(profile),
             input_fingerprint,
             ClimateQuantizationId::DeterministicF64V1,
-            u32::from(formation_years) * CLIMATE_MONTH_COUNT as u32,
+            u32::from(formation_cycles) * CLIMATE_MONTH_COUNT as u32,
             state_fingerprint,
         )?;
         let snapshot = GlobalCirculationSnapshot::new_cancellable(
-            GLOBAL_CIRCULATION_SCHEMA_V1,
+            GLOBAL_CIRCULATION_SCHEMA_V2,
             surface_ref,
             layout,
             SELECTED_PRODUCTION_INTEGRATOR,
@@ -311,14 +310,6 @@ impl GlobalCirculationGenerator {
         )?;
         snapshot.validate_against_cancellable(surface, &cancelled)?;
         Ok(snapshot)
-    }
-}
-
-fn maximum_formation_cycles(domain: &ClimateWorkDomainSnapshot) -> u16 {
-    match domain.profile() {
-        crate::world::natural::NaturalQualityProfile::Draft => 8,
-        crate::world::natural::NaturalQualityProfile::Standard => 10,
-        crate::world::natural::NaturalQualityProfile::High => 12,
     }
 }
 
@@ -1367,7 +1358,7 @@ mod tests {
                 &forcing,
                 &vec![1.0; grid.edges().len()],
                 0,
-                MACRO_STEP_SECONDS,
+                GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                 &BuildCancellation::new(),
             )
             .unwrap();
@@ -1384,7 +1375,7 @@ mod tests {
                 &before,
                 &leaked,
                 &tendency,
-                MACRO_STEP_SECONDS,
+                GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
                 &cancellation,
             )
             .unwrap();

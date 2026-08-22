@@ -12,7 +12,7 @@ use crate::generators::natural::circulation::{
 };
 use crate::world::natural::{
     ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
-    CLIMATE_MONTH_COUNT,
+    CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
 };
 
 const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
@@ -100,7 +100,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         f64::from(UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION),
         5.0 * SECONDS_PER_DAY,
         3.0 * SECONDS_PER_DAY,
-        super::generation::MACRO_STEP_SECONDS,
+        GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
         super::generation::MAXIMUM_FAST_STEP_SECONDS,
         super::generation::FAST_CFL_TARGET,
         super::generation::REFERENCE_WAVE_SPEED_M_S,

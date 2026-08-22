@@ -7,7 +7,7 @@ use sekai::world::natural::{
     ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields,
     GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
     MonthlyVector3Field, NaturalQualityProfile, ProductionIntegratorId,
-    GLOBAL_CIRCULATION_SCHEMA_V1,
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_SCHEMA_V2,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec};
@@ -95,7 +95,7 @@ fn c2_snapshot(surface: &SphericalSurfaceSnapshot) -> GlobalCirculationSnapshot 
     )
     .unwrap();
     GlobalCirculationSnapshot::new(
-        GLOBAL_CIRCULATION_SCHEMA_V1,
+        GLOBAL_CIRCULATION_SCHEMA_V2,
         SurfaceRef::for_spherical(surface),
         layout,
         ProductionIntegratorId::SplitExplicitRk3V1,
@@ -280,10 +280,10 @@ fn checkpoint_fingerprint_covers_every_resume_identity() {
     );
 
     let mut tampered = serde_json::to_value(&first).unwrap();
-    tampered["completed_months"] = serde_json::json!(36);
+    tampered["completed_phase_steps"] = serde_json::json!(36);
     assert!(serde_json::from_value::<ClimateCheckpoint>(tampered).is_err());
 
-    for (quality, completed_months) in [
+    for (quality, completed_phase_steps) in [
         (sekai::world::natural::NaturalQualityProfile::Draft, 9 * 12),
         (
             sekai::world::natural::NaturalQualityProfile::Standard,
@@ -300,12 +300,42 @@ fn checkpoint_fingerprint_covers_every_resume_identity() {
                 global_circulation_model_fingerprint(ClimateModelProfile::C2LayeredV1),
                 [3; 32],
                 ClimateQuantizationId::DeterministicF64V1,
-                completed_months,
+                completed_phase_steps,
                 [4; 32],
             ),
-            Err(sekai::world::natural::ClimateCheckpointError::CompletedMonthsExceedProfile { .. })
+            Err(
+                sekai::world::natural::ClimateCheckpointError::CompletedPhaseStepsExceedProfile { .. }
+            )
         ));
     }
+}
+
+#[test]
+fn v2_time_contract_distinguishes_forcing_phases_from_integrated_time() {
+    let source = surface(42);
+    let snapshot = c2_snapshot(&source);
+    let checkpoint = serde_json::to_value(snapshot.checkpoint()).unwrap();
+    let solve = serde_json::to_value(snapshot.solve_report()).unwrap();
+
+    assert_eq!(checkpoint["schema_version"], serde_json::json!(2));
+    assert_eq!(checkpoint["completed_phase_steps"], serde_json::json!(24));
+    assert!(checkpoint.get("completed_months").is_none());
+    assert_eq!(solve["formation_cycles"], serde_json::json!(2));
+    assert_eq!(solve["continuation_steps"], serde_json::json!(24));
+    assert_eq!(
+        solve["integrated_model_seconds"],
+        serde_json::json!(24 * GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+    );
+    assert!(solve.get("formation_years").is_none());
+    assert!(solve.get("macro_steps").is_none());
+
+    let mut old_checkpoint = checkpoint;
+    old_checkpoint["schema_version"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<ClimateCheckpoint>(old_checkpoint).is_err());
+
+    let mut old_snapshot = serde_json::to_value(snapshot).unwrap();
+    old_snapshot["schema_version"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<GlobalCirculationSnapshot>(old_snapshot).is_err());
 }
 
 #[test]
@@ -356,7 +386,7 @@ fn contextual_snapshot_validation_rejects_a_validly_rehashed_noncanonical_grid()
         *canonical.checkpoint().model_fingerprint(),
         *canonical.checkpoint().input_fingerprint(),
         ClimateQuantizationId::DeterministicF64V1,
-        canonical.checkpoint().completed_months(),
+        canonical.checkpoint().completed_phase_steps(),
         *canonical.checkpoint().state_fingerprint(),
     )
     .unwrap();
@@ -439,7 +469,7 @@ fn snapshot_constructor_and_serde_reject_nonpositive_actual_layer_depths() {
         )
         .unwrap();
         GlobalCirculationSnapshot::new(
-            GLOBAL_CIRCULATION_SCHEMA_V1,
+            GLOBAL_CIRCULATION_SCHEMA_V2,
             SurfaceRef::for_spherical(&source),
             layout,
             ProductionIntegratorId::SplitExplicitRk3V1,

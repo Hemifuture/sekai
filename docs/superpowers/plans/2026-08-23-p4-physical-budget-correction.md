@@ -40,16 +40,16 @@
 - 修改：`tests/global_circulation_stage.rs`
 - 修改：受语义重命名影响的测试与调用点
 
-- [ ] 先写 RED：V1 wire 被严格拒绝；checkpoint 只接受正的完整 forcing-phase
+- [x] 先写 RED：V1 wire 被严格拒绝；checkpoint 只接受正的完整 forcing-phase
   cycle；report 区分 `formation_cycles`、`continuation_steps`、
   `integrated_model_seconds`；序列化不再出现 year/month 伪语义。
-- [ ] 将 global-circulation 与 checkpoint schema 升为 V2；把 profile 上限、
+- [x] 将 global-circulation 与 checkpoint schema 升为 V2；把 profile 上限、
   checkpoint、solve report、错误枚举、fingerprint domain separator 与生成器
   变量统一改为 cycle/phase-step 语义。
-- [ ] 保留十二个日历月平均强迫相位和 SI `MACRO_STEP_SECONDS`；由生产常量
+- [x] 保留十二个日历月平均强迫相位和 SI `MACRO_STEP_SECONDS`；由生产常量
   唯一推导 integrated seconds，不新增用户旋钮。
-- [ ] 跑 contracts/generation/stage 受影响测试；确认 P0–P3 证据身份不变。
-- [ ] 跑三道门禁并提交。
+- [x] 跑 contracts/generation/stage 受影响测试；确认 P0–P3 证据身份不变。
+- [x] 跑三道门禁并提交。
 
 提交：`Version P4 continuation time semantics`
 

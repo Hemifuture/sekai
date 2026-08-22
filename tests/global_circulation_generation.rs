@@ -110,8 +110,13 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     }
 
     assert_eq!(
-        snapshot.checkpoint().completed_months(),
-        u32::from(snapshot.solve_report().formation_years()) * 12
+        snapshot.checkpoint().completed_phase_steps(),
+        u32::from(snapshot.solve_report().formation_cycles()) * 12
+    );
+    assert_eq!(
+        snapshot.solve_report().integrated_model_seconds(),
+        snapshot.solve_report().continuation_steps()
+            * sekai::world::natural::GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64
     );
     assert_eq!(
         snapshot.checkpoint().state_fingerprint(),
@@ -247,9 +252,9 @@ fn formation_is_convergent_budgeted_causal_and_deterministic() {
         first.solve_report(),
         first.budget_report()
     );
-    assert!(first.solve_report().formation_years() > 0);
-    assert!(first.solve_report().macro_steps() >= 12);
-    assert!(first.solve_report().fast_substeps() >= first.solve_report().macro_steps());
+    assert!(first.solve_report().formation_cycles() > 0);
+    assert!(first.solve_report().continuation_steps() >= 12);
+    assert!(first.solve_report().fast_substeps() >= first.solve_report().continuation_steps());
     assert!(
         first.solve_report().final_residual() <= 0.25,
         "formation residual {}",

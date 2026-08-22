@@ -446,7 +446,7 @@ impl Stage for GlobalCirculationStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {

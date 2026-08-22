@@ -8,7 +8,9 @@ mod split_explicit;
 mod state;
 mod tendency;
 
-use crate::world::natural::ClimateModelProfile;
+use crate::world::natural::{
+    ClimateModelProfile, CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+};
 
 pub use comparison::{
     annual_precipitation_total_bias, compare_climate_states,
@@ -49,5 +51,10 @@ pub use tendency::{
 
 /// Canonical identity of the locked shared equations and formation procedure.
 pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
-    tendency::layered_equation_model_fingerprint(profile)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.global-circulation-equations.v2\0");
+    hasher.update(&tendency::layered_equation_model_fingerprint(profile));
+    hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());
+    hasher.update(&GLOBAL_CIRCULATION_MACRO_STEP_SECONDS.to_le_bytes());
+    *hasher.finalize().as_bytes()
 }
