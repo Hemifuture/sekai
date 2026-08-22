@@ -1,6 +1,6 @@
 # 陆地占比驱动与水线求解（T0b）设计草案
 
-状态：草案（冻结前需用户确认 §8）。日期：2026-08-22。
+状态：草案，§8 已由用户裁定（R1）；Task 1 实测后冻结。日期：2026-08-22。
 前置：`2026-08-21-t0-hypsometric-calibration-design`（T0，已交付）。
 
 ## 1. 动机
@@ -81,14 +81,25 @@
 
 ```rust
 pub enum SeaLevelPolicy {
-    /// 海面由地球水量（按面积缩放）解出；陆地占比是结果。默认。
+    /// 海面由世界水量解出；陆地占比是结果。默认。
     WaterInventory,
     /// 海面按 `target_land_fraction` 解出；水量是结果（隐含库存）。
     TargetLandFraction,
 }
 ```
 
-`ReliefSpec` 增加字段 `sea_level_policy`，schema 升版；
+`ReliefSpec` 增加两个字段，schema 升版：
+
+- `sea_level_policy: SeaLevelPolicy`；
+- `water_inventory_ratio: f32`——**世界表层水量**，以地球水量（按面积
+  缩放，`scaled_earth_ocean_inventory_m3`）为单位的比值，默认 1.0，
+  合法范围 `MIN_WATER_INVENTORY_RATIO`–`MAX_WATER_INVENTORY_RATIO`
+  （世界常量，拟 0.05–5.0：下界保证存在海洋，上界远在"水世界"之外）。
+  用户裁定（R1）：水量是一等世界参数，不绑定地球数值，只要求算法
+  科学（体积守恒、浴缸恒等式、测高一致）；其 UI 旋钮**后期**再加，
+  本里程碑只显示。`WaterInventory` 模式用它解海面；`TargetLandFraction`
+  模式把解出的隐含比值写回快照推导值（§3.2），不回写 spec。
+
 `target_land_fraction` 字段保留（范围 `MIN_TARGET_LAND_FRACTION` 0.05
 –`MAX_TARGET_LAND_FRACTION` 0.75 不变）。legacy 链
 （`LegacyFoundation`）没有水量解，始终按目标切海面，忽略本策略
@@ -104,7 +115,9 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 第二个百分位求解器（SSOT）。离散格元下目标在一格面积内达成，即既有
 `land_fraction_constraint_tolerance`。
 
-- P3 `generate`：按 `sea_level_policy` 分派；目标模式下把隐含水量写入
+- P3 `generate`：按 `sea_level_policy` 分派；`WaterInventory` 模式的
+  库存 = `water_inventory_ratio × scaled_earth_ocean_inventory_m3(area)`；
+  目标模式下把隐含水量写入
   快照既有字段 `water_inventory_m3`（`realized_water_volume_m3` 同值，
   相对误差 0），`constraint_status` 按既有 `constraint_status(requested,
   physical, tolerance)` 评定（目标模式下由构造为 `Satisfied`）。
@@ -126,7 +139,10 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - `Infeasible` 不再是目标模式的结论；WaterInventory 模式下它仍表达
   "地球水量下未达到标称陆地"，UI 文案改为陈述事实（§3.5）。
 - 露出洋壳（L 超过陆壳可露出上限）不禁止：P5 衬底把露出的洋壳当镁铁质
-  基岩处理（今日火山岛/洋脊即如此），UI 给出提示（§3.5）。
+  基岩处理（今日火山岛/洋脊即如此），UI 给出提示（§3.5）。用户裁定
+  （R1）：过程守物理，结果归玩家，系统只给建议值。
+- 水量建议带 `WATER_INVENTORY_RATIO_ADVISORY_MIN/MAX`（世界常量，拟
+  0.5–2.0）只用于 UI 提示，不钳制、不入门禁。
 
 ### 3.4 预设：陆壳携带几何，标称陆地按实测重钉
 
@@ -135,8 +151,8 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - `recommended_land_fraction` 重新定义为：该预设在 WaterInventory 模式
   下的 **17 粒语料陆地中位（实测，Task 1 钉值）**。它是 UI 在自动模式
   下显示的"预期陆地"，也是目标模式滑块的初值。
-- 若 Task 1 实测某预设的露出率远低于地球（§8.3 决策规则），才考虑
-  重定该预设的陆壳值，并同步修订 v5 语料门禁——作为显式修订条目。
+- 本里程碑**不重定任何预设的陆壳值**（用户裁定 R1）：陆地占比由水线
+  精确控制后，陆壳只剩几何职责，没有必要再为露出率去动它。
 
 ### 3.5 UI（`src/app.rs` 左侧面板，形成链）
 
@@ -153,7 +169,8 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - 默认驱动 = 陆壳比例（物理解），即今日行为；指纹与证据不变。
 - 切换驱动只改 `ReliefSpec::sea_level_policy`；被锁定的滑块禁用并显示
   推算/实测值（不只是变灰）。
-- "面积依从性"组：`陆地面积：目标 x%｜实际 y%｜海水量 = r × 地球`；
+- "面积依从性"组：`陆地面积：目标 x%｜实际 y%｜海水量 = r × 地球`
+  （r 在物理模式下即 `water_inventory_ratio`，目标模式下为隐含比值）；
   r 落在 §8.2 提示带之外时附一行提示；若目标超过"陆壳可露出上限"
   （陆地 > 演化后陆壳面积 − 淹没陆架下限），提示"将露出洋底"。
   `FormationAreaSummary` 增加 `water_inventory_ratio`（由快照推导）。
@@ -181,6 +198,8 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
 - 不动 P5 方程、T1/T1v2、色带、河流。
 - 不做直方图重映射（§3.2 论证）。
 - 不改 legacy 链语义。
+- 水量旋钮（直接拨 `water_inventory_ratio`）延后：参数与显示本里程碑
+  落地，交互后期加（用户裁定 R1）。
 
 ## 5. 科学依据
 
@@ -218,17 +237,24 @@ legacy 球面链同一实现：按 `LandOceanKind::quantized_centimeters` 排序
    淹没，仅高地露出。
 4. 切回陆壳驱动：回到 1 的画面，陆地滑块锁定并显示实测值。
 
-## 8. 开放问题（冻结前须回答）
+## 8. 开放问题（用户裁定，2026-08-22）
 
-1. **默认驱动**：拟为陆壳比例（物理解，今日行为，指纹不动）。
-2. **水量提示带**：拟 0.5–2.0 × 地球仅提示、不钳制（Hirschmann 2006
-   的储量跨度支持更宽，但行星表层水量的直观可信区间取此）。
-3. **预设陆壳值是否重定**：决策规则——Task 1 实测某预设在地球水量下的
-   露出率 < 0.55（地球 0.71）且其标称陆地需要 r < 0.7 才能达成时，才
-   提议重定该预设陆壳并修订 v5 门禁；否则不动。
-4. **露出洋壳**：拟允许 + 提示（§3.3）。
-5. **标称陆地的来源**：拟改为实测中位（§3.4），预设名称不再暗示 38%。
+1. **默认驱动**：陆壳比例（物理解，今日行为，指纹不动）。——**裁定：是。**
+2. **水量**：建议带 0.5–2.0 × 地球仅提示、不钳制。——**裁定：水量后期
+   要做成用户可调，不必按地球数据，只要算法科学。** 落实为 §3.1 的
+   一等参数 `water_inventory_ratio` + 建议带常量。
+3. **预设陆壳值是否重定**：原拟按实测露出率定规则。——**裁定：不动**
+   （用户未采纳该规则；陆地由水线控制后无必要）。
+4. **露出洋壳**：允许 + 提示。——**裁定：可以；过程守物理，结果归玩家，
+   可给建议值。**
+5. **标称陆地的来源**：改为实测中位。——**裁定：同意。**
+
+Task 1 实测后待钉的数值：各预设 `recommended_land_fraction`（实测中位）、
+`MIN/MAX_WATER_INVENTORY_RATIO`、建议带常量、§2.1 的陆地上限表。
 
 ## 9. 修订记录
 
 - R0（2026-08-22）：草案。
+- R1（2026-08-22）：用户裁定 §8 五项；水量升格为一等世界参数
+  `water_inventory_ratio`（§3.1），预设陆壳值明确不动（§3.4），
+  建议带只提示（§3.3），水量旋钮延后（§4）。

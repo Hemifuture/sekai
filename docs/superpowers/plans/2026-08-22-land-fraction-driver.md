@@ -21,11 +21,12 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
       （b）五个预设 × 17 粒种子在地球水量下的陆地中位、露出率、
       (1 − L)·D 表与"地球水量下陆地上限"；（c）各预设达到标称陆地所需
       的隐含水量比。数字写入规格 §2 与 §8 决策规则。一提交。
-- [ ] Task 2 —— 规格冻结：按 Task 1 回答 §8（默认驱动、提示带、预设
-      陆壳是否重定、露出洋壳、标称陆地来源），钉预设
-      `recommended_land_fraction` 实测值；**停一次交用户确认**后冻结。
-- [ ] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy`（schema
-      升版、校验、序列化）；目标解复用 `select_area_weighted_sea_level` +
+- [ ] Task 2 —— 规格冻结：§8 已由用户裁定（R1）；按 Task 1 钉预设
+      `recommended_land_fraction` 实测值、水量比合法范围与建议带常量、
+      陆地上限表；**停一次交用户确认**后冻结。
+- [ ] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy` 与
+      `water_inventory_ratio`（schema 升版、校验、序列化）；物理模式库存
+      = 比值 × 地球缩放水量；目标解复用 `select_area_weighted_sea_level` +
       `water_volume_at_sea_level_m3` 隐含水量（互逆测试）；P3 `generate` 分派，快照 wire 不变；
       P3 报告新增无界测量 `water-inventory-ratio`；默认模式逐位不变
       的守门测试（P3 证据哈希 / P5 seed 42 工件哈希）。验证：单元 +
@@ -46,7 +47,8 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
 
 ## 非目标
 
-- 不动预设陆壳值与 v5 运动学（§8.3 决策规则例外须显式修订）。
+- 不动预设陆壳值与 v5 运动学（用户裁定 R1）。
+- 水量旋钮的交互延后；参数与显示本里程碑落地。
 - 不修陆壳清单离散度（T0 开放项），只归因。
 - 不动 P5 方程、T1/T1v2、色带、河流；不改 legacy 链语义。
 - 不做直方图重映射。
