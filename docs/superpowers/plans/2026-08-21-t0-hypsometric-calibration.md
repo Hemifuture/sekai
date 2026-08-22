@@ -19,7 +19,7 @@
 
 ## 任务
 
-- [ ] Task 1 —— 诊断归因：扩展 `terrain_audit_probe` 输出
+- [x] Task 1 —— 诊断归因：扩展 `terrain_audit_probe` 输出
       ① P3 primary-relief 自身测高分位与其浴缸海面；② 陆地格元
       v5 陆壳厚度 CDF（对照 CRUST1.0 形状）；③ P3→P5 逐分位位移
       （归因 P5 改形量）；④ 洋盆-水量记账（海面为何 −1363 m）。
