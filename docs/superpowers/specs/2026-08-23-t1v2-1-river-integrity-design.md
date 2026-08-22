@@ -218,9 +218,44 @@ visible(order, leaf_level, max_order) ⇔ order + leaf_level − 1 ≥ max_order
 `20fb2405f60ea634b2153474a06f2103fc059073479ba8414ac297c164e36ea5`，
 默认 P5 seed 42 工件仍为
 `83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90`；
-目标陆比模式 P3/P5 工件也仍为 `8c0ed431…` / `95738e67…`。这证明变化止于
-T1 派生，没有反向改写 P5 权威网络或上游产物。§8“较深者”同步勘正为现有
-A6 用户反馈修订后的 UI 行为；仅修正文案，不改变实现。
+目标陆比模式 P3/P5 工件也仍为
+`8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27` /
+`95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8`。
+这证明变化止于 T1 派生，没有反向改写 P5 权威网络或上游产物。§8“较深者”
+同步勘正为现有 A6 用户反馈修订后的 UI 行为；仅修正文案，不改变实现。
+
+### R3 — 尺度筛选与物理河宽呈现证据（2026-08-23，Task 3–4）
+
+`RiverPolylineSegment` 的宽度元数据只携带生产 `width_m`；Strahler 河级只在
+`build_river_polylines` 按 §8 选择 reach，不再参与宽度。view 层以
+`TerrainAmplifier::radius_m()` 传出的权威半径构造同一对真实横向偏移，地图
+和球面 GPU 复用原 instance padding 保存投影差向量，实例字节数不变；shader
+按实时 `detail_transform` 投影宽度，并仅以 `RIVER_RASTER_FLOOR_PX` 作为采样
+下限。离屏 GPU 测试证明同一实例在深缩放后由物理宽度主导，改变相机无需
+重建河流实例。
+
+因果刷新清单只有 R2 已记录的 T1 层级探针。M1、P3 证据
+`ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2` /
+`b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1`、
+P4/P5 工件、自然字段 hash
+`0d9ac9bf0a984aa2c94757bc030e70edfdcff4054a01a918a45447ad2b34158d`、
+`EXPECTED_SAMPLED_IDS` 以及 16 幅球面 GPU 金样均通过原守门值，因此没有
+刷新。复用 padding 的普通 edge/vector 实例写零向量，原呈现逐位不变。
+
+### R4 — 性能与完整回归（2026-08-23，Task 5）
+
+release 河路完整性 11 项测试（门户、水体裁线、扇区、纵向单调、跨 reach
+节点、缓存次序、走廊、河床）不含编译耗时 0.31 s。运行时每个候选只增加
+O(1) 扇区/gnomonic 检查，仍复用每 leg 缓存和最近点界剪枝；没有全网
+O(n²) 求交扫描。
+
+最终以 PowerShell `Start-Process -WindowStyle Hidden` 分离运行 release
+`cargo test --workspace --all-targets --all-features --release --no-fail-fast` 与
+去掉 `--release` 的 debug 全量：日志区间分别为 8 分 58 秒、28 分 32 秒；
+两者退出码均为 0、失败标记均为 0，并均运行至最后的 benchmark target。
+fmt、全 workspace clippy `-D warnings`、wasm32 all-features lib 与受影响
+release GPU/P5 套件也全部通过。日志保存在 `target/verification/`，不进入
+版本控制。
 
 ## 11. 每项承重技术的出处
 
