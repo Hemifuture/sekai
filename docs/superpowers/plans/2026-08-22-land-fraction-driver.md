@@ -41,7 +41,7 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
       改变而变（原则：输出哈希不变者不动）；目标模式证据
       （Continents / seed 42 / 0.38）入 P3、P5 完成记录修订条目；
       规格 §3.6 刷新清单落账。
-- [ ] Task 6 —— 门禁与验收：fmt / clippy -D warnings / wasm；全量套件
+- [x] Task 6 —— 门禁与验收：fmt / clippy -D warnings / wasm；全量套件
       两档 `--no-fail-fast` 分离进程；计划核对；用户验收步骤；交付报告
       artifact。最终验收归用户。
 

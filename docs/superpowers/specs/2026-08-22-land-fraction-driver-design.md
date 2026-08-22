@@ -344,6 +344,16 @@ Task 1 实测（§2.4）后钉下的数值（用户确认，2026-08-22，R3 冻�
 ## 9. 修订记录
 
 - R0（2026-08-22）：草案。
+- R5（2026-08-22，Task 6）：验证收尾，不改变 R3 设计裁定。fmt、clippy
+  `-D warnings`、wasm 门禁通过；两档全量均由 PowerShell 分离进程以
+  `--no-fail-fast` 运行：Release 176 个结果组、1,552 passed / 0 failed /
+  50 ignored、exit 0；Debug 176 个结果组、1,549 passed / 0 failed /
+  53 ignored、exit 0。首次 Debug 全量还暴露出测试把 Release 冻结工件哈希
+  错绑到 Debug 身份域；修正后精确 T0/P3/P5 身份哈希只在 §6 指定的
+  Release 集成档守门，两档仍共同执行目标模式隐含水量、P5 传递与陆地漂移
+  语义检查，R4 的目标证据值不变。交付 artifact 为
+  `docs/artifacts/sekai-t0b-delivery-report.html`；最终 UI 验收仍归用户按 §7
+  执行。
 - R4（2026-08-22，Task 5）：实现证据修订，不改变 R3 设计裁定。预设标称
   陆地按 §8 冻结中位落地；§7 填入目标模式实测隐含水量；下列指纹审计
   记录“只刷新确实改变的输出”：
