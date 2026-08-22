@@ -415,6 +415,14 @@ impl HierarchicalEvaluator {
         self.amplifier.river_reaches().len()
     }
 
+    /// The production hydraulic width of one published reach, in metres.
+    pub fn river_width_m(&self, reach: u32) -> Option<f32> {
+        self.amplifier
+            .river_reaches()
+            .get(reach as usize)
+            .map(|reach| reach.width_m as f32)
+    }
+
     /// The deepest meaningful rerouting depth of one reach — where the
     /// sub-segment length falls under half the meander wavelength
     /// (spec §10 amendment A6).

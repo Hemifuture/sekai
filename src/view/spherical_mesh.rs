@@ -1376,14 +1376,16 @@ impl AmplifiedSurfaceMesh {
     }
 }
 
-/// One display river reach in the direction domain (plan Task 5).
+/// One display river sub-segment in the direction domain.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RiverPolylineSegment {
-    /// The upstream cell centroid direction.
+    /// The upstream path-node direction.
     pub start: [f64; 3],
-    /// The downstream cell centroid direction.
+    /// The downstream path-node direction.
     pub end: [f64; 3],
-    /// The published Strahler order driving the symbolic line width.
+    /// The production hydraulic width, in metres.
+    pub width_m: f32,
+    /// The published Strahler order used by the current raster presenter.
     pub strahler_order: u8,
 }
 
