@@ -203,8 +203,8 @@ pub use stage::{
 pub use surface_formation::{
     implicit_stream_power_n1_height, CoastGenerationError, CoastalExchange, CoastalExchangeStep,
     CoastalInputs, FormationHydrologyGenerationError, FormationHydrologyGenerator,
-    FormationSeaLevelSolver, FormationWaterState, HillslopeGenerationError, HillslopeInputs,
-    HillslopeTransportStep, HillslopeWorkspace, ImplicitStreamPowerSolver, IsostasyGenerationError,
+    FormationSeaLevelSolver, HillslopeGenerationError, HillslopeInputs, HillslopeTransportStep,
+    HillslopeWorkspace, ImplicitStreamPowerSolver, IsostasyGenerationError,
     IsostaticAdjustmentStep, LocalAiryIsostasy, NonlinearHillslopeTransport,
     ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs, SedimentTransportStep,
     StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,

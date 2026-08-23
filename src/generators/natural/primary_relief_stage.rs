@@ -221,7 +221,7 @@ impl StageInputs for PrimaryReliefStageInputs {
     }
 }
 
-/// Deterministic physical primary-relief stage isolated at version 1.
+/// Deterministic physical primary-relief stage publishing fractional water geometry.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PrimaryReliefStage;
 
@@ -234,7 +234,7 @@ impl Stage for PrimaryReliefStage {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn namespace(&self) -> &'static str {

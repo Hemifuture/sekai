@@ -60,7 +60,7 @@ pub use tendency::{
 /// Canonical identity of the locked shared equations and formation procedure.
 pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v5\0");
+    hasher.update(b"sekai.global-circulation-equations.v6\0");
     hasher.update(&tendency::layered_equation_model_fingerprint(profile));
     hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());
     hasher.update(&GLOBAL_CIRCULATION_MACRO_STEP_SECONDS.to_le_bytes());

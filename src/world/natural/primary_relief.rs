@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::geology::validate_bedrock_crust_compatibility;
+use super::surface_water_geometry::surface_elevation_fingerprint;
 use super::{
     BedrockKind, BedrockKindField, CrustKind, CrustKindField, EvolvedTectonicSnapshot,
     EvolvedTectonicValidationError, GeologicValidationError, LandOceanField, ReliefSpec,
@@ -32,8 +33,8 @@ pub const OCEANIC_CRUST_DENSITY_KG_M3: f32 = 2_950.0;
 pub const CRUST_DENSITY_MIN_KG_M3: f32 = 2_500.0;
 /// Inclusive safety ceiling for a published effective crust density.
 pub const CRUST_DENSITY_MAX_KG_M3: f32 = 3_200.0;
-/// The first strict physical-primary-relief schema.
-pub const PRIMARY_RELIEF_SCHEMA_V1: u16 = 1;
+/// Physical primary relief retaining the authoritative fractional water geometry.
+pub const PRIMARY_RELIEF_SCHEMA_V2: u16 = 2;
 /// NOAA/NGDC Earth ocean inventory used by the locked P3 water budget.
 pub const EARTH_OCEAN_VOLUME_M3: f64 = 1.335e18;
 /// Earth-radius reference paired with the locked ocean inventory.
@@ -706,7 +707,7 @@ pub struct PrimaryReliefSnapshot {
     conditioned_regional_detail_m: Vec<f32>,
     elevation_m: Vec<f32>,
     water_inventory_m3: f64,
-    realized_water_volume_m3: f64,
+    surface_water_geometry: SurfaceWaterGeometry,
     requested_land_fraction: f32,
     physical_land_fraction: f32,
     land_fraction_tolerance: f32,
@@ -732,7 +733,7 @@ struct PrimaryReliefSnapshotWire {
     #[serde(deserialize_with = "deserialize_dense_f32")]
     elevation_m: Vec<f32>,
     water_inventory_m3: f64,
-    realized_water_volume_m3: f64,
+    surface_water_geometry: SurfaceWaterGeometry,
     requested_land_fraction: f32,
     physical_land_fraction: f32,
     land_fraction_tolerance: f32,
@@ -753,7 +754,7 @@ impl PrimaryReliefSnapshot {
         conditioned_regional_detail_m: Vec<f32>,
         elevation_m: Vec<f32>,
         water_inventory_m3: f64,
-        realized_water_volume_m3: f64,
+        surface_water_geometry: SurfaceWaterGeometry,
         requested_land_fraction: f32,
         physical_land_fraction: f32,
         land_fraction_tolerance: f32,
@@ -770,7 +771,7 @@ impl PrimaryReliefSnapshot {
             conditioned_regional_detail_m,
             elevation_m,
             water_inventory_m3,
-            realized_water_volume_m3,
+            surface_water_geometry,
             requested_land_fraction,
             physical_land_fraction,
             land_fraction_tolerance,
@@ -782,10 +783,10 @@ impl PrimaryReliefSnapshot {
 
     /// Rechecks local component, compatibility, and budget-closure invariants.
     pub fn validate(&self) -> Result<(), PrimaryReliefValidationError> {
-        if self.schema_version != PRIMARY_RELIEF_SCHEMA_V1 {
+        if self.schema_version != PRIMARY_RELIEF_SCHEMA_V2 {
             return Err(PrimaryReliefValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: PRIMARY_RELIEF_SCHEMA_V1,
+                supported: PRIMARY_RELIEF_SCHEMA_V2,
             });
         }
         self.surface_ref.validate()?;
@@ -809,6 +810,13 @@ impl PrimaryReliefSnapshot {
             return Err(PrimaryReliefValidationError::CompatibilitySurfaceMismatch {
                 snapshot: self.surface_ref,
                 compatibility: self.compatibility.surface_ref(),
+            });
+        }
+        self.surface_water_geometry.validate()?;
+        if self.surface_water_geometry.surface_ref() != self.surface_ref {
+            return Err(PrimaryReliefValidationError::WaterGeometrySurfaceMismatch {
+                snapshot: self.surface_ref,
+                geometry: self.surface_water_geometry.surface_ref(),
             });
         }
 
@@ -884,13 +892,35 @@ impl PrimaryReliefSnapshot {
             }
         }
 
+        if self.surface_water_geometry.elevation_fingerprint()
+            != &surface_elevation_fingerprint(&self.elevation_m)
+        {
+            return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
+        }
+        if self.compatibility.sea_level_m().to_bits()
+            != self.surface_water_geometry.sea_level_m().to_bits()
+        {
+            return Err(
+                PrimaryReliefValidationError::WaterGeometrySeaLevelMismatch {
+                    stored: self.compatibility.sea_level_m(),
+                    geometry: self.surface_water_geometry.sea_level_m(),
+                },
+            );
+        }
+        if self.compatibility.land_ocean().raw_values()
+            != self.surface_water_geometry.land_ocean().raw_values()
+        {
+            return Err(PrimaryReliefValidationError::WaterGeometryLandOceanMismatch);
+        }
+
         validate_non_negative_f64("water_inventory_m3", self.water_inventory_m3)?;
-        validate_non_negative_f64("realized_water_volume_m3", self.realized_water_volume_m3)?;
+        let realized_water_volume_m3 = self.surface_water_geometry.total_water_volume_m3();
+        validate_non_negative_f64("realized_water_volume_m3", realized_water_volume_m3)?;
         let relative_error =
-            relative_water_error(self.realized_water_volume_m3, self.water_inventory_m3);
+            relative_water_error(realized_water_volume_m3, self.water_inventory_m3);
         if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
             return Err(PrimaryReliefValidationError::WaterVolumeClosureExceeded {
-                realized: self.realized_water_volume_m3,
+                realized: realized_water_volume_m3,
                 inventory: self.water_inventory_m3,
                 relative_error,
                 maximum: WATER_VOLUME_RELATIVE_TOLERANCE,
@@ -929,10 +959,9 @@ impl PrimaryReliefSnapshot {
     pub fn validate_against_surface(
         &self,
         surface: &SphericalSurfaceSnapshot,
-        water_geometry: &SurfaceWaterGeometry,
         relief_spec: &ReliefSpec,
     ) -> Result<(), PrimaryReliefValidationError> {
-        self.validate_against_surface_measurements(surface, water_geometry)?;
+        self.validate_against_surface_measurements(surface)?;
         self.validate_authored_policy(surface, relief_spec)
     }
 
@@ -942,17 +971,7 @@ impl PrimaryReliefSnapshot {
         surface: &SphericalSurfaceSnapshot,
         relief_spec: &ReliefSpec,
     ) -> Result<(), PrimaryReliefValidationError> {
-        self.validate()?;
-        surface.validate()?;
-        self.compatibility
-            .validate_against_validated_surface(surface)?;
-        let authoritative = SurfaceRef::for_spherical(surface);
-        if self.surface_ref != authoritative {
-            return Err(PrimaryReliefValidationError::SurfaceMismatch {
-                snapshot: self.surface_ref,
-                authoritative,
-            });
-        }
+        self.validate_against_surface_measurements(surface)?;
         self.validate_authored_policy(surface, relief_spec)
     }
 
@@ -998,7 +1017,6 @@ impl PrimaryReliefSnapshot {
     pub(crate) fn validate_against_surface_measurements(
         &self,
         surface: &SphericalSurfaceSnapshot,
-        water_geometry: &SurfaceWaterGeometry,
     ) -> Result<(), PrimaryReliefValidationError> {
         self.validate()?;
         surface.validate()?;
@@ -1011,26 +1029,11 @@ impl PrimaryReliefSnapshot {
                 authoritative,
             });
         }
-        water_geometry.validate_against(surface, &self.elevation_m)?;
-        if self.compatibility.sea_level_m().to_bits() != water_geometry.sea_level_m().to_bits() {
-            return Err(
-                PrimaryReliefValidationError::WaterGeometrySeaLevelMismatch {
-                    stored: self.compatibility.sea_level_m(),
-                    geometry: water_geometry.sea_level_m(),
-                },
-            );
-        }
-        if self.compatibility.land_ocean().raw_values() != water_geometry.land_ocean().raw_values()
-        {
-            return Err(PrimaryReliefValidationError::WaterGeometryLandOceanMismatch);
-        }
-        let realized = water_geometry.total_water_volume_m3();
-        validate_close_f64(
-            "realized_water_volume_m3",
-            self.realized_water_volume_m3,
-            realized,
-        )?;
-        let physical = water_geometry.global_land_area_fraction(surface)?;
+        self.surface_water_geometry
+            .validate_against(surface, &self.elevation_m)?;
+        let physical = self
+            .surface_water_geometry
+            .global_land_area_fraction(surface)?;
         if (self.physical_land_fraction - physical).abs() > 1.0e-6 {
             return Err(PrimaryReliefValidationError::PhysicalLandFractionMismatch {
                 stored: self.physical_land_fraction,
@@ -1053,12 +1056,11 @@ impl PrimaryReliefSnapshot {
     pub fn validate_against(
         &self,
         surface: &SphericalSurfaceSnapshot,
-        water_geometry: &SurfaceWaterGeometry,
         substrate: &GeologicSubstrateSnapshot,
         relief_spec: &ReliefSpec,
     ) -> Result<(), PrimaryReliefValidationError> {
         substrate.validate_against_surface(surface)?;
-        self.validate_against_surface(surface, water_geometry, relief_spec)
+        self.validate_against_surface(surface, relief_spec)
     }
 
     pub const fn schema_version(&self) -> u16 {
@@ -1075,6 +1077,10 @@ impl PrimaryReliefSnapshot {
 
     pub const fn compatibility(&self) -> &SphericalReliefSnapshot {
         &self.compatibility
+    }
+
+    pub const fn surface_water_geometry(&self) -> &SurfaceWaterGeometry {
+        &self.surface_water_geometry
     }
 
     pub fn isostatic_base_m(&self) -> &[f32] {
@@ -1102,11 +1108,11 @@ impl PrimaryReliefSnapshot {
     }
 
     pub const fn sea_level_m(&self) -> f32 {
-        self.compatibility.sea_level_m()
+        self.surface_water_geometry.sea_level_m()
     }
 
     pub const fn land_ocean(&self) -> &LandOceanField {
-        self.compatibility.land_ocean()
+        self.surface_water_geometry.land_ocean()
     }
 
     pub const fn water_inventory_m3(&self) -> f64 {
@@ -1124,12 +1130,12 @@ impl PrimaryReliefSnapshot {
         Ok(self.water_inventory_m3 / scaled_earth_ocean_inventory_m3(total_surface_area_m2)?)
     }
 
-    pub const fn realized_water_volume_m3(&self) -> f64 {
-        self.realized_water_volume_m3
+    pub fn realized_water_volume_m3(&self) -> f64 {
+        self.surface_water_geometry.total_water_volume_m3()
     }
 
     pub fn water_volume_relative_error(&self) -> f64 {
-        relative_water_error(self.realized_water_volume_m3, self.water_inventory_m3)
+        relative_water_error(self.realized_water_volume_m3(), self.water_inventory_m3)
     }
 
     pub const fn requested_land_fraction(&self) -> f32 {
@@ -1166,7 +1172,7 @@ impl<'de> Deserialize<'de> for PrimaryReliefSnapshot {
             wire.conditioned_regional_detail_m,
             wire.elevation_m,
             wire.water_inventory_m3,
-            wire.realized_water_volume_m3,
+            wire.surface_water_geometry,
             wire.requested_land_fraction,
             wire.physical_land_fraction,
             wire.land_fraction_tolerance,
@@ -1414,6 +1420,13 @@ pub enum PrimaryReliefValidationError {
     CompatibilitySurfaceMismatch {
         snapshot: SurfaceRef,
         compatibility: SurfaceRef,
+    },
+    #[error(
+        "surface-water geometry surface {geometry:?} differs from primary relief {snapshot:?}"
+    )]
+    WaterGeometrySurfaceMismatch {
+        snapshot: SurfaceRef,
+        geometry: SurfaceRef,
     },
     #[error("field {field} has length {found}; expected {expected}")]
     FieldLengthMismatch {

@@ -2,9 +2,9 @@ use thiserror::Error;
 
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    SedimentSourceKindField, SurfaceWaterField, SurfaceWaterKind, CLIMATE_MONTH_COUNT,
-    CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    FORMATION_COASTAL_COVER_SHIELD_M, FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
+    SedimentSourceKindField, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
+    CLIMATE_MONTH_COUNT, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_COASTAL_COVER_SHIELD_M, FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
     FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, FORMATION_COASTAL_WIND_REFERENCE_M_S,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
@@ -17,8 +17,7 @@ const CANCELLATION_POLL_MASK: usize = 255;
 #[derive(Debug, Clone, Copy)]
 pub struct CoastalInputs<'a> {
     pub elevation_m: &'a [f32],
-    pub sea_level_m: f32,
-    pub surface_water: &'a SurfaceWaterField,
+    pub surface_water_geometry: &'a SurfaceWaterGeometry,
     pub substrate_erodibility: &'a [f32],
     pub sediment_thickness_m: &'a [f32],
     pub substrate_density_kg_m3: &'a [f32],
@@ -98,36 +97,48 @@ impl CoastalExchange {
         validate_inputs(surface, inputs, step_years, cancellation)?;
         let count = surface.cells().len();
         let mut land_exposure_sum = vec![0.0_f64; count];
-        let mut land_edge_length_m = vec![0.0_f64; count];
         let mut marine_exposure_sum = vec![0.0_f64; count];
-        let mut marine_edge_length_m = vec![0.0_f64; count];
+        let mut cell_perimeter_m = vec![0.0_f64; count];
+        for (position, edge) in surface.edges().iter().enumerate() {
+            poll_cancelled(cancellation, position)?;
+            let length_m = edge.length.get();
+            cell_perimeter_m[edge.cells[0].raw() as usize] += length_m;
+            cell_perimeter_m[edge.cells[1].raw() as usize] += length_m;
+        }
 
         for (position, edge) in surface.edges().iter().enumerate() {
             poll_cancelled(cancellation, position)?;
             let first = edge.cells[0].raw() as usize;
             let second = edge.cells[1].raw() as usize;
-            let (land, ocean) = match (
-                inputs.surface_water.get(first),
-                inputs.surface_water.get(second),
-            ) {
-                (Some(SurfaceWaterKind::DryLand), Some(SurfaceWaterKind::Ocean)) => (first, second),
-                (Some(SurfaceWaterKind::Ocean), Some(SurfaceWaterKind::DryLand)) => (second, first),
-                _ => continue,
-            };
-            let exposure = edge_exposure(edge, land, ocean, inputs);
-            let length_m = edge.length.get();
-            land_exposure_sum[land] += exposure * length_m;
-            land_edge_length_m[land] += length_m;
-            marine_exposure_sum[ocean] += exposure * length_m;
-            marine_edge_length_m[ocean] += length_m;
+            let wet_fraction =
+                f64::from(inputs.surface_water_geometry.wet_edge_fraction()[position]);
+            if wet_fraction == 0.0 {
+                continue;
+            }
+            for (land, ocean) in [(first, second), (second, first)] {
+                let land_fraction = f64::from(
+                    inputs
+                        .surface_water_geometry
+                        .land_area_fraction(land)
+                        .expect("validated geometry covers every cell"),
+                );
+                let aperture_m = edge.length.get() * wet_fraction * land_fraction;
+                if aperture_m == 0.0 {
+                    continue;
+                }
+                let exposure = edge_exposure(edge, land, ocean, inputs);
+                let weighted = exposure * aperture_m;
+                land_exposure_sum[land] += weighted;
+                marine_exposure_sum[ocean] += weighted;
+            }
         }
 
         let land_exposure = land_exposure_sum
             .iter()
-            .zip(&land_edge_length_m)
-            .map(|(&sum, &length)| {
-                if length > 0.0 {
-                    (sum / length) as f32
+            .zip(&cell_perimeter_m)
+            .map(|(&sum, &perimeter)| {
+                if perimeter > 0.0 {
+                    (sum / perimeter) as f32
                 } else {
                     0.0
                 }
@@ -135,10 +146,10 @@ impl CoastalExchange {
             .collect::<Vec<_>>();
         let marine_exposure = marine_exposure_sum
             .iter()
-            .zip(&marine_edge_length_m)
-            .map(|(&sum, &length)| {
-                if length > 0.0 {
-                    (sum / length) as f32
+            .zip(&cell_perimeter_m)
+            .map(|(&sum, &perimeter)| {
+                if perimeter > 0.0 {
+                    (sum / perimeter) as f32
                 } else {
                     0.0
                 }
@@ -152,8 +163,7 @@ impl CoastalExchange {
         for land in 0..count {
             poll_cancelled(cancellation, land)?;
             let exposure = f64::from(land_exposure[land]);
-            if exposure == 0.0 || inputs.surface_water.get(land) != Some(SurfaceWaterKind::DryLand)
-            {
+            if exposure == 0.0 {
                 continue;
             }
             let shield = 1.0
@@ -192,10 +202,24 @@ impl CoastalExchange {
                     .opposite_cell(cell, edge_id)
                     .expect("closed spherical edge has an opposite cell")
                     .raw() as usize;
-                if inputs.surface_water.get(receiver) != Some(SurfaceWaterKind::Ocean) {
+                let wet_fraction = f64::from(
+                    inputs.surface_water_geometry.wet_edge_fraction()[edge_id.raw() as usize],
+                );
+                let receiver_ocean_fraction =
+                    f64::from(inputs.surface_water_geometry.ocean_area_fraction()[receiver]);
+                if wet_fraction == 0.0 || receiver_ocean_fraction == 0.0 {
                     continue;
                 }
-                let weight = edge.length.get() * edge_exposure(edge, land, receiver, inputs);
+                let land_fraction = f64::from(
+                    inputs
+                        .surface_water_geometry
+                        .land_area_fraction(land)
+                        .expect("validated geometry covers every cell"),
+                );
+                let weight = edge.length.get()
+                    * wet_fraction
+                    * land_fraction
+                    * edge_exposure(edge, land, receiver, inputs);
                 if weight > 0.0 {
                     receivers.push((receiver, weight));
                     total_weight += weight;
@@ -275,17 +299,9 @@ fn validate_inputs(
     if !step_years.is_finite() || step_years <= 0.0 {
         return Err(CoastGenerationError::InvalidStepYears { found: step_years });
     }
-    if !inputs.sea_level_m.is_finite()
-        || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&inputs.sea_level_m)
-    {
-        return Err(CoastGenerationError::InvalidSeaLevel {
-            found: inputs.sea_level_m,
-        });
-    }
     let count = surface.cells().len();
     for (field, found) in [
         ("elevation_m", inputs.elevation_m.len()),
-        ("surface_water", inputs.surface_water.len()),
         ("substrate_erodibility", inputs.substrate_erodibility.len()),
         ("sediment_thickness_m", inputs.sediment_thickness_m.len()),
         (
@@ -307,6 +323,9 @@ fn validate_inputs(
             });
         }
     }
+    inputs
+        .surface_water_geometry
+        .validate_against(surface, inputs.elevation_m)?;
     for index in 0..count {
         poll_cancelled(cancellation, index)?;
         for (field, value, minimum, maximum) in [
@@ -428,8 +447,8 @@ pub enum CoastGenerationError {
         cell: CellId,
         found: f64,
     },
-    #[error("coastal sea level is invalid: {found}")]
-    InvalidSeaLevel { found: f32 },
+    #[error("invalid coastal surface-water geometry: {0}")]
+    InvalidSurfaceWaterGeometry(#[from] SurfaceWaterGeometryValidationError),
     #[error("coastal step duration must be finite and positive, got {found}")]
     InvalidStepYears { found: f64 },
 }

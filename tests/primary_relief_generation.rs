@@ -2,10 +2,10 @@ use std::sync::OnceLock;
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    build_surface_water_geometry, causal_accumulated_response_m, continental_airy_elevation_m,
-    dynamic_tectonic_response_m, gdh1_ocean_depth_m, oceanic_isostatic_elevation_m,
-    oceanic_sediment_seafloor_rise_m, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
-    PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
+    gdh1_ocean_depth_m, oceanic_isostatic_elevation_m, oceanic_sediment_seafloor_rise_m,
+    EvolvedTectonicGenerator, GeologicSubstrateGenerator, PrimaryReliefGenerationError,
+    PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -138,21 +138,8 @@ fn generated_relief_closes_components_water_and_all_causal_supports() {
         &mut diagnostics,
     )
     .unwrap();
-    let water_geometry = build_surface_water_geometry(
-        surface,
-        relief.elevation_m(),
-        relief.sea_level_m(),
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-
     relief
-        .validate_against(
-            surface,
-            &water_geometry,
-            &fixture.substrate,
-            &ReliefSpec::default(),
-        )
+        .validate_against(surface, &fixture.substrate, &ReliefSpec::default())
         .unwrap();
     assert!(relief.water_volume_relative_error() <= 1.0e-6);
     assert!(relief

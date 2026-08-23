@@ -3,8 +3,8 @@ use thiserror::Error;
 use super::super::surface_water_geometry::solve_physical_sea_level_cancellable;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_elevation_from_components, LandOceanField, WaterVolumeSolveError, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
+    formation_elevation_from_components, WaterVolumeSolution, WaterVolumeSolveError,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
@@ -132,33 +132,6 @@ impl LocalAiryIsostasy {
     }
 }
 
-/// Fixed-water-volume terrain classification returned after each P5 candidate.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FormationWaterState {
-    sea_level_m: f32,
-    realized_water_volume_m3: f64,
-    relative_error: f64,
-    land_ocean: LandOceanField,
-}
-
-impl FormationWaterState {
-    pub const fn sea_level_m(&self) -> f32 {
-        self.sea_level_m
-    }
-
-    pub const fn realized_water_volume_m3(&self) -> f64 {
-        self.realized_water_volume_m3
-    }
-
-    pub const fn relative_error(&self) -> f64 {
-        self.relative_error
-    }
-
-    pub const fn land_ocean(&self) -> &LandOceanField {
-        &self.land_ocean
-    }
-}
-
 /// Exact piecewise-linear water solve; it never targets an authored land share.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FormationSeaLevelSolver;
@@ -169,7 +142,7 @@ impl FormationSeaLevelSolver {
         elevation_m: &[f32],
         water_inventory_m3: f64,
         cancellation: &BuildCancellation,
-    ) -> Result<FormationWaterState, IsostasyGenerationError> {
+    ) -> Result<WaterVolumeSolution, IsostasyGenerationError> {
         check_cancelled(cancellation)?;
         surface
             .validate_cancellable(&|| cancellation.is_cancelled())
@@ -183,7 +156,7 @@ impl FormationSeaLevelSolver {
         elevation_m: &[f32],
         water_inventory_m3: f64,
         cancellation: &BuildCancellation,
-    ) -> Result<FormationWaterState, IsostasyGenerationError> {
+    ) -> Result<WaterVolumeSolution, IsostasyGenerationError> {
         check_cancelled(cancellation)?;
         if elevation_m.len() != surface.cells().len() {
             return Err(IsostasyGenerationError::CellCountMismatch {
@@ -203,12 +176,7 @@ impl FormationSeaLevelSolver {
             other => IsostasyGenerationError::WaterSolve(other),
         })?;
         check_cancelled(cancellation)?;
-        Ok(FormationWaterState {
-            sea_level_m: solution.sea_level_m(),
-            realized_water_volume_m3: solution.realized_water_volume_m3(),
-            relative_error: solution.relative_error(),
-            land_ocean: solution.geometry().land_ocean().clone(),
-        })
+        Ok(solution)
     }
 }
 

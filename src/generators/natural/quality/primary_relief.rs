@@ -1,8 +1,7 @@
 //! Versioned scientific and morphology evidence for physical P3 relief.
 
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
-use crate::engine::BuildCancellation;
-use crate::generators::natural::{build_surface_water_geometry, evaluate_evolved_tectonic_quality};
+use crate::generators::natural::evaluate_evolved_tectonic_quality;
 use crate::world::natural::{
     BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
     NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
@@ -499,15 +498,8 @@ fn validate_inputs(
     substrate
         .validate_against(surface, evolved)
         .map_err(|error| invalid_input("geologic-substrate", error.to_string()))?;
-    let water_geometry = build_surface_water_geometry(
-        surface,
-        relief.elevation_m(),
-        relief.sea_level_m(),
-        &BuildCancellation::new(),
-    )
-    .map_err(|error| invalid_input("surface-water-geometry", error.to_string()))?;
     relief
-        .validate_against_surface_measurements(surface, &water_geometry)
+        .validate_against_surface_measurements(surface)
         .map_err(|error| invalid_input("primary-relief", error.to_string()))?;
     Ok(())
 }

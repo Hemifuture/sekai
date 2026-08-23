@@ -18,8 +18,7 @@ pub use hillslope::{
 };
 pub use hydrology::{FormationHydrologyGenerationError, FormationHydrologyGenerator};
 pub use isostasy::{
-    FormationSeaLevelSolver, FormationWaterState, IsostasyGenerationError, IsostaticAdjustmentStep,
-    LocalAiryIsostasy,
+    FormationSeaLevelSolver, IsostasyGenerationError, IsostaticAdjustmentStep, LocalAiryIsostasy,
 };
 pub use sediment::{
     ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs, SedimentTransportStep,

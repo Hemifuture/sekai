@@ -311,3 +311,97 @@ Task 3 的生产实现冻结如下；本修订细化 §4，不改变 §1 的批�
   `20,252 / 79,212 / 198,812` 格元。Release 探针中 Draft 全 P3 为
   `2,752,963 us`；Standard/High 上游取消延迟为 `372,670 / 851,267 us`，
   均满足既有两秒取消门禁。
+
+## 13. R2 修订：连续海岸贯通 P3、P4 与 P5（2026-08-24）
+
+Task 4 的生产实现冻结如下；本修订细化 §4、§8 和 §10，不改变 §1 的批准
+结论：
+
+1. P3 以 `PRIMARY_RELIEF_SCHEMA_V2` 只持有一份权威
+   `SurfaceWaterGeometry`。`sea_level_m`、实测水量和离散
+   `LandOceanField` 都从该 payload 派生；旧 compatibility payload 仅为既有
+   消费者保留，并与权威几何逐位交叉验证，不构成第二事实源。P3 质量评估不再
+   重建水面几何。
+2. P4 源格元的陆地面积分数定义为
+   `l_i = 1 - ocean_area_fraction_i`，工作网格值使用既有守恒球面重映射
+   `l_c = sum_i(W_ci l_i)`。工作网格按重映射高程和同一海平面重建 P1 水面，
+   有限体积边通透性直接取共享边湿长比例 `k_e = wet_edge_fraction_e`；旧
+   `min(1 - l_first, 1 - l_second)` 已删除。只有 `l_i = 1` 的完全干源格才将
+   发布海流清零，部分湿格保留海流。
+3. P5 在丘坡过程之后、海岸过程之前按固定库存重求水面。对共享边 `e` 上从
+   格元 `i` 指向邻格 `j` 的海岸开口，定义
+   `A_i->j,e = L_e * wet_edge_fraction_e * land_area_fraction_i`；风与海流暴露
+   乘该开口后，以 `i` 的完整格元周长归一。向海洋接收格路由沉积时再乘
+   `ocean_area_fraction_j`。这是有限体积控制面边界积分的分数开口离散，不是
+   新经验系数；两方向分别计算，使两个部分淹没格元可独立贡献。宏步末在
+   沉积与 Airy 响应后的最终高程上再次求解并发布唯一水面几何。
+4. P5 形成水文的海洋 terminal 只从该几何派生的 `LandOceanField` 读取；legacy
+   平面/球面水文继续保持原厘米高程分类语义。亚格元面积或湿边变化因此连续
+   改变气候与海岸交换，而格元中心跨过海平面时仍产生显式、合法的水文拓扑
+   事件。
+5. 身份随真实契约变化升级：`PrimaryReliefStage` 为 v2；
+   `GlobalCirculationStage` 为 v4，forcing/model tag 分别为
+   `sekai.global-climate-forcing.v3` / `sekai.global-circulation-equations.v6`；
+   `FORMATION_TERRAIN_FIELDS_SCHEMA_V2`、
+   `NATURAL_SURFACE_FORMATION_SCHEMA_V2`、`SurfaceFormationStage` v2，以及
+   surface-formation equation/state tag v2 同步生效。无人消费的旧 V1 schema
+   常量已删除；V1 wire 由 V2 validator 明确拒绝，不保留投机性迁移 API。
+6. `PrimaryReliefStage.version()` 同时进入 cache identity 与该阶段 RNG seed。
+   因输出 schema 已改变，保留 v1 会让旧 cache identity 与 V2 wire 冲突；因此
+   本修订明确接受 v2 带来的 P3 随机语料刷新，不伪装成“只改序列化、不改
+   地形”，也不以回退版本号恢复 Task 3 语料。
+
+固定库存 `0.181_f32 m` 平移探针使用 Higham (2002) 的 round-to-nearest 标准
+模型，而不要求不同量级的 `f32` 加法逐位平移。令 `u = f32::EPSILON / 2`，
+测试上界为：输入加法项 `u max_i|fl(z_i + delta)|`；海平面求解器因只在最近
+量化值及相邻两个 `f32` 中择优，其两个发布值合计项为
+`3u(|s_0| + |s_1|)`；最终减法项为 `u|fl(s_1 - s_0)|`。实测海平面平移为
+`0.1809998 m`，与 `0.181_f32 m` 相差 `2.3841858e-7 m`，落在上述随输入尺度
+计算的表示误差包络内；连续海洋面积分数、共享边湿润比例、离散分类和总水量
+仍逐位不变。独立亚格元探针同时证明：离散分类不变时，海岸侵蚀与交换质量已
+连续改变。
+
+固定 Draft/seed 42 Release 语料的先测后钉结果：
+
+- 默认 P3 snapshot BLAKE3 从
+  `4e4dc63c21a61cc0e96ac0c01818ccf9bee7ad87707a97cd5f017a5a19eb6a55`
+  变为
+  `caa867e9e83ab3413600fdce83e2275bd2fe176580a2d93120c4b1a887441582`；
+  默认 P5 artifact 从
+  `04c2e2373c40256f6387565211b33d89989acb4a6fa449422057b199695533bf`
+  变为
+  `14b21a1a863408fcfdac56c78ad2ab82d9994b82695ae86d5ea6e152d8f62437`。
+- T1 probe 从
+  `a7905840137948fda3e82a0509fef62d4026bc612d9c5ccaf67b0ee421f23271`
+  变为
+  `d2d966fee7e699e3d84c7396c4476e46fbe8052edaca48ab1bab8e6924393ee6`；
+  T1v2 probe 从
+  `6885e498c8b0941914f48177eee606e4bf2b30082abfcff153aaee9997de35f8`
+  变为
+  `8da656cc94f754f92e8ef062c19216d25700a5167684ba890b8951777cba8863`。
+- `target_land_fraction = 0.38` 的 seed 42 模式中，P3/P5 artifact BLAKE3
+  分别从
+  `21a4beda983ad54a65e5ab6ad8e16bccef2aa13969fa5cbb2cfb341f04daeffa` /
+  `248d92caefaf50c467e875f015c24fc78fc650cf41fe9be71e2ec245a148c9b1`
+  变为
+  `6da4f8574c6818933779dce65364eeb3b8fcc9f19add3f97c8db034f2b67170f` /
+  `976f72985b2b11569ff217f243182224f83b2b2fc92461e8e4aea70b4b239c23`；
+  同算子反求的隐式水量比从 `0.687761329529` 变为 `0.691398882131`，P3
+  海平面、连续陆地面积分数与 P5 海平面分别从 `-1242.500000 m`、
+  `0.379614234`、`-1233.861572 m` 变为 `-1228.500000 m`、`0.379475296`、
+  `-1218.276733 m`。
+
+本修订各承重技术的出处：
+
+- 动态分数海岸与守恒交换沿用 Meccia & Mikolajewicz (2018)，DOI
+  `10.5194/gmd-11-4677-2018`，以及 CMEPS *Fractional grids* 的工业语义：
+  耦合场保留 `[0, 1]` 面积分数，不先二值化再交换。
+- 分数开口乘共享边长来自有限体积控制面的边界通量积分；见 Eymard, Gallouët
+  & Herbin (2000), *Finite Volume Methods*, Handbook of Numerical Analysis
+  VII, DOI `10.1016/S1570-8659(00)07005-8`。球面共享边一次计通量并由两侧消费
+  的实现依据沿用 Skamarock & Gassmann (2011), DOI
+  `10.1175/MWR-D-10-05056.1`。
+- 浮点包络采用 Higham (2002), *Accuracy and Stability of Numerical
+  Algorithms*, second edition, SIAM, DOI `10.1137/1.9780898718027` 的
+  `fl(x op y) = (x op y)(1 + delta)`、`|delta| <= u` 标准模型；该包络只描述
+  表示误差，不改变任何物理验收阈值。

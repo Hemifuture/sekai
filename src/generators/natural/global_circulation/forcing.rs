@@ -9,12 +9,12 @@ use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRe
 use crate::world::natural::{
     absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c,
     saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot,
-    ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, LandOceanField,
-    LandOceanKind, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
-    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+    ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, PlanetForcing,
+    PrimaryReliefSnapshot, PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
     P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
     P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
-    PRIMARY_RELIEF_SCHEMA_V1, REFERENCE_SURFACE_RELATIVE_HUMIDITY, WATER_VOLUME_RELATIVE_TOLERANCE,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -28,7 +28,7 @@ pub struct GlobalClimateForcing {
     climate_spec_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
     sea_level_m: f32,
-    source_land_mask: Vec<u8>,
+    source_land_fraction: Vec<f32>,
     planet_forcing: PlanetForcing,
     relative_elevation_m: Vec<f32>,
     ocean_depth_m: Vec<f32>,
@@ -114,20 +114,20 @@ impl GlobalClimateForcing {
         }
         let cell_count = domain.climate_surface().cells().len();
         let source_cell_count = domain.source_ref().cell_count() as usize;
-        if self.source_land_mask.len() != source_cell_count {
+        if self.source_land_fraction.len() != source_cell_count {
             return Err(GlobalClimateForcingError::FieldLengthMismatch {
-                field: "source_land_mask",
-                found: self.source_land_mask.len(),
+                field: "source_land_fraction",
+                found: self.source_land_fraction.len(),
                 expected: source_cell_count,
             });
         }
-        for (index, value) in self.source_land_mask.iter().copied().enumerate() {
+        for (index, value) in self.source_land_fraction.iter().copied().enumerate() {
             poll_optional_cancelled(index, cancellation)?;
-            if value > 1 {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
                 return Err(GlobalClimateForcingError::ValueOutOfRange {
-                    field: "source_land_mask",
+                    field: "source_land_fraction",
                     index,
-                    found: f32::from(value),
+                    found: value,
                     minimum: 0.0,
                     maximum: 1.0,
                 });
@@ -221,13 +221,13 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v2\0");
+        hasher.update(b"sekai.global-climate-forcing.v3\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
         hasher.update(self.planet_forcing.fingerprint());
         hasher.update(&self.sea_level_m.to_bits().to_le_bytes());
-        hasher.update(&self.source_land_mask);
+        hash_f32_slice_cancellable(&mut hasher, &self.source_land_fraction, cancellation)?;
         hash_f32_slice_cancellable(&mut hasher, &self.relative_elevation_m, cancellation)?;
         hash_f32_slice_cancellable(&mut hasher, &self.ocean_depth_m, cancellation)?;
         for (index, value) in self.terrain_gradient_m_per_m.iter().enumerate() {
@@ -267,9 +267,9 @@ impl GlobalClimateForcing {
         &self.planet_forcing
     }
 
-    /// Exact authoritative P3 classification. A value of one is full land.
-    pub fn source_land_mask(&self) -> &[u8] {
-        &self.source_land_mask
+    /// Exact authoritative P3 fractional land area. A value of one is full land.
+    pub fn source_land_fraction(&self) -> &[f32] {
+        &self.source_land_fraction
     }
 
     pub fn relative_elevation_m(&self) -> &[f32] {
@@ -300,9 +300,8 @@ pub struct GlobalClimateForcingBuilder;
 struct ClimateTerrainInput<'a> {
     source_ref: SurfaceRef,
     source_fingerprint: [u8; 32],
-    sea_level_m: f32,
     elevation_m: &'a [f32],
-    land_ocean: &'a LandOceanField,
+    surface_water_geometry: &'a SurfaceWaterGeometry,
 }
 
 impl GlobalClimateForcingBuilder {
@@ -320,9 +319,8 @@ impl GlobalClimateForcingBuilder {
         let terrain = ClimateTerrainInput {
             source_ref,
             source_fingerprint: relief_fingerprint_cancellable(relief, cancellation)?,
-            sea_level_m: relief.sea_level_m(),
             elevation_m: relief.elevation_m(),
-            land_ocean: relief.land_ocean(),
+            surface_water_geometry: relief.surface_water_geometry(),
         };
         Self::build_from_validated_terrain(terrain, climate_spec, domain, cancellation)
     }
@@ -340,14 +338,18 @@ impl GlobalClimateForcingBuilder {
     ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
         let source_ref = validate_common_inputs(surface, climate_spec, domain, cancellation)?;
         validate_formation_terrain_against_surface(surface, terrain, cancellation)?;
-        let source_fingerprint =
-            formation_terrain_climate_fingerprint(source_ref, terrain, Some(cancellation))?;
+        let surface_water_geometry = terrain.surface_water_geometry();
+        let source_fingerprint = formation_terrain_climate_fingerprint(
+            source_ref,
+            terrain,
+            surface_water_geometry,
+            Some(cancellation),
+        )?;
         let input = ClimateTerrainInput {
             source_ref,
             source_fingerprint,
-            sea_level_m: terrain.sea_level_m(),
             elevation_m: terrain.final_elevation_m(),
-            land_ocean: terrain.land_ocean(),
+            surface_water_geometry,
         };
         Self::build_from_validated_terrain(input, climate_spec, domain, cancellation)
     }
@@ -365,25 +367,25 @@ impl GlobalClimateForcingBuilder {
             cancellation.is_cancelled()
         })
         .map_err(map_remap_error)?;
-        let mut source_land = Vec::with_capacity(terrain.land_ocean.raw_values().len());
-        let mut source_land_mask = Vec::with_capacity(terrain.land_ocean.raw_values().len());
-        for (index, &kind) in terrain.land_ocean.raw_values().iter().enumerate() {
+        let ocean_area_fraction = terrain.surface_water_geometry.ocean_area_fraction();
+        let mut source_land_fraction = Vec::with_capacity(ocean_area_fraction.len());
+        for (index, &ocean_fraction) in ocean_area_fraction.iter().enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            let is_land = kind == LandOceanKind::Land.raw();
-            source_land.push(f32::from(is_land));
-            source_land_mask.push(u8::from(is_land));
+            source_land_fraction.push(1.0 - ocean_fraction);
         }
-        let land_fraction =
-            remap_intensive_f32_cancellable(map, &source_land, &|| cancellation.is_cancelled())
-                .map_err(map_remap_error)?;
+        let land_fraction = remap_intensive_f32_cancellable(map, &source_land_fraction, &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(map_remap_error)?;
+        let sea_level_m = terrain.surface_water_geometry.sea_level_m();
         let mut source_ocean_depth = Vec::with_capacity(terrain.elevation_m.len());
         for (index, &elevation) in terrain.elevation_m.iter().enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            source_ocean_depth.push((terrain.sea_level_m - elevation).max(0.0));
+            source_ocean_depth.push((sea_level_m - elevation).max(0.0));
         }
         let ocean_depth_m = remap_intensive_f32_cancellable(map, &source_ocean_depth, &|| {
             cancellation.is_cancelled()
@@ -394,7 +396,7 @@ impl GlobalClimateForcingBuilder {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            relative_elevation_m.push(elevation - terrain.sea_level_m);
+            relative_elevation_m.push(elevation - sea_level_m);
         }
 
         let grid = CubedSphereGrid::new_cancellable(
@@ -409,16 +411,17 @@ impl GlobalClimateForcingBuilder {
         let terrain_gradient_m_per_m = CirculationOperators::new(&grid)
             .gradient_cancellable(&relative_elevation_m, cancellation)
             .map_err(map_operator_error)?;
-        let mut ocean_edge_permeability = Vec::with_capacity(grid.edges().len());
-        for (index, edge) in grid.edges().iter().enumerate() {
-            if index % 256 == 0 {
-                check_cancelled(cancellation)?;
-            }
-            let [first, second] = *edge.cells();
-            let first_water = 1.0 - land_fraction[first as usize];
-            let second_water = 1.0 - land_fraction[second as usize];
-            ocean_edge_permeability.push(first_water.min(second_water).clamp(0.0, 1.0));
-        }
+        let work_water_geometry = build_surface_water_geometry(
+            domain.climate_surface(),
+            &elevation_m,
+            sea_level_m,
+            cancellation,
+        )
+        .map_err(|error| GlobalClimateForcingError::InvalidInput {
+            role: "climate_surface_water_geometry",
+            reason: error.to_string(),
+        })?;
+        let ocean_edge_permeability = work_water_geometry.wet_edge_fraction().to_vec();
 
         let axial_tilt_rad = f64::from(climate_spec.axial_tilt_degrees()).to_radians();
         let temperature_offset_c = f64::from(climate_spec.temperature_offset_c());
@@ -502,8 +505,8 @@ impl GlobalClimateForcingBuilder {
             source_relief_fingerprint: terrain.source_fingerprint,
             climate_spec_fingerprint: climate_spec_fingerprint(climate_spec),
             fingerprint: [0; 32],
-            sea_level_m: terrain.sea_level_m,
-            source_land_mask,
+            sea_level_m,
+            source_land_fraction,
             planet_forcing,
             relative_elevation_m,
             ocean_depth_m,
@@ -548,12 +551,12 @@ fn validate_formation_terrain_against_surface(
     cancellation: &BuildCancellation,
 ) -> Result<(), GlobalClimateForcingError> {
     check_cancelled(cancellation)?;
-    terrain
-        .validate()
-        .map_err(|error| GlobalClimateForcingError::InvalidInput {
+    terrain.validate_against_surface(surface).map_err(|error| {
+        GlobalClimateForcingError::InvalidInput {
             role: "formation_terrain",
             reason: error.to_string(),
-        })?;
+        }
+    })?;
     let expected = surface.cells().len();
     let found = terrain.final_elevation_m().len();
     if found != expected {
@@ -564,27 +567,6 @@ fn validate_formation_terrain_against_surface(
         });
     }
 
-    let geometry = build_surface_water_geometry(
-        surface,
-        terrain.final_elevation_m(),
-        terrain.sea_level_m(),
-        cancellation,
-    )
-    .map_err(|error| GlobalClimateForcingError::InvalidInput {
-        role: "formation_terrain",
-        reason: error.to_string(),
-    })?;
-    let total = geometry.total_water_volume_m3();
-    let stored = terrain.realized_water_volume_m3();
-    let relative_error = (total - stored).abs() / total.abs().max(stored.abs()).max(1.0);
-    if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
-        return Err(GlobalClimateForcingError::InvalidInput {
-            role: "formation_terrain",
-            reason: format!(
-                "physical water volume {total} differs from retained {stored} by {relative_error} relative"
-            ),
-        });
-    }
     check_cancelled(cancellation)
 }
 
@@ -611,9 +593,7 @@ fn relief_fingerprint_impl(
     climate_terrain_fingerprint_impl(
         relief.schema_version(),
         relief.surface_ref(),
-        relief.sea_level_m(),
-        relief.elevation_m(),
-        relief.land_ocean(),
+        relief.surface_water_geometry(),
         cancellation,
     )
 }
@@ -622,14 +602,13 @@ fn relief_fingerprint_impl(
 fn formation_terrain_climate_fingerprint(
     surface_ref: SurfaceRef,
     terrain: &FormationTerrainFields,
+    surface_water_geometry: &SurfaceWaterGeometry,
     cancellation: Option<&BuildCancellation>,
 ) -> Result<[u8; 32], GlobalClimateForcingError> {
     climate_terrain_fingerprint_impl(
-        PRIMARY_RELIEF_SCHEMA_V1,
+        terrain.schema_version(),
         surface_ref,
-        terrain.sea_level_m(),
-        terrain.final_elevation_m(),
-        terrain.land_ocean(),
+        surface_water_geometry,
         cancellation,
     )
 }
@@ -637,22 +616,15 @@ fn formation_terrain_climate_fingerprint(
 fn climate_terrain_fingerprint_impl(
     climate_terrain_schema: u16,
     surface_ref: SurfaceRef,
-    sea_level_m: f32,
-    elevation_m: &[f32],
-    land_ocean: &LandOceanField,
+    surface_water_geometry: &SurfaceWaterGeometry,
     cancellation: Option<&BuildCancellation>,
 ) -> Result<[u8; 32], GlobalClimateForcingError> {
     check_optional_cancelled(cancellation)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.primary-relief.climate-input.v1\0");
+    hasher.update(b"sekai.climate-terrain-input.v2\0");
     hasher.update(&climate_terrain_schema.to_le_bytes());
     hasher.update(&surface_ref.fingerprint());
-    hasher.update(&sea_level_m.to_bits().to_le_bytes());
-    hash_f32_slice_cancellable(&mut hasher, elevation_m, cancellation)?;
-    for (index, value) in land_ocean.raw_values().iter().enumerate() {
-        poll_optional_cancelled(index, cancellation)?;
-        hasher.update(&value.to_le_bytes());
-    }
+    hasher.update(surface_water_geometry.fingerprint());
     check_optional_cancelled(cancellation)?;
     Ok(*hasher.finalize().as_bytes())
 }
@@ -810,7 +782,7 @@ mod formation_tests {
         constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile, ElevationField,
         FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
         NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot,
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V1, PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V2, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -858,7 +830,7 @@ mod formation_tests {
                 .unwrap();
             let tolerance = land_fraction_constraint_tolerance(&surface).unwrap();
             let relief = PrimaryReliefSnapshot::new(
-                PRIMARY_RELIEF_SCHEMA_V1,
+                PRIMARY_RELIEF_SCHEMA_V2,
                 SurfaceRef::for_spherical(&surface),
                 compatibility,
                 primary.clone(),
@@ -868,7 +840,7 @@ mod formation_tests {
                 zero,
                 primary,
                 water_inventory,
-                water.realized_water_volume_m3(),
+                water.geometry().clone(),
                 ReliefSpec::default().target_land_fraction,
                 physical,
                 tolerance,
@@ -928,12 +900,10 @@ mod formation_tests {
         .unwrap();
         let water = solve_physical_sea_level(surface, &primary, water_inventory_m3).unwrap();
         FormationTerrainFields::new(
-            FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
             components,
-            water.sea_level_m(),
+            water.into_geometry(),
             water_inventory_m3,
-            water.realized_water_volume_m3(),
-            water.geometry().land_ocean().clone(),
             FormationSedimentFields::new(
                 vec![0.0; count],
                 vec![[0.0; 5]; count],
@@ -1041,7 +1011,10 @@ mod formation_tests {
                 &fixture.domain,
                 &BuildCancellation::new(),
             ),
-            Err(GlobalClimateForcingError::FieldLengthMismatch { .. })
+            Err(GlobalClimateForcingError::InvalidInput {
+                role: "formation_terrain",
+                ..
+            })
         ));
 
         let cancellation = BuildCancellation::new();

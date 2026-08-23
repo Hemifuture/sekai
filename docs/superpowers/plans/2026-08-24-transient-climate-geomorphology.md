@@ -118,15 +118,15 @@ cargo check --target wasm32-unknown-unknown --all-features --lib
 - 修改：`src/generators/natural/surface_formation/{isostasy,coast,hydrology,generation}.rs`
 - 修改：P3/P4/P5 contracts、forcing、generation 与 stage 测试
 
-- [ ] P3 snapshot 发布权威水面几何/指纹，物理陆地比例改为连续面积；目标陆地
+- [x] P3 snapshot 发布权威水面几何/指纹，物理陆地比例改为连续面积；目标陆地
   模式使用同一连续面积求根。
-- [ ] P4 land fraction 保守重映射权威分数；work-grid 海洋边通透性来自 P1
+- [x] P4 land fraction 保守重映射权威分数；work-grid 海洋边通透性来自 P1
   共享边湿长，删除 `min(first_water, second_water)`。
-- [ ] P5 海岸交换、海洋终端和每步海平面共同消费水面 payload；离散
+- [x] P5 海岸交换、海洋终端和每步海平面共同消费水面 payload；离散
   `LandOceanField` 只由该 payload 派生。
-- [ ] Release probe 复现旧 0.181 m 海平面扰动，证明通量/面积连续且总水量
+- [x] Release probe 复现旧 0.181 m 海平面扰动，证明通量/面积连续且总水量
   不变；真实海峡开闭仍产生合法拓扑事件。
-- [ ] 刷新实际受影响 P3->P5 身份，三道门禁并提交。
+- [x] 刷新实际受影响 P3->P5 身份，三道门禁并提交。
 
 提交：`Drive the natural pipeline with fractional coasts`
 

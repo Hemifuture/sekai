@@ -8,7 +8,7 @@ use sekai::generators::natural::{
 use sekai::world::natural::{
     expected_global_circulation_dense_state_bytes, ClimateCapabilityAvailability,
     ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile, ClimateWorkDomainSnapshot,
-    LandOceanKind, NaturalQualityProfile, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    NaturalQualityProfile, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
     GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
 };
 use sekai::world::spatial::{ConservativeSurfaceMap, SurfaceOverlapWeight, TangentTransform};
@@ -156,8 +156,14 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     );
 
     let currents = snapshot.fields().surface_ocean_current_m_s().values();
-    for (cell, kind) in fixture.relief.land_ocean().raw_values().iter().enumerate() {
-        if *kind == LandOceanKind::Land.raw() {
+    for (cell, &ocean_fraction) in fixture
+        .relief
+        .surface_water_geometry()
+        .ocean_area_fraction()
+        .iter()
+        .enumerate()
+    {
+        if ocean_fraction == 0.0 {
             for current in &currents[cell] {
                 assert_eq!(*current, [0.0; 3]);
             }

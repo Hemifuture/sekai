@@ -18,7 +18,7 @@ use crate::world::natural::{
     CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
     EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M, EARTH_OCEAN_CRUST_MEAN_AGE_MYR, ELEVATION_MAX_M,
     ELEVATION_MIN_M, OCEANIC_CRUST_DENSITY_KG_M3, OCEANIC_SEDIMENT_DENSITY_KG_M3,
-    OCEAN_WATER_DENSITY_KG_M3, PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V1,
+    OCEAN_WATER_DENSITY_KG_M3, PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V2,
     REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, RELIEF_SCHEMA_V4, TECTONIC_OFFSET_MAX_M,
     TECTONIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
@@ -218,7 +218,6 @@ impl PrimaryReliefGenerator {
             }
         };
         let sea_level_m = water_geometry.sea_level_m();
-        let realized_water_volume = water_geometry.total_water_volume_m3();
         let elevation_field = ElevationField::from_values(elevation.clone())?;
         let land_ocean = water_geometry.land_ocean().clone();
         let regional = passive_margin
@@ -243,7 +242,7 @@ impl PrimaryReliefGenerator {
         let tolerance = land_fraction_constraint_tolerance(surface)?;
         let status = constraint_status(relief_spec.target_land_fraction, physical_land, tolerance);
         let snapshot = PrimaryReliefSnapshot::new(
-            PRIMARY_RELIEF_SCHEMA_V1,
+            PRIMARY_RELIEF_SCHEMA_V2,
             SurfaceRef::for_spherical(surface),
             compatibility_relief,
             isostatic_base,
@@ -253,13 +252,13 @@ impl PrimaryReliefGenerator {
             regional_detail,
             elevation,
             water_inventory,
-            realized_water_volume,
+            water_geometry,
             relief_spec.target_land_fraction,
             physical_land,
             tolerance,
             status,
         )?;
-        snapshot.validate_against(surface, &water_geometry, substrate, relief_spec)?;
+        snapshot.validate_against(surface, substrate, relief_spec)?;
         Ok(snapshot)
     }
 }

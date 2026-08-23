@@ -77,7 +77,7 @@ fn target_land_fraction_inventory_reaches_p5_and_preserves_release_evidence() {
             blake3::hash(&serde_json::to_vec(default_formation.as_ref()).unwrap())
                 .to_hex()
                 .to_string(),
-            "04c2e2373c40256f6387565211b33d89989acb4a6fa449422057b199695533bf"
+            "14b21a1a863408fcfdac56c78ad2ab82d9994b82695ae86d5ea6e152d8f62437"
         );
     }
 
@@ -119,11 +119,11 @@ fn target_land_fraction_inventory_reaches_p5_and_preserves_release_evidence() {
     {
         assert_eq!(
             p3_artifact_hash,
-            "21a4beda983ad54a65e5ab6ad8e16bccef2aa13969fa5cbb2cfb341f04daeffa"
+            "6da4f8574c6818933779dce65364eeb3b8fcc9f19add3f97c8db034f2b67170f"
         );
         assert_eq!(
             p5_artifact_hash,
-            "248d92caefaf50c467e875f015c24fc78fc650cf41fe9be71e2ec245a148c9b1"
+            "976f72985b2b11569ff217f243182224f83b2b2fc92461e8e4aea70b4b239c23"
         );
     }
     let document =
@@ -284,7 +284,7 @@ fn the_p5_stage_publishes_a_locked_key_identity_and_exact_dependency_boundary() 
         SurfaceFormationStage.id().as_str(),
         "natural.surface-formation"
     );
-    assert_eq!(SurfaceFormationStage.version(), 1);
+    assert_eq!(SurfaceFormationStage.version(), 2);
     assert_eq!(SurfaceFormationStage.namespace(), "sekai.core");
 
     let graph = surface_formation_graph().unwrap();
@@ -781,7 +781,7 @@ fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
         lod.levels()
     );
     assert_eq!(
-        hex, "a7905840137948fda3e82a0509fef62d4026bc612d9c5ccaf67b0ee421f23271",
+        hex, "d2d966fee7e699e3d84c7396c4476e46fbe8052edaca48ab1bab8e6924393ee6",
         "the frozen T1 probe fingerprint changed; record an amendment in the T1 spec"
     );
 
@@ -856,7 +856,7 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
         .collect();
     eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
     assert_eq!(
-        hex, "6885e498c8b0941914f48177eee606e4bf2b30082abfcff153aaee9997de35f8",
+        hex, "8da656cc94f754f92e8ef062c19216d25700a5167684ba890b8951777cba8863",
         "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
     );
 

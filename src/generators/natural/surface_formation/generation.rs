@@ -24,7 +24,7 @@ use crate::world::natural::{
     NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, SedimentBudgetReport,
     SphericalHydrologySnapshot, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_TERRAIN_FIELDS_SCHEMA_V1, NATURAL_SURFACE_FORMATION_SCHEMA_V1,
+    ELEVATION_MIN_M, FORMATION_TERRAIN_FIELDS_SCHEMA_V2, NATURAL_SURFACE_FORMATION_SCHEMA_V2,
     SEDIMENT_PROVENANCE_SOURCE_COUNT, SURFACE_FORMATION_MACRO_STEPS,
     SURFACE_FORMATION_MACRO_STEP_YEARS, SURFACE_FORMATION_MAX_OUTER_ITERATIONS,
 };
@@ -383,12 +383,18 @@ fn solve_geomorphic(
         );
         state.refresh_elevation(cancellation)?;
 
+        let coast_water = FormationSeaLevelSolver::solve_from_validated_surface(
+            surface,
+            &state.elevation_m,
+            inputs.relief.water_inventory_m3(),
+            cancellation,
+        )?;
+
         let coast = CoastalExchange::advance_from_validated_surface(
             surface,
             CoastalInputs {
                 elevation_m: &state.elevation_m,
-                sea_level_m: terrain.sea_level_m(),
-                surface_water: hydrology.surface_water(),
+                surface_water_geometry: coast_water.geometry(),
                 substrate_erodibility: inputs.substrate.erodibility(),
                 sediment_thickness_m: terrain.sediment().sediment_thickness_m(),
                 substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
@@ -406,7 +412,7 @@ fn solve_geomorphic(
             surface,
             SedimentInputs {
                 elevation_m: &state.elevation_m,
-                sea_level_m: terrain.sea_level_m(),
+                sea_level_m: coast_water.sea_level_m(),
                 surface_water: hydrology.surface_water(),
                 flow_receiver: hydrology.flow_receiver(),
                 drainage_surface_elevation_m: hydrology.drainage_surface_elevation_m().values(),
@@ -457,12 +463,10 @@ fn solve_geomorphic(
             cancellation,
         )?;
         terrain = FormationTerrainFields::new(
-            FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
             state.components()?,
-            water.sea_level_m(),
+            water.into_geometry(),
             inputs.relief.water_inventory_m3(),
-            water.realized_water_volume_m3(),
-            water.land_ocean().clone(),
             sediment.fields().clone(),
         )?;
     }
@@ -502,12 +506,10 @@ fn primary_relief_terrain(
         zero_f32,
     )?;
     Ok(FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
         components,
-        inputs.relief.sea_level_m(),
+        inputs.relief.surface_water_geometry().clone(),
         inputs.relief.water_inventory_m3(),
-        inputs.relief.realized_water_volume_m3(),
-        inputs.relief.land_ocean().clone(),
         sediment,
     )?)
 }
@@ -608,7 +610,7 @@ fn publish(
     )?;
     check_cancelled(cancellation)?;
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V1,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V2,
         surface_ref,
         checkpoint,
         solved.terrain,

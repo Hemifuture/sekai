@@ -35,7 +35,7 @@ impl FormationHydrologyGenerator {
         spec.validate()?;
         surface.validate()?;
         check_cancelled(cancellation)?;
-        terrain.validate()?;
+        terrain.validate_against_surface(surface)?;
         check_cancelled(cancellation)?;
         substrate.validate_against_surface(surface)?;
         check_cancelled(cancellation)?;
@@ -83,7 +83,7 @@ impl FormationHydrologyGenerator {
             &surface_view,
             &topology,
             &elevation,
-            terrain.sea_level_m(),
+            terrain.land_ocean(),
             substrate.relative_permeability(),
             climate.fields().monthly_precipitation_mm_day().values(),
             spec,

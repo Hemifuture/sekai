@@ -16,7 +16,7 @@ use sekai::world::natural::{
     GeologicSubstrateSnapshot, GlobalCirculationFields, GlobalCirculationSnapshot,
     HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
     ProductionIntegratorId, SedimentSourceKind, SedimentSourceKindField, SphericalMantleSnapshot,
-    CLIMATOLOGICAL_YEAR_SECONDS, FORMATION_TERRAIN_FIELDS_SCHEMA_V1, GEOLOGIC_SUBSTRATE_SCHEMA_V1,
+    CLIMATOLOGICAL_YEAR_SECONDS, FORMATION_TERRAIN_FIELDS_SCHEMA_V2, GEOLOGIC_SUBSTRATE_SCHEMA_V1,
     GLOBAL_CIRCULATION_SCHEMA_V2, MANTLE_SNAPSHOT_SCHEMA_V2, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
@@ -63,12 +63,10 @@ fn terrain(surface: &SphericalSurfaceSnapshot, elevation_m: Vec<f32>) -> Formati
             .unwrap();
     let water_volume_m3 = water_geometry.total_water_volume_m3();
     FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
         components,
-        0.0,
+        water_geometry,
         water_volume_m3,
-        water_volume_m3,
-        water_geometry.land_ocean().clone(),
         zero_sediment(count),
     )
     .unwrap()

@@ -1,10 +1,10 @@
 use sekai::engine::BuildCancellation;
-use sekai::generators::natural::{build_surface_water_geometry, solve_physical_sea_level};
+use sekai::generators::natural::solve_physical_sea_level;
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
     scaled_earth_ocean_inventory_m3, ElevationField, LandFractionConstraintStatus,
     NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy,
-    SphericalReliefSnapshot, SurfaceWaterGeometry, PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
+    SphericalReliefSnapshot, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::Meters;
@@ -69,7 +69,7 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     .max(0.02) as f32;
 
     PrimaryReliefSnapshot::new(
-        PRIMARY_RELIEF_SCHEMA_V1,
+        PRIMARY_RELIEF_SCHEMA_V2,
         SurfaceRef::for_spherical(surface),
         compatibility,
         isostatic,
@@ -79,7 +79,7 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
         detail,
         elevation,
         inventory,
-        solution.realized_water_volume_m3(),
+        solution.geometry().clone(),
         ReliefSpec::default().target_land_fraction,
         physical,
         tolerance,
@@ -88,26 +88,12 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     .unwrap()
 }
 
-fn water_geometry(
-    surface: &SphericalSurfaceSnapshot,
-    snapshot: &PrimaryReliefSnapshot,
-) -> SurfaceWaterGeometry {
-    build_surface_water_geometry(
-        surface,
-        snapshot.elevation_m(),
-        snapshot.sea_level_m(),
-        &BuildCancellation::new(),
-    )
-    .unwrap()
-}
-
 #[test]
 fn strict_primary_relief_roundtrips_and_cross_validates_physical_water() {
     let surface = surface();
     let snapshot = valid_snapshot(&surface);
-    let geometry = water_geometry(&surface, &snapshot);
     snapshot
-        .validate_against_surface(&surface, &geometry, &ReliefSpec::default())
+        .validate_against_surface(&surface, &ReliefSpec::default())
         .unwrap();
     snapshot
         .validate_against_authoring(&surface, &ReliefSpec::default())
@@ -117,11 +103,19 @@ fn strict_primary_relief_roundtrips_and_cross_validates_physical_water() {
     let decoded: PrimaryReliefSnapshot = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, snapshot);
     assert_eq!(
+        decoded.surface_water_geometry(),
+        snapshot.surface_water_geometry()
+    );
+    assert_eq!(
         decoded.constraint_status(),
         LandFractionConstraintStatus::Infeasible
     );
     assert_eq!(decoded.physical_land_fraction(), 0.0);
     assert!(decoded.water_volume_relative_error() <= 1.0e-6);
+
+    let wire = serde_json::to_value(&snapshot).unwrap();
+    assert!(wire.get("surface_water_geometry").is_some());
+    assert!(wire.get("realized_water_volume_m3").is_none());
 }
 
 #[test]
@@ -134,7 +128,7 @@ fn strict_wire_rejects_unknown_schema_and_component_drift() {
     assert!(serde_json::from_value::<PrimaryReliefSnapshot>(unknown).is_err());
 
     let mut schema = encoded.clone();
-    schema["schema_version"] = serde_json::json!(2);
+    schema["schema_version"] = serde_json::json!(1);
     assert!(serde_json::from_value::<PrimaryReliefSnapshot>(schema).is_err());
 
     let mut component = encoded;
@@ -157,10 +151,23 @@ fn surface_cross_validation_recomputes_area_weighted_constraint_status() {
     let mut encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
     encoded["physical_land_fraction"] = serde_json::json!(0.25);
     let stale: PrimaryReliefSnapshot = serde_json::from_value(encoded).unwrap();
-    let geometry = water_geometry(&surface, &stale);
     assert!(stale
-        .validate_against_surface(&surface, &geometry, &ReliefSpec::default())
+        .validate_against_surface(&surface, &ReliefSpec::default())
         .is_err());
+}
+
+#[test]
+fn retained_water_geometry_cannot_diverge_from_compatibility_payload() {
+    let surface = surface();
+    let encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+
+    let mut sea_level = encoded.clone();
+    sea_level["compatibility"]["sea_level_m"] = serde_json::json!(1.0);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(sea_level).is_err());
+
+    let mut land_ocean = encoded;
+    land_ocean["compatibility"]["land_ocean_kind"][0] = serde_json::json!(1);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(land_ocean).is_err());
 }
 
 #[test]
@@ -171,10 +178,8 @@ fn target_policy_cross_validation_requires_the_authored_land_fraction_to_be_sati
         sea_level_policy: SeaLevelPolicy::TargetLandFraction,
         ..ReliefSpec::default()
     };
-    let geometry = water_geometry(&surface, &snapshot);
-
     assert!(snapshot
-        .validate_against_surface(&surface, &geometry, &target_spec)
+        .validate_against_surface(&surface, &target_spec)
         .is_err());
     assert!(snapshot
         .validate_against_authoring(&surface, &target_spec)

@@ -16,13 +16,12 @@ use sekai::world::natural::{
     lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
     neutral_surface_air_specific_humidity_kg_kg, planetary_albedo_from_surface,
     raw_orographic_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateSpec,
-    ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, LandOceanKind,
-    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
-    CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
-    CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
-    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+    ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile,
+    PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    TectonicSpec, WorldFormationPreset, CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2,
+    EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN, EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
     EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE,
     EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, P4_REFERENCE_AIR_DENSITY_KG_M3,
@@ -281,31 +280,21 @@ fn earth_water_and_energy_evidence_references_are_self_consistent() {
 fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
     let fixture = fixture();
     let surface = fixture.bundle.authoritative_surface();
-    let water_geometry = build_surface_water_geometry(
-        surface,
-        fixture.relief.elevation_m(),
-        fixture.relief.sea_level_m(),
-        &BuildCancellation::new(),
-    )
-    .unwrap();
     fixture
         .relief
-        .validate_against(
-            surface,
-            &water_geometry,
-            &fixture.substrate,
-            &ReliefSpec::default(),
-        )
+        .validate_against(surface, &fixture.substrate, &ReliefSpec::default())
         .unwrap();
     fixture.forcing.validate_against(&fixture.domain).unwrap();
 
     let source_land = fixture
         .relief
-        .land_ocean()
-        .raw_values()
+        .surface_water_geometry()
+        .ocean_area_fraction()
         .iter()
-        .map(|&kind| f32::from(kind == LandOceanKind::Land.raw()))
+        .map(|&ocean| 1.0 - ocean)
         .collect::<Vec<_>>();
+    assert_eq!(fixture.forcing.source_land_fraction(), source_land);
+    assert!(source_land.iter().any(|value| (0.0..1.0).contains(value)));
     let expected_land =
         remap_intensive_f32(fixture.domain.source_to_climate(), &source_land).unwrap();
     assert_eq!(
@@ -346,6 +335,17 @@ fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
     assert_eq!(
         fixture.forcing.planet_forcing().elevation_m(),
         expected_elevation
+    );
+    let work_geometry = build_surface_water_geometry(
+        fixture.domain.climate_surface(),
+        &expected_elevation,
+        fixture.relief.sea_level_m(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.forcing.ocean_edge_permeability(),
+        work_geometry.wet_edge_fraction()
     );
     for ((relative, elevation), depth) in fixture
         .forcing

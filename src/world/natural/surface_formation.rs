@@ -4,22 +4,23 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use super::surface_water_geometry::surface_elevation_fingerprint;
 use super::{
-    GlobalCirculationSnapshot, LandOceanField, LandOceanKind, NaturalQualityProfile,
-    SedimentSourceKind, SphericalHydrologySnapshot, ANNUAL_PRECIPITATION_MAX_MM,
-    CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
+    GlobalCirculationSnapshot, LandOceanField, NaturalQualityProfile, SedimentSourceKind,
+    SphericalHydrologySnapshot, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
+    ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
 use crate::world::MAX_SPHERICAL_CELL_COUNT;
 
-/// The first strict coupled geomorphic-formation product schema.
-pub const NATURAL_SURFACE_FORMATION_SCHEMA_V1: u16 = 1;
+/// Coupled formation product retaining one authoritative fractional water geometry.
+pub const NATURAL_SURFACE_FORMATION_SCHEMA_V2: u16 = 2;
 /// The first strict P5 resume/checkpoint schema.
 pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1: u16 = 1;
-/// The first strict P5 retained terrain/process-field schema.
-pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V1: u16 = 1;
+/// Retained terrain with one authoritative fractional water geometry.
+pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V2: u16 = 2;
 /// The fixed number of retained sediment-source provenance channels.
 pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
 /// The bounded outer climate/terrain fixed-point iteration count.
@@ -226,7 +227,7 @@ pub enum SurfaceFormationModelId {
 /// Returns the canonical identity of every equation and frozen P5 constant.
 pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-equations.v1\0");
+    hasher.update(b"sekai.surface-formation-equations.v2\0");
     hasher.update(&[surface_formation_model_tag(
         SurfaceFormationModelId::PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1,
     )]);
@@ -1273,10 +1274,8 @@ impl<'de> Deserialize<'de> for FormationSedimentFields {
 pub struct FormationTerrainFields {
     schema_version: u16,
     elevation_components: FormationElevationComponents,
-    sea_level_m: f32,
+    surface_water_geometry: SurfaceWaterGeometry,
     water_inventory_m3: f64,
-    realized_water_volume_m3: f64,
-    land_ocean: LandOceanField,
     sediment: FormationSedimentFields,
 }
 
@@ -1285,32 +1284,24 @@ pub struct FormationTerrainFields {
 struct FormationTerrainFieldsWire {
     schema_version: u16,
     elevation_components: FormationElevationComponents,
-    sea_level_m: f32,
+    surface_water_geometry: SurfaceWaterGeometry,
     water_inventory_m3: f64,
-    realized_water_volume_m3: f64,
-    #[serde(deserialize_with = "deserialize_formation_land_ocean")]
-    land_ocean: LandOceanField,
     sediment: FormationSedimentFields,
 }
 
 impl FormationTerrainFields {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         schema_version: u16,
         elevation_components: FormationElevationComponents,
-        sea_level_m: f32,
+        surface_water_geometry: SurfaceWaterGeometry,
         water_inventory_m3: f64,
-        realized_water_volume_m3: f64,
-        land_ocean: LandOceanField,
         sediment: FormationSedimentFields,
     ) -> Result<Self, SurfaceFormationValidationError> {
         let fields = Self {
             schema_version,
             elevation_components,
-            sea_level_m,
+            surface_water_geometry,
             water_inventory_m3,
-            realized_water_volume_m3,
-            land_ocean,
             sediment,
         };
         fields.validate()?;
@@ -1318,30 +1309,29 @@ impl FormationTerrainFields {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V1 {
+        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V2 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "formation_terrain_fields",
                 found: self.schema_version,
-                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
+                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
             });
         }
         self.elevation_components.validate()?;
+        self.surface_water_geometry.validate()?;
         self.sediment.validate()?;
         let count = self.elevation_components.len();
-        validate_field_length("land_ocean", self.land_ocean.len(), count)?;
+        validate_field_length(
+            "surface_water_geometry",
+            self.surface_water_geometry.ocean_area_fraction().len(),
+            count,
+        )?;
         validate_field_length("sediment", self.sediment.len(), count)?;
-        if !self.sea_level_m.is_finite()
-            || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&self.sea_level_m)
+        if self.surface_water_geometry.elevation_fingerprint()
+            != &surface_elevation_fingerprint(self.elevation_components.final_elevation_m())
         {
-            return Err(SurfaceFormationValidationError::InvalidValue {
-                field: "sea_level_m",
-                found: f64::from(self.sea_level_m),
-            });
+            return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
         }
-        for (field, value) in [
-            ("water_inventory_m3", self.water_inventory_m3),
-            ("realized_water_volume_m3", self.realized_water_volume_m3),
-        ] {
+        for (field, value) in [("water_inventory_m3", self.water_inventory_m3)] {
             if !value.is_finite() || value < 0.0 {
                 return Err(SurfaceFormationValidationError::InvalidValue {
                     field,
@@ -1349,42 +1339,37 @@ impl FormationTerrainFields {
                 });
             }
         }
-        let water_error = relative_error(self.realized_water_volume_m3, self.water_inventory_m3);
+        let realized_water_volume_m3 = self.surface_water_geometry.total_water_volume_m3();
+        if !realized_water_volume_m3.is_finite() {
+            return Err(SurfaceFormationValidationError::InvalidValue {
+                field: "realized_water_volume_m3",
+                found: realized_water_volume_m3,
+            });
+        }
+        let water_error = relative_error(realized_water_volume_m3, self.water_inventory_m3);
         if water_error > WATER_VOLUME_RELATIVE_TOLERANCE {
             return Err(SurfaceFormationValidationError::WaterVolumeMismatch {
-                stored: self.realized_water_volume_m3,
+                stored: realized_water_volume_m3,
                 expected: self.water_inventory_m3,
                 relative_error: water_error,
             });
         }
-        for (cell, &elevation) in self
-            .elevation_components
-            .final_elevation_m()
-            .iter()
-            .enumerate()
-        {
-            let expected = LandOceanKind::classify(elevation, self.sea_level_m);
-            let found = self.land_ocean.get(cell).ok_or(
-                SurfaceFormationValidationError::InvalidCellValue {
-                    field: "land_ocean",
-                    cell,
-                    found: f64::NAN,
-                },
-            )?;
-            if found != expected {
-                return Err(SurfaceFormationValidationError::LandOceanMismatch {
-                    cell,
-                    found,
-                    expected,
-                });
-            }
-        }
+        Ok(())
+    }
+
+    pub fn validate_against_surface(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<(), SurfaceFormationValidationError> {
+        self.validate()?;
+        self.surface_water_geometry
+            .validate_against(surface, self.final_elevation_m())?;
         Ok(())
     }
 
     pub fn fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.formation-terrain-fields.v1\0");
+        hasher.update(b"sekai.formation-terrain-fields.v2\0");
         hasher.update(&self.schema_version.to_le_bytes());
         for values in [
             self.elevation_components.primary_elevation_m(),
@@ -1402,12 +1387,8 @@ impl FormationTerrainFields {
         ] {
             update_f32_slice_hash(&mut hasher, values);
         }
-        hasher.update(&self.sea_level_m.to_bits().to_le_bytes());
+        hasher.update(self.surface_water_geometry.fingerprint());
         hasher.update(&self.water_inventory_m3.to_bits().to_le_bytes());
-        hasher.update(&self.realized_water_volume_m3.to_bits().to_le_bytes());
-        for &value in self.land_ocean.raw_values() {
-            hasher.update(&value.to_le_bytes());
-        }
         for fractions in self.sediment.provenance_fraction() {
             update_f32_slice_hash(&mut hasher, fractions);
         }
@@ -1434,20 +1415,24 @@ impl FormationTerrainFields {
         self.elevation_components.final_elevation_m()
     }
 
+    pub const fn surface_water_geometry(&self) -> &SurfaceWaterGeometry {
+        &self.surface_water_geometry
+    }
+
     pub const fn sea_level_m(&self) -> f32 {
-        self.sea_level_m
+        self.surface_water_geometry.sea_level_m()
     }
 
     pub const fn water_inventory_m3(&self) -> f64 {
         self.water_inventory_m3
     }
 
-    pub const fn realized_water_volume_m3(&self) -> f64 {
-        self.realized_water_volume_m3
+    pub fn realized_water_volume_m3(&self) -> f64 {
+        self.surface_water_geometry.total_water_volume_m3()
     }
 
     pub const fn land_ocean(&self) -> &LandOceanField {
-        &self.land_ocean
+        self.surface_water_geometry.land_ocean()
     }
 
     pub const fn sediment(&self) -> &FormationSedimentFields {
@@ -1464,10 +1449,8 @@ impl<'de> Deserialize<'de> for FormationTerrainFields {
         Self::new(
             wire.schema_version,
             wire.elevation_components,
-            wire.sea_level_m,
+            wire.surface_water_geometry,
             wire.water_inventory_m3,
-            wire.realized_water_volume_m3,
-            wire.land_ocean,
             wire.sediment,
         )
         .map_err(D::Error::custom)
@@ -1962,7 +1945,7 @@ pub fn surface_formation_state_fingerprint(
     formation_climate: &GlobalCirculationSnapshot,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-state.v1\0");
+    hasher.update(b"sekai.surface-formation-state.v2\0");
     hasher.update(&terrain_fields.fingerprint());
     hasher.update(b"hydrology-json-v2\0");
     serde_json::to_writer(Blake3Writer(&mut hasher), hydrology)
@@ -2030,11 +2013,11 @@ impl NaturalSurfaceFormationSnapshot {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V1 {
+        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V2 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "natural_surface_formation_snapshot",
                 found: self.schema_version,
-                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V1,
+                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V2,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2092,6 +2075,13 @@ impl NaturalSurfaceFormationSnapshot {
                 expected: self.surface_ref.cell_count() as usize,
             });
         }
+        if self.terrain_fields.surface_water_geometry().surface_ref() != self.surface_ref {
+            return Err(SurfaceFormationValidationError::NestedSurfaceMismatch {
+                role: "terrain_fields",
+                found: self.terrain_fields.surface_water_geometry().surface_ref(),
+                expected: self.surface_ref,
+            });
+        }
         if self.solve_report.outer_iterations() != self.checkpoint.outer_iterations() {
             return Err(SurfaceFormationValidationError::SolveWorkMismatch {
                 field: "outer_iterations",
@@ -2140,6 +2130,7 @@ impl NaturalSurfaceFormationSnapshot {
                 reason: error.to_string(),
             }
         })?;
+        self.terrain_fields.validate_against_surface(surface)?;
         self.formation_climate
             .validate_against(surface)
             .map_err(|error| SurfaceFormationValidationError::InvalidNested {
@@ -2265,12 +2256,8 @@ pub enum SurfaceFormationValidationError {
         found: f64,
         expected: f64,
     },
-    #[error("land/ocean class at cell {cell} is {found:?}, expected {expected:?}")]
-    LandOceanMismatch {
-        cell: usize,
-        found: LandOceanKind,
-        expected: LandOceanKind,
-    },
+    #[error("invalid surface-water geometry: {0}")]
+    InvalidSurfaceWaterGeometry(#[from] SurfaceWaterGeometryValidationError),
     #[error(
         "stored water volume {stored} differs from expected {expected} by {relative_error} relative"
     )]
@@ -2450,14 +2437,6 @@ where
     D: Deserializer<'de>,
 {
     deserialize_bounded_vec::<_, _, MAX_FORMATION_CELLS>(deserializer)
-}
-
-fn deserialize_formation_land_ocean<'de, D>(deserializer: D) -> Result<LandOceanField, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let values = deserialize_bounded_vec::<_, _, MAX_FORMATION_CELLS>(deserializer)?;
-    LandOceanField::from_raw(values).map_err(D::Error::custom)
 }
 
 fn deserialize_formation_capabilities<'de, D>(

@@ -2,17 +2,19 @@ use std::time::{Duration, Instant};
 
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::{
-    solve_physical_sea_level, CoastalExchange, CoastalInputs, FormationSeaLevelSolver,
-    IsostasyGenerationError, LocalAiryIsostasy,
+    build_surface_water_geometry, solve_physical_sea_level, CoastalExchange, CoastalInputs,
+    FormationSeaLevelSolver, IsostasyGenerationError, LocalAiryIsostasy,
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     LandOceanKind, NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField,
-    SurfaceWaterField, SurfaceWaterKind, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
-    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
+    SurfaceWaterGeometry, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
+    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{Meters, SphericalSpaceSpec};
+
+const WATERLINE_TRANSLATION_M: f32 = 0.181;
 
 fn surface(radius_m: f64, target_cell_count: u32) -> SphericalSurfaceSnapshot {
     GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
@@ -32,7 +34,7 @@ fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
 
 struct CoastFields {
     elevation_m: Vec<f32>,
-    water: SurfaceWaterField,
+    geometry: SurfaceWaterGeometry,
     erodibility: Vec<f32>,
     sediment_thickness_m: Vec<f32>,
     density_kg_m3: Vec<f32>,
@@ -45,8 +47,7 @@ impl CoastFields {
     fn inputs(&self) -> CoastalInputs<'_> {
         CoastalInputs {
             elevation_m: &self.elevation_m,
-            sea_level_m: 0.0,
-            surface_water: &self.water,
+            surface_water_geometry: &self.geometry,
             substrate_erodibility: &self.erodibility,
             sediment_thickness_m: &self.sediment_thickness_m,
             substrate_density_kg_m3: &self.density_kg_m3,
@@ -62,10 +63,11 @@ fn exposed_coast(surface: &SphericalSurfaceSnapshot) -> (usize, CoastFields) {
     let edge = &surface.edges()[0];
     let land = edge.cells[0].raw() as usize;
     let ocean = edge.cells[1].raw() as usize;
-    let mut water = vec![SurfaceWaterKind::Ocean; count];
-    water[land] = SurfaceWaterKind::DryLand;
     let mut elevation_m = vec![-20.0; count];
-    elevation_m[land] = 100.0;
+    elevation_m[land] = 10.0;
+    let geometry =
+        build_surface_water_geometry(surface, &elevation_m, 0.0, &BuildCancellation::new())
+            .unwrap();
     let mut wind_m_s = vec![[[0.0; 3]; 12]; count];
     let mut current_m_s = vec![[[0.0; 3]; 12]; count];
     let normal = edge.normal_from_first.components();
@@ -78,7 +80,7 @@ fn exposed_coast(surface: &SphericalSurfaceSnapshot) -> (usize, CoastFields) {
         land,
         CoastFields {
             elevation_m,
-            water: SurfaceWaterField::from_kinds(water),
+            geometry,
             erodibility: vec![0.8; count],
             sediment_thickness_m: vec![0.0; count],
             density_kg_m3: vec![2_700.0; count],
@@ -134,8 +136,14 @@ fn coast_requires_land_ocean_exposure_and_injects_only_removed_source_mass() {
     assert_eq!(calm.produced_mass_kg(), 0.0);
 
     let mut inland = exposed_coast(&surface).1;
-    inland.water =
-        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()]);
+    inland.elevation_m.fill(100.0);
+    inland.geometry = build_surface_water_geometry(
+        &surface,
+        &inland.elevation_m,
+        0.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
     let inland = CoastalExchange::advance(
         &surface,
         inland.inputs(),
@@ -167,6 +175,100 @@ fn sediment_cover_shields_coast_without_changing_the_forcing_exposure() {
         covered_result.land_exposure()[land].to_bits()
     );
     assert!(covered_result.coastal_erosion_m()[land] < bare_result.coastal_erosion_m()[land] / 5.0);
+}
+
+#[test]
+fn subcell_coast_responds_before_the_discrete_hydrology_terminal_changes() {
+    let surface = surface(10_000.0, 42);
+    let (land, baseline) = exposed_coast(&surface);
+    let baseline_exchange = CoastalExchange::advance(
+        &surface,
+        baseline.inputs(),
+        1_000.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+
+    let mut shifted = exposed_coast(&surface).1;
+    shifted.geometry = build_surface_water_geometry(
+        &surface,
+        &shifted.elevation_m,
+        WATERLINE_TRANSLATION_M,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        shifted.geometry.land_ocean().raw_values(),
+        baseline.geometry.land_ocean().raw_values()
+    );
+    let shifted_exchange = CoastalExchange::advance(
+        &surface,
+        shifted.inputs(),
+        1_000.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+
+    assert_ne!(
+        shifted_exchange.coastal_erosion_m()[land].to_bits(),
+        baseline_exchange.coastal_erosion_m()[land].to_bits()
+    );
+    assert_ne!(
+        shifted_exchange.produced_mass_kg().to_bits(),
+        baseline_exchange.produced_mass_kg().to_bits()
+    );
+}
+
+#[test]
+fn fixed_inventory_reproduces_the_point_181_metre_waterline_translation() {
+    let surface = surface(10_000.0, 42);
+    let (_, baseline) = exposed_coast(&surface);
+    let inventory_m3 = baseline.geometry.total_water_volume_m3();
+    let baseline_solution =
+        solve_physical_sea_level(&surface, &baseline.elevation_m, inventory_m3).unwrap();
+
+    let translation_m = WATERLINE_TRANSLATION_M;
+    let translated_elevation = baseline
+        .elevation_m
+        .iter()
+        .map(|&elevation| elevation + translation_m)
+        .collect::<Vec<_>>();
+    let translated =
+        solve_physical_sea_level(&surface, &translated_elevation, inventory_m3).unwrap();
+
+    let observed_translation_m = translated.sea_level_m() - baseline_solution.sea_level_m();
+    let unit_roundoff = 0.5 * f32::EPSILON;
+    let input_scale_m = translated_elevation
+        .iter()
+        .map(|value| value.abs())
+        .fold(translation_m.abs(), f32::max);
+    let input_addition_roundoff_m = unit_roundoff * input_scale_m;
+    // One neighbor beyond round-to-nearest is at most 1.5 ulp, or 3u.
+    let adjacent_candidate_roundoff_m = 3.0
+        * unit_roundoff
+        * (translated.sea_level_m().abs() + baseline_solution.sea_level_m().abs());
+    let subtraction_roundoff_m = unit_roundoff * observed_translation_m.abs();
+    let roundoff_bound_m =
+        input_addition_roundoff_m + adjacent_candidate_roundoff_m + subtraction_roundoff_m;
+    assert!(
+        (observed_translation_m - translation_m).abs() <= roundoff_bound_m,
+        "fixed-inventory translation error exceeded the f32 roundoff envelope: observed={observed_translation_m}, expected={translation_m}, bound={roundoff_bound_m}"
+    );
+    assert_eq!(
+        translated.geometry().ocean_area_fraction(),
+        baseline_solution.geometry().ocean_area_fraction()
+    );
+    assert_eq!(
+        translated.geometry().wet_edge_fraction(),
+        baseline_solution.geometry().wet_edge_fraction()
+    );
+    for solution in [&baseline_solution, &translated] {
+        assert!(solution.relative_error() <= WATER_VOLUME_RELATIVE_TOLERANCE);
+        assert_eq!(
+            solution.geometry().total_water_volume_m3().to_bits(),
+            inventory_m3.to_bits()
+        );
+    }
 }
 
 #[test]
@@ -213,11 +315,17 @@ fn airy_response_has_local_unloading_and_loading_signs_and_sea_level_closes_wate
         expected.realized_water_volume_m3().to_bits()
     );
     assert_eq!(
-        water.land_ocean().raw_values(),
+        water.geometry().land_ocean().raw_values(),
         expected.geometry().land_ocean().raw_values()
     );
-    assert_eq!(water.land_ocean().get(0), Some(LandOceanKind::Ocean));
-    assert_eq!(water.land_ocean().get(1), Some(LandOceanKind::Land));
+    assert_eq!(
+        water.geometry().land_ocean().get(0),
+        Some(LandOceanKind::Ocean)
+    );
+    assert_eq!(
+        water.geometry().land_ocean().get(1),
+        Some(LandOceanKind::Land)
+    );
 }
 
 #[test]

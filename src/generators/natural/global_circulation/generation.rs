@@ -1254,15 +1254,15 @@ impl WorkClimatology {
             cancellation,
         )?;
         observer(GlobalCirculationPhase::PublicationStarted);
-        for (cell, (vectors, &is_land)) in ocean_current
+        for (cell, (vectors, &land_fraction)) in ocean_current
             .iter_mut()
-            .zip(forcing.source_land_mask())
+            .zip(forcing.source_land_fraction())
             .enumerate()
         {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            if is_land != 0 {
+            if land_fraction >= 1.0 {
                 *vectors = [[0.0; 3]; CLIMATE_MONTH_COUNT];
             }
         }

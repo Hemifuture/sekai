@@ -7,10 +7,11 @@ use super::hydrology::{
 use super::topology::NaturalTopologyIndex;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    ElevationField, HydroErosionSpec, HydroErosionSpecError, SphericalClimateValidationError,
-    SphericalGeologicSnapshot, SphericalGeologicValidationError, SphericalHydrologySnapshot,
-    SphericalHydrologyValidationError, SphericalPreliminaryClimateSnapshot,
-    SphericalReliefSnapshot, SphericalReliefValidationError, HYDROLOGY_SCHEMA_V2,
+    ElevationField, HydroErosionSpec, HydroErosionSpecError, LandOceanField,
+    SphericalClimateValidationError, SphericalGeologicSnapshot, SphericalGeologicValidationError,
+    SphericalHydrologySnapshot, SphericalHydrologyValidationError,
+    SphericalPreliminaryClimateSnapshot, SphericalReliefSnapshot, SphericalReliefValidationError,
+    HYDROLOGY_SCHEMA_V2,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -81,7 +82,7 @@ pub(crate) fn generate_formation_spherical_from_validated_inputs(
     surface: &SphericalNaturalSurface<'_>,
     topology: &NaturalTopologyIndex,
     surface_elevation_m: &ElevationField,
-    sea_level_m: f32,
+    land_ocean: &LandOceanField,
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; crate::world::natural::CLIMATE_MONTH_COUNT]],
     spec: &HydroErosionSpec,
@@ -91,7 +92,7 @@ pub(crate) fn generate_formation_spherical_from_validated_inputs(
         surface,
         topology,
         surface_elevation_m,
-        sea_level_m,
+        land_ocean,
         relative_permeability,
         monthly_precipitation_mm_day,
         spec,
