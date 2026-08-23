@@ -205,19 +205,26 @@
 - 修改：`src/app.rs`
 - 修改：对应字段注册表、文档、呈现和 app 测试
 
-- [ ] 先写 RED：natural field registry 注册年蒸发、年均 ASR、年均 OLR 和
+- [x] 先写 RED：natural field registry 注册年蒸发、年均 ASR、年均 OLR 和
   surface albedo；形成地图与球面 document 返回同一权威 payload；预算摘要
   来自 final formation climate，不在 app 重算。
-- [ ] 以字段注册表 + localization 增加四个字段；形成 display cache 只做必要的
+- [x] 以字段注册表 + localization 增加四个字段；形成 display cache 只做必要的
   月→年/年均归约，具体公式复用 `world` helper。
-- [ ] 扩展 `FormationAreaSummary` 为正交的 `P4WaterEnergySummary` payload，左侧
+- [x] 扩展 `FormationAreaSummary` 为正交的 `P4WaterEnergySummary` payload，左侧
   显示降水、蒸发、`E-P`、ASR、OLR、TOA net、行星反照率与 Earth reference；
   标签与数值事实均取 SSOT。R5 已否决生产 warm path，不显示虚构状态。
-- [ ] 在平面地图和球面切换所有新字段，验证同字段同范围、无 NaN、无越权
+- [x] 在平面地图和球面切换所有新字段，验证同字段同范围、无 NaN、无越权
   读取生成器内部状态。
-- [ ] 跑 field registry、formation display、app、GPU presentation 的 focused
+- [x] 跑 field registry、formation display、app、GPU presentation 的 focused
   测试；只刷新实际变化的 registry/presentation identity。
-- [ ] 跑三道门禁并提交。
+- [x] 跑三道门禁并提交。
+
+完成证据（2026-08-23）：形成字段注册表冻结为 `a9dbe80b…`；默认 natural
+注册表与 16 幅 GPU 金样逐位不变。release 形成链实测四个新场与原始年降水
+均逐位来自 final climate，地图/球面共用 `PreparedFieldLayers`；合成高雨量回归
+跨过旧 `ANNUAL_PRECIPITATION_MAX_MM` 而不钳制，超出 `f32` 才返回 typed error。
+最终预算 payload 八项逐位复用 `ClimateBudgetReport`。focused 测试、fmt、Clippy、
+WASM 均通过；独立代码审查无 Critical，Important 已修复。
 
 提交：`Expose P4 water and energy budgets`
 

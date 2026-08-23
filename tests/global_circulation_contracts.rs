@@ -2,12 +2,14 @@ use sekai::generators::natural::circulation::CubedSphereGrid;
 use sekai::generators::natural::global_circulation_model_fingerprint;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    ClimateBudgetReport, ClimateCapabilityAvailability, ClimateCapabilityId, ClimateCapabilitySet,
-    ClimateCheckpoint, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields,
-    GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
-    MonthlyVector3Field, NaturalQualityProfile, ProductionIntegratorId, CLIMATE_MONTH_COUNT,
-    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_SCHEMA_V2,
+    climatological_annual_total_mm, climatological_monthly_mean, ClimateBudgetReport,
+    ClimateCapabilityAvailability, ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint,
+    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields, GlobalCirculationSnapshot,
+    GlobalCirculationValidationError, MonthlyScalarField, MonthlyVector3Field,
+    NaturalQualityProfile, ProductionIntegratorId, CLIMATE_MONTH_COUNT,
+    CLIMATOLOGICAL_YEAR_SECONDS, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    GLOBAL_CIRCULATION_SCHEMA_V2, MEAN_SOLAR_DAY_SECONDS,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec};
@@ -26,6 +28,30 @@ fn scalar(cell_count: usize, value: f32) -> MonthlyScalarField {
 
 fn vectors(cell_count: usize, value: [f32; 3]) -> MonthlyVector3Field {
     MonthlyVector3Field::from_values(vec![[value; 12]; cell_count]).unwrap()
+}
+
+#[test]
+fn climatological_display_reductions_follow_the_equal_phase_time_contract() {
+    let monthly = [2.0_f32; CLIMATE_MONTH_COUNT];
+    assert_eq!(
+        climatological_monthly_mean(&monthly).to_bits(),
+        2.0_f32.to_bits()
+    );
+    assert_eq!(
+        climatological_annual_total_mm(&monthly).to_bits(),
+        (2.0 * CLIMATOLOGICAL_YEAR_SECONDS / MEAN_SOLAR_DAY_SECONDS).to_bits()
+    );
+
+    let budget = ClimateBudgetReport::new_with_climatology(
+        0.0, 0.0, 0.0, 0.0, 0.0, 2.8, 2.7, 240.9, 240.0, 0.291,
+    )
+    .unwrap();
+    assert_eq!(
+        budget
+            .evaporation_minus_precipitation_global_mean_mm_day()
+            .to_bits(),
+        (2.8_f64 - 2.7_f64).to_bits()
+    );
 }
 
 fn checkpoint(profile: ClimateModelProfile) -> ClimateCheckpoint {

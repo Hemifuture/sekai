@@ -16,7 +16,8 @@ mod spherical_natural_display;
 mod spherical_presentation;
 
 pub use spherical_formation_display::{
-    FormationAreaSummary, SphericalFormationDisplayError, SphericalFormationFieldDocument,
+    FormationAreaSummary, P4WaterEnergySummary, SphericalFormationDisplayError,
+    SphericalFormationFieldDocument,
 };
 pub use spherical_natural_display::{
     SphericalNaturalAreaSummary, SphericalNaturalDisplayError, SphericalNaturalFieldDocument,
@@ -63,7 +64,17 @@ use crate::{
     },
     ui::{
         canvas::canvas::Canvas,
-        field::{show_field_controls, show_field_inspector, FieldControlAction},
+        field::{
+            localization::{
+                localized_field_label, EARTH_REFERENCE_LABEL, P4_ASR_LABEL,
+                P4_EVAPORATION_MINUS_PRECIPITATION_LABEL, P4_GLOBAL_DAILY_MEAN_LABEL,
+                P4_GLOBAL_MEAN_LABEL, P4_OLR_LABEL, P4_PLANETARY_ALBEDO_LABEL,
+                P4_PRECIPITATION_REFERENCE_LABEL, P4_RADIATIVE_FLUX_UNIT,
+                P4_RELATIVE_CLOSURE_ERROR_LABEL, P4_TOA_NET_LABEL, P4_WATER_ENERGY_BUDGET_LABEL,
+                P4_WATER_FLUX_UNIT,
+            },
+            show_field_controls, show_field_inspector, FieldControlAction,
+        },
         spherical::{
             apply_spherical_canvas_action, interact_spherical_canvas, legacy_compatibility_ui,
             queue_spherical_canvas_callback, show_spherical_controls, show_spherical_inspector,
@@ -76,6 +87,10 @@ use crate::{
     },
     world::{
         natural::{
+            circulation_annual_evaporation_mm_field_id,
+            circulation_annual_precipitation_mm_field_id,
+            circulation_mean_absorbed_shortwave_w_m2_field_id,
+            circulation_mean_outgoing_longwave_w_m2_field_id,
             preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, ClimateSpec,
             GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError, ReliefSpec,
             ResolvedWorldFormation, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity,
@@ -2306,7 +2321,7 @@ impl eframe::App for TemplateApp {
                                     presentation.globe().cell_count()
                                 ),
                             });
-                            show_spherical_area_summary(ui, presentation.document().area_summary());
+                            show_spherical_area_summary(ui, presentation.document());
                             match show_spherical_controls(
                                 ui,
                                 presentation,
@@ -2388,12 +2403,19 @@ fn activity_label(activity: TectonicActivity) -> &'static str {
     }
 }
 
-fn show_spherical_area_summary(ui: &mut egui::Ui, summary: SphericalWorldAreaSummary) {
-    match summary {
+fn show_spherical_area_summary(ui: &mut egui::Ui, document: &SphericalWorldFieldDocument) {
+    match document.area_summary() {
         SphericalWorldAreaSummary::NaturalFoundation(summary) => {
             show_natural_area_summary(ui, summary)
         }
-        SphericalWorldAreaSummary::Formation(summary) => show_formation_area_summary(ui, summary),
+        SphericalWorldAreaSummary::Formation(summary) => show_formation_area_summary(
+            ui,
+            summary,
+            document
+                .formation()
+                .expect("formation summary and document variant agree")
+                .field_registry(),
+        ),
     }
 }
 
@@ -2415,7 +2437,11 @@ fn show_natural_area_summary(ui: &mut egui::Ui, summary: SphericalNaturalAreaSum
     });
 }
 
-fn show_formation_area_summary(ui: &mut egui::Ui, summary: crate::app::FormationAreaSummary) {
+fn show_formation_area_summary(
+    ui: &mut egui::Ui,
+    summary: crate::app::FormationAreaSummary,
+    registry: &crate::world::fields::FieldRegistry,
+) {
     ui.group(|ui| {
         ui.strong("面积依从性（P5 形成链）");
         ui.label(format!(
@@ -2451,6 +2477,67 @@ fn show_formation_area_summary(ui: &mut egui::Ui, summary: crate::app::Formation
             ui.label("提示：该目标将露出洋底；过程仍按物理水线求解");
         }
         ui.label(format!("海平面：{:.1} m", summary.sea_level_m()));
+    });
+    let budget = summary.p4_water_energy();
+    ui.group(|ui| {
+        ui.strong(P4_WATER_ENERGY_BUDGET_LABEL);
+        let precipitation = localized_field_label(
+            registry
+                .get(&circulation_annual_precipitation_mm_field_id())
+                .expect("formation registry contains annual precipitation"),
+        );
+        let evaporation = localized_field_label(
+            registry
+                .get(&circulation_annual_evaporation_mm_field_id())
+                .expect("formation registry contains annual evaporation"),
+        );
+        let absorbed_shortwave = localized_field_label(
+            registry
+                .get(&circulation_mean_absorbed_shortwave_w_m2_field_id())
+                .expect("formation registry contains absorbed shortwave"),
+        );
+        let outgoing_longwave = localized_field_label(
+            registry
+                .get(&circulation_mean_outgoing_longwave_w_m2_field_id())
+                .expect("formation registry contains outgoing longwave"),
+        );
+        ui.label(format!(
+            "{precipitation}：{P4_GLOBAL_DAILY_MEAN_LABEL} {:.3} {P4_WATER_FLUX_UNIT}",
+            budget.precipitation_global_mean_mm_day()
+        ));
+        ui.label(format!(
+            "{evaporation}：{P4_GLOBAL_DAILY_MEAN_LABEL} {:.3} {P4_WATER_FLUX_UNIT}",
+            budget.evaporation_global_mean_mm_day()
+        ));
+        ui.label(format!(
+            "{P4_EVAPORATION_MINUS_PRECIPITATION_LABEL}：{:+.3} {P4_WATER_FLUX_UNIT}｜{P4_RELATIVE_CLOSURE_ERROR_LABEL} {:.2}%",
+            budget.evaporation_minus_precipitation_global_mean_mm_day(),
+            budget.evaporation_precipitation_relative_imbalance() * 100.0,
+        ));
+        ui.label(format!(
+            "{absorbed_shortwave}：{P4_GLOBAL_MEAN_LABEL} {:.1} {P4_RADIATIVE_FLUX_UNIT}",
+            budget.absorbed_shortwave_global_mean_w_m2()
+        ));
+        ui.label(format!(
+            "{outgoing_longwave}：{P4_GLOBAL_MEAN_LABEL} {:.1} {P4_RADIATIVE_FLUX_UNIT}",
+            budget.outgoing_longwave_global_mean_w_m2()
+        ));
+        ui.label(format!(
+            "{P4_TOA_NET_LABEL}：{:+.2} {P4_RADIATIVE_FLUX_UNIT}",
+            budget.toa_net_radiation_global_mean_w_m2()
+        ));
+        ui.label(format!(
+            "{P4_PLANETARY_ALBEDO_LABEL}：{:.3}",
+            budget.planetary_albedo_global_mean()
+        ));
+        ui.weak(format!(
+            "{EARTH_REFERENCE_LABEL}：{P4_PRECIPITATION_REFERENCE_LABEL} {:.2} {P4_WATER_FLUX_UNIT}｜{P4_ASR_LABEL} {:.1} {P4_RADIATIVE_FLUX_UNIT}｜{P4_OLR_LABEL} {:.1} {P4_RADIATIVE_FLUX_UNIT}｜{P4_TOA_NET_LABEL} {:+.1} {P4_RADIATIVE_FLUX_UNIT}｜{P4_PLANETARY_ALBEDO_LABEL} {:.3}",
+            crate::world::natural::EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY,
+            crate::world::natural::CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+            crate::world::natural::CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
+            crate::world::natural::CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2,
+            crate::world::natural::EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+        ));
     });
 }
 
@@ -2729,9 +2816,10 @@ mod natural_app_tests {
         configure_frame_stats_scenario, default_world_spec, formation_authoring_control_state,
         formation_provenance_label, show_formation_area_summary, show_spherical_area_summary,
         AppRuntimeError, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
-        NaturalWorldBuildError, PersistedWorldOrigin, PublishedSphericalPresentation,
-        SphericalWorldAreaSummary, TemplateApp, WorldPipeline, CURRENT_SLICE_STATUS_TEXT,
-        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT, INITIAL_PLATE_COUNT_LABEL,
+        NaturalWorldBuildError, P4WaterEnergySummary, PersistedWorldOrigin,
+        PublishedSphericalPresentation, SphericalWorldAreaSummary, TemplateApp, WorldPipeline,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -2757,12 +2845,22 @@ mod natural_app_tests {
     use crate::world::natural::{
         boundary_strength_field_id, land_ocean_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
-        surface_elevation_m_field_id, ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity,
-        ReliefSpec, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity, TectonicSpec,
+        spherical_formation_field_registry, surface_elevation_m_field_id, ClimateBudgetReport,
+        ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity, ReliefSpec,
+        ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity, TectonicSpec,
         WorldFormationPreset, WorldFormationSpec,
     };
     use crate::world::spatial::Topology;
     use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
+
+    fn p4_budget_fixture() -> P4WaterEnergySummary {
+        P4WaterEnergySummary::from_budget_report(
+            &ClimateBudgetReport::new_with_climatology(
+                0.0, 0.0, 0.0, 0.0, 0.0, 2.8, 2.7, 240.9, 240.0, 0.291,
+            )
+            .unwrap(),
+        )
+    }
 
     fn request_test_render_state() -> eframe::egui_wgpu::RenderState {
         use eframe::egui_wgpu::{self, wgpu};
@@ -4127,6 +4225,7 @@ mod natural_app_tests {
             -80.0,
             SeaLevelPolicy::WaterInventory,
             1.0,
+            p4_budget_fixture(),
         ));
         let mut relief = ReliefSpec {
             target_land_fraction: 0.55,
@@ -4182,11 +4281,17 @@ mod natural_app_tests {
             -1_200.0,
             SeaLevelPolicy::TargetLandFraction,
             2.5,
+            p4_budget_fixture(),
         );
+        let registry = spherical_formation_field_registry(
+            12,
+            4.0 * std::f64::consts::PI * 6_371_000.0_f64.powi(2),
+        )
+        .unwrap();
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                show_formation_area_summary(ui, summary);
+                show_formation_area_summary(ui, summary, &registry);
             });
         });
         let mut texts = Vec::new();
@@ -4200,6 +4305,17 @@ mod natural_app_tests {
         assert!(texts.iter().any(|text| text == "海水量 = 2.500 × 地球"));
         assert!(texts.iter().any(|text| text.contains("海水量超出建议带")));
         assert!(texts.iter().any(|text| text.contains("将露出洋底")));
+        assert!(texts.iter().any(|text| text == "P4 水热预算"));
+        assert!(texts
+            .iter()
+            .any(|text| text == "年降水量（环流）：全球日均 2.700 mm/day"));
+        assert!(texts
+            .iter()
+            .any(|text| text == "年蒸发量（环流）：全球日均 2.800 mm/day"));
+        assert!(texts
+            .iter()
+            .any(|text| text == "E-P：+0.100 mm/day｜相对闭合差 3.57%"));
+        assert!(texts.iter().any(|text| text.starts_with("地球参考：")));
     }
 
     #[test]
@@ -4263,13 +4379,14 @@ mod natural_app_tests {
 
         let render_state = request_test_render_state();
         let app = create_from_persisted(TemplateApp::default(), &render_state);
-        let world_summary = app
+        let world_document = app
             .spherical_presentation
-            .read_resource(|current| current.as_ref().unwrap().document().area_summary());
+            .read_resource(|current| Arc::clone(current.as_ref().unwrap().document_arc()));
+        let world_summary = world_document.area_summary();
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                show_spherical_area_summary(ui, world_summary);
+                show_spherical_area_summary(ui, &world_document);
             });
         });
         let mut texts = Vec::new();

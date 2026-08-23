@@ -629,3 +629,39 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
      已定义周期 fixed point 的 time-step map。若后续先把 P4 升级为真正、稳定且
      与初值无关的周期解，可另立设计重新评估；不得在当前近似停止语义上以调 damping、
      history depth 或 agreement 阈值掩盖路径依赖。
+- R6（2026-08-23）：Task 6 将 R1 的水热场与预算接入形成链 UI，并细化 §7.3、
+  §8 的呈现契约。
+
+  1. `spherical_formation_field_registry` 新增
+     `circulation_annual_evaporation_mm`、
+     `circulation_mean_absorbed_shortwave_w_m2`、
+     `circulation_mean_outgoing_longwave_w_m2` 与
+     `circulation_surface_albedo`。四者只读取 formation product 自己的 final
+     `GlobalCirculationFields`；静态 albedo 直接借用权威数组，其余三项只在
+     `FormationDisplayCache` 做一次月相位归约。地图与球面继续共享同一个
+     `PreparedFieldLayers`，不存在按投影分叉的第二份数据或范围。
+  2. 十二个月是冻结的等时 climatological forcing phases，不是十二个数值步。
+     `climatological_monthly_mean` 取十二相位算术平均；
+     `climatological_annual_total_mm` 以该平均日率乘
+     `CLIMATOLOGICAL_YEAR_SECONDS / MEAN_SOLAR_DAY_SECONDS`。日的 `86_400 s`
+     定义来自 BIPM *SI Brochure*, ninth edition, Chapter 4 Table 8；公式和常量均在
+     `world`，测试与 UI 不重写。形成链原“环流年降水”展示曾错误复用 P5 的
+     `ANNUAL_PRECIPITATION_MAX_MM` forcing 包络；本修订只从展示路径删除该隐藏
+     钳制，P5 水文 forcing 本身不变。正常有限值原样进入 Data range；只有年总量
+     无法表示为有限 `f32` 时才返回结构性错误。
+  3. `P4WaterEnergySummary` 逐位复制 final climate `ClimateBudgetReport` 的全球
+     降水、蒸发、相对 `E-P`、ASR、OLR、TOA net 与行星反照率；带符号 `E-P`
+     由 `ClimateBudgetReport::evaporation_minus_precipitation_global_mean_mm_day`
+     在 `world` 唯一计算。`app` 只格式化 payload。四个字段名称来自 registry +
+     localization，Earth reference 只引用 §7.2 已冻结的 GPCP/CERES 常量；全部是
+     可见检测证据，不新增 hard gate、钳制或玩家世界拒绝条件。R5 已否决的
+     warm/cold 状态不显示。预算面板的指标、范围、单位与 reference 子标签集中
+     在 localization，不在调用点保存第二份文案。
+  4. formation presentation graph contract 从 V1 升为 V2；这只标识扩展后的
+     呈现契约，不改变 P0–P5/T1 artifact。既有 planar/spherical natural registry
+     及其冻结 hash `7daf32cc…` 不变；Earth-radius/12-plate formation registry
+     首次冻结为
+     `a9dbe80b57cd69cdaf2bebafd362a8f803b43cdde5c667970f81a8d3a2f5c11a`。
+     既有 16 幅 natural-foundation GPU 金样逐幅不变；Task 7 继续登记完整身份
+     与证据清单。合成回归让降水与蒸发的年总量都跨过旧 P5 forcing 包络，另锁定
+     `f32` overflow typed error，防止隐藏展示钳制复发。

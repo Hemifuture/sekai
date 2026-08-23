@@ -2,7 +2,10 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use super::{MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT};
+use super::{
+    MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT,
+    CLIMATOLOGICAL_YEAR_SECONDS, MEAN_SOLAR_DAY_SECONDS,
+};
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
     ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
@@ -278,7 +281,30 @@ pub fn planetary_albedo_from_surface(surface_albedo: f64) -> f64 {
 /// energy by the exact SI day makes this the only mm/day-to-W/m2 conversion
 /// used by evidence and presentation.
 pub fn latent_heat_flux_w_m2_from_evaporation_mm_day(evaporation_mm_day: f64) -> f64 {
-    evaporation_mm_day * WATER_VAPORIZATION_LATENT_HEAT_J_KG / 86_400.0
+    evaporation_mm_day * WATER_VAPORIZATION_LATENT_HEAT_J_KG / MEAN_SOLAR_DAY_SECONDS
+}
+
+/// Reduces twelve equal-duration climatological forcing phases to their mean.
+///
+/// P4 publishes monthly phase means rather than a weather trajectory. The
+/// frozen time contract gives every phase the same climatological duration,
+/// so the annual mean is the arithmetic mean of the twelve values.
+pub fn climatological_monthly_mean(monthly: &[f32; CLIMATE_MONTH_COUNT]) -> f32 {
+    (monthly.iter().map(|value| f64::from(*value)).sum::<f64>() / CLIMATE_MONTH_COUNT as f64) as f32
+}
+
+/// Expands twelve mean daily water-equivalent rates to one climatological total.
+///
+/// The result remains `f64` so a renderer can reject an unrepresentable `f32`
+/// payload rather than silently clamp a physically published rate.
+pub fn climatological_annual_total_mm(monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT]) -> f64 {
+    monthly_mm_day
+        .iter()
+        .map(|value| f64::from(*value))
+        .sum::<f64>()
+        / CLIMATE_MONTH_COUNT as f64
+        * CLIMATOLOGICAL_YEAR_SECONDS
+        / MEAN_SOLAR_DAY_SECONDS
 }
 
 /// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar
@@ -1932,6 +1958,11 @@ impl ClimateBudgetReport {
 
     pub const fn evaporation_precipitation_relative_imbalance(&self) -> f64 {
         self.evaporation_precipitation_relative_imbalance
+    }
+
+    /// Returns the signed global water-cycle residual in `mm/day`.
+    pub fn evaporation_minus_precipitation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_global_mean_mm_day - self.precipitation_global_mean_mm_day
     }
 
     pub const fn absorbed_shortwave_global_mean_w_m2(&self) -> f64 {

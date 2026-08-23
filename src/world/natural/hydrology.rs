@@ -20,6 +20,12 @@ pub const HYDROLOGY_SCHEMA_V2: u16 = 2;
 const MONTH_COUNT: usize = 12;
 /// Mean Gregorian-year duration used by the current-slice water-volume conversion.
 pub const CLIMATOLOGICAL_YEAR_SECONDS: f64 = 31_556_952.0;
+/// Exact SI seconds in one mean solar day.
+///
+/// The BIPM SI Brochure, ninth edition, chapter 4, table 8 gives the day as
+/// exactly `86_400 s`; climatological rate/total conversions share this one
+/// domain fact instead of restating the number in presentation code.
+pub const MEAN_SOLAR_DAY_SECONDS: f64 = 86_400.0;
 /// Uniform mean month duration used for every climatological month.
 pub const SECONDS_PER_CLIMATOLOGICAL_MONTH: f64 = CLIMATOLOGICAL_YEAR_SECONDS / MONTH_COUNT as f64;
 /// Largest representable V1 Strahler stream order.

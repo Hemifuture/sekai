@@ -1,9 +1,23 @@
 use std::borrow::Cow;
 
 use crate::view::PaletteId;
-use crate::world::fields::{EntityKind, FieldDomain, FieldValueType, StableIdKind};
+use crate::world::fields::{EntityKind, FieldDomain, FieldSchema, FieldValueType, StableIdKind};
 
 const NATURAL_FIELD_PREFIX: &str = "field.sekai.core.natural.";
+
+pub(crate) const P4_WATER_ENERGY_BUDGET_LABEL: &str = "P4 水热预算";
+pub(crate) const P4_EVAPORATION_MINUS_PRECIPITATION_LABEL: &str = "E-P";
+pub(crate) const P4_PLANETARY_ALBEDO_LABEL: &str = "行星反照率";
+pub(crate) const P4_GLOBAL_DAILY_MEAN_LABEL: &str = "全球日均";
+pub(crate) const P4_GLOBAL_MEAN_LABEL: &str = "全球";
+pub(crate) const P4_RELATIVE_CLOSURE_ERROR_LABEL: &str = "相对闭合差";
+pub(crate) const P4_TOA_NET_LABEL: &str = "TOA net";
+pub(crate) const P4_PRECIPITATION_REFERENCE_LABEL: &str = "降水";
+pub(crate) const P4_ASR_LABEL: &str = "ASR";
+pub(crate) const P4_OLR_LABEL: &str = "OLR";
+pub(crate) const P4_WATER_FLUX_UNIT: &str = "mm/day";
+pub(crate) const P4_RADIATIVE_FLUX_UNIT: &str = "W/m²";
+pub(crate) const EARTH_REFERENCE_LABEL: &str = "地球参考";
 
 pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let Some(tail) = key.strip_prefix(NATURAL_FIELD_PREFIX) else {
@@ -12,9 +26,13 @@ pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let label = match tail {
         "annual_local_runoff_mm" => "本地年径流量",
         "bedrock_kind" => "基岩类型",
+        "circulation_annual_evaporation_mm" => "年蒸发量（环流）",
         "circulation_annual_precipitation_mm" => "年降水量（环流）",
+        "circulation_mean_absorbed_shortwave_w_m2" => "年均吸收短波（环流）",
         "circulation_mean_air_temperature_c" => "年均气温（环流）",
+        "circulation_mean_outgoing_longwave_w_m2" => "年均出射长波（环流）",
         "circulation_prevailing_wind_m_s" => "盛行风（环流）",
+        "circulation_surface_albedo" => "表面反照率（环流）",
         "coastal_deposition_m" => "海岸沉积量",
         "coastal_erosion_m" => "海岸侵蚀量",
         "hillslope_deposition_m" => "坡面堆积量",
@@ -80,6 +98,20 @@ pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
         _ => return dynamic_or_fallback(key, tail),
     };
     Cow::Borrowed(label)
+}
+
+pub(crate) fn localized_field_label(schema: &FieldSchema) -> String {
+    let label = schema.display.label_key();
+    if label.is_empty() {
+        format!(
+            "{}.{}@{}",
+            schema.id.namespace(),
+            schema.id.name(),
+            schema.id.version()
+        )
+    } else {
+        localized_field_key(label).into_owned()
+    }
 }
 
 fn dynamic_or_fallback<'a>(key: &'a str, tail: &str) -> Cow<'a, str> {

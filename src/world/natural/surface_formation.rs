@@ -8,7 +8,7 @@ use super::{
     water_volume_at_sea_level_m3, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
     NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot,
     ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, WATER_VOLUME_RELATIVE_TOLERANCE,
+    ELEVATION_MIN_M, MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
@@ -137,9 +137,6 @@ pub const FORMATION_SEDIMENT_RESIDUAL_SCALE_M: f64 = 10.0;
 /// Coastline area-change scale used by the outer fixed-point residual.
 pub const FORMATION_COASTLINE_RESIDUAL_SCALE: f64 = 0.005;
 
-/// Seconds in one mean solar day, used to expand published mean daily rates.
-pub const FORMATION_SECONDS_PER_DAY: f64 = 86_400.0;
-
 /// Converts published P4 mean daily rates into the single bounded monthly
 /// formation precipitation envelope every P5 process forcing is derived from.
 ///
@@ -153,7 +150,7 @@ pub fn formation_monthly_precipitation_mm(
     monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT],
 ) -> [f64; CLIMATE_MONTH_COUNT] {
     let days_per_month =
-        CLIMATOLOGICAL_YEAR_SECONDS / CLIMATE_MONTH_COUNT as f64 / FORMATION_SECONDS_PER_DAY;
+        CLIMATOLOGICAL_YEAR_SECONDS / CLIMATE_MONTH_COUNT as f64 / MEAN_SOLAR_DAY_SECONDS;
     let mut monthly: [f64; CLIMATE_MONTH_COUNT] =
         std::array::from_fn(|month| f64::from(monthly_mm_day[month]) * days_per_month);
     let annual = monthly.iter().sum::<f64>();
@@ -273,7 +270,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
         FORMATION_ENDORHEIC_RESIDENCE_YEARS,
         CLIMATOLOGICAL_YEAR_SECONDS,
-        FORMATION_SECONDS_PER_DAY,
+        MEAN_SOLAR_DAY_SECONDS,
         f64::from(ANNUAL_PRECIPITATION_MAX_MM),
         FORMATION_ELEVATION_RESIDUAL_SCALE_M,
         FORMATION_RECEIVER_RESIDUAL_SCALE,

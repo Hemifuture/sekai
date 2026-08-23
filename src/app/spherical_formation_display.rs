@@ -27,19 +27,22 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldRegistry, ValueRange};
 use crate::world::natural::{
-    annual_local_runoff_mm_field_id, circulation_annual_precipitation_mm_field_id,
-    circulation_mean_air_temperature_c_field_id, circulation_prevailing_wind_m_s_field_id,
-    coastal_deposition_m_field_id, coastal_erosion_m_field_id, crust_kind_field_id,
-    crust_thickness_field_id, drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
-    formation_annual_precipitation_mm, hillslope_deposition_m_field_id,
+    annual_local_runoff_mm_field_id, circulation_annual_evaporation_mm_field_id,
+    circulation_annual_precipitation_mm_field_id,
+    circulation_mean_absorbed_shortwave_w_m2_field_id, circulation_mean_air_temperature_c_field_id,
+    circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
+    circulation_surface_albedo_field_id, climatological_annual_total_mm,
+    climatological_monthly_mean, coastal_deposition_m_field_id, coastal_erosion_m_field_id,
+    crust_kind_field_id, crust_thickness_field_id, drainage_area_km2_field_id,
+    fluvial_erosion_depth_m_field_id, hillslope_deposition_m_field_id,
     hillslope_erosion_m_field_id, isostatic_response_m_field_id, lake_depth_m_field_id,
     land_ocean_field_id, mean_annual_discharge_m3_s_field_id, plate_id_field_id,
     primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
     sediment_deposition_thickness_m_field_id, spherical_formation_field_registry,
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    tectonic_displacement_m_field_id, GlobalCirculationFields, NaturalFieldRegistryError,
-    PrimaryReliefValidationError, SeaLevelPolicy, SphericalTectonicValidationError,
-    SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
+    tectonic_displacement_m_field_id, ClimateBudgetReport, GlobalCirculationFields,
+    NaturalFieldRegistryError, PrimaryReliefValidationError, SeaLevelPolicy,
+    SphericalTectonicValidationError, SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
@@ -47,7 +50,7 @@ use crate::world::spatial::{
 };
 use crate::world::RootSeed;
 
-const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 1;
+const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 2;
 
 /// Stable provenance identity for one complete formation-product document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +92,68 @@ impl SphericalFormationBuildIdentity {
     }
 }
 
+/// Read-only water and energy budget copied from the final P5 climate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct P4WaterEnergySummary {
+    evaporation_global_mean_mm_day: f64,
+    precipitation_global_mean_mm_day: f64,
+    evaporation_minus_precipitation_global_mean_mm_day: f64,
+    evaporation_precipitation_relative_imbalance: f64,
+    absorbed_shortwave_global_mean_w_m2: f64,
+    outgoing_longwave_global_mean_w_m2: f64,
+    toa_net_radiation_global_mean_w_m2: f64,
+    planetary_albedo_global_mean: f64,
+}
+
+impl P4WaterEnergySummary {
+    pub(super) fn from_budget_report(report: &ClimateBudgetReport) -> Self {
+        Self {
+            evaporation_global_mean_mm_day: report.evaporation_global_mean_mm_day(),
+            precipitation_global_mean_mm_day: report.precipitation_global_mean_mm_day(),
+            evaporation_minus_precipitation_global_mean_mm_day: report
+                .evaporation_minus_precipitation_global_mean_mm_day(),
+            evaporation_precipitation_relative_imbalance: report
+                .evaporation_precipitation_relative_imbalance(),
+            absorbed_shortwave_global_mean_w_m2: report.absorbed_shortwave_global_mean_w_m2(),
+            outgoing_longwave_global_mean_w_m2: report.outgoing_longwave_global_mean_w_m2(),
+            toa_net_radiation_global_mean_w_m2: report.toa_net_radiation_global_mean_w_m2(),
+            planetary_albedo_global_mean: report.planetary_albedo_global_mean(),
+        }
+    }
+
+    pub const fn evaporation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_global_mean_mm_day
+    }
+
+    pub const fn precipitation_global_mean_mm_day(&self) -> f64 {
+        self.precipitation_global_mean_mm_day
+    }
+
+    pub const fn evaporation_minus_precipitation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_minus_precipitation_global_mean_mm_day
+    }
+
+    pub const fn evaporation_precipitation_relative_imbalance(&self) -> f64 {
+        self.evaporation_precipitation_relative_imbalance
+    }
+
+    pub const fn absorbed_shortwave_global_mean_w_m2(&self) -> f64 {
+        self.absorbed_shortwave_global_mean_w_m2
+    }
+
+    pub const fn outgoing_longwave_global_mean_w_m2(&self) -> f64 {
+        self.outgoing_longwave_global_mean_w_m2
+    }
+
+    pub const fn toa_net_radiation_global_mean_w_m2(&self) -> f64 {
+        self.toa_net_radiation_global_mean_w_m2
+    }
+
+    pub const fn planetary_albedo_global_mean(&self) -> f64 {
+        self.planetary_albedo_global_mean
+    }
+}
+
 /// Build-time authoring-compliance measurements for the formation product.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FormationAreaSummary {
@@ -99,6 +164,7 @@ pub struct FormationAreaSummary {
     sea_level_m: f32,
     sea_level_policy: SeaLevelPolicy,
     water_inventory_ratio: f64,
+    p4_water_energy: P4WaterEnergySummary,
 }
 
 impl FormationAreaSummary {
@@ -110,6 +176,7 @@ impl FormationAreaSummary {
         sea_level_m: f32,
         sea_level_policy: SeaLevelPolicy,
         water_inventory_ratio: f64,
+        p4_water_energy: P4WaterEnergySummary,
     ) -> Self {
         Self {
             authored_continental_fraction,
@@ -119,6 +186,7 @@ impl FormationAreaSummary {
             sea_level_m,
             sea_level_policy,
             water_inventory_ratio,
+            p4_water_energy,
         }
     }
 
@@ -156,14 +224,22 @@ impl FormationAreaSummary {
     pub const fn water_inventory_ratio(&self) -> f64 {
         self.water_inventory_ratio
     }
+
+    /// Returns the final formation climate's authoritative P4 budget.
+    pub const fn p4_water_energy(&self) -> P4WaterEnergySummary {
+        self.p4_water_energy
+    }
 }
 
 /// Owned display arrays derived once from the formation product's own
 /// published end-state circulation, so the climate on screen is consistent
 /// with the terrain on screen.
 struct FormationDisplayCache {
+    annual_evaporation_mm: Vec<f32>,
     annual_precipitation_mm: Vec<f32>,
+    mean_absorbed_shortwave_w_m2: Vec<f32>,
     mean_air_temperature_c: Vec<f32>,
+    mean_outgoing_longwave_w_m2: Vec<f32>,
     prevailing_wind_m_s: Vec<[f32; 2]>,
 }
 
@@ -180,18 +256,36 @@ impl FormationDisplayCache {
             });
         }
         let monthly_precipitation = fields.monthly_precipitation_mm_day().values();
+        let monthly_evaporation = fields.monthly_evaporation_mm_day().values();
+        let monthly_absorbed_shortwave = fields.monthly_absorbed_shortwave_w_m2().values();
         let monthly_temperature = fields.monthly_air_temperature_c().values();
+        let monthly_outgoing_longwave = fields.monthly_outgoing_longwave_w_m2().values();
         let monthly_wind = fields.near_surface_wind_m_s().values();
 
+        let mut annual_evaporation_mm = Vec::with_capacity(cell_count);
         let mut annual_precipitation_mm = Vec::with_capacity(cell_count);
+        let mut mean_absorbed_shortwave_w_m2 = Vec::with_capacity(cell_count);
         let mut mean_air_temperature_c = Vec::with_capacity(cell_count);
+        let mut mean_outgoing_longwave_w_m2 = Vec::with_capacity(cell_count);
         let mut prevailing_wind_m_s = Vec::with_capacity(cell_count);
         for (index, cell) in surface.cells().iter().enumerate() {
-            annual_precipitation_mm.push(formation_annual_precipitation_mm(
+            annual_evaporation_mm.push(display_annual_water_total_mm(
+                "circulation_annual_evaporation_mm",
+                index,
+                &monthly_evaporation[index],
+            )?);
+            annual_precipitation_mm.push(display_annual_water_total_mm(
+                "circulation_annual_precipitation_mm",
+                index,
                 &monthly_precipitation[index],
+            )?);
+            mean_absorbed_shortwave_w_m2.push(climatological_monthly_mean(
+                &monthly_absorbed_shortwave[index],
             ));
-            mean_air_temperature_c
-                .push(monthly_temperature[index].iter().sum::<f32>() / CLIMATE_MONTH_COUNT as f32);
+            mean_air_temperature_c.push(climatological_monthly_mean(&monthly_temperature[index]));
+            mean_outgoing_longwave_w_m2.push(climatological_monthly_mean(
+                &monthly_outgoing_longwave[index],
+            ));
             let mut mean_wind = [0.0_f64; 3];
             for month in &monthly_wind[index] {
                 for (axis, component) in month.iter().enumerate() {
@@ -209,11 +303,26 @@ impl FormationDisplayCache {
             prevailing_wind_m_s.push([east_component as f32, north_component as f32]);
         }
         Ok(Self {
+            annual_evaporation_mm,
             annual_precipitation_mm,
+            mean_absorbed_shortwave_w_m2,
             mean_air_temperature_c,
+            mean_outgoing_longwave_w_m2,
             prevailing_wind_m_s,
         })
     }
+}
+
+fn display_annual_water_total_mm(
+    field: &'static str,
+    cell: usize,
+    monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT],
+) -> Result<f32, SphericalFormationDisplayError> {
+    let annual = climatological_annual_total_mm(monthly_mm_day) as f32;
+    if !annual.is_finite() {
+        return Err(SphericalFormationDisplayError::ReductionOverflow { field, cell });
+    }
+    Ok(annual)
 }
 
 /// Projection-free, immutable document for one complete formation world.
@@ -327,6 +436,9 @@ impl SphericalFormationFieldDocument {
             primary_relief
                 .snapshot()
                 .water_inventory_ratio(total_area)?,
+            P4WaterEnergySummary::from_budget_report(
+                formation_snapshot.formation_climate().budget_report(),
+            ),
         );
         let elevation_display_radius_m =
             elevation_display_radius_m(terrain.sea_level_m(), terrain.final_elevation_m());
@@ -425,6 +537,11 @@ impl SphericalFormationFieldDocument {
         &self.area_summary
     }
 
+    /// Borrows the field schemas that provide presentation labels and units.
+    pub(super) const fn field_registry(&self) -> &FieldRegistry {
+        &self.registry
+    }
+
     /// Returns the product-preferred initial fill field.
     pub fn preferred_field(&self) -> Option<FieldId> {
         <Self as FieldDocument>::preferred_field(self)
@@ -504,16 +621,38 @@ impl FieldDocument for SphericalFormationFieldDocument {
                 FieldPayloadRef::CategoryU32(terrain.land_ocean().raw_values()),
             ),
             (
+                circulation_annual_evaporation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.annual_evaporation_mm),
+            ),
+            (
                 circulation_annual_precipitation_mm_field_id(),
                 FieldPayloadRef::ScalarF32(&self.cache.annual_precipitation_mm),
+            ),
+            (
+                circulation_mean_absorbed_shortwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.mean_absorbed_shortwave_w_m2),
             ),
             (
                 circulation_mean_air_temperature_c_field_id(),
                 FieldPayloadRef::ScalarF32(&self.cache.mean_air_temperature_c),
             ),
             (
+                circulation_mean_outgoing_longwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.mean_outgoing_longwave_w_m2),
+            ),
+            (
                 circulation_prevailing_wind_m_s_field_id(),
                 FieldPayloadRef::Vector2F32(&self.cache.prevailing_wind_m_s),
+            ),
+            (
+                circulation_surface_albedo_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.formation
+                        .snapshot()
+                        .formation_climate()
+                        .fields()
+                        .surface_albedo(),
+                ),
             ),
             (
                 annual_local_runoff_mm_field_id(),
@@ -584,8 +723,12 @@ fn formation_preferred_range(
 ) -> Option<DisplayRangeMode> {
     if [
         annual_local_runoff_mm_field_id(),
+        circulation_annual_evaporation_mm_field_id(),
         circulation_annual_precipitation_mm_field_id(),
+        circulation_mean_absorbed_shortwave_w_m2_field_id(),
         circulation_mean_air_temperature_c_field_id(),
+        circulation_mean_outgoing_longwave_w_m2_field_id(),
+        circulation_surface_albedo_field_id(),
         coastal_deposition_m_field_id(),
         coastal_erosion_m_field_id(),
         drainage_area_km2_field_id(),
@@ -642,6 +785,8 @@ pub enum SphericalFormationDisplayError {
         circulation_cells: usize,
         surface_cells: usize,
     },
+    #[error("{field} reduction at cell {cell} cannot be represented as finite f32")]
+    ReductionOverflow { field: &'static str, cell: usize },
     #[error(
         "formation product {snapshot:?} does not match authoritative surface {authoritative:?}"
     )]
@@ -649,4 +794,47 @@ pub enum SphericalFormationDisplayError {
         snapshot: SurfaceRef,
         authoritative: SurfaceRef,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_annual_water_total_mm, SphericalFormationDisplayError};
+    use crate::world::natural::{
+        climatological_annual_total_mm, ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT,
+    };
+
+    #[test]
+    fn displayed_annual_water_total_preserves_values_above_the_legacy_p5_envelope() {
+        for (field, monthly) in [
+            (
+                "circulation_annual_precipitation_mm",
+                [100.0; CLIMATE_MONTH_COUNT],
+            ),
+            (
+                "circulation_annual_evaporation_mm",
+                [75.0; CLIMATE_MONTH_COUNT],
+            ),
+        ] {
+            let displayed = display_annual_water_total_mm(field, 0, &monthly).unwrap();
+
+            assert!(displayed > ANNUAL_PRECIPITATION_MAX_MM);
+            assert_eq!(
+                displayed.to_bits(),
+                (climatological_annual_total_mm(&monthly) as f32).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn displayed_annual_water_total_reports_f32_overflow_without_clamping() {
+        let monthly = [f32::MAX; CLIMATE_MONTH_COUNT];
+
+        assert!(matches!(
+            display_annual_water_total_mm("circulation_annual_precipitation_mm", 7, &monthly),
+            Err(SphericalFormationDisplayError::ReductionOverflow {
+                field: "circulation_annual_precipitation_mm",
+                cell: 7,
+            })
+        ));
+    }
 }

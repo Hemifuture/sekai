@@ -5,10 +5,11 @@ use thiserror::Error;
 use super::{
     TectonicSnapshot, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
     CLIMATOLOGICAL_YEAR_SECONDS, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
-    HEAT_FLOW_MIN_MW_M2, MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M,
-    MAX_PLATE_COUNT, MAX_STRAHLER_ORDER, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
+    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
+    MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT,
+    MAX_STRAHLER_ORDER, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M,
+    REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
     TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::fields::{
@@ -809,6 +810,26 @@ pub fn circulation_annual_precipitation_mm_field_id() -> FieldId {
     field_id("circulation_annual_precipitation_mm")
 }
 
+/// Returns the stable P4 circulation annual evaporation field ID.
+pub fn circulation_annual_evaporation_mm_field_id() -> FieldId {
+    field_id("circulation_annual_evaporation_mm")
+}
+
+/// Returns the stable P4 annual-mean absorbed-shortwave field ID.
+pub fn circulation_mean_absorbed_shortwave_w_m2_field_id() -> FieldId {
+    field_id("circulation_mean_absorbed_shortwave_w_m2")
+}
+
+/// Returns the stable P4 annual-mean outgoing-longwave field ID.
+pub fn circulation_mean_outgoing_longwave_w_m2_field_id() -> FieldId {
+    field_id("circulation_mean_outgoing_longwave_w_m2")
+}
+
+/// Returns the stable P4 resolved surface-albedo field ID.
+pub fn circulation_surface_albedo_field_id() -> FieldId {
+    field_id("circulation_surface_albedo")
+}
+
 /// Returns the stable P4 circulation mean air temperature field ID.
 pub fn circulation_mean_air_temperature_c_field_id() -> FieldId {
     field_id("circulation_mean_air_temperature_c")
@@ -879,9 +900,13 @@ fn formation_schemas(
     let sediment_deposition_thickness = sediment_deposition_thickness_m_field_id();
     let surface_elevation = surface_elevation_m_field_id();
     let land_ocean = land_ocean_field_id();
+    let annual_evaporation = circulation_annual_evaporation_mm_field_id();
     let annual_precipitation = circulation_annual_precipitation_mm_field_id();
+    let mean_absorbed_shortwave = circulation_mean_absorbed_shortwave_w_m2_field_id();
     let mean_air_temperature = circulation_mean_air_temperature_c_field_id();
+    let mean_outgoing_longwave = circulation_mean_outgoing_longwave_w_m2_field_id();
     let prevailing_wind = circulation_prevailing_wind_m_s_field_id();
+    let surface_albedo = circulation_surface_albedo_field_id();
     let annual_local_runoff = annual_local_runoff_mm_field_id();
     let lake_depth = lake_depth_m_field_id();
     let surface_water_kind = surface_water_kind_field_id();
@@ -1047,15 +1072,31 @@ fn formation_schemas(
             vec![surface_elevation.clone()],
             FieldPaletteHint::LandOcean,
         )?,
-        scalar_schema(
+        unbounded_scalar_schema(
+            annual_evaporation,
+            FieldDomain::Cells,
+            custom_unit("millimeter-per-year", "mm/year"),
+            FieldPaletteHint::Sequential,
+            0,
+            vec![land_ocean.clone()],
+        )?,
+        unbounded_scalar_schema(
             annual_precipitation.clone(),
             FieldDomain::Cells,
             custom_unit("millimeter-per-year", "mm/year"),
-            0.0,
-            ANNUAL_PRECIPITATION_MAX_MM,
             FieldPaletteHint::Sequential,
             0,
             Vec::new(),
+        )?,
+        scalar_schema(
+            mean_absorbed_shortwave.clone(),
+            FieldDomain::Cells,
+            custom_unit("watt-per-square-meter", "W/m²"),
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![surface_albedo.clone()],
         )?,
         scalar_schema(
             mean_air_temperature.clone(),
@@ -1067,10 +1108,30 @@ fn formation_schemas(
             1,
             Vec::new(),
         )?,
+        scalar_schema(
+            mean_outgoing_longwave,
+            FieldDomain::Cells,
+            custom_unit("watt-per-square-meter", "W/m²"),
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![mean_absorbed_shortwave, mean_air_temperature],
+        )?,
         vector_schema(
             prevailing_wind.clone(),
             custom_unit("meter-per-second", "m/s"),
             Vec::new(),
+        )?,
+        scalar_schema(
+            surface_albedo,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            3,
+            vec![land_ocean.clone(), surface_elevation.clone()],
         )?,
         scalar_schema(
             annual_local_runoff.clone(),
@@ -1231,6 +1292,27 @@ fn scalar_schema(
         value_type: FieldValueType::ScalarF32,
         unit,
         valid_range: Some(ValueRange::new(min, max)?),
+        missing: MissingValuePolicy::Forbidden,
+        dependencies,
+        category_labels: BTreeMap::new(),
+    })
+}
+
+fn unbounded_scalar_schema(
+    id: FieldId,
+    domain: FieldDomain,
+    unit: FieldUnit,
+    palette: FieldPaletteHint,
+    decimal_places: u8,
+    dependencies: Vec<FieldId>,
+) -> Result<FieldSchema, FieldSchemaError> {
+    Ok(FieldSchema {
+        display: display(&id, palette, decimal_places)?,
+        id,
+        domain,
+        value_type: FieldValueType::ScalarF32,
+        unit,
+        valid_range: None,
         missing: MissingValuePolicy::Forbidden,
         dependencies,
         category_labels: BTreeMap::new(),

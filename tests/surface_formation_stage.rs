@@ -493,15 +493,20 @@ fn the_p5_graph_reuses_p4_hashes_and_republishes_only_on_formation_input_changes
 #[test]
 fn the_formation_document_materializes_every_field_from_the_app_build_path() {
     use sekai::world::natural::{
-        annual_local_runoff_mm_field_id, circulation_annual_precipitation_mm_field_id,
-        circulation_mean_air_temperature_c_field_id, circulation_prevailing_wind_m_s_field_id,
-        coastal_deposition_m_field_id, coastal_erosion_m_field_id, crust_kind_field_id,
-        crust_thickness_field_id, drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
-        hillslope_deposition_m_field_id, hillslope_erosion_m_field_id,
-        isostatic_response_m_field_id, lake_depth_m_field_id, land_ocean_field_id,
-        mean_annual_discharge_m3_s_field_id, plate_id_field_id, primary_elevation_m_field_id,
-        routed_sediment_deposition_m_field_id, sediment_deposition_thickness_m_field_id,
-        strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
+        annual_local_runoff_mm_field_id, circulation_annual_evaporation_mm_field_id,
+        circulation_annual_precipitation_mm_field_id,
+        circulation_mean_absorbed_shortwave_w_m2_field_id,
+        circulation_mean_air_temperature_c_field_id,
+        circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
+        circulation_surface_albedo_field_id, climatological_annual_total_mm,
+        climatological_monthly_mean, coastal_deposition_m_field_id, coastal_erosion_m_field_id,
+        crust_kind_field_id, crust_thickness_field_id, drainage_area_km2_field_id,
+        fluvial_erosion_depth_m_field_id, hillslope_deposition_m_field_id,
+        hillslope_erosion_m_field_id, isostatic_response_m_field_id, lake_depth_m_field_id,
+        land_ocean_field_id, mean_annual_discharge_m3_s_field_id, plate_id_field_id,
+        primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
+        sediment_deposition_thickness_m_field_id, strahler_stream_order_field_id,
+        surface_elevation_m_field_id, surface_water_kind_field_id,
         tectonic_displacement_m_field_id, WorldFormationSpec,
     };
 
@@ -541,9 +546,13 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
         sediment_deposition_thickness_m_field_id(),
         surface_elevation_m_field_id(),
         land_ocean_field_id(),
+        circulation_annual_evaporation_mm_field_id(),
         circulation_annual_precipitation_mm_field_id(),
+        circulation_mean_absorbed_shortwave_w_m2_field_id(),
         circulation_mean_air_temperature_c_field_id(),
+        circulation_mean_outgoing_longwave_w_m2_field_id(),
         circulation_prevailing_wind_m_s_field_id(),
+        circulation_surface_albedo_field_id(),
         annual_local_runoff_mm_field_id(),
         lake_depth_m_field_id(),
         surface_water_kind_field_id(),
@@ -561,6 +570,99 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
         assert_eq!(view.len(), cell_count, "cardinality of {field:?}");
     }
 
+    let climate = document.formation_snapshot().formation_climate();
+    let fields = climate.fields();
+    let expected_scalar_fields = [
+        (
+            circulation_annual_evaporation_mm_field_id(),
+            fields
+                .monthly_evaporation_mm_day()
+                .values()
+                .iter()
+                .map(|monthly| climatological_annual_total_mm(monthly) as f32)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            circulation_annual_precipitation_mm_field_id(),
+            fields
+                .monthly_precipitation_mm_day()
+                .values()
+                .iter()
+                .map(|monthly| climatological_annual_total_mm(monthly) as f32)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            circulation_mean_absorbed_shortwave_w_m2_field_id(),
+            fields
+                .monthly_absorbed_shortwave_w_m2()
+                .values()
+                .iter()
+                .map(climatological_monthly_mean)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            circulation_mean_outgoing_longwave_w_m2_field_id(),
+            fields
+                .monthly_outgoing_longwave_w_m2()
+                .values()
+                .iter()
+                .map(climatological_monthly_mean)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            circulation_surface_albedo_field_id(),
+            fields.surface_albedo().to_vec(),
+        ),
+    ];
+    for (field, expected) in expected_scalar_fields {
+        let displayed = catalog
+            .get(&field)
+            .unwrap()
+            .view()
+            .unwrap()
+            .scalar_values()
+            .unwrap();
+        assert_eq!(
+            displayed
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            "formation map/globe payload for {field:?} must be the final P5 climate reduction"
+        );
+        assert!(displayed.iter().all(|value| value.is_finite()));
+        assert_eq!(
+            document.preferred_range(&field),
+            Some(sekai::view::DisplayRangeMode::Data)
+        );
+        let mut state = sekai::view::SphericalFieldDisplayState::default();
+        state.select_fill(field.clone());
+        let mut clock = sekai::view::DisplayRevisionClock::default();
+        let layers = sekai::view::prepare_spherical_field_layers(
+            document.presentation_source(),
+            &catalog,
+            cell_count,
+            document.surface().edges().len(),
+            document.diagnostics(),
+            document.preferred_field(),
+            |field| document.preferred_range(field),
+            &mut state,
+            &mut clock,
+        )
+        .unwrap();
+        assert_eq!(layers.fill().field_id(), &field);
+        assert_eq!(
+            layers.fill().raw_values(),
+            displayed
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
     assert_eq!(
         document.preferred_field(),
         Some(surface_elevation_m_field_id())
@@ -571,6 +673,56 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
         panic!("the formation surface elevation must use a sea-anchored manual range");
     };
     let summary = document.area_summary();
+    let budget = climate.budget_report();
+    let displayed_budget = summary.p4_water_energy();
+    assert_eq!(
+        displayed_budget.evaporation_global_mean_mm_day().to_bits(),
+        budget.evaporation_global_mean_mm_day().to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .precipitation_global_mean_mm_day()
+            .to_bits(),
+        budget.precipitation_global_mean_mm_day().to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .evaporation_minus_precipitation_global_mean_mm_day()
+            .to_bits(),
+        budget
+            .evaporation_minus_precipitation_global_mean_mm_day()
+            .to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .evaporation_precipitation_relative_imbalance()
+            .to_bits(),
+        budget
+            .evaporation_precipitation_relative_imbalance()
+            .to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .absorbed_shortwave_global_mean_w_m2()
+            .to_bits(),
+        budget.absorbed_shortwave_global_mean_w_m2().to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .outgoing_longwave_global_mean_w_m2()
+            .to_bits(),
+        budget.outgoing_longwave_global_mean_w_m2().to_bits()
+    );
+    assert_eq!(
+        displayed_budget
+            .toa_net_radiation_global_mean_w_m2()
+            .to_bits(),
+        budget.toa_net_radiation_global_mean_w_m2().to_bits()
+    );
+    assert_eq!(
+        displayed_budget.planetary_albedo_global_mean().to_bits(),
+        budget.planetary_albedo_global_mean().to_bits()
+    );
     let sea = summary.sea_level_m();
     assert!(((range.min() + range.max()) * 0.5 - sea).abs() < 0.5);
     assert_eq!(summary.sea_level_policy(), SeaLevelPolicy::WaterInventory);
@@ -592,6 +744,7 @@ fn the_formation_document_materializes_every_field_from_the_app_build_path() {
 
     let source = document.presentation_source();
     assert_eq!(source.root_seed(), root_seed);
+    assert_eq!(source.graph_contract_version(), 2);
 }
 
 #[test]
