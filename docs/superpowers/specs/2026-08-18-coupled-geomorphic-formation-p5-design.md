@@ -164,6 +164,22 @@ the maximum of independently normalized quantities:
 Every component must be `<= 1`. Non-convergence is a typed failure carrying the
 best report; no last iterate or partial artifact is published.
 
+### Amendment A3 (2026-08-23): dynamic Aitken climate-terrain coupling
+
+The corrected P4 water/energy forcing exposed a stable period-two orbit on the
+exact Draft/seed 7 application path: adjacent normalized residuals plateau near
+`2.55`, while two-back residuals contract to about `0.002`. This differs from
+the geometric contraction behind amendments A1/A2; more iterations or a wider
+residual cannot select a unique coupled solution.
+
+The pure Picard update in this section is therefore superseded by the locked
+area-weighted safeguarded dynamic-Aitken interface, fixed-water sea-level
+re-solve, and final unrelaxed verification in
+`2026-08-23-p5-coupling-stability-design.md`. The complete P4/P5 equations,
+five-component convergence criterion, and restart-from-P3 horizon semantics do
+not change. P5 snapshot/stage/model identities version as specified there;
+P0-P4 identities do not change merely because P5 uses a private accelerator.
+
 ## 7. Hydrology and depression semantics
 
 Elevations are quantized to centimetres only for topology-changing comparisons.
