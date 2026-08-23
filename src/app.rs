@@ -2772,6 +2772,28 @@ mod natural_app_tests {
         TemplateApp::new(&cc)
     }
 
+    fn create_cpu_published_app() -> TemplateApp {
+        let mut app = TemplateApp::default();
+        app.spherical_space_spec.target_cell_count = 162;
+        let candidate = super::build_spherical_presentation_candidate(
+            RootSeed::new(app.world_seed),
+            &app.spherical_space_spec,
+            &app.formation_spec,
+            &app.tectonic_spec,
+            &app.relief_spec,
+            &app.geologic_spec,
+            &mut app.stage_cache,
+            app.spherical_canvas_state.field_state(),
+            &app.display_revision_clock,
+        )
+        .unwrap();
+        let published =
+            PublishedSphericalPresentation::try_new_without_gpu_for_test(candidate).unwrap();
+        app.spherical_presentation
+            .with_resource(|current| *current = Some(published));
+        app
+    }
+
     #[test]
     fn template_app_new_executes_only_the_persisted_origin_graph() {
         let render_state = request_test_render_state();
@@ -3323,8 +3345,7 @@ mod natural_app_tests {
 
     #[test]
     fn pending_world_build_hides_the_old_map_until_rollback_or_publication() {
-        let render_state = request_test_render_state();
-        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let mut app = create_cpu_published_app();
         let (sender, receiver) = std::sync::mpsc::channel();
         app.world_build = Some(PendingWorldBuild {
             receiver,

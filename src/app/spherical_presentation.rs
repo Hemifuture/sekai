@@ -609,6 +609,32 @@ impl PublishedSphericalPresentation {
         Ok(Self { current: candidate })
     }
 
+    #[cfg(test)]
+    pub(super) fn try_new_without_gpu_for_test(
+        candidate: SphericalPresentationCandidate,
+    ) -> Result<Self, SphericalPresentationError> {
+        struct NoopGpuPreparer;
+
+        impl SphericalGpuPreparer for NoopGpuPreparer {
+            fn preflight(
+                &self,
+                _preparation: SphericalGpuPreparation<'_>,
+            ) -> Result<(), SphericalRenderError> {
+                Ok(())
+            }
+
+            fn prepare(
+                &mut self,
+                _preparation: SphericalGpuPreparation<'_>,
+                _packet: &SphericalGpuPacket,
+            ) -> Result<(), SphericalRenderError> {
+                Ok(())
+            }
+        }
+
+        Self::try_new_with_preparer(candidate, &mut NoopGpuPreparer)
+    }
+
     /// Builds a whole-world candidate bound to this exact publication and revision lineage.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_replacement_candidate(
