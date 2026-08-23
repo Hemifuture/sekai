@@ -171,36 +171,28 @@
 
 提交：`Audit P4 water and energy evidence`
 
-## Task 5：为 P5 接入严格 continuation warm start
+## Task 5：验证并裁决 P5 continuation warm start
 
 文件：
 
-- 修改：`src/generators/natural/global_circulation/mod.rs`
-- 修改：`src/generators/natural/global_circulation/generation.rs`
-- 修改：`src/generators/natural/surface_formation/generation.rs`
-- 修改：`src/world/natural/global_circulation.rs`
-- 修改：`src/world/natural/surface_formation.rs`
-- 修改：`tests/global_circulation_generation.rs`
-- 修改：`tests/surface_formation_generation.rs`
-- 修改：`tests/surface_formation_contracts.rs`
-- 修改：`tests/surface_formation_performance.rs`
+- 修改：`docs/superpowers/specs/2026-08-23-p4-physical-budget-correction-design.md`
+- 修改：本计划
 
-- [ ] 先写 RED：同 forcing continuation 可精确续算；changed-forcing 只有
-  grid/profile/integrator/quantization/equation identity 全同才可作初值；错状态
-  typed rejection；cold/warm 均走同一 equation 与 hard gates。
-- [ ] 新增 crate-private validated `GlobalCirculationContinuation`，只拥有 work-grid
-  terminal state 和最小身份；它不进入 artifact、engine cache 或 UI schema。
-- [ ] 将生成循环收敛路径抽成 cold/warm 共用实现；solve report 标记
-  `warm_started`，新 checkpoint 始终绑定当前 forcing。
-- [ ] P5 第一次 climate candidate 冷启动，随后外循环回传 continuation；取消、
-  原子发布和最大迭代行为不变。
-- [ ] 更新 mechanically derived dense-owner inventory，并以 locked High memory
-  上限验证。
-- [ ] Release 比较 cold P4、same-forcing exact continuation、changed-forcing
-  warm agreement 和 P5 Standard wall clock；不降低分辨率、月份或残差要求。
-- [ ] 跑三道门禁并提交。
+- [x] 先写 RED 原型：同 forcing terminal state 可逐位恢复；changed-forcing 只有
+  grid/profile/integrator/quantization/equation identity 全同才允许进入求解；错误身份
+  typed rejection；cold/warm 走同一 equation 与 hard gates。
+- [x] 以 production Draft/seed 42 比较同一最终 terrain 的 cold/warm published
+  fields；确认 changed-forcing warm 未通过冻结 agreement，而不是放宽标准。
+- [x] 对两周期湿度闭合振荡做系统调试；隔离验证 terminal retention、look-ahead
+  shooting、depth-one/full-history Anderson，确认既有 horizon 内没有形成稳定且
+  与初值无关的周期解；所有实验代码删除。
+- [x] 跑 Standard/seed 42 P5 生产对照：warm continuation 导致 P4 发散及 P5
+  cold/warm 轨道振荡；既有全冷路径两轮收敛、generation `61.2148426 s <= 90 s`。
+- [x] 按 R5 与 YAGNI 否决 changed-forcing warm start；不保留无人消费的 carrier、
+  wire、memory owner、stage identity 或 UI 状态，P5 权威输出与当前全冷行为不变。
+- [x] 跑三道门禁并提交文档化裁决。
 
-提交：`Warm start coupled P4 continuation`
+提交：`Reject path-dependent P4 warm starts`
 
 ## Task 6：把 P4 水热场与预算接入两种呈现
 
@@ -219,8 +211,8 @@
 - [ ] 以字段注册表 + localization 增加四个字段；形成 display cache 只做必要的
   月→年/年均归约，具体公式复用 `world` helper。
 - [ ] 扩展 `FormationAreaSummary` 为正交的 `P4WaterEnergySummary` payload，左侧
-  显示降水、蒸发、`E-P`、ASR、OLR、TOA net、行星反照率、warm/cold 与 Earth
-  reference；标签与数值事实均取 SSOT。
+  显示降水、蒸发、`E-P`、ASR、OLR、TOA net、行星反照率与 Earth reference；
+  标签与数值事实均取 SSOT。R5 已否决生产 warm path，不显示虚构状态。
 - [ ] 在平面地图和球面切换所有新字段，验证同字段同范围、无 NaN、无越权
   读取生成器内部状态。
 - [ ] 跑 field registry、formation display、app、GPU presentation 的 focused
@@ -248,7 +240,7 @@
   比对，只接受可由 V2 schema、物理场或注册表解释的变化。
 - [ ] 明确列出 P0–P3 不变证据，以及 P4/P5/T1 old→new 指纹、natural field
   registry hash、sampled IDs、16 幅 GPU golden 的实际刷新清单。
-- [ ] 记录 17 粒 Earth-default 水热统计、cold/warm agreement、P4 三档、P5
+- [ ] 记录 17 粒 Earth-default 水热统计、R5 cold/warm 否决证据、P4 三档、P5
   Standard wall clock、High dense memory 与取消延迟。
 - [ ] 跑所有 P4/P5/T1 focused/adjacent Release 套件与冻结的 P0/P2/P3 证据。
 - [ ] 用 PowerShell `Start-Process` 分离运行并等待两档全量：
@@ -296,5 +288,8 @@
   `10.1007/s10712-017-9416-4`；Hersbach et al. (2020), ERA5, DOI
   `10.1002/qj.3803`。
 - restart/continuation 验证：CESM 1.2 User Guide 的 *Restarting a run*、
-  *History and Restart Files* 与 exact-restart tests；changed-forcing 路径另由
-  Sekai 的身份检查和 cold/warm agreement 约束。
+  *History and Restart Files* 与 exact-restart tests。
+- 周期 fixed-point 加速适用域：Walker & Ni (2011), DOI
+  `10.1137/10078356X`；Khatiwala (2023), DOI `10.1029/2022MS003447`；R5 的
+  production agreement 与收敛轨迹证明当前 P4 尚不满足安全接入条件，故没有把
+  这些方法的可调参数带入产品。

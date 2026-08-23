@@ -596,3 +596,36 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
      performance JSON BLAKE3 为
      `061c6328db79aca931c874ff88dc319b139f980b7cb6859a11fa077db695ec94`。
      这些墙钟与经验数值只作证据，不进入算法或 profile 选择。
+- R5（2026-08-23）：Task 5 的生产路径 RED 否决 changed-forcing
+  continuation，并显式替代 §1 第 4 条、§6、§7.3 的 warm/cold 行、§8 的
+  continuation memory 与 §9 第 5 条。
+
+  1. `GlobalCirculationContinuation` 原型严格验证了 grid、profile、integrator、
+     quantization、equation model 与 forcing identity；同 forcing 的 work-grid
+     terminal state 可以逐位恢复。但 changed-forcing 初值在当前 P4 的
+     procedural climatology 中不是无害的求解器优化：Draft/seed 42 的暖解在两个
+     cycle 后发布，独立冷解在五个 cycle 后发布，最差 vector correlation
+     `0.9593`、vector normalized RMSE `0.6387`、scalar correlation `0.9841`、
+     scalar bias `0.8116 K`、precipitation correlation `0.9461`、annual total bias
+     `9.207%`，未通过冻结的同方程 field agreement。
+  2. 原因不是 continuation 身份漏检，而是当前 `FORMATION_RESIDUAL_TARGET` 只定义
+     有界的近似 continuation，并未定义与初值无关的唯一周期轨道；标量 `E-P`
+     shooting 又只选择下一轮湿度总量初值。强制继续后，水量闭合在相邻 cycle
+     之间交替通过/失败。保留探针终态、增加 one-cycle look-ahead、depth-one 与
+     full-history Anderson acceleration 的隔离实验均未在既有 horizon 内同时得到
+     稳定周期闭合和 cold/warm field agreement，实验代码全部删除。
+  3. Standard/seed 42 更直接证明它不能接入 P5：第 2 个 warm candidate 的 P5
+     normalized residual 为 `1.0483`；继续把它传入第 3 次气候求解后，P4 state
+     residual 从 `0.0875649` 增至 `3.0820591`。尝试“暖失败再冷启”会让 P5 在
+     warm/cold 两条数值轨道间振荡，外层 residual 约停在 `1.58`，不是性能优化。
+  4. 保留既有全冷生产路径时，同一 Standard 语料只需两个 P5 外循环，轨迹为
+     `14.7349 → 0.6290`，formation generation 实测 `61.2148426 s`，通过既有
+     `90 s` 预算。故本任务不新增 continuation carrier、wire 字段、内存 owner、
+     stage identity 或 UI 状态；所有原型代码按 YAGNI 删除，P5 每个 changed-terrain
+     candidate 继续从权威 annual-mean forcing 冷启动。Task 7 重新测最终性能，
+     本条数值只作选择证据。
+  5. Anderson acceleration 本身不是被否决；Walker & Ni (2011), DOI
+     `10.1137/10078356X` 与 Khatiwala (2023), DOI `10.1029/2022MS003447` 说明它适合
+     已定义周期 fixed point 的 time-step map。若后续先把 P4 升级为真正、稳定且
+     与初值无关的周期解，可另立设计重新评估；不得在当前近似停止语义上以调 damping、
+     history depth 或 agreement 阈值掩盖路径依赖。
