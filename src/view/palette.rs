@@ -6,6 +6,39 @@ use super::{FieldView, FieldViewError};
 use crate::world::fields::{FieldId, ValueRange};
 use crate::world::CellId;
 
+/// sRGB colors for the world-build transition owned by the view layer.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorldLoadingPalette {
+    pub(crate) background: [u8; 3],
+    pub(crate) surface: [u8; 3],
+    pub(crate) outline: [u8; 3],
+    pub(crate) ink: [u8; 3],
+    pub(crate) muted: [u8; 3],
+    pub(crate) accent: [u8; 3],
+    pub(crate) tones: [[u8; 3]; 7],
+}
+
+/// Approved world-build transition palette from the frozen design prototype.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const WORLD_LOADING_PALETTE: WorldLoadingPalette = WorldLoadingPalette {
+    background: [4, 10, 16],
+    surface: [5, 16, 24],
+    outline: [194, 220, 210],
+    ink: [233, 241, 236],
+    muted: [99, 119, 112],
+    accent: [184, 217, 196],
+    tones: [
+        [66, 110, 125],
+        [118, 160, 145],
+        [190, 196, 149],
+        [243, 230, 190],
+        [140, 170, 148],
+        [86, 127, 133],
+        [105, 150, 138],
+    ],
+};
+
 /// A linear-light RGBA color used consistently by CPU and GPU display paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -75,7 +75,7 @@ rg -n "T[B]D|T[O]DO|implement l[a]ter|fill in d[e]tails|类似 T[a]sk|适当处[
 
 预期：无输出。再逐节核对“旧地图消失、二十块凸拼图、双向位移、reduced motion、失败回滚、无新依赖、UI 验收”都有任务承接。
 
-- [ ] **Step 4: 提交设计文档**
+- [x] **Step 4: 提交设计文档**
 
 ```powershell
 git add docs/superpowers/specs/2026-08-23-world-build-loading-animation-design.md docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
@@ -92,6 +92,7 @@ git commit -m "docs: freeze the world build loading animation" -m "Record the ap
 - Modify: `src/ui/mod.rs`
 - Modify: `src/view/palette.rs`
 - Modify: `src/view/mod.rs`
+- Modify: `docs/superpowers/specs/2026-08-23-world-build-loading-animation-design.md`
 
 **Interfaces:**
 
@@ -132,7 +133,7 @@ fn clipped_piece_points(piece_index: usize, travel: f32) -> Vec<[f32; 2]>;
 fn format_elapsed(elapsed: std::time::Duration) -> String;
 ```
 
-- [ ] **Step 1: 写动效与几何 RED 测试**
+- [x] **Step 1: 写动效与几何 RED 测试**
 
 在 `src/ui/world_loading.rs` 先写模块测试并在 `src/ui/mod.rs` 注册模块。测试必须断言：
 
@@ -252,7 +253,7 @@ fn moved_pieces_are_clipped_to_the_production_equal_earth_outline() {
 
 生产变更若把块数改回十三、重新引入凹折、让相邻块同色、移除退出位移、改变循环周期或绕过投影裁剪，至少一条测试必须失败。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 运行：
 
@@ -262,7 +263,7 @@ cargo test --lib ui::world_loading::tests -- --nocapture
 
 预期：编译失败，因为加载常量、纯函数、色板和绘制入口尚不存在。
 
-- [ ] **Step 3: 增加唯一加载色板**
+- [x] **Step 3: 增加唯一加载色板**
 
 在 `src/view/palette.rs` 增加 crate 内只读结构：
 
@@ -298,16 +299,16 @@ pub(crate) const WORLD_LOADING_PALETTE: WorldLoadingPalette = WorldLoadingPalett
 
 实际值逐项抄自最终网页原型的 CSS；`src/view/mod.rs` 只作 crate 内重导出，UI 不再出现 RGB 字面量。
 
-- [ ] **Step 4: 实现共享拓扑、生产投影轮廓与凸裁剪**
+- [x] **Step 4: 实现共享拓扑、生产投影轮廓与凸裁剪**
 
 把最终原型的二十块几何转写为一份 `WORLD_LOADING_VERTICES` 和一份索引拓扑。`equal_earth_outline` 调用生产投影，`clipped_piece_points` 用 Sutherland–Hodgman 逐边裁剪移动后的胞元；不增加几何 crate 或运行时随机数。
 
-- [ ] **Step 5: 实现纯时序与 egui 绘制**
+- [x] **Step 5: 实现纯时序与 egui 绘制**
 
 使用规格常量和 Khronos `smoothstep` 公式生成每块 `opacity/travel`。绘制顺序为背景与环境光 → 投影表面 → 二十块凸多边形 → 轮廓 → 实际 egui 状态文案；pending 时调用
 `ui.ctx().request_repaint_after(Duration::from_millis(16))`。
 
-- [ ] **Step 6: 运行 GREEN 与格式检查**
+- [x] **Step 6: 运行 GREEN 与格式检查**
 
 运行：
 
@@ -318,10 +319,12 @@ cargo fmt --all -- --check
 
 预期：加载模块测试全部通过，格式检查退出 0。
 
-- [ ] **Step 7: 提交加载视图**
+执行证据（2026-08-23）：RED 因加载常量和纯函数尚不存在而产生 32 个编译错误；实现后 7 个模块测试全部通过。裁剪调试先定位到设计平面尺度下 `-0.000038146973` 的 `f32` 叉积舍入，再以机器精度和设计平面尺度推导容差；最终几何、时序、reduced-motion、计时和真实 egui 文本/二十块绘制断言均为 GREEN，格式检查退出 0。为保持任务逐提交且让本提交独立通过 `-D warnings`，模块入口和两项色板事实临时用 `cfg_attr(not(test), allow(dead_code))` 标记；Task 3 接入唯一真实消费者时立即删除这些属性。
+
+- [x] **Step 7: 提交加载视图**
 
 ```powershell
-git add src/ui/world_loading.rs src/ui/mod.rs src/view/palette.rs src/view/mod.rs docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
+git add src/ui/world_loading.rs src/ui/mod.rs src/view/palette.rs src/view/mod.rs docs/superpowers/specs/2026-08-23-world-build-loading-animation-design.md docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
 git commit -m "feat: draw the Equal Earth build animation" -m "Render the approved twenty-piece convex loading choreography from one shared topology and the canonical projection and palette sources."
 ```
 

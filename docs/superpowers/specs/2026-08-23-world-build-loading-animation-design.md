@@ -33,6 +33,8 @@
 公式或静态轮廓点。轮廓按 `WORLD_LOADING_OUTLINE_LATITUDE_STEPS` 采样，映射到
 `WORLD_LOADING_VIEWBOX_WIDTH` × `WORLD_LOADING_VIEWBOX_HEIGHT` 的设计平面，并保留网页验收稿的留白比例。
 
+最终网页原型转写值为：设计平面 `1000 × 500`，东西两侧各按纬度分成 24 个采样区间，投影轮廓占设计平面高度的 80%。水平方向留白由生产投影的实际宽高比推导，不钉第二份 Equal Earth 宽度。
+
 出处：Šavrič、Patterson 与 Jenny（2018/2019），DOI
 `10.1080/13658816.2018.1504949`；项目现有权威实现为
 `src/view/spherical_projection.rs`。
@@ -43,9 +45,11 @@
 
 移动后的胞元通过 Sutherland–Hodgman 逐边裁剪到生产投影轮廓。该算法针对凸裁剪窗，保持输入凸多边形的凸性，适配 egui 的 `Shape::convex_polygon`。
 
+裁剪内外测试使用 `f32::EPSILON × WORLD_LOADING_VIEWBOX_WIDTH × WORLD_LOADING_VIEWBOX_HEIGHT` 作为叉积尺度容差；该值只吸收把生产侧 `f64` 投影点转为 egui `f32` 后的舍入误差，不改变可见边界。容差按运算尺度由机器精度推导，依据 Higham（2002）关于浮点前向误差随 unit roundoff 与问题尺度增长的分析，不使用经验像素阈值。
+
 出处：I. E. Sutherland 与 G. W. Hodgman，*Reentrant Polygon Clipping*，
 Communications of the ACM 17(1), 32–42, 1974，DOI
-`10.1145/360767.360802`。
+`10.1145/360767.360802`；Nicholas J. Higham，*Accuracy and Stability of Numerical Algorithms*，第二版，SIAM，2002，DOI `10.1137/1.9780898718027`。
 
 ### 3.3 色板
 
@@ -87,6 +91,10 @@ Windows Fluent Motion 把 167/250/333 ms 列为直接进入/既有元素的标�
 ## 6. 布局与文案
 
 加载视图占据整个 CentralPanel：深色背景、微弱环境光、中央 Equal Earth 拼图、投影轮廓与下方状态文案。窗口缩小时地图按可用宽高等比缩放，不改变块几何、动画顺序或时钟。
+
+egui 布局逐项转写最终网页原型：地图宽度为视窗的 78%、上限 900 pt，并继续受可用高度约束；常规纵向留白为 `clamp(4vh, 26 pt, 54 pt)`，高度不超过 680 pt 时为 12 pt；地图与文案的重叠量为 `clamp(-1.6vw, -16 pt, -7 pt)`。眉题、标题、时钟、过程文案字号分别为 9 pt、`clamp(3.2vw, 28 pt, 44 pt)`、15 pt、11 pt，纵向间隔依次为 11/13/15 pt。投影表面、轮廓、块缝透明度分别为 0.72/0.20/0.50，轮廓与块缝宽度分别为 1.25/2 pt。环境光沿用原型的 12%/18% 椭圆内缩、56 pt 模糊范围和 0.17 总透明度；egui 没有椭圆模糊图元，生产实现用四层等分透明度的内建 `Shape::ellipse_filled` 近似同一视觉事实，不引入纹理或 shader。
+
+上述值的出处是用户逐轮确认的最终网页原型；R4 只把既有视觉事实显式写入设计真相，不增加新的视觉裁定。
 
 产品文案在 `src/ui/world_loading.rs` 只定义一次：
 
@@ -130,3 +138,4 @@ Windows Fluent Motion 把 167/250/333 ms 列为直接进入/既有元素的标�
 - R1（2026-08-23）：用户裁定 Equal Earth 拼合形状、十三块自然凹板块与双向位移。
 - R2（2026-08-23）：用户最终裁定恢复凸多边形并增加至二十块。
 - R3（2026-08-23）：用户确认最终网页效果，授权 egui 落地、验证并提交；本规格冻结。
+- R4（2026-08-23）：实现转写时补记原型中已确认的投影采样、响应式布局、透明度和环境光参数，并记录 `f32` 裁剪容差的尺度推导；不改变 R3 的视觉与运行时裁定。

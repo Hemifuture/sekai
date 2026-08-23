@@ -47,6 +47,7 @@ pub use palette::{
     PreparedFieldKind, ResolvedDisplayRange, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR,
     DIAGNOSTIC_WARNING_COLOR, HYPSOMETRIC_DISPLAY_RADIUS_M,
 };
+pub(crate) use palette::{WorldLoadingPalette, WORLD_LOADING_PALETTE};
 pub use prepared::{
     DisplayRevision, DisplayRevisionClock, DisplayRevisions, DisplayStatusError,
     FieldDisplayResourceState, PreparedFieldDisplay,
