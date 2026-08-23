@@ -12,16 +12,23 @@ use sekai::generators::spatial::{
 };
 use sekai::world::natural::{
     absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s,
-    gray_equilibrium_surface_temperature_c, linearized_outgoing_longwave_w_m2,
-    planetary_albedo_from_surface, raw_orographic_condensation_kg_m2_s,
-    saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
-    GeologicSubstrateSnapshot, LandOceanKind, NaturalQualityProfile, PrimaryReliefSnapshot,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
-    CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
-    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    gray_equilibrium_surface_temperature_c, latent_heat_flux_w_m2_from_evaporation_mm_day,
+    lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
+    neutral_surface_air_specific_humidity_kg_kg, planetary_albedo_from_surface,
+    raw_orographic_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateSpec,
+    ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, LandOceanKind,
+    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
+    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+    EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE,
+    EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, P4_REFERENCE_AIR_DENSITY_KG_M3,
     REFERENCE_SURFACE_RELATIVE_HUMIDITY, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+    WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -52,12 +59,82 @@ fn physical_moisture_helpers_obey_analytic_limits() {
     );
     assert!(bulk_surface_evaporation_kg_m2_s(15.0, unsaturated, 12.0, 1.0) > 0.0);
 
+    let surface_temperature_c = 20.0;
+    let relative_humidity = 0.8;
+    let cold_slab_temperature_c = 5.0;
+    let mild_slab_temperature_c = 15.0;
+    let cold_slab_humidity =
+        relative_humidity * saturation_specific_humidity_kg_kg(cold_slab_temperature_c);
+    let mild_slab_humidity =
+        relative_humidity * saturation_specific_humidity_kg_kg(mild_slab_temperature_c);
+    let cold_neutral = neutral_surface_air_specific_humidity_kg_kg(
+        surface_temperature_c,
+        cold_slab_temperature_c,
+        cold_slab_humidity,
+    );
+    let mild_neutral = neutral_surface_air_specific_humidity_kg_kg(
+        surface_temperature_c,
+        mild_slab_temperature_c,
+        mild_slab_humidity,
+    );
+    assert!((cold_neutral - mild_neutral).abs() <= 1.0e-12);
+    assert_eq!(
+        bulk_surface_evaporation_kg_m2_s(surface_temperature_c, cold_neutral, 8.0, 1.0,).to_bits(),
+        bulk_surface_evaporation_kg_m2_s(surface_temperature_c, mild_neutral, 8.0, 1.0,).to_bits(),
+    );
+
     assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, -0.02), 0.0);
     assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, 0.0), 0.0);
     assert_eq!(
         raw_orographic_condensation_kg_m2_s(0.01, 0.02),
         P4_REFERENCE_AIR_DENSITY_KG_M3 * 0.01 * 0.02
     );
+    let orographic_temperature_c = 20.0;
+    let orographic_saturation = saturation_specific_humidity_kg_kg(orographic_temperature_c);
+    let upslope_velocity_m_s = 0.1;
+    let horizontal_wind_speed_m_s = 10.0;
+    let resolved_cell_area_m2 = 1.0e10;
+    assert_eq!(
+        lcl_adjusted_orographic_condensation_kg_m2_s(
+            0.014,
+            81.0,
+            0.082,
+            8.0,
+            resolved_cell_area_m2,
+        ),
+        0.0,
+    );
+    assert_eq!(
+        lcl_adjusted_orographic_condensation_kg_m2_s(
+            orographic_saturation,
+            orographic_temperature_c,
+            upslope_velocity_m_s,
+            horizontal_wind_speed_m_s,
+            resolved_cell_area_m2,
+        )
+        .to_bits(),
+        raw_orographic_condensation_kg_m2_s(orographic_saturation, upslope_velocity_m_s).to_bits(),
+    );
+    let sub_saturated = 0.8 * orographic_saturation;
+    assert_eq!(
+        lcl_adjusted_orographic_condensation_kg_m2_s(
+            sub_saturated,
+            orographic_temperature_c,
+            upslope_velocity_m_s,
+            horizontal_wind_speed_m_s,
+            1.0e6,
+        ),
+        0.0,
+    );
+    let crossed_lcl = lcl_adjusted_orographic_condensation_kg_m2_s(
+        sub_saturated,
+        orographic_temperature_c,
+        upslope_velocity_m_s,
+        horizontal_wind_speed_m_s,
+        resolved_cell_area_m2,
+    );
+    assert!(crossed_lcl > 0.0);
+    assert!(crossed_lcl < raw_orographic_condensation_kg_m2_s(sub_saturated, upslope_velocity_m_s));
 }
 
 fn fixture() -> &'static Fixture {
@@ -155,8 +232,7 @@ fn radiative_helpers_reproduce_the_ceres_calibration_and_analytic_limits() {
     assert!(dark > bright && bright >= 0.0);
     assert!(dark < EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2 * 0.25);
 
-    let ceres_asr = CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2
-        - CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2;
+    let ceres_asr = CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2;
     let reference_temperature = gray_equilibrium_surface_temperature_c(ceres_asr);
     assert!((15.0..=18.0).contains(&reference_temperature));
     assert!(gray_equilibrium_surface_temperature_c(ceres_asr * 1.1) > reference_temperature);
@@ -178,6 +254,26 @@ fn radiative_helpers_reproduce_the_ceres_calibration_and_analytic_limits() {
             reference_temperature - 100.0,
         ),
         0.0
+    );
+}
+
+#[test]
+fn earth_water_and_energy_evidence_references_are_self_consistent() {
+    assert!((0.0..1.0).contains(&EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE));
+    let latent_heat =
+        latent_heat_flux_w_m2_from_evaporation_mm_day(EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY);
+    assert!(
+        (WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2..=WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2)
+            .contains(&latent_heat)
+    );
+    assert!((STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2
+        ..=STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2)
+        .contains(&latent_heat));
+    assert_eq!(
+        CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2.to_bits(),
+        (CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2
+            - CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2)
+            .to_bits(),
     );
 }
 

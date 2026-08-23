@@ -49,7 +49,7 @@ impl NaturalQualityProfile {
     /// Exact bounded continuation-cycle horizon for the global circulation solver.
     pub const fn global_circulation_formation_cycles_max(self) -> u16 {
         match self {
-            Self::Draft => 8,
+            Self::Draft => 10,
             Self::Standard => 10,
             Self::High => 12,
         }

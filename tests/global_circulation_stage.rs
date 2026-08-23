@@ -103,7 +103,7 @@ fn p4_stages_publish_locked_keys_identities_and_exact_dependency_boundaries() {
         GlobalCirculationStage.id().as_str(),
         "natural.global-circulation"
     );
-    assert_eq!(GlobalCirculationStage.version(), 2);
+    assert_eq!(GlobalCirculationStage.version(), 3);
     assert_eq!(GlobalCirculationStage.namespace(), "sekai.core");
 
     let graph = global_circulation_graph().unwrap();

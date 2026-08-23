@@ -1,55 +1,90 @@
-//! Locked P4 morphology and physical-structure quality gates.
+//! P4 morphology diagnostics and hard physical-closure quality gates.
 
-use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
+use super::{MetricAccumulator, MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::engine::BuildCancellation;
 use crate::generators::natural::global_circulation::GlobalClimateForcing;
 use crate::world::natural::{
     GlobalCirculationSnapshot, LandOceanKind, NaturalQualityReport, PrimaryReliefSnapshot,
     QualityMetricId, QualityMetricStatus, CLIMATE_MONTH_COUNT,
+    GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2, GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
 
 const METRIC_NAMESPACE: &str = "sekai.global-circulation-v1";
 const METRIC_VERSION: u16 = 1;
 const SEASONAL_FORCING_AMPLITUDE_MIN_C: f64 = 0.5;
+const LOW_LATITUDE_WIND_MIN_ABS_DEGREES: f64 = 5.0;
+const TROPICAL_MAX_ABS_LATITUDE_DEGREES: f64 = 30.0;
+const MIDLATITUDE_WIND_MIN_ABS_DEGREES: f64 = 35.0;
+const HIGH_LATITUDE_MIN_ABS_DEGREES: f64 = 60.0;
+const TEMPERATURE_SEASONAL_PHASE_MIN_ABS_DEGREES: f64 = 10.0;
 const NO_RESOLVED_SEASONAL_FORCING_REASON: &str =
     "January-July equilibrium-air-temperature amplitude is below 0.5 C";
-const EXPECTED_METRIC_NAMES: [&str; 16] = [
-    "cubed-face-seam-speed-ratio",
-    "low-latitude-easterly-fraction",
-    "midlatitude-westerly-fraction",
-    "mixed-layer-warmer-than-thermocline-fraction",
-    "ocean-current-land-leakage-max-m-s",
-    "ocean-gyre-circulation-fraction",
-    "orographic-precipitation-response",
-    "orographic-rain-shadow-leeward-drying",
-    "orographic-uplift-enrichment-ratio",
-    "positive-thermocline-depth-fraction",
-    "sea-surface-height-max-absolute-m",
-    "seasonal-hemisphere-phase-correlation",
-    "seasonal-hemisphere-phase-fraction",
-    "vertical-shear-rms-m-s",
-    "warm-ocean-humidity-contrast",
-    "warm-ocean-humidity-correlation",
-];
-const EXPECTED_METRIC_BOUNDS: [(Option<f64>, Option<f64>); 16] = [
-    (None, Some(4.0)),
-    (Some(0.35), None),
-    (Some(0.55), None),
-    (Some(0.70), None),
-    (None, Some(0.0)),
-    (Some(0.20), None),
-    (Some(0.01), None),
-    (Some(0.02), None),
-    (Some(1.20), None),
-    (Some(1.0), None),
-    (Some(0.01), Some(6.0)),
-    (None, None),
-    (Some(0.65), None),
-    (Some(0.10), None),
-    (Some(0.10), None),
-    (None, None),
-];
+const NO_HIGH_LATITUDE_PRECIPITATION_REASON: &str =
+    "high-latitude annual-mean precipitation is zero";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ExpectedMetric {
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    hard: bool,
+}
+
+macro_rules! declare_expected_metrics {
+    ($count:expr; $($name:literal => ($minimum:expr, $maximum:expr, $hard:expr)),+ $(,)?) => {
+        const EXPECTED_METRIC_NAMES: [&str; $count] = [$($name),+];
+
+        fn expected_metric(name: &str) -> Option<ExpectedMetric> {
+            match name {
+                $($name => Some(ExpectedMetric {
+                    minimum: $minimum,
+                    maximum: $maximum,
+                    hard: $hard,
+                }),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+// This declaration is the sole P4 metric-bound registry. Its order is part of
+// the canonical report identity, while every caller resolves bounds by name.
+declare_expected_metrics! {
+    25;
+    "absorbed-shortwave-global-mean-w-m2" => (None, None, false),
+    "cubed-face-seam-speed-ratio" => (None, Some(4.0), false),
+    "evaporation-global-mean-mm-day" => (None, None, false),
+    "evaporation-precipitation-relative-imbalance" => (
+        None,
+        Some(GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX),
+        true
+    ),
+    "low-latitude-easterly-fraction" => (Some(0.35), None, false),
+    "midlatitude-westerly-fraction" => (Some(0.55), None, false),
+    "mixed-layer-warmer-than-thermocline-fraction" => (Some(0.70), None, false),
+    "ocean-current-land-leakage-max-m-s" => (None, Some(0.0), false),
+    "ocean-gyre-circulation-fraction" => (Some(0.20), None, false),
+    "orographic-precipitation-response" => (Some(0.01), None, false),
+    "orographic-rain-shadow-leeward-drying" => (Some(0.02), None, false),
+    "orographic-uplift-enrichment-ratio" => (Some(1.20), None, false),
+    "outgoing-longwave-global-mean-w-m2" => (None, None, false),
+    "planetary-albedo-global-mean" => (None, None, false),
+    "positive-thermocline-depth-fraction" => (Some(1.0), None, false),
+    "precipitation-global-mean-mm-day" => (None, None, false),
+    "precipitation-low-to-high-latitude-ratio" => (None, None, false),
+    "precipitation-seasonal-hemisphere-phase-fraction" => (None, None, false),
+    "sea-surface-height-max-absolute-m" => (Some(0.01), Some(6.0), false),
+    "seasonal-hemisphere-phase-correlation" => (None, None, false),
+    "seasonal-hemisphere-phase-fraction" => (Some(0.65), None, false),
+    "toa-net-radiation-global-mean-w-m2" => (
+        Some(-GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2),
+        Some(GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2),
+        true
+    ),
+    "vertical-shear-rms-m-s" => (Some(0.10), None, false),
+    "warm-ocean-humidity-contrast" => (Some(0.10), None, false),
+    "warm-ocean-humidity-correlation" => (None, None, false),
+}
 
 pub fn evaluate_global_circulation_quality(
     surface: &SphericalSurfaceSnapshot,
@@ -191,6 +226,9 @@ fn evaluate_global_circulation_quality_impl(
     let mut seasonal_temperature = Vec::new();
     let mut seasonal_phase_total = 0_u32;
     let mut seasonal_phase_correct = 0_u32;
+    let mut low_latitude_precipitation = MetricAccumulator::new();
+    let mut high_latitude_precipitation = MetricAccumulator::new();
+    let mut precipitation_seasonal_phase = MetricAccumulator::new();
     let seasonal_forcing_amplitude_c = forcing
         .planet_forcing()
         .equilibrium_air_temperature_c()
@@ -207,17 +245,30 @@ fn evaluate_global_circulation_quality_impl(
         }
         let radial = cell.centroid.components();
         let latitude = radial[2].asin().to_degrees();
+        let absolute_latitude = latitude.abs();
+        let area_m2 = cell.area.get();
         let (east, _) = canonical_east_north_basis(cell.centroid);
         let land = relief.land_ocean().raw_values()[cell_index] == LandOceanKind::Land.raw();
         for month in 0..12 {
             let zonal = dot(lower[cell_index][month].map(f64::from), east);
-            if (5.0..=30.0).contains(&latitude.abs()) {
+            if (LOW_LATITUDE_WIND_MIN_ABS_DEGREES..=TROPICAL_MAX_ABS_LATITUDE_DEGREES)
+                .contains(&absolute_latitude)
+            {
                 low_total += 1;
                 low_easterly += u32::from(zonal < 0.0);
             }
-            if (35.0..=60.0).contains(&latitude.abs()) {
+            if (MIDLATITUDE_WIND_MIN_ABS_DEGREES..=HIGH_LATITUDE_MIN_ABS_DEGREES)
+                .contains(&absolute_latitude)
+            {
                 mid_total += 1;
                 mid_westerly += u32::from(zonal > 0.0);
+            }
+            let precipitation_mm_day = f64::from(precipitation[cell_index][month]);
+            if absolute_latitude <= TROPICAL_MAX_ABS_LATITUDE_DEGREES {
+                low_latitude_precipitation.push(precipitation_mm_day, area_m2)?;
+            }
+            if absolute_latitude >= HIGH_LATITUDE_MIN_ABS_DEGREES {
+                high_latitude_precipitation.push(precipitation_mm_day, area_m2)?;
             }
             let shear_speed = norm(shear.values()[cell_index][month].map(f64::from));
             shear_square += shear_speed * shear_speed;
@@ -226,7 +277,7 @@ fn evaluate_global_circulation_quality_impl(
             if land {
                 land_leakage = land_leakage.max(current_speed);
             } else {
-                if latitude.abs() <= 60.0 {
+                if absolute_latitude <= HIGH_LATITUDE_MIN_ABS_DEGREES {
                     mixed_warm_total += 1;
                     mixed_warm +=
                         u32::from(mixed[cell_index][month] > thermocline[cell_index][month]);
@@ -246,9 +297,18 @@ fn evaluate_global_circulation_quality_impl(
         );
         seasonal_latitude.push(latitude);
         seasonal_temperature.push(seasonal_difference);
-        if latitude.abs() >= 10.0 {
+        if absolute_latitude >= TEMPERATURE_SEASONAL_PHASE_MIN_ABS_DEGREES {
             seasonal_phase_total += 1;
             seasonal_phase_correct += u32::from(latitude * seasonal_difference > 0.0);
+        }
+        if latitude != 0.0 && absolute_latitude <= TROPICAL_MAX_ABS_LATITUDE_DEGREES {
+            record_precipitation_seasonal_phase_signal(
+                &mut precipitation_seasonal_phase,
+                latitude,
+                f64::from(precipitation[cell_index][0]),
+                f64::from(precipitation[cell_index][6]),
+                area_m2,
+            )?;
         }
     }
 
@@ -270,149 +330,268 @@ fn evaluate_global_circulation_quality_impl(
         orographic_precipitation,
         cancellation,
     )?;
+    let precipitation_low_to_high = ratio_observation(
+        low_latitude_precipitation.finish()?,
+        high_latitude_precipitation.finish()?,
+    )?;
+    let precipitation_seasonal_phase = precipitation_seasonal_phase.finish()?;
     check_quality_cancelled(cancellation)?;
+    let budget = snapshot.budget_report();
+    let seasonal_correlation = if seasonal_forcing_is_resolved {
+        MetricObservation::Available {
+            value: correlation(&seasonal_latitude, &seasonal_temperature, cancellation)?.abs(),
+            sample_count: u32::try_from(seasonal_latitude.len())
+                .map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        }
+    } else {
+        unavailable_seasonal_observation()
+    };
+    let seasonal_fraction = if seasonal_forcing_is_resolved {
+        MetricObservation::Available {
+            value: fraction(seasonal_phase_correct, seasonal_phase_total),
+            sample_count: seasonal_phase_total,
+        }
+    } else {
+        unavailable_seasonal_observation()
+    };
+    let precipitation_seasonal_phase = if seasonal_forcing_is_resolved {
+        precipitation_seasonal_phase
+    } else {
+        unavailable_seasonal_observation()
+    };
     let mut builder = NaturalQualityReportBuilder::new(surface_ref);
-    record_at_least(
+    record_expected_metric(
+        &mut builder,
+        "absorbed-shortwave-global-mean-w-m2",
+        available(budget.absorbed_shortwave_global_mean_w_m2(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "cubed-face-seam-speed-ratio",
+        available(
+            seam_ratio,
+            u32::try_from(surface.edges().len())
+                .map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        ),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "evaporation-global-mean-mm-day",
+        available(budget.evaporation_global_mean_mm_day(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "evaporation-precipitation-relative-imbalance",
+        available(budget.evaporation_precipitation_relative_imbalance(), 1),
+    )?;
+    record_expected_metric(
         &mut builder,
         "low-latitude-easterly-fraction",
-        fraction(low_easterly, low_total),
-        low_total,
-        0.35,
+        available(fraction(low_easterly, low_total), low_total),
     )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
         "midlatitude-westerly-fraction",
-        fraction(mid_westerly, mid_total),
-        mid_total,
-        0.55,
+        available(fraction(mid_westerly, mid_total), mid_total),
     )?;
-    record_at_least(
-        &mut builder,
-        "vertical-shear-rms-m-s",
-        (shear_square / f64::from(shear_count.max(1))).sqrt(),
-        shear_count,
-        0.10,
-    )?;
-    builder.record_at_most(
-        metric_id("ocean-current-land-leakage-max-m-s")?,
-        land_leakage,
-        u32::try_from(surface.cells().len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
-        0.0,
-    )?;
-    record_at_least(
-        &mut builder,
-        "ocean-gyre-circulation-fraction",
-        gyre_fraction,
-        gyre_samples,
-        0.20,
-    )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
         "mixed-layer-warmer-than-thermocline-fraction",
-        fraction(mixed_warm, mixed_warm_total),
-        mixed_warm_total,
-        0.70,
+        available(fraction(mixed_warm, mixed_warm_total), mixed_warm_total),
     )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
-        "positive-thermocline-depth-fraction",
-        fraction(depth_positive, depth_total),
-        depth_total,
-        1.0,
+        "ocean-current-land-leakage-max-m-s",
+        available(
+            land_leakage,
+            u32::try_from(surface.cells().len())
+                .map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        ),
     )?;
-    builder.record_between(
-        metric_id("sea-surface-height-max-absolute-m")?,
-        sea_surface_height_max_absolute,
-        sea_surface_height_count.max(1),
-        0.01,
-        6.0,
-    )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
-        "warm-ocean-humidity-contrast",
-        interquartile_response(&warm, &humid, cancellation)?,
-        u32::try_from(warm.len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
-        0.10,
+        "ocean-gyre-circulation-fraction",
+        available(gyre_fraction, gyre_samples),
     )?;
-    builder.record_unbounded(
-        metric_id("warm-ocean-humidity-correlation")?,
-        correlation(&warm, &humid, cancellation)?,
-        u32::try_from(warm.len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
-    )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
         "orographic-precipitation-response",
-        orographic_fraction,
-        orographic_samples,
-        0.01,
+        available(orographic_fraction, orographic_samples),
     )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
         "orographic-rain-shadow-leeward-drying",
-        orographic.leeward_drying,
-        orographic.leeward_samples,
-        0.02,
+        available(orographic.leeward_drying, orographic.leeward_samples),
     )?;
-    record_at_least(
+    record_expected_metric(
         &mut builder,
         "orographic-uplift-enrichment-ratio",
-        orographic_uplift.enrichment_ratio,
-        orographic_uplift.supported_samples,
-        1.20,
+        available(
+            orographic_uplift.enrichment_ratio,
+            orographic_uplift.supported_samples,
+        ),
     )?;
-    if seasonal_forcing_is_resolved {
-        builder.record_unbounded(
-            metric_id("seasonal-hemisphere-phase-correlation")?,
-            correlation(&seasonal_latitude, &seasonal_temperature, cancellation)?.abs(),
-            u32::try_from(seasonal_latitude.len())
-                .map_err(|_| QualityBuildError::SampleCountOverflow)?,
-        )?;
-        record_at_least(
-            &mut builder,
-            "seasonal-hemisphere-phase-fraction",
-            fraction(seasonal_phase_correct, seasonal_phase_total),
-            seasonal_phase_total,
-            0.65,
-        )?;
-    } else {
-        let unavailable = || MetricObservation::Unavailable {
-            reason: NO_RESOLVED_SEASONAL_FORCING_REASON.to_owned(),
-        };
-        builder.record_observation_unbounded(
-            metric_id("seasonal-hemisphere-phase-correlation")?,
-            unavailable(),
-        )?;
-        builder.record_observation_at_least(
-            metric_id("seasonal-hemisphere-phase-fraction")?,
-            unavailable(),
-            0.65,
-        )?;
-    }
-    builder.record_at_most(
-        metric_id("cubed-face-seam-speed-ratio")?,
-        seam_ratio,
-        u32::try_from(surface.edges().len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
-        4.0,
+    record_expected_metric(
+        &mut builder,
+        "outgoing-longwave-global-mean-w-m2",
+        available(budget.outgoing_longwave_global_mean_w_m2(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "planetary-albedo-global-mean",
+        available(budget.planetary_albedo_global_mean(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "positive-thermocline-depth-fraction",
+        available(fraction(depth_positive, depth_total), depth_total),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "precipitation-global-mean-mm-day",
+        available(budget.precipitation_global_mean_mm_day(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "precipitation-low-to-high-latitude-ratio",
+        precipitation_low_to_high,
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "precipitation-seasonal-hemisphere-phase-fraction",
+        precipitation_seasonal_phase,
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "sea-surface-height-max-absolute-m",
+        available(
+            sea_surface_height_max_absolute,
+            sea_surface_height_count.max(1),
+        ),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "seasonal-hemisphere-phase-correlation",
+        seasonal_correlation,
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "seasonal-hemisphere-phase-fraction",
+        seasonal_fraction,
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "toa-net-radiation-global-mean-w-m2",
+        available(budget.toa_net_radiation_global_mean_w_m2(), 1),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "vertical-shear-rms-m-s",
+        available(
+            (shear_square / f64::from(shear_count.max(1))).sqrt(),
+            shear_count,
+        ),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "warm-ocean-humidity-contrast",
+        available(
+            interquartile_response(&warm, &humid, cancellation)?,
+            u32::try_from(warm.len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        ),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "warm-ocean-humidity-correlation",
+        available(
+            correlation(&warm, &humid, cancellation)?,
+            u32::try_from(warm.len()).map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        ),
     )?;
     Ok(builder
         .finish()?
         .bind_subject_fingerprint(*snapshot.checkpoint().fingerprint())?)
 }
 
-fn record_at_least(
+fn record_expected_metric(
     builder: &mut NaturalQualityReportBuilder,
     name: &'static str,
-    value: f64,
-    sample_count: u32,
-    minimum: f64,
+    observation: MetricObservation,
 ) -> Result<(), QualityBuildError> {
-    builder.record_observation_at_least(
-        metric_id(name)?,
-        MetricObservation::Available {
-            value,
-            sample_count: sample_count.max(1),
-        },
-        minimum,
+    let expected = expected_metric(name).expect("recorded P4 metric belongs to its registry");
+    match (expected.minimum, expected.maximum) {
+        (None, None) => builder.record_observation_unbounded(metric_id(name)?, observation),
+        (Some(minimum), None) => {
+            builder.record_observation_at_least(metric_id(name)?, observation, minimum)
+        }
+        (None, Some(maximum)) => {
+            builder.record_observation_at_most(metric_id(name)?, observation, maximum)
+        }
+        (Some(minimum), Some(maximum)) => {
+            builder.record_observation_between(metric_id(name)?, observation, minimum, maximum)
+        }
+    }
+}
+
+fn available(value: f64, sample_count: u32) -> MetricObservation {
+    MetricObservation::Available {
+        value,
+        sample_count: sample_count.max(1),
+    }
+}
+
+fn unavailable_seasonal_observation() -> MetricObservation {
+    MetricObservation::Unavailable {
+        reason: NO_RESOLVED_SEASONAL_FORCING_REASON.to_owned(),
+    }
+}
+
+fn ratio_observation(
+    numerator: MetricObservation,
+    denominator: MetricObservation,
+) -> Result<MetricObservation, QualityBuildError> {
+    match (numerator, denominator) {
+        (
+            MetricObservation::Available {
+                value: numerator,
+                sample_count: numerator_samples,
+            },
+            MetricObservation::Available {
+                value: denominator,
+                sample_count: denominator_samples,
+            },
+        ) if denominator > 0.0 => Ok(MetricObservation::Available {
+            value: numerator / denominator,
+            sample_count: numerator_samples
+                .checked_add(denominator_samples)
+                .ok_or(QualityBuildError::SampleCountOverflow)?,
+        }),
+        (_, MetricObservation::Available { value: 0.0, .. }) => {
+            Ok(MetricObservation::Unavailable {
+                reason: NO_HIGH_LATITUDE_PRECIPITATION_REASON.to_owned(),
+            })
+        }
+        (MetricObservation::Unavailable { reason }, _)
+        | (_, MetricObservation::Unavailable { reason }) => {
+            Ok(MetricObservation::Unavailable { reason })
+        }
+        (_, MetricObservation::Available { .. }) => {
+            unreachable!("precipitation means are validated nonnegative")
+        }
+    }
+}
+
+fn record_precipitation_seasonal_phase_signal(
+    accumulator: &mut MetricAccumulator,
+    latitude_degrees: f64,
+    january_precipitation_mm_day: f64,
+    july_precipitation_mm_day: f64,
+    area_m2: f64,
+) -> Result<(), QualityBuildError> {
+    let seasonal_difference = july_precipitation_mm_day - january_precipitation_mm_day;
+    accumulator.push(
+        f64::from(latitude_degrees * seasonal_difference > 0.0),
+        area_m2 * seasonal_difference.abs(),
     )
 }
 
@@ -1080,6 +1259,146 @@ mod tests {
     }
 
     #[test]
+    fn metric_inventory_is_complete_and_alphabetical() {
+        assert_eq!(EXPECTED_METRIC_NAMES.len(), 25);
+        assert!(
+            EXPECTED_METRIC_NAMES
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+            "P4 metric identity is canonical only in alphabetical order"
+        );
+        for required in [
+            "absorbed-shortwave-global-mean-w-m2",
+            "evaporation-global-mean-mm-day",
+            "evaporation-precipitation-relative-imbalance",
+            "outgoing-longwave-global-mean-w-m2",
+            "planetary-albedo-global-mean",
+            "precipitation-global-mean-mm-day",
+            "precipitation-low-to-high-latitude-ratio",
+            "precipitation-seasonal-hemisphere-phase-fraction",
+            "toa-net-radiation-global-mean-w-m2",
+        ] {
+            assert!(
+                EXPECTED_METRIC_NAMES.contains(&required),
+                "missing P4 water/energy metric {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn precipitation_phase_fraction_weights_resolved_signal_not_dry_cell_count() {
+        let mut phase = MetricAccumulator::new();
+        record_precipitation_seasonal_phase_signal(&mut phase, 20.0, 2.0, 6.0, 1.0).unwrap();
+        record_precipitation_seasonal_phase_signal(&mut phase, 20.0, 1.0e-6, 0.0, 1_000.0).unwrap();
+        record_precipitation_seasonal_phase_signal(&mut phase, -20.0, 5.0, 1.0, 1.0).unwrap();
+        let MetricObservation::Available { value, .. } = phase.finish().unwrap() else {
+            panic!("resolved precipitation phase must be measurable");
+        };
+        assert!(value > 0.999, "dry-grid noise dominated phase: {value}");
+    }
+
+    fn synthetic_report(
+        failing_name: Option<&str>,
+    ) -> (NaturalQualityReport, SurfaceRef, [u8; 32]) {
+        let surface = surface();
+        let surface_ref = SurfaceRef::for_spherical(&surface);
+        let state_fingerprint = [7_u8; 32];
+        let maximum_monthly_samples = surface_ref.cell_count() * CLIMATE_MONTH_COUNT as u32;
+        let mut builder = NaturalQualityReportBuilder::new(surface_ref);
+        for name in EXPECTED_METRIC_NAMES.into_iter().rev() {
+            let expected = expected_metric(name).unwrap();
+            let passing_value = match (expected.minimum, expected.maximum) {
+                (Some(minimum), Some(maximum)) => (minimum + maximum) * 0.5,
+                (Some(minimum), None) => minimum,
+                (None, Some(maximum)) => maximum,
+                (None, None) => 0.0,
+            };
+            let value = if failing_name == Some(name) {
+                expected.maximum.map_or_else(
+                    || expected.minimum.expect("hard metric has one bound") - 1.0,
+                    |maximum| maximum + 1.0,
+                )
+            } else {
+                passing_value
+            };
+            let sample_count = match name {
+                "cubed-face-seam-speed-ratio" => surface_ref.edge_count(),
+                "ocean-current-land-leakage-max-m-s" => surface_ref.cell_count(),
+                "positive-thermocline-depth-fraction" | "vertical-shear-rms-m-s" => {
+                    maximum_monthly_samples
+                }
+                "seasonal-hemisphere-phase-correlation" => surface_ref.cell_count(),
+                _ => 1,
+            };
+            record_expected_metric(&mut builder, name, available(value, sample_count)).unwrap();
+        }
+        let report = builder
+            .finish()
+            .unwrap()
+            .bind_subject_fingerprint(state_fingerprint)
+            .unwrap();
+        (report, surface_ref, state_fingerprint)
+    }
+
+    #[test]
+    fn canonical_report_resolves_every_bound_by_metric_name() {
+        let (report, surface_ref, state_fingerprint) = synthetic_report(None);
+        validate_global_circulation_quality_report(&report, surface_ref, &state_fingerprint)
+            .unwrap();
+        for metric in report.metrics() {
+            let expected = expected_metric(metric.id().name()).unwrap();
+            assert_eq!(metric.bounds().min(), expected.minimum);
+            assert_eq!(metric.bounds().max(), expected.maximum);
+        }
+    }
+
+    #[test]
+    fn synthetic_water_and_energy_closure_failures_are_rejected() {
+        for failing_name in [
+            "evaporation-precipitation-relative-imbalance",
+            "toa-net-radiation-global-mean-w-m2",
+        ] {
+            let (report, surface_ref, state_fingerprint) = synthetic_report(Some(failing_name));
+            assert_eq!(
+                report
+                    .metrics()
+                    .iter()
+                    .find(|metric| metric.id().name() == failing_name)
+                    .unwrap()
+                    .status(),
+                QualityMetricStatus::Fail,
+            );
+            let error = validate_global_circulation_quality_report(
+                &report,
+                surface_ref,
+                &state_fingerprint,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains(failing_name),
+                "hard closure rejection did not identify {failing_name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_morphology_failure_remains_diagnostic() {
+        let diagnostic_name = "low-latitude-easterly-fraction";
+        let (report, surface_ref, state_fingerprint) = synthetic_report(Some(diagnostic_name));
+        assert_eq!(
+            report
+                .metrics()
+                .iter()
+                .find(|metric| metric.id().name() == diagnostic_name)
+                .unwrap()
+                .status(),
+            QualityMetricStatus::Fail,
+        );
+        validate_global_circulation_quality_report(&report, surface_ref, &state_fingerprint)
+            .unwrap();
+    }
+
+    #[test]
     fn uniform_ambient_flow_does_not_count_as_a_basin_gyre() {
         let surface = surface();
         let current = surface
@@ -1285,32 +1604,35 @@ pub(crate) fn validate_global_circulation_quality_report(
         .cell_count()
         .checked_mul(CLIMATE_MONTH_COUNT as u32)
         .ok_or_else(|| "P4 quality sample limit overflowed".to_owned())?;
-    for ((metric, expected_name), (expected_min, expected_max)) in report
-        .metrics()
-        .iter()
-        .zip(EXPECTED_METRIC_NAMES)
-        .zip(EXPECTED_METRIC_BOUNDS)
-    {
+    for (metric, expected_name) in report.metrics().iter().zip(EXPECTED_METRIC_NAMES) {
         if metric.id().namespace() != METRIC_NAMESPACE
             || metric.id().version() != METRIC_VERSION
             || metric.id().name() != expected_name
         {
             return Err(format!("unexpected P4 metric {}", metric.id().name()));
         }
+        let expected = expected_metric(expected_name)
+            .expect("validated P4 metric name belongs to the locked registry");
         let bounds = metric.bounds();
-        if bounds.min() != expected_min || bounds.max() != expected_max {
+        if bounds.min() != expected.minimum || bounds.max() != expected.maximum {
             return Err(format!(
-                "per-world P4 metric {expected_name} changed locked bounds from {expected_min:?}..={expected_max:?} to {:?}..={:?}",
+                "per-world P4 metric {expected_name} changed locked bounds from {:?}..={:?} to {:?}..={:?}",
+                expected.minimum,
+                expected.maximum,
                 bounds.min(),
                 bounds.max()
             ));
         }
-        // Per-world metric statuses are measurements of this world, not
-        // gates: any recorded status is legal evidence and the runtime never
-        // rejects a world for its statistics (user ruling, 2026-08-20).
-        // Structural checks - binding, metric set, locked bounds, sample
-        // counts - stay hard because failing them means the evidence itself
-        // is corrupt.
+        if expected.hard && metric.status() != QualityMetricStatus::Pass {
+            return Err(format!(
+                "hard P4 closure metric {expected_name} has status {:?}",
+                metric.status()
+            ));
+        }
+        // Morphology and Earth-likeness statuses describe this authored world;
+        // only the two structural water/energy closures are hard. Binding,
+        // metric inventory, named bounds, and sample counts remain structural
+        // because violating them corrupts the evidence itself.
         if metric.status() == QualityMetricStatus::Unavailable {
             continue;
         }
@@ -1321,6 +1643,13 @@ pub(crate) fn validate_global_circulation_quality_report(
             ));
         }
         let exact_samples = match expected_name {
+            "absorbed-shortwave-global-mean-w-m2"
+            | "evaporation-global-mean-mm-day"
+            | "evaporation-precipitation-relative-imbalance"
+            | "outgoing-longwave-global-mean-w-m2"
+            | "planetary-albedo-global-mean"
+            | "precipitation-global-mean-mm-day"
+            | "toa-net-radiation-global-mean-w-m2" => Some(1),
             "cubed-face-seam-speed-ratio" => Some(expected_surface.edge_count()),
             "ocean-current-land-leakage-max-m-s" => Some(expected_surface.cell_count()),
             "positive-thermocline-depth-fraction" | "vertical-shear-rms-m-s" => {

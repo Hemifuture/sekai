@@ -92,6 +92,29 @@ impl<'grid> CirculationOperators<'grid> {
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         debug_assert_eq!(scalar.len(), self.grid.cell_count());
         let mut accumulated = vec![[0.0_f64; 3]; self.grid.cell_count()];
+        let mut result = vec![[0.0_f32; 3]; self.grid.cell_count()];
+        self.gradient_f32_into_validated_impl(
+            scalar,
+            edge_permeability,
+            &mut accumulated,
+            &mut result,
+            cancellation,
+        )?;
+        Ok(result)
+    }
+
+    fn gradient_f32_into_validated_impl(
+        &self,
+        scalar: &[f32],
+        edge_permeability: Option<&[f32]>,
+        accumulated: &mut [[f64; 3]],
+        result: &mut [[f32; 3]],
+        cancellation: Option<&BuildCancellation>,
+    ) -> Result<(), CirculationOperatorError> {
+        debug_assert_eq!(scalar.len(), self.grid.cell_count());
+        debug_assert_eq!(accumulated.len(), self.grid.cell_count());
+        debug_assert_eq!(result.len(), self.grid.cell_count());
+        accumulated.fill([0.0; 3]);
         for (edge_index, edge) in self.grid.edges().iter().enumerate() {
             poll_operator_cancelled(edge_index, cancellation)?;
             let [first, second] = edge.cells();
@@ -116,15 +139,41 @@ impl<'grid> CirculationOperators<'grid> {
                 -(edge_value - second_value) * length,
             );
         }
-        let mut result = Vec::with_capacity(self.grid.cell_count());
-        for (index, (cell, value)) in self.grid.cells().iter().zip(accumulated).enumerate() {
+        for (index, ((cell, value), target)) in self
+            .grid
+            .cells()
+            .iter()
+            .zip(accumulated)
+            .zip(result)
+            .enumerate()
+        {
             poll_operator_cancelled(index, cancellation)?;
             let gradient =
-                project_tangent(scale(value, cell.area_m2().recip()), cell.center_unit());
-            result.push(to_quantized_tangent_f32(gradient, cell.center_unit()));
+                project_tangent(scale(*value, cell.area_m2().recip()), cell.center_unit());
+            *target = to_quantized_tangent_f32(gradient, cell.center_unit());
         }
         check_operator_cancelled(cancellation)?;
-        Ok(result)
+        Ok(())
+    }
+
+    pub(crate) fn gradient_into_cancellable_validated(
+        &self,
+        scalar: &[f32],
+        edge_permeability: &[f32],
+        output: &mut [[f32; 3]],
+        workspace: &mut SecondOrderTransportWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), CirculationOperatorError> {
+        debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
+        debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
+        debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
+        self.gradient_f32_into_validated_impl(
+            scalar,
+            Some(edge_permeability),
+            &mut workspace.gradients,
+            output,
+            Some(cancellation),
+        )
     }
 
     /// Fuses the two finite-volume edge traversals needed by the fast

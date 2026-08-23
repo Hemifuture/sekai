@@ -10,7 +10,7 @@ use sekai::generators::natural::{
 };
 use sekai::world::natural::{
     large_scale_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateLayerLayout,
-    ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    ClimateLayerRole, ClimateModelProfile, PlanetForcing, P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
     P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
     WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
@@ -360,7 +360,17 @@ fn saturation_adjustment_removes_supersaturation_within_one_physical_step() {
         assert!(tendency.precipitation_rate_mm_s()[cell] > 0.0);
         let adjusted = f64::from(initial.specific_humidity()[cell])
             + step_seconds * f64::from(tendency.specific_humidity_tendency_s_inv()[cell]);
-        assert!(adjusted <= f64::from(saturation) + 2.0e-9);
+        let adjusted_temperature = f64::from(
+            initial
+                .temperature_c(ClimateLayerRole::LowerAtmosphere)
+                .unwrap()[cell],
+        ) + step_seconds
+            * f64::from(
+                tendency
+                    .temperature_tendency_k_s(ClimateLayerRole::LowerAtmosphere)
+                    .unwrap()[cell],
+            );
+        assert!(adjusted <= saturation_specific_humidity_kg_kg(adjusted_temperature) + 2.0e-9);
         assert!(adjusted >= 0.0);
     }
 }
@@ -417,7 +427,12 @@ fn upper_layer_saturation_adjustment_cannot_store_cloud_water_without_rain() {
 
     for (cell, &humidity_tendency) in upper_tendency.iter().enumerate() {
         let adjusted = f64::from(initial_upper[cell]) + step_seconds * f64::from(humidity_tendency);
-        assert!(adjusted <= f64::from(saturation) + 2.0e-9);
+        let adjusted_temperature = f64::from(
+            initial
+                .temperature_c(ClimateLayerRole::UpperAtmosphere)
+                .unwrap()[cell],
+        ) + step_seconds * f64::from(upper_heat[cell]);
+        assert!(adjusted <= saturation_specific_humidity_kg_kg(adjusted_temperature) + 2.0e-9);
         assert!(adjusted >= 0.0);
         assert!(precipitation[cell] > 0.0);
         assert!(
@@ -437,13 +452,62 @@ fn coarse_grid_condensation_relaxes_cloudy_humidity_without_overshoot() {
     let step_seconds = 7_200.0;
     let rate = large_scale_condensation_kg_m2_s(initial, temperature_c, column_mass, step_seconds);
     let adjusted = initial - step_seconds * rate / column_mass;
-    let expected = threshold
-        + (initial - threshold)
-            * (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
+    let adjusted_temperature = temperature_c
+        + WATER_VAPORIZATION_LATENT_HEAT_J_KG * (initial - adjusted)
+            / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K;
+    let initial_cloud_excess = initial - threshold;
+    let adjusted_cloud_excess = adjusted
+        - P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY
+            * saturation_specific_humidity_kg_kg(adjusted_temperature);
+    let expected_cloud_excess = initial_cloud_excess
+        * (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
 
-    assert!((adjusted - expected).abs() <= 1.0e-15);
-    assert!(adjusted >= threshold);
+    assert!((adjusted_cloud_excess - expected_cloud_excess).abs() <= 1.0e-14);
+    assert!(adjusted_cloud_excess >= 0.0);
     assert!(adjusted < initial);
+}
+
+#[test]
+fn coupled_saturation_adjustment_is_invariant_to_physical_step_partition() {
+    fn advance(
+        mut humidity: f64,
+        mut temperature_c: f64,
+        column_mass: f64,
+        step_seconds: f64,
+        steps: usize,
+    ) -> (f64, f64) {
+        for _ in 0..steps {
+            let rate = large_scale_condensation_kg_m2_s(
+                humidity,
+                temperature_c,
+                column_mass,
+                step_seconds,
+            );
+            let condensed = step_seconds * rate / column_mass;
+            humidity -= condensed;
+            temperature_c += WATER_VAPORIZATION_LATENT_HEAT_J_KG * condensed
+                / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K;
+        }
+        (humidity, temperature_c)
+    }
+
+    let temperature_c = 15.0;
+    let initial = 1.2 * saturation_specific_humidity_kg_kg(temperature_c);
+    let column_mass = 1.225 * 8_000.0;
+    let one_step = advance(initial, temperature_c, column_mass, 7_200.0, 1);
+    let partitioned = advance(initial, temperature_c, column_mass, 300.0, 24);
+
+    assert!((one_step.0 - partitioned.0).abs() <= 1.0e-14);
+    assert!((one_step.1 - partitioned.1).abs() <= 1.0e-11);
+    assert!(
+        one_step.0 <= saturation_specific_humidity_kg_kg(one_step.1) + f64::EPSILON,
+        "coupled adjustment must end at or below saturation: {one_step:?}"
+    );
+    let initial_moist_enthalpy = P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K * temperature_c
+        + WATER_VAPORIZATION_LATENT_HEAT_J_KG * initial;
+    let final_moist_enthalpy = P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K * one_step.1
+        + WATER_VAPORIZATION_LATENT_HEAT_J_KG * one_step.0;
+    assert!((initial_moist_enthalpy - final_moist_enthalpy).abs() <= 1.0e-9);
 }
 
 #[test]

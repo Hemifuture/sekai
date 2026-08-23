@@ -314,16 +314,43 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         )?;
         let full_derivative = ClimateDerivative::from_tendency(state, full, cancellation)?;
         let fast_derivative = ClimateDerivative::from_tendency(state, &fast, cancellation)?;
-        let slow = full_derivative.subtract(&fast_derivative, cancellation)?;
-        let first_fast_plus_slow = fast_derivative.add(&slow, cancellation)?;
-        // Only the frozen slow derivative and the full precipitation
-        // diagnostic survive into the RK3 loop. Explicit drops make the live
-        // owner inventory used by the public memory report mechanically true.
+        let mut slow = full_derivative.subtract(&fast_derivative, cancellation)?;
+        // Transport and phase-change closures diagnose a conservative scalar
+        // endpoint over the declared physical step; they are not autonomous
+        // RK stage derivatives. Apply that endpoint once, replace the frozen
+        // thermal-pressure contribution with its post-endpoint value, then
+        // retain that slow dynamical background through the fast stages.
+        // Explicit drops keep the live owner inventory used by the public
+        // memory report mechanically true.
         drop(full_derivative);
-        drop(fast_derivative);
         drop(fast);
         let mut advanced = state.clone_cancellable(cancellation)?;
-        let mut evaluations = 2_u64;
+        apply_frozen_slow_scalar_endpoint(
+            state,
+            &slow,
+            macro_step_seconds,
+            &mut advanced,
+            cancellation,
+        )?;
+        let thermal_pressure_difference = system
+            .evaluate_thermal_pressure_endpoint_difference_with_workspace_validated(
+                state,
+                &advanced,
+                ocean_edge_permeability,
+                cancellation,
+                fast_workspace,
+            )?;
+        let thermal_pressure_difference = ClimateDerivative::from_tendency(
+            &advanced,
+            &thermal_pressure_difference,
+            cancellation,
+        )?;
+        slow = slow.add(&thermal_pressure_difference, cancellation)?;
+        clear_scalar_components(&mut slow);
+        let first_fast_plus_slow = fast_derivative.add(&slow, cancellation)?;
+        drop(thermal_pressure_difference);
+        drop(fast_derivative);
+        let mut evaluations = 3_u64;
         let mut first_fast_plus_slow = Some(first_fast_plus_slow);
         observer(GlobalCirculationPhase::FastSubstepsStarted);
         if cancellation.is_cancelled() {
@@ -365,13 +392,6 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             };
             observer(GlobalCirculationPhase::FastSubstepCompleted);
         }
-        apply_frozen_slow_scalar_endpoint(
-            state,
-            &slow,
-            macro_step_seconds,
-            &mut advanced,
-            cancellation,
-        )?;
         advanced.validate_against_cancellable(self.grid, cancellation)?;
         Ok(ClimateStepResult::new(
             advanced,
@@ -409,6 +429,19 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         }
         let substeps = substeps_f64 as u32;
         Ok((substeps, macro_step_seconds / f64::from(substeps)))
+    }
+}
+
+fn clear_scalar_components(derivative: &mut ClimateDerivative) {
+    for layer in &mut derivative.layers {
+        layer.temperature.fill(0.0);
+    }
+    derivative.humidity.fill(0.0);
+    if let Some(upper_humidity) = &mut derivative.upper_humidity {
+        upper_humidity.fill(0.0);
+    }
+    if let Some(deep_temperature) = &mut derivative.deep_temperature {
+        deep_temperature.fill(0.0);
     }
 }
 

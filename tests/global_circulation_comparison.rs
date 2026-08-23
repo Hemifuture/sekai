@@ -185,7 +185,11 @@ fn same_equation_suite_selects_only_a_candidate_that_passes_every_gate() {
         &BuildCancellation::new(),
     )
     .unwrap();
-    assert!(report.split_explicit().qualifies());
+    assert!(
+        report.split_explicit().qualifies(),
+        "split-explicit comparison: {:?}",
+        report.split_explicit()
+    );
     match report.selection() {
         ProductionCandidateSelection::Selected(ProductionIntegratorId::SplitExplicitRk3V1) => {
             assert!(report.split_explicit().qualifies());

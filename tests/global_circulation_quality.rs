@@ -29,7 +29,7 @@ fn public_product_error_flattens_cancellation_from_every_dense_phase() {
 }
 
 #[test]
-fn generated_c2_passes_locked_wind_ocean_vertical_and_moisture_gates() {
+fn generated_c2_publishes_finite_diagnostics_and_passes_physical_closures() {
     let fixture = global_circulation_fixture();
     let surface = fixture.bundle.authoritative_surface();
     let snapshot = GlobalCirculationGenerator::generate(
@@ -43,8 +43,10 @@ fn generated_c2_passes_locked_wind_ocean_vertical_and_moisture_gates() {
     let report =
         evaluate_global_circulation_quality(surface, &fixture.relief, &fixture.forcing, &snapshot)
             .unwrap();
-    assert!(report.metrics().len() >= 10);
     for required in [
+        "absorbed-shortwave-global-mean-w-m2",
+        "evaporation-global-mean-mm-day",
+        "evaporation-precipitation-relative-imbalance",
         "low-latitude-easterly-fraction",
         "midlatitude-westerly-fraction",
         "vertical-shear-rms-m-s",
@@ -58,8 +60,14 @@ fn generated_c2_passes_locked_wind_ocean_vertical_and_moisture_gates() {
         "orographic-precipitation-response",
         "orographic-rain-shadow-leeward-drying",
         "orographic-uplift-enrichment-ratio",
+        "outgoing-longwave-global-mean-w-m2",
+        "planetary-albedo-global-mean",
+        "precipitation-global-mean-mm-day",
+        "precipitation-low-to-high-latitude-ratio",
+        "precipitation-seasonal-hemisphere-phase-fraction",
         "seasonal-hemisphere-phase-correlation",
         "seasonal-hemisphere-phase-fraction",
+        "toa-net-radiation-global-mean-w-m2",
         "cubed-face-seam-speed-ratio",
     ] {
         let metric = report
@@ -67,17 +75,75 @@ fn generated_c2_passes_locked_wind_ocean_vertical_and_moisture_gates() {
             .iter()
             .find(|metric| metric.id().name() == required)
             .unwrap_or_else(|| panic!("missing quality metric {required}"));
-        assert_eq!(
-            metric.status(),
-            QualityMetricStatus::Pass,
-            "{required}: value={:?}, bounds={:?}",
+        assert!(
+            metric.value().is_some_and(f64::is_finite),
+            "{required}: value={:?}",
             metric.value(),
-            metric.bounds(),
         );
         if required == "sea-surface-height-max-absolute-m" {
             assert_eq!(metric.bounds().min(), Some(0.01));
             assert_eq!(metric.bounds().max(), Some(6.0));
         }
+    }
+    let budget = snapshot.budget_report();
+    for (name, expected) in [
+        (
+            "absorbed-shortwave-global-mean-w-m2",
+            budget.absorbed_shortwave_global_mean_w_m2(),
+        ),
+        (
+            "evaporation-global-mean-mm-day",
+            budget.evaporation_global_mean_mm_day(),
+        ),
+        (
+            "evaporation-precipitation-relative-imbalance",
+            budget.evaporation_precipitation_relative_imbalance(),
+        ),
+        (
+            "outgoing-longwave-global-mean-w-m2",
+            budget.outgoing_longwave_global_mean_w_m2(),
+        ),
+        (
+            "planetary-albedo-global-mean",
+            budget.planetary_albedo_global_mean(),
+        ),
+        (
+            "precipitation-global-mean-mm-day",
+            budget.precipitation_global_mean_mm_day(),
+        ),
+        (
+            "toa-net-radiation-global-mean-w-m2",
+            budget.toa_net_radiation_global_mean_w_m2(),
+        ),
+    ] {
+        let metric = report
+            .metrics()
+            .iter()
+            .find(|metric| metric.id().name() == name)
+            .unwrap();
+        assert_eq!(
+            metric.value().unwrap().to_bits(),
+            expected.to_bits(),
+            "{name}"
+        );
+        assert_eq!(metric.sample_count(), 1, "{name}");
+    }
+    for hard_closure in [
+        "evaporation-precipitation-relative-imbalance",
+        "toa-net-radiation-global-mean-w-m2",
+    ] {
+        let metric = report
+            .metrics()
+            .iter()
+            .find(|metric| metric.id().name() == hard_closure)
+            .unwrap();
+        assert_eq!(
+            metric.status(),
+            QualityMetricStatus::Pass,
+            "{hard_closure}: value={:?}, bounds={:?}",
+            metric.value(),
+            metric.bounds(),
+        );
     }
 }
 
@@ -305,14 +371,22 @@ fn zero_axial_tilt_marks_seasonal_phase_not_applicable_without_rejecting_product
     .unwrap();
     let report =
         evaluate_global_circulation_quality(surface, &fixture.relief, &forcing, &snapshot).unwrap();
-    assert!(
-        report
-            .metrics()
-            .iter()
-            .all(|metric| metric.status() != QualityMetricStatus::Fail),
-        "a conditionally unavailable seasonal signal must not hide another failed product gate"
-    );
+    for hard_closure in [
+        "evaporation-precipitation-relative-imbalance",
+        "toa-net-radiation-global-mean-w-m2",
+    ] {
+        assert_eq!(
+            report
+                .metrics()
+                .iter()
+                .find(|metric| metric.id().name() == hard_closure)
+                .unwrap()
+                .status(),
+            QualityMetricStatus::Pass,
+        );
+    }
     for name in [
+        "precipitation-seasonal-hemisphere-phase-fraction",
         "seasonal-hemisphere-phase-correlation",
         "seasonal-hemisphere-phase-fraction",
     ] {

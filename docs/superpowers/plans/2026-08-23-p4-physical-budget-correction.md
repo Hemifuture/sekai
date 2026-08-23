@@ -136,22 +136,38 @@
 文件：
 
 - 修改：`src/generators/natural/quality/global_circulation.rs`
+- 修改：`src/world/natural/global_circulation.rs`
+- 修改：`src/generators/natural/circulation/operators.rs`
+- 修改：`src/generators/natural/global_circulation/comparison.rs`
+- 修改：`src/generators/natural/global_circulation/mod.rs`
+- 修改：`src/generators/natural/global_circulation/split_explicit.rs`
+- 修改：`src/generators/natural/global_circulation_stage.rs`
+- 修改：`src/generators/natural/global_circulation/tendency.rs`
+- 修改：`src/world/natural/mod.rs`
+- 修改：`src/world/natural/profile.rs`
 - 修改：`tests/global_circulation_quality.rs`
 - 修改：`tests/global_circulation_evidence.rs`
-- 修改：`tests/support/global_circulation.rs`
-- 修改：`tests/support/natural_quality.rs`
+- 修改：`tests/global_circulation_forcing.rs`
+- 修改：`tests/global_circulation_integrators.rs`
+- 修改：`tests/global_circulation_comparison.rs`
+- 修改：`tests/global_circulation_contracts.rs`
+- 修改：`tests/global_circulation_performance.rs`
+- 修改：`tests/global_circulation_stage.rs`
 - 修改：受 P4 quality schema 影响的 stage/quality 测试
 
-- [ ] 先写 RED：`EXPECTED_METRIC_NAMES` 为字母序；边界按 metric name 查找；
+- [x] 先写 RED：`EXPECTED_METRIC_NAMES` 为字母序；边界按 metric name 查找；
   合成 report 人工注入 `E-P` 与 TOA net Fail 时被拒，不能借 seed 巧合。
-- [ ] 添加规格 §7.1 的无界测量和两项 hard closure；移除位置耦合的 bounds
+- [x] 添加规格 §7.1 的无界测量和两项 hard closure；移除位置耦合的 bounds
   zip，集中到一个名字→边界事实源。
-- [ ] 冻结 17 粒默认 Earth-like Release evidence；使用生产面积、生产字段和
+- [x] 冻结 17 粒默认 Earth-like Release evidence；使用生产面积、生产字段和
   `world` 参考常量报告 GPCP V3.2、CERES EBAF 与 latent-heat 偏差。
-- [ ] 默认语料的聚合降水须进入 GPCP 参考 `±7%` evidence envelope；玩家参数
-  世界不受这个证据包络钳制。记录低/高纬比和两半球季节相位。
-- [ ] 跑 quality/evidence 与 P4 stage focused Release 套件，保留确定性哈希。
-- [ ] 跑三道门禁并提交。
+- [x] 按 R4 与用户裁定，记录默认语料相对 GPCP `±7%` evidence envelope 的
+  偏差、低/高纬比和热带两半球季节相位；经验结果只检测、不钳制也不阻止生成。
+- [x] 修复证据 RED 暴露的 neutral bulk、resolved-cell LCL 与湿焓耦合饱和调整；
+  endpoint operator 只执行一次，单步与 formation-cycle 细慢步参考均复用同一
+  process split；global-circulation stage identity 随方程与质量 payload 升版。
+- [x] 跑 quality/evidence 与 P4 stage focused Release 套件，保留确定性哈希。
+- [x] 跑三道门禁并提交。
 
 提交：`Audit P4 water and energy evidence`
 
@@ -268,6 +284,11 @@
   `10.1007/s00382-002-0268-2`；Ridders (1979), *A New Algorithm for
   Computing a Single Root of a Real Continuous Function*, DOI
   `10.1109/TCS.1979.1084580`。
+- 湿焓相变的一维求根：Press et al. (2007), *Numerical Recipes*, third
+  edition, §9.4 `rtsafe` 的 safeguarded Newton/bisection 模式。
+- 干空气物性与标准重力：Wallace & Hobbs (2006), *Atmospheric Science: An
+  Introductory Survey*, second edition, constants table；3rd CGPM (1901),
+  Declaration 2, DOI `10.59161/CGPM1901DECL2E`。
 - 守恒保界通量：Hu, Adams & Shu (2013), DOI
   `10.1016/j.jcp.2013.01.024`。
 - Earth 降水与水量审计：Huffman et al. (2023), GPCP V3.2, DOI

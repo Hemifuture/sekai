@@ -13,17 +13,14 @@ use crate::generators::natural::circulation::{
 };
 use crate::world::natural::{
     bulk_surface_evaporation_kg_m2_s, large_scale_condensation_kg_m2_s,
-    linearized_outgoing_longwave_w_m2, raw_orographic_condensation_kg_m2_s,
-    saturation_specific_humidity_kg_kg, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ForcingError, PlanetForcing, BULK_MOISTURE_TRANSFER_COEFFICIENT, CLIMATE_MONTH_COUNT,
-    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
-    P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS, P4_LOWER_LAYER_REFERENCE_PRESSURE_PA,
-    P4_MAX_SPECIFIC_HUMIDITY_KG_KG, P4_REFERENCE_AIR_DENSITY_KG_M3,
+    lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
+    neutral_surface_air_specific_humidity_kg_kg, p4_thermodynamic_constants_fingerprint,
+    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
+    CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, STANDARD_GRAVITY_M_S2,
     WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
-const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 const SEAWATER_THERMAL_EXPANSION_K_INV: f64 = 2.0e-4;
 const MIXED_LAYER_REFERENCE_THICKNESS_M: f64 = 100.0;
 const MIXED_LAYER_STERIC_ACCELERATION_M2_S2_K: f64 = 0.5
@@ -73,22 +70,16 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v5\0");
+    hasher.update(b"sekai.global-circulation-equations.v7\0");
     hasher.update(&layout.fingerprint());
+    hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
         EARTH_ROTATION_RATE_RAD_S,
-        STANDARD_GRAVITY_M_S2,
         SEAWATER_THERMAL_EXPANSION_K_INV,
         MIXED_LAYER_REFERENCE_THICKNESS_M,
         COASTAL_FORM_DRAG_TIMESCALE_S,
         BATHYMETRIC_BOTTOM_DRAG_TIMESCALE_S,
         BATHYMETRIC_BOTTOM_DRAG_REFERENCE_DEPTH_M,
-        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA,
-        P4_REFERENCE_AIR_DENSITY_KG_M3,
-        BULK_MOISTURE_TRANSFER_COEFFICIENT,
-        P4_MAX_SPECIFIC_HUMIDITY_KG_KG,
-        P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
-        P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
         ATMOSPHERE_HORIZONTAL_EDDY_VISCOSITY_M2_S,
         OCEAN_HORIZONTAL_EDDY_VISCOSITY_M2_S,
         C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
@@ -107,7 +98,6 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         f64::from(THERMOCLINE_EQUILIBRIUM_OFFSET_C),
         f64::from(DEEP_OCEAN_EQUILIBRIUM_OFFSET_C),
         f64::from(UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION),
-        WATER_VAPORIZATION_LATENT_HEAT_J_KG,
         GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
         super::generation::MAXIMUM_FAST_STEP_SECONDS,
         super::generation::FAST_CFL_TARGET,
@@ -150,7 +140,8 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         b"single-lower-boundary-linearized-gray-longwave-v1".as_slice(),
         b"reference-stratification-anomaly-heat-exchange-v1".as_slice(),
         b"subsurface-temperature-floor-pair-flux-limiter-v1".as_slice(),
-        b"bolton-large-pond-smith-speedy-phase-change-v2".as_slice(),
+        b"bolton-lcl-neutral-surface-rh-large-pond-smith-speedy-coupled-phase-change-v5".as_slice(),
+        b"thermodynamic-endpoint-before-fast-thermal-pressure-v1".as_slice(),
         b"lower-upper-condensation-latent-heat-v1".as_slice(),
         b"sensible-plus-vapor-latent-energy-ledger-v1".as_slice(),
         b"signed-external-extensive-ledger-v2".as_slice(),
@@ -1524,9 +1515,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
     /// Evaluates the fast shallow-water/Coriolis operator plus conservative
     /// paired momentum exchange and horizontal momentum diffusion. External
     /// relaxation, moisture sources/sinks, transport, drag, heat/moisture
-    /// exchange, and diagnosed eddy stress remain slow. Velocity-dependent
-    /// exchange and diffusion are re-evaluated at every RK stage so the split
-    /// does not freeze their stability response for a whole macro step.
+    /// exchange, diagnosed eddy stress, and the fixed thermodynamic endpoint
+    /// pressure remain slow. Velocity-dependent exchange and diffusion are
+    /// re-evaluated at every RK stage so the split does not freeze their
+    /// stability response for a whole macro step.
     pub fn evaluate_fast(
         &self,
         state: &LayeredClimateState,
@@ -1683,6 +1675,73 @@ impl<'grid> LayeredTendencySystem<'grid> {
         Ok(tendency)
     }
 
+    /// Diagnoses the pressure-acceleration change caused only by replacing one
+    /// validated thermodynamic endpoint with another.
+    ///
+    /// The split integrator applies scalar endpoint operators before its fast
+    /// dynamics. Those scalars then remain fixed through every RK stage, so
+    /// linearity permits one temperature-gradient difference per macro step
+    /// instead of repeating an identical gradient at every fast evaluation.
+    pub(crate) fn evaluate_thermal_pressure_endpoint_difference_with_workspace_validated(
+        &self,
+        before: &LayeredClimateState,
+        after: &LayeredClimateState,
+        ocean_edge_permeability: &[f32],
+        cancellation: &BuildCancellation,
+        workspace: &mut LayeredTendencyWorkspace,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        debug_assert_eq!(before.profile(), after.profile());
+        debug_assert_eq!(before.grid_fingerprint(), after.grid_fingerprint());
+        debug_assert_eq!(before.grid_fingerprint(), self.grid.fingerprint());
+        debug_assert_eq!(ocean_edge_permeability.len(), self.grid.edges().len());
+        let operators = CirculationOperators::new(self.grid);
+        let mut tendency = LayeredClimateTendency::zeroed(before);
+        for role in before.active_roles() {
+            check_cancelled(cancellation)?;
+            let before_temperature = before.temperature_c(*role).expect("active role");
+            let after_temperature = after.temperature_c(*role).expect("active role");
+            for (target, (&after, &before)) in workspace
+                .scalar_scratch
+                .iter_mut()
+                .zip(after_temperature.iter().zip(before_temperature))
+            {
+                *target = after - before;
+            }
+            let ocean = matches!(
+                role,
+                ClimateLayerRole::OceanMixedLayer | ClimateLayerRole::OceanThermocline
+            );
+            let permeability = if ocean {
+                ocean_edge_permeability
+            } else {
+                &workspace.open_edges
+            };
+            operators.gradient_into_cancellable_validated(
+                &workspace.scalar_scratch,
+                permeability,
+                &mut workspace.vector_scratch,
+                &mut workspace.transport,
+                cancellation,
+            )?;
+            let thermal_gradient_acceleration = role_constants(before.profile(), *role).3;
+            let layer = tendency.layer_mut(*role).expect("active tendency role");
+            for cell in 0..self.grid.cell_count() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let radial = self.grid.cells()[cell].center_unit();
+                layer.velocity_tendency_m_s2[cell] = tangentize(
+                    workspace.vector_scratch[cell]
+                        .map(|value| thermal_gradient_acceleration * f64::from(value)),
+                    radial,
+                )
+                .map(|value| value as f32);
+            }
+        }
+        self.validate_tendency(&tendency, cancellation)?;
+        Ok(tendency)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_inputs(
         &self,
@@ -1792,9 +1851,15 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .map(|component| f64::from(*component).powi(2))
                 .sum::<f64>()
                 .sqrt();
-            let evaporation_rate_kg_m2_s = bulk_surface_evaporation_kg_m2_s(
-                f64::from(surface_temperature[cell]),
+            let surface_temperature_c = f64::from(surface_temperature[cell]);
+            let neutral_surface_air_humidity = neutral_surface_air_specific_humidity_kg_kg(
+                surface_temperature_c,
+                f64::from(lower_temperature[cell]),
                 transported,
+            );
+            let evaporation_rate_kg_m2_s = bulk_surface_evaporation_kg_m2_s(
+                surface_temperature_c,
+                neutral_surface_air_humidity,
                 wind_speed,
                 f64::from(forcing.surface_moisture_availability()[cell]),
             );
@@ -1806,16 +1871,19 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let land_fraction = f64::from(forcing.land_fraction()[cell]);
             let after_evaporation =
                 transported + step_seconds * evaporation_rate_kg_m2_s / atmospheric_column_mass;
-            let saturation = saturation_specific_humidity_kg_kg(f64::from(lower_temperature[cell]));
             let large_scale_condensation_rate_kg_m2_s = large_scale_condensation_kg_m2_s(
                 after_evaporation,
                 f64::from(lower_temperature[cell]),
                 atmospheric_column_mass,
                 step_seconds,
             );
-            let orographic_rate_kg_m2_s =
-                raw_orographic_condensation_kg_m2_s(transported.min(saturation), upslope_velocity)
-                    * land_fraction;
+            let orographic_rate_kg_m2_s = lcl_adjusted_orographic_condensation_kg_m2_s(
+                transported,
+                f64::from(lower_temperature[cell]),
+                upslope_velocity,
+                wind_speed,
+                self.grid.cells()[cell].area_m2(),
+            ) * land_fraction;
             let available_rate_kg_m2_s =
                 after_evaporation.max(0.0) * atmospheric_column_mass / step_seconds;
             let requested_precipitation_rate_kg_m2_s = (large_scale_condensation_rate_kg_m2_s
@@ -3076,7 +3144,7 @@ mod tests {
     }
 
     #[test]
-    fn fused_fast_edge_kernel_matches_separate_gradient_and_continuity_bit_for_bit() {
+    fn reusable_fast_gradients_match_standalone_operator_bit_for_bit() {
         let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
         let height = (0..grid.cell_count())
             .map(|cell| 10.0 * cell as f32)
@@ -3126,6 +3194,23 @@ mod tests {
 
         assert_eq!(fused_gradient, expected_gradient);
         assert_eq!(fused_thickness, expected_thickness);
+
+        let allocation_signature = workspace.transport.allocation_signature();
+        let mut reused_gradient = vec![[0.0; 3]; grid.cell_count()];
+        operators
+            .gradient_into_cancellable_validated(
+                &height,
+                &permeability,
+                &mut reused_gradient,
+                &mut workspace.transport,
+                &cancellation,
+            )
+            .unwrap();
+        assert_eq!(reused_gradient, expected_gradient);
+        assert_eq!(
+            workspace.transport.allocation_signature(),
+            allocation_signature
+        );
     }
 
     #[test]

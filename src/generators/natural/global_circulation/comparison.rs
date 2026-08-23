@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use super::{
-    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult, ExplicitRk3Integrator,
+    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
     ImexCrankNicolsonIntegrator, LayeredClimateState, SplitExplicitRk3Integrator,
 };
 use crate::engine::BuildCancellation;
@@ -572,11 +572,14 @@ pub fn run_integrator_comparison(
     }
     let reference_steps = step_count_f64 as u32;
     let exact_reference_step = horizon_seconds / f64::from(reference_steps);
-    let explicit = ExplicitRk3Integrator::new(grid);
+    // Endpoint-style transport and phase change must execute once per physical
+    // step, not once per RK stage. The reference therefore refines the slow
+    // process step while retaining the same equation decomposition.
+    let reference_integrator = SplitExplicitRk3Integrator::new(grid, reference_step_seconds)?;
     let mut reference = initial.clone();
     let mut reference_precipitation_integral = vec![0.0_f64; grid.cell_count()];
     for _ in 0..reference_steps {
-        let result = explicit.advance(
+        let result = reference_integrator.advance(
             &reference,
             forcing,
             ocean_edge_permeability,
@@ -1123,15 +1126,15 @@ impl FormationCycleComparisonReport {
 
 #[derive(Debug, Clone, Copy)]
 enum FormationIntegrator {
-    ExplicitReference,
+    RefinedSplitReference,
     Imex,
     SplitExplicit,
 }
 
 /// Runs the locked January-to-December formation procedure independently for
-/// the truth reference and both candidates, then checks exact stopping-cycle
-/// identity. All three paths use the same capability inventory and extensive
-/// source/sink interpretation.
+/// a process-consistent refined reference and both candidates, then checks
+/// exact stopping-cycle identity. All three paths use the same capability
+/// inventory and extensive source/sink interpretation.
 #[allow(clippy::too_many_arguments)]
 pub fn run_formation_cycle_comparison(
     grid: &CubedSphereGrid,
@@ -1157,7 +1160,7 @@ pub fn run_formation_cycle_comparison(
         });
     }
     let reference = run_formation(
-        FormationIntegrator::ExplicitReference,
+        FormationIntegrator::RefinedSplitReference,
         grid,
         initial,
         forcing,
@@ -1258,7 +1261,7 @@ fn run_formation(
                 Err(ClimateIntegratorError::Cancelled) => {
                     return Err(ClimateIntegratorError::Cancelled)
                 }
-                Err(error) if !matches!(integrator, FormationIntegrator::ExplicitReference) => {
+                Err(error) if !matches!(integrator, FormationIntegrator::RefinedSplitReference) => {
                     return Ok(FormationRunOutcome {
                         cycles: None,
                         final_residual,
@@ -1299,9 +1302,11 @@ fn actual_integrator_procedure_identity(
     reference_step_seconds: f64,
 ) -> Result<FormationProcedureIdentity, ClimateIntegratorError> {
     match integrator {
-        FormationIntegrator::ExplicitReference => {
-            Ok(ExplicitRk3Integrator::new(grid).formation_procedure_identity(profile))
-        }
+        FormationIntegrator::RefinedSplitReference => Ok(SplitExplicitRk3Integrator::new(
+            grid,
+            reference_step_seconds,
+        )?
+        .formation_procedure_identity(profile)),
         FormationIntegrator::Imex => Ok(ImexCrankNicolsonIntegrator::new(grid, 32, 1.0e-6)?
             .formation_procedure_identity(profile)),
         FormationIntegrator::SplitExplicit => Ok(SplitExplicitRk3Integrator::new(
@@ -1325,12 +1330,12 @@ fn advance_formation_month(
     cancellation: &BuildCancellation,
 ) -> Result<LayeredClimateState, ClimateIntegratorError> {
     match integrator {
-        FormationIntegrator::ExplicitReference => {
+        FormationIntegrator::RefinedSplitReference => {
             let steps = (macro_step_seconds / reference_step_seconds)
                 .ceil()
                 .max(1.0) as u32;
             let step_seconds = macro_step_seconds / f64::from(steps);
-            let integrator = ExplicitRk3Integrator::new(grid);
+            let integrator = SplitExplicitRk3Integrator::new(grid, reference_step_seconds)?;
             let mut state = state.clone();
             for _ in 0..steps {
                 state = integrator

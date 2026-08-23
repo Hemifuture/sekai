@@ -345,15 +345,26 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
 - Bolton, D. (1980), DOI
   `10.1175/1520-0493(1980)108<1046:TCOEPT>2.0.CO;2`：饱和水汽压与湿度
   换算。
+- Wallace & Hobbs (2006), *Atmospheric Science: An Introductory Survey*,
+  second edition, constants table：`P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K`；
+  3rd CGPM (1901), Declaration 2, DOI `10.59161/CGPM1901DECL2E`：
+  `STANDARD_GRAVITY_M_S2`。
 - Manabe, S. & Wetherald, R. T. (1967), DOI
   `10.1175/1520-0469(1967)024<0241:TEOTAW>2.0.CO;2`：标准近地相对湿度
   初值及潜热能量项。
 - Large, W. G. & Pond, S. (1982), DOI
   `10.1175/1520-0485(1982)012<0464:SALHFM>2.0.CO;2`：海气 bulk latent
   heat / moisture flux 与 neutral transfer coefficient。
+- Molteni (2003), SPEEDY, DOI `10.1007/s00382-002-0268-2`：粗网格
+  large-scale condensation 的 RH threshold 与 relaxation time。
 - Smith (1979) raw upslope model；Smith & Barstad (2004) linear
   orographic precipitation，及 Barstad & Smith (2005), DOI
   `10.1175/JHM-404.1`：`rho_v U dot grad(h)` 地形凝结源与后续搬运/降落实践。
+- Ridders (1979), DOI `10.1109/TCS.1979.1084580`：周期湿度 shooting 的
+  括区间指数插值；Press et al. (2007), *Numerical Recipes*, third edition,
+  §9.4 `rtsafe`：湿焓相变求根的 safeguarded Newton/bisection 模式。
+- Wu (2003), DOI `10.1029/2003GL017198`：缺少 convective momentum
+  transport 的简化 GCM 对 ITCZ 跨赤道季节迁移的已知能力边界。
 - Hu, Adams & Shu (2013), *Positivity-preserving method for high-order
   conservative schemes solving compressible Euler equations*, DOI
   `10.1016/j.jcp.2013.01.024`：检测会越过物理可行域的守恒通量并以共同系数
@@ -488,3 +499,100 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
       两端，因而只删除不可行的内部传热部分，不产生或销毁热量。解析测试覆盖
       边界零通量与部分缩放；High 实测最低温精确为既有下限，wire、热预算和性能
       门禁同时通过。该修订复用既有物理状态边界与步长，不新增容差或地学参数。
+- R4（2026-08-23）：Task 4 的 17 粒独立证据与用户关于经验检测的裁定，显式
+  修订 §5.2、§5.3、§7.2、§9 第 4 条以及实施计划中“默认语料必须进入
+  `±7%`”的原验收表述。
+
+  1. GPCP、CERES、潜热通量范围和降水形态均是 Earth-default 偏差检测，不是
+     玩家世界 gate、参数钳制或 writer 失败条件。生产 hard quality 只保留
+     `evaporation-precipitation-relative-imbalance` 与
+     `toa-net-radiation-global-mean-w-m2`；wire 有限值、状态可行域和守恒拓扑
+     继续由各自结构验证器约束。语料仍记录是否进入经验包络，但不得为了变绿
+     改 transfer coefficient、增益或输出分布。
+  2. P4 质量注册表成为 25 项、严格字母序的单一名字→边界事实源；9 项水热
+     measurement 通过名字取值，预算量逐位复用 `ClimateBudgetReport`。合成
+     `E-P`/TOA Fail 守卫证明 hard 项会被拒，形态偏差则保留测量并允许产品发布，
+     不再让测试依赖某个 seed 偶然变绿。
+  3. Task 3 方程的首轮 17 粒实测降水为 `3.561324–4.141787 mm/day`、均值
+     `3.773504 mm/day`。因果分解发现 Large–Pond 是近表面 neutral bulk
+     closure，而 P4 的 prognostic lower atmosphere 是约 6 km 深的 slab；直接以
+     更冷 slab 的 `q_lower` 与温暖 SST 的 `q_sat` 相减，把垂直温差误算成海气
+     湿度亏缺。§5.2 的 `q_lower` 因而改为：先在 slab 温度诊断已解析相对湿度，
+     再以相同相对湿度重建 neutral surface-air specific humidity；不新增经验
+     常量。该修正使 seed 42 的降水/蒸发由 `3.681438/3.820134` 降为物理解附近，
+     且相同相对湿度的不同 slab 温度给出逐位相同的 bulk evaporation。
+  4. 原始 Smith upslope source 明确假设 saturated 或 near-saturated flow。直接
+     对任意 `q` 使用它，曾令 seed 61 的一个 `81.71011 C` 干热陆格产生
+     `122.19549 mm/day` 降水及同量级潜热加热。§5.3 因而改为连续物理适用域：
+     用 Bolton (1980) Eq. 15 从温度、specific humidity 和既有 reference pressure
+     求 LCL 温度，以 `P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K /`
+     `STANDARD_GRAVITY_M_S2` 换算 dry-adiabatic LCL 高度；单个 resolved cell 的
+     沿风抬升由 `upslope_velocity / horizontal_wind_speed * sqrt(cell_area)` 给出，
+     raw Smith source 只乘其中越过 LCL 的路径比例。未到 LCL 为零、越过后连续
+     增长、初始饱和时逐位回到 raw source，且结果与时间步长无关。试验性的
+     `RH >= 0.9` 地形雨硬开关已
+     删除；SPEEDY 的 `P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY` 只继续服务
+     原 coarse-grid unresolved-cloud closure。
+  5. `precipitation-seasonal-hemisphere-phase-fraction` 检测 ITCZ/热带雨带，而非
+     把冬季风暴路径也强行判作夏季降水：统计限制在既有低纬事实源
+     `TROPICAL_MAX_ABS_LATITUDE_DEGREES` 内，以 January–July 降水差的绝对振幅
+     乘面积作权重，零/极干格点不投票。Wu (2003), DOI
+     `10.1029/2003GL017198` 说明简化 GCM 缺少 convective momentum transport
+     时常无法模拟 ITCZ 跨赤道季节迁移；该指标因此是模型能力探针，不是合法性
+     门槛。
+  6. 最终 Draft/C2 17 粒 Release evidence 逐位重复通过，JSON BLAKE3 为
+     `dbbe8225c4417b92cc8fc04a2c549852d011d5c1dfa819b9af340887654a81d9`，CSV
+     BLAKE3 为
+     `476cae8d33bc304a02f249cb35dccd33228cd8a76fd604459ca24f7d25805449`。实测范围/
+     均值如下；这些数值只进入证据：
+
+     - precipitation `2.548303–2.978766 / 2.684635 mm/day`，相对 GPCP 均值
+       `-4.4614%`，17 粒中 10 粒进入 `±7%` 包络，语料均值也在包络内；
+     - evaporation `2.645588–3.062348 / 2.788984 mm/day`，最终周期 `E-P`
+       relative imbalance `0.012887–0.049283 / 0.037683`，17/17 通过结构闭合；
+     - latent heat `76.551–88.610 / 80.700 W/m2`，均值同时在 Wild et al. 与
+       Stephens et al. 证据范围内；
+     - ASR `237.191–243.927 / 241.255 W/m2`，OLR
+       `230.073–237.394 / 234.132 W/m2`，TOA net
+       `3.313–9.760 / 7.123 W/m2`，planetary albedo
+       `0.28310–0.30290 / 0.29095`；17/17 通过当前结构 TOA 闭合，但正 TOA 偏差
+       诚实表明周期定常近似仍非完整地球辐射平衡；
+     - low/high-latitude precipitation ratio
+       `79.976–3194.666 / 681.297`，热带季节相位
+       `0.47807–0.51786 / 0.49612`；orographic response 17/17、leeward drying
+       13/17、uplift enrichment 8/17 达到旧形态参考。它们说明 resolved-cell LCL
+       已恢复连续地形响应，但当前 P4 的极向水汽输送、ITCZ 跨赤道迁移和部分
+       粗网格雨影仍偏弱。该局限不得以经验阈值修补；若路线图后续要求改善，应
+       独立设计解析 convection/meridional moisture transport 与尺度感知地形降水，
+       而不是阻塞本轮合法世界生成。
+  7. 最终物理与离散语义使 equation fingerprint domain 从 V5 升为 V7、global
+     model domain 从 V4 升为 V5，global-circulation stage identity 从 V2 升为
+     V3；`p4_thermodynamic_constants_fingerprint` 机械覆盖包括 private
+     Bolton/LCL 系数在内的湿热常量，semantic ID 覆盖 neutral-surface RH、Bolton
+     LCL、Large–Pond、Smith、SPEEDY、湿焓耦合相变及“热力端点先于快速动力”
+     的过程分裂。P0–P3 仍不受影响；P4 及其 P5/T1 下游旧→新指纹继续按 Task 7
+     的实际输出登记，禁止预先猜哈希。
+  8. 最终方程使 Draft/C1 在原 8-cycle horizon 的 TOA net 为
+     `10.14567 W/m2`；继续同一方程时第 9 cycle 单调降至 `10.00339 W/m2`，第
+     10 cycle 通过既有 `GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2`。因此 Draft
+     continuation horizon 从 8 修订为 10，与 Standard 相同而仍以更低空间分辨率
+     保持快速；High 继续为 12。禁止用这组实测放宽 TOA 标准。C2 17 粒均在
+     5–8 cycles 结束，故上述 horizon 修订不改变本条第 6 项证据或哈希。
+  9. 积分器比较 RED 发现 endpoint-style saturation adjustment 不能在 classic
+     RK3 的三个 stage 中当作 autonomous derivative 重复调用：即使物理步仅
+     `300 s`，旧参考也会重复相变并与单次守恒端点产生约 `1.2 K` 的空气温度偏差。
+     最终 large-scale condensation 沿 `c_p T + L_v q` 守恒曲线求解，阈值以上的
+     cloud excess 按既有 SPEEDY 时间尺度指数衰减；括区间 Newton 使用解析导数、
+     IEEE 754 停滞判据和有效位数上限，并遵循 Press et al. (2007), *Numerical
+     Recipes*, third edition, §9.4 的 safeguarded Newton/bisection 模式，不新增
+     容差。解析测试证明
+     `1 × 7200 s` 与 `24 × 300 s` 的水汽/温度端点一致。生产 split 先一次应用
+     热力—水汽端点，再推进冻结慢动力与快速 RK3；比较参考以 `300 s` 细化同一
+     慢过程，而不在 RK stage 重复 endpoint operator；单步与 formation-cycle
+     comparison 均使用该 process-consistent refined reference。热力压力只计算
+     一次端点梯度差并复用工作区，数值逐位等价且循环内不分配。最终 Release 性能为
+     Draft/C1 `9.581 s`、Standard/C2 `28.213 s`、High/C2 `70.864 s`；High
+     独立子进程 `71.214 s`、增量 RSS `352,112,640 B`，取消延迟 `1.835 ms`；
+     performance JSON BLAKE3 为
+     `061c6328db79aca931c874ff88dc319b139f980b7cb6859a11fa077db695ec94`。
+     这些墙钟与经验数值只作证据，不进入算法或 profile 选择。

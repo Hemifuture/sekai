@@ -11,6 +11,12 @@ use crate::world::spatial::{
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
 
 const MAX_GLOBAL_CIRCULATION_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
+const WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO: f64 = 0.622;
+const BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA: f64 = 611.2;
+const BOLTON_SATURATION_EXPONENT_COEFFICIENT: f64 = 17.67;
+const BOLTON_DEWPOINT_OFFSET_C: f64 = 243.5;
+const BOLTON_LCL_TEMPERATURE_OFFSET_K: f64 = 56.0;
+const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
 
 fn deserialize_global_circulation_scalars<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
 where
@@ -73,6 +79,16 @@ pub const P4_LOWER_LAYER_REFERENCE_PRESSURE_PA: f64 = 101_325.0;
 /// density is consistent with P4's incompressible layer model; density-varying
 /// moist thermodynamics remain outside this milestone.
 pub const P4_REFERENCE_AIR_DENSITY_KG_M3: f64 = 1.225;
+/// Standard dry-air specific heat used by every P4 atmospheric slab.
+///
+/// Adopted from the constants table accompanying Wallace & Hobbs (2006),
+/// *Atmospheric Science: An Introductory Survey*, second edition.
+pub const P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K: f64 = 1_004.0;
+/// Conventional standard gravity used by P4 dynamics and dry parcel lifting.
+///
+/// This is the conventional value adopted by the 3rd CGPM (1901), Declaration
+/// 2, DOI `10.59161/CGPM1901DECL2E`.
+pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 /// Neutral bulk moisture-transfer coefficient over open water.
 ///
 /// Large & Pond (1982), DOI
@@ -93,6 +109,31 @@ pub const REFERENCE_SURFACE_RELATIVE_HUMIDITY: f64 = 0.77;
 /// P4. Temperature-dependent latent heat is deferred until thermodynamic state
 /// complexity can support it without adding an orphaned approximation.
 pub const WATER_VAPORIZATION_LATENT_HEAT_J_KG: f64 = 2.5e6;
+/// GPCP V3.2 global annual-mean precipitation reference.
+///
+/// This adopts the annual global mean reported by Huffman et al. (2023), DOI
+/// `10.1175/JCLI-D-23-0123.1`. It is Earth-default evidence, not a
+/// player-world gate.
+pub const EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY: f64 = 2.81;
+/// Relative evidence envelope around the GPCP global precipitation mean.
+///
+/// This follows the multi-product global-mean spread synthesized by Adler et
+/// al. (2017), DOI `10.1007/s10712-017-9416-4`, and applies only to the frozen
+/// Earth-default corpus.
+pub const EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE: f64 = 0.07;
+/// Lower global latent-heat-flux evidence bound from Wild et al. (2015).
+pub const WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2: f64 = 70.0;
+/// Upper global latent-heat-flux evidence bound from Wild et al. (2015).
+///
+/// Wild et al., DOI `10.1007/s00382-014-2430-z`, derive the adopted evidence
+/// interval from water- and surface-energy-budget constraints.
+pub const WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2: f64 = 85.0;
+/// Lower global latent-heat-flux evidence bound from Stephens et al. (2012).
+pub const STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2: f64 = 78.0;
+/// Upper global latent-heat-flux evidence bound from Stephens et al. (2012).
+///
+/// The adopted interval follows Stephens et al., DOI `10.1038/ngeo1580`.
+pub const STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2: f64 = 98.0;
 /// Structural mass-fraction upper bound shared by legacy and layered humidity.
 ///
 /// Specific humidity is water-vapor mass divided by total moist-air mass, so
@@ -151,6 +192,13 @@ pub const CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 340.0;
 pub const CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 99.1;
 /// CERES EBAF Ed4 global-mean outgoing longwave flux (Loeb et al. 2018).
 pub const CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 240.0;
+/// CERES global-mean absorbed shortwave derived from incoming minus reflected SW.
+pub const CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 =
+    CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2
+        - CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2;
+/// CERES global-mean TOA net radiation derived as ASR minus OLR.
+pub const CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2: f64 =
+    CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2 - CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2;
 /// CERES EBAF Ed4 surface-up longwave flux (Kato et al. 2018).
 pub const CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 398.3;
 /// Earth planetary albedo derived from the two CERES TOA shortwave fluxes.
@@ -186,11 +234,51 @@ pub const GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2: f64 =
 /// Locked dense-owner memory budget for the High C2 product.
 pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
 
+/// Fingerprints every numeric fact consumed by the P4 moist-thermodynamic
+/// closures, including the private Bolton/LCL coefficients.
+///
+/// Keeping this identity beside the formulas prevents a coefficient change
+/// from bypassing the generator's equation identity merely because the
+/// coefficient has the minimum private visibility.
+pub(crate) fn p4_thermodynamic_constants_fingerprint() -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.p4-thermodynamic-constants.v1\0");
+    for value in [
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO,
+        BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA,
+        BOLTON_SATURATION_EXPONENT_COEFFICIENT,
+        BOLTON_DEWPOINT_OFFSET_C,
+        BOLTON_LCL_TEMPERATURE_OFFSET_K,
+        BOLTON_LCL_LOG_COEFFICIENT_K,
+        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA,
+        P4_REFERENCE_AIR_DENSITY_KG_M3,
+        P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
+        STANDARD_GRAVITY_M_S2,
+        BULK_MOISTURE_TRANSFER_COEFFICIENT,
+        WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+        P4_MAX_SPECIFIC_HUMIDITY_KG_KG,
+        P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
+        P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
+    ] {
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
 /// Combines the unresolved atmosphere and resolved surface without duplicating
 /// the CERES calibration formula in generators, tests, quality, or UI code.
 pub fn planetary_albedo_from_surface(surface_albedo: f64) -> f64 {
     EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE
         + (1.0 - EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE) * surface_albedo.clamp(0.0, 1.0)
+}
+
+/// Converts P4's water-equivalent evaporation rate to latent heat flux.
+///
+/// In P4, `1 mm` water equivalent is `1 kg/m2`; dividing the fixed latent
+/// energy by the exact SI day makes this the only mm/day-to-W/m2 conversion
+/// used by evidence and presentation.
+pub fn latent_heat_flux_w_m2_from_evaporation_mm_day(evaporation_mm_day: f64) -> f64 {
+    evaporation_mm_day * WATER_VAPORIZATION_LATENT_HEAT_J_KG / 86_400.0
 }
 
 /// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar
@@ -233,11 +321,56 @@ pub fn linearized_outgoing_longwave_w_m2(
 /// `611.2 exp(17.67 T / (T + 243.5)) Pa`; the denominator below converts
 /// vapor pressure to specific humidity rather than mixing ratio.
 pub fn saturation_specific_humidity_kg_kg(temperature_c: f64) -> f64 {
-    let saturation_vapor_pressure_pa =
-        611.2 * (17.67 * temperature_c / (temperature_c + 243.5)).exp();
-    (0.622 * saturation_vapor_pressure_pa
-        / (P4_LOWER_LAYER_REFERENCE_PRESSURE_PA - 0.378 * saturation_vapor_pressure_pa))
-        .clamp(0.0, P4_MAX_SPECIFIC_HUMIDITY_KG_KG)
+    saturation_specific_humidity_and_temperature_derivative(temperature_c).0
+}
+
+fn saturation_specific_humidity_and_temperature_derivative(temperature_c: f64) -> (f64, f64) {
+    let saturation_vapor_pressure_pa = BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA
+        * (BOLTON_SATURATION_EXPONENT_COEFFICIENT * temperature_c
+            / (temperature_c + BOLTON_DEWPOINT_OFFSET_C))
+            .exp();
+    let denominator = P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+        - (1.0 - WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO) * saturation_vapor_pressure_pa;
+    let raw_humidity =
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO * saturation_vapor_pressure_pa / denominator;
+    let humidity = raw_humidity.clamp(0.0, P4_MAX_SPECIFIC_HUMIDITY_KG_KG);
+    let derivative = if humidity != raw_humidity || !humidity.is_finite() {
+        0.0
+    } else {
+        let vapor_pressure_temperature_derivative = saturation_vapor_pressure_pa
+            * BOLTON_SATURATION_EXPONENT_COEFFICIENT
+            * BOLTON_DEWPOINT_OFFSET_C
+            / (temperature_c + BOLTON_DEWPOINT_OFFSET_C).powi(2);
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO
+            * P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+            * vapor_pressure_temperature_derivative
+            / denominator.powi(2)
+    };
+    (humidity, derivative)
+}
+
+/// Diagnoses neutral near-surface air humidity from P4's deep lower slab.
+///
+/// Large–Pond bulk transfer is a near-surface neutral closure, whereas P4's
+/// prognostic lower atmosphere has the deep slab extent declared by
+/// `ClimateLayerLayout`. Directly subtracting that cold slab's specific
+/// humidity from saturation at the warmer ocean surface spuriously counts the
+/// slab's vertical temperature contrast as an air–sea humidity deficit. This
+/// zero-parameter closure preserves the slab's resolved relative humidity
+/// while evaluating it at the surface temperature, consistent with P4's
+/// existing Manabe–Wetherald relative-humidity state.
+pub fn neutral_surface_air_specific_humidity_kg_kg(
+    surface_temperature_c: f64,
+    lower_temperature_c: f64,
+    lower_specific_humidity_kg_kg: f64,
+) -> f64 {
+    let lower_saturation = saturation_specific_humidity_kg_kg(lower_temperature_c);
+    let relative_humidity = if lower_saturation > 0.0 {
+        (lower_specific_humidity_kg_kg / lower_saturation).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    relative_humidity * saturation_specific_humidity_kg_kg(surface_temperature_c)
 }
 
 /// Large–Pond neutral bulk evaporation from an explicitly wet surface.
@@ -266,27 +399,202 @@ pub fn raw_orographic_condensation_kg_m2_s(
         * upslope_velocity_m_s.max(0.0)
 }
 
-/// Coarse-grid large-scale condensation plus exact saturation adjustment.
+/// Integrates the raw Smith upslope source only after a parcel reaches its LCL.
 ///
-/// Supersaturation is removed within the current physical step. Humidity
-/// between the unresolved-cloud threshold and saturation follows an analytic
-/// exponential relaxation, avoiding a time-step-dependent Euler overshoot.
+/// Smith & Barstad (2004), DOI
+/// `10.1175/1520-0469(2004)061<1377:ALTOOP>2.0.CO;2`, derive their linear
+/// source for saturated or near-saturated flow. Bolton's Eq. 15 diagnoses the
+/// lifting-condensation temperature from the resolved temperature and
+/// humidity; dry-adiabatic lifting converts it to LCL height. The returned
+/// source is the raw Smith rate multiplied by the fraction of one resolved-cell
+/// terrain ascent above the LCL. The ascent follows the wind-aligned slope over
+/// the cell's area-derived characteristic length, so the physical tendency is
+/// continuous, time-step independent, and introduces no empirical
+/// relative-humidity switch.
+pub fn lcl_adjusted_orographic_condensation_kg_m2_s(
+    specific_humidity_kg_kg: f64,
+    temperature_c: f64,
+    upslope_velocity_m_s: f64,
+    horizontal_wind_speed_m_s: f64,
+    resolved_cell_area_m2: f64,
+) -> f64 {
+    if !specific_humidity_kg_kg.is_finite()
+        || !temperature_c.is_finite()
+        || !upslope_velocity_m_s.is_finite()
+        || !horizontal_wind_speed_m_s.is_finite()
+        || !resolved_cell_area_m2.is_finite()
+        || specific_humidity_kg_kg <= 0.0
+        || upslope_velocity_m_s <= 0.0
+        || horizontal_wind_speed_m_s <= 0.0
+        || resolved_cell_area_m2 <= 0.0
+    {
+        return 0.0;
+    }
+    let saturation = saturation_specific_humidity_kg_kg(temperature_c);
+    if saturation <= 0.0 {
+        return 0.0;
+    }
+    let raw_source = raw_orographic_condensation_kg_m2_s(
+        specific_humidity_kg_kg.min(saturation),
+        upslope_velocity_m_s,
+    );
+    if specific_humidity_kg_kg >= saturation {
+        return raw_source;
+    }
+
+    let humidity = specific_humidity_kg_kg.min(P4_MAX_SPECIFIC_HUMIDITY_KG_KG);
+    let vapor_pressure_pa = humidity * P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+        / (WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO
+            + (1.0 - WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO) * humidity);
+    let logarithmic_pressure_ratio =
+        (vapor_pressure_pa / BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA).ln();
+    let dewpoint_denominator = BOLTON_SATURATION_EXPONENT_COEFFICIENT - logarithmic_pressure_ratio;
+    if !logarithmic_pressure_ratio.is_finite() || dewpoint_denominator <= 0.0 {
+        return 0.0;
+    }
+    let dewpoint_k =
+        BOLTON_DEWPOINT_OFFSET_C * logarithmic_pressure_ratio / dewpoint_denominator + 273.15;
+    let temperature_k = temperature_c + 273.15;
+    if dewpoint_k <= BOLTON_LCL_TEMPERATURE_OFFSET_K || temperature_k <= 0.0 {
+        return 0.0;
+    }
+    let lcl_denominator = 1.0 / (dewpoint_k - BOLTON_LCL_TEMPERATURE_OFFSET_K)
+        + (temperature_k / dewpoint_k).ln() / BOLTON_LCL_LOG_COEFFICIENT_K;
+    if !lcl_denominator.is_finite() || lcl_denominator <= 0.0 {
+        return 0.0;
+    }
+    let lcl_temperature_k = 1.0 / lcl_denominator + BOLTON_LCL_TEMPERATURE_OFFSET_K;
+    let lcl_height_m = (temperature_k - lcl_temperature_k).max(0.0)
+        * P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+        / STANDARD_GRAVITY_M_S2;
+    let uplift_m = upslope_velocity_m_s / horizontal_wind_speed_m_s * resolved_cell_area_m2.sqrt();
+    let saturated_path_fraction = ((uplift_m - lcl_height_m) / uplift_m).clamp(0.0, 1.0);
+    raw_source * saturated_path_fraction
+}
+
+/// Coarse-grid large-scale condensation with moist-enthalpy-conserving
+/// saturation adjustment.
+///
+/// Supersaturation is first projected to saturation along the local
+/// `c_p T + L_v q` conservation curve. Excess humidity above the unresolved
+/// cloud threshold then decays analytically on that same curve. Expressing the
+/// relaxation in threshold-relative humidity makes the endpoint independent
+/// of how a physical interval is partitioned into numerical steps, while the
+/// matching latent-heat tendency supplies exactly the diagnosed warming. The
+/// bracketed Newton solve follows the safeguarded Newton/bisection pattern of
+/// Press et al. (2007), *Numerical Recipes*, third edition, section 9.4.
 pub fn large_scale_condensation_kg_m2_s(
     specific_humidity_kg_kg: f64,
     temperature_c: f64,
     atmospheric_column_mass_kg_m2: f64,
     step_seconds: f64,
 ) -> f64 {
+    if !specific_humidity_kg_kg.is_finite()
+        || !temperature_c.is_finite()
+        || !atmospheric_column_mass_kg_m2.is_finite()
+        || !step_seconds.is_finite()
+        || specific_humidity_kg_kg <= 0.0
+        || atmospheric_column_mass_kg_m2 <= 0.0
+        || step_seconds <= 0.0
+    {
+        return 0.0;
+    }
     let humidity = specific_humidity_kg_kg.max(0.0);
     let saturation = saturation_specific_humidity_kg_kg(temperature_c);
-    let supersaturation = (humidity - saturation).max(0.0);
-    let cloudy_excess = (humidity.min(saturation)
-        - P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY * saturation)
-        .max(0.0);
-    let relaxed_fraction =
-        1.0 - (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
-    atmospheric_column_mass_kg_m2.max(0.0) * (supersaturation + relaxed_fraction * cloudy_excess)
-        / step_seconds
+    let (saturation_adjusted_humidity, saturation_adjusted_temperature) = if humidity > saturation {
+        let adjusted =
+            solve_moist_enthalpy_humidity_endpoint(humidity, temperature_c, humidity, 1.0, 0.0);
+        (
+            adjusted,
+            moist_enthalpy_temperature_c(humidity, temperature_c, adjusted),
+        )
+    } else {
+        (humidity, temperature_c)
+    };
+    let cloudy_excess = (saturation_adjusted_humidity
+        - P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY
+            * saturation_specific_humidity_kg_kg(saturation_adjusted_temperature))
+    .max(0.0);
+    if cloudy_excess == 0.0 {
+        return 0.0;
+    }
+    let remaining_cloudy_excess =
+        cloudy_excess * (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
+    let adjusted_humidity = solve_moist_enthalpy_humidity_endpoint(
+        humidity,
+        temperature_c,
+        saturation_adjusted_humidity,
+        P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
+        remaining_cloudy_excess,
+    );
+    atmospheric_column_mass_kg_m2 * (humidity - adjusted_humidity).max(0.0) / step_seconds
+}
+
+fn moist_enthalpy_temperature_c(
+    initial_humidity_kg_kg: f64,
+    initial_temperature_c: f64,
+    adjusted_humidity_kg_kg: f64,
+) -> f64 {
+    initial_temperature_c
+        + WATER_VAPORIZATION_LATENT_HEAT_J_KG * (initial_humidity_kg_kg - adjusted_humidity_kg_kg)
+            / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+}
+
+fn solve_moist_enthalpy_humidity_endpoint(
+    initial_humidity_kg_kg: f64,
+    initial_temperature_c: f64,
+    upper_humidity_kg_kg: f64,
+    relative_humidity: f64,
+    remaining_cloudy_excess_kg_kg: f64,
+) -> f64 {
+    let residual_and_derivative = |adjusted_humidity_kg_kg: f64| {
+        let adjusted_temperature_c = moist_enthalpy_temperature_c(
+            initial_humidity_kg_kg,
+            initial_temperature_c,
+            adjusted_humidity_kg_kg,
+        );
+        let (saturation, saturation_temperature_derivative) =
+            saturation_specific_humidity_and_temperature_derivative(adjusted_temperature_c);
+        (
+            adjusted_humidity_kg_kg
+                - relative_humidity * saturation
+                - remaining_cloudy_excess_kg_kg,
+            1.0 + relative_humidity * WATER_VAPORIZATION_LATENT_HEAT_J_KG
+                / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+                * saturation_temperature_derivative,
+        )
+    };
+    let mut lower = 0.0;
+    let mut upper = upper_humidity_kg_kg;
+    debug_assert!(residual_and_derivative(lower).0 <= 0.0);
+    debug_assert!(residual_and_derivative(upper).0 >= 0.0);
+    let mut candidate = upper;
+    for _ in 0..f64::MANTISSA_DIGITS {
+        let (residual, derivative) = residual_and_derivative(candidate);
+        if residual == 0.0 {
+            return candidate;
+        }
+        if residual < 0.0 {
+            lower = candidate;
+        } else {
+            upper = candidate;
+        }
+        let midpoint = lower + 0.5 * (upper - lower);
+        if midpoint == lower || midpoint == upper {
+            return midpoint;
+        }
+        let newton = candidate - residual / derivative;
+        let next = if newton > lower && newton < upper && newton != candidate {
+            newton
+        } else {
+            midpoint
+        };
+        if next == candidate {
+            return next;
+        }
+        candidate = next;
+    }
+    lower + 0.5 * (upper - lower)
 }
 
 /// Symmetric relative mismatch used by the production water-cycle gate and
@@ -567,7 +875,7 @@ impl ClimateLayerLayout {
             dynamically_active: true,
             reference_thickness_m: thickness,
             density_kg_m3: P4_REFERENCE_AIR_DENSITY_KG_M3,
-            heat_capacity_j_kg_k: 1_004.0,
+            heat_capacity_j_kg_k: P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
         };
         let ocean = |role, thickness, active| ClimateLayerSpec {
             role,

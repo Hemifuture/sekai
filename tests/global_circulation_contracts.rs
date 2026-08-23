@@ -6,7 +6,7 @@ use sekai::world::natural::{
     ClimateCheckpoint, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
     ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields,
     GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
-    MonthlyVector3Field, NaturalQualityProfile, ProductionIntegratorId,
+    MonthlyVector3Field, NaturalQualityProfile, ProductionIntegratorId, CLIMATE_MONTH_COUNT,
     GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_SCHEMA_V2,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
@@ -287,13 +287,14 @@ fn checkpoint_fingerprint_covers_every_resume_identity() {
     tampered["completed_phase_steps"] = serde_json::json!(36);
     assert!(serde_json::from_value::<ClimateCheckpoint>(tampered).is_err());
 
-    for (quality, completed_phase_steps) in [
-        (sekai::world::natural::NaturalQualityProfile::Draft, 9 * 12),
-        (
-            sekai::world::natural::NaturalQualityProfile::Standard,
-            11 * 12,
-        ),
+    for quality in [
+        NaturalQualityProfile::Draft,
+        NaturalQualityProfile::Standard,
+        NaturalQualityProfile::High,
     ] {
+        let completed_phase_steps = (u32::from(quality.global_circulation_formation_cycles_max())
+            + 1)
+            * CLIMATE_MONTH_COUNT as u32;
         assert!(matches!(
             ClimateCheckpoint::new(
                 quality,

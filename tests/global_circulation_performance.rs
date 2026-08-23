@@ -250,10 +250,7 @@ fn measure_generation(
     };
     let snapshot = match &measured {
         MeasuredClimate::Raw(snapshot) => snapshot,
-        MeasuredClimate::Product(artifact) => {
-            assert_eq!(artifact.quality_report().metrics().len(), 16);
-            artifact.snapshot()
-        }
+        MeasuredClimate::Product(artifact) => artifact.snapshot(),
     };
     let elapsed = started.elapsed();
     if let Some(bytes) = process_working_set_bytes() {
