@@ -9,7 +9,10 @@ use sekai::generators::natural::{
     SplitExplicitRk3Integrator,
 };
 use sekai::world::natural::{
-    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    large_scale_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateLayerLayout,
+    ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
+    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 fn uniform_forcing(grid: &CubedSphereGrid, temperature_c: f32) -> PlanetForcing {
@@ -29,6 +32,26 @@ fn uniform_forcing_with_absorbed_shortwave(
         vec![0.0; count],
         vec![1.0; count],
         vec![[absorbed_shortwave_w_m2; 12]; count],
+        vec![[temperature_c; 12]; count],
+        vec![[temperature_c; 12]; count],
+        vec![[0.008; 12]; count],
+    )
+    .unwrap()
+}
+
+fn uniform_forcing_with_surface_water(
+    grid: &CubedSphereGrid,
+    temperature_c: f32,
+    water_fraction: f32,
+) -> PlanetForcing {
+    let count = grid.cell_count();
+    PlanetForcing::new(
+        *grid.fingerprint(),
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![water_fraction; count],
+        vec![[240.0; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[0.008; 12]; count],
@@ -217,6 +240,210 @@ fn zero_absorbed_shortwave_prevents_positive_radiative_heating_in_the_equation()
             .iter()
             .all(|value| *value == 0.0));
     }
+}
+
+#[test]
+fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
+    let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+    let profile = ClimateModelProfile::C1SingleLayerV1;
+    let wet_forcing = uniform_forcing_with_surface_water(&grid, 15.0, 1.0);
+    let dry_forcing = uniform_forcing_with_surface_water(&grid, 15.0, 0.0);
+    let mut initial = state(&grid, profile, &wet_forcing);
+    let saturation = saturation_specific_humidity_kg_kg(15.0) as f32;
+    initial.specific_humidity_mut().fill(0.5 * saturation);
+    for (cell, velocity) in grid.cells().iter().zip(
+        initial
+            .velocity_m_s_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap(),
+    ) {
+        let [x, y, _] = cell.center_unit();
+        *velocity = [-12.0 * y as f32, 12.0 * x as f32, 0.0];
+    }
+    let system = LayeredTendencySystem::new(&grid);
+    let permeability = vec![1.0; grid.edges().len()];
+    let cancellation = BuildCancellation::new();
+    let wet = system
+        .evaluate_for_step(
+            &initial,
+            &wet_forcing,
+            &permeability,
+            0,
+            7_200.0,
+            &cancellation,
+        )
+        .unwrap();
+    let dry = system
+        .evaluate_for_step(
+            &initial,
+            &dry_forcing,
+            &permeability,
+            0,
+            7_200.0,
+            &cancellation,
+        )
+        .unwrap();
+    let layout = ClimateLayerLayout::for_profile(profile);
+    let lower = layout
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == ClimateLayerRole::LowerAtmosphere)
+        .unwrap();
+    let surface = layout
+        .layers()
+        .iter()
+        .find(|layer| layer.role() == ClimateLayerRole::OceanMixedLayer)
+        .unwrap();
+    let lower_mass = lower.density_kg_m3() * lower.reference_thickness_m();
+    let lower_capacity = lower_mass * lower.heat_capacity_j_kg_k();
+    let surface_capacity =
+        surface.density_kg_m3() * surface.reference_thickness_m() * surface.heat_capacity_j_kg_k();
+
+    for cell in 0..grid.cell_count() {
+        let evaporation = f64::from(wet.evaporation_rate_mm_s()[cell]);
+        assert!(evaporation > 0.0);
+        assert_eq!(dry.evaporation_rate_mm_s()[cell], 0.0);
+        assert_eq!(wet.precipitation_rate_mm_s()[cell], 0.0);
+        let humidity_power = WATER_VAPORIZATION_LATENT_HEAT_J_KG
+            * lower_mass
+            * f64::from(
+                wet.specific_humidity_tendency_s_inv()[cell]
+                    - dry.specific_humidity_tendency_s_inv()[cell],
+            );
+        let sensible_power = lower_capacity
+            * f64::from(
+                wet.temperature_tendency_k_s(ClimateLayerRole::LowerAtmosphere)
+                    .unwrap()[cell]
+                    - dry
+                        .temperature_tendency_k_s(ClimateLayerRole::LowerAtmosphere)
+                        .unwrap()[cell],
+            )
+            + surface_capacity
+                * f64::from(
+                    wet.temperature_tendency_k_s(ClimateLayerRole::OceanMixedLayer)
+                        .unwrap()[cell]
+                        - dry
+                            .temperature_tendency_k_s(ClimateLayerRole::OceanMixedLayer)
+                            .unwrap()[cell],
+                );
+        let scale = (WATER_VAPORIZATION_LATENT_HEAT_J_KG * evaporation).max(1.0);
+        assert!((sensible_power + humidity_power).abs() / scale <= 2.0e-4);
+        assert!(
+            (lower_mass * f64::from(wet.specific_humidity_tendency_s_inv()[cell]) - evaporation)
+                .abs()
+                / evaporation
+                <= 2.0e-6
+        );
+    }
+}
+
+#[test]
+fn saturation_adjustment_removes_supersaturation_within_one_physical_step() {
+    let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+    let forcing = uniform_forcing_with_surface_water(&grid, 15.0, 0.0);
+    let mut initial = state(&grid, ClimateModelProfile::C1SingleLayerV1, &forcing);
+    let saturation = saturation_specific_humidity_kg_kg(15.0) as f32;
+    initial.specific_humidity_mut().fill(saturation + 0.002);
+    let step_seconds = 7_200.0;
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            step_seconds,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+
+    for cell in 0..grid.cell_count() {
+        assert_eq!(tendency.evaporation_rate_mm_s()[cell], 0.0);
+        assert!(tendency.precipitation_rate_mm_s()[cell] > 0.0);
+        let adjusted = f64::from(initial.specific_humidity()[cell])
+            + step_seconds * f64::from(tendency.specific_humidity_tendency_s_inv()[cell]);
+        assert!(adjusted <= f64::from(saturation) + 2.0e-9);
+        assert!(adjusted >= 0.0);
+    }
+}
+
+#[test]
+fn upper_layer_saturation_adjustment_cannot_store_cloud_water_without_rain() {
+    let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+    let forcing = uniform_forcing_with_surface_water(&grid, 15.0, 0.0);
+    let mut initial = state(&grid, ClimateModelProfile::C2LayeredV1, &forcing);
+    initial.specific_humidity_mut().fill(0.0);
+    let upper_temperature = initial
+        .temperature_c(ClimateLayerRole::UpperAtmosphere)
+        .unwrap()[0];
+    let saturation = saturation_specific_humidity_kg_kg(f64::from(upper_temperature)) as f32;
+    let mut saturated_control = initial.clone();
+    saturated_control
+        .upper_specific_humidity_mut()
+        .unwrap()
+        .fill(saturation);
+    initial
+        .upper_specific_humidity_mut()
+        .unwrap()
+        .fill(saturation + 0.002);
+    let step_seconds = 7_200.0;
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            step_seconds,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+    let control = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &saturated_control,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            step_seconds,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+    let upper_tendency = tendency.upper_specific_humidity_tendency_s_inv().unwrap();
+    let initial_upper = initial.upper_specific_humidity().unwrap();
+    let precipitation = tendency.precipitation_rate_mm_s();
+    let upper_heat = tendency
+        .temperature_tendency_k_s(ClimateLayerRole::UpperAtmosphere)
+        .unwrap();
+    let control_upper_heat = control
+        .temperature_tendency_k_s(ClimateLayerRole::UpperAtmosphere)
+        .unwrap();
+
+    for (cell, &humidity_tendency) in upper_tendency.iter().enumerate() {
+        let adjusted = f64::from(initial_upper[cell]) + step_seconds * f64::from(humidity_tendency);
+        assert!(adjusted <= f64::from(saturation) + 2.0e-9);
+        assert!(adjusted >= 0.0);
+        assert!(precipitation[cell] > 0.0);
+        assert!(
+            upper_heat[cell] > control_upper_heat[cell],
+            "upper condensation must release latent heat into the upper layer"
+        );
+    }
+}
+
+#[test]
+fn coarse_grid_condensation_relaxes_cloudy_humidity_without_overshoot() {
+    let temperature_c = 15.0;
+    let saturation = saturation_specific_humidity_kg_kg(temperature_c);
+    let threshold = P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY * saturation;
+    let initial = 0.95 * saturation;
+    let column_mass = 1.225 * 8_000.0;
+    let step_seconds = 7_200.0;
+    let rate = large_scale_condensation_kg_m2_s(initial, temperature_c, column_mass, step_seconds);
+    let adjusted = initial - step_seconds * rate / column_mass;
+    let expected = threshold
+        + (initial - threshold)
+            * (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
+
+    assert!((adjusted - expected).abs() <= 1.0e-15);
+    assert!(adjusted >= threshold);
+    assert!(adjusted < initial);
 }
 
 #[test]

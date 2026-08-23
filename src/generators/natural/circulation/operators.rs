@@ -127,35 +127,49 @@ impl<'grid> CirculationOperators<'grid> {
         Ok(result)
     }
 
-    /// Allocation-free gradient kernel for a caller that already validated
-    /// the field, permeability, and workspace shape. The transport gradient
-    /// scratch is idle during the split-explicit fast solve, so sharing it
-    /// here keeps the hot RK stages free of transient dense allocations.
-    pub(crate) fn gradient_with_permeability_into_cancellable_validated(
+    /// Fuses the two finite-volume edge traversals needed by the fast
+    /// pressure-gradient and donor-upwind layer-continuity operators.
+    ///
+    /// Each accumulator preserves the same canonical edge order and f64
+    /// arithmetic as its standalone production operator; only the shared
+    /// geometry/permeability traversal is removed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
         &self,
-        scalar: &[f32],
+        height_anomaly_m: &[f32],
+        velocity_m_s: &[[f32; 3]],
         edge_permeability: &[f32],
-        output: &mut [[f32; 3]],
+        reference_thickness_m: f64,
+        gradient_output: &mut [[f32; 3]],
+        thickness_tendency_m_s: &mut [f64],
         workspace: &mut SecondOrderTransportWorkspace,
         cancellation: &BuildCancellation,
     ) -> Result<(), CirculationOperatorError> {
-        debug_assert_eq!(scalar.len(), self.grid.cell_count());
+        debug_assert_eq!(height_anomaly_m.len(), self.grid.cell_count());
+        debug_assert_eq!(velocity_m_s.len(), self.grid.cell_count());
         debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
-        debug_assert_eq!(output.len(), self.grid.cell_count());
+        debug_assert!(reference_thickness_m.is_finite() && reference_thickness_m > 0.0);
+        debug_assert_eq!(gradient_output.len(), self.grid.cell_count());
+        debug_assert_eq!(thickness_tendency_m_s.len(), self.grid.cell_count());
         debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
         debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
         check_operator_cancelled(Some(cancellation))?;
         workspace.gradients.fill([0.0; 3]);
-        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+        thickness_tendency_m_s.fill(0.0);
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
             poll_operator_cancelled(edge_index, Some(cancellation))?;
-            let [first, second] = edge.cells();
-            let first = *first as usize;
-            let second = *second as usize;
-            let first_value = f64::from(scalar[first]);
-            let second_value = f64::from(scalar[second]);
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let first_value = f64::from(height_anomaly_m[first]);
+            let second_value = f64::from(height_anomaly_m[second]);
             let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
             let normal = edge.normal_from_first();
-            let length = edge.length_m() * f64::from(edge_permeability[edge_index]);
+            let permeability = f64::from(*permeability);
+            let edge_length_m = edge.length_m();
+            let length = edge_length_m * permeability;
             accumulate_vector(
                 &mut workspace.gradients[first],
                 normal,
@@ -166,13 +180,33 @@ impl<'grid> CirculationOperators<'grid> {
                 normal,
                 -(edge_value - second_value) * length,
             );
+
+            if permeability > 0.0 {
+                let normal_velocity_m_s = dot(
+                    interpolate_vector(edge, velocity_m_s[first], velocity_m_s[second]),
+                    normal,
+                );
+                let donor = if normal_velocity_m_s >= 0.0 {
+                    first
+                } else {
+                    second
+                };
+                let donor_thickness_m =
+                    (reference_thickness_m + f64::from(height_anomaly_m[donor])).max(0.0);
+                let amount_rate_m3_s =
+                    normal_velocity_m_s * edge_length_m * permeability * donor_thickness_m;
+                thickness_tendency_m_s[first] -=
+                    amount_rate_m3_s / self.grid.cells()[first].area_m2();
+                thickness_tendency_m_s[second] +=
+                    amount_rate_m3_s / self.grid.cells()[second].area_m2();
+            }
         }
         for (index, ((cell, value), target)) in self
             .grid
             .cells()
             .iter()
             .zip(&workspace.gradients)
-            .zip(output)
+            .zip(gradient_output)
             .enumerate()
         {
             poll_operator_cancelled(index, Some(cancellation))?;
@@ -316,49 +350,6 @@ impl<'grid> CirculationOperators<'grid> {
         Ok(result)
     }
 
-    /// Allocation-free divergence counterpart to the reusable gradient
-    /// kernel above.
-    pub(crate) fn divergence_with_permeability_into_cancellable_validated(
-        &self,
-        velocity: &[[f32; 3]],
-        edge_permeability: &[f32],
-        output: &mut [f32],
-        workspace: &mut SecondOrderTransportWorkspace,
-        cancellation: &BuildCancellation,
-    ) -> Result<(), CirculationOperatorError> {
-        debug_assert_eq!(velocity.len(), self.grid.cell_count());
-        debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
-        debug_assert_eq!(output.len(), self.grid.cell_count());
-        debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
-        debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
-        check_operator_cancelled(Some(cancellation))?;
-        workspace.extensive_delta.fill(0.0);
-        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
-            poll_operator_cancelled(edge_index, Some(cancellation))?;
-            let [first, second] = edge.cells();
-            let first = *first as usize;
-            let second = *second as usize;
-            let edge_velocity = interpolate_vector(edge, velocity[first], velocity[second]);
-            let flux = dot(edge_velocity, edge.normal_from_first())
-                * edge.length_m()
-                * f64::from(edge_permeability[edge_index]);
-            workspace.extensive_delta[first] += flux;
-            workspace.extensive_delta[second] -= flux;
-        }
-        for (index, ((cell, flux), target)) in self
-            .grid
-            .cells()
-            .iter()
-            .zip(&workspace.extensive_delta)
-            .zip(output)
-            .enumerate()
-        {
-            poll_operator_cancelled(index, Some(cancellation))?;
-            *target = (*flux / cell.area_m2()) as f32;
-        }
-        check_operator_cancelled(Some(cancellation))
-    }
-
     pub(crate) fn divergence_f64_with_permeability(
         &self,
         velocity: &[[f64; 3]],
@@ -447,12 +438,36 @@ impl<'grid> CirculationOperators<'grid> {
         velocity: [f32; 3],
         rotation_rate_rad_s: f64,
     ) -> [f32; 3] {
+        let (acceleration, radial) =
+            self.coriolis_cell_f64_validated(cell, velocity, rotation_rate_rad_s);
+        to_quantized_tangent_f32(acceleration, radial)
+    }
+
+    #[inline]
+    pub(crate) fn coriolis_cell_projected_validated(
+        &self,
+        cell: usize,
+        velocity: [f32; 3],
+        rotation_rate_rad_s: f64,
+    ) -> [f32; 3] {
+        let (acceleration, _) =
+            self.coriolis_cell_f64_validated(cell, velocity, rotation_rate_rad_s);
+        to_f32_vector(acceleration)
+    }
+
+    #[inline]
+    fn coriolis_cell_f64_validated(
+        &self,
+        cell: usize,
+        velocity: [f32; 3],
+        rotation_rate_rad_s: f64,
+    ) -> ([f64; 3], [f64; 3]) {
         debug_assert!(cell < self.grid.cell_count());
         let radial = self.grid.cells()[cell].center_unit();
         let tangent_velocity = project_tangent(to_f64_vector(velocity), radial);
         let coriolis_parameter = 2.0 * rotation_rate_rad_s * radial[2];
         let acceleration = scale(cross(radial, tangent_velocity), -coriolis_parameter);
-        to_quantized_tangent_f32(acceleration, radial)
+        (acceleration, radial)
     }
 
     pub(crate) fn coriolis_validated(
@@ -473,34 +488,30 @@ impl<'grid> CirculationOperators<'grid> {
         Ok(self.tangentize_validated(vectors))
     }
 
-    pub(crate) fn tangentize_cancellable(
-        &self,
-        vectors: &[[f32; 3]],
-        cancellation: &BuildCancellation,
-    ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        check_operator_cancelled(Some(cancellation))?;
-        validate_vector_field("vectors", vectors, self.grid.cell_count())?;
-        let mut tangent = Vec::with_capacity(vectors.len());
-        for (index, (cell, value)) in self.grid.cells().iter().zip(vectors).enumerate() {
-            poll_operator_cancelled(index, Some(cancellation))?;
-            tangent.push(to_quantized_tangent_f32(
-                to_f64_vector(*value),
-                cell.center_unit(),
-            ));
-        }
-        check_operator_cancelled(Some(cancellation))?;
-        Ok(tangent)
+    pub(crate) fn tangentize_validated(&self, vectors: &[[f32; 3]]) -> Vec<[f32; 3]> {
+        vectors
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| self.tangentize_cell_validated(cell, *value))
+            .collect()
     }
 
-    pub(crate) fn tangentize_validated(&self, vectors: &[[f32; 3]]) -> Vec<[f32; 3]> {
-        self.grid
-            .cells()
-            .iter()
-            .zip(vectors)
-            .map(|(cell, value)| {
-                to_quantized_tangent_f32(to_f64_vector(*value), cell.center_unit())
-            })
-            .collect()
+    #[inline]
+    pub(crate) fn tangentize_cell_validated(&self, cell: usize, value: [f32; 3]) -> [f32; 3] {
+        debug_assert!(cell < self.grid.cell_count());
+        to_quantized_tangent_f32(to_f64_vector(value), self.grid.cells()[cell].center_unit())
+    }
+
+    /// Orthogonally projects one transient RK stage vector before its next
+    /// tendency evaluation. Final/public operator paths retain the stricter
+    /// representable-vector correction above.
+    #[inline]
+    pub(crate) fn project_tangent_cell_validated(&self, cell: usize, value: [f32; 3]) -> [f32; 3] {
+        debug_assert!(cell < self.grid.cell_count());
+        to_f32_vector(project_tangent(
+            to_f64_vector(value),
+            self.grid.cells()[cell].center_unit(),
+        ))
     }
 
     /// Advances one cell-mean scalar using conservative first-order upwind fluxes.
@@ -1506,7 +1517,11 @@ fn edge_displacement_m(grid: &CubedSphereGrid, edge: &SphericalEdge, owner: usiz
     }
 }
 
-fn interpolate_vector(edge: &SphericalEdge, first: [f32; 3], second: [f32; 3]) -> [f64; 3] {
+pub(crate) fn interpolate_vector(
+    edge: &SphericalEdge,
+    first: [f32; 3],
+    second: [f32; 3],
+) -> [f64; 3] {
     interpolate_vector_f64(edge, to_f64_vector(first), to_f64_vector(second))
 }
 
@@ -2089,31 +2104,23 @@ mod tests {
         let expected_gradient = operators
             .gradient_with_permeability_cancellable(&scalar, &permeability, &cancellation)
             .unwrap();
-        let expected_divergence = operators
-            .divergence_with_permeability_cancellable(&velocity, &permeability, &cancellation)
-            .unwrap();
         let expected_coriolis = operators
             .coriolis_cancellable(&velocity, 7.292_115_9e-5, &cancellation)
             .unwrap();
+        let expected_tangent = operators.tangentize(&velocity).unwrap();
 
         let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
         let allocation = workspace.allocation_signature();
         let mut gradient = vec![[f32::NAN; 3]; grid.cell_count()];
-        let mut divergence = vec![f32::NAN; grid.cell_count()];
+        let mut thickness = vec![0.0; grid.cell_count()];
         operators
-            .gradient_with_permeability_into_cancellable_validated(
+            .gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
                 &scalar,
-                &permeability,
-                &mut gradient,
-                &mut workspace,
-                &cancellation,
-            )
-            .unwrap();
-        operators
-            .divergence_with_permeability_into_cancellable_validated(
                 &velocity,
                 &permeability,
-                &mut divergence,
+                6_000.0,
+                &mut gradient,
+                &mut thickness,
                 &mut workspace,
                 &cancellation,
             )
@@ -2123,10 +2130,39 @@ mod tests {
             .enumerate()
             .map(|(cell, value)| operators.coriolis_cell_validated(cell, *value, 7.292_115_9e-5))
             .collect::<Vec<_>>();
+        let stage_coriolis = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| {
+                operators.coriolis_cell_projected_validated(cell, *value, 7.292_115_9e-5)
+            })
+            .collect::<Vec<_>>();
+        let tangent = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| operators.tangentize_cell_validated(cell, *value))
+            .collect::<Vec<_>>();
+        let stage_tangent = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| operators.project_tangent_cell_validated(cell, *value))
+            .collect::<Vec<_>>();
 
         assert_eq!(gradient, expected_gradient);
-        assert_eq!(divergence, expected_divergence);
         assert_eq!(coriolis, expected_coriolis);
+        assert_eq!(tangent, expected_tangent);
+        for (cell, value) in grid.cells().iter().zip(stage_tangent) {
+            assert!(
+                dot(to_f64_vector(value), cell.center_unit()).abs()
+                    <= crate::world::natural::GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S
+            );
+        }
+        for (cell, value) in grid.cells().iter().zip(stage_coriolis) {
+            assert!(
+                dot(to_f64_vector(value), cell.center_unit()).abs()
+                    <= crate::world::natural::GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S
+            );
+        }
         assert_eq!(workspace.allocation_signature(), allocation);
     }
 }

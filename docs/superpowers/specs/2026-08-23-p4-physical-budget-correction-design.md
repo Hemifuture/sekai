@@ -354,6 +354,10 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
 - Smith (1979) raw upslope model；Smith & Barstad (2004) linear
   orographic precipitation，及 Barstad & Smith (2005), DOI
   `10.1175/JHM-404.1`：`rho_v U dot grad(h)` 地形凝结源与后续搬运/降落实践。
+- Hu, Adams & Shu (2013), *Positivity-preserving method for high-order
+  conservative schemes solving compressible Euler equations*, DOI
+  `10.1016/j.jcp.2013.01.024`：检测会越过物理可行域的守恒通量并以共同系数
+  缩放；P4 将同一原则窄化到两个 ocean reservoir 的内部成对热通量。
 - CESM 1.2 User Guide 的 *Restarting a run* 与 *History and Restart Files*：
   continuation restart 保存完整状态并以 bit-for-bit exact test 验证；Sekai 既有
   V1 transient strict warm-start identity：continuation 只换初值、方程与验收
@@ -376,3 +380,111 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
   十二 forcing phase 的逐格年均值，避免任意 January 相位获得动力学先手；
   后续每月方程、时间步与收敛门槛不变。以上修订不增加用户旋钮或经验增益，
   equation fingerprint 显式升级。
+- R3（2026-08-23）：Task 3 的守恒 RED 与冷启动实测进一步修正以下实现
+  细节；本条显式替代 R2 中“每个热 reservoir 各自施加外部辐射”的可误读
+  表述。
+
+  1. TOA 只有一个下边界外部功率：同格 land/water fraction 将同一份
+     `ASR - OLR` 分给 lower atmosphere 与 mixed layer；upper atmosphere、
+     thermocline 与 deep reservoir 只接受内部热交换。`OLR` 由灰体平衡点
+     的 Stefan–Boltzmann 一阶响应计算并保持非负，故外部功率不会按活动层数
+     重复计入。数值、水量与 TOA 账本每个 formation cycle 独立清零，只有
+     最终完整 cycle 可进入公开报告。
+  2. 原线性扰动连续方程 `-H div(u)` 在长积分中会让上层厚度穿过零。生产
+     full/fast 核改为有限体积 donor-upwind 的 `-div((H + eta) u)`，逐边使用
+     同一法向体积通量作等量反号更新；IMEX 的线性隐式参考仍保留
+     `-H div(u)`，非线性差额属于显式项。该修订同时保证封闭球面层质量守恒
+     与正厚度，不做事后 clipping。
+  3. 年均冷启动不再直接平均十二个月的非线性 `q_sat`，而是先从各月 forcing
+     恢复平均相对湿度，再在年均 lower-air temperature 上重建湿度，避免
+     Jensen 偏差制造首周期假降水。粗网格 lower condensation 使用 SPEEDY
+     的 `0.9` 相对湿度阈值与四小时解析松弛，物理过饱和仍在当前 step 内精确
+     移除；C2 lower/upper 水汽交换之后对 upper layer 再做同一饱和调整，降水
+     和潜热分别进入同一 retained mass/energy tendency，禁止上层无降水储存
+     过饱和水汽。
+  4. 严格 `E-P` 门禁揭示：以冻结单一终端风场连续推进几十个热力周期会让
+     温度梯度与风场失配，随后完整耦合 cycle 产生伪降水尖峰。最终实现改为
+     bounded thermodynamic-moisture shooting preconditioner：在最近一次完整
+     cycle 的十二月速度轨迹上，复用生产 tendency 回放温度与水汽，以当前
+     状态和干燥/饱和边界括住一维湿度初值，并以 Ridders (1979) 的括区间
+     exponential interpolation 求解精确周期根 `E-P=0`。已经进入公开闭合集合
+     的探针直接接受，避免无意义地继续扰动已可发布的 tracer；只有尚未闭合时
+     才求数学零点。内部停止条件直接复用公开
+     `GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX`，探针上限由被插值
+     `f32` 状态的 `MANTISSA_DIGITS` 机械推导，不另设经验目标、容差或次数。它在
+     C1 状态残差不大于同为无量纲的公开水量闭合界后启用；C2 在公开状态
+     残差通过，且 TOA 已闭合或已进入 profile horizon 的后半段时启用。前半段
+     只形成 C2 动力/辐射背景，后半段给 block moisture iteration 留出多次
+     “修正→完整耦合验证”机会。seed 11 实测 TOA 从 `13.41090` 单调降至
+     `10.57268 W/m2`，单纯以 TOA 作前置条件会令其在 Draft horizon 内一次湿度
+     修正也不能执行；从首个状态门槛就修正则使 seed 42 局地空气达到
+     `80.23986 C` 并被 wire 验证拒绝。两段边界由 profile cycle horizon 的整数
+     中点机械推导，不新增经验阈值。若下一完整 cycle 仍未闭合，可在 profile
+     既有最大 cycle 内重复同一有界修正。二者都只选择下一 cycle 的初值，
+     不发布探针状态、不改变方程，也不计作物理 `continuation_steps`。
+     下一次正常 `SplitExplicitRk3V1` 完整 cycle 仍须独立
+     通过 state、`E-P`、TOA 和数值守恒全部门禁，否则不得发布。
+  5. 身份相应升级：equation fingerprint domain 为 V5，覆盖非线性层连续性、
+     单下边界辐射、Bolton/Large–Pond/Smith/SPEEDY 相变、上下层凝结与全部新
+     常量；global model domain 为 V4，覆盖相对湿度年均初始化与 shooting
+     参数；公开 state field fingerprint 为 V3，新增逐月蒸发字段。P0–P3
+     不在影响链；P4 及把 P4 纳入身份的 P5/T1 下游旧→新清单留待 Task 7
+     以实测哈希登记。
+  6. 数值预条件不新增地学系数：括区间指数插值沿用 Ridders (1979),
+     *A New Algorithm for Computing a Single Root of a Real Continuous Function*,
+     DOI `10.1109/TCS.1979.1084580`；退化步回到已经计算的二分中点。最大探针数
+     来自 IEEE 754 binary32 有效位数。最终接受仍完全由公开物理门禁决定。
+
+     固定 Draft/seed 42 生产探针给出的选择证据如下；数值只记录实测，不进入
+     公式或门禁。C1 若在首个公开状态门槛（cycle 1）就求零，随后水量残差回到
+     `0.55783`；等状态残差降到公开水量界再作周期求根，cycle 7 的水量残差为
+     `0.023159`、TOA net 为 `9.99403 W/m2`。C2 在 state+TOA 门禁首次同时通过时
+     作同一操作，cycle 5 水量残差为 `0.036307`、TOA net 为
+     `6.29858 W/m2`。这组结果
+     解释 profile 启用条件；Task 4 的 17 粒语料仍负责检验可迁移性，不能由本
+     单种子代替。
+  7. 出处审计移除旧 shared thermodynamics 的 `0.2` specific-humidity 魔法上限：
+     上限改为 specific humidity 质量分数定义直接给出的 `1`；月蒸发/降水 wire
+     只要求非负有限，最大值由其 `f32` 存储类型机械给出，不再以无出处的
+     `1000 mm/day` 钳制玩家世界。默认 Earth-like 结果没有触碰这些结构边界。
+  8. Debug 取消同步测试删除无产品语义的 `120 s` phase-arrival 看门狗。该固定
+     墙钟既不是 P4 性能门禁，也会在零容量 channel 超时后让 scoped worker
+     死锁；测试改用非阻塞发送并等待“目标 phase 或 sender 结束”，仍严格保留请求取消
+     后 `250 ms` 的既有产品延迟门禁。Release C1/C2/High 性能由独立 evidence
+     测试负责。
+  9. 为守住冻结的性能门禁而作的数值路径收敛不改变物理方程：forcing 构造时
+     已验证并缓存的地形梯度成为唯一生产输入；同一次 macro step 的 declared
+     tendency 同时供预算与积分器消费；split/RK3 工作区、首级导数和状态缓冲复用；
+     标量梯度与 donor-upwind 厚度通量合并为同一次规范边遍历并以逐位等价测试
+     守门；RK 中间态只作 `v - (v·n)n` 的 `f64` 正交投影，最终公开态仍走带 ULP
+     修正的严格切向投影。公开构造器仍完整验证外部输入，只有 crate-private 的
+     已验证 forcing 路径跳过循环内重复验证。
+  10. dense-owner 公式按实际所有权修订：投影 `Vec` 被 `Monthly*Field` 接管后
+      直接移动进 `GlobalCirculationFields`，不产生第二套 27 分量月场，因此发布
+      峰值只有一个 output owner；真实隔离 RSS 门禁继续独立约束实现。最终 Release
+      实测：Draft/C1 `6.175 s`，Standard/C2 `22.217 s`，High/C2 `72.160 s`；High
+      独立子进程 `73.890 s`、增量 RSS `364,756,992 B`，机械 dense-owner 估算
+      `280,811,216 B`，均低于规格冻结上限；High 取消延迟 `1.574 ms`。这些数值
+      仅为证据，不进入算法、阈值或 profile 选择。
+  11. 全 crate RED 揭示旧 C2 内部热交换把“参考层结”错当成“待消除异常”：状态
+      初始化按 `UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C`、
+      `THERMOCLINE_EQUILIBRIUM_OFFSET_C` 与
+      `DEEP_OCEAN_EQUILIBRIUM_OFFSET_C` 构造有序冷层，旧项却直接扩散原始温度，
+      因而持续从唯一辐射下边界抽热；延长到公开最大 cycle 时 TOA 反而由
+      `9.229 W/m2` 增至 `13.467 W/m2`，排除了“少积分几轮”的解释。修订由同一
+      `role_reference_temperature_c` 为状态初始化和 tendency 逐格逐月给出参考温度；
+      它同时包含 forcing 相位、固定层间 offset 与已声明 ocean clamp。内部热通量
+      改为 `C_min ((T_k-T_k_ref)-(T_l-T_l_ref))/tau`，仍由同一
+      `paired_heat_exchange` 作等量反号 extensive 更新。两段海洋内部 exchange
+      同时改为按权威 `1-land_fraction` 缩放，全陆地严格为零。以上不新增常量、
+      旋钮、外部热源或事后温度修正，并由“完整参考层结严格零热通量”和“C2 海洋
+      内部交换均为 water-only”解析测试守门。原 changed-terrain 回归与固定 C2
+      生产例均通过既有水量、TOA 和温度 wire 门禁，无需放宽阈值。
+  12. High RED 进一步区分了重映射误差与源状态越界：fractional-water cell 在
+      climate work grid 已出现 `-5.000025 C`，故不得在发布层钳值。海洋内部成对
+      热交换现按 Hu, Adams & Shu (2013) 的 conservative positivity-preserving
+      flux-limiter 原则，在一个 production step 会穿过
+      `SUBSURFACE_OCEAN_MIN_C` 时求唯一 `alpha in [0,1]`；同一 `alpha` 同乘交换
+      两端，因而只删除不可行的内部传热部分，不产生或销毁热量。解析测试覆盖
+      边界零通量与部分缩放；High 实测最低温精确为既有下限，wire、热预算和性能
+      门禁同时通过。该修订复用既有物理状态边界与步长，不新增容差或地学参数。

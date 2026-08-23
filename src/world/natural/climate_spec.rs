@@ -33,7 +33,7 @@ pub struct ClimateSpec {
     pub axial_tilt_centideg: u16,
     /// Global sea-level temperature offset, in tenths of a degree Celsius.
     pub temperature_offset_deci_c: i16,
-    /// Atmospheric moisture-source multiplier, in parts per thousand.
+    /// Initial/reference relative-humidity multiplier, in parts per thousand.
     pub moisture_scale_permille: u16,
 }
 

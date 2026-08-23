@@ -15,7 +15,8 @@ const MIN_CLIMATE_GRID_CELLS: usize = 16;
 const MAX_CLIMATE_GRID_CELLS: usize = 4_096;
 const MIN_GRID_AXIS: usize = 4;
 const WATER_VAPOR_TRANSPORT_STEPS: usize = 48;
-pub(super) const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 = 0.0065;
+pub(super) const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 =
+    crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M as f32;
 
 /// Deterministic bounded solver for preliminary monthly climate forcing.
 #[derive(Debug, Clone, Copy, Default)]

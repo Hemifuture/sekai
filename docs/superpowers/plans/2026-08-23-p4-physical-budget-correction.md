@@ -105,28 +105,29 @@
 - 修改：`tests/global_circulation_generation.rs`
 - 修改：`tests/global_circulation_contracts.rs`
 
-- [ ] 先写 RED 解析测试：Bolton `q_sat` 随温度增加；零风、饱和空气、零
+- [x] 先写 RED 解析测试：Bolton `q_sat` 随温度增加；零风、饱和空气、零
   water fraction 的蒸发严格为零；平坦地形 raw-upslope 为零；过饱和经一步
   adjustment 不越界；蒸发/凝结只在 sensible/latent reservoir 间交换能量。
-- [ ] 在 `world` 定义 lower-layer reference pressure、air density、Large–Pond
+- [x] 在 `world` 定义 lower-layer reference pressure、air density、Large–Pond
   moisture transfer coefficient、latent heat、参考相对湿度、水循环闭合阈值
   及唯一 production helpers，并在 doc comment 标明来源和推导。
-- [ ] forcing 的 surface moisture availability 改为权威 water fraction；初始化
+- [x] forcing 的 surface moisture availability 改为权威 water fraction；初始化
   humidity 使用 `moisture_scale × REFERENCE_SURFACE_RELATIVE_HUMIDITY × q_sat`
   并钳在饱和物理上限。
-- [ ] 删除五日 evaporation relaxation、三日 condensation relaxation、
+- [x] 删除五日 evaporation relaxation、三日 condensation relaxation、
   `OROGRAPHIC_CONDENSATION_DEPTH_M` 与 uplift cap；实现海洋 bulk evaporation、
   saturation adjustment、`rho_air q max(u·grad h, 0)` raw upslope 和最终水汽
   availability limiter。
-- [ ] 把 retained evaporation/condensation 同时写入 water mass、surface/lower
+- [x] 把 retained evaporation/condensation 同时写入 water mass、surface/lower
   atmosphere 潜热交换与 moist total-energy ledger；生成器只发布同一 retained
   通量。
-- [ ] fields 增加 `monthly_evaporation_mm_day`；预算报告增加 final-cycle 全球
+- [x] fields 增加 `monthly_evaporation_mm_day`；预算报告增加 final-cycle 全球
   precipitation、evaporation、`E-P`、ASR、OLR、TOA net 与 planetary albedo，
   并以生产 hard closure 规则校验。
-- [ ] 跑解析测试、integrators、contracts、generation；用 Release 17 粒探针
-  测量而非调参，若偏差存在先作因果分解。
-- [ ] 跑三道门禁并提交。
+- [x] 跑解析测试、integrators、contracts、generation 与三档 Release 性能探针；
+  测量而非调参，若偏差存在先作因果分解。17 粒 Earth-default 语料由 Task 4
+  独立冻结。
+- [x] 跑三道门禁并提交。
 
 提交：`Conserve P4 water and latent heat`
 
@@ -263,6 +264,12 @@
 - 地形凝结：Smith (1979) raw upslope；Smith & Barstad (2004) linear
   orographic precipitation；Barstad & Smith (2005), DOI
   `10.1175/JHM-404.1`。
+- 粗网格凝结与周期湿度求根：Molteni (2003) SPEEDY, DOI
+  `10.1007/s00382-002-0268-2`；Ridders (1979), *A New Algorithm for
+  Computing a Single Root of a Real Continuous Function*, DOI
+  `10.1109/TCS.1979.1084580`。
+- 守恒保界通量：Hu, Adams & Shu (2013), DOI
+  `10.1016/j.jcp.2013.01.024`。
 - Earth 降水与水量审计：Huffman et al. (2023), GPCP V3.2, DOI
   `10.1175/JCLI-D-23-0123.1`；Adler et al. (2017), DOI
   `10.1007/s10712-017-9416-4`；Hersbach et al. (2020), ERA5, DOI

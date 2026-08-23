@@ -122,6 +122,7 @@ fn climate(surface: &SphericalSurfaceSnapshot) -> GlobalCirculationSnapshot {
         scalar(count, 8.0),
         scalar(count, 900.0),
         scalar(count, 0.008),
+        scalar(count, 0.0),
         scalar(count, 2.0),
         scalar(count, 0.5),
         scalar(count, 0.0),

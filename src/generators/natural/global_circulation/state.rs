@@ -3,8 +3,8 @@ use thiserror::Error;
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
 use crate::world::natural::{
-    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
-    CLIMATE_MONTH_COUNT,
+    saturation_specific_humidity_kg_kg, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
+    ForcingError, PlanetForcing, CLIMATE_MONTH_COUNT,
 };
 
 const C1_ACTIVE_ROLES: [ClimateLayerRole; 2] = [
@@ -175,34 +175,15 @@ impl LayeredClimateState {
                 .iter()
                 .find(|layer| layer.role() == *role)
                 .expect("fixed layout contains every active role");
-            let source = match role {
-                ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere => {
-                    forcing.equilibrium_air_temperature_c()
-                }
-                ClimateLayerRole::OceanMixedLayer | ClimateLayerRole::OceanThermocline => {
-                    forcing.equilibrium_surface_temperature_c()
-                }
-                ClimateLayerRole::DeepOceanReservoir => {
-                    unreachable!("deep reservoir is not dynamically active")
-                }
-            };
             let mut temperature_c = Vec::with_capacity(grid.cell_count());
-            for (cell, months) in source.iter().enumerate() {
+            for cell in 0..grid.cell_count() {
                 poll_state_cancelled(cell, cancellation)?;
-                let monthly_value = forcing_initial_value(months, month);
-                let value = match role {
-                    ClimateLayerRole::LowerAtmosphere => monthly_value,
-                    ClimateLayerRole::UpperAtmosphere => {
-                        monthly_value - UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C
-                    }
-                    ClimateLayerRole::OceanMixedLayer => {
-                        monthly_value.clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
-                    }
-                    ClimateLayerRole::OceanThermocline => (monthly_value
-                        - THERMOCLINE_EQUILIBRIUM_OFFSET_C)
-                        .clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C),
-                    ClimateLayerRole::DeepOceanReservoir => unreachable!(),
-                };
+                let value = forcing_initial_temperature(
+                    &forcing.equilibrium_air_temperature_c()[cell],
+                    &forcing.equilibrium_surface_temperature_c()[cell],
+                    month,
+                    *role,
+                );
                 temperature_c.push(value);
             }
             active_layers.push(ActiveLayerState {
@@ -219,20 +200,22 @@ impl LayeredClimateState {
         let mut deep_ocean_temperature_c = c2.then(|| Vec::with_capacity(grid.cell_count()));
         for cell in 0..grid.cell_count() {
             poll_state_cancelled(cell, cancellation)?;
-            let humidity =
-                forcing_initial_value(&forcing.equilibrium_specific_humidity()[cell], month);
+            let humidity = forcing_initial_humidity(
+                &forcing.equilibrium_air_temperature_c()[cell],
+                &forcing.equilibrium_specific_humidity()[cell],
+                month,
+            );
             specific_humidity.push(humidity);
             if let Some(upper) = &mut upper_specific_humidity {
                 upper.push(UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION * humidity);
             }
             if let Some(deep) = &mut deep_ocean_temperature_c {
-                deep.push(
-                    (forcing_initial_value(
-                        &forcing.equilibrium_surface_temperature_c()[cell],
-                        month,
-                    ) - DEEP_OCEAN_EQUILIBRIUM_OFFSET_C)
-                        .clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C),
-                );
+                deep.push(forcing_initial_temperature(
+                    &forcing.equilibrium_air_temperature_c()[cell],
+                    &forcing.equilibrium_surface_temperature_c()[cell],
+                    month,
+                    ClimateLayerRole::DeepOceanReservoir,
+                ));
             }
         }
         let state = Self {
@@ -492,11 +475,77 @@ impl LayeredClimateState {
     }
 }
 
-fn forcing_initial_value(months: &[f32; CLIMATE_MONTH_COUNT], month: Option<usize>) -> f32 {
+fn forcing_initial_humidity(
+    air_temperature_c: &[f32; CLIMATE_MONTH_COUNT],
+    specific_humidity: &[f32; CLIMATE_MONTH_COUNT],
+    month: Option<usize>,
+) -> f32 {
+    if let Some(month) = month {
+        return specific_humidity[month];
+    }
+    let relative_humidity = air_temperature_c
+        .iter()
+        .zip(specific_humidity)
+        .map(|(temperature, humidity)| {
+            let saturation = saturation_specific_humidity_kg_kg(f64::from(*temperature));
+            if saturation > 0.0 {
+                f64::from(*humidity) / saturation
+            } else {
+                0.0
+            }
+        })
+        .sum::<f64>()
+        / CLIMATE_MONTH_COUNT as f64;
+    let annual_mean_temperature = forcing_initial_temperature(
+        air_temperature_c,
+        air_temperature_c,
+        None,
+        ClimateLayerRole::LowerAtmosphere,
+    );
+    (relative_humidity * saturation_specific_humidity_kg_kg(f64::from(annual_mean_temperature)))
+        as f32
+}
+
+fn forcing_initial_temperature(
+    air_months: &[f32; CLIMATE_MONTH_COUNT],
+    surface_months: &[f32; CLIMATE_MONTH_COUNT],
+    month: Option<usize>,
+    role: ClimateLayerRole,
+) -> f32 {
     month.map_or_else(
-        || (months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64) as f32,
-        |month| months[month],
+        || {
+            (air_months
+                .iter()
+                .zip(surface_months)
+                .map(|(air, surface)| role_reference_temperature_c(role, *air, *surface))
+                .map(f64::from)
+                .sum::<f64>()
+                / CLIMATE_MONTH_COUNT as f64) as f32
+        },
+        |month| role_reference_temperature_c(role, air_months[month], surface_months[month]),
     )
+}
+
+pub(super) fn role_reference_temperature_c(
+    role: ClimateLayerRole,
+    air_temperature_c: f32,
+    surface_temperature_c: f32,
+) -> f32 {
+    match role {
+        ClimateLayerRole::LowerAtmosphere => air_temperature_c,
+        ClimateLayerRole::UpperAtmosphere => {
+            air_temperature_c - UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C
+        }
+        ClimateLayerRole::OceanMixedLayer => {
+            surface_temperature_c.clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
+        }
+        ClimateLayerRole::OceanThermocline => (surface_temperature_c
+            - THERMOCLINE_EQUILIBRIUM_OFFSET_C)
+            .clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C),
+        ClimateLayerRole::DeepOceanReservoir => (surface_temperature_c
+            - DEEP_OCEAN_EQUILIBRIUM_OFFSET_C)
+            .clamp(SUBSURFACE_OCEAN_MIN_C, OCEAN_EQUILIBRIUM_MAX_C),
+    }
 }
 
 fn copy_scalars_cancellable(

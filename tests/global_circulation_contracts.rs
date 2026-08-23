@@ -64,6 +64,7 @@ fn c2_fields(
         scalar(count, 8.0),
         scalar(count, 900.0 + thermocline_height_m),
         scalar(count, 0.008),
+        scalar(count, 0.0),
         scalar(count, 2.0),
         scalar(count, 0.5),
         scalar(count, lower_height_m),

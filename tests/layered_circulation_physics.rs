@@ -11,13 +11,17 @@ use sekai::world::natural::{
 };
 
 fn forcing(grid: &CubedSphereGrid) -> PlanetForcing {
+    forcing_with_surface_water(grid, 1.0)
+}
+
+fn forcing_with_surface_water(grid: &CubedSphereGrid, water_fraction: f32) -> PlanetForcing {
     let count = grid.cell_count();
     PlanetForcing::new(
         *grid.fingerprint(),
         vec![0.0; count],
         vec![0.0; count],
         vec![0.1; count],
-        vec![1.0; count],
+        vec![water_fraction; count],
         vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[18.0; 12]; count],
@@ -281,6 +285,9 @@ fn shared_tendency_is_tangent_budgeted_and_honors_closed_ocean_edges() {
     state
         .velocity_m_s_mut(ClimateLayerRole::OceanMixedLayer)
         .unwrap()[first] = edge.normal_from_first().map(|value| value as f32);
+    state
+        .temperature_c_mut(ClimateLayerRole::OceanMixedLayer)
+        .unwrap()[first] += 1.0;
 
     let system = LayeredTendencySystem::new(&grid);
     let cancellation = BuildCancellation::new();
@@ -683,7 +690,7 @@ fn tendency_rejects_nonpositive_thickness_bad_permeability_and_cancellation() {
 #[test]
 fn shared_tendency_uses_monotone_second_order_heat_and_moisture_transport() {
     let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
-    let forcing = forcing(&grid);
+    let forcing = forcing_with_surface_water(&grid, 0.0);
     let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
     let mut still = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
     for (cell, temperature) in grid.cells().iter().zip(

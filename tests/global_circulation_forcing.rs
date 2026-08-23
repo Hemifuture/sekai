@@ -11,14 +11,17 @@ use sekai::generators::spatial::{
     remap_intensive_f32, ProfileSurfaceBuilder, ProfileSurfaceBundle,
 };
 use sekai::world::natural::{
-    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c, planetary_albedo_from_surface,
-    ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, LandOceanKind,
-    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s,
+    gray_equilibrium_surface_temperature_c, linearized_outgoing_longwave_w_m2,
+    planetary_albedo_from_surface, raw_orographic_condensation_kg_m2_s,
+    saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
+    GeologicSubstrateSnapshot, LandOceanKind, NaturalQualityProfile, PrimaryReliefSnapshot,
+    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
+    WorldFormationPreset, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
     CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
     EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
-    GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, P4_REFERENCE_AIR_DENSITY_KG_M3,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -28,6 +31,33 @@ struct Fixture {
     relief: PrimaryReliefSnapshot,
     domain: ClimateWorkDomainSnapshot,
     forcing: GlobalClimateForcing,
+}
+
+#[test]
+fn physical_moisture_helpers_obey_analytic_limits() {
+    let cold = saturation_specific_humidity_kg_kg(-10.0);
+    let mild = saturation_specific_humidity_kg_kg(15.0);
+    let warm = saturation_specific_humidity_kg_kg(30.0);
+    assert!(cold > 0.0 && cold < mild && mild < warm);
+
+    let unsaturated = 0.5 * mild;
+    assert_eq!(
+        bulk_surface_evaporation_kg_m2_s(15.0, unsaturated, 0.0, 1.0),
+        0.0
+    );
+    assert_eq!(bulk_surface_evaporation_kg_m2_s(15.0, mild, 12.0, 1.0), 0.0);
+    assert_eq!(
+        bulk_surface_evaporation_kg_m2_s(15.0, unsaturated, 12.0, 0.0),
+        0.0
+    );
+    assert!(bulk_surface_evaporation_kg_m2_s(15.0, unsaturated, 12.0, 1.0) > 0.0);
+
+    assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, -0.02), 0.0);
+    assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, 0.0), 0.0);
+    assert_eq!(
+        raw_orographic_condensation_kg_m2_s(0.01, 0.02),
+        P4_REFERENCE_AIR_DENSITY_KG_M3 * 0.01 * 0.02
+    );
 }
 
 fn fixture() -> &'static Fixture {
@@ -130,6 +160,25 @@ fn radiative_helpers_reproduce_the_ceres_calibration_and_analytic_limits() {
     let reference_temperature = gray_equilibrium_surface_temperature_c(ceres_asr);
     assert!((15.0..=18.0).contains(&reference_temperature));
     assert!(gray_equilibrium_surface_temperature_c(ceres_asr * 1.1) > reference_temperature);
+    assert_eq!(
+        linearized_outgoing_longwave_w_m2(ceres_asr, reference_temperature, reference_temperature),
+        ceres_asr
+    );
+    assert!(
+        linearized_outgoing_longwave_w_m2(
+            ceres_asr,
+            reference_temperature,
+            reference_temperature + 2.0,
+        ) > ceres_asr
+    );
+    assert_eq!(
+        linearized_outgoing_longwave_w_m2(
+            ceres_asr,
+            reference_temperature,
+            reference_temperature - 100.0,
+        ),
+        0.0
+    );
 }
 
 #[test]
@@ -155,6 +204,32 @@ fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
         fixture.forcing.planet_forcing().land_fraction(),
         expected_land
     );
+    for (cell, land_fraction) in expected_land.iter().copied().enumerate() {
+        assert_eq!(
+            fixture
+                .forcing
+                .planet_forcing()
+                .surface_moisture_availability()[cell]
+                .to_bits(),
+            (1.0_f32 - land_fraction).to_bits()
+        );
+        for month in 0..12 {
+            let air_temperature = fixture
+                .forcing
+                .planet_forcing()
+                .equilibrium_air_temperature_c()[cell][month];
+            let saturation = saturation_specific_humidity_kg_kg(f64::from(air_temperature));
+            let expected = (REFERENCE_SURFACE_RELATIVE_HUMIDITY * saturation) as f32;
+            assert_eq!(
+                fixture
+                    .forcing
+                    .planet_forcing()
+                    .equilibrium_specific_humidity()[cell][month]
+                    .to_bits(),
+                expected.to_bits()
+            );
+        }
+    }
     let expected_elevation = remap_intensive_f32(
         fixture.domain.source_to_climate(),
         fixture.relief.elevation_m(),

@@ -1,14 +1,15 @@
 use thiserror::Error;
 
 use crate::world::natural::{
-    CirculationSpec, CirculationSpecError, ForcingError, PlanetForcing, CLIMATE_MONTH_COUNT,
+    saturation_specific_humidity_kg_kg, CirculationSpec, CirculationSpecError, ForcingError,
+    PlanetForcing, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    P4_LOWER_LAYER_REFERENCE_PRESSURE_PA, P4_MAX_SPECIFIC_HUMIDITY_KG_KG,
 };
 
 use super::{CirculationOperatorError, CirculationOperators, CubedSphereGrid};
 
-pub(crate) const LAPSE_RATE_C_PER_M: f32 = 0.0065;
-const STANDARD_PRESSURE_PA: f64 = 101_325.0;
-pub(crate) const MAX_SPECIFIC_HUMIDITY: f32 = 0.2;
+pub(crate) const LAPSE_RATE_C_PER_M: f32 = CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M as f32;
+pub(crate) const MAX_SPECIFIC_HUMIDITY: f32 = P4_MAX_SPECIFIC_HUMIDITY_KG_KG as f32;
 const CONDENSATION_TIMESCALE_S: f64 = 21_600.0;
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const STEADY_LINEAR_ITERATIONS: u16 = 128;
@@ -575,17 +576,12 @@ pub(crate) fn advance_thermodynamics_weighted(
     ThermodynamicState::new(air, surface, specific_humidity)
 }
 
-/// Tetens saturation specific humidity at standard pressure, in kg/kg.
+/// Compatibility wrapper around the world-domain Bolton saturation helper.
 pub fn saturation_specific_humidity(temperature_c: f32) -> Result<f32, ThermodynamicError> {
     if !temperature_c.is_finite() {
         return Err(ThermodynamicError::NonFiniteTemperature);
     }
-    let temperature = f64::from(temperature_c.clamp(-80.0, 60.0));
-    let saturation_vapor_pressure_pa =
-        610.94 * (17.625 * temperature / (temperature + 243.04)).exp();
-    let humidity = 0.622 * saturation_vapor_pressure_pa
-        / (STANDARD_PRESSURE_PA - 0.378 * saturation_vapor_pressure_pa);
-    Ok(humidity.clamp(0.0, f64::from(MAX_SPECIFIC_HUMIDITY)) as f32)
+    Ok(saturation_specific_humidity_kg_kg(f64::from(temperature_c)) as f32)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -619,7 +615,7 @@ fn surface_relaxation_multiplier(land: f32) -> f32 {
 
 fn precipitation_from_condensation_mm_day(condensation_kg_kg_s: f64, gravity_m_s2: f64) -> f64 {
     // Hydrostatic column mass at the explicitly assumed standard pressure is p / g.
-    condensation_kg_kg_s * (STANDARD_PRESSURE_PA / gravity_m_s2) * SECONDS_PER_DAY
+    condensation_kg_kg_s * (P4_LOWER_LAYER_REFERENCE_PRESSURE_PA / gravity_m_s2) * SECONDS_PER_DAY
 }
 
 fn validate_grid_forcing(

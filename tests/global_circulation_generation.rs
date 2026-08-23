@@ -8,7 +8,8 @@ use sekai::generators::natural::{
 use sekai::world::natural::{
     expected_global_circulation_dense_state_bytes, ClimateCapabilityAvailability,
     ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile, ClimateWorkDomainSnapshot,
-    LandOceanKind, NaturalQualityProfile,
+    LandOceanKind, NaturalQualityProfile, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
 };
 use sekai::world::spatial::{ConservativeSurfaceMap, SurfaceOverlapWeight, TangentTransform};
 
@@ -63,6 +64,7 @@ fn c2_generation_publishes_every_semantic_field_and_exact_component_identity() {
     for field in [
         snapshot.fields().monthly_absorbed_shortwave_w_m2(),
         snapshot.fields().monthly_outgoing_longwave_w_m2(),
+        snapshot.fields().monthly_evaporation_mm_day(),
     ] {
         assert_eq!(field.len(), surface.cells().len());
         assert!(field
@@ -285,10 +287,34 @@ fn formation_is_convergent_budgeted_causal_and_deterministic() {
         first.solve_report().final_residual()
     );
     first.budget_report().validate().unwrap();
+    let budget = first.budget_report();
+    assert!(budget.evaporation_global_mean_mm_day() >= 0.0);
+    assert!(budget.precipitation_global_mean_mm_day() >= 0.0);
+    assert!(
+        budget.evaporation_precipitation_relative_imbalance()
+            <= GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX
+    );
+    assert!(budget.absorbed_shortwave_global_mean_w_m2() >= 0.0);
+    assert!(budget.outgoing_longwave_global_mean_w_m2() >= 0.0);
+    assert!(budget.planetary_albedo_global_mean() >= 0.0);
+    assert!(budget.planetary_albedo_global_mean() <= 1.0);
+    assert!(
+        budget.toa_net_radiation_global_mean_w_m2().abs()
+            <= GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2
+    );
+    assert!(
+        (budget.toa_net_radiation_global_mean_w_m2()
+            - (budget.absorbed_shortwave_global_mean_w_m2()
+                - budget.outgoing_longwave_global_mean_w_m2()))
+        .abs()
+            <= 1.0e-12
+    );
 
     let fields = first.fields();
+    let evaporation = fields.monthly_evaporation_mm_day().values();
     let precipitation = fields.monthly_precipitation_mm_day().values();
     let orographic = fields.monthly_orographic_precipitation_mm_day().values();
+    assert!(evaporation.iter().flatten().any(|value| *value > 0.0));
     assert!(precipitation.iter().flatten().any(|value| *value > 0.01));
     assert!(orographic.iter().flatten().any(|value| *value > 0.01));
     for (total, orographic) in precipitation.iter().zip(orographic) {
@@ -368,26 +394,32 @@ fn active_cancellation_is_synchronized_after_completed_solver_work_units() {
         GlobalCirculationPhase::StateFingerprintCompleted,
     ] {
         let cancellation = BuildCancellation::new();
-        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let latency = std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
+            let worker_tx = entered_tx.clone();
+            let surface = fixture.bundle.authoritative_surface();
+            let domain = &fixture.domain;
+            let forcing = &fixture.forcing;
+            let cancellation_ref = &cancellation;
+            let worker = scope.spawn(move || {
                 let mut triggered = false;
                 GlobalCirculationGenerator::generate_with_phase_observer(
-                    fixture.bundle.authoritative_surface(),
-                    &fixture.domain,
-                    &fixture.forcing,
+                    surface,
+                    domain,
+                    forcing,
                     ClimateModelProfile::C2LayeredV1,
-                    &cancellation,
+                    cancellation_ref,
                     |observed| {
                         if observed == phase && !triggered {
                             triggered = true;
-                            entered_tx.send(()).unwrap();
+                            worker_tx.send(()).unwrap();
                         }
                     },
                 )
             });
+            drop(entered_tx);
             entered_rx
-                .recv_timeout(std::time::Duration::from_secs(120))
+                .recv()
                 .unwrap_or_else(|_| panic!("solver never entered {phase:?}"));
             // The observer fires only after a real work unit. Wait until the
             // following unit has itself crossed several cooperative polls;

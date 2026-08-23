@@ -138,6 +138,7 @@ fn climate(
         scalar(count, 8.0),
         scalar(count, 900.0),
         scalar(count, 0.008),
+        scalar(count, 0.0),
         scalar(count, precipitation_mm_day),
         scalar(count, 0.0),
         scalar(count, 0.0),

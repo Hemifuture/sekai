@@ -15,9 +15,10 @@ use crate::world::natural::{
     EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
     EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_GRAY_GREENHOUSE_OFFSET_K,
     EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
-    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
-    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
-    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, STEFAN_BOLTZMANN_CONSTANT_W_M2_K4,
+    GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+    P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
+    P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY, STEFAN_BOLTZMANN_CONSTANT_W_M2_K4,
 };
 
 pub use crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M;
@@ -59,7 +60,7 @@ pub use tendency::{
 /// Canonical identity of the locked shared equations and formation procedure.
 pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v3\0");
+    hasher.update(b"sekai.global-circulation-equations.v4\0");
     hasher.update(&tendency::layered_equation_model_fingerprint(profile));
     hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());
     hasher.update(&GLOBAL_CIRCULATION_MACRO_STEP_SECONDS.to_le_bytes());
@@ -80,12 +81,16 @@ pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8
         EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE,
         STEFAN_BOLTZMANN_CONSTANT_W_M2_K4,
         EARTH_GRAY_GREENHOUSE_OFFSET_K,
+        REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+        GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
     ] {
         hasher.update(&value.to_bits().to_le_bytes());
     }
+    hasher.update(&u64::from(f32::MANTISSA_DIGITS).to_le_bytes());
     for semantic_id in [
         b"toa-gray-radiation-ledger.v1".as_slice(),
-        b"annual-mean-climatology-initial-state.v1".as_slice(),
+        b"annual-mean-relative-humidity-initial-state.v2".as_slice(),
+        b"thermodynamic-moisture-shooting-preconditioner-v2".as_slice(),
         b"surface-albedo-asr-olr-fields.v1".as_slice(),
     ] {
         hasher.update(&(semantic_id.len() as u32).to_le_bytes());

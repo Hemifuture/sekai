@@ -445,6 +445,21 @@ where
 {
     check_integrator_cancelled(Some(cancellation))?;
     let first = evaluate(state)?;
+    rk3_step_with_first(grid, state, dt_seconds, cancellation, first, evaluate)
+}
+
+pub(crate) fn rk3_step_with_first<F>(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    dt_seconds: f64,
+    cancellation: &BuildCancellation,
+    first: ClimateDerivative,
+    mut evaluate: F,
+) -> Result<LayeredClimateState, ClimateIntegratorError>
+where
+    F: FnMut(&LayeredClimateState) -> Result<ClimateDerivative, ClimateIntegratorError>,
+{
+    check_integrator_cancelled(Some(cancellation))?;
     let stage_two = combine_state(grid, state, &[(0.5 * dt_seconds, &first)], cancellation)?;
     let second = evaluate(&stage_two)?;
     let stage_three = combine_state(
@@ -473,6 +488,7 @@ pub(crate) fn combine_state(
     cancellation: &BuildCancellation,
 ) -> Result<LayeredClimateState, ClimateIntegratorError> {
     let mut result = base.clone_cancellable(cancellation)?;
+    let operators = CirculationOperators::new(grid);
     for role in base.active_roles() {
         let base_height = base.height_anomaly_m(*role).expect("active role");
         let base_velocity = base.velocity_m_s(*role).expect("active role");
@@ -488,8 +504,13 @@ pub(crate) fn combine_state(
                 derivative.layer(*role).height[index]
             })?;
         }
-        let mut velocity = Vec::with_capacity(base.cell_count());
-        for (index, original) in base_velocity.iter().copied().enumerate() {
+        for (index, (target, original)) in result
+            .velocity_m_s_mut(*role)
+            .expect("active role")
+            .iter_mut()
+            .zip(base_velocity)
+            .enumerate()
+        {
             poll_integrator_cancelled(index, Some(cancellation))?;
             let mut value = [0.0_f32; 3];
             for component in 0..3 {
@@ -497,17 +518,8 @@ pub(crate) fn combine_state(
                     derivative.layer(*role).velocity[index][component]
                 })?;
             }
-            velocity.push(value);
+            *target = operators.project_tangent_cell_validated(index, value);
         }
-        let tangent = CirculationOperators::new(grid)
-            .tangentize_cancellable(&velocity, cancellation)
-            .map_err(|error| {
-                ClimateIntegratorError::Tendency(LayeredTendencyError::Operator(error))
-            })?;
-        result
-            .velocity_m_s_mut(*role)
-            .expect("active role")
-            .copy_from_slice(&tangent);
         for (index, target) in result
             .temperature_c_mut(*role)
             .expect("active role")

@@ -1,10 +1,10 @@
 use super::rk3::{
-    copy_scalars, estimate_cfl, rk3_step_with, validate_step, ClimateDerivative,
-    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
+    copy_scalars, estimate_cfl, rk3_step_with, rk3_step_with_first, validate_step,
+    ClimateDerivative, ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
 };
 use super::{
     ClimateConservationInterpretation, FormationProcedureIdentity, GlobalCirculationPhase,
-    LayeredClimateState, LayeredTendencySystem, LayeredTendencyWorkspace,
+    LayeredClimateState, LayeredClimateTendency, LayeredTendencySystem, LayeredTendencyWorkspace,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
@@ -17,6 +17,7 @@ const MAXIMUM_SLOW_STEP_SECONDS: f64 = 7_200.0;
 #[derive(Debug, Clone, Copy)]
 pub struct SplitExplicitRk3Integrator<'grid> {
     grid: &'grid CubedSphereGrid,
+    tendency_system: LayeredTendencySystem<'grid>,
     maximum_fast_step_seconds: f64,
 }
 
@@ -32,8 +33,24 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         }
         Ok(Self {
             grid,
+            tendency_system: LayeredTendencySystem::new(grid),
             maximum_fast_step_seconds,
         })
+    }
+
+    pub(crate) fn new_with_terrain_gradient(
+        grid: &'grid CubedSphereGrid,
+        terrain_gradient_m_per_m: &'grid [[f32; 3]],
+        maximum_fast_step_seconds: f64,
+    ) -> Result<Self, ClimateIntegratorError> {
+        let mut integrator = Self::new(grid, maximum_fast_step_seconds)?;
+        integrator.tendency_system =
+            LayeredTendencySystem::with_terrain_gradient(grid, terrain_gradient_m_per_m);
+        Ok(integrator)
+    }
+
+    pub(crate) const fn tendency_system(&self) -> LayeredTendencySystem<'grid> {
+        self.tendency_system
     }
 
     /// Declares the scientific capabilities and conservation ledger owned by
@@ -88,7 +105,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
         let (substeps, fast_step_seconds) =
             self.fast_substep_plan(state, macro_step_seconds, cancellation)?;
-        let system = LayeredTendencySystem::new(self.grid);
+        let system = self.tendency_system;
         let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
         system.validate_fast_inputs(
             state,
@@ -149,6 +166,8 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         F: FnMut(GlobalCirculationPhase),
     {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
+        let mut full_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
         if macro_step_seconds <= MAXIMUM_SLOW_STEP_SECONDS {
             return self.advance_single_slow_step_with_phase_observer(
                 state,
@@ -158,6 +177,9 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                 macro_step_seconds,
                 cancellation,
                 observer,
+                None,
+                &mut full_workspace,
+                &mut fast_workspace,
             );
         }
 
@@ -179,6 +201,9 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                 slow_step_seconds,
                 cancellation,
                 observer,
+                None,
+                &mut full_workspace,
+                &mut fast_workspace,
             )?;
             diagnostics.accumulate(result.diagnostics());
             for (cell, precipitation) in result.mean_precipitation_rate_mm_s().iter().enumerate() {
@@ -203,6 +228,45 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         ))
     }
 
+    /// Advances one production macro step from the exact full tendency that
+    /// the generation driver already retained for its conservation ledger.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance_with_declared_tendency_and_phase_observer<F>(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        macro_step_seconds: f64,
+        declared_full: &LayeredClimateTendency,
+        cancellation: &BuildCancellation,
+        observer: &mut F,
+    ) -> Result<ClimateStepResult, ClimateIntegratorError>
+    where
+        F: FnMut(GlobalCirculationPhase),
+    {
+        validate_step(self.grid, state, macro_step_seconds, cancellation)?;
+        if macro_step_seconds > MAXIMUM_SLOW_STEP_SECONDS {
+            return Err(ClimateIntegratorError::InvalidTimeStep {
+                found: macro_step_seconds,
+            });
+        }
+        let mut full_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        self.advance_single_slow_step_with_phase_observer(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            macro_step_seconds,
+            cancellation,
+            observer,
+            Some(declared_full),
+            &mut full_workspace,
+            &mut fast_workspace,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn advance_single_slow_step_with_phase_observer<F>(
         &self,
@@ -213,6 +277,9 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         macro_step_seconds: f64,
         cancellation: &BuildCancellation,
         observer: &mut F,
+        declared_full: Option<&LayeredClimateTendency>,
+        full_workspace: &mut LayeredTendencyWorkspace,
+        fast_workspace: &mut LayeredTendencyWorkspace,
     ) -> Result<ClimateStepResult, ClimateIntegratorError>
     where
         F: FnMut(GlobalCirculationPhase),
@@ -220,38 +287,44 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
         let (substeps, fast_step_seconds) =
             self.fast_substep_plan(state, macro_step_seconds, cancellation)?;
-        let system = LayeredTendencySystem::new(self.grid);
-        let mut full_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
-        let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        let system = self.tendency_system;
 
-        let full = system.evaluate_with_workspace_for_step(
-            state,
-            forcing,
-            ocean_edge_permeability,
-            month,
-            macro_step_seconds,
-            cancellation,
-            &mut full_workspace,
-        )?;
+        let evaluated_full = if declared_full.is_none() {
+            Some(system.evaluate_with_workspace_for_step(
+                state,
+                forcing,
+                ocean_edge_permeability,
+                month,
+                macro_step_seconds,
+                cancellation,
+                full_workspace,
+            )?)
+        } else {
+            None
+        };
+        let full = declared_full
+            .or(evaluated_full.as_ref())
+            .expect("full tendency is supplied or evaluated");
         let fast = system.evaluate_fast_with_workspace_validated(
             state,
             forcing,
             ocean_edge_permeability,
             cancellation,
-            &mut fast_workspace,
+            fast_workspace,
         )?;
-        let full_derivative = ClimateDerivative::from_tendency(state, &full, cancellation)?;
+        let full_derivative = ClimateDerivative::from_tendency(state, full, cancellation)?;
         let fast_derivative = ClimateDerivative::from_tendency(state, &fast, cancellation)?;
         let slow = full_derivative.subtract(&fast_derivative, cancellation)?;
+        let first_fast_plus_slow = fast_derivative.add(&slow, cancellation)?;
         // Only the frozen slow derivative and the full precipitation
         // diagnostic survive into the RK3 loop. Explicit drops make the live
         // owner inventory used by the public memory report mechanically true.
         drop(full_derivative);
         drop(fast_derivative);
         drop(fast);
-
         let mut advanced = state.clone_cancellable(cancellation)?;
         let mut evaluations = 2_u64;
+        let mut first_fast_plus_slow = Some(first_fast_plus_slow);
         observer(GlobalCirculationPhase::FastSubstepsStarted);
         if cancellation.is_cancelled() {
             return Err(ClimateIntegratorError::Cancelled);
@@ -260,24 +333,36 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             if cancellation.is_cancelled() {
                 return Err(ClimateIntegratorError::Cancelled);
             }
-            advanced = rk3_step_with(
-                self.grid,
-                &advanced,
-                fast_step_seconds,
-                cancellation,
-                |stage| {
-                    evaluations += 1;
-                    let value = system.evaluate_fast_with_workspace_validated(
-                        stage,
-                        forcing,
-                        ocean_edge_permeability,
-                        cancellation,
-                        &mut fast_workspace,
-                    )?;
-                    ClimateDerivative::from_tendency(stage, &value, cancellation)?
-                        .add(&slow, cancellation)
-                },
-            )?;
+            let mut evaluate = |stage: &LayeredClimateState| {
+                evaluations += 1;
+                let value = system.evaluate_fast_with_workspace_validated(
+                    stage,
+                    forcing,
+                    ocean_edge_permeability,
+                    cancellation,
+                    fast_workspace,
+                )?;
+                ClimateDerivative::from_tendency(stage, &value, cancellation)?
+                    .add(&slow, cancellation)
+            };
+            advanced = if let Some(first) = first_fast_plus_slow.take() {
+                rk3_step_with_first(
+                    self.grid,
+                    &advanced,
+                    fast_step_seconds,
+                    cancellation,
+                    first,
+                    &mut evaluate,
+                )?
+            } else {
+                rk3_step_with(
+                    self.grid,
+                    &advanced,
+                    fast_step_seconds,
+                    cancellation,
+                    &mut evaluate,
+                )?
+            };
             observer(GlobalCirculationPhase::FastSubstepCompleted);
         }
         apply_frozen_slow_scalar_endpoint(

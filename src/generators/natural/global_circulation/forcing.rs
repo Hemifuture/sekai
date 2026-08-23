@@ -6,14 +6,14 @@ use crate::generators::natural::circulation::{
 };
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
-    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c, ClimateSpec,
-    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
-    FormationTerrainFields, LandOceanField, LandOceanKind, PlanetForcing, PrimaryReliefSnapshot,
-    PrimaryReliefValidationError, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
-    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
-    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, PRIMARY_RELIEF_SCHEMA_V1,
-    WATER_VOLUME_RELATIVE_TOLERANCE,
+    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c,
+    saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot,
+    ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, LandOceanField,
+    LandOceanKind, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
+    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+    P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
+    P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
+    PRIMARY_RELIEF_SCHEMA_V1, REFERENCE_SURFACE_RELATIVE_HUMIDITY, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -445,8 +445,7 @@ impl GlobalClimateForcingBuilder {
                     + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land)
                     as f32,
             );
-            let moisture = (1.0 - 0.72 * land + 0.12 * land * snow_prior).clamp(0.0, 1.0);
-            surface_moisture_availability.push(moisture as f32);
+            surface_moisture_availability.push(1.0_f32 - land_fraction[index]);
 
             let mut insolation = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut surface_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
@@ -468,10 +467,13 @@ impl GlobalClimateForcingBuilder {
                 let surface_c = (radiative - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
                     .clamp(-90.0, 65.0);
                 let air_c = surface_c.clamp(-100.0, 65.0);
-                let saturation = (0.0038 * (0.07 * air_c).exp()).clamp(0.000_01, 0.08);
                 surface_temperature[month] = surface_c as f32;
                 air_temperature[month] = air_c as f32;
-                humidity[month] = (saturation * moisture * moisture_scale).clamp(0.0, 0.1) as f32;
+                let saturation =
+                    saturation_specific_humidity_kg_kg(f64::from(air_temperature[month]));
+                humidity[month] = (saturation
+                    * (moisture_scale * REFERENCE_SURFACE_RELATIVE_HUMIDITY).clamp(0.0, 1.0))
+                    as f32;
             }
             monthly_insolation_fraction.push(insolation);
             equilibrium_surface_temperature_c.push(surface_temperature);
