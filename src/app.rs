@@ -635,6 +635,8 @@ pub struct TemplateApp {
     spherical_space_spec: crate::world::SphericalSpaceSpec,
     #[serde(default)]
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
+    #[serde(default)]
+    reduce_loading_motion: bool,
     world_seed: u64,
     formation_spec: WorldFormationSpec,
     tectonic_spec: TectonicSpec,
@@ -703,6 +705,7 @@ impl Default for TemplateApp {
             world_origin: PersistedWorldOrigin::SphericalV1,
             spherical_space_spec: default_spherical_space_spec(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
+            reduce_loading_motion: false,
             world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
             formation_spec: WorldFormationSpec::default(),
             tectonic_spec: TectonicSpec::default(),
@@ -1714,6 +1717,20 @@ impl TemplateApp {
             self.apply_spherical_action(action);
         }
 
+        if let Some(pending) = &self.world_build {
+            let elapsed = pending.started_at.elapsed();
+            let cancelling = pending.cancellation.is_cancelled();
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::ui::world_loading::show_world_loading(
+                    ui,
+                    elapsed,
+                    self.reduce_loading_motion,
+                    cancelling,
+                );
+            });
+            return;
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| match self.world_origin {
             PersistedWorldOrigin::LegacyPlanarV1 => {
                 ui.add(&mut self.canvas_widget);
@@ -2132,6 +2149,7 @@ impl eframe::App for TemplateApp {
                                 }
                             });
                     }
+                    ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
                     if ui.button("按当前参数重建").clicked() {
                         rebuild = true;
                     }
@@ -2600,9 +2618,9 @@ mod natural_app_tests {
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
         configure_frame_stats_scenario, default_world_spec, formation_provenance_label,
         show_spherical_area_summary, AppRuntimeError, AppRuntimeGraph, MigrationFailurePoint,
-        NaturalWorldBuildError, PersistedWorldOrigin, PublishedSphericalPresentation, TemplateApp,
-        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
-        INITIAL_PLATE_COUNT_LABEL,
+        NaturalWorldBuildError, PendingWorldBuild, PersistedWorldOrigin,
+        PublishedSphericalPresentation, TemplateApp, CURRENT_SLICE_STATUS_TEXT,
+        CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT, INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::ExternalArtifacts;
     use crate::generators::natural::{
@@ -3155,6 +3173,40 @@ mod natural_app_tests {
         }
     }
 
+    fn spherical_callback_count(output: &egui::FullOutput) -> usize {
+        fn count(shape: &egui::epaint::Shape) -> usize {
+            match shape {
+                egui::epaint::Shape::Callback(_) => 1,
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+                _ => 0,
+            }
+        }
+
+        output.shapes.iter().map(|shape| count(&shape.shape)).sum()
+    }
+
+    fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn test_raw_input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn failed_spherical_startup_is_visible_and_retries_standalone_without_planar_fallback() {
         let render_state = request_test_render_state();
@@ -3232,14 +3284,6 @@ mod natural_app_tests {
                 PersistedWorldOrigin::SphericalV1,
                 SphericalCanvasAction::SetCentralMeridianRadians(0.75),
             ),
-            (
-                PersistedWorldOrigin::SphericalV1,
-                SphericalCanvasAction::RegenerateAsSpherical,
-            ),
-            (
-                PersistedWorldOrigin::LegacyPlanarV1,
-                SphericalCanvasAction::RegenerateAsSpherical,
-            ),
         ] {
             let render_state = request_test_render_state();
             let persisted = TemplateApp {
@@ -3248,23 +3292,12 @@ mod natural_app_tests {
             };
             let mut app = create_from_persisted(persisted, &render_state);
             let context = egui::Context::default();
-            let output = context.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(800.0, 600.0),
-                    )),
-                    ..Default::default()
-                },
-                |context| app.show_active_canvas_after_actions(context, vec![action.clone()]),
-            );
+            let output = context.run(test_raw_input(), |context| {
+                app.show_active_canvas_after_actions(context, vec![action.clone()])
+            });
             assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
             assert_eq!(
-                output
-                    .shapes
-                    .iter()
-                    .filter(|shape| matches!(shape.shape, egui::epaint::Shape::Callback(_)))
-                    .count(),
+                spherical_callback_count(&output),
                 1,
                 "{origin:?} action frame must queue one spherical callback"
             );
@@ -3286,6 +3319,48 @@ mod natural_app_tests {
                 "same-frame callback must reuse the action's current packet"
             );
         }
+    }
+
+    #[test]
+    fn pending_world_build_hides_the_old_map_until_rollback_or_publication() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.world_build = Some(PendingWorldBuild {
+            receiver,
+            cancellation: crate::engine::BuildCancellation::new(),
+            started_at: std::time::Instant::now(),
+            replacement: true,
+        });
+
+        let context = egui::Context::default();
+        let pending = context.run(test_raw_input(), |context| {
+            app.show_active_canvas_after_actions(context, Vec::new());
+        });
+        assert_eq!(spherical_callback_count(&pending), 0);
+        let mut texts = Vec::new();
+        for shape in &pending.shapes {
+            collect_text(&shape.shape, &mut texts);
+        }
+        assert!(texts.iter().any(|text| text == "世界正在成形"));
+
+        app.world_build.as_ref().unwrap().cancellation.cancel();
+        let cancelling = context.run(test_raw_input(), |context| {
+            app.show_active_canvas_after_actions(context, Vec::new());
+        });
+        assert_eq!(spherical_callback_count(&cancelling), 0);
+        let mut texts = Vec::new();
+        for shape in &cancelling.shapes {
+            collect_text(&shape.shape, &mut texts);
+        }
+        assert!(texts.iter().any(|text| text == "正在取消构建"));
+
+        drop(sender);
+        app.world_build = None;
+        let restored = context.run(test_raw_input(), |context| {
+            app.show_active_canvas_after_actions(context, Vec::new());
+        });
+        assert_eq!(spherical_callback_count(&restored), 1);
     }
 
     #[test]
@@ -3982,6 +4057,25 @@ mod natural_app_tests {
     }
 
     #[test]
+    fn loading_motion_preference_roundtrips() {
+        let app = TemplateApp {
+            reduce_loading_motion: true,
+            ..TemplateApp::default()
+        };
+        let encoded = serde_json::to_value(&app).unwrap();
+        let restored: TemplateApp = serde_json::from_value(encoded.clone()).unwrap();
+        assert!(restored.reduce_loading_motion);
+
+        let mut legacy = encoded;
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("reduce_loading_motion");
+        let restored_legacy: TemplateApp = serde_json::from_value(legacy).unwrap();
+        assert!(!restored_legacy.reduce_loading_motion);
+    }
+
+    #[test]
     fn quality_tier_roundtrips_and_defaults_to_draft() {
         assert_eq!(
             TemplateApp::default().formation_quality_profile,
@@ -4028,18 +4122,6 @@ mod natural_app_tests {
 
     #[test]
     fn spherical_author_ui_reports_requested_evolved_target_actual_delta_and_sea_level() {
-        fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
-            match shape {
-                egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
-                egui::epaint::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        collect_text(shape, output);
-                    }
-                }
-                _ => {}
-            }
-        }
-
         let render_state = request_test_render_state();
         let app = create_from_persisted(TemplateApp::default(), &render_state);
         let world_summary = app

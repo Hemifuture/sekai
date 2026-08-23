@@ -7,7 +7,6 @@ use crate::world::fields::{FieldId, ValueRange};
 use crate::world::CellId;
 
 /// sRGB colors for the world-build transition owned by the view layer.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WorldLoadingPalette {
     pub(crate) background: [u8; 3],
@@ -20,7 +19,6 @@ pub(crate) struct WorldLoadingPalette {
 }
 
 /// Approved world-build transition palette from the frozen design prototype.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const WORLD_LOADING_PALETTE: WorldLoadingPalette = WorldLoadingPalette {
     background: [4, 10, 16],
     surface: [5, 16, 24],

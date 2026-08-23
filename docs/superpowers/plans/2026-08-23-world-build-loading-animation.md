@@ -129,7 +129,11 @@ struct LoadingPiece {
 fn loading_frame(elapsed_seconds: f64, reduce_motion: bool)
     -> [LoadingPieceFrame; WORLD_LOADING_PIECE_COUNT];
 fn equal_earth_outline() -> Vec<[f32; 2]>;
-fn clipped_piece_points(piece_index: usize, travel: f32) -> Vec<[f32; 2]>;
+fn clipped_piece_to_outline(
+    piece_index: usize,
+    travel: f32,
+    outline: &[[f32; 2]],
+) -> Vec<[f32; 2]>;
 fn format_elapsed(elapsed: std::time::Duration) -> String;
 ```
 
@@ -242,7 +246,7 @@ fn reduced_motion_preserves_fades_and_removes_displacement() {
 fn moved_pieces_are_clipped_to_the_production_equal_earth_outline() {
     let outline = equal_earth_outline();
     for index in 0..WORLD_LOADING_PIECE_COUNT {
-        let points = clipped_piece_points(index, 1.0);
+        let points = clipped_piece_to_outline(index, 1.0, &outline);
         assert!(points.len() >= 3);
         assert!(points
             .into_iter()
@@ -301,7 +305,7 @@ pub(crate) const WORLD_LOADING_PALETTE: WorldLoadingPalette = WorldLoadingPalett
 
 - [x] **Step 4: 实现共享拓扑、生产投影轮廓与凸裁剪**
 
-把最终原型的二十块几何转写为一份 `WORLD_LOADING_VERTICES` 和一份索引拓扑。`equal_earth_outline` 调用生产投影，`clipped_piece_points` 用 Sutherland–Hodgman 逐边裁剪移动后的胞元；不增加几何 crate 或运行时随机数。
+把最终原型的二十块几何转写为一份 `WORLD_LOADING_VERTICES` 和一份索引拓扑。`equal_earth_outline` 调用生产投影，`clipped_piece_to_outline` 用 Sutherland–Hodgman 逐边裁剪移动后的胞元；不增加几何 crate 或运行时随机数。绘制和测试都传入同一帧已计算的轮廓，避免逐块重复投影。
 
 - [x] **Step 5: 实现纯时序与 egui 绘制**
 
@@ -335,6 +339,9 @@ git commit -m "feat: draw the Equal Earth build animation" -m "Render the approv
 **Files:**
 
 - Modify: `src/app.rs`
+- Modify: `src/ui/mod.rs`
+- Modify: `src/ui/world_loading.rs`
+- Modify: `src/view/palette.rs`
 - Delete: `prototypes/world-loading/index.html`
 - Delete: `prototypes/world-loading/styles.css`
 - Delete: `prototypes/world-loading/app.js`
@@ -354,7 +361,7 @@ git commit -m "feat: draw the Equal Earth build animation" -m "Render the approv
   - `TemplateApp::reduce_loading_motion: bool`，`#[serde(default)]` 持久化。
   - pending CentralPanel 零地图 callback；pending 清除后现有地图 callback 恢复。
 
-- [ ] **Step 1: 把旧 callback 断言改为 RED**
+- [x] **Step 1: 把旧 callback 断言改为 RED**
 
 拆分 `packet_changing_app_actions_queue_only_the_current_callback_in_the_same_frame`：非重建 action 继续要求一个当前 callback；新增测试构造一个未完成的 `PendingWorldBuild`，调用
 `show_active_canvas_after_actions` 后断言：
@@ -416,7 +423,7 @@ assert_eq!(spherical_callback_count(&restored), 1);
 
 另在持久化测试中把 `reduce_loading_motion = true` 往返序列化，证明开关不是临时测试字段。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 运行：
 
@@ -427,12 +434,12 @@ cargo test --lib app::natural_app_tests::loading_motion_preference_roundtrips --
 
 预期：第一条仍看到旧地图 callback 或缺少加载文案；第二条因字段不存在而编译失败。
 
-- [ ] **Step 3: 最小接入 app 状态与侧边栏**
+- [x] **Step 3: 最小接入 app 状态与侧边栏**
 
 在 `TemplateApp` 增加 `#[serde(default)] reduce_loading_motion: bool`。重建按钮附近增加
 `ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效")`；保留既有 spinner、已用秒数与取消按钮。
 
-- [ ] **Step 4: pending 时只绘制加载 CentralPanel**
+- [x] **Step 4: pending 时只绘制加载 CentralPanel**
 
 `show_active_canvas_after_actions` 先应用 actions，再读取 `world_build`。若 pending：
 
@@ -452,7 +459,7 @@ return;
 
 否则原样进入 legacy/spherical canvas。不得清空 `spherical_presentation` 或 renderer；回滚仍由 pending 清除自然恢复。
 
-- [ ] **Step 5: 运行 GREEN 与受影响回归**
+- [x] **Step 5: 运行 GREEN 与受影响回归**
 
 运行：
 
@@ -466,14 +473,16 @@ cargo test --lib app::natural_app_tests::gpu_failed_spherical_startup_is_visible
 
 预期：全部通过；失败/取消语义与 publication 原子性不变。
 
-- [ ] **Step 6: 删除临时网页原型**
+执行证据（2026-08-23）：callback RED 实际得到 `left: 1, right: 0`；持久化 RED 因 `TemplateApp` 缺少 `reduce_loading_motion` 产生 3 个编译错误。最小接入后两条目标测试转绿，且取消中的帧保持零 callback 并显示“正在取消构建”；7 个加载视图测试、同帧 packet callback、无 GPU 启动失败重试、GPU 准备失败重试均通过。接入真实消费者后删除 Task 2 的临时 dead-code 属性，并按 Clippy 反馈删除只被测试调用的裁剪包装函数，让绘制与测试直接复用同一个带轮廓参数的生产助手。
+
+- [x] **Step 6: 删除临时网页原型**
 
 用 `apply_patch` 删除 `prototypes/world-loading/` 中全部文件。确认 `rg --files prototypes/world-loading` 无输出，生产几何、时序与色板只剩 Rust 事实源。
 
-- [ ] **Step 7: 提交 app 集成**
+- [x] **Step 7: 提交 app 集成**
 
 ```powershell
-git add src/app.rs prototypes/world-loading docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
+git add src/app.rs src/ui/mod.rs src/ui/world_loading.rs src/view/palette.rs docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
 git commit -m "feat: replace rebuilding maps with the loading stage" -m "Hide the retained publication while a worker build is pending, preserve rollback semantics, expose reduced motion, and retire the duplicate web prototype."
 ```
 

@@ -11,7 +11,6 @@ use crate::view::{
 };
 
 const WORLD_LOADING_PIECE_COUNT: usize = 20;
-const WORLD_LOADING_TONE_COUNT: usize = WORLD_LOADING_PALETTE.tones.len();
 const WORLD_LOADING_OUTLINE_LATITUDE_STEPS: usize = 24;
 const WORLD_LOADING_TRANSITION_SECONDS: f64 = 0.3;
 const WORLD_LOADING_STAGGER_WINDOW_SECONDS: f64 = 0.6;
@@ -467,11 +466,6 @@ fn project_outline_point(
     ]
 }
 
-fn clipped_piece_points(piece_index: usize, travel: f32) -> Vec<[f32; 2]> {
-    let outline = equal_earth_outline();
-    clipped_piece_to_outline(piece_index, travel, &outline)
-}
-
 fn clipped_piece_to_outline(
     piece_index: usize,
     travel: f32,
@@ -661,7 +655,7 @@ mod tests {
             assert!(is_convex(piece.vertices));
             used_tones.insert(piece.tone);
         }
-        assert_eq!(used_tones.len(), WORLD_LOADING_TONE_COUNT);
+        assert_eq!(used_tones.len(), WORLD_LOADING_PALETTE.tones.len());
 
         for (left, left_piece) in WORLD_LOADING_PIECES.iter().enumerate() {
             for (right, right_piece) in WORLD_LOADING_PIECES.iter().enumerate().skip(left + 1) {
@@ -709,7 +703,7 @@ mod tests {
     fn resting_pieces_clip_to_exactly_one_projection_surface() {
         let outline = equal_earth_outline();
         let pieces_area: f32 = (0..WORLD_LOADING_PIECES.len())
-            .map(|index| polygon_area(&clipped_piece_points(index, 0.0)).abs())
+            .map(|index| polygon_area(&clipped_piece_to_outline(index, 0.0, &outline)).abs())
             .sum();
         let outline_area = polygon_area(&outline).abs();
         let accumulated_area_tolerance =
@@ -721,7 +715,7 @@ mod tests {
             pieces_area - outline_area
         );
         for index in 0..WORLD_LOADING_PIECES.len() {
-            let clipped = clipped_piece_points(index, 1.0);
+            let clipped = clipped_piece_to_outline(index, 1.0, &outline);
             assert!(!clipped.is_empty());
             assert!(clipped
                 .iter()
