@@ -1,7 +1,7 @@
 # P5 气候—地貌耦合稳定化设计
 
 日期：2026-08-23  
-状态：**冻结**（2026-08-23 用户批准）  
+状态：**已废止**（原于 2026-08-23 冻结；2026-08-24 修订 R1）
 上游：
 `2026-08-18-coupled-geomorphic-formation-p5-design.md`、
 `2026-08-23-p4-physical-budget-correction-design.md`、
@@ -224,3 +224,21 @@ artifact/checkpoint 指纹。地球形态、河网密度及水热参考继续作
 - preCICE, *Acceleration configuration*,
   <https://precice.org/configuration-acceleration>：工业隐式耦合的 fixed-point
   加速、primary/secondary coupling data 与动态 Aitken 实践。
+
+## 修订 R1（2026-08-24）：废止整段历史的不动点语义
+
+用户批准会话 `01a028a0-9ac5-7583-8e30-d73f4958d6d9` 的最终科学审计后，
+本规格整体停止实施，由
+`2026-08-24-transient-climate-geomorphology-design.md` 替代。
+
+Task 2/3 未提交原型实测到：动态系数轨迹
+`1.0 -> 0.986785 -> 0.493519 -> 0.327098 -> 0.140482 -> 0.404956`；
+raw candidate 间残差虽降到 `0.0535`，同一时刻真实接口残差仍为
+`3.681727 m RMS`，强制未松弛复核又回到 `2.5438 normalized_max`。
+海岸活动集仅因约 `0.181 m` 水线差即可切换，河网/湖泊/沉积又是不可凸组合
+的离散历史状态。故 Aitken 没有证明旧 `F(x)=x` 存在可发布根。
+
+本修订保留 §2 的二周期和上述失败数值作为证据，但废止 §3–§10 的生产设计：
+不新增 `FormationCouplingReport`、Aitken wire、私有松弛接口或相关 UI；P5
+改为 P3 只初始化一次的前向多速率共演。Irons–Tuck/preCICE 仍是固定点算法
+出处，不再构成把 100 ka 地理历史写成终态根问题的依据。

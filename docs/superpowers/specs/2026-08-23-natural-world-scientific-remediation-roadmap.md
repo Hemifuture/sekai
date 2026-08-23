@@ -58,13 +58,16 @@ T0 后 17-seed P4 证据（`target/natural-quality/p4/evidence.json`）的全球
 
 ### R2 — P5 水文 v2
 
-- R2a 先修复 P4 水热校正后实测暴露的 P5 稳定二周期：采用面积加权动态
-  Aitken 私有地形接口、固定水量重求水线和最终未松弛复核。详细冻结规格见
-  `2026-08-23-p5-coupling-stability-design.md`。
-- R2b 再在稳定耦合上引入显式 ET、土壤蓄水、地下水基流与雪冰储量。
-- R2c 最后标定分辨率一致的河道起始与 hydraulic geometry；不得在振荡的
-  气候—地貌相位上校准河网。
-- 在 R1 强迫上引入显式 ET、土壤蓄水、地下水基流与雪冰储量。
+- 修订 R2a（2026-08-24，用户批准）：动态 Aitken 原型未通过真实接口残差和
+  未松弛复核，且旧映射每轮抹除 100 ka 历史；先偿还 P4 独立 RK3 comparison
+  reference 与 stage identity 证据债，不在有偏真值上继续校准。
+- R2b 建立统一亚格元水面几何，让水体积、连续陆海分数、共享湿边和离散海陆
+  拓扑来自一个事实源；详细规格见
+  `2026-08-24-transient-climate-geomorphology-design.md`。
+- R2c 将 P5 改成 P3 只初始化一次、P4 快平衡/P5 慢推进的误差控制前向共演，
+  再引入显式 ET、土壤蓄水、地下水基流与雪冰储量及全水圈库存守恒。
+- R2d 最后标定分辨率一致的河道起始与 hydraulic geometry；不得在不守恒的
+  径流或被重启的地貌历史上校准河网。
 - 河道起始使用面积/坡度或输水能力的分辨率一致判据，不再仅靠单一绝对
   流量阈值承担所有尺度。
 - 用流量及可辨识环境分组校准 hydraulic geometry；不得用 Strahler 级

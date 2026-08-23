@@ -1,5 +1,10 @@
 # P5 气候—地貌耦合稳定化实施计划
 
+> **状态：已终止。** Task 1 已提交；Task 2–5 的未提交原型被生产实测否决，
+> 2026-08-24 经用户批准改由
+> `2026-08-24-transient-climate-geomorphology.md` 执行。不得继续本计划的
+> Aitken/schema/UI 任务。
+
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 用球面面积加权动态 Aitken 消除 P4↔P5 稳定二周期，只发布经过

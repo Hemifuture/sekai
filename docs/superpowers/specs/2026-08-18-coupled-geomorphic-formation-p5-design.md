@@ -180,6 +180,24 @@ five-component convergence criterion, and restart-from-P3 horizon semantics do
 not change. P5 snapshot/stage/model identities version as specified there;
 P0-P4 identities do not change merely because P5 uses a private accelerator.
 
+### Amendment A4 (2026-08-24): forward transient multirate co-evolution
+
+Post-freeze production probing falsified A3's publication premise. Dynamic
+Aitken reduced the distance between successive raw candidates while the actual
+interface residual remained `3.681727 m RMS`; the mandatory unrelaxed check
+returned to `2.5438 normalized_max`. The mapping also restarts sediment,
+drainage and coastline history from P3, so a root of that terminal mapping is
+not a time-causal `100,000 yr` landscape even if a stronger accelerator finds
+one.
+
+A3 and this section's restart-from-P3 outer fixed point are therefore
+superseded by
+`2026-08-24-transient-climate-geomorphology-design.md`. P3 initializes the
+formation state once; P4 equilibrates on the current accepted state; P5 then
+advances that same state through error-controlled slow coupling windows. The
+five former fixed-point residuals may remain measurements, but no longer define
+the physical time integrator or successful publication.
+
 ## 7. Hydrology and depression semantics
 
 Elevations are quantized to centimetres only for topology-changing comparisons.
