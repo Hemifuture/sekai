@@ -393,11 +393,13 @@ impl SphericalFormationFieldDocument {
                 authoritative,
             });
         }
-        primary_relief.snapshot().validate_against(
-            surface.snapshot(),
-            substrate.snapshot(),
-            relief_spec.spec(),
-        )?;
+        primary_relief
+            .snapshot()
+            .validate_against_authoring(surface.snapshot(), relief_spec.spec())?;
+        substrate
+            .snapshot()
+            .validate_against_surface(surface.snapshot())
+            .map_err(PrimaryReliefValidationError::from)?;
 
         let compatibility = tectonics.snapshot().compatibility();
         let plate_count = u16::try_from(compatibility.plates().len())

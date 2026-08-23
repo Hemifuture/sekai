@@ -5,17 +5,17 @@ use super::land_fraction::select_area_weighted_sea_level;
 use super::random::{LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL};
 use super::spherical_island_relief::synthesize_spherical_hotspot_offset;
 use super::spherical_relief::synthesize_conditioned_regional_detail;
+use super::surface_water_geometry::{build_surface_water_geometry, solve_physical_sea_level};
 use super::topology::{multi_source_distance, NaturalTopologyIndex};
 use crate::engine::{Diagnostic, DiagnosticContext, DiagnosticSeverity, StageRng};
 use crate::world::natural::{
-    constraint_status, land_fraction_constraint_tolerance, physical_land_fraction,
-    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, water_volume_at_sea_level_m3,
+    constraint_status, land_fraction_constraint_tolerance, scaled_earth_ocean_inventory_m3,
     BoundaryKind, CrustKind, ElevationField, EvolvedTectonicSnapshot,
     EvolvedTectonicValidationError, GeologicSubstrateSnapshot, GeologicSubstrateValidationError,
-    LandOceanField, PrimaryReliefSnapshot, PrimaryReliefValidationError, ReliefSpec,
-    ReliefSpecError, ReliefValidationError, SeaLevelPolicy, SphericalReliefSnapshot,
-    SphericalReliefValidationError, WaterVolumeSolveError, CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M,
-    CONTINENTAL_CRUST_DENSITY_KG_M3, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
+    PrimaryReliefSnapshot, PrimaryReliefValidationError, ReliefSpec, ReliefSpecError,
+    ReliefValidationError, SeaLevelPolicy, SphericalReliefSnapshot, SphericalReliefValidationError,
+    WaterVolumeSolveError, CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M, CONTINENTAL_CRUST_DENSITY_KG_M3,
+    CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
     EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M, EARTH_OCEAN_CRUST_MEAN_AGE_MYR, ELEVATION_MAX_M,
     ELEVATION_MIN_M, OCEANIC_CRUST_DENSITY_KG_M3, OCEANIC_SEDIMENT_DENSITY_KG_M3,
     OCEAN_WATER_DENSITY_KG_M3, PASSIVE_MARGIN_OFFSET_ABS_MAX_M, PRIMARY_RELIEF_SCHEMA_V1,
@@ -65,6 +65,7 @@ impl PrimaryReliefGenerator {
         substrate.validate_against(surface, evolved)?;
         relief_spec.validate()?;
 
+        let cancellation = rng.cancellation_signal();
         let streams = LabeledSubstreams::capture(rng);
         streams
             .check_cancelled()
@@ -190,18 +191,12 @@ impl PrimaryReliefGenerator {
             .map(|cell| cell.area.get())
             .collect::<Vec<_>>();
         let earth_inventory = scaled_earth_ocean_inventory_m3(surface.total_cell_area().get())?;
-        let (sea_level_m, water_inventory, realized_water_volume) = match relief_spec
-            .sea_level_policy
-        {
+        let (water_inventory, water_geometry) = match relief_spec.sea_level_policy {
             SeaLevelPolicy::WaterInventory => {
                 let water_inventory =
                     earth_inventory * f64::from(relief_spec.water_inventory_ratio);
-                let water = solve_physical_sea_level(&elevation, &areas, water_inventory)?;
-                (
-                    water.sea_level_m(),
-                    water_inventory,
-                    water.realized_water_volume_m3(),
-                )
+                let water = solve_physical_sea_level(surface, &elevation, water_inventory)?;
+                (water_inventory, water.into_geometry())
             }
             SeaLevelPolicy::TargetLandFraction => {
                 let selection = select_area_weighted_sea_level(
@@ -212,13 +207,20 @@ impl PrimaryReliefGenerator {
                 .map_err(|error| {
                     PrimaryReliefGenerationError::InvalidLandFractionSelection(error.to_string())
                 })?;
-                let water_inventory =
-                    water_volume_at_sea_level_m3(&elevation, &areas, selection.sea_level_m)?;
-                (selection.sea_level_m, water_inventory, water_inventory)
+                let geometry = build_surface_water_geometry(
+                    surface,
+                    &elevation,
+                    selection.sea_level_m,
+                    &cancellation,
+                )?;
+                let water_inventory = geometry.total_water_volume_m3();
+                (water_inventory, geometry)
             }
         };
+        let sea_level_m = water_geometry.sea_level_m();
+        let realized_water_volume = water_geometry.total_water_volume_m3();
         let elevation_field = ElevationField::from_values(elevation.clone())?;
-        let land_ocean = LandOceanField::classify(&elevation_field, sea_level_m);
+        let land_ocean = water_geometry.land_ocean().clone();
         let regional = passive_margin
             .iter()
             .zip(&regional_detail)
@@ -235,7 +237,9 @@ impl PrimaryReliefGenerator {
             elevation_field,
             land_ocean,
         )?;
-        let physical_land = physical_land_fraction(surface, compatibility_relief.land_ocean())?;
+        let physical_land = water_geometry
+            .global_land_area_fraction(surface)
+            .map_err(WaterVolumeSolveError::from)?;
         let tolerance = land_fraction_constraint_tolerance(surface)?;
         let status = constraint_status(relief_spec.target_land_fraction, physical_land, tolerance);
         let snapshot = PrimaryReliefSnapshot::new(
@@ -255,7 +259,7 @@ impl PrimaryReliefGenerator {
             tolerance,
             status,
         )?;
-        snapshot.validate_against(surface, substrate, relief_spec)?;
+        snapshot.validate_against(surface, &water_geometry, substrate, relief_spec)?;
         Ok(snapshot)
     }
 }

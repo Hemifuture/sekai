@@ -1,18 +1,20 @@
+use sekai::engine::BuildCancellation;
 use sekai::generators::natural::circulation::CubedSphereGrid;
-use sekai::generators::natural::global_circulation_model_fingerprint;
+use sekai::generators::natural::{
+    build_surface_water_geometry, global_circulation_model_fingerprint,
+};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
     expected_global_circulation_dense_state_bytes, formation_elevation_from_components,
-    surface_formation_model_fingerprint, surface_formation_state_fingerprint,
-    water_volume_at_sea_level_m3, ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint,
-    ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport,
-    ClimateSolveReport, FormationElevationComponents, FormationResiduals, FormationSedimentFields,
-    FormationSolveReport, FormationTerrainFields, GlobalCirculationFields,
-    GlobalCirculationSnapshot, HydrologySnapshot, LandOceanField, MonthlyScalarField,
-    MonthlyVector3Field, NaturalQualityProfile, NaturalSurfaceFormationSnapshot,
-    ProductionIntegratorId, SedimentBudgetReport, SphericalHydrologySnapshot, StrahlerOrderField,
-    SurfaceFormationCapabilityAvailability, SurfaceFormationCapabilityId,
-    SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
+    surface_formation_model_fingerprint, surface_formation_state_fingerprint, ClimateBudgetReport,
+    ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile,
+    ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, FormationElevationComponents,
+    FormationResiduals, FormationSedimentFields, FormationSolveReport, FormationTerrainFields,
+    GlobalCirculationFields, GlobalCirculationSnapshot, HydrologySnapshot, LandOceanField,
+    MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
+    NaturalSurfaceFormationSnapshot, ProductionIntegratorId, SedimentBudgetReport,
+    SphericalHydrologySnapshot, StrahlerOrderField, SurfaceFormationCapabilityAvailability,
+    SurfaceFormationCapabilityId, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceWaterField, SurfaceWaterKind,
     FORMATION_HILLSLOPE_CRITICAL_SLOPE, FORMATION_HILLSLOPE_DENOMINATOR_MIN,
     FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, FORMATION_MINIMUM_LAKE_DEPTH_M,
@@ -232,20 +234,21 @@ fn terrain_for_surface(surface: &SphericalSurfaceSnapshot) -> FormationTerrainFi
         vec![-1_000.0; count],
     )
     .unwrap();
-    let areas = surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get())
-        .collect::<Vec<_>>();
-    let realized =
-        water_volume_at_sea_level_m3(components.final_elevation_m(), &areas, 0.0).unwrap();
+    let geometry = build_surface_water_geometry(
+        surface,
+        components.final_elevation_m(),
+        0.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let realized = geometry.total_water_volume_m3();
     FormationTerrainFields::new(
         FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
         components,
         0.0,
         realized,
         realized,
-        LandOceanField::from_kinds(vec![sekai::world::natural::LandOceanKind::Ocean; count]),
+        geometry.land_ocean().clone(),
         zero_sediment(count),
     )
     .unwrap()

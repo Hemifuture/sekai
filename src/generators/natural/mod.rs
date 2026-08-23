@@ -54,6 +54,7 @@ mod spherical_tectonics;
 mod stage;
 mod surface_formation;
 mod surface_formation_stage;
+mod surface_water_geometry;
 mod tectonics;
 mod terrain_amplification;
 mod topology;
@@ -212,6 +213,10 @@ pub use surface_formation::{
 pub use surface_formation_stage::{
     surface_formation_graph, NaturalSurfaceFormationArtifact, SurfaceFormationProductError,
     SurfaceFormationStage, SurfaceFormationStageInputs,
+};
+pub use surface_water_geometry::{
+    build_surface_water_geometry, solve_physical_sea_level, solve_physical_sea_level_cancellable,
+    water_volume_at_sea_level_m3,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};
 pub use terrain_amplification::{

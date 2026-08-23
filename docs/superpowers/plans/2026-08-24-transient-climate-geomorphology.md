@@ -90,15 +90,20 @@ cargo check --target wasm32-unknown-unknown --all-features --lib
 - 修改：`src/world/natural/primary_relief.rs`
 - 修改：水面解析/契约测试
 
-- [ ] RED：全陆/全海、单个线性三角形半淹没、共享边两侧逐位同湿润比例、
+- [x] RED：全陆/全海、单个线性三角形半淹没、共享边两侧逐位同湿润比例、
   面积分数和为 1、常数高程退化、取消、长度/NaN/拓扑拒绝。
-- [ ] 生产重建共享顶点高程、格元三角扇、解析湿区面积/线性水深积分；只保留
+- [x] 生产重建共享顶点高程、格元三角扇、解析湿区面积/线性水深积分；只保留
   一个 `SurfaceWaterGeometry` payload。
-- [ ] `water_volume_at_sea_level_m3` 和海平面求解调用同一算子；RED 证明体积
+- [x] `water_volume_at_sea_level_m3` 和海平面求解调用同一算子；RED 证明体积
   连续单调、水量闭合、旧平顶格元分支已删除。
-- [ ] 运行 fixed surface、P3 contracts/generation/quality 与性能 probe；登记
+- [x] 运行 fixed surface、P3 contracts/generation/quality 与性能 probe；登记
   dense owner、取消延迟和默认水线差异，不用后处理恢复旧分布。
-- [ ] 三道门禁并提交。
+- [x] 三道门禁并提交。
+
+实测记录：17-seed 连续陆地面积中位数为 `0.1943376362323761`；Draft seed 42
+海平面为 `-64.06 m`。Draft/Standard/High dense owner 为
+`20,252 / 79,212 / 198,812` 格元，Draft 全 P3 为 `2,752,963 us`，后两档
+取消延迟为 `372,670 / 851,267 us`。完整 old→new 身份与算法细节见冻结规格 R1。
 
 提交：`Unify fractional surface-water geometry`
 

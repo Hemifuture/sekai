@@ -21,10 +21,10 @@ use sekai::app::default_spherical_space_spec;
 use sekai::engine::{BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
     continental_airy_elevation_m, dynamic_tectonic_response_m, gdh1_ocean_depth_m,
-    spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, ImplicitStreamPowerSolver, ReliefSpecArtifact,
-    RulePackSetArtifact, SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
-    WorldFormationSpecArtifact,
+    solve_physical_sea_level, spherical_natural_foundation_graph, water_volume_at_sea_level_m3,
+    AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
+    ImplicitStreamPowerSolver, ReliefSpecArtifact, RulePackSetArtifact, SphericalReliefArtifact,
+    SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
     ProfileSurfaceBuilder, SphericalSpaceArtifact, SphericalSurfaceArtifact,
@@ -32,8 +32,7 @@ use sekai::generators::spatial::{
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     hypsometric_mean, hypsometric_quantile, hypsometric_share_below, hypsometric_total_area,
-    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, sort_hypsometric_samples,
-    water_volume_at_sea_level_m3, CrustKind, ElevationField, GeologicSpec, LandOceanField,
+    scaled_earth_ocean_inventory_m3, sort_hypsometric_samples, CrustKind, GeologicSpec,
     LandOceanKind, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormationPreset,
     SurfaceWaterKind, TectonicActivity, TectonicSpec, WorldFormationSpec,
     CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3, EARTH_WATER_REFERENCE_RADIUS_M,
@@ -867,7 +866,7 @@ fn hypsometry(
 /// the bath-tub solve reproduces its own datum.
 fn freeboard_closure(
     label: &str,
-    areas: &[f64],
+    surface: &SphericalSurfaceSnapshot,
     elevation: &[f32],
     continental_weight: &[f32],
     inventory_m3: f64,
@@ -882,7 +881,7 @@ fn freeboard_closure(
         for ((slot, &base), &weight) in shifted.iter_mut().zip(elevation).zip(continental_weight) {
             *slot = base + (sea + lift_m) * weight;
         }
-        let next = solve_physical_sea_level(&shifted, areas, inventory_m3)
+        let next = solve_physical_sea_level(surface, &shifted, inventory_m3)
             .unwrap()
             .sea_level_m();
         let converged = (next - sea).abs() <= CLOSURE_TOLERANCE_M;
@@ -891,12 +890,24 @@ fn freeboard_closure(
             break;
         }
     }
-    let land =
-        LandOceanField::classify(&ElevationField::from_values(shifted.clone()).unwrap(), sea);
+    let water = solve_physical_sea_level(surface, &shifted, inventory_m3).unwrap();
+    let land = water.geometry().land_ocean();
+    let areas = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .collect::<Vec<_>>();
     println!(
         "-- freeboard closure [{label}] lift_m={lift_m:.1} iterations={iterations} datum_shift_m={sea:.1}"
     );
-    let quantiles = hypsometry(label, areas, &shifted, sea, land.raw_values(), inventory_m3);
+    let quantiles = hypsometry(
+        label,
+        &areas,
+        &shifted,
+        sea,
+        land.raw_values(),
+        inventory_m3,
+    );
     (sea, quantiles, land.raw_values().to_vec())
 }
 
@@ -1155,17 +1166,13 @@ fn probe_t0_hypsometric_attribution() {
             &format!("{label}: fluvial_erosion over land (m)"),
             &Weighted::collect(step.fluvial_erosion_m(), &areas, |i| land_p5[i] == 1),
         );
-        let water = solve_physical_sea_level(step.elevation_m(), &areas, inventory).unwrap();
-        let land = LandOceanField::classify(
-            &ElevationField::from_values(step.elevation_m().to_vec()).unwrap(),
-            water.sea_level_m(),
-        );
+        let water = solve_physical_sea_level(surface, step.elevation_m(), inventory).unwrap();
         hypsometry(
             &label,
             &areas,
             step.elevation_m(),
             water.sea_level_m(),
-            land.raw_values(),
+            water.geometry().land_ocean().raw_values(),
             inventory,
         );
     }
@@ -1287,11 +1294,7 @@ fn probe_t0_hypsometric_attribution() {
                 .zip(&continental_weight)
                 .map(|(&base, &weight)| base + lift_m * weight)
                 .collect();
-            let water = solve_physical_sea_level(&elevation, &areas, inventory).unwrap();
-            let land = LandOceanField::classify(
-                &ElevationField::from_values(elevation.clone()).unwrap(),
-                water.sea_level_m(),
-            );
+            let water = solve_physical_sea_level(surface, &elevation, inventory).unwrap();
             hypsometry(
                 &format!(
                     "L0 on p3/primary over {scope}, uniform continental thickening {thickening_km:.0} km"
@@ -1299,7 +1302,7 @@ fn probe_t0_hypsometric_attribution() {
                 &areas,
                 &elevation,
                 water.sea_level_m(),
-                land.raw_values(),
+                water.geometry().land_ocean().raw_values(),
                 inventory,
             );
         }
@@ -1310,7 +1313,7 @@ fn probe_t0_hypsometric_attribution() {
     for thickening_km in CLOSURE_THICKENING_TRIALS_KM {
         let (sea, _, land) = freeboard_closure(
             &format!("L1 on p3/primary, uniform continental thickening {thickening_km:.0} km"),
-            &areas,
+            surface,
             relief.elevation_m(),
             &continental_weight,
             inventory,
@@ -1330,7 +1333,7 @@ fn probe_t0_hypsometric_attribution() {
     }
     freeboard_closure(
         "L1 on p5/final (diagnostic only; P5 would re-solve)",
-        &areas,
+        surface,
         terrain.final_elevation_m(),
         &continental_weight,
         inventory,
@@ -1601,10 +1604,13 @@ fn probe_t0b_land_fraction_driver() {
             ];
             for ratio in T0B_WATER_RATIOS {
                 let solved =
-                    solve_physical_sea_level(elevation, &areas, ratio * inventory).unwrap();
-                row.push(
-                    land_area_at(elevation, &areas, solved.sea_level_m(), |_| true) / total_area,
-                );
+                    solve_physical_sea_level(surface, elevation, ratio * inventory).unwrap();
+                row.push(f64::from(
+                    solved
+                        .geometry()
+                        .global_land_area_fraction(surface)
+                        .unwrap(),
+                ));
             }
             let mut samples: Vec<(f32, f64)> = elevation
                 .iter()
@@ -1615,7 +1621,7 @@ fn probe_t0b_land_fraction_driver() {
             let mut oceanic_shares = Vec::with_capacity(5);
             for target in std::iter::once(nominal).chain(T0B_TARGET_LAND) {
                 let sea_t = hypsometric_quantile(&samples, 1.0 - target);
-                let volume = water_volume_at_sea_level_m3(elevation, &areas, sea_t).unwrap();
+                let volume = water_volume_at_sea_level_m3(surface, elevation, sea_t).unwrap();
                 row.push(volume / inventory);
                 let land_t = land_area_at(elevation, &areas, sea_t, |_| true);
                 let oceanic_t = land_area_at(elevation, &areas, sea_t, |i| !continental(i));

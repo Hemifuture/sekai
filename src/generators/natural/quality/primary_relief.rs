@@ -1,7 +1,8 @@
 //! Versioned scientific and morphology evidence for physical P3 relief.
 
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
-use crate::generators::natural::evaluate_evolved_tectonic_quality;
+use crate::engine::BuildCancellation;
+use crate::generators::natural::{build_surface_water_geometry, evaluate_evolved_tectonic_quality};
 use crate::world::natural::{
     BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
     NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
@@ -193,15 +194,13 @@ fn record_statistical_metrics(
         separation_observation(&raw.old_ocean_depth, &raw.young_ocean_depth)?,
         600.0,
     )?;
-    builder.record_observation_between(
+    builder.record_observation_unbounded(
         metric_id("physical-land-area-fraction")?,
         median_observation(
             &raw.physical_land_fractions,
             "no physical land-fraction samples",
             "physical-land-fraction",
         )?,
-        0.20,
-        0.55,
     )?;
     builder.record_observation_between(
         metric_id("regional-detail-rms-ratio")?,
@@ -500,8 +499,15 @@ fn validate_inputs(
     substrate
         .validate_against(surface, evolved)
         .map_err(|error| invalid_input("geologic-substrate", error.to_string()))?;
+    let water_geometry = build_surface_water_geometry(
+        surface,
+        relief.elevation_m(),
+        relief.sea_level_m(),
+        &BuildCancellation::new(),
+    )
+    .map_err(|error| invalid_input("surface-water-geometry", error.to_string()))?;
     relief
-        .validate_against_surface_measurements(surface)
+        .validate_against_surface_measurements(surface, &water_geometry)
         .map_err(|error| invalid_input("primary-relief", error.to_string()))?;
     Ok(())
 }

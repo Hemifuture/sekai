@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::{
-    CoastalExchange, CoastalInputs, FormationSeaLevelSolver, IsostasyGenerationError,
-    LocalAiryIsostasy,
+    solve_physical_sea_level, CoastalExchange, CoastalInputs, FormationSeaLevelSolver,
+    IsostasyGenerationError, LocalAiryIsostasy,
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
@@ -203,10 +203,18 @@ fn airy_response_has_local_unloading_and_loading_signs_and_sea_level_closes_wate
         &BuildCancellation::new(),
     )
     .unwrap();
-    assert_eq!(water.sea_level_m(), 5.0);
+    let expected = solve_physical_sea_level(&surface, &elevation_m, inventory_m3).unwrap();
+    assert_eq!(
+        water.sea_level_m().to_bits(),
+        expected.sea_level_m().to_bits()
+    );
     assert_eq!(
         water.realized_water_volume_m3().to_bits(),
-        inventory_m3.to_bits()
+        expected.realized_water_volume_m3().to_bits()
+    );
+    assert_eq!(
+        water.land_ocean().raw_values(),
+        expected.geometry().land_ocean().raw_values()
     );
     assert_eq!(water.land_ocean().get(0), Some(LandOceanKind::Ocean));
     assert_eq!(water.land_ocean().get(1), Some(LandOceanKind::Land));

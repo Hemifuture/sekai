@@ -234,6 +234,13 @@ fn corpus_report_contains_only_statistics_and_recomputes_from_raw_samples() {
         .unwrap();
     assert_eq!(water_inventory.bounds().min(), None);
     assert_eq!(water_inventory.bounds().max(), None);
+    let physical_land = corpus
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == "physical-land-area-fraction")
+        .unwrap();
+    assert_eq!(physical_land.bounds().min(), None);
+    assert_eq!(physical_land.bounds().max(), None);
 }
 
 #[test]

@@ -77,7 +77,7 @@ fn target_land_fraction_inventory_reaches_p5_and_preserves_release_evidence() {
             blake3::hash(&serde_json::to_vec(default_formation.as_ref()).unwrap())
                 .to_hex()
                 .to_string(),
-            "83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90"
+            "04c2e2373c40256f6387565211b33d89989acb4a6fa449422057b199695533bf"
         );
     }
 
@@ -108,27 +108,22 @@ fn target_land_fraction_inventory_reaches_p5_and_preserves_release_evidence() {
         .to_hex()
         .to_string();
     println!(
-        "target_driver_seed42 p3_artifact={} p5_artifact={} implicit_water_ratio={implicit_ratio:.12} p3_sea_level_m={:.6} p3_land_fraction={:.9} p5_sea_level_m={:.6} p5_land_fraction={:.9}",
+        "target_driver_seed42 p3_artifact={} p5_artifact={} implicit_water_ratio={implicit_ratio:.12} p3_sea_level_m={:.6} p3_land_fraction={:.9} p5_sea_level_m={:.6}",
         p3_artifact_hash,
         p5_artifact_hash,
         primary.snapshot().sea_level_m(),
         primary.snapshot().physical_land_fraction(),
         formation.snapshot().terrain_fields().sea_level_m(),
-        sekai::world::natural::physical_land_fraction(
-            surface(),
-            formation.snapshot().terrain_fields().land_ocean(),
-        )
-        .unwrap(),
     );
     #[cfg(not(debug_assertions))]
     {
         assert_eq!(
             p3_artifact_hash,
-            "8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27"
+            "21a4beda983ad54a65e5ab6ad8e16bccef2aa13969fa5cbb2cfb341f04daeffa"
         );
         assert_eq!(
             p5_artifact_hash,
-            "95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8"
+            "248d92caefaf50c467e875f015c24fc78fc650cf41fe9be71e2ec245a148c9b1"
         );
     }
     let document =
@@ -786,7 +781,7 @@ fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
         lod.levels()
     );
     assert_eq!(
-        hex, "20fb2405f60ea634b2153474a06f2103fc059073479ba8414ac297c164e36ea5",
+        hex, "a7905840137948fda3e82a0509fef62d4026bc612d9c5ccaf67b0ee421f23271",
         "the frozen T1 probe fingerprint changed; record an amendment in the T1 spec"
     );
 
@@ -861,7 +856,7 @@ fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
         .collect();
     eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
     assert_eq!(
-        hex, "c43a9a2dd66c241cc5d1695cfb7b972d744aba373df37d44dda564facce355c1",
+        hex, "6885e498c8b0941914f48177eee606e4bf2b30082abfcff153aaee9997de35f8",
         "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
     );
 

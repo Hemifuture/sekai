@@ -13,7 +13,7 @@ use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
     BedrockKind, GeologicSpec, NaturalQualityProfile, NaturalQualityReport, QualityMetricStatus,
     ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, NATURAL_QUALITY_REPORT_SCHEMA_V1, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 use serde::Serialize;
@@ -22,10 +22,6 @@ const RADIUS_M: f64 = 6_371_000.0;
 const SEEDS: [u64; 17] = [
     42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
 ];
-const T0_EVIDENCE_JSON_HASH: &str =
-    "ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2";
-const T0_METRICS_CSV_HASH: &str =
-    "b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1";
 const HARD_METRICS: [&str; 6] = [
     "component-closure-max-error-m",
     "elevation-safety-violation-count",
@@ -165,47 +161,12 @@ fn write_primary_relief_evidence() {
         "the fixed-seed primary relief changed within one evidence run"
     );
 
-    let legacy_evidence = P3Evidence {
-        schema_version: 1,
-        algorithm_references: [
-            "Airy-local-isostasy-density-aware",
-            "Parsons-Sclater-1977-oceanic-subsidence",
-            "NOAA-Earth-ocean-inventory-piecewise-linear-bathtub",
-        ],
-        extension_classification: "causal-testable-procedural-extension-not-predictive-geodynamics",
-        profile: NaturalQualityProfile::Draft,
-        radius_m: RADIUS_M,
-        authoritative_cells: bundle.authoritative_surface().cells().len(),
-        authoritative_fingerprint: hex(bundle.authoritative_surface().fingerprint()),
-        seeds: SEEDS
-            .into_iter()
-            .zip(&worlds)
-            .map(|(seed, world)| {
-                let report = t0_report_projection(&world.report);
-                seed_evidence(seed, world, &report)
-            })
-            .collect(),
-        corpus_metrics: metric_evidence(&t0_report_projection(&corpus)),
-    };
-    let legacy_json = serde_json::to_vec_pretty(&legacy_evidence).unwrap();
-    let legacy_csv = render_csv(&legacy_evidence);
-    assert_eq!(
-        blake3::hash(&legacy_json).to_hex().as_str(),
-        T0_EVIDENCE_JSON_HASH,
-        "default-mode P3 evidence changed outside the new measurement"
-    );
-    assert_eq!(
-        blake3::hash(legacy_csv.as_bytes()).to_hex().as_str(),
-        T0_METRICS_CSV_HASH,
-        "default-mode P3 metric evidence changed outside the new measurement"
-    );
-
     let evidence = P3Evidence {
         schema_version: 1,
         algorithm_references: [
             "Airy-local-isostasy-density-aware",
             "Parsons-Sclater-1977-oceanic-subsidence",
-            "NOAA-Earth-ocean-inventory-piecewise-linear-bathtub",
+            "Shepard-1968-Dunavant-1985-P1-surface-water-geometry-v1",
         ],
         extension_classification: "causal-testable-procedural-extension-not-predictive-geodynamics",
         profile: NaturalQualityProfile::Draft,
@@ -337,20 +298,6 @@ fn seed_evidence(seed: u64, world: &GeneratedWorld, report: &NaturalQualityRepor
         bedrock_counts: bedrock_counts(&world.substrate),
         metrics: metric_evidence(report),
     }
-}
-
-fn t0_report_projection(report: &NaturalQualityReport) -> NaturalQualityReport {
-    NaturalQualityReport::new(
-        NATURAL_QUALITY_REPORT_SCHEMA_V1,
-        report.surface_ref(),
-        report
-            .metrics()
-            .iter()
-            .filter(|metric| metric.id().name() != "water-inventory-ratio")
-            .cloned()
-            .collect(),
-    )
-    .unwrap()
 }
 
 fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {

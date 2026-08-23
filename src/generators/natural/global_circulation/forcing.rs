@@ -4,6 +4,7 @@ use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{
     CirculationOperatorError, CirculationOperators, CubedSphereGrid, CubedSphereGridError,
 };
+use crate::generators::natural::surface_water_geometry::build_surface_water_geometry;
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
     absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c,
@@ -563,24 +564,17 @@ fn validate_formation_terrain_against_surface(
         });
     }
 
-    let mut total = 0.0_f64;
-    let mut compensation = 0.0_f64;
-    for (index, (cell, &elevation)) in surface
-        .cells()
-        .iter()
-        .zip(terrain.final_elevation_m())
-        .enumerate()
-    {
-        if index % 256 == 0 {
-            check_cancelled(cancellation)?;
-        }
-        let contribution =
-            cell.area.get() * f64::from((terrain.sea_level_m() - elevation).max(0.0));
-        let adjusted = contribution - compensation;
-        let next = total + adjusted;
-        compensation = (next - total) - adjusted;
-        total = next;
-    }
+    let geometry = build_surface_water_geometry(
+        surface,
+        terrain.final_elevation_m(),
+        terrain.sea_level_m(),
+        cancellation,
+    )
+    .map_err(|error| GlobalClimateForcingError::InvalidInput {
+        role: "formation_terrain",
+        reason: error.to_string(),
+    })?;
+    let total = geometry.total_water_volume_m3();
     let stored = terrain.realized_water_volume_m3();
     let relative_error = (total - stored).abs() / total.abs().max(stored.abs()).max(1.0);
     if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
@@ -808,15 +802,15 @@ mod formation_tests {
     use std::sync::OnceLock;
 
     use super::*;
-    use crate::generators::natural::{ClimateWorkDomainBuilder, GlobalCirculationGenerator};
+    use crate::generators::natural::{
+        solve_physical_sea_level, ClimateWorkDomainBuilder, GlobalCirculationGenerator,
+    };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        constraint_status, land_fraction_constraint_tolerance, physical_land_fraction,
-        solve_physical_sea_level, ClimateModelProfile, ElevationField,
+        constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile, ElevationField,
         FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
-        LandOceanField, NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec,
-        SphericalReliefSnapshot, FORMATION_TERRAIN_FIELDS_SCHEMA_V1, PRIMARY_RELIEF_SCHEMA_V1,
-        RELIEF_SCHEMA_V4,
+        NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V1, PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -843,9 +837,9 @@ mod formation_tests {
                 .map(|cell| cell.area.get())
                 .collect::<Vec<_>>();
             let water_inventory = areas.iter().sum::<f64>() * 1_000.0;
-            let water = solve_physical_sea_level(&primary, &areas, water_inventory).unwrap();
+            let water = solve_physical_sea_level(&surface, &primary, water_inventory).unwrap();
             let elevation = ElevationField::from_values(primary.clone()).unwrap();
-            let land_ocean = LandOceanField::classify(&elevation, water.sea_level_m());
+            let land_ocean = water.geometry().land_ocean().clone();
             let compatibility = SphericalReliefSnapshot::new(
                 RELIEF_SCHEMA_V4,
                 SurfaceRef::for_spherical(&surface),
@@ -858,7 +852,10 @@ mod formation_tests {
                 land_ocean,
             )
             .unwrap();
-            let physical = physical_land_fraction(&surface, compatibility.land_ocean()).unwrap();
+            let physical = water
+                .geometry()
+                .global_land_area_fraction(&surface)
+                .unwrap();
             let tolerance = land_fraction_constraint_tolerance(&surface).unwrap();
             let relief = PrimaryReliefSnapshot::new(
                 PRIMARY_RELIEF_SCHEMA_V1,
@@ -929,20 +926,14 @@ mod formation_tests {
             primary.clone(),
         )
         .unwrap();
-        let areas = surface
-            .cells()
-            .iter()
-            .map(|cell| cell.area.get())
-            .collect::<Vec<_>>();
-        let water = solve_physical_sea_level(&primary, &areas, water_inventory_m3).unwrap();
-        let elevation = ElevationField::from_values(primary).unwrap();
+        let water = solve_physical_sea_level(surface, &primary, water_inventory_m3).unwrap();
         FormationTerrainFields::new(
             FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
             components,
             water.sea_level_m(),
             water_inventory_m3,
             water.realized_water_volume_m3(),
-            LandOceanField::classify(&elevation, water.sea_level_m()),
+            water.geometry().land_ocean().clone(),
             FormationSedimentFields::new(
                 vec![0.0; count],
                 vec![[0.0; 5]; count],

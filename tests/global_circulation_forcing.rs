@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    project_monthly_extensive_rate, project_monthly_intensive_scalar,
+    build_surface_water_geometry, project_monthly_extensive_rate, project_monthly_intensive_scalar,
     project_monthly_tangent_vectors, ClimateProjectionError, ClimateWorkDomainBuilder,
     EvolvedTectonicGenerator, GeologicSubstrateGenerator, GlobalClimateForcing,
     GlobalClimateForcingBuilder, GlobalClimateForcingError, PrimaryReliefGenerator,
@@ -281,9 +281,21 @@ fn earth_water_and_energy_evidence_references_are_self_consistent() {
 fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
     let fixture = fixture();
     let surface = fixture.bundle.authoritative_surface();
+    let water_geometry = build_surface_water_geometry(
+        surface,
+        fixture.relief.elevation_m(),
+        fixture.relief.sea_level_m(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
     fixture
         .relief
-        .validate_against(surface, &fixture.substrate, &ReliefSpec::default())
+        .validate_against(
+            surface,
+            &water_geometry,
+            &fixture.substrate,
+            &ReliefSpec::default(),
+        )
         .unwrap();
     fixture.forcing.validate_against(&fixture.domain).unwrap();
 

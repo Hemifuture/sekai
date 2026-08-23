@@ -1,10 +1,10 @@
 use sekai::engine::BuildCancellation;
+use sekai::generators::natural::{build_surface_water_geometry, solve_physical_sea_level};
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    physical_land_fraction, scaled_earth_ocean_inventory_m3, solve_physical_sea_level,
-    ElevationField, LandFractionConstraintStatus, LandOceanField, NaturalQualityProfile,
-    PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy, SphericalReliefSnapshot,
-    PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
+    scaled_earth_ocean_inventory_m3, ElevationField, LandFractionConstraintStatus,
+    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy,
+    SphericalReliefSnapshot, SurfaceWaterGeometry, PRIMARY_RELIEF_SCHEMA_V1, RELIEF_SCHEMA_V4,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::Meters;
@@ -34,9 +34,9 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
         .map(|cell| cell.area.get())
         .collect::<Vec<_>>();
     let inventory = scaled_earth_ocean_inventory_m3(areas.iter().sum()).unwrap();
-    let solution = solve_physical_sea_level(&elevation, &areas, inventory).unwrap();
+    let solution = solve_physical_sea_level(surface, &elevation, inventory).unwrap();
     let elevation_field = ElevationField::from_values(elevation.clone()).unwrap();
-    let land_ocean = LandOceanField::classify(&elevation_field, solution.sea_level_m());
+    let land_ocean = solution.geometry().land_ocean().clone();
     let compatibility = SphericalReliefSnapshot::new(
         RELIEF_SCHEMA_V4,
         SurfaceRef::for_spherical(surface),
@@ -56,7 +56,10 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
         land_ocean,
     )
     .unwrap();
-    let physical = physical_land_fraction(surface, compatibility.land_ocean()).unwrap();
+    let physical = solution
+        .geometry()
+        .global_land_area_fraction(surface)
+        .unwrap();
     let tolerance = (surface
         .cells()
         .iter()
@@ -85,12 +88,29 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     .unwrap()
 }
 
+fn water_geometry(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &PrimaryReliefSnapshot,
+) -> SurfaceWaterGeometry {
+    build_surface_water_geometry(
+        surface,
+        snapshot.elevation_m(),
+        snapshot.sea_level_m(),
+        &BuildCancellation::new(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn strict_primary_relief_roundtrips_and_cross_validates_physical_water() {
     let surface = surface();
     let snapshot = valid_snapshot(&surface);
+    let geometry = water_geometry(&surface, &snapshot);
     snapshot
-        .validate_against_surface(&surface, &ReliefSpec::default())
+        .validate_against_surface(&surface, &geometry, &ReliefSpec::default())
+        .unwrap();
+    snapshot
+        .validate_against_authoring(&surface, &ReliefSpec::default())
         .unwrap();
 
     let encoded = serde_json::to_vec(&snapshot).unwrap();
@@ -137,8 +157,9 @@ fn surface_cross_validation_recomputes_area_weighted_constraint_status() {
     let mut encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
     encoded["physical_land_fraction"] = serde_json::json!(0.25);
     let stale: PrimaryReliefSnapshot = serde_json::from_value(encoded).unwrap();
+    let geometry = water_geometry(&surface, &stale);
     assert!(stale
-        .validate_against_surface(&surface, &ReliefSpec::default())
+        .validate_against_surface(&surface, &geometry, &ReliefSpec::default())
         .is_err());
 }
 
@@ -150,8 +171,12 @@ fn target_policy_cross_validation_requires_the_authored_land_fraction_to_be_sati
         sea_level_policy: SeaLevelPolicy::TargetLandFraction,
         ..ReliefSpec::default()
     };
+    let geometry = water_geometry(&surface, &snapshot);
 
     assert!(snapshot
-        .validate_against_surface(&surface, &target_spec)
+        .validate_against_surface(&surface, &geometry, &target_spec)
+        .is_err());
+    assert!(snapshot
+        .validate_against_authoring(&surface, &target_spec)
         .is_err());
 }

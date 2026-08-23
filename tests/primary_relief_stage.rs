@@ -4,19 +4,18 @@ use sekai::engine::{
     Artifact, BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage,
 };
 use sekai::generators::natural::{
-    primary_relief_graph, spherical_natural_foundation_graph, EvolvedTectonicArtifact,
-    GeologicSubstrateArtifact, GeologicSubstrateStage, NaturalQualityProfileArtifact,
-    PrimaryReliefArtifact, PrimaryReliefStage, ReliefSpecArtifact, ResolvedGeologicInput,
-    ResolvedGeologicInputArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
-    ResolvedWorldFormationArtifact,
+    build_surface_water_geometry, primary_relief_graph, solve_physical_sea_level,
+    spherical_natural_foundation_graph, EvolvedTectonicArtifact, GeologicSubstrateArtifact,
+    GeologicSubstrateStage, NaturalQualityProfileArtifact, PrimaryReliefArtifact,
+    PrimaryReliefStage, ReliefSpecArtifact, ResolvedGeologicInput, ResolvedGeologicInputArtifact,
+    ResolvedTectonicInput, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceArtifact};
 use sekai::rules::{GeologicModel, TectonicModel};
 use sekai::world::natural::{
-    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, GeologicSpec,
-    LandFractionConstraintStatus, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicSpec, WorldFormationPreset,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    scaled_earth_ocean_inventory_m3, GeologicSpec, LandFractionConstraintStatus,
+    NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    SeaLevelPolicy, TectonicSpec, WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
@@ -155,6 +154,13 @@ fn graph_builds_strict_artifacts_and_restores_all_three_stages_from_cache() {
     let evolved = first.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
     let substrate = first.artifacts.get::<GeologicSubstrateArtifact>().unwrap();
     let relief = first.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    let water_geometry = build_surface_water_geometry(
+        draft_surface(),
+        relief.snapshot().elevation_m(),
+        relief.snapshot().sea_level_m(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
     substrate
         .snapshot()
         .validate_against(draft_surface(), evolved.snapshot())
@@ -163,6 +169,7 @@ fn graph_builds_strict_artifacts_and_restores_all_three_stages_from_cache() {
         .snapshot()
         .validate_against(
             draft_surface(),
+            &water_geometry,
             substrate.snapshot(),
             &ReliefSpec::default(),
         )
@@ -234,7 +241,7 @@ fn sea_level_policies_preserve_the_default_and_solve_the_authored_driver() {
             .to_string();
     assert_eq!(
         default_snapshot_hash,
-        "051d0907261112e80b59f0c4f014b6a0a9f1d9a5f142b2a74c160ab675b3aede"
+        "4e4dc63c21a61cc0e96ac0c01818ccf9bee7ad87707a97cd5f017a5a19eb6a55"
     );
 
     let total_area = draft_surface().total_cell_area().get();
@@ -288,12 +295,8 @@ fn sea_level_policies_preserve_the_default_and_solve_the_authored_driver() {
             <= target_snapshot.land_fraction_tolerance()
     );
     let inverse = solve_physical_sea_level(
+        draft_surface(),
         target_snapshot.elevation_m(),
-        &draft_surface()
-            .cells()
-            .iter()
-            .map(|cell| cell.area.get())
-            .collect::<Vec<_>>(),
         target_snapshot.water_inventory_m3(),
     )
     .unwrap();

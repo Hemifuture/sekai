@@ -5,10 +5,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    water_volume_at_sea_level_m3, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
-    NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot,
-    ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
+    GlobalCirculationSnapshot, LandOceanField, LandOceanKind, NaturalQualityProfile,
+    SedimentSourceKind, SphericalHydrologySnapshot, ANNUAL_PRECIPITATION_MAX_MM,
+    CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
@@ -2146,28 +2146,6 @@ impl NaturalSurfaceFormationSnapshot {
                 role: "formation_climate",
                 reason: error.to_string(),
             })?;
-        let areas = surface
-            .cells()
-            .iter()
-            .map(|cell| cell.area.get())
-            .collect::<Vec<_>>();
-        let calculated = water_volume_at_sea_level_m3(
-            self.terrain_fields.final_elevation_m(),
-            &areas,
-            self.terrain_fields.sea_level_m(),
-        )
-        .map_err(|error| SurfaceFormationValidationError::InvalidNested {
-            role: "water_volume",
-            reason: error.to_string(),
-        })?;
-        let relative = relative_error(calculated, self.terrain_fields.realized_water_volume_m3());
-        if relative > WATER_VOLUME_RELATIVE_TOLERANCE {
-            return Err(SurfaceFormationValidationError::WaterVolumeMismatch {
-                stored: self.terrain_fields.realized_water_volume_m3(),
-                expected: calculated,
-                relative_error: relative,
-            });
-        }
         Ok(())
     }
 

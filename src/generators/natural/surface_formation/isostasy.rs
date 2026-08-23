@@ -1,10 +1,10 @@
 use thiserror::Error;
 
+use super::super::surface_water_geometry::solve_physical_sea_level_cancellable;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_elevation_from_components, solve_physical_sea_level_cancellable, LandOceanField,
-    LandOceanKind, WaterVolumeSolveError, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
+    formation_elevation_from_components, LandOceanField, WaterVolumeSolveError, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
@@ -192,30 +192,22 @@ impl FormationSeaLevelSolver {
                 found: elevation_m.len(),
             });
         }
-        let mut areas = Vec::with_capacity(surface.cells().len());
-        for (index, cell) in surface.cells().iter().enumerate() {
-            poll_cancelled(cancellation, index)?;
-            areas.push(cell.area.get());
-        }
-        let solution =
-            solve_physical_sea_level_cancellable(elevation_m, &areas, water_inventory_m3, &|| {
-                cancellation.is_cancelled()
-            })
-            .map_err(|error| match error {
-                WaterVolumeSolveError::Cancelled => IsostasyGenerationError::Cancelled,
-                other => IsostasyGenerationError::WaterSolve(other),
-            })?;
-        let mut kinds = Vec::with_capacity(elevation_m.len());
-        for (index, &elevation) in elevation_m.iter().enumerate() {
-            poll_cancelled(cancellation, index)?;
-            kinds.push(LandOceanKind::classify(elevation, solution.sea_level_m()));
-        }
+        let solution = solve_physical_sea_level_cancellable(
+            surface,
+            elevation_m,
+            water_inventory_m3,
+            cancellation,
+        )
+        .map_err(|error| match error {
+            WaterVolumeSolveError::Cancelled => IsostasyGenerationError::Cancelled,
+            other => IsostasyGenerationError::WaterSolve(other),
+        })?;
         check_cancelled(cancellation)?;
         Ok(FormationWaterState {
             sea_level_m: solution.sea_level_m(),
             realized_water_volume_m3: solution.realized_water_volume_m3(),
             relative_error: solution.relative_error(),
-            land_ocean: LandOceanField::from_kinds(kinds),
+            land_ocean: solution.geometry().land_ocean().clone(),
         })
     }
 }

@@ -30,6 +30,7 @@ mod spherical_surface_process;
 mod spherical_tectonics;
 mod surface_formation;
 mod surface_process;
+mod surface_water_geometry;
 mod tectonics;
 
 pub use circulation::{
@@ -168,12 +169,10 @@ pub use mantle::{
 };
 pub use primary_relief::{
     constraint_status, effective_crust_density_kg_m3, land_fraction_constraint_tolerance,
-    physical_land_fraction, scaled_earth_ocean_inventory_m3, sediment_source_for_bedrock,
-    solve_physical_sea_level, solve_physical_sea_level_cancellable, water_volume_at_sea_level_m3,
-    GeologicSubstrateSnapshot, GeologicSubstrateValidationError, LandFractionConstraintStatus,
-    PrimaryReliefSnapshot, PrimaryReliefValidationError, SedimentSourceKind,
-    SedimentSourceKindField, WaterVolumeSolution, WaterVolumeSolveError,
-    CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M, CONTINENTAL_CRUST_DENSITY_KG_M3,
+    scaled_earth_ocean_inventory_m3, sediment_source_for_bedrock, GeologicSubstrateSnapshot,
+    GeologicSubstrateValidationError, LandFractionConstraintStatus, PrimaryReliefSnapshot,
+    PrimaryReliefValidationError, SedimentSourceKind, SedimentSourceKindField, WaterVolumeSolution,
+    WaterVolumeSolveError, CONDITIONED_REGIONAL_DETAIL_ABS_MAX_M, CONTINENTAL_CRUST_DENSITY_KG_M3,
     CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, EARTH_OCEANIC_SEDIMENT_MEAN_THICKNESS_M,
     EARTH_OCEAN_CRUST_MEAN_AGE_MYR, EARTH_OCEAN_VOLUME_M3, EARTH_WATER_REFERENCE_RADIUS_M,
     GEOLOGIC_SUBSTRATE_SCHEMA_V1, MIN_LAND_FRACTION_CONSTRAINT_TOLERANCE,
@@ -270,6 +269,10 @@ pub use surface_process::{
     SurfaceProcessSnapshot, SurfaceProcessValidationError, MAX_DEPOSITION_THICKNESS_M,
     MAX_EROSION_DEPTH_M, SEDIMENT_VOLUME_ABSOLUTE_TOLERANCE_M3, SEDIMENT_VOLUME_RELATIVE_TOLERANCE,
     SURFACE_IDENTITY_TOLERANCE_M, SURFACE_PROCESS_SCHEMA_V1, SURFACE_PROCESS_SCHEMA_V2,
+};
+pub(crate) use surface_water_geometry::surface_elevation_fingerprint;
+pub use surface_water_geometry::{
+    SurfaceWaterGeometry, SurfaceWaterGeometryValidationError, SURFACE_WATER_GEOMETRY_SCHEMA_V1,
 };
 pub(crate) use tectonics::{
     classify_boundary_kinematics, BoundaryClassification, BoundaryKinematics,

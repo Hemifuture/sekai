@@ -4,18 +4,17 @@ use std::time::{Duration, Instant};
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::circulation::CubedSphereGrid;
 use sekai::generators::natural::{
-    global_circulation_model_fingerprint, FormationHydrologyGenerationError,
-    FormationHydrologyGenerator,
+    build_surface_water_geometry, global_circulation_model_fingerprint,
+    FormationHydrologyGenerationError, FormationHydrologyGenerator,
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
-    expected_global_circulation_dense_state_bytes, water_volume_at_sea_level_m3, BasinOutletKind,
-    BedrockKind, BedrockKindField, ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint,
-    ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport,
-    ClimateSolveReport, CrustKind, CrustKindField, FormationElevationComponents,
-    FormationSedimentFields, FormationTerrainFields, GeologicSubstrateSnapshot,
-    GlobalCirculationFields, GlobalCirculationSnapshot, HydroErosionSpec, LandOceanField,
-    LandOceanKind, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
+    expected_global_circulation_dense_state_bytes, BasinOutletKind, BedrockKind, BedrockKindField,
+    ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout,
+    ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, CrustKind,
+    CrustKindField, FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
+    GeologicSubstrateSnapshot, GlobalCirculationFields, GlobalCirculationSnapshot,
+    HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
     ProductionIntegratorId, SedimentSourceKind, SedimentSourceKindField, SphericalMantleSnapshot,
     CLIMATOLOGICAL_YEAR_SECONDS, FORMATION_TERRAIN_FIELDS_SCHEMA_V1, GEOLOGIC_SUBSTRATE_SCHEMA_V1,
     GLOBAL_CIRCULATION_SCHEMA_V2, MANTLE_SNAPSHOT_SCHEMA_V2, SECONDS_PER_CLIMATOLOGICAL_MONTH,
@@ -59,23 +58,17 @@ fn terrain(surface: &SphericalSurfaceSnapshot, elevation_m: Vec<f32>) -> Formati
         elevation_m.clone(),
     )
     .unwrap();
-    let cell_areas_m2 = surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get())
-        .collect::<Vec<_>>();
-    let water_volume_m3 = water_volume_at_sea_level_m3(&elevation_m, &cell_areas_m2, 0.0).unwrap();
-    let land_ocean = elevation_m
-        .iter()
-        .map(|&value| LandOceanKind::classify(value, 0.0))
-        .collect();
+    let water_geometry =
+        build_surface_water_geometry(surface, &elevation_m, 0.0, &BuildCancellation::new())
+            .unwrap();
+    let water_volume_m3 = water_geometry.total_water_volume_m3();
     FormationTerrainFields::new(
         FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
         components,
         0.0,
         water_volume_m3,
         water_volume_m3,
-        LandOceanField::from_kinds(land_ocean),
+        water_geometry.land_ocean().clone(),
         zero_sediment(count),
     )
     .unwrap()
