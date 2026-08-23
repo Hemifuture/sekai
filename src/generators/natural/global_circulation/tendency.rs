@@ -887,6 +887,35 @@ pub struct LayeredTendencySystem<'grid> {
     forcing_prevalidated: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TendencyEvaluationMode {
+    FullEndpoint,
+    ThermodynamicMoistureEndpoint,
+    LinearImplicit,
+    SmoothDynamics,
+}
+
+impl TendencyEvaluationMode {
+    const fn includes_explicit_transport_and_moisture(self) -> bool {
+        matches!(
+            self,
+            Self::FullEndpoint | Self::ThermodynamicMoistureEndpoint
+        )
+    }
+
+    const fn includes_dynamics(self) -> bool {
+        !matches!(self, Self::ThermodynamicMoistureEndpoint)
+    }
+
+    const fn includes_thermodynamics(self) -> bool {
+        !matches!(self, Self::SmoothDynamics)
+    }
+
+    const fn uses_explicit_dynamics(self) -> bool {
+        matches!(self, Self::FullEndpoint | Self::SmoothDynamics)
+    }
+}
+
 impl<'grid> LayeredTendencySystem<'grid> {
     pub const fn new(grid: &'grid CubedSphereGrid) -> Self {
         Self {
@@ -968,8 +997,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             month,
             cancellation,
             workspace,
-            true,
-            true,
+            TendencyEvaluationMode::FullEndpoint,
             1.0,
         )
     }
@@ -992,8 +1020,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             month,
             cancellation,
             workspace,
-            true,
-            true,
+            TendencyEvaluationMode::FullEndpoint,
             step_seconds,
         )
     }
@@ -1024,8 +1051,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             month,
             cancellation,
             workspace,
-            true,
-            false,
+            TendencyEvaluationMode::ThermodynamicMoistureEndpoint,
             step_seconds,
         )
     }
@@ -1047,8 +1073,32 @@ impl<'grid> LayeredTendencySystem<'grid> {
             month,
             cancellation,
             workspace,
-            false,
-            true,
+            TendencyEvaluationMode::LinearImplicit,
+            1.0,
+        )
+    }
+
+    /// Evaluates the complete height and momentum equations while leaving
+    /// endpoint-style scalar transport, radiation, exchange, and phase change
+    /// out of the RK stages.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn evaluate_smooth_dynamics_with_workspace(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        month: usize,
+        cancellation: &BuildCancellation,
+        workspace: &mut LayeredTendencyWorkspace,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        self.evaluate_with_workspace_mode(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            cancellation,
+            workspace,
+            TendencyEvaluationMode::SmoothDynamics,
             1.0,
         )
     }
@@ -1062,8 +1112,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
         month: usize,
         cancellation: &BuildCancellation,
         workspace: &mut LayeredTendencyWorkspace,
-        include_explicit_transport_and_moisture: bool,
-        include_dynamics: bool,
+        mode: TendencyEvaluationMode,
         transport_step_seconds: f64,
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
         if !transport_step_seconds.is_finite() || transport_step_seconds <= 0.0 {
@@ -1095,7 +1144,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             } else {
                 &workspace.open_edges
             };
-            if include_explicit_transport_and_moisture {
+            if mode.includes_explicit_transport_and_moisture() {
                 let transported = operators.advect_scalar_monotone_second_order_into_cancellable(
                     temperature,
                     velocity,
@@ -1120,7 +1169,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         / transport_step_seconds) as f32;
                 }
             }
-            if !include_dynamics {
+            if !mode.includes_dynamics() {
                 continue;
             }
             let height = state.height_anomaly_m(*role).expect("active role");
@@ -1155,7 +1204,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             )?;
             let reference_thickness =
                 f64::from(state.reference_thickness_m(*role).expect("active role"));
-            if include_explicit_transport_and_moisture {
+            if mode.uses_explicit_dynamics() {
                 conservative_layer_thickness_tendency(
                     self.grid,
                     reference_thickness,
@@ -1235,10 +1284,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
             }
         }
 
-        self.apply_external_radiation(state, forcing, month, &mut tendency, cancellation)?;
+        if mode.includes_thermodynamics() {
+            self.apply_external_radiation(state, forcing, month, &mut tendency, cancellation)?;
+        }
 
-        if include_dynamics
-            && include_explicit_transport_and_moisture
+        if mode.includes_dynamics()
+            && mode.uses_explicit_dynamics()
             && state.profile() == ClimateModelProfile::C2LayeredV1
         {
             apply_baroclinic_reynolds_stress_closure(
@@ -1251,7 +1302,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             )?;
         }
 
-        if include_explicit_transport_and_moisture {
+        if mode.includes_explicit_transport_and_moisture() {
             let computed_terrain_gradient;
             let terrain_gradient = if let Some(terrain_gradient) = self.terrain_gradient_m_per_m {
                 terrain_gradient
@@ -1339,7 +1390,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 }
             }
         }
-        if include_explicit_transport_and_moisture {
+        if mode.includes_explicit_transport_and_moisture() {
             tendency.enforce_moisture_availability(state, transport_step_seconds, cancellation)?;
         }
         // Add exchanges after every unrelated tendency so the budget measures
@@ -1353,11 +1404,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
             month,
             cancellation,
             &mut tendency,
-            include_dynamics,
-            include_explicit_transport_and_moisture,
+            mode.includes_thermodynamics(),
+            mode.includes_dynamics(),
+            mode.includes_explicit_transport_and_moisture(),
             transport_step_seconds,
         )?;
-        if include_explicit_transport_and_moisture {
+        if mode.includes_explicit_transport_and_moisture() {
             self.apply_upper_condensation_after_exchange(
                 state,
                 transport_step_seconds,
@@ -2110,6 +2162,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
         month: usize,
         cancellation: &BuildCancellation,
         tendency: &mut LayeredClimateTendency,
+        include_heat_exchange: bool,
         include_momentum_exchange: bool,
         include_moisture_exchange: bool,
         moisture_step_seconds: f64,
@@ -2148,60 +2201,64 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     continue;
                 }
                 let area = self.grid.cells()[cell].area_m2();
-                let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
-                let surface_reference = forcing.equilibrium_surface_temperature_c()[cell][month];
-                let heat = equilibrium_anomaly_heat_exchange(
-                    first_temperature[cell],
-                    role_reference_temperature_c(first_role, air_reference, surface_reference),
-                    second_temperature[cell],
-                    role_reference_temperature_c(second_role, air_reference, surface_reference),
-                    first_capacity,
-                    second_capacity,
-                    heat_timescale,
-                )?;
-                let pair_tendencies = [
-                    water_scale * heat.first_tendency_k_s,
-                    water_scale * heat.second_tendency_k_s,
-                ];
-                let heat_scale = subsurface_pair_exchange_scale_for_step(
-                    [first_role, second_role],
-                    [first_temperature[cell], second_temperature[cell]],
-                    [
-                        tendency
-                            .layer(first_role)
+                if include_heat_exchange {
+                    let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
+                    let surface_reference =
+                        forcing.equilibrium_surface_temperature_c()[cell][month];
+                    let heat = equilibrium_anomaly_heat_exchange(
+                        first_temperature[cell],
+                        role_reference_temperature_c(first_role, air_reference, surface_reference),
+                        second_temperature[cell],
+                        role_reference_temperature_c(second_role, air_reference, surface_reference),
+                        first_capacity,
+                        second_capacity,
+                        heat_timescale,
+                    )?;
+                    let pair_tendencies = [
+                        water_scale * heat.first_tendency_k_s,
+                        water_scale * heat.second_tendency_k_s,
+                    ];
+                    let heat_scale = subsurface_pair_exchange_scale_for_step(
+                        [first_role, second_role],
+                        [first_temperature[cell], second_temperature[cell]],
+                        [
+                            tendency
+                                .layer(first_role)
+                                .expect("pair role")
+                                .temperature_tendency_k_s[cell],
+                            tendency
+                                .layer(second_role)
+                                .expect("pair role")
+                                .temperature_tendency_k_s[cell],
+                        ],
+                        pair_tendencies,
+                        moisture_step_seconds,
+                    );
+                    let first_heat_delta = {
+                        let target = &mut tendency
+                            .layer_mut(first_role)
                             .expect("pair role")
-                            .temperature_tendency_k_s[cell],
-                        tendency
-                            .layer(second_role)
+                            .temperature_tendency_k_s[cell];
+                        let before = *target;
+                        *target += (heat_scale * pair_tendencies[0]) as f32;
+                        f64::from(*target) - f64::from(before)
+                    };
+                    let second_heat_delta = {
+                        let target = &mut tendency
+                            .layer_mut(second_role)
                             .expect("pair role")
-                            .temperature_tendency_k_s[cell],
-                    ],
-                    pair_tendencies,
-                    moisture_step_seconds,
-                );
-                let first_heat_delta = {
-                    let target = &mut tendency
-                        .layer_mut(first_role)
-                        .expect("pair role")
-                        .temperature_tendency_k_s[cell];
-                    let before = *target;
-                    *target += (heat_scale * pair_tendencies[0]) as f32;
-                    f64::from(*target) - f64::from(before)
-                };
-                let second_heat_delta = {
-                    let target = &mut tendency
-                        .layer_mut(second_role)
-                        .expect("pair role")
-                        .temperature_tendency_k_s[cell];
-                    let before = *target;
-                    *target += (heat_scale * pair_tendencies[1]) as f32;
-                    f64::from(*target) - f64::from(before)
-                };
-                let first_heat = first_capacity * first_heat_delta;
-                let second_heat = second_capacity * second_heat_delta;
-                tendency.budget.paired_heat_absolute_w +=
-                    area * 0.5 * (first_heat.abs() + second_heat.abs());
-                tendency.budget.paired_heat_residual_w += area * (first_heat + second_heat).abs();
+                            .temperature_tendency_k_s[cell];
+                        let before = *target;
+                        *target += (heat_scale * pair_tendencies[1]) as f32;
+                        f64::from(*target) - f64::from(before)
+                    };
+                    let first_heat = first_capacity * first_heat_delta;
+                    let second_heat = second_capacity * second_heat_delta;
+                    tendency.budget.paired_heat_absolute_w +=
+                        area * 0.5 * (first_heat.abs() + second_heat.abs());
+                    tendency.budget.paired_heat_residual_w +=
+                        area * (first_heat + second_heat).abs();
+                }
 
                 if include_momentum_exchange {
                     let momentum = paired_momentum_exchange(

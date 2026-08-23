@@ -1,9 +1,9 @@
 use thiserror::Error;
 
 use super::{
-    ClimateConservationInterpretation, FormationProcedureIdentity, LayeredClimateState,
-    LayeredClimateTendency, LayeredStateError, LayeredTendencyError, LayeredTendencySystem,
-    LayeredTendencyWorkspace,
+    ClimateConservationInterpretation, ClimateIntegrationProcedure, FormationProcedureIdentity,
+    LayeredClimateState, LayeredClimateTendency, LayeredStateError, LayeredTendencyError,
+    LayeredTendencySystem, LayeredTendencyWorkspace,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
@@ -21,6 +21,7 @@ pub(super) const FORMATION_SPECIFIC_HUMIDITY_SCALE: f64 = 0.02;
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
 pub struct ClimateIntegratorDiagnostics {
     tendency_evaluations: u64,
+    endpoint_evaluations: u64,
     fast_substeps: u32,
     linear_iterations: u16,
     initial_linear_relative_residual: f64,
@@ -31,6 +32,10 @@ pub struct ClimateIntegratorDiagnostics {
 impl ClimateIntegratorDiagnostics {
     pub const fn tendency_evaluations(self) -> u64 {
         self.tendency_evaluations
+    }
+
+    pub const fn endpoint_evaluations(self) -> u64 {
+        self.endpoint_evaluations
     }
 
     pub const fn fast_substeps(self) -> u32 {
@@ -53,9 +58,14 @@ impl ClimateIntegratorDiagnostics {
         self.maximum_cfl
     }
 
-    pub(crate) const fn explicit(tendency_evaluations: u64, cfl: f64) -> Self {
+    pub(crate) const fn explicit(
+        tendency_evaluations: u64,
+        endpoint_evaluations: u64,
+        cfl: f64,
+    ) -> Self {
         Self {
             tendency_evaluations,
+            endpoint_evaluations,
             fast_substeps: 1,
             linear_iterations: 0,
             initial_linear_relative_residual: 0.0,
@@ -64,9 +74,15 @@ impl ClimateIntegratorDiagnostics {
         }
     }
 
-    pub(crate) const fn split(tendency_evaluations: u64, substeps: u32, cfl: f64) -> Self {
+    pub(crate) const fn split(
+        tendency_evaluations: u64,
+        endpoint_evaluations: u64,
+        substeps: u32,
+        cfl: f64,
+    ) -> Self {
         Self {
             tendency_evaluations,
+            endpoint_evaluations,
             fast_substeps: substeps,
             linear_iterations: 0,
             initial_linear_relative_residual: 0.0,
@@ -77,6 +93,7 @@ impl ClimateIntegratorDiagnostics {
 
     pub(crate) const fn imex(
         tendency_evaluations: u64,
+        endpoint_evaluations: u64,
         iterations: u16,
         initial_residual: f64,
         final_residual: f64,
@@ -84,6 +101,7 @@ impl ClimateIntegratorDiagnostics {
     ) -> Self {
         Self {
             tendency_evaluations,
+            endpoint_evaluations,
             fast_substeps: 1,
             linear_iterations: iterations,
             initial_linear_relative_residual: initial_residual,
@@ -96,6 +114,9 @@ impl ClimateIntegratorDiagnostics {
         self.tendency_evaluations = self
             .tendency_evaluations
             .saturating_add(other.tendency_evaluations);
+        self.endpoint_evaluations = self
+            .endpoint_evaluations
+            .saturating_add(other.endpoint_evaluations);
         self.fast_substeps = self.fast_substeps.saturating_add(other.fast_substeps);
         self.linear_iterations = self
             .linear_iterations
@@ -215,6 +236,7 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
         profile: ClimateModelProfile,
     ) -> FormationProcedureIdentity {
         FormationProcedureIdentity::new(
+            ClimateIntegrationProcedure::ExplicitEndpointThenClassicRk3V1,
             ClimateCapabilitySet::for_profile(profile),
             ClimateConservationInterpretation::SharedTendencyExtensiveV1,
             super::global_circulation_model_fingerprint(profile),
@@ -233,41 +255,52 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
     ) -> Result<ClimateStepResult, ClimateIntegratorError> {
         validate_step(self.grid, state, dt_seconds, cancellation)?;
         let system = LayeredTendencySystem::new(self.grid);
-        let mut workspace = LayeredTendencyWorkspace::for_grid(self.grid);
-        let mut evaluations = 0_u64;
-        let mut stage_precipitation = Vec::with_capacity(3);
-        let advanced = rk3_step_with(self.grid, state, dt_seconds, cancellation, |stage| {
-            evaluations += 1;
-            let tendency = system.evaluate_with_workspace_for_step(
-                stage,
-                forcing,
-                ocean_edge_permeability,
-                month,
-                dt_seconds,
-                cancellation,
-                &mut workspace,
-            )?;
-            stage_precipitation.push(copy_scalars(
-                tendency.precipitation_rate_mm_s(),
-                cancellation,
-            )?);
-            ClimateDerivative::from_tendency(stage, &tendency, cancellation)
-        })?;
-        let mut mean_precipitation_rate_mm_s = Vec::with_capacity(self.grid.cell_count());
-        let [first, second, third] = stage_precipitation.as_slice() else {
-            unreachable!("classic RK3 always evaluates exactly three precipitation stages")
-        };
-        for (cell, ((first, second), third)) in first.iter().zip(second).zip(third).enumerate() {
-            poll_integrator_cancelled(cell, Some(cancellation))?;
-            mean_precipitation_rate_mm_s.push(
-                (f64::from(*first) / 6.0 + 2.0 * f64::from(*second) / 3.0 + f64::from(*third) / 6.0)
-                    as f32,
-            );
-        }
+        let mut endpoint_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        let mut dynamics_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
+        let endpoint = system.evaluate_with_workspace_for_step(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            month,
+            dt_seconds,
+            cancellation,
+            &mut endpoint_workspace,
+        )?;
+        let mean_precipitation_rate_mm_s =
+            copy_scalars(endpoint.precipitation_rate_mm_s(), cancellation)?;
+        let endpoint_derivative = ClimateDerivative::from_tendency(state, &endpoint, cancellation)?;
+        let mut endpoint_state = state.clone_cancellable(cancellation)?;
+        apply_scalar_endpoint(
+            state,
+            &endpoint_derivative,
+            dt_seconds,
+            &mut endpoint_state,
+            cancellation,
+        )?;
+        let mut evaluations = 1_u64;
+        let advanced = rk3_step_with(
+            self.grid,
+            &endpoint_state,
+            dt_seconds,
+            cancellation,
+            |stage| {
+                evaluations += 1;
+                let tendency = system.evaluate_smooth_dynamics_with_workspace(
+                    stage,
+                    forcing,
+                    ocean_edge_permeability,
+                    month,
+                    cancellation,
+                    &mut dynamics_workspace,
+                )?;
+                ClimateDerivative::from_tendency(stage, &tendency, cancellation)
+            },
+        )?;
         Ok(ClimateStepResult::new(
             advanced,
             ClimateIntegratorDiagnostics::explicit(
                 evaluations,
+                1,
                 estimate_cfl(self.grid, state, dt_seconds, cancellation)?,
             ),
             mean_precipitation_rate_mm_s,
@@ -431,6 +464,55 @@ impl ClimateDerivative {
             .find(|layer| layer.role == role)
             .expect("derivative contains every active role")
     }
+}
+
+pub(crate) fn apply_scalar_endpoint(
+    initial: &LayeredClimateState,
+    endpoint: &ClimateDerivative,
+    step_seconds: f64,
+    advanced: &mut LayeredClimateState,
+    cancellation: &BuildCancellation,
+) -> Result<(), ClimateIntegratorError> {
+    let quantize = |before: f32, tendency: f32| -> Result<f32, ClimateIntegratorError> {
+        let value = f64::from(before) + step_seconds * f64::from(tendency);
+        if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+            return Err(ClimateIntegratorError::LinearSolveBreakdown);
+        }
+        Ok(value as f32)
+    };
+    for layer in &endpoint.layers {
+        let before = initial.temperature_c(layer.role).expect("active role");
+        let after = advanced.temperature_c_mut(layer.role).expect("active role");
+        for (cell, target) in after.iter_mut().enumerate() {
+            poll_integrator_cancelled(cell, Some(cancellation))?;
+            *target = quantize(before[cell], layer.temperature[cell])?;
+        }
+    }
+    for (cell, target) in advanced.specific_humidity_mut().iter_mut().enumerate() {
+        poll_integrator_cancelled(cell, Some(cancellation))?;
+        *target = quantize(initial.specific_humidity()[cell], endpoint.humidity[cell])?.max(0.0);
+    }
+    if let (Some(before), Some(tendency), Some(after)) = (
+        initial.upper_specific_humidity(),
+        endpoint.upper_humidity.as_ref(),
+        advanced.upper_specific_humidity_mut(),
+    ) {
+        for (cell, target) in after.iter_mut().enumerate() {
+            poll_integrator_cancelled(cell, Some(cancellation))?;
+            *target = quantize(before[cell], tendency[cell])?.max(0.0);
+        }
+    }
+    if let (Some(before), Some(tendency), Some(after)) = (
+        initial.deep_ocean_temperature_c(),
+        endpoint.deep_temperature.as_ref(),
+        advanced.deep_ocean_temperature_c_mut(),
+    ) {
+        for (cell, target) in after.iter_mut().enumerate() {
+            poll_integrator_cancelled(cell, Some(cancellation))?;
+            *target = quantize(before[cell], tendency[cell])?;
+        }
+    }
+    check_integrator_cancelled(Some(cancellation))
 }
 
 pub(crate) fn rk3_step_with<F>(

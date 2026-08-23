@@ -824,7 +824,7 @@ fn split_explicit_reports_the_frozen_slow_macro_step_precipitation() {
 }
 
 #[test]
-fn explicit_rk3_reports_stage_integrated_not_terminal_precipitation() {
+fn explicit_reference_reports_one_endpoint_precipitation_before_classic_rk3() {
     let grid = CubedSphereGrid::new(3, 6_371_000.0).unwrap();
     let forcing = sharp_humidity_forcing(&grid);
     let mut initial = state(&grid, ClimateModelProfile::C1SingleLayerV1, &forcing);
@@ -837,6 +837,16 @@ fn explicit_rk3_reports_stage_integrated_not_terminal_precipitation() {
         *velocity = [-120.0 * y as f32, 120.0 * x as f32, 0.0];
     }
     let permeability = vec![1.0; grid.edges().len()];
+    let endpoint = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &permeability,
+            0,
+            300.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
     let result = ExplicitRk3Integrator::new(&grid)
         .advance(
             &initial,
@@ -847,6 +857,12 @@ fn explicit_rk3_reports_stage_integrated_not_terminal_precipitation() {
             &BuildCancellation::new(),
         )
         .unwrap();
+    assert_eq!(result.diagnostics().endpoint_evaluations(), 1);
+    assert_eq!(
+        result.mean_precipitation_rate_mm_s(),
+        endpoint.precipitation_rate_mm_s(),
+        "the reference diagnostic must come from the one executed endpoint"
+    );
     let terminal = LayeredTendencySystem::new(&grid)
         .evaluate_for_step(
             result.state(),
@@ -867,7 +883,7 @@ fn explicit_rk3_reports_stage_integrated_not_terminal_precipitation() {
             .iter()
             .zip(terminal.precipitation_rate_mm_s())
             .any(|(mean, terminal)| mean.to_bits() != terminal.to_bits()),
-        "fixture must distinguish the RK3 stage integral from terminal reevaluation"
+        "fixture must distinguish the initial endpoint from terminal reevaluation"
     );
 }
 

@@ -3,8 +3,8 @@ use super::rk3::{
     ClimateIntegratorError, ClimateStepResult,
 };
 use super::{
-    ClimateConservationInterpretation, FormationProcedureIdentity, LayeredClimateState,
-    LayeredTendencySystem, LayeredTendencyWorkspace,
+    ClimateConservationInterpretation, ClimateIntegrationProcedure, FormationProcedureIdentity,
+    LayeredClimateState, LayeredTendencySystem, LayeredTendencyWorkspace,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
@@ -45,6 +45,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         profile: ClimateModelProfile,
     ) -> FormationProcedureIdentity {
         FormationProcedureIdentity::new(
+            ClimateIntegrationProcedure::ImexCrankNicolsonV1,
             ClimateCapabilitySet::for_profile(profile),
             ClimateConservationInterpretation::SharedTendencyExtensiveV1,
             super::global_circulation_model_fingerprint(profile),
@@ -73,6 +74,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             cancellation,
             &mut workspace,
         )?;
+        let mut endpoint_evaluations = 1_u64;
         let mut mean_precipitation_rate_mm_s = base_tendency.precipitation_rate_mm_s().to_vec();
         let base_implicit_tendency = system.evaluate_linear_implicit_with_workspace(
             state,
@@ -226,6 +228,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                 &mut workspace,
             )?;
             tendency_evaluations += 1;
+            endpoint_evaluations += 1;
             for (mean, (base, predicted)) in mean_precipitation_rate_mm_s.iter_mut().zip(
                 base_tendency
                     .precipitation_rate_mm_s()
@@ -269,6 +272,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             advanced,
             ClimateIntegratorDiagnostics::imex(
                 tendency_evaluations,
+                endpoint_evaluations,
                 iterations,
                 if initial_norm > 0.0 { 1.0 } else { 0.0 },
                 relative_residual,

@@ -1,10 +1,12 @@
 use super::rk3::{
-    copy_scalars, estimate_cfl, rk3_step_with, rk3_step_with_first, validate_step,
-    ClimateDerivative, ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
+    apply_scalar_endpoint, copy_scalars, estimate_cfl, rk3_step_with, rk3_step_with_first,
+    validate_step, ClimateDerivative, ClimateIntegratorDiagnostics, ClimateIntegratorError,
+    ClimateStepResult,
 };
 use super::{
-    ClimateConservationInterpretation, FormationProcedureIdentity, GlobalCirculationPhase,
-    LayeredClimateState, LayeredClimateTendency, LayeredTendencySystem, LayeredTendencyWorkspace,
+    ClimateConservationInterpretation, ClimateIntegrationProcedure, FormationProcedureIdentity,
+    GlobalCirculationPhase, LayeredClimateState, LayeredClimateTendency, LayeredTendencySystem,
+    LayeredTendencyWorkspace,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
@@ -60,6 +62,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         profile: ClimateModelProfile,
     ) -> FormationProcedureIdentity {
         FormationProcedureIdentity::new(
+            ClimateIntegrationProcedure::SplitExplicitRk3V1,
             ClimateCapabilitySet::for_profile(profile),
             ClimateConservationInterpretation::SharedTendencyExtensiveV1,
             super::global_circulation_model_fingerprint(profile),
@@ -144,6 +147,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             advanced,
             ClimateIntegratorDiagnostics::split(
                 evaluations,
+                0,
                 substeps,
                 estimate_cfl(self.grid, state, fast_step_seconds, cancellation)?,
             ),
@@ -325,7 +329,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         drop(full_derivative);
         drop(fast);
         let mut advanced = state.clone_cancellable(cancellation)?;
-        apply_frozen_slow_scalar_endpoint(
+        apply_scalar_endpoint(
             state,
             &slow,
             macro_step_seconds,
@@ -397,6 +401,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             advanced,
             ClimateIntegratorDiagnostics::split(
                 evaluations,
+                1,
                 substeps,
                 estimate_cfl(self.grid, state, fast_step_seconds, cancellation)?,
             ),
@@ -443,64 +448,4 @@ fn clear_scalar_components(derivative: &mut ClimateDerivative) {
     if let Some(deep_temperature) = &mut derivative.deep_temperature {
         deep_temperature.fill(0.0);
     }
-}
-
-fn apply_frozen_slow_scalar_endpoint(
-    initial: &LayeredClimateState,
-    slow: &ClimateDerivative,
-    step_seconds: f64,
-    advanced: &mut LayeredClimateState,
-    cancellation: &BuildCancellation,
-) -> Result<(), ClimateIntegratorError> {
-    let quantize = |before: f32, tendency: f32| -> Result<f32, ClimateIntegratorError> {
-        let value = f64::from(before) + step_seconds * f64::from(tendency);
-        if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
-            return Err(ClimateIntegratorError::LinearSolveBreakdown);
-        }
-        Ok(value as f32)
-    };
-    for layer in &slow.layers {
-        let before = initial.temperature_c(layer.role).expect("active role");
-        let after = advanced.temperature_c_mut(layer.role).expect("active role");
-        for (cell, target) in after.iter_mut().enumerate() {
-            if cell % 256 == 0 && cancellation.is_cancelled() {
-                return Err(ClimateIntegratorError::Cancelled);
-            }
-            *target = quantize(before[cell], layer.temperature[cell])?;
-        }
-    }
-    for (cell, target) in advanced.specific_humidity_mut().iter_mut().enumerate() {
-        if cell % 256 == 0 && cancellation.is_cancelled() {
-            return Err(ClimateIntegratorError::Cancelled);
-        }
-        *target = quantize(initial.specific_humidity()[cell], slow.humidity[cell])?.max(0.0);
-    }
-    if let (Some(before), Some(tendency), Some(after)) = (
-        initial.upper_specific_humidity(),
-        slow.upper_humidity.as_ref(),
-        advanced.upper_specific_humidity_mut(),
-    ) {
-        for (cell, target) in after.iter_mut().enumerate() {
-            if cell % 256 == 0 && cancellation.is_cancelled() {
-                return Err(ClimateIntegratorError::Cancelled);
-            }
-            *target = quantize(before[cell], tendency[cell])?.max(0.0);
-        }
-    }
-    if let (Some(before), Some(tendency), Some(after)) = (
-        initial.deep_ocean_temperature_c(),
-        slow.deep_temperature.as_ref(),
-        advanced.deep_ocean_temperature_c_mut(),
-    ) {
-        for (cell, target) in after.iter_mut().enumerate() {
-            if cell % 256 == 0 && cancellation.is_cancelled() {
-                return Err(ClimateIntegratorError::Cancelled);
-            }
-            *target = quantize(before[cell], tendency[cell])?;
-        }
-    }
-    if cancellation.is_cancelled() {
-        return Err(ClimateIntegratorError::Cancelled);
-    }
-    Ok(())
 }

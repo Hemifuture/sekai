@@ -5,9 +5,10 @@ use sekai::generators::natural::{
     compare_formation_procedure_identities, formation_procedure_identity_matches,
     global_circulation_model_fingerprint, run_closed_split_annual_mass_fixture,
     run_formation_cycle_comparison, run_integrator_comparison, AnnualLayerMassConservationReport,
-    ClimateAgreementThresholds, ClimateConservationInterpretation, ExplicitRk3Integrator,
-    FormationProcedureIdentity, ImexCrankNicolsonIntegrator, LayeredClimateState,
-    ProductionCandidateSelection, SplitExplicitRk3Integrator, SELECTED_PRODUCTION_INTEGRATOR,
+    ClimateAgreementThresholds, ClimateConservationInterpretation, ClimateIntegrationProcedure,
+    ExplicitRk3Integrator, FormationProcedureIdentity, ImexCrankNicolsonIntegrator,
+    LayeredClimateState, ProductionCandidateSelection, SplitExplicitRk3Integrator,
+    SELECTED_PRODUCTION_INTEGRATOR,
 };
 use sekai::world::natural::{
     ClimateCapabilitySet, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
@@ -202,6 +203,19 @@ fn same_equation_suite_selects_only_a_candidate_that_passes_every_gate() {
         }
     }
     assert!(report.reference_steps() > 1);
+    assert_eq!(
+        report.reference_procedure().integration_procedure(),
+        ClimateIntegrationProcedure::ExplicitEndpointThenClassicRk3V1
+    );
+    assert_eq!(
+        report.split_explicit().procedure().integration_procedure(),
+        ClimateIntegrationProcedure::SplitExplicitRk3V1
+    );
+    assert_eq!(
+        report.reference_diagnostics().endpoint_evaluations(),
+        u64::from(report.reference_steps()),
+        "each refined physical step must execute exactly one scalar endpoint"
+    );
     assert!(report.imex().final_linear_relative_residual().is_finite());
 }
 
@@ -309,6 +323,20 @@ fn formation_capability_and_conservation_identity_are_locked_for_every_fixture()
         assert!(report.capability_set_match());
         assert!(report.conservation_interpretation_match());
         assert!(report.model_fingerprint_match());
+        assert!(report.integration_procedure_independent());
+        assert_eq!(
+            report.reference().procedure().integration_procedure(),
+            ClimateIntegrationProcedure::ExplicitEndpointThenClassicRk3V1
+        );
+        assert_eq!(
+            report.split_explicit().procedure().integration_procedure(),
+            ClimateIntegrationProcedure::SplitExplicitRk3V1
+        );
+        assert_ne!(
+            report.reference().procedure().integration_procedure(),
+            report.split_explicit().procedure().integration_procedure(),
+            "the refined truth path must not instantiate the selected candidate implementation"
+        );
     }
 }
 
@@ -326,11 +354,13 @@ fn formation_procedure_identity_gate_rejects_capability_and_budget_mismatches() 
     assert!(compare_formation_procedure_identities(&expected, &imex, &split).qualifies());
 
     let wrong_capabilities = FormationProcedureIdentity::new(
+        ClimateIntegrationProcedure::SplitExplicitRk3V1,
         ClimateCapabilitySet::for_profile(ClimateModelProfile::C1SingleLayerV1),
         ClimateConservationInterpretation::SharedTendencyExtensiveV1,
         global_circulation_model_fingerprint(profile),
     );
     let wrong_budget_semantics = FormationProcedureIdentity::new(
+        ClimateIntegrationProcedure::ImexCrankNicolsonV1,
         ClimateCapabilitySet::for_profile(ClimateModelProfile::C2LayeredV1),
         ClimateConservationInterpretation::IntegratorInternalStateDeltaV1,
         global_circulation_model_fingerprint(profile),
@@ -338,6 +368,7 @@ fn formation_procedure_identity_gate_rejects_capability_and_budget_mismatches() 
     let mut forged_model = global_circulation_model_fingerprint(profile);
     forged_model[0] ^= 1;
     let wrong_model = FormationProcedureIdentity::new(
+        ClimateIntegrationProcedure::ImexCrankNicolsonV1,
         ClimateCapabilitySet::for_profile(profile),
         ClimateConservationInterpretation::SharedTendencyExtensiveV1,
         forged_model,
@@ -368,6 +399,17 @@ fn formation_procedure_identity_gate_rejects_capability_and_budget_mismatches() 
     let model_mismatch = compare_formation_procedure_identities(&expected, &wrong_model, &split);
     assert!(!model_mismatch.qualifies());
     assert!(!model_mismatch.imex_model_fingerprint_match());
+
+    let forged_self_comparison = FormationProcedureIdentity::new(
+        expected.integration_procedure(),
+        ClimateCapabilitySet::for_profile(profile),
+        ClimateConservationInterpretation::SharedTendencyExtensiveV1,
+        global_circulation_model_fingerprint(profile),
+    );
+    let implementation_self_comparison =
+        compare_formation_procedure_identities(&expected, &imex, &forged_self_comparison);
+    assert!(!implementation_self_comparison.qualifies());
+    assert!(!implementation_self_comparison.split_explicit_integration_procedure_independent());
 }
 
 #[test]
@@ -477,7 +519,7 @@ fn build_comparison_evidence() -> ComparisonEvidence {
     }
     let conservation_grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
     let evidence = ComparisonEvidence {
-        schema: "sekai.p4-integrator-comparison.v1",
+        schema: "sekai.p4-integrator-comparison.v2",
         thresholds: ClimateAgreementThresholds::LOCKED,
         selected: SELECTED_PRODUCTION_INTEGRATOR,
         closed_annual_layer_mass: run_closed_split_annual_mass_fixture(
@@ -492,6 +534,7 @@ fn build_comparison_evidence() -> ComparisonEvidence {
 }
 
 fn assert_comparison_evidence_passes_locked_gates(evidence: &ComparisonEvidence) {
+    assert_eq!(evidence.schema, "sekai.p4-integrator-comparison.v2");
     assert_eq!(
         evidence.selected,
         ProductionIntegratorId::SplitExplicitRk3V1
@@ -513,6 +556,19 @@ fn assert_comparison_evidence_passes_locked_gates(evidence: &ComparisonEvidence)
     for fixture in &evidence.fixtures {
         assert_eq!(fixture.monthly.len(), 12);
         for report in &fixture.monthly {
+            assert_eq!(
+                report.reference_procedure().integration_procedure(),
+                ClimateIntegrationProcedure::ExplicitEndpointThenClassicRk3V1
+            );
+            assert_eq!(
+                report.reference_diagnostics().endpoint_evaluations(),
+                u64::from(report.reference_steps())
+            );
+            assert_eq!(
+                report.split_explicit().procedure().integration_procedure(),
+                ClimateIntegrationProcedure::SplitExplicitRk3V1
+            );
+            assert!(report.split_explicit().procedure_qualified());
             assert!(
                 report.split_explicit().qualifies(),
                 "{:?} coastal={} month={} split candidate failed: {:?}",
@@ -542,6 +598,7 @@ fn assert_comparison_evidence_passes_locked_gates(evidence: &ComparisonEvidence)
         );
         assert!(fixture.formation.reference().cycles().is_some());
         assert!(fixture.formation.split_explicit_cycle_match());
+        assert!(fixture.formation.integration_procedure_independent());
         assert!(fixture.formation.imex_capability_set_match());
         assert!(fixture.formation.split_explicit_capability_set_match());
         assert!(fixture.formation.imex_conservation_interpretation_match());

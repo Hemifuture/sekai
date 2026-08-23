@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use super::{
-    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
+    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult, ExplicitRk3Integrator,
     ImexCrankNicolsonIntegrator, LayeredClimateState, SplitExplicitRk3Integrator,
 };
 use crate::engine::BuildCancellation;
@@ -478,11 +478,14 @@ pub struct CandidateIntegratorComparison {
     agreement: Option<ClimateStateComparison>,
     diagnostics: ClimateIntegratorDiagnostics,
     integration_failure: Option<String>,
+    procedure: FormationProcedureIdentity,
+    procedure_qualified: bool,
 }
 
 impl CandidateIntegratorComparison {
     pub fn qualifies(&self) -> bool {
-        self.integration_failure.is_none()
+        self.procedure_qualified
+            && self.integration_failure.is_none()
             && self
                 .agreement
                 .as_ref()
@@ -504,6 +507,14 @@ impl CandidateIntegratorComparison {
     pub fn integration_failure(&self) -> Option<&str> {
         self.integration_failure.as_deref()
     }
+
+    pub const fn procedure(&self) -> &FormationProcedureIdentity {
+        &self.procedure
+    }
+
+    pub const fn procedure_qualified(&self) -> bool {
+        self.procedure_qualified
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -516,6 +527,8 @@ pub enum ProductionCandidateSelection {
 pub struct IntegratorComparisonReport {
     month: usize,
     reference_steps: u32,
+    reference_diagnostics: ClimateIntegratorDiagnostics,
+    reference_procedure: FormationProcedureIdentity,
     imex: CandidateIntegratorComparison,
     split_explicit: CandidateIntegratorComparison,
     selection: ProductionCandidateSelection,
@@ -528,6 +541,14 @@ impl IntegratorComparisonReport {
 
     pub const fn reference_steps(&self) -> u32 {
         self.reference_steps
+    }
+
+    pub const fn reference_diagnostics(&self) -> ClimateIntegratorDiagnostics {
+        self.reference_diagnostics
+    }
+
+    pub const fn reference_procedure(&self) -> &FormationProcedureIdentity {
+        &self.reference_procedure
     }
 
     pub const fn imex(&self) -> &CandidateIntegratorComparison {
@@ -572,11 +593,13 @@ pub fn run_integrator_comparison(
     }
     let reference_steps = step_count_f64 as u32;
     let exact_reference_step = horizon_seconds / f64::from(reference_steps);
-    // Endpoint-style transport and phase change must execute once per physical
-    // step, not once per RK stage. The reference therefore refines the slow
-    // process step while retaining the same equation decomposition.
-    let reference_integrator = SplitExplicitRk3Integrator::new(grid, reference_step_seconds)?;
+    // Endpoint-style transport and phase change execute once per physical
+    // step. The independent reference then applies classic RK3 only to the
+    // smooth height and momentum equations.
+    let reference_integrator = ExplicitRk3Integrator::new(grid);
+    let reference_procedure = reference_integrator.formation_procedure_identity(initial.profile());
     let mut reference = initial.clone();
+    let mut reference_diagnostics = ClimateIntegratorDiagnostics::default();
     let mut reference_precipitation_integral = vec![0.0_f64; grid.cell_count()];
     for _ in 0..reference_steps {
         let result = reference_integrator.advance(
@@ -587,6 +610,7 @@ pub fn run_integrator_comparison(
             exact_reference_step,
             cancellation,
         )?;
+        reference_diagnostics.accumulate(result.diagnostics());
         for (integral, rate) in reference_precipitation_integral
             .iter_mut()
             .zip(result.mean_precipitation_rate_mm_s())
@@ -600,6 +624,7 @@ pub fn run_integrator_comparison(
         .map(|integral| (integral / horizon_seconds) as f32)
         .collect::<Vec<_>>();
     let imex_integrator = ImexCrankNicolsonIntegrator::new(grid, 32, 1.0e-6)?;
+    let imex_procedure = imex_integrator.formation_procedure_identity(initial.profile());
     let imex_attempt = advance_candidate_over_product_steps(
         grid,
         initial,
@@ -616,6 +641,7 @@ pub fn run_integrator_comparison(
         },
     );
     let split_integrator = SplitExplicitRk3Integrator::new(grid, reference_step_seconds)?;
+    let split_procedure = split_integrator.formation_procedure_identity(initial.profile());
     let split_attempt = advance_candidate_over_product_steps(
         grid,
         initial,
@@ -632,13 +658,30 @@ pub fn run_integrator_comparison(
         },
     );
     let thresholds = ClimateAgreementThresholds::LOCKED;
+    let procedure_agreement = compare_formation_procedure_identities(
+        &reference_procedure,
+        &imex_procedure,
+        &split_procedure,
+    );
     let context = CandidateContext {
         grid,
         reference: &reference,
         reference_precipitation: &reference_precipitation,
     };
-    let imex = candidate_comparison(&context, imex_attempt, thresholds)?;
-    let split_explicit = candidate_comparison(&context, split_attempt, thresholds)?;
+    let imex = candidate_comparison(
+        &context,
+        imex_attempt,
+        thresholds,
+        imex_procedure,
+        procedure_agreement.imex_qualifies(),
+    )?;
+    let split_explicit = candidate_comparison(
+        &context,
+        split_attempt,
+        thresholds,
+        split_procedure,
+        procedure_agreement.split_explicit_qualifies(),
+    )?;
     let selection = if split_explicit.qualifies()
         && (!imex.qualifies()
             || split_explicit.diagnostics.tendency_evaluations()
@@ -653,6 +696,8 @@ pub fn run_integrator_comparison(
     Ok(IntegratorComparisonReport {
         month,
         reference_steps,
+        reference_diagnostics,
+        reference_procedure,
         imex,
         split_explicit,
         selection,
@@ -707,6 +752,8 @@ fn candidate_comparison(
     context: &CandidateContext<'_>,
     attempt: Result<super::ClimateStepResult, ClimateIntegratorError>,
     thresholds: ClimateAgreementThresholds,
+    procedure: FormationProcedureIdentity,
+    procedure_qualified: bool,
 ) -> Result<CandidateIntegratorComparison, ClimateIntegratorError> {
     match attempt {
         Ok(result) => {
@@ -726,6 +773,8 @@ fn candidate_comparison(
                 agreement: Some(agreement),
                 diagnostics: result.diagnostics(),
                 integration_failure: None,
+                procedure,
+                procedure_qualified,
             })
         }
         Err(ClimateIntegratorError::Cancelled) => Err(ClimateIntegratorError::Cancelled),
@@ -735,13 +784,15 @@ fn candidate_comparison(
                     iterations,
                     residual,
                     ..
-                } => ClimateIntegratorDiagnostics::imex(0, *iterations, 1.0, *residual, 0.0),
+                } => ClimateIntegratorDiagnostics::imex(0, 0, *iterations, 1.0, *residual, 0.0),
                 _ => ClimateIntegratorDiagnostics::default(),
             };
             Ok(CandidateIntegratorComparison {
                 agreement: None,
                 diagnostics,
                 integration_failure: Some(error.to_string()),
+                procedure,
+                procedure_qualified,
             })
         }
     }
@@ -902,8 +953,16 @@ pub enum ClimateConservationInterpretation {
     IntegratorInternalStateDeltaV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ClimateIntegrationProcedure {
+    ExplicitEndpointThenClassicRk3V1,
+    ImexCrankNicolsonV1,
+    SplitExplicitRk3V1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FormationProcedureIdentity {
+    integration_procedure: ClimateIntegrationProcedure,
     capabilities: ClimateCapabilitySet,
     conservation_interpretation: ClimateConservationInterpretation,
     model_fingerprint: [u8; 32],
@@ -911,15 +970,21 @@ pub struct FormationProcedureIdentity {
 
 impl FormationProcedureIdentity {
     pub fn new(
+        integration_procedure: ClimateIntegrationProcedure,
         capabilities: ClimateCapabilitySet,
         conservation_interpretation: ClimateConservationInterpretation,
         model_fingerprint: [u8; 32],
     ) -> Self {
         Self {
+            integration_procedure,
             capabilities,
             conservation_interpretation,
             model_fingerprint,
         }
+    }
+
+    pub const fn integration_procedure(&self) -> ClimateIntegrationProcedure {
+        self.integration_procedure
     }
 
     pub const fn capabilities(&self) -> &ClimateCapabilitySet {
@@ -946,6 +1011,8 @@ pub fn formation_procedure_identity_matches(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormationProcedureAgreement {
+    imex_integration_procedure_independent: bool,
+    split_explicit_integration_procedure_independent: bool,
     imex_capability_set_match: bool,
     split_explicit_capability_set_match: bool,
     imex_conservation_interpretation_match: bool,
@@ -955,6 +1022,19 @@ pub struct FormationProcedureAgreement {
 }
 
 impl FormationProcedureAgreement {
+    pub const fn imex_integration_procedure_independent(self) -> bool {
+        self.imex_integration_procedure_independent
+    }
+
+    pub const fn split_explicit_integration_procedure_independent(self) -> bool {
+        self.split_explicit_integration_procedure_independent
+    }
+
+    pub const fn integration_procedure_independent(self) -> bool {
+        self.imex_integration_procedure_independent
+            && self.split_explicit_integration_procedure_independent
+    }
+
     pub const fn imex_capability_set_match(self) -> bool {
         self.imex_capability_set_match
     }
@@ -993,13 +1073,28 @@ impl FormationProcedureAgreement {
     }
 
     pub const fn qualifies(self) -> bool {
-        self.capability_set_match()
+        self.integration_procedure_independent()
+            && self.capability_set_match()
             && self.conservation_interpretation_match()
             && self.model_fingerprint_match()
     }
+
+    const fn imex_qualifies(self) -> bool {
+        self.imex_integration_procedure_independent
+            && self.imex_capability_set_match
+            && self.imex_conservation_interpretation_match
+            && self.imex_model_fingerprint_match
+    }
+
+    const fn split_explicit_qualifies(self) -> bool {
+        self.split_explicit_integration_procedure_independent
+            && self.split_explicit_capability_set_match
+            && self.split_explicit_conservation_interpretation_match
+            && self.split_explicit_model_fingerprint_match
+    }
 }
 
-/// Uses the same three-way gate as the serialized formation report. Tests can
+/// Uses the same four-part gate as the serialized formation report. Tests can
 /// inject a mismatched identity here and prove the complete aggregate gate is
 /// not a self-comparison.
 pub fn compare_formation_procedure_identities(
@@ -1008,6 +1103,10 @@ pub fn compare_formation_procedure_identities(
     split_explicit: &FormationProcedureIdentity,
 ) -> FormationProcedureAgreement {
     FormationProcedureAgreement {
+        imex_integration_procedure_independent: imex.integration_procedure
+            != reference.integration_procedure,
+        split_explicit_integration_procedure_independent: split_explicit.integration_procedure
+            != reference.integration_procedure,
         imex_capability_set_match: imex.capabilities == reference.capabilities,
         split_explicit_capability_set_match: split_explicit.capabilities == reference.capabilities,
         imex_conservation_interpretation_match: imex.conservation_interpretation
@@ -1054,6 +1153,9 @@ pub struct FormationCycleComparisonReport {
     split_explicit: FormationRunOutcome,
     imex_cycle_match: bool,
     split_explicit_cycle_match: bool,
+    imex_integration_procedure_independent: bool,
+    split_explicit_integration_procedure_independent: bool,
+    integration_procedure_independent: bool,
     imex_capability_set_match: bool,
     split_explicit_capability_set_match: bool,
     capability_set_match: bool,
@@ -1085,6 +1187,18 @@ impl FormationCycleComparisonReport {
 
     pub const fn split_explicit_cycle_match(&self) -> bool {
         self.split_explicit_cycle_match
+    }
+
+    pub const fn imex_integration_procedure_independent(&self) -> bool {
+        self.imex_integration_procedure_independent
+    }
+
+    pub const fn split_explicit_integration_procedure_independent(&self) -> bool {
+        self.split_explicit_integration_procedure_independent
+    }
+
+    pub const fn integration_procedure_independent(&self) -> bool {
+        self.integration_procedure_independent
     }
 
     pub const fn capability_set_match(&self) -> bool {
@@ -1126,7 +1240,7 @@ impl FormationCycleComparisonReport {
 
 #[derive(Debug, Clone, Copy)]
 enum FormationIntegrator {
-    RefinedSplitReference,
+    ExplicitReference,
     Imex,
     SplitExplicit,
 }
@@ -1160,7 +1274,7 @@ pub fn run_formation_cycle_comparison(
         });
     }
     let reference = run_formation(
-        FormationIntegrator::RefinedSplitReference,
+        FormationIntegrator::ExplicitReference,
         grid,
         initial,
         forcing,
@@ -1202,6 +1316,11 @@ pub fn run_formation_cycle_comparison(
         imex_cycle_match: imex.cycles.is_some() && imex.cycles == reference.cycles,
         split_explicit_cycle_match: split_explicit.cycles.is_some()
             && split_explicit.cycles == reference.cycles,
+        imex_integration_procedure_independent: procedure_agreement
+            .imex_integration_procedure_independent(),
+        split_explicit_integration_procedure_independent: procedure_agreement
+            .split_explicit_integration_procedure_independent(),
+        integration_procedure_independent: procedure_agreement.integration_procedure_independent(),
         reference,
         imex,
         split_explicit,
@@ -1261,7 +1380,7 @@ fn run_formation(
                 Err(ClimateIntegratorError::Cancelled) => {
                     return Err(ClimateIntegratorError::Cancelled)
                 }
-                Err(error) if !matches!(integrator, FormationIntegrator::RefinedSplitReference) => {
+                Err(error) if !matches!(integrator, FormationIntegrator::ExplicitReference) => {
                     return Ok(FormationRunOutcome {
                         cycles: None,
                         final_residual,
@@ -1302,11 +1421,9 @@ fn actual_integrator_procedure_identity(
     reference_step_seconds: f64,
 ) -> Result<FormationProcedureIdentity, ClimateIntegratorError> {
     match integrator {
-        FormationIntegrator::RefinedSplitReference => Ok(SplitExplicitRk3Integrator::new(
-            grid,
-            reference_step_seconds,
-        )?
-        .formation_procedure_identity(profile)),
+        FormationIntegrator::ExplicitReference => {
+            Ok(ExplicitRk3Integrator::new(grid).formation_procedure_identity(profile))
+        }
         FormationIntegrator::Imex => Ok(ImexCrankNicolsonIntegrator::new(grid, 32, 1.0e-6)?
             .formation_procedure_identity(profile)),
         FormationIntegrator::SplitExplicit => Ok(SplitExplicitRk3Integrator::new(
@@ -1330,12 +1447,12 @@ fn advance_formation_month(
     cancellation: &BuildCancellation,
 ) -> Result<LayeredClimateState, ClimateIntegratorError> {
     match integrator {
-        FormationIntegrator::RefinedSplitReference => {
+        FormationIntegrator::ExplicitReference => {
             let steps = (macro_step_seconds / reference_step_seconds)
                 .ceil()
                 .max(1.0) as u32;
             let step_seconds = macro_step_seconds / f64::from(steps);
-            let integrator = SplitExplicitRk3Integrator::new(grid, reference_step_seconds)?;
+            let integrator = ExplicitRk3Integrator::new(grid);
             let mut state = state.clone();
             for _ in 0..steps {
                 state = integrator

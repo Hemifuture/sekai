@@ -230,6 +230,13 @@ WASM 均通过；独立代码审查无 Critical，Important 已修复。
 
 ## Task 7：刷新受影响身份并冻结 R1 完成证据
 
+> **状态：已分解替代（2026-08-24）。** P4 reference、comparison evidence 与
+> 产品身份清单由
+> `2026-08-24-transient-climate-geomorphology.md` Task 2 冻结；生产 P4 evidence
+> 已证明逐位不变。下列旧 fixed-point P5/T1 atlas、performance 与 golden 不再
+> 生成；前向 P3→P5→T1 的实际 old→new 清单、两档全量回归和用户 UI 验收统一由
+> 新计划 Task 9 完成。以下未勾选项只保留为被替代的历史范围，不再执行。
+
 文件：
 
 - 修改：受影响的 P4、P5、T1 stage fingerprint 期望

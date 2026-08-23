@@ -29,10 +29,10 @@ pub use comparison::{
     run_closed_split_annual_mass_fixture, run_formation_cycle_comparison,
     run_integrator_comparison, AnnualLayerMassConservationReport, CandidateIntegratorComparison,
     ClimateAgreementFailure, ClimateAgreementThresholds, ClimateConservationInterpretation,
-    ClimatePrecipitationAgreement, ClimateScalarAgreement, ClimateStateComparison,
-    ClimateVectorAgreement, FormationCycleComparisonReport, FormationProcedureAgreement,
-    FormationProcedureIdentity, FormationRunOutcome, IntegratorComparisonReport,
-    LayerMassConservationDiagnostic, ProductionCandidateSelection,
+    ClimateIntegrationProcedure, ClimatePrecipitationAgreement, ClimateScalarAgreement,
+    ClimateStateComparison, ClimateVectorAgreement, FormationCycleComparisonReport,
+    FormationProcedureAgreement, FormationProcedureIdentity, FormationRunOutcome,
+    IntegratorComparisonReport, LayerMassConservationDiagnostic, ProductionCandidateSelection,
     CLOSED_ANNUAL_LAYER_MASS_DRIFT_MAX, SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use forcing::{GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError};

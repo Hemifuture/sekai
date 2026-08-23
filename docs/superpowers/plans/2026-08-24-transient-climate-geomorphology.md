@@ -67,14 +67,15 @@ cargo check --target wasm32-unknown-unknown --all-features --lib
 - 修改：受影响的 P4 stage/evidence 期望
 - 修改：P4 规格显式修订、本计划与 R1 完成记录
 
-- [ ] RED 证明 refined reference 当前错误实例化
+- [x] RED 证明 refined reference 当前错误实例化
   `SplitExplicitRk3Integrator`，并让 reference/candidate procedure identity
   自比较；伪造同 identity 的候选必须不再通过。
-- [ ] reference 改为实际 `ExplicitRk3Integrator` 的细步同方程路径；实际执行
+- [x] reference 改为实际 `ExplicitRk3Integrator` 的细步同方程路径；实际执行
   identity 与报告 identity 由被运行的积分器给出。
-- [ ] P4 stage/model identity 只按方程/比较证据实际影响刷新；重跑 formation
+- [x] P4 stage/model identity 只按方程/比较证据实际影响刷新；重跑 formation
   cycle comparison、integrator corpus、17-seed evidence。
-- [ ] 完成 P4 计划中尚未完成的 Task 7 身份清单；三道门禁并提交。
+- [x] 完成 P4 计划中尚未完成的 Task 7 产品身份清单，显式关闭旧 fixed-point
+  P5/T1 金样范围；三道门禁并提交。
 
 提交：`Use an independent RK3 climate reference`
 

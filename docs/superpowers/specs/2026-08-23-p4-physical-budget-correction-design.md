@@ -665,3 +665,38 @@ net、行星反照率与 warm/cold solve。Earth reference 数值来自 `world` 
      既有 16 幅 natural-foundation GPU 金样逐幅不变；Task 7 继续登记完整身份
      与证据清单。合成回归让降水与蒸发的年总量都跨过旧 P5 forcing 包络，另锁定
      `f32` overflow typed error，防止隐藏展示钳制复发。
+- R7（2026-08-24）：修正 R4 第 9 条中“process-consistent refined reference”
+  的实现身份债，并显式替代其中“比较参考细化同一 split 实现”的表述。
+
+  1. RED 证明 `run_integrator_comparison` 与
+     `run_formation_cycle_comparison` 的 reference 实际实例化
+     `SplitExplicitRk3Integrator`，与 selected candidate 是同一个实现；原
+     `FormationProcedureIdentity` 又只包含 capability、守恒解释与 model
+     fingerprint，因而不能识别 self-comparison。
+  2. 不能恢复旧的“完整 tendency 每个 classic RK3 stage 重评估”路径：R4 已实测
+     endpoint-style saturation adjustment 即使在 `300 s` 也会重复相变并产生约
+     `1.2 K` 偏差。修订后的 `ExplicitRk3Integrator` 每个细步先执行一次完整标量
+     endpoint，再以 Hairer, Nørsett & Wanner (1993) 的 classical three-stage RK3
+     独立重评估平滑厚度/动量方程。生产 split 与 reference 只共享
+     `apply_scalar_endpoint` 这一物理 SSOT，不共享完整积分循环。
+  3. `ClimateIntegrationProcedure` 成为实际 procedure identity：reference 为
+     `ExplicitEndpointThenClassicRk3V1`，生产候选为
+     `SplitExplicitRk3V1`。comparison qualification 同时要求同 capability、同
+     `SharedTendencyExtensiveV1`、同 model fingerprint 和不同 integration
+     procedure；同 identity 伪造候选严格失败。`ClimateIntegratorDiagnostics`
+     逐步累计 `endpoint_evaluations`，Release corpus 每个报告的 `72` 个细步严格
+     对应 `72` 次 endpoint。
+  4. comparison evidence schema 从 V1 升为 V2。`aca5584` 的真实旧值为
+     `146,333 B / e6faf68523c64e3593af0b6f3f7a3b859f331436f8884e1465da288a531add9c`；
+     新值为
+     `430,940 B / 87d005c217f5fb6faef70124026f89bc04c132f20ff2f4757b776cbb5ed8bee3`。
+     C1/C2、open/coastal、十二个月全部仍选择 split；最坏 vector NRMSE
+     `0.0476854863`、scalar bias `0.0466908296`、年度降水偏差
+     `0.0063257317`，全部使用原冻结门槛。
+  5. 生产 `SplitExplicitRk3V1` 方程、字段和 artifact 未改变。17 粒 P4 Release
+     evidence 逐位保持 JSON
+     `dbbe8225c4417b92cc8fc04a2c549852d011d5c1dfa819b9af340887654a81d9`
+     与 CSV
+     `476cae8d33bc304a02f249cb35dccd33228cd8a76fd604459ca24f7d25805449`。
+     因此 equation/global model fingerprint、P4 stage V3、P5/T1 下游、字段注册表、
+     sampled IDs 和 GPU goldens 都不刷新；只刷新 comparison evidence 身份。
