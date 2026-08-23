@@ -499,7 +499,7 @@ git commit -m "feat: replace rebuilding maps with the loading stage" -m "Hide th
 - Consumes: Tasks 1–3 的已提交实现。
 - Produces: 可复核的测试输出、提交列表和用户 UI 验收步骤；不执行合并。
 
-- [ ] **Step 1: 跑格式、Clippy 与 wasm 门禁**
+- [x] **Step 1: 跑格式、Clippy 与 wasm 门禁**
 
 运行：
 
@@ -511,7 +511,7 @@ cargo check --target wasm32-unknown-unknown --all-features --lib
 
 预期：全部退出 0，无 warning。
 
-- [ ] **Step 2: 跑完整调试回归**
+- [x] **Step 2: 跑完整调试回归**
 
 运行：
 
@@ -521,7 +521,7 @@ cargo test --workspace --all-features --no-fail-fast
 
 预期：非 ignored 测试全部通过；若出现失败，先按系统化调试定位，不以本任务无关为由跳过。
 
-- [ ] **Step 3: 核对差异与事实源**
+- [x] **Step 3: 核对差异与事实源**
 
 运行：
 
@@ -534,7 +534,7 @@ rg -n "#426e7d|WORLD_LOADING_TRANSITION_SECONDS|WORLD_LOADING_VERTICES" src prot
 预期：无空白错误；只存在计划内修改；色值只在 `src/view/palette.rs`，时序和几何只在
 `src/ui/world_loading.rs`，`prototypes/world-loading` 不存在。
 
-- [ ] **Step 4: 记录执行证据并提交**
+- [x] **Step 4: 记录执行证据并提交**
 
 把各命令的测试数量、退出码与提交哈希写入本计划“执行证据”，然后运行：
 
@@ -543,7 +543,7 @@ git add docs/superpowers/plans/2026-08-23-world-build-loading-animation.md
 git commit -m "docs: record loading animation verification" -m "Capture the native, wasm, lint, regression, and handoff evidence for the committed egui implementation."
 ```
 
-- [ ] **Step 5: 向用户交付但不合并**
+- [x] **Step 5: 向用户交付但不合并**
 
 报告提交哈希与以下验证流程：`cargo run --release` → 等首图 → 点击“按当前参数重建” → 检查旧图立即消失和二十块循环 → 取消检查回滚 → 勾选 reduced motion 再试。明确当前分支保持不合并，等待用户通知。
 
@@ -561,4 +561,34 @@ git commit -m "docs: record loading animation verification" -m "Capture the nati
 
 ## 执行证据
 
-执行时逐任务记录，不预填结果。
+### 提交
+
+- `b4a11aa docs: freeze the world build loading animation`：冻结用户逐轮确认的视觉、状态与验收语义。
+- `e599c7b feat: draw the Equal Earth build animation`：实现二十块凸拼图、生产 Equal Earth 轮廓、双向位移、淡入淡出、reduced motion 与 egui 绘制。
+- `4b67f44 feat: replace rebuilding maps with the loading stage`：把 pending worker 状态接入中央视窗，隐藏旧地图并保留成功发布／失败回滚语义，删除临时网页原型。
+- `ea38d88 test: avoid redundant GPU setup in loading regression`：让加载态验收以生产候选校验和无操作测试 preparer 建立保留地图，避免为纯 callback 断言额外并发创建 WGPU 设备。
+- 本节及最终门禁记录由包含本节的 Task 4 文档提交承载；其哈希在交付回复中报告，避免文档自引用哈希循环。
+
+### TDD 与受影响回归
+
+- Task 2 RED：加载常量与纯函数未实现时产生 32 个预期编译错误；GREEN：`ui::world_loading::tests` 7/7 通过，覆盖投影比例、二十块共享边凸拓扑、无缝覆盖、进入／退出顺序与位移、长时间循环、reduced motion 及真实 egui 绘制／语义文本。
+- Task 3 RED：pending 帧旧地图 callback 断言实际为 `left: 1, right: 0`；持久化测试因尚无 `reduce_loading_motion` 产生 3 个预期编译错误。GREEN：pending、取消、结束恢复、偏好 round-trip、同帧 packet callback 及两条球面启动失败重试回归全部通过。
+- Task 4 首次完整调试回归在 Windows 默认并发下于 lib 测试进程触发原生 `STATUS_ACCESS_VIOLATION (0xc0000005)`，没有 Rust 断言失败；同一 lib 以 `--nocapture` 运行得到 520 passed、1 ignored，默认捕获但 `--test-threads=1` 也得到 520 passed、1 ignored。根因范围因此收敛到并发 WGPU 设备初始化，而非加载逻辑。新增验收改用生产 `try_new_with_preparer` 路径和无操作测试 preparer 后，目标测试 1/1、默认并发 lib 520 passed／1 ignored，访问冲突不再出现。
+
+### 最终门禁（`ea38d88` 代码树）
+
+- `cargo fmt --all -- --check`：退出 0。
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`：退出 0，零 warning。
+- `cargo check --target wasm32-unknown-unknown --all-features --lib`：退出 0。
+- `cargo test --workspace --all-features --no-fail-fast`：退出 0；lib 为 520 passed、0 failed、1 ignored，全部集成测试目标的非 ignored 测试通过，doc tests 为 9 passed、0 failed、8 ignored。
+- `git diff --check`：退出 0；无空白错误。
+- SSOT 扫描：`WORLD_LOADING_TRANSITION_SECONDS` 与 `WORLD_LOADING_VERTICES` 只命中 `src/ui/world_loading.rs`；`WorldLoadingPalette`／`WORLD_LOADING_PALETTE` 的定义只在 `src/view/palette.rs`，UI 仅引用；`prototypes/world-loading` 已不存在；未增加第三方依赖。
+
+### 用户 UI 验收（仍由用户本人执行）
+
+1. 在本分支运行 `cargo run --release`，等待首张二维地图完成。
+2. 点击“按当前参数重建”：旧地图应立即消失，中央视窗只显示 Equal Earth 外形的二十块凸拼图；块从中心向外错峰移入并淡入，短暂停留后错峰移出并淡出，循环期间界面仍可响应。
+3. 构建完成后：加载视图应一次性被新地图替换，不闪回旧地图。
+4. 再次重建并点击“取消”：加载视图标题变为“正在取消构建”，worker 结束后恢复上一张完整地图，并显示取消结果。
+5. 勾选“减少加载位移动效”后重复重建：透明度与拼图顺序保留，但进入／退出位移应为零；取消勾选后位移恢复。
+6. 本工作树保持在 `dyzdyz010/anim_loading`，不合并、不推送，等待用户通知。
