@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准；2026-08-25 最终态与生成效率显式修订已批准**
+状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -48,7 +48,8 @@ commit `f1df994` 在本规格加入的以下要求：
 5. 上一版每宏步三次 P4 的路径只保留为 ignored/release 离线高成本参考探针，
    默认语料为 `Standard`/seed `42`。它只比较最终地形组成、水面几何、气候、
    水库/沉积库存、既有质量指标、守恒、指纹和耗时，不进入产品 schema、缓存、
-   UI 或每次构建门禁。
+   UI 或每次构建门禁。由于 P2/P5 保留不同物理时域，该路径只是耦合顺序敏感性
+   对照，不得称为同一时间离散问题的高精度金标准解。
 6. 删除三层 step-doubling 和新造误差包络。离线参考的原始最终态差值是研发证据，
    不是未经来源批准的新失败阈值；产品验收仍由硬不变式、既有质量包络、现有
    profile 性能门禁和 UI 结果承担。
@@ -57,6 +58,71 @@ commit `f1df994` 在本规格加入的以下要求：
    且 P2/P5 保留各自不同的 resolved horizon，因此这里是 Lie-style sequential
    splitting 的工程类比而非同一 `Δt` 上的形式 Trotter 收敛声明。具体日程属于
    以离线实测裁定的开放问题，不得伪装成学术结论。
+
+### 0.1 2026-08-25 联合审查后的科学与执行勘误
+
+本条在 §0 获批后由 Codex 与 Claude 对规格、计划和当前工作树做联合审查，并经
+用户批准。它按“后写优先”显式替代本规格及实施计划中与下列内容冲突的旧表述：
+
+1. **P5 必须积分 P2 的最终当前构造强迫。** 最终 P3 已经包含该时刻固体状态的
+   累计几何，P5 不得再次叠加 P3 位移；但 P2 发布的
+   `uplift_rate_mm_per_year - subsidence_rate_mm_per_year` 是 P5 formation horizon
+   内的有单位外部强迫，必须以零阶保持近似在 P5 的稳定子步中积分，并单独记入
+   `tectonic_displacement_m`。因此 `SurfaceProcessInputs` 必须借用最终
+   `EvolvedTectonicSnapshot`。把构造率仅当诊断而完全不积分，会偷换 §2.4 和
+   §9.2 的物理机制；零阶保持本身则是需由离线参考测量适用误差的耦合策略。
+2. **最终高程保留九个因果组成事实。** 跨步 retained state 及最终 wire 必须分别
+   保存 `primary_elevation_m`、`tectonic_displacement_m`、
+   `fluvial_erosion_m`、`hillslope_erosion_m`、`hillslope_deposition_m`、
+   `routed_sediment_deposition_m`、`coastal_erosion_m`、
+   `coastal_deposition_m`、`isostatic_response_m`，并由唯一
+   `formation_elevation_from_components` 得到 `final_elevation_m`。这些是最终
+   当前态的因果账本，不是历史 schema；不得折叠成无归因的
+   `equilibrium_adjustment_m` 或通用 `surface_adjustment_m` 事实源。当前过程率是
+   另一组终点诊断，不能替代累计组成。
+3. **科学 kernel 端到端使用 `f64`。** 任何会影响后续科学状态的 elevation、
+   displacement、sediment mass、hydrology/process input 与 kernel output 均保持
+   `f64`；不得把 `elevation_f32` scratch 送回下一 kernel。九个完整组成及其和先
+   以 `f64` 校验，只有最终已接受 snapshot 的 wire/GPU 投影才转换为 `f32`。
+4. **有限时间报告替代稳态报告。** `FormationSolveReport`、
+   `EquilibriumV3`、外层 PTC continuation 常量/指纹和
+   `equilibrium-current-flux-residual <= 1` 发布语义全部退役。
+   `FormationEvolutionReport` 只报告实际积分时长、接受子步、当前过程率和资源
+   证据；当前非零 `dh/dt` 可以合法发布，只要每项有归因且硬不变式成立。若保留
+   当前速率指标，它只能是非门禁观测，名称不得继续暗示绝对稳态收敛。
+5. **性能归因先于 P5 核心迁移。** 在冻结显式/隐式、工作分辨率或内部子步策略
+   前，先用 production operator 对完整 `100,000 yr` 做一次只含一轮 P5 advance
+   的 release 探针，分别记录外层重复求解和单次推进成本。既有 Draft
+   `12.5/6.25/3.125 ka` 探针约 `208–279/415–547/829–1075 s` 是不利证据，
+   但尚不能独立证明新单次 kernel 的精确成本。若测量显示显式全分辨率路径超出
+   现有预算，可在不改方程、守恒、时域和最终身份的前提下选用有出处的隐式下游
+   栈、近似线性解或多分辨率工作域；不得静默缩短 horizon。
+6. **离线参考受资源预估约束。** `Standard`/seed `42` 的高成本参考仍保留，先以
+   相同 `2 Myr` 步长的短前缀测得每窗口成本，再估算完整运行；只有资源估算允许
+   才执行完整 ignored probe，否则记录机器、估算方法与资源缺口。observer 只在
+   accepted snapshot 借用期内即时消费，不保留轨迹集合。
+7. **配置边界保持最小。** 生产固定使用现有 `ClimateModelProfile::C2LayeredV1`，
+   不新增 climate/profile/cadence 旋钮。后期参数异质性仍完全按 §2.6：由每个
+   算法拥有具体、有出处的分布配方，常数是零离散度退化分布；本轮不预建 schema、
+   通用 trait、中央噪声 stage 或额外 seed。
+8. **P3 不得把当前构造率再次变成位移。** 现有
+   `DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR = 250` 的量纲等效于把同一
+   `uplift_rate_mm_per_year - subsidence_rate_mm_per_year` 隐式积分 `250 kyr`；
+   它既与第 1 项 P5 的 `100,000 yr` 显式积分重复，也没有直接出处。因此 P3
+   删除该系数、`dynamic_tectonic_response_m` 率项和 compatibility elevation
+   继承，只保留由物质、厚度、年龄、造山类别与已有具名过程产生的同一时刻投影。
+   原来只检查该经验项正负号的
+   `subduction-negative-dynamic-fraction` 与
+   `convergent-positive-dynamic-fraction` 随被测机制一并退役，不重定向到 P5、
+   不以零场继续执行旧门禁。
+   P2 当前率到高程位移的唯一生产所有者是 P5；若未来需要独立的动态地形机制，
+   必须另给方程、时标与直接出处，不能复活该经验增益。
+9. **显式替代 R3 §14.5 的固定时域否决结论。** 上位
+   `2026-08-24-transient-climate-geomorphology-design.md` §14.5 中“固定
+   `100 ka` 时域已被否决”的结论不再有效；恢复 HEAD/上位 P5 规格已有的
+   `SURFACE_FORMATION_HORIZON_YEARS = 100_000.0` 作为 P5 coarse-grained
+   产品时域。§14.5 的九组运行结果只保留为旧外层重复求解的成本证据，不证明
+   单次新 kernel 的成本，也不授权缩短该时域。
 
 ## 1. 用户裁定与问题归因
 
@@ -325,6 +391,8 @@ ignored/release 参考探针。探针在 `Standard`/seed `42` 上运行完整 P2
 的最终地形组成、`SurfaceWaterGeometry`、climate fields、沉积/水库、既有质量
 指标、守恒残差、wall time、peak RSS 和全部相关指纹。它不保存中间轨迹，不做
 `2/1/0.5 Myr` 细化，不产生新误差包络，也不进入常规测试、每次构建或发布门。
+由于这里比较的是两个不同物理时标间的调用顺序，该探针只回答最终态对耦合顺序
+是否敏感；它不是形式 step-refinement，也不是可据以声称轨迹收敛的金标准解。
 
 生产单次分裂若破坏守恒、有限性、支持域、最终身份或既有质量门禁，必须更换
 求解策略；不得 clamp 或后处理结果。若全部硬不变式、既有质量与性能门禁通过，
@@ -383,9 +451,11 @@ NaturalFormationBundle
 ```
 
 `NaturalSurfaceFormationSnapshot` 不再包含 `formation_climate`。
-`SurfaceFormationUpstreamFingerprints` 只保留
+`SurfaceFormationUpstreamFingerprints` 中的**气候 checkpoint 身份**只保留
 `formation_climate_checkpoint_fingerprint`，用于声明终点 P5 诊断由哪个
-sibling P4 checkpoint 驱动。world 层 bundle 结构 validator 必须验证共同
+sibling P4 checkpoint 驱动；evolved tectonics、substrate、primary relief、climate
+work domain/spec 与 formation spec 的既有 lineage 指纹继续保留，不得因去嵌套
+P4 而删除。world 层 bundle 结构 validator 必须验证共同
 `SurfaceRef`/timeline，以及
 `surface_formation.checkpoint().upstream()` 的 climate checkpoint 指纹等于
 sibling P4 checkpoint 指纹。需要 climate spec/work domain 的
@@ -600,6 +670,16 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
   *A modeling framework (WRF-Landlab) for simulating orogen-scale
   climate-erosion coupling*, DOI `10.1016/j.cageo.2020.104625`。两者支持保留
   feedback 机制和离线敏感性检查，不要求地图产品逐宏步高频互调。
+- P5 horizon 内固定最终 P2 速率并积分位移，是上述顺序分裂的零阶保持工程
+  近似；`rate × accepted duration` 对被保持为常数的 forcing 本身是精确积分。
+  Paik & Kim (2021)、Shen et al. (2021) 与 Santos et al. (2021) 支持低频/异步
+  耦合及 cadence 敏感性，但没有直接给出 Sekai 的 `100,000 yr` 保持误差。因此
+  该保持时长的适用性是由代表性离线参考测量的开放问题，不是文献常量。
+- P3 删除当前率经验增益不是引入新公式：量纲核对表明原
+  `250 m/(mm yr⁻¹)` 等价于无出处的 `250 kyr` 保持积分，而 P5 已拥有唯一有
+  物理时长的积分位置。Cortial et al. (2019) 支持 P2 程序构造及其有单位率，
+  不支持把该率在 P3 乘以这个经验响应时间；因此本修订选择删除，不以另一魔法
+  系数替代。
 - 固定次数 predictor-corrector 与高成本迭代参考的类比：Schüller, Lemarié,
   Birken & Blayo (2025), *Quantifying coupling errors in atmosphere-ocean-sea
   ice models*, DOI `10.5194/gmd-18-9167-2025`，比较非迭代与迭代耦合并指出
@@ -610,7 +690,8 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
   Fields on the Sphere*, DOI `10.1214/14-AAP1067`；一般流形/三角网格上的 Matérn
   场与稀疏表示：Lindgren, Rue & Lindström (2011), DOI
   `10.1111/j.1467-9868.2011.00777.x`；有方向和频谱控制的程序场：Lagae et al.
-  (2009), *Procedural Noise using Sparse Gabor Convolution*, ACM TOG 28(3)。
+  (2009), *Procedural Noise using Sparse Gabor Convolution*, ACM TOG 28(3),
+  DOI `10.1145/1531326.1531360`。
 - 参数采样的确定性与子流正交沿用现有可复核实现
   `generators/natural/random.rs::LabeledSubstreams`：一次捕获 32-byte 根材料，
   以长度分帧的 BLAKE3 标签派生 `rand_chacha::ChaCha8Rng`。这只定义重放和模块
@@ -622,6 +703,11 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
   作为开放问题交用户裁定。
 - 基岩侵蚀、沉积输运与其他表面过程的组件化耦合：Shobe, Tucker & Barnhart
   (2017), *The SPACE 1.0 model*, GMD 10, DOI `10.5194/gmd-10-4577-2017`。
+- 九项最终高程组成的机制出处按所有者分别承重：构造位移沿用 Cortial et al.
+  (2019) 的程序构造与 P2 有单位 forcing；河流侵蚀、路由沉积沿用 Shobe et al.
+  (2017) 与 Salles et al. (2018)；坡面、海岸和 Airy 继续沿用上位 P5 规格已经
+  冻结的 Eymard et al. (2000)/Landlab、Paola & Voller (2005)、Turcotte &
+  Schubert (2014)。本勘误只保留这些现有因果账本，不增加新方程或系数。
 - 地质时间上的构造、陆地—海岸—海洋沉积演化：Salles, Ding & Brocard
   (2018), *pyBadlands*, PLOS ONE 13, DOI `10.1371/journal.pone.0195557`。
 - generalized Exner 质量守恒与显式源汇边界：Paola & Voller (2005),
