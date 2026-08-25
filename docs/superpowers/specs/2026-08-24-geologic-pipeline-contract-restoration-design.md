@@ -509,6 +509,22 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 
 交付物：架构消费清单、数值基线和可复核探针；无科学行为变化。
 
+**实现期修订（2026-08-25，Task 0 无根基线）：**完整调试回归与独立复核确认，
+旧绝对稳态方程在 Draft/seed `42` 上产生的下界失败属于完整 `f64` 候选的真实
+域外值；旧 `f32` 比较会把该亚 ULP 越界舍入回边界，不能作为科学成功证据。
+因此在有限时间 P5 尚未落地的 Tasks 0–8，默认旧 graph 的正确中间契约是
+`ElevationOutOfRange` 类型化失败、P5 无 artifact/`result_hash`、上游 artifact
+仍可命中且现有世界/cache/GPU 原子不变。该修订不改变最终交付要求，也不授权
+seed/profile 特判、clamp、精度回退、成功 golden 重钉或把核心测试改为 ignored。
+
+Task 0 删除只对旧成功 artifact 有意义的默认/target P5 hash、T1/T1v2 指纹、真实
+field payload 物化和质量门清单断言，并以明确恢复责任替代：阶段 D 的有限时间 P5
+必须让默认语料成功、保留 `f64` 对 `f32` 假绿的窄回归，并恢复守恒/组成/确定性/
+质量门（不含已退役 equilibrium flux residual）；阶段 E 必须在 sibling bundle 上
+重新测量 T1/T1v2 指纹、恢复并加强逐字段 payload 值验证，以及恢复 target-land
+P5 与 P3↔P5 水库存身份。不得硬编码当前首次失败 cell 或完整越界值，因为后续
+权威输入与 retained-state 修订可合法移动它；域关系、原子性和确定性才是冻结事实。
+
 ### 阶段 B：隔离兼容视图
 
 - 建立不暴露兼容高程的借用型 P2→P3 权威输入；

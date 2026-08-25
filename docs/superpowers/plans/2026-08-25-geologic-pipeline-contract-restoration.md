@@ -190,6 +190,21 @@ NaturalFormationBundleArtifact
   中间态。Task 0 必须在断言字段集合、payload 与本地化一致后，同提交更新该
   golden，并记录旧/新 digest 的因果；不得只为过测试盲目重钉 hash。该修订只补
   直接测试消费者，不改变科学 schema、UI 旋钮或 Tasks 1–13 的架构。
+- **实现期科学契约修订（2026-08-25）：**完整调试回归与独立复核确认，Draft/seed
+  `42` 在旧绝对稳态方程下返回的 `ElevationOutOfRange` 是完整 `f64` 候选的真实
+  下界越界；旧 `f32` 路径只是把该值舍入回支持域边界而产生假绿。Task 0 必须把
+  该无根性质冻结为原子、类型化的中间契约：P5 不发布 artifact，`result_hash` 为
+  `None`，上游 cache 可命中，现有完整世界/cache/GPU 均不提交。不得改 seed/profile、
+  重钉成功 golden、降低精度、clamp 或提前实现有限时间求解来伪造成功。
+- 该契约只覆盖旧求解器仍存在的 Tasks 0–8，不是产品交付态。Task 0 对
+  `surface_formation_stage/generation/quality` 中受影响的 18 个非 ignored 成功断言
+  做显式处置：保留契约、注册表、stage 依赖/cache、P3 证据、取消及失败测试；以
+  一个默认语料集成测试锁定确定性的原子失败、完整 `f64` 真越界和转成 `f32` 后会
+  假绿的区别；只测试 evaluator 失败机制的用例可使用非生产的最小合成 snapshot。
+  依赖旧成功 artifact 的默认/target P5 hash、T1/T1v2 产品指纹、真实 field payload
+  物化和质量门清单断言应删除而非改为 ignored，并在 Task 9/11 按下述恢复门重建。
+  测试不得硬编码具体 `CellId` 或完整越界数值，因为后续权威输入与 `f64` retained
+  state 会合法改变首次失败位置；必须断言域关系、精度区别和重复运行确定性。
 
 ---
 
@@ -264,6 +279,12 @@ timeline、authoritative view、九项新 retained state、有限时间报告或
 若失败暴露机制错误，先用现有测试定位因果；不得 clamp、改门禁或改快照来迁就
 测试。纯格式/警告修复不改变数值语义。
 
+旧绝对稳态方程在默认语料上的 `ElevationOutOfRange` 属于该方程本身的无域内解，
+不是要在 Task 0 修复的迭代器缺陷。按“继承 dirty 落地边界”的科学契约修订改写或
+删除受影响测试：保持默认 graph 的类型化失败、无 artifact 与原子不提交全绿，
+同时给每项暂时删除的成功态证据留下 Task 9 或 Task 11 恢复归属。不得在本任务
+引入 finite-horizon advance、替换生产 fixture 或新增 `#[ignore]` 掩盖失败。
+
 同时在继承的 `2026-08-24-transient-climate-geomorphology-design.md` §14.5 增加
 2026-08-25 显式修订指针：本规格 §0.1(9) 已替代“固定 `100 ka` 时域本身被否决”的
 旧结论；九组旧整步/两半步数据只证明旧外层重复求解与互调过重，不否定
@@ -289,10 +310,13 @@ Run: `cargo test --release --test formation_coast_isostasy --test formation_hill
 
 Run: `cargo test --release --test natural_field_registry_spherical`
 
+Run: `cargo test --release --test surface_formation_stage --test surface_formation_generation --test surface_formation_quality`
+
 Run: `cargo test --workspace --all-targets --all-features`
 
-Expected: 全部 PASS；最后一条按项目说明预留完整调试回归时间。若只在未暂存
-工作树通过，Task 0 不得提交。
+Expected: 全部 PASS；默认 Draft/seed `42` 的旧 P5 路径通过的是类型化失败、无
+artifact、原子不提交和 `f64` 精度回归契约，不是成功生成。最后一条按项目说明
+预留完整调试回归时间。若只在未暂存工作树通过，Task 0 不得提交。
 
 - [ ] **Step 5: 整文件暂存继承基线并提交**
 
@@ -1585,6 +1609,18 @@ Run: `cargo test --release --test formation_stream_power --test surface_formatio
 Expected: 全部 PASS；有限时间测试允许非零 `dh/dt`，只要求归因、守恒、时长完整和数值稳定；终点诊断不改变状态。过渡 P5 snapshot 的 climate 与 checkpoint
 严格一致；真正去嵌套由 Task 11 与 sibling 消费者一起原子完成。
 
+Task 0 暂时冻结的无根失败在本任务按以下恢复门退役：
+
+1. Draft/seed `42` 必须用有限物理时间 P5 成功生成，并完整消费
+   `SURFACE_FORMATION_HORIZON_YEARS`；删除 Task 0 的默认 graph 类型化失败集成测试。
+2. 保留“完整 `f64` 真越界而转成 `f32` 会假绿”的窄数值单元回归，继续证明任何
+   真实域外候选都类型化失败且未被裁剪；该测试不再要求默认产品失败。
+3. 恢复默认成功 artifact 上的质量门清单测试，但删除已退役绝对稳态方程专属的
+   equilibrium flux residual 门；不得用新同义 aggregate 保留旧语义。
+4. 恢复 generation 的守恒、九项组成、确定性和完整时长断言，允许终点
+   `dh/dt` 非零；target-land 的 bundle/P5 身份和真实 payload 证据留给 Task 11
+   在 sibling 架构中恢复，避免重建即将删除的独立 artifact。
+
 - [ ] **Step 5: 提交**
 
 ```bash
@@ -2070,6 +2106,18 @@ Run: `cargo test --release --lib hierarchical_derivation`
 Expected: 全部 PASS；serde 中 P5 无 `formation_climate`，T1/UI 只借用同一 bundle
 sibling，成功只发布一个 bundle，取消、数值越界、预算或安装失败均没有部分
 artifact/cache/GPU 提交。
+
+同一 GREEN 必须恢复 Task 0 因无成功 artifact 而退役的三组证据：
+
+1. 用新 bundle 重新测量并冻结 T1 与 T1v2 产品指纹，在测试或实测修订中记录
+   old→new 与“有限时间 P5 + sibling endpoint climate + schema 身份变化”的直接因果，
+   不复用或凭空改写旧 golden。
+2. 恢复并加强真实 bundle 的 field document payload 物化测试：先断言 catalog、字段
+   集合、单位与本地化来自注册表 SSOT，再逐字段确认 payload 存在并抽样核对标量值；
+   不能只验证 sibling wiring 或字段数量。
+3. 在 bundle fixture 中恢复 target-land 的 P5 hash/漂移证据以及 P3↔P5 水库存
+   identity；这些断言必须同时使用同一 bundle 的 `surface_formation()` 与
+   `climate()`，不得复活独立 P5 artifact 或嵌套 P4。
 
 - [ ] **Step 6: 运行完整 locked timeline 实测，不先写新 cadence/阈值**
 
