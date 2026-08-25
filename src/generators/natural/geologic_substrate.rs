@@ -51,9 +51,9 @@ impl GeologicSubstrateGenerator {
             .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
 
         let count = surface.cells().len();
-        let material = evolved.material();
-        let forcing = evolved.forcing();
-        let compatibility = evolved.compatibility();
+        let tectonic = evolved.authoritative_view();
+        let material = tectonic.material();
+        let forcing = tectonic.forcing();
         let mut density = Vec::with_capacity(count);
         let mut bedrock = Vec::with_capacity(count);
         let mut fracture = Vec::with_capacity(count);
@@ -65,7 +65,7 @@ impl GeologicSubstrateGenerator {
                 rng.check_cancelled()
                     .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
             }
-            let crust = compatibility
+            let crust = tectonic
                 .crust_kinds()
                 .get(index)
                 .expect("validated evolved tectonics has a dense crust field");
@@ -114,9 +114,9 @@ impl GeologicSubstrateGenerator {
             GEOLOGIC_SUBSTRATE_SCHEMA_V1,
             SurfaceRef::for_spherical(surface),
             mantle,
-            compatibility.crust_kinds().clone(),
-            compatibility.crust_thickness_km().to_vec(),
-            compatibility.crust_age_myr().to_vec(),
+            tectonic.crust_kinds().clone(),
+            tectonic.crust_thickness_km().to_vec(),
+            tectonic.crust_age_myr().to_vec(),
             density,
             BedrockKindField::from_kinds(bedrock),
             fracture,

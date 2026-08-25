@@ -3,10 +3,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    CrustKind, NaturalProfileError, NaturalResolutionPlan, SphericalTectonicSnapshot,
-    SphericalTectonicValidationError, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_CRUST_AGE_MYR, MAX_PLATE_COUNT,
-    NO_OROGENY_AGE_SENTINEL_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    CrustKind, CrustKindField, NaturalProfileError, NaturalResolutionPlan,
+    SphericalTectonicSnapshot, SphericalTectonicValidationError,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM, MAX_CRUST_AGE_MYR,
+    MAX_PLATE_COUNT, NO_OROGENY_AGE_SENTINEL_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -1013,6 +1014,34 @@ impl<'de> Deserialize<'de> for SphericalTectonicLineageBudget {
     }
 }
 
+/// Borrowed, cause-only P2 authority consumed by downstream generators.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AuthoritativeTectonicView<'a> {
+    snapshot: &'a EvolvedTectonicSnapshot,
+}
+
+impl<'a> AuthoritativeTectonicView<'a> {
+    pub(crate) const fn material(self) -> &'a SphericalCrustMaterialState {
+        &self.snapshot.material
+    }
+
+    pub(crate) const fn forcing(self) -> &'a SphericalTectonicForcingState {
+        &self.snapshot.forcing
+    }
+
+    pub(crate) fn crust_kinds(self) -> &'a CrustKindField {
+        self.snapshot.compatibility.crust_kinds()
+    }
+
+    pub(crate) fn crust_thickness_km(self) -> &'a [f32] {
+        self.snapshot.compatibility.crust_thickness_km()
+    }
+
+    pub(crate) fn crust_age_myr(self) -> &'a [f32] {
+        self.snapshot.compatibility.crust_age_myr()
+    }
+}
+
 /// Immutable authoritative V5 tectonic causes and conservative diagnostics.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1039,6 +1068,10 @@ struct EvolvedTectonicSnapshotWire {
 }
 
 impl EvolvedTectonicSnapshot {
+    pub(crate) const fn authoritative_view(&self) -> AuthoritativeTectonicView<'_> {
+        AuthoritativeTectonicView { snapshot: self }
+    }
+
     /// Constructs a complete V5 snapshot only after all local invariants close.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1676,4 +1709,116 @@ pub enum EvolvedTectonicValidationError {
     /// Category quantization is larger than one authoritative cell.
     #[error("category area quantization {found} m2 exceeds largest cell {max} m2")]
     CategoryQuantizationExceeded { found: f64, max: f64 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::natural::{
+        BoundaryRecord, CrustKindField, NaturalQualityProfile, PlateIdField, SphericalCrustState,
+        SphericalOrogenyKind, SphericalPlate, SphericalPlateRotation, SphericalTectonicSnapshot,
+        TECTONIC_SNAPSHOT_SCHEMA_V3,
+    };
+    use crate::world::spatial::{SurfaceGeometryKind, UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1};
+    use crate::world::{Meters, PlateId, SphericalSpaceSpec};
+
+    struct EvolvedFixture {
+        evolved: EvolvedTectonicSnapshot,
+    }
+
+    fn evolved_fixture() -> EvolvedFixture {
+        let authoritative_space = SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: NaturalQualityProfile::Draft.authoritative_target_cell_count(),
+        };
+        let resolution_plan = NaturalQualityProfile::Draft
+            .resolve(&authoritative_space)
+            .unwrap();
+        let cell_count = resolution_plan.authoritative_resolved_cell_count() as usize;
+        let surface_ref = SurfaceRef::new(
+            SurfaceGeometryKind::SphericalV1,
+            SPHERICAL_SURFACE_SCHEMA_V1,
+            cell_count as u32,
+            1,
+            [1; 32],
+        )
+        .unwrap();
+        let compatibility = SphericalTectonicSnapshot::new(
+            TECTONIC_SNAPSHOT_SCHEMA_V3,
+            surface_ref,
+            vec![SphericalPlate::new(
+                PlateId::from_raw(0),
+                CellId::from_raw(0),
+                SphericalPlateRotation::new(UnitVector3::new(0.0, 0.0, 1.0).unwrap(), 10_000)
+                    .unwrap(),
+            )],
+            PlateIdField::from_ids(vec![PlateId::from_raw(0); cell_count]),
+            SphericalCrustState::new(
+                CrustKindField::from_kinds(vec![CrustKind::Oceanic; cell_count]),
+                vec![3.0; cell_count],
+                vec![0.0; cell_count],
+                vec![0.0; cell_count],
+                vec![0.0; cell_count],
+                vec![0.0; cell_count],
+                vec![SphericalOrogenyKind::None; cell_count],
+                vec![NO_OROGENY_AGE_SENTINEL_MYR; cell_count],
+            )
+            .unwrap(),
+            vec![BoundaryRecord::none()],
+            Vec::new(),
+        )
+        .unwrap();
+        let material = SphericalCrustMaterialState::new(
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![1.0; cell_count],
+            vec![3_000.0; cell_count],
+        )
+        .unwrap();
+        let totals = material.totals();
+        let processes = SphericalTectonicMaterialProcesses::new(
+            0.0,
+            0.0,
+            TectonicMaterialAmount::zero(),
+            TectonicMaterialAmount::zero(),
+            TectonicMaterialAmount::zero(),
+            TectonicMaterialAmount::zero(),
+            TectonicMaterialAmount::zero(),
+        )
+        .unwrap();
+        let material_budget =
+            SphericalTectonicMaterialBudget::new(totals, processes, totals, totals, 0.0, 0.0)
+                .unwrap();
+        let forcing = SphericalTectonicForcingState::new(
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![0.0; cell_count],
+            vec![NO_OROGENY_AGE_SENTINEL_MYR; cell_count],
+        )
+        .unwrap();
+        let evolved = EvolvedTectonicSnapshot::new(
+            EVOLVED_TECTONIC_SNAPSHOT_SCHEMA_V1,
+            resolution_plan,
+            compatibility,
+            material,
+            forcing,
+            material_budget,
+            SphericalTectonicLineageBudget::new(1, 0, 0, 1, 0, 0).unwrap(),
+        )
+        .unwrap();
+        EvolvedFixture { evolved }
+    }
+
+    #[test]
+    fn authoritative_view_borrows_only_causal_fields() {
+        let snapshot = evolved_fixture().evolved;
+        let view = snapshot.authoritative_view();
+        assert!(std::ptr::eq(
+            view.crust_thickness_km().as_ptr(),
+            snapshot.compatibility().crust_thickness_km().as_ptr(),
+        ));
+        assert!(std::ptr::eq(view.material(), snapshot.material()));
+        assert!(std::ptr::eq(view.forcing(), snapshot.forcing()));
+    }
 }
