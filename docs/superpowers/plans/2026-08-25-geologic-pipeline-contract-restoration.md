@@ -345,6 +345,7 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 **Files:**
 - Modify: `src/world/natural/formation.rs`
 - Modify: `src/world/natural/mod.rs`
+- Modify: `src/generators/natural/spherical_tectonics.rs`
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Modify: `src/generators/natural/spherical_tectonics/publication.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/mod.rs`
@@ -353,7 +354,15 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 - Modify: `src/generators/natural/spherical_tectonics/forcing.rs`
 - Modify: `src/generators/natural/evolved_tectonics.rs`
 - Test: `tests/world_formation_spec.rs`
-- Test: `tests/evolved_tectonic_generation.rs`
+
+**实现期清单修订（2026-08-25）：**仓库及完整 git 历史均不存在
+`tests/evolved_tectonic_generation.rs`；现有固定 seed 球面 P2 等价回归目标是
+`tests/spherical_tectonic_generation.rs`，本任务只运行而不修改它。相反，
+`src/generators/natural/spherical_tectonics.rs` 是 runner 两条 V4/V5 生产调用和
+同模块单元调用的直接消费者；要让 runner 只从同一个 `ResolvedWorldFormation`
+取得 timeline，必须同提交把该文件从 `.resolved()` preset 传递改为完整 resolved
+formation 传递。清单以该真实生产消费者替换不存在的测试文件，仍为 11 个路径；
+不得保留 preset/default timeline wrapper 来绕过修订。
 
 **Interfaces:**
 - Consumes: `ResolvedWorldFormation::new(u16, WorldFormationPreset, ResolvedWorldFormationPreset)`；该构造器签名保持不变。
@@ -462,6 +471,9 @@ impl ResolvedFormationTimeline {
 所有 process 调用都从本次 `formation.timeline()` 派生/显式传入 `delta_myr`。
 `generate_evolved_spherical` 和 runner 的 formation 参数改为
 `&ResolvedWorldFormation`，只在 recipe 选择处调用 `.resolved()`。
+`src/generators/natural/spherical_tectonics.rs` 的 control/direct 两条 runner 调用及其
+crate 内单元 fixture 同步传完整 resolved formation；不得在调用点重建 reference
+timeline。
 `forcing.rs` 的 metres-per-step→mm/year 换算显式接收同一
 `timeline.step_duration_myr()`；`subduction.rs` 不再把每步 uplift 固化为含
 `DEFAULT_DELTA_MYR` 的常量，而是保留有单位 rate 并在调用时乘本步时长；
@@ -472,7 +484,7 @@ impl ResolvedFormationTimeline {
 
 Run: `cargo test --test world_formation_spec`
 
-Run: `cargo test --release --test evolved_tectonic_generation`
+Run: `cargo test --release --test spherical_tectonic_generation`
 
 Run: `cargo test --lib spherical_tectonics::processes::`
 
@@ -485,7 +497,7 @@ fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs tests/evolved_tectonic_generation.rs
+git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
 git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's authored horizon and Cortial's sourced step duration distinct inside validated input identity."
 ```
 
@@ -949,7 +961,7 @@ accepted snapshot 的借用期内即时消费，不保存 snapshot/history 集�
 
 - [ ] **Step 4: 运行 GREEN、确定性和预算回归**
 
-Run: `cargo test --release --test evolved_tectonic_generation --test spherical_tectonic_causality --test evolved_tectonic_material --test evolved_tectonic_publication`
+Run: `cargo test --release --test spherical_tectonic_generation --test spherical_tectonic_causality --test evolved_tectonic_material --test evolved_tectonic_publication`
 
 Expected: 全部 PASS；三 seed 的 observer/no-op 最终产品逐位等价，observer 次数
 等于 timeline step count，生产 API/序列化面没有新增历史状态。
