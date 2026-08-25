@@ -87,7 +87,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "result",
-        "18d0c1b4fef960847ad4b5d2c20b24c7a5fc0bdbd88477a4858ac194bdb4494c",
+        "3097588c61b79cf93c2062e1dcc04bba446ecafdad82c261eef52087384d9fda",
     ),
 ];
 

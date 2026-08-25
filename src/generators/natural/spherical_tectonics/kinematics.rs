@@ -180,8 +180,8 @@ mod tests {
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        ResolvedWorldFormationPreset, SphericalPlateRotation, TectonicSpec,
-        MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+        ResolvedFormationTimeline, ResolvedWorldFormationPreset, SphericalPlateRotation,
+        TectonicSpec, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
     };
     use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
@@ -248,11 +248,12 @@ mod tests {
         assert!(component_distance(moved, analytic) <= 1.0e-14);
         assert!((moved.norm() - 1.0).abs() <= 16.0 * f64::EPSILON);
 
+        let timeline = ResolvedFormationTimeline::sekai_reference();
         let mut repeated = radial;
-        for _ in 0..128 {
-            repeated = rotate_direction(repeated, rotation, 2.0).unwrap();
+        for _ in 0..timeline.step_count() {
+            repeated = rotate_direction(repeated, rotation, timeline.step_duration_myr()).unwrap();
         }
-        let once = rotate_direction(radial, rotation, 256.0).unwrap();
+        let once = rotate_direction(radial, rotation, timeline.total_duration_myr()).unwrap();
         assert!(component_distance(repeated, once) <= 2.0e-14);
     }
 

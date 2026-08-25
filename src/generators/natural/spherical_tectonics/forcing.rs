@@ -16,7 +16,6 @@ use crate::world::natural::{
 use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, EdgeId};
 
-const METRES_PER_STEP_TO_MM_PER_YEAR: f64 = 1.0 / (constants::DEFAULT_DELTA_MYR * 1_000.0);
 const DIVERGENT_FORCING_MAX_DISTANCE_M: f64 = 800_000.0;
 const BASE_DIVERGENT_SUBSIDENCE_MM_PER_YEAR: f64 = 0.25;
 
@@ -25,11 +24,12 @@ pub(super) fn evaluate_present_day_forcing(
     topology: &NaturalTopologyIndex,
     state: &TectonicState,
     recipe: FormationTectonicRecipe,
+    step_duration_myr: f64,
 ) -> Result<SphericalTectonicForcingState, ForcingError> {
     let mut coverage = super::contacts::CoverageScratch::with_cell_capacity(surface.cells().len());
     let mut events = Vec::new();
     build_contacts(surface, topology, state, &mut coverage, &mut events)?;
-    evaluate_contact_forcing(surface, state, recipe, &events)
+    evaluate_contact_forcing(surface, state, recipe, &events, step_duration_myr)
 }
 
 fn evaluate_contact_forcing(
@@ -37,7 +37,14 @@ fn evaluate_contact_forcing(
     state: &TectonicState,
     recipe: FormationTectonicRecipe,
     events: &[ContactEvent],
+    step_duration_myr: f64,
 ) -> Result<SphericalTectonicForcingState, ForcingError> {
+    if !step_duration_myr.is_finite() || step_duration_myr <= 0.0 {
+        return Err(ForcingError::InvalidStepDuration {
+            found: step_duration_myr,
+        });
+    }
+    let metres_per_step_to_mm_per_year = 1.0 / (step_duration_myr * 1_000.0);
     let cell_count = surface.cells().len();
     let mut sample_by_cell = vec![None; cell_count];
     let mut event_age_myr = vec![NO_OROGENY_AGE_SENTINEL_MYR; cell_count];
@@ -132,13 +139,17 @@ fn evaluate_contact_forcing(
                             .map_err(|error| ForcingError::Geometry(error.to_string()))?,
                         direct,
                     );
-                    let (trench_step_m, uplift_step_m) =
-                        super::processes::subduction_profile(distance, speed, gain);
+                    let (trench_step_m, uplift_step_m) = super::processes::subduction_profile(
+                        distance,
+                        speed,
+                        gain,
+                        step_duration_myr,
+                    );
                     let cell = sample.anchor.raw() as usize;
                     if sample.owner == descending
                         && sample.material.oceanic_reference_area_m2() > 0.0
                     {
-                        let rate = (-f64::from(trench_step_m) * METRES_PER_STEP_TO_MM_PER_YEAR)
+                        let rate = (-f64::from(trench_step_m) * metres_per_step_to_mm_per_year)
                             .clamp(0.0, 500.0) as f32;
                         if rate > 0.0 {
                             subsidence[cell] = subsidence[cell].max(rate);
@@ -147,7 +158,7 @@ fn evaluate_contact_forcing(
                     } else if sample.owner == overriding {
                         let rate = (f64::from(uplift_step_m)
                             * descending_relief_weight
-                            * METRES_PER_STEP_TO_MM_PER_YEAR)
+                            * metres_per_step_to_mm_per_year)
                             .clamp(0.0, 500.0) as f32;
                         if rate > 0.0 {
                             uplift[cell] = uplift[cell].max(rate);
@@ -315,6 +326,8 @@ pub(super) enum ForcingError {
     Contacts(#[from] ContactError),
     #[error("present-day forcing contract failed: {0}")]
     Invalid(#[from] EvolvedTectonicValidationError),
+    #[error("formation step duration must be finite and positive, got {found} Myr")]
+    InvalidStepDuration { found: f64 },
     #[error("sample {sample} anchor {anchor:?} is outside {cells} cells")]
     InvalidAnchor {
         sample: usize,
@@ -350,8 +363,8 @@ mod tests {
     };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
-        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
+        CrustKind, ResolvedFormationTimeline, ResolvedWorldFormationPreset, SphericalOrogenyKind,
+        SphericalPlateRotation, CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
     };
     use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{CellId, Meters, SphericalSpaceSpec};
@@ -362,6 +375,10 @@ mod tests {
             target_cell_count: 162,
         })
         .unwrap()
+    }
+
+    fn step_duration_myr() -> f64 {
+        ResolvedFormationTimeline::sekai_reference().step_duration_myr()
     }
 
     fn state_for_edge(
@@ -465,6 +482,7 @@ mod tests {
                 },
                 -80.0,
             )],
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -499,6 +517,7 @@ mod tests {
                 },
                 -80.0,
             )],
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -522,6 +541,7 @@ mod tests {
             &state,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
             &[event(&surface, ContactKind::ContinentalCollision, -55.0)],
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -547,6 +567,7 @@ mod tests {
             &state,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
             &[event(&surface, ContactKind::Divergence, 40.0)],
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -573,6 +594,7 @@ mod tests {
             &state,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
             &[event(&surface, ContactKind::Transform, 0.0)],
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -612,6 +634,7 @@ mod tests {
             &state,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
             &[event(&surface, ContactKind::Transform, 0.0)],
+            step_duration_myr(),
         )
         .unwrap();
 

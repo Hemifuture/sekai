@@ -17,7 +17,7 @@ use crate::generators::spatial::{
 };
 use crate::world::natural::{
     BoundaryKind, CrustKind, CrustKindField, EvolvedTectonicSnapshot,
-    EvolvedTectonicValidationError, PlateIdField, ResolvedWorldFormationPreset,
+    EvolvedTectonicValidationError, PlateIdField, ResolvedWorldFormation,
     SphericalCrustMaterialState, SphericalCrustState, SphericalOrogenyKind, SphericalPlate,
     SphericalTectonicForcingState, SphericalTectonicMaterialBudget, SphericalTectonicSnapshot,
     SphericalTectonicValidationError, TectonicSpec, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
@@ -33,7 +33,7 @@ use crate::world::{CellId, PlateId};
 pub(in crate::generators::natural) fn generate_evolved_spherical(
     bundle: &ProfileSurfaceBundle,
     spec: &TectonicSpec,
-    formation: ResolvedWorldFormationPreset,
+    formation: &ResolvedWorldFormation,
     rng: &mut StageRng,
 ) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError> {
     rng.check_cancelled()?;

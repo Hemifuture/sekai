@@ -68,17 +68,12 @@ impl TectonicGenerator {
             })?;
             let control_view = SphericalNaturalSurface::from_validated(&control)?;
             let control_topology = NaturalTopologyIndex::from_surface(&control_view);
-            let control_current = evolve_current_state(
-                &control,
-                &control_topology,
-                spec,
-                formation.resolved(),
-                &streams,
-            )
-            .map_err(|error| SphericalTectonicGenerationError::Morphology {
-                domain: "tectonic control evolution",
-                message: error.to_string(),
-            })?;
+            let control_current =
+                evolve_current_state(&control, &control_topology, spec, formation, &streams)
+                    .map_err(|error| SphericalTectonicGenerationError::Morphology {
+                        domain: "tectonic control evolution",
+                        message: error.to_string(),
+                    })?;
             let projected = project_current_state(
                 &control,
                 &control_topology,
@@ -97,11 +92,12 @@ impl TectonicGenerator {
                 }
             })?
         } else {
-            run_tectonic_evolution(surface, &topology, spec, formation.resolved(), &streams)
-                .map_err(|error| SphericalTectonicGenerationError::Morphology {
+            run_tectonic_evolution(surface, &topology, spec, formation, &streams).map_err(
+                |error| SphericalTectonicGenerationError::Morphology {
                     domain: "tectonic evolution",
                     message: error.to_string(),
-                })?
+                },
+            )?
         };
         let crust = crust_state_from_samples(&current.samples)?;
         let (boundaries, boundary_segments) = classify_and_aggregate_boundaries(
@@ -202,7 +198,10 @@ mod tests {
     use crate::generators::natural::random::LabeledSubstreams;
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec};
+    use crate::world::natural::{
+        ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    };
     use crate::world::spatial::SphericalNaturalSurface;
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
@@ -284,6 +283,12 @@ mod tests {
             StageIdentity::new("natural.spherical-tectonics", 4, "sekai.core"),
         ));
         let streams = LabeledSubstreams::capture(&mut rng);
+        let formation = ResolvedWorldFormation::new(
+            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+            WorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Continents,
+        )
+        .unwrap();
         let state = evolve_current_state(
             &surface,
             &topology,
@@ -291,7 +296,7 @@ mod tests {
                 continental_crust_fraction: 0.55,
                 ..TectonicSpec::default()
             },
-            ResolvedWorldFormationPreset::Continents,
+            &formation,
             &streams,
         )
         .unwrap();

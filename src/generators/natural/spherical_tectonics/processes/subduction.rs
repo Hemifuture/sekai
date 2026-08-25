@@ -19,13 +19,16 @@ pub(in crate::generators::natural::spherical_tectonics) fn subduction_profile(
     distance_m: f64,
     speed_mm_per_year: f64,
     gain: f64,
+    delta_myr: f64,
 ) -> (f32, f32) {
     if !distance_m.is_finite()
         || !speed_mm_per_year.is_finite()
         || !gain.is_finite()
+        || !delta_myr.is_finite()
         || distance_m < 0.0
         || speed_mm_per_year <= 0.0
         || gain <= 0.0
+        || delta_myr < 0.0
         || distance_m >= constants::SUBDUCTION_MAX_DISTANCE_M
     {
         return (0.0, 0.0);
@@ -43,8 +46,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn subduction_profile(
     let response = distance_weight * speed_weight * gain;
     let trench_span =
         f64::from(constants::ABYSSAL_PLAIN_ELEVATION_M - constants::OCEANIC_TRENCH_ELEVATION_M);
-    let uplift_per_step_m =
-        constants::BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR * constants::DEFAULT_DELTA_MYR * 1_000.0;
+    let uplift_per_step_m = constants::BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR * delta_myr * 1_000.0;
     (
         -(trench_span * response) as f32,
         (uplift_per_step_m * response) as f32,
@@ -58,6 +60,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction(
     next: &mut TectonicState,
     actions: &mut ProcessActions,
     recipe: FormationTectonicRecipe,
+    delta_myr: f64,
 ) -> Result<ProcessStats, ProcessError> {
     if current.samples.len() != next.samples.len() {
         return Err(ProcessError::StateCardinalityMismatch {
@@ -90,8 +93,8 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction(
         let overriding_distance =
             event_distance_m(surface, event, next.samples[overriding_index].position)?;
         let speed = event_speed(event);
-        let (trench, _) = subduction_profile(descending_distance, speed, gain);
-        let (_, raw_uplift) = subduction_profile(overriding_distance, speed, gain);
+        let (trench, _) = subduction_profile(descending_distance, speed, gain, delta_myr);
+        let (_, raw_uplift) = subduction_profile(overriding_distance, speed, gain, delta_myr);
         let descending_elevation = next.samples[descending_index].tectonic_elevation_m;
         let normalized_height = ((descending_elevation - constants::OCEANIC_TRENCH_ELEVATION_M)
             / (constants::HIGHEST_CONTINENTAL_ELEVATION_M - constants::OCEANIC_TRENCH_ELEVATION_M))
@@ -135,6 +138,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction_v5(
     next: &mut TectonicState,
     actions: &mut ProcessActions,
     recipe: FormationTectonicRecipe,
+    delta_myr: f64,
 ) -> Result<ProcessStats, ProcessError> {
     if current.samples.len() != next.samples.len() {
         return Err(ProcessError::StateCardinalityMismatch {
@@ -167,8 +171,8 @@ pub(in crate::generators::natural::spherical_tectonics) fn apply_subduction_v5(
         let overriding_distance =
             event_distance_m(surface, event, next.samples[overriding_index].position)?;
         let speed = event_speed(event);
-        let (trench, _) = subduction_profile(descending_distance, speed, gain);
-        let (_, raw_uplift) = subduction_profile(overriding_distance, speed, gain);
+        let (trench, _) = subduction_profile(descending_distance, speed, gain, delta_myr);
+        let (_, raw_uplift) = subduction_profile(overriding_distance, speed, gain, delta_myr);
         let descending_elevation = next.samples[descending_index].tectonic_elevation_m;
         let normalized_height = ((descending_elevation - constants::OCEANIC_TRENCH_ELEVATION_M)
             / (constants::HIGHEST_CONTINENTAL_ELEVATION_M - constants::OCEANIC_TRENCH_ELEVATION_M))
@@ -247,8 +251,8 @@ mod tests {
     };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
-        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
+        CrustKind, ResolvedFormationTimeline, ResolvedWorldFormationPreset, SphericalOrogenyKind,
+        SphericalPlateRotation, CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
     };
     use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{Meters, SphericalSpaceSpec};
@@ -259,6 +263,10 @@ mod tests {
             target_cell_count: 42,
         })
         .unwrap()
+    }
+
+    fn step_duration_myr() -> f64 {
+        ResolvedFormationTimeline::sekai_reference().step_duration_myr()
     }
 
     fn state_and_event(
@@ -329,23 +337,36 @@ mod tests {
     fn appendix_a_subduction_curve_has_bounded_endpoints_and_monotone_branches() {
         assert_eq!(constants::SUBDUCTION_MAX_DISTANCE_M, 1_800_000.0);
         assert_eq!(constants::BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR, 0.6);
-        let at_front = subduction_profile(0.0, 100.0, 1.0);
-        let before_peak =
-            subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M * 0.5, 100.0, 1.0);
-        let peak = subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 100.0, 1.0);
+        let delta_myr = step_duration_myr();
+        let at_front = subduction_profile(0.0, 100.0, 1.0, delta_myr);
+        let before_peak = subduction_profile(
+            constants::SUBDUCTION_PEAK_DISTANCE_M * 0.5,
+            100.0,
+            1.0,
+            delta_myr,
+        );
+        let peak = subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 100.0, 1.0, delta_myr);
         let after_peak = subduction_profile(
             (constants::SUBDUCTION_PEAK_DISTANCE_M + constants::SUBDUCTION_MAX_DISTANCE_M) * 0.5,
             100.0,
             1.0,
+            delta_myr,
         );
-        let outside = subduction_profile(constants::SUBDUCTION_MAX_DISTANCE_M, 100.0, 1.0);
+        let outside =
+            subduction_profile(constants::SUBDUCTION_MAX_DISTANCE_M, 100.0, 1.0, delta_myr);
         assert_eq!(at_front, (0.0, 0.0));
         assert!(before_peak.0 < 0.0 && before_peak.1 > 0.0);
         assert!(peak.0 < before_peak.0 && peak.1 > before_peak.1);
         assert!(after_peak.0 > peak.0 && after_peak.1 < peak.1);
         assert_eq!(outside, (0.0, 0.0));
-        assert!(subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 40.0, 1.0).1 < peak.1);
-        assert!(subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 100.0, 1.2).1 > peak.1);
+        assert!(
+            subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 40.0, 1.0, delta_myr,).1
+                < peak.1
+        );
+        assert!(
+            subduction_profile(constants::SUBDUCTION_PEAK_DISTANCE_M, 100.0, 1.2, delta_myr,).1
+                > peak.1
+        );
     }
 
     #[test]
@@ -363,6 +384,7 @@ mod tests {
             &mut next,
             &mut actions,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -399,6 +421,7 @@ mod tests {
             &mut once,
             &mut once_actions,
             recipe,
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -411,6 +434,7 @@ mod tests {
             &mut repeated,
             &mut repeated_actions,
             recipe,
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -452,6 +476,7 @@ mod tests {
             &mut next,
             &mut actions,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+            step_duration_myr(),
         )
         .unwrap();
         commit_process_actions_v5(&mut next, &mut actions, &mut ledger).unwrap();

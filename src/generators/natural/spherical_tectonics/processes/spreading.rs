@@ -20,7 +20,7 @@ use crate::world::natural::{
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 // McKenzie-style homogeneous pure-shear extension expressed over one coarse
-// rift zone.  The bounded per-step beta prevents a single 2 My step from
+// rift zone. The bounded per-step beta prevents a single resolved step from
 // exhausting continental crust while repeated divergence can still reach the
 // public minimum-thickness contract.
 const CONTINENTAL_RIFT_ZONE_WIDTH_M: f64 = 400_000.0;
@@ -379,7 +379,9 @@ mod tests {
     };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{CrustKind, ResolvedWorldFormationPreset, TectonicSpec};
+    use crate::world::natural::{
+        CrustKind, ResolvedFormationTimeline, ResolvedWorldFormationPreset, TectonicSpec,
+    };
     use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
@@ -409,6 +411,10 @@ mod tests {
             state.next_lineage_raw(),
         )
         .unwrap()
+    }
+
+    fn step_duration_myr() -> f32 {
+        ResolvedFormationTimeline::sekai_reference().step_duration_myr() as f32
     }
 
     #[test]
@@ -586,7 +592,7 @@ mod tests {
             &[event],
             &mut next,
             &mut actions,
-            constants::DEFAULT_DELTA_MYR as f32,
+            step_duration_myr(),
         )
         .unwrap();
 
@@ -653,7 +659,7 @@ mod tests {
             &mut next,
             &mut actions,
             &mut ledger,
-            constants::DEFAULT_DELTA_MYR as f32,
+            step_duration_myr(),
         )
         .unwrap();
 

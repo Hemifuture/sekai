@@ -142,6 +142,7 @@ pub(super) fn rift_rate_q32(
 
 pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
     step: u16,
+    delta_myr: u16,
     surface: &SphericalSurfaceSnapshot,
     current: &TectonicState,
     next: &mut TectonicState,
@@ -177,7 +178,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn maybe_rift_plates(
             RIFT_EVENTS_V3_LABEL,
             &[u64::from(step), u64::from(parent.lineage.raw())],
         );
-        if !poisson_event(draw, rate, 2) {
+        if !poisson_event(draw, rate, delta_myr) {
             continue;
         }
         let sample_indices = current
@@ -640,8 +641,9 @@ mod tests {
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
-        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_PLATE_COUNT, NO_OROGENY_AGE_SENTINEL_MYR,
+        CrustKind, ResolvedFormationTimeline, ResolvedWorldFormationPreset, SphericalOrogenyKind,
+        SphericalPlateRotation, CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_PLATE_COUNT,
+        NO_OROGENY_AGE_SENTINEL_MYR,
     };
     use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
@@ -728,25 +730,32 @@ mod tests {
         .unwrap()
     }
 
+    fn reference_step_duration_myr() -> u16 {
+        let step_duration_kyr = ResolvedFormationTimeline::sekai_reference().step_duration_kyr();
+        assert_eq!(step_duration_kyr % 1_000, 0);
+        u16::try_from(step_duration_kyr / 1_000).unwrap()
+    }
+
     #[test]
     fn fixed_point_pade_threshold_matches_complete_supported_rate_range() {
+        let delta_myr = reference_step_duration_myr();
         let mut previous = 0_u128;
         for ppm in 0..=MAX_RIFT_RATE_PPM_PER_MYR {
             let rate = rate_q32_from_ppm(ppm);
-            let threshold = poisson_threshold_q64(rate, 2);
+            let threshold = poisson_threshold_q64(rate, delta_myr);
             assert!(threshold >= previous);
             previous = threshold;
             let actual = threshold as f64 / 2.0_f64.powi(64);
-            let lambda_delta = f64::from(ppm) / 1_000_000.0 * 2.0;
+            let lambda_delta = f64::from(ppm) / 1_000_000.0 * f64::from(delta_myr);
             let expected = 1.0 - (-lambda_delta).exp();
             assert!((actual - expected).abs() < 1.0 / 2.0_f64.powi(32));
         }
         let rate = rate_q32_from_ppm(4_000);
-        assert!(!poisson_event(u64::MAX, rate, 2));
-        assert!(poisson_event(0, rate, 2));
+        assert!(!poisson_event(u64::MAX, rate, delta_myr));
+        assert!(poisson_event(0, rate, delta_myr));
         assert_eq!(
-            poisson_threshold_q64(u64::MAX, 2),
-            poisson_threshold_q64(rate_q32_from_ppm(MAX_RIFT_RATE_PPM_PER_MYR), 2),
+            poisson_threshold_q64(u64::MAX, delta_myr),
+            poisson_threshold_q64(rate_q32_from_ppm(MAX_RIFT_RATE_PPM_PER_MYR), delta_myr,),
             "out-of-contract rates must clamp before fixed-point products"
         );
     }
@@ -831,6 +840,7 @@ mod tests {
 
     #[test]
     fn rift_is_counter_deterministic_divergent_bounded_and_never_reuses_lineages() {
+        let delta_myr = reference_step_duration_myr();
         let surface = surface(162);
         let current = state(&surface, 2);
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
@@ -844,7 +854,7 @@ mod tests {
                         &[u64::from(step), u64::from(current.plates[0].lineage.raw())],
                     ),
                     rate,
-                    2,
+                    delta_myr,
                 )
             })
             .expect("the supported deterministic rate must produce an event in the u16 domain");
@@ -855,6 +865,7 @@ mod tests {
             actions.begin_step(next.samples.len());
             let stats = maybe_rift_plates(
                 step,
+                delta_myr,
                 &surface,
                 &current,
                 &mut next,
@@ -903,6 +914,7 @@ mod tests {
 
     #[test]
     fn rifting_stops_at_the_global_plate_cap_before_drawing_or_allocating() {
+        let delta_myr = reference_step_duration_myr();
         let surface = surface(162);
         let current = state(&surface, usize::from(MAX_PLATE_COUNT));
         let mut next = copy_state(&current);
@@ -922,12 +934,13 @@ mod tests {
                         &[u64::from(step), u64::from(current.plates[0].lineage.raw())],
                     ),
                     rate,
-                    2,
+                    delta_myr,
                 )
             })
             .expect("the capacity fixture must exercise a would-be rift");
         let stats = maybe_rift_plates(
             step,
+            delta_myr,
             &surface,
             &current,
             &mut next,
@@ -946,6 +959,7 @@ mod tests {
 
     #[test]
     fn rifting_may_use_capacity_above_half_of_the_global_plate_cap() {
+        let delta_myr = reference_step_duration_myr();
         let surface = surface(162);
         let current = state(&surface, usize::from(MAX_PLATE_COUNT) / 2 + 1);
         let mut next = copy_state(&current);
@@ -959,13 +973,14 @@ mod tests {
                 poisson_event(
                     streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[u64::from(step), 0]),
                     rate,
-                    2,
+                    delta_myr,
                 )
             })
             .expect("the capacity fixture must exercise a rift above the half-cap");
 
         let stats = maybe_rift_plates(
             step,
+            delta_myr,
             &surface,
             &current,
             &mut next,
@@ -983,6 +998,7 @@ mod tests {
 
     #[test]
     fn rifting_requires_enough_area_for_every_child_plate() {
+        let delta_myr = reference_step_duration_myr();
         let surface = surface(42);
         let mut current = state(&surface, 1);
         current.samples.truncate(7);
@@ -998,13 +1014,14 @@ mod tests {
                 poisson_event(
                     streams.counter_u64(RIFT_EVENTS_V3_LABEL, &[u64::from(step), 0]),
                     rate,
-                    2,
+                    delta_myr,
                 )
             })
             .unwrap();
 
         let stats = maybe_rift_plates(
             step,
+            delta_myr,
             &surface,
             &current,
             &mut next,
@@ -1022,6 +1039,7 @@ mod tests {
 
     #[test]
     fn rifting_does_not_delete_a_lineage_with_pending_process_actions() {
+        let delta_myr = reference_step_duration_myr();
         let surface = surface(162);
         let current = state(&surface, 2);
         let mut next = copy_state(&current);
@@ -1048,13 +1066,14 @@ mod tests {
                         &[u64::from(step), u64::from(parent.raw())],
                     ),
                     rate,
-                    2,
+                    delta_myr,
                 )
             })
             .unwrap();
 
         let stats = maybe_rift_plates(
             step,
+            delta_myr,
             &surface,
             &current,
             &mut next,

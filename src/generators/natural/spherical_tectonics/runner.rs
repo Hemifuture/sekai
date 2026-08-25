@@ -29,12 +29,11 @@ use super::workspace::TectonicWorkspace;
 use crate::engine::BuildCancellationError;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
-use crate::world::natural::SphericalTectonicForcingState;
-use crate::world::natural::{ResolvedWorldFormationPreset, TectonicSpec, MIN_PLATE_COUNT};
+use crate::world::natural::{
+    ResolvedFormationTimeline, ResolvedWorldFormation, SphericalTectonicForcingState, TectonicSpec,
+    MIN_PLATE_COUNT,
+};
 use crate::world::spatial::SphericalSurfaceSnapshot;
-
-pub(super) const EVOLUTION_STEP_COUNT: u16 = 128;
-pub(super) const EVOLUTION_DELTA_MYR: f64 = 2.0;
 
 #[derive(Debug)]
 pub(super) struct EvolvedControlState {
@@ -48,7 +47,7 @@ pub(super) fn run_tectonic_evolution(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
-    formation: ResolvedWorldFormationPreset,
+    formation: &ResolvedWorldFormation,
     streams: &LabeledSubstreams,
 ) -> Result<CanonicalTectonicState, RunnerError> {
     let current = evolve_current_state(surface, topology, spec, formation, streams)?;
@@ -59,31 +58,37 @@ pub(super) fn evolve_current_state(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
-    formation: ResolvedWorldFormationPreset,
+    formation: &ResolvedWorldFormation,
     streams: &LabeledSubstreams,
 ) -> Result<TectonicState, RunnerError> {
-    let recipe = FormationTectonicRecipe::for_preset(formation);
+    let recipe = FormationTectonicRecipe::for_preset(formation.resolved());
+    let timeline = formation.timeline();
+    let delta_myr = timeline.step_duration_myr();
+    let process_delta_myr = delta_myr as f32;
+    let rift_delta_myr = rift_step_duration_myr(timeline)?;
     let initial = build_initial_state(surface, topology, spec, recipe, streams)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
 
-    for step in 0..EVOLUTION_STEP_COUNT {
+    for step in 0..timeline.step_count() {
         let (current, next, coverage, events, actions) = workspace.step_parts();
-        advance_samples(surface, topology, current, next, EVOLUTION_DELTA_MYR)?;
+        advance_samples(surface, topology, current, next, delta_myr)?;
         build_contacts(surface, topology, next, coverage, events)?;
         actions.begin_step(next.samples.len());
-        apply_subduction(surface, events, current, next, actions, recipe)?;
+        apply_subduction(surface, events, current, next, actions, recipe, delta_myr)?;
         apply_collision(surface, events, current, next, actions, recipe)?;
-        apply_divergent_extension(surface, events, next, actions, EVOLUTION_DELTA_MYR as f32)?;
+        apply_divergent_extension(surface, events, next, actions, process_delta_myr)?;
         fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
-        maybe_rift_plates(step, surface, current, next, actions, recipe, streams)?;
-        relax_current_crust(
+        maybe_rift_plates(
+            step,
+            rift_delta_myr,
             surface,
-            events,
+            current,
             next,
             actions,
             recipe,
-            EVOLUTION_DELTA_MYR as f32,
+            streams,
         )?;
+        relax_current_crust(surface, events, next, actions, recipe, process_delta_myr)?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
             &current.plates,
@@ -108,11 +113,15 @@ pub(super) fn evolve_control_state_v5(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     spec: &TectonicSpec,
-    formation: ResolvedWorldFormationPreset,
+    formation: &ResolvedWorldFormation,
     streams: &LabeledSubstreams,
 ) -> Result<EvolvedControlState, RunnerError> {
     streams.check_cancelled()?;
-    let recipe = FormationTectonicRecipe::for_preset(formation);
+    let recipe = FormationTectonicRecipe::for_preset(formation.resolved());
+    let timeline = formation.timeline();
+    let delta_myr = timeline.step_duration_myr();
+    let process_delta_myr = delta_myr as f32;
+    let rift_delta_myr = rift_step_duration_myr(timeline)?;
     let initial = build_initial_state_v5(surface, topology, spec, recipe, streams)?;
     trace_continental_inventory("initial", 0, &initial);
     streams.check_cancelled()?;
@@ -120,13 +129,13 @@ pub(super) fn evolve_control_state_v5(
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
 
-    for step in 0..EVOLUTION_STEP_COUNT {
+    for step in 0..timeline.step_count() {
         streams.check_cancelled()?;
         let (current, next, coverage, events, actions) = workspace.step_parts();
-        advance_samples(surface, topology, current, next, EVOLUTION_DELTA_MYR)?;
+        advance_samples(surface, topology, current, next, delta_myr)?;
         build_contacts(surface, topology, next, coverage, events)?;
         actions.begin_step(next.samples.len());
-        apply_subduction_v5(surface, events, current, next, actions, recipe)?;
+        apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)?;
         let collision = apply_collision_v5(
             surface,
             events,
@@ -135,7 +144,7 @@ pub(super) fn evolve_control_state_v5(
             actions,
             recipe,
             &mut material_ledger,
-            EVOLUTION_DELTA_MYR as f32,
+            process_delta_myr,
         )?;
         lineage_ledger.record_terrane_transfers(collision.terrane_transfer_events);
         apply_divergent_extension_v5(
@@ -144,7 +153,7 @@ pub(super) fn evolve_control_state_v5(
             next,
             actions,
             &mut material_ledger,
-            EVOLUTION_DELTA_MYR as f32,
+            process_delta_myr,
         )?;
         fill_spreading_gaps_v5(
             surface,
@@ -155,15 +164,17 @@ pub(super) fn evolve_control_state_v5(
             recipe,
             &mut material_ledger,
         )?;
-        maybe_rift_plates(step, surface, current, next, actions, recipe, streams)?;
-        relax_current_crust(
+        maybe_rift_plates(
+            step,
+            rift_delta_myr,
             surface,
-            events,
+            current,
             next,
             actions,
             recipe,
-            EVOLUTION_DELTA_MYR as f32,
+            streams,
         )?;
+        relax_current_crust(surface, events, next, actions, recipe, process_delta_myr)?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
             &current.plates,
@@ -190,7 +201,7 @@ pub(super) fn evolve_control_state_v5(
     if workspace.requires_resample() {
         resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
         mechanically_fragment_oversized_plates_v5(
-            EVOLUTION_STEP_COUNT,
+            timeline.step_count(),
             surface,
             topology,
             &mut workspace.current,
@@ -199,11 +210,12 @@ pub(super) fn evolve_control_state_v5(
             &mut lineage_ledger,
         )?;
     }
-    trace_continental_inventory("final", EVOLUTION_STEP_COUNT, &workspace.current);
+    trace_continental_inventory("final", timeline.step_count(), &workspace.current);
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
     streams.check_cancelled()?;
-    let forcing = evaluate_present_day_forcing(surface, topology, &workspace.current, recipe)?;
+    let forcing =
+        evaluate_present_day_forcing(surface, topology, &workspace.current, recipe, delta_myr)?;
     Ok(EvolvedControlState {
         current: workspace.current,
         forcing,
@@ -221,6 +233,15 @@ pub(super) fn canonicalize_evolved_state(
 
 fn resample_due(workspace: &TectonicWorkspace) -> bool {
     workspace.steps_since_resample() >= resampling_interval_steps(&workspace.current)
+}
+
+fn rift_step_duration_myr(timeline: ResolvedFormationTimeline) -> Result<u16, RunnerError> {
+    let step_duration_kyr = timeline.step_duration_kyr();
+    if step_duration_kyr % 1_000 != 0 {
+        return Err(RunnerError::NonIntegralRiftStepDuration { step_duration_kyr });
+    }
+    u16::try_from(step_duration_kyr / 1_000)
+        .map_err(|_| RunnerError::RiftStepDurationOverflow { step_duration_kyr })
 }
 
 /// Prints the area-weighted continental thickness inventory of one state when
@@ -299,6 +320,10 @@ pub(super) enum RunnerError {
     Lineage(#[from] super::model::LineageLedgerError),
     #[error("present-day tectonic forcing failed: {0}")]
     Forcing(#[from] ForcingError),
+    #[error("rift step duration {step_duration_kyr} kyr is not an integer number of Myr")]
+    NonIntegralRiftStepDuration { step_duration_kyr: u32 },
+    #[error("rift step duration {step_duration_kyr} kyr exceeds its integer-Myr process domain")]
+    RiftStepDurationOverflow { step_duration_kyr: u32 },
     #[error("tectonic evolution was cancelled")]
     Cancelled(#[from] BuildCancellationError),
 }
@@ -322,7 +347,10 @@ mod tests {
     };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec};
+    use crate::world::natural::{
+        ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec,
+        WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    };
     use crate::world::spatial::{project_tangent, SphericalNaturalSurface, UnitVector3};
     use crate::world::{EdgeId, Meters, RootSeed, SphericalSpaceSpec, SurfaceVertexId};
 
@@ -469,6 +497,15 @@ mod tests {
         first.into_iter().zip(second).map(|(a, b)| a * b).sum()
     }
 
+    fn resolved_formation(preset: ResolvedWorldFormationPreset) -> ResolvedWorldFormation {
+        ResolvedWorldFormation::new(
+            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+            WorldFormationPreset::Continents,
+            preset,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn final_owners_come_from_evolution_not_the_initial_voronoi_partition() {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
@@ -484,12 +521,12 @@ mod tests {
         ));
         let streams = LabeledSubstreams::capture(&mut rng);
         let spec = TectonicSpec::default();
-        let formation = ResolvedWorldFormationPreset::Continents;
+        let formation = resolved_formation(ResolvedWorldFormationPreset::Continents);
         let initial = build_initial_state(
             &surface,
             &topology,
             &spec,
-            FormationTectonicRecipe::for_preset(formation),
+            FormationTectonicRecipe::for_preset(formation.resolved()),
             &streams,
         )
         .unwrap()
@@ -498,7 +535,7 @@ mod tests {
         .map(|lineage| lineage.raw())
         .collect::<Vec<_>>();
         let final_state =
-            run_tectonic_evolution(&surface, &topology, &spec, formation, &streams).unwrap();
+            run_tectonic_evolution(&surface, &topology, &spec, &formation, &streams).unwrap();
 
         assert_ne!(final_state.cell_plates.raw_values(), initial);
         assert_eq!(final_state.samples.len(), surface.cells().len());
@@ -530,7 +567,7 @@ mod tests {
             &surface,
             &topology,
             &spec,
-            ResolvedWorldFormationPreset::Supercontinent,
+            &resolved_formation(ResolvedWorldFormationPreset::Supercontinent),
             &streams,
         )
         .expect("the minimum supported plate configuration must remain publishable");
@@ -557,28 +594,17 @@ mod tests {
             continental_crust_fraction: 0.38,
             ..TectonicSpec::default()
         };
-        let first = evolve_control_state_v5(
-            &surface,
-            &topology,
-            &spec,
-            ResolvedWorldFormationPreset::Continents,
-            &streams,
-        )
-        .unwrap();
+        let formation = resolved_formation(ResolvedWorldFormationPreset::Continents);
+        let first =
+            evolve_control_state_v5(&surface, &topology, &spec, &formation, &streams).unwrap();
         first
             .material_ledger
             .control_budget(&first.current)
             .unwrap();
         first.lineage_ledger.budget(&first.current).unwrap();
 
-        let second = evolve_control_state_v5(
-            &surface,
-            &topology,
-            &spec,
-            ResolvedWorldFormationPreset::Continents,
-            &streams,
-        )
-        .unwrap();
+        let second =
+            evolve_control_state_v5(&surface, &topology, &spec, &formation, &streams).unwrap();
         assert_eq!(
             first.current.material_totals().unwrap(),
             second.current.material_totals().unwrap()
@@ -632,6 +658,7 @@ mod tests {
         let mut transform_uplift = Vec::new();
         let mut convergent_uplift = Vec::new();
         let mut ocean_age_depth_area = Vec::new();
+        let formation = resolved_formation(ResolvedWorldFormationPreset::Continents);
         for seed in [
             42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
         ] {
@@ -649,14 +676,8 @@ mod tests {
             )
             .unwrap();
             initial_triple_angles.extend(macro_triple_angles(&surface, &initial));
-            let evolved = evolve_control_state_v5(
-                &surface,
-                &topology,
-                &spec,
-                ResolvedWorldFormationPreset::Continents,
-                &streams,
-            )
-            .unwrap();
+            let evolved =
+                evolve_control_state_v5(&surface, &topology, &spec, &formation, &streams).unwrap();
             let initial_continental = evolved
                 .material_ledger
                 .initial_control()

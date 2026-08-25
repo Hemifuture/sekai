@@ -1,8 +1,14 @@
+use sekai::engine::{BuildEngine, ExternalArtifacts, MemoryStageCache, StageGraphBuilder};
+use sekai::generators::natural::{
+    ResolvedWorldFormationArtifact, WorldFormationSpecArtifact, WorldFormationStage,
+};
 use sekai::world::natural::{
     MantleFormationBias, ResolvedWorldFormation, ResolvedWorldFormationPreset,
     WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1, WORLD_FORMATION_SPEC_SCHEMA_V1,
+    CORTIAL_FORMATION_STEP_DURATION_KYR, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    SEKAI_REFERENCE_FORMATION_STEP_COUNT, WORLD_FORMATION_SPEC_SCHEMA_V1,
 };
+use sekai::world::RootSeed;
 
 const CONCRETE_PRESETS: [ResolvedWorldFormationPreset; 5] = [
     ResolvedWorldFormationPreset::Continents,
@@ -11,6 +17,30 @@ const CONCRETE_PRESETS: [ResolvedWorldFormationPreset; 5] = [
     ResolvedWorldFormationPreset::GreatIsland,
     ResolvedWorldFormationPreset::VolcanicIslands,
 ];
+
+fn resolve(seed: u64, preset: WorldFormationPreset) -> ResolvedWorldFormationArtifact {
+    let graph = StageGraphBuilder::new()
+        .external::<WorldFormationSpecArtifact>()
+        .stage(WorldFormationStage)
+        .build()
+        .unwrap();
+    let mut external = ExternalArtifacts::new();
+    external
+        .insert(WorldFormationSpecArtifact::new(WorldFormationSpec {
+            preset,
+            ..WorldFormationSpec::default()
+        }))
+        .unwrap();
+
+    BuildEngine::new(graph)
+        .build(RootSeed::new(seed), external, &mut MemoryStageCache::new())
+        .unwrap()
+        .artifacts
+        .get::<ResolvedWorldFormationArtifact>()
+        .unwrap()
+        .as_ref()
+        .clone()
+}
 
 #[test]
 fn default_spec_requests_named_multi_continents() {
@@ -92,6 +122,44 @@ fn resolved_formation_round_trips_and_rejects_invalid_wire_data() {
         "resolved": "Random"
     });
     assert!(serde_json::from_value::<ResolvedWorldFormation>(resolved_random).is_err());
+}
+
+#[test]
+fn resolved_formation_carries_the_sekai_reference_timeline_in_its_identity() {
+    let formation = resolve(42, WorldFormationPreset::Continents)
+        .formation()
+        .clone();
+    let timeline = formation.timeline();
+    assert_eq!(timeline.step_count(), SEKAI_REFERENCE_FORMATION_STEP_COUNT);
+    assert_eq!(
+        timeline.step_duration_kyr(),
+        CORTIAL_FORMATION_STEP_DURATION_KYR
+    );
+    assert_eq!(
+        timeline.total_duration_myr().to_bits(),
+        (f64::from(SEKAI_REFERENCE_FORMATION_STEP_COUNT)
+            * f64::from(CORTIAL_FORMATION_STEP_DURATION_KYR)
+            / 1_000.0)
+            .to_bits(),
+    );
+
+    let encoded = serde_json::to_value(&formation).unwrap();
+    assert_eq!(
+        encoded["timeline"]["step_count"],
+        SEKAI_REFERENCE_FORMATION_STEP_COUNT,
+    );
+    assert_eq!(
+        encoded["timeline"]["step_duration_kyr"],
+        CORTIAL_FORMATION_STEP_DURATION_KYR,
+    );
+}
+
+#[test]
+fn resolved_formation_rejects_a_forged_timeline() {
+    let mut encoded =
+        serde_json::to_value(resolve(42, WorldFormationPreset::Continents).formation()).unwrap();
+    encoded["timeline"]["step_count"] = serde_json::json!(SEKAI_REFERENCE_FORMATION_STEP_COUNT - 1);
+    assert!(serde_json::from_value::<ResolvedWorldFormation>(encoded).is_err());
 }
 
 #[test]

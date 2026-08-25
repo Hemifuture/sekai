@@ -58,7 +58,7 @@ impl EvolvedTectonicGenerator {
             ));
         }
 
-        match generate_evolved_spherical(bundle, spec, formation.resolved(), rng) {
+        match generate_evolved_spherical(bundle, spec, formation, rng) {
             Ok(snapshot) => Ok(snapshot),
             Err(_) if rng.is_cancelled() => Err(EvolvedTectonicGenerationError::Cancelled),
             Err(error) => Err(EvolvedTectonicGenerationError::Generation(

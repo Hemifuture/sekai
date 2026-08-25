@@ -5,6 +5,62 @@ use thiserror::Error;
 pub const WORLD_FORMATION_SPEC_SCHEMA_V1: u16 = 1;
 /// The supported version of a resolved world-formation selection.
 pub const RESOLVED_WORLD_FORMATION_SCHEMA_V1: u16 = 1;
+/// Number of finite evolution steps in the user-approved Sekai reference
+/// formation horizon. This is a product parameter, not a literature constant
+/// or an Earth-age claim.
+pub const SEKAI_REFERENCE_FORMATION_STEP_COUNT: u16 = 128;
+/// Duration of one reference step, stored as integer kyr for identity-stable
+/// serde; the 2 Myr step follows Cortial et al. (2019), DOI
+/// 10.1111/cgf.13614.
+pub const CORTIAL_FORMATION_STEP_DURATION_KYR: u32 = 2_000;
+
+/// The validated finite schedule used to derive the current formation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ResolvedFormationTimeline {
+    step_count: u16,
+    step_duration_kyr: u32,
+}
+
+impl ResolvedFormationTimeline {
+    /// Returns Sekai's authored horizon with Cortial's sourced step duration.
+    pub const fn sekai_reference() -> Self {
+        Self {
+            step_count: SEKAI_REFERENCE_FORMATION_STEP_COUNT,
+            step_duration_kyr: CORTIAL_FORMATION_STEP_DURATION_KYR,
+        }
+    }
+
+    /// Returns the finite number of formation steps.
+    pub const fn step_count(self) -> u16 {
+        self.step_count
+    }
+
+    /// Returns one step duration in identity-stable integer kyr.
+    pub const fn step_duration_kyr(self) -> u32 {
+        self.step_duration_kyr
+    }
+
+    /// Returns one step duration in Myr for the numerical process kernels.
+    pub fn step_duration_myr(self) -> f64 {
+        f64::from(self.step_duration_kyr) / 1_000.0
+    }
+
+    /// Returns the complete private formation horizon in Myr.
+    pub fn total_duration_myr(self) -> f64 {
+        f64::from(self.step_count) * self.step_duration_myr()
+    }
+
+    /// Rejects timelines outside the currently supported product identity.
+    pub fn validate(self) -> Result<(), WorldFormationSpecError> {
+        if self != Self::sekai_reference() {
+            return Err(WorldFormationSpecError::UnsupportedTimeline {
+                step_count: self.step_count,
+                step_duration_kyr: self.step_duration_kyr,
+            });
+        }
+        Ok(())
+    }
+}
 
 /// An author-facing macro formation choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -132,6 +188,7 @@ pub struct ResolvedWorldFormation {
     schema_version: u16,
     requested: WorldFormationPreset,
     resolved: ResolvedWorldFormationPreset,
+    timeline: ResolvedFormationTimeline,
 }
 
 impl ResolvedWorldFormation {
@@ -145,6 +202,7 @@ impl ResolvedWorldFormation {
             schema_version,
             requested,
             resolved,
+            timeline: ResolvedFormationTimeline::sekai_reference(),
         };
         formation.validate()?;
         Ok(formation)
@@ -158,6 +216,7 @@ impl ResolvedWorldFormation {
                 supported: RESOLVED_WORLD_FORMATION_SCHEMA_V1,
             });
         }
+        self.timeline.validate()?;
         Ok(())
     }
 
@@ -169,6 +228,11 @@ impl ResolvedWorldFormation {
     /// Returns the concrete preset consumed by generators.
     pub const fn resolved(&self) -> ResolvedWorldFormationPreset {
         self.resolved
+    }
+
+    /// Returns the finite schedule whose endpoint this resolved state denotes.
+    pub const fn timeline(&self) -> ResolvedFormationTimeline {
+        self.timeline
     }
 
     /// Returns the narrow mantle-facing formation projection.
@@ -194,10 +258,30 @@ impl ResolvedWorldFormation {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolvedFormationTimelineWire {
+    step_count: u16,
+    step_duration_kyr: u32,
+}
+
+impl ResolvedFormationTimelineWire {
+    fn resolve(self) -> Result<ResolvedFormationTimeline, WorldFormationSpecError> {
+        let timeline = ResolvedFormationTimeline {
+            step_count: self.step_count,
+            step_duration_kyr: self.step_duration_kyr,
+        };
+        timeline.validate()?;
+        Ok(timeline)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResolvedWorldFormationWire {
     schema_version: u16,
     requested: WorldFormationPreset,
     resolved: ResolvedWorldFormationPreset,
+    timeline: ResolvedFormationTimelineWire,
 }
 
 impl<'de> Deserialize<'de> for ResolvedWorldFormation {
@@ -206,8 +290,14 @@ impl<'de> Deserialize<'de> for ResolvedWorldFormation {
         D: Deserializer<'de>,
     {
         let wire = ResolvedWorldFormationWire::deserialize(deserializer)?;
-        Self::new(wire.schema_version, wire.requested, wire.resolved)
-            .map_err(serde::de::Error::custom)
+        let formation = Self {
+            schema_version: wire.schema_version,
+            requested: wire.requested,
+            resolved: wire.resolved,
+            timeline: wire.timeline.resolve().map_err(serde::de::Error::custom)?,
+        };
+        formation.validate().map_err(serde::de::Error::custom)?;
+        Ok(formation)
     }
 }
 
@@ -231,5 +321,13 @@ pub enum WorldFormationSpecError {
         found: u16,
         /// The only supported schema version.
         supported: u16,
+    },
+    /// A resolved formation carries a schedule outside the supported product identity.
+    #[error("unsupported formation timeline with {step_count} steps of {step_duration_kyr} kyr")]
+    UnsupportedTimeline {
+        /// The encountered number of evolution steps.
+        step_count: u16,
+        /// The encountered duration of one step in kyr.
+        step_duration_kyr: u32,
     },
 }

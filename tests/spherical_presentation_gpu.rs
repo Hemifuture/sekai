@@ -416,22 +416,22 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_vector_paused",
             &map_vector_paused,
-            "bfe37933afd9fa9485fefe432a7ff98c13da528632e79f24d9d9931d27f6a93d",
+            "0f456e1a2e39ac74e65893c62c117d4412ff537deae6234429ad9c95bbe9372b",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "61794f059d1a04e82e38ff4a6a29bfd6ee30e0c8d008e9fc5a8996f9834fb437",
+            "2f893396fe8a15b2ab59255ecd74ace87f13c9eee7f4862a27ed46d94d711d14",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "dddc9c656bdcdd94b1229e80532134b8f67c217860d299d7da771d7e1ab27b29",
+            "dc24ce0ba525a5b45e4500f650b45865de85cf6d8749ce88d11e58317ce34215",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "f63baca918fdde0b9033030bd75179aa5983359268a550bb411e04462091f47e",
+            "d932b44ebd75b6b63ed31dbdc8ff67ce77e4d112f8fb6d7e79aa615e5703e042",
         ),
         (
             "map_seam_fragments",
@@ -676,7 +676,8 @@ fn assert_vector_glyph_semantics(
     glyphs: &PreparedVectorGlyphs,
 ) {
     const EXPECTED_SAMPLED_IDS: &[u32] = &[
-        5, 11, 23, 37, 38, 42, 47, 53, 64, 66, 67, 81, 100, 101, 108, 125, 127, 129, 151, 155, 158,
+        18, 22, 25, 30, 38, 44, 47, 82, 91, 100, 108, 111, 118, 119, 125, 127, 144, 150, 152, 157,
+        158, 160, 161,
     ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());

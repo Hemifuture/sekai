@@ -23,7 +23,6 @@ use crate::world::spatial::{
 use crate::world::{CellId, EdgeId};
 
 pub(super) mod constants {
-    pub(in crate::generators::natural::spherical_tectonics) const DEFAULT_DELTA_MYR: f64 = 2.0;
     pub(super) const OCEANIC_RIDGE_ELEVATION_M: f32 = -1_000.0;
     pub(in crate::generators::natural::spherical_tectonics) const OCEANIC_TRENCH_ELEVATION_M: f32 =
         -10_000.0;

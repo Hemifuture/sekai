@@ -87,9 +87,11 @@ pub use fields::{
     NaturalFieldDisplayCache, NaturalFieldRegistryError,
 };
 pub use formation::{
-    MantleFormationBias, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1, WORLD_FORMATION_SPEC_SCHEMA_V1,
+    MantleFormationBias, ResolvedFormationTimeline, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, WorldFormationPreset, WorldFormationSpec,
+    WorldFormationSpecError, CORTIAL_FORMATION_STEP_DURATION_KYR,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1, SEKAI_REFERENCE_FORMATION_STEP_COUNT,
+    WORLD_FORMATION_SPEC_SCHEMA_V1,
 };
 pub use geologic_spec::{
     GeologicSpec, GeologicSpecError, MantleActivity, GEOLOGIC_SPEC_SCHEMA_V1, MAX_HOTSPOT_COUNT,
