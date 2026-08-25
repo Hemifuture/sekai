@@ -570,9 +570,18 @@ git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's
 - Consumes: `EvolvedTectonicSnapshot::{material,forcing,compatibility}`。
 - Produces: crate-private
   `EvolvedTectonicSnapshot::authoritative_view() -> AuthoritativeTectonicView<'_>`；
-  view 只提供 plates、plate ids、crust kind/thickness/age/lineation/orogeny、
-  boundaries、material 和 forcing 的借用访问器，不提供
+  本任务只提供已有 substrate 真实消费的 crust kind/thickness/age、material 和
+  forcing 借用访问器，不提供
   `tectonic_elevation_m` 或完整 compatibility snapshot，不进入公共 API。
+
+**实现期 YAGNI 修订（2026-08-25）：**RED 后的生产调用图与 `-D warnings` 证明，原计划
+一次性列出的 `surface_ref`、plates、plate ids、lineation、orogeny、boundaries 和
+boundary segments 在 Task 2 尚无生产消费者，提前实现会形成 dead code；以 `allow`、
+伪调用或只靠测试消费掩盖同样违反根 `AGENTS.md`。因此 Task 2 只开放下面五个当前
+真实访问器。Task 3 迁移 hotspot、passive-margin 与 conditioned-detail 的真实调用点时，
+再在同一提交中逐个增加其实际使用的借用访问器；若某字段最终没有消费者就不增加。
+这只收窄可见接缝，不改变规格中“P3 可读取所需构造事实且永不读取兼容高程”的架构
+裁定。
 
 - [ ] **Step 1: 写 crate 内借用与不可见性 RED**
 
@@ -616,11 +625,6 @@ impl EvolvedTectonicSnapshot {
 }
 
 impl<'a> AuthoritativeTectonicView<'a> {
-    pub(crate) const fn surface_ref(self) -> SurfaceRef { self.snapshot.compatibility.surface_ref() }
-    pub(crate) fn plates(self) -> &'a [SphericalPlate] { self.snapshot.compatibility.plates() }
-    pub(crate) const fn cell_plates(self) -> &'a PlateIdField {
-        self.snapshot.compatibility.cell_plates()
-    }
     pub(crate) const fn material(self) -> &'a SphericalCrustMaterialState { &self.snapshot.material }
     pub(crate) const fn forcing(self) -> &'a SphericalTectonicForcingState { &self.snapshot.forcing }
     pub(crate) fn crust_kinds(self) -> &'a CrustKindField { self.snapshot.compatibility.crust_kinds() }
@@ -628,22 +632,14 @@ impl<'a> AuthoritativeTectonicView<'a> {
         self.snapshot.compatibility.crust_thickness_km()
     }
     pub(crate) fn crust_age_myr(self) -> &'a [f32] { self.snapshot.compatibility.crust_age_myr() }
-    pub(crate) fn lineation_east(self) -> &'a [f32] { self.snapshot.compatibility.lineation_east() }
-    pub(crate) fn lineation_north(self) -> &'a [f32] { self.snapshot.compatibility.lineation_north() }
-    pub(crate) fn orogeny_kind(self) -> &'a [SphericalOrogenyKind] {
-        self.snapshot.compatibility.orogeny_kind()
-    }
-    pub(crate) fn orogeny_age_myr(self) -> &'a [f32] {
-        self.snapshot.compatibility.orogeny_age_myr()
-    }
-    pub(crate) fn boundaries(self) -> &'a [BoundaryRecord] { self.snapshot.compatibility.boundaries() }
-    pub(crate) fn boundary_segments(self) -> &'a [SphericalBoundarySegment] {
-        self.snapshot.compatibility.boundary_segments()
-    }
 }
 ```
 
-以上就是本任务允许的完整访问器集合；禁止返回 `&SphericalTectonicSnapshot`、`compatibility()` 或 `tectonic_elevation_m()`。`GeologicSubstrateGenerator::generate` 先取得 `let tectonic = evolved.authoritative_view();`，材料、forcing 和 crust 字段全部经该 view 读取。
+以上五项就是本任务允许的完整访问器集合；禁止返回
+`&SphericalTectonicSnapshot`、`compatibility()` 或 `tectonic_elevation_m()`。
+`GeologicSubstrateGenerator::generate` 先取得
+`let tectonic = evolved.authoritative_view();`，材料、forcing 和 crust 字段全部经该
+view 读取。
 
 - [ ] **Step 4: 运行 GREEN**
 
@@ -651,8 +647,9 @@ Run: `cargo test --release --lib authoritative_view_borrows_only_causal_fields`
 
 Run: `cargo test --release --test geologic_substrate_generation`
 
-Expected: 全部 PASS；crate-private 类型的完整访问器清单没有兼容高程入口，借用测试
-证明没有新 snapshot/数组复制，外部 crate 无法获得该 view。
+Expected: 全部 PASS；crate-private 类型的五个当前消费者访问器没有兼容高程入口，
+借用测试证明没有新 snapshot/数组复制，外部 crate 无法获得该 view；Clippy 不存在
+未消费访问器。
 
 - [ ] **Step 5: 提交**
 
