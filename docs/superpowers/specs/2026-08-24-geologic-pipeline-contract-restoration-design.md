@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准**
+状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准；2026-08-26 P3 Airy 支持域闭合勘误经联合审查批准**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -185,6 +185,34 @@ commit `f1df994` 在本规格加入的以下要求：
     现有 `GlobalClimateForcingBuilder::build` 构造；它与 P5 exact 初态之间可能有
     次 ULP 边界差，这是跨领域 wire 边界的已知近似，不授权同域 P5 回读 wire，
     也不放宽最终 endpoint forcing/checkpoint 身份。
+13. **P3 Airy 组成域必须覆盖冻结输入域的完整像。** Task 3 删除结果 clamp 后，
+    Draft 17-seed corpus 在 seed `11`、`CellId(18426)` 首次暴露旧域矛盾：纯大陆
+    格元厚度约 `73.783 km`、密度 `2800 kg/m³`，冻结 Airy 柱方程直接给出
+    `isostatic_base_m = 6126.229153765945 m`，超过 2026-07-29 legacy 展示
+    artifact 遗留、且没有物理出处的 `5000 m` 上界。该失败不是公式或单位错误，
+    而是验证域没有覆盖方程在 P2 已冻结输入域上的像；不得恢复 clamp，也不得把
+    该格元特判为 `5000 m`。
+
+    P3 进入公式前会以非负大陆/洋壳体积重算
+    `(Vc·2800 + Vo·2950)/(Vc + Vo)` 并与 substrate wire 交叉验证，因此生产输入
+    密度全域为 `[2800, 2950] kg/m³`。大陆 Airy 高程对厚度单调递增、对密度单调
+    递减；P2 又把非零大陆壳厚度冻结在 `20..=80 km`，故大陆端元上确界唯一取在
+    `T = CONTINENTAL_CRUST_MAX_THICKNESS_KM`、
+    `ρ = CONTINENTAL_CRUST_DENSITY_KG_M3`。洋壳端元在其冻结年龄/厚度域内低于该
+    值，而混合格元只是两端元按非负参考面积的凸组合。因此组成 exact 上界必须由
+    **同一个** Airy `const fn` 和上述既有常量计算，不得手抄约 `7068.18 m` 的新
+    十进制阈值。
+
+    `CRUST_BASE_ELEVATION_MAX_EXACT_M: f64` 只承担 P3 working-state 科学校验；
+    既有公开 `CRUST_BASE_ELEVATION_MAX_M: f32` 只承担 wire/schema 支持域，并取不
+    小于 exact 上界的最邻近 `f32`（若 round-to-nearest 向下，则前进一个
+    representable value）。这是 IEEE-754 发布编码的外向舍入，不是新物理裕量；
+    上一个 `f32` 必须严格小于 exact 上界。最终完整高程仍独立按既有
+    `ELEVATION_MIN_M..=ELEVATION_MAX_M` 在 `f64` 上 typed-check，本勘误不放宽
+    `9000 m` 最终硬域，也不授权任何其他组成域变化。Airy 机制沿用 Turcotte &
+    Schubert (2014) 及上位 P3 规格；相邻可表示数的 wire 外向舍入只有 Goldberg
+    (1991)/Higham (2002) 的一般浮点依据，明确属于数值实现类比，不是经验地貌
+    参数。
 
 ## 1. 用户裁定与问题归因
 
@@ -759,6 +787,11 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
   物理时长的积分位置。Cortial et al. (2019) 支持 P2 程序构造及其有单位率，
   不支持把该率在 P3 乘以这个经验响应时间；因此本修订选择删除，不以另一魔法
   系数替代。
+- P3 crust-base exact 支持上界由同一 Airy 柱方程在 P2/V5 冻结的厚度与端元
+  密度域上解析求值；Airy 机制沿用 Turcotte & Schubert (2014)，输入域沿用
+  `2026-08-17-evolved-tectonics-v5-design.md`，没有新增经验常量。f32 wire 上界的
+  外向相邻可表示数只沿用 Goldberg (1991)/Higham (2002) 的浮点背景，是编码
+  类比而非物理裕量；最终 `ELEVATION_MAX_M` 保持不变。
 - 固定次数 predictor-corrector 与高成本迭代参考的类比：Schüller, Lemarié,
   Birken & Blayo (2025), *Quantifying coupling errors in atmosphere-ocean-sea
   ice models*, DOI `10.5194/gmd-18-9167-2025`，比较非迭代与迭代耦合并指出

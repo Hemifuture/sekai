@@ -21,6 +21,11 @@ P5 的唯一构造位移积分双计数；P4/P5 sibling 所有权和最终 forci
 第二轮 Codex/Claude 精度边界复核由规格 §0.1(10–12) 显式冻结：同域 retained/
 守恒状态必须 `f64`，P3/P5 水面几何不得经 wire 回流；P4 内部暂不扩成无实测依据
 的 `f64` 重写，最终 forcing 则必须锚定唯一一次、可反序列化重放的 final wire。
+2026-08-26 Task 3 的 17-seed RED 又暴露旧 `5000 m` crust-base 展示域不能覆盖
+冻结 Airy 方程在 P2 `20..=80 km` 输入域上的完整像；Codex/Claude 联合复核批准
+规格 §0.1(13) 的解析域闭合。实现必须由 world 层同一 Airy `const fn` 推导 exact
+`f64` 上界，并只为既有 `f32` wire 做 IEEE-754 外向投影；不得恢复 clamp、手写
+约 `7068.18 m` 阈值或放宽最终 `ELEVATION_MAX_M`。
 
 ## Global Constraints
 
@@ -673,6 +678,16 @@ git commit -m "Isolate authoritative tectonic inputs" -m "Give P3 a borrowed cau
 回流边界，并刷新已经改变语义的 snapshot/stage 身份。下列后写内容替代本任务
 旧的窄文件清单、会从集成测试访问 private `exact` 字段的示例，以及只运行一个
 RED filter 的命令；不把修订扩成 P4 solver 的 `f64` 迁移。
+
+**2026-08-26 17-seed RED 后显式修订：** seed `11` 的纯大陆格元在冻结 Airy
+方程下产生 `6126.229153765945 m`，证明无出处的 legacy `5000 m` 组成上界与
+P2 最大 `80 km` 地壳输入域不闭合。先以 docs-only 提交冻结规格 §0.1(13)，再做
+GREEN：把 Airy exact 方程及其 mantle/reference 常量收拢为 world 层唯一
+`const fn`；`CRUST_BASE_ELEVATION_MAX_EXACT_M` 由该函数在冻结最大厚度与全域最小
+密度 `2800 kg/m³` 上解析求值，production exact 校验直接使用它。公开 f32 常量
+只作为 wire/schema 外向包络，必须满足 `wire >= exact` 且前一个 f32 `< exact`。
+最终 `9000 m` 域仍在组成求和后独立拒绝。该修订不增加用户配置、经验系数或
+新 schema 字段。
 
 **Files:**
 - Modify: `src/generators/natural/primary_relief.rs`
@@ -2694,6 +2709,12 @@ git commit -m "Verify causal formation end to end" -m "Record scientific, perfor
   无出处的 `250 kyr` 保持积分，而 P5 已拥有唯一明确物理时长的 rate integration。
   Cortial et al. (2019) 支持 P2 程序构造与有单位 forcing，不支持 P3 的这个经验
   响应时间；因此 Task 3 删除该机制，并以质量门实测是否暴露新的物质/过程缺口。
+- P3 crust-base exact 上界不是新的地貌经验阈值：Airy 柱机制沿用 Turcotte &
+  Schubert (2014) 与上位 P3 规格，输入端点沿用 P2/V5 已冻结的
+  `CONTINENTAL_CRUST_MAX_THICKNESS_KM` 和体积加权端元密度。上界由同一生产
+  `const fn` 在单调端点解析求值，关闭方程定义域到 artifact 支持域的映射；f32
+  wire 只按 Goldberg (1991)/Higham (2002) 的一般浮点背景向外取相邻可表示数，
+  属于编码类比，不增加物理裕量或放宽最终 `ELEVATION_MAX_M`。
 - 一次固定 predictor-corrector 和高成本耦合顺序对照的数值类比：Schüller et al.
   (2025), DOI `10.5194/gmd-18-9167-2025`，比较非迭代/迭代 Earth-system
   coupling 并记录非光滑参数化的非收敛风险；Strang (1968), DOI
