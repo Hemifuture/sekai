@@ -357,6 +357,7 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 - Modify: `src/generators/natural/evolved_tectonics.rs`
 - Test: `tests/world_formation_spec.rs`
 - Test: `tests/spherical_natural_stage_graph.rs`
+- Test: `tests/spherical_presentation_gpu.rs`
 
 **实现期清单修订（2026-08-25）：**仓库及完整 git 历史均不存在
 `tests/evolved_tectonic_generation.rs`；现有固定 seed 球面 P2 等价回归目标是
@@ -393,6 +394,17 @@ geology/climate/hydro/quality 八个领域 artifact hash 均保持逐字不变�
 把该直接 consumer 纳入第 14 路径：只有先断言八个子域 hash 和两次生成确定性都
 不变，才可把打印出的 final result old→new 值按“新增 validated timeline lineage”
 因果重钉；不得改任何领域 golden 或仅为过测试批量刷新 hash。
+
+**实现期 UI identity consumer 修订（2026-08-25）：**stage-graph 失败点后的回归在
+GPU 渲染前的 CPU semantic oracle 证明，`PreparedVectorGlyphs` 依照既有
+`vector_glyph_score` 用 `build_result_hash` 作为 keyed BLAKE3 key。final result
+lineage 合法刷新后，同一 seed/surface/field 的 glyph sampled cell IDs 因而确定性
+改变；两次独立重跑得到同一新集合，这不是 adapter 波动。Task 1 把
+`tests/spherical_presentation_gpu.rs` 纳入第 15 路径，只允许在先通过 CPU 字段/
+overlay/LOD 语义断言后更新 sampled IDs，以及由该向量 glyph 集合直接导致变化的
+audited vector-overlay RGBA8 hash；必须记录 old→new 值和 result-hash key 因果。
+不得修改 `field_layers.rs` 采样机制、adapter policy、非向量 golden 或把 exact GPU
+门禁改成容差比较。
 
 **Interfaces:**
 - Consumes: `ResolvedWorldFormation::new(u16, WorldFormationPreset, ResolvedWorldFormationPreset)`；该构造器签名保持不变。
@@ -527,16 +539,20 @@ Run: `cargo test --lib spherical_tectonics::forcing::`
 
 Run: `cargo test --test spherical_natural_stage_graph whole_graph_cross_validates_and_has_frozen_semantic_hashes`
 
+Run: `cargo test --test spherical_presentation_gpu complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles -- --nocapture`
+
 Expected: 全部 PASS；固定 seed 的 P2 物理数组与预算不变。由于 timeline 新进入
 resolved input 序列化身份，任何包含该输入或其 lineage 的 artifact/stage
 fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹伪装不变。stage graph
 测试的八个领域 artifact hash 必须保持旧值，只有 final result hash 以记录的
-old→new 因果刷新。
+old→new 因果刷新。GPU 目标必须先通过新 sampled IDs 的 CPU semantic oracle；若
+随后 audited exact hash 失败，只更新实测证明由新向量 glyph 集合造成的对应向量
+overlay golden，其他图层 hash 必须保持旧值。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/kinematics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs tests/spherical_natural_stage_graph.rs
+git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/kinematics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs tests/spherical_natural_stage_graph.rs tests/spherical_presentation_gpu.rs
 git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's authored horizon and Cortial's sourced step duration distinct inside validated input identity."
 ```
 
