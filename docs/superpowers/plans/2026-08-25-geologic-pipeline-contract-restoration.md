@@ -349,6 +349,7 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Modify: `src/generators/natural/spherical_tectonics/publication.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/mod.rs`
+- Modify: `src/generators/natural/spherical_tectonics/processes/rifting.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/spreading.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/subduction.rs`
 - Modify: `src/generators/natural/spherical_tectonics/forcing.rs`
@@ -361,8 +362,18 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 `src/generators/natural/spherical_tectonics.rs` 是 runner 两条 V4/V5 生产调用和
 同模块单元调用的直接消费者；要让 runner 只从同一个 `ResolvedWorldFormation`
 取得 timeline，必须同提交把该文件从 `.resolved()` preset 传递改为完整 resolved
-formation 传递。清单以该真实生产消费者替换不存在的测试文件，仍为 11 个路径；
+formation 传递。清单以该真实生产消费者替换不存在的测试文件；
 不得保留 preset/default timeline wrapper 来绕过修订。
+
+**实现期时间消费者修订（2026-08-25）：**GREEN 调用图审计进一步发现
+`processes/rifting.rs::maybe_rift_plates` 把 Poisson 事件窗口以字面量 `2` Myr
+传给已有 `poisson_event(..., delta_myr: u16)`。这是第四份隐藏步长事实，若不迁移
+就会让 rift 概率继续绕过 resolved timeline。Task 1 因而增加该真实算法消费者，
+共 12 个路径；函数显式接收经整除与 checked conversion 从
+`timeline.step_duration_kyr()` 派生的整数 Myr，V4/V5 两条 runner 传同一个值，
+文件内测试复用 production timeline 常量/访问器。不得保留字面量 `2`、在 rifting
+内部调用 `sekai_reference()`，或把 Poisson 模型改成会改变现有随机阈值舍入的
+另一套时间单位。
 
 **Interfaces:**
 - Consumes: `ResolvedWorldFormation::new(u16, WorldFormationPreset, ResolvedWorldFormationPreset)`；该构造器签名保持不变。
@@ -479,6 +490,9 @@ timeline。
 `DEFAULT_DELTA_MYR` 的常量，而是保留有单位 rate 并在调用时乘本步时长；
 `spreading.rs` 的测试/辅助调用也显式传入 resolved/test timeline 的时长。删除常量
 后 `rg "DEFAULT_DELTA_MYR" src tests` 必须零命中。
+`rifting.rs` 的 `maybe_rift_plates` 同样显式接收本步整数 Myr；runner 必须先证明
+`step_duration_kyr` 可被 `1_000` 整除并 checked-convert 为 `u16`，再把同一值传给
+两条循环。该适配只迁移时间事实源，不改变现有 Q32 Poisson 阈值算法或随机标签。
 
 - [ ] **Step 4: 运行 GREEN 与 P2 等价回归**
 
@@ -497,7 +511,7 @@ fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
+git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
 git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's authored horizon and Cortial's sourced step duration distinct inside validated input identity."
 ```
 
