@@ -183,6 +183,13 @@ NaturalFormationBundleArtifact
   落地；根目录 `debug.log` 是范围外宿主文件，始终不暂存、不修改、不删除。
 - Task 0 后所有任务从干净的相关路径开始并整文件暂存其具名清单；
   `ReliefSpecArtifact` 继续定义在现有 `relief_spec.rs`，不因 bundle 迁移挪动事实源。
+- **实现期清单修订（2026-08-25）：**完整调试回归证明
+  `tests/natural_field_registry_spherical.rs` 是 Task 0 字段注册表/schema 迁移的直接
+  identity consumer。它在继承 dirty snapshot 中原本干净，因而初版清单漏列；但
+  让生产 `fields.rs`、payload、本地化与旧冻结 hash 分属两个提交会制造不可复现
+  中间态。Task 0 必须在断言字段集合、payload 与本地化一致后，同提交更新该
+  golden，并记录旧/新 digest 的因果；不得只为过测试盲目重钉 hash。该修订只补
+  直接测试消费者，不改变科学 schema、UI 旋钮或 Tasks 1–13 的架构。
 
 ---
 
@@ -224,6 +231,7 @@ NaturalFormationBundleArtifact
 - Test: `tests/surface_formation_quality.rs`
 - Test: `tests/surface_formation_stage.rs`
 - Test: `tests/terrain_audit_probe.rs`
+- Test: `tests/natural_field_registry_spherical.rs`
 
 **Interfaces:**
 - Consumes: 进入本计划时记录的 tracked dirty snapshot
@@ -279,6 +287,8 @@ Run: `cargo test --release --lib generators::natural::surface_formation::generat
 
 Run: `cargo test --release --test formation_coast_isostasy --test formation_hillslope --test formation_hydrology --test formation_sediment --test formation_stream_power`
 
+Run: `cargo test --release --test natural_field_registry_spherical`
+
 Run: `cargo test --workspace --all-targets --all-features`
 
 Expected: 全部 PASS；最后一条按项目说明预留完整调试回归时间。若只在未暂存
@@ -287,7 +297,7 @@ Expected: 全部 PASS；最后一条按项目说明预留完整调试回归时�
 - [ ] **Step 5: 整文件暂存继承基线并提交**
 
 ```bash
-git add docs/superpowers/specs/2026-08-08-spherical-presentation-design.md docs/superpowers/specs/2026-08-24-transient-climate-geomorphology-design.md docs/superpowers/plans/2026-08-24-p5-publish-transaction.md src/app.rs src/app/spherical_formation_display.rs src/engine/cache.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/global_circulation/generation.rs src/generators/natural/quality/surface_formation.rs src/generators/natural/surface_formation/coast.rs src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/hillslope.rs src/generators/natural/surface_formation/hydrology.rs src/generators/natural/surface_formation/isostasy.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/surface_formation/sediment.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/terrain_amplification.rs src/ui/field/localization.rs src/world/natural/fields.rs src/world/natural/mod.rs src/world/natural/surface_formation.rs tests/formation_coast_isostasy.rs tests/formation_hillslope.rs tests/formation_hydrology.rs tests/formation_sediment.rs tests/formation_stream_power.rs tests/surface_formation_atlas.rs tests/surface_formation_contracts.rs tests/surface_formation_evidence.rs tests/surface_formation_generation.rs tests/surface_formation_performance.rs tests/surface_formation_quality.rs tests/surface_formation_stage.rs tests/terrain_audit_probe.rs
+git add docs/superpowers/specs/2026-08-08-spherical-presentation-design.md docs/superpowers/specs/2026-08-24-transient-climate-geomorphology-design.md docs/superpowers/plans/2026-08-24-p5-publish-transaction.md src/app.rs src/app/spherical_formation_display.rs src/engine/cache.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/global_circulation/generation.rs src/generators/natural/quality/surface_formation.rs src/generators/natural/surface_formation/coast.rs src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/hillslope.rs src/generators/natural/surface_formation/hydrology.rs src/generators/natural/surface_formation/isostasy.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/surface_formation/sediment.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/terrain_amplification.rs src/ui/field/localization.rs src/world/natural/fields.rs src/world/natural/mod.rs src/world/natural/surface_formation.rs tests/formation_coast_isostasy.rs tests/formation_hillslope.rs tests/formation_hydrology.rs tests/formation_sediment.rs tests/formation_stream_power.rs tests/surface_formation_atlas.rs tests/surface_formation_contracts.rs tests/surface_formation_evidence.rs tests/surface_formation_generation.rs tests/surface_formation_performance.rs tests/surface_formation_quality.rs tests/surface_formation_stage.rs tests/terrain_audit_probe.rs tests/natural_field_registry_spherical.rs
 git diff --cached --name-only
 git diff --cached --check
 git commit -m "Land the inherited P5 publication baseline" -m "Make the existing R4 scientific and UI transaction work reproducible from its own commit before the contract-restoration tasks build on it."
