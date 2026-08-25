@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准；2026-08-25 科学正确性修订待用户复核，实施受 §8 决策门约束**
+状态：**用户已批准；2026-08-25 最终态与生成效率显式修订已批准**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -16,29 +16,47 @@
 后来登记但未退役的兼容债务，并更正“只发布当前状态”被误推导为“固定瞬时
 强迫下必须存在绝对高程稳态”的求解语义。
 
-## 0. 2026-08-25 科学正确性修订
+## 0. 2026-08-25 最终态与生成效率显式修订
 
-本修订显式替代原批准稿中“P4 按未定义控制器 cadence 求解”以及“P4 嵌入 P5
-snapshot”的部分，不改变 §1 的用户裁定。修订理由与结果如下：
+本修订落实 commit `7648e0f` 已写入 `AGENTS.md` 的产品边界，并显式替代
+commit `f1df994` 在本规格加入的以下要求：
 
-1. 地形—气候反馈不能在一个 `2 Myr` 构造宏步内无误差证据地冻结。直接参考
-   路径固定为宏步起点、时间中点和终点各求一次 P4；P5 分两个半宏步推进。
-2. 终点 P4 必须由终点完整地形及其 `SurfaceWaterGeometry` 重新构造 forcing
-   后求得；随后只重算终点水文与当前过程率，不再推进 P5 时间。因而发布的气候
-   不滞后于发布的地貌。
-3. P4 与 P5 是 bundle 中的 sibling artifact。P5 snapshot 只拥有地表、水圈、
-   沉积与当前过程诊断，通过最终 P4 checkpoint 指纹绑定其 forcing，但不复制
-   或嵌套气候科学状态。
-4. `2 Myr` 离散步由 Cortial et al. (2019) 的程序构造模型支持；`128` 步是
-   Sekai 当前已批准的参考形成时域参数，不是该论文给出的常量，也不代表地球
-   年龄。
-5. 直接参考路径在公开 artifact 与 UI 迁移前必须通过 §8 的科学与性能人工
-   决策门。三层步长加倍只产生原始误差与细化趋势，不自行发明容差。
+- 每个 `2 Myr` P2 构造宏步都执行 start/midpoint/endpoint 三次 P4 与两个半步
+  P5；
+- 以 `2/1/0.5 Myr` 三层 step-doubling、人工耦合误差包络和用户批准作为公开
+  artifact/UI 迁移的发布门；
+- 把完整形成轨迹的耦合收敛当作地图生成器每次构建都必须证明的产品性质。
 
-这里的起点—中点—终点序列是可复核的参考耦合路径，不宣称对包含拓扑变化、
-阈值和快平衡重求解的整个离散系统具有形式二阶精度。Strang 分裂与 step
-doubling 只为调用顺序和误差测量提供数值方法依据；Sekai 的实际收敛阶与可接受
-包络必须由生产算子实测并经用户批准。
+替代后的约束如下：
+
+1. P2/P3/P4/P5 的模块所有权、公式出处、单位、`f64` 科学状态、质量/水量守恒、
+   数值域、跨层身份和原子发布仍是硬约束，不因采用近似求解而放宽。
+2. 生产默认采用一次 Lie-style sequential operator splitting 加终点闭合：P2
+   先完成 resolved timeline，P3 从最终固体状态投影一次基础地形，P4 在该起始
+   formation terrain 上求快平衡，P5 以自身稳定子步推进既有 P5 规格冻结的
+   `100,000 yr` coarse-grained formation horizon，然后从最终
+   `FormationTerrainFields`/`SurfaceWaterGeometry` 重建 forcing 并再求一次
+   发布 P4。该顺序保留同一组物理算子、各域已经批准的时域和守恒账本，只改变
+   算子之间的调用日程；不得把 P2 的 `128 × 2 Myr` 时域误塞给 P5。
+3. 发布 P4 后只以零时间重算 P5 的终点水文和当前过程率；不得再次积分侵蚀、
+   沉积或水量。最终 P4 forcing 必须与最终地形/水面几何一致，P5 checkpoint
+   必须绑定该 sibling P4。终点闭合不宣称整条私有轨迹已经收敛或达到耦合不动点。
+4. 若离线对照证明上述单次分裂不能满足既有最终态质量包络，唯一预留的升级是
+   **一次有界 predictor-corrector**：先得到预测终点 P4，再从同一个 P3/P5
+   初态重跑一次 P5 校正，最后重建并求发布 P4。校正次数固定为一，不增加运行时
+   容差、收敛循环或用户 cadence 旋钮；是否升级必须另作显式规格修订。
+5. 上一版每宏步三次 P4 的路径只保留为 ignored/release 离线高成本参考探针，
+   默认语料为 `Standard`/seed `42`。它只比较最终地形组成、水面几何、气候、
+   水库/沉积库存、既有质量指标、守恒、指纹和耗时，不进入产品 schema、缓存、
+   UI 或每次构建门禁。
+6. 删除三层 step-doubling 和新造误差包络。离线参考的原始最终态差值是研发证据，
+   不是未经来源批准的新失败阈值；产品验收仍由硬不变式、既有质量包络、现有
+   profile 性能门禁和 UI 结果承担。
+7. Lie–Trotter、顺序耦合和固定次数校正有数值方法依据；Sekai 选择“生产两次
+   外层 P4”或候选校正路径“三次外层 P4”的具体次数没有可直接移植的文献常量，
+   且 P2/P5 保留各自不同的 resolved horizon，因此这里是 Lie-style sequential
+   splitting 的工程类比而非同一 `Δt` 上的形式 Trotter 收敛声明。具体日程属于
+   以离线实测裁定的开放问题，不得伪装成学术结论。
 
 ## 1. 用户裁定与问题归因
 
@@ -144,6 +162,50 @@ snapshot；P5 算子显式借用当前 P4，发布时只记录最终 P4 checkpoi
 协调器一次成功调用只返回最终当前态 bundle；引擎仍执行单向、可缓存的有向
 无环图，不为本任务增加通用循环 stage 或跨 stage 可变共享状态。
 
+### 2.6 后期参数异质性的所有权与输入契约
+
+后期计划所称“统一噪声抖动”在本修订中统一改称**参数异质性**：同一物理算法
+仍求解同一方程，但其中经文献或数据允许空间变化的参数，可以由全域常数推广为
+一个有指定边际分布和空间相关性的确定性参数场。它不是独立地貌算法，不在最终
+高程、边界、洋壳年龄或水量上追加随机残差。
+
+常数是零离散度的退化分布，因此后期扩展不需要平行的“常数算法”和“噪声算法”。
+参数场只向原算法提供局部 `f64` 参数值；P2/P3/P5 仍分别拥有自己的方程、单位、
+状态更新、守恒账本和失败语义。统一部分仅限现有
+`generators/natural/morphology::noise`、`FieldRecipe`/`GaborKernel` 和
+`LabeledSubstreams` 已承担的相关场采样、随机流正交与确定性规则，不新增第二个
+球面噪声入口或跨模块状态写入器。
+
+每个真实参数消费者在实施前必须冻结以下 resolved 输入；没有直接出处的项必须
+标为类比和开放问题：
+
+- 参数身份、所属模块、所进入的方程项、物理单位与科学支持域；
+- 边际分布族及其位置/尺度/形状参数；分布的支持域必须按构造满足物理域，禁止
+  先采样再 clamp；
+- 空间相关结构：物理或角相关尺度、频带权重，以及确有消费者时的各向异性和
+  方向来源；
+- 采样坐标系：世界球面、物质随体坐标或由过程所有者提供的局部切向/法向；
+- 因果条件场和作用域，例如边界类别、岩性、洋脊方向或局部铺展状态；不得接受
+  任意绘图 mask；
+- 多参数确有直接依据时的联合分布、交叉协方差或共享潜在场；不得默认相关，
+  也不得用一个全局噪声场把无关参数暗中绑定；
+- 独立、版本化的标签子流，以及分布/采样算法版本；不新增第二个用户 seed；
+- 必须精确保持的总体矩、对称性或质量约束，以及不满足约束时的 typed failure；
+- `SurfaceRef`、世界半径、真实单元面积和可解析最短波长。分辨率过滤由工作域
+  推导，不暴露 octave、lacunarity 或格元尺度等 UI 算法旋钮。
+
+运行时输入只来自已验证的 resolved formation/profile、权威球面、具名随机子流
+和该算法已经拥有的因果状态。参数场是私有中间输入，不进入 bundle 历史；其
+配方、版本和标签进入输入/产物指纹。增加更高频带不得改变其他参数子流、板块
+owner、事件序列或既有低频结果。
+
+未来 P2 去规则化应优先让已有的板块阻力、裂谷倾向或局部铺展参数按有出处的
+分布变化，使边界和年龄条带通过原过程自然变得不规则；不得直接执行
+`final_boundary += noise` 或 `final_age += noise`。这些具体参数采用何种边际
+分布、相关尺度和条件关系尚无本规格可直接移植的统一出处，故仍是后期任务的
+开放问题，不能由本修订预钉数值。纯显示微细节若未来存在，则属于 `view/gpu`，
+不得回流科学 artifact。
+
 ## 3. 兼容视图隔离
 
 ### 3.1 权威消费边界
@@ -213,46 +275,63 @@ P2 是有地质过程依据的程序形成模型，不是预测性地球动力�
 内部逐步历史发布到 UI。未来若用户可编辑形成时长，必须另做规格、性能包络
 和 UI 设计。
 
-### 4.3 多速率调用顺序
+### 4.3 生产单次分裂与终点闭合
 
-每个已接受的构造宏步遵循：
+一次生产构建遵循：
 
 ```text
-advance solid-earth state
-derive current authoritative geological components
-apply the geological-component delta to the retained f64 formation state
-rebuild forcing and solve start P4 from post-geology terrain/SurfaceWaterGeometry
-advance P5 through the first half-macro with stable physical substeps
-rebuild forcing and solve midpoint P4 from midpoint terrain/SurfaceWaterGeometry
-advance P5 through the second half-macro with stable physical substeps
+advance P2 solid-earth state across the resolved timeline
+derive one final authoritative P3 terrain/SurfaceWaterGeometry
+initialize the retained f64 formation state
+rebuild forcing and solve start P4
+advance P5 once across its resolved 100,000 yr horizon with stable physical substeps
 rebuild forcing and solve endpoint P4 from final terrain/SurfaceWaterGeometry
 recompute terminal hydrology and current process rates under endpoint P4
 validate solid, sediment, water, component and endpoint-forcing identities
-accept the complete candidate atomically
+publish the complete bundle atomically
 ```
 
-P3 组成只能以新旧权威固体状态的组成差进入已保留地表；不得在每个宏步从 P3
-整张重置地形，否则会抹除 P5 历史。P5 子步长度由现有生产稳定性/误差算子
-决定。半宏步是 resolved 宏步时长的精确二分；终点诊断重算不增加物理时间、
-不重复沉积/侵蚀/水量积分。本规格不新增经验 cadence、收敛阈值或为性能拍定
-的魔法步长。
+这是对同一组 P2/P5 演化算子的一次 Lie-style 顺序分裂。P2 仍按自己的 `128`
+个 accepted steps 完成 `256 Myr` 程序形成时域，P5 仍完整消费其上位 P5 规格
+冻结的 `100,000 yr` coarse-grained horizon 并使用已有稳定子步；两个时间参数
+来源不同，禁止合并。删除的是两者在每个 P2 宏步上的高频互调，不是物理过程、
+各自时域或账本。P3 是最终固体状态的确定性投影，不再需要逐宏步把整张基础
+地形重置进 P5。
 
-三层步长加倍探针从同一个 post-geology P2/P3 candidate 和同一个 P5 起始状态
-出发，在相同 `2 Myr` 物理时域内比较一个 `2 Myr`、两个 `1 Myr` 和四个
-`0.5 Myr` 耦合窗口；每个窗口均完整执行自己的起点—中点—终点 P4 序列。
-探针记录高程组成、沉积库存、水库和气候场的原始差值、范数、指纹，以及
-`h→h/2` 与 `h/2→h/4` 的差值比。只有两层结果不能声称存在细化趋势。
+start P4 驱动这一次 P5 生产推进；endpoint P4 只在最终地形与最终水面几何上
+重新闭合发布 forcing。终点诊断重算不增加物理时间，也不重复沉积、侵蚀或水量
+积分。一次完整生产构建的外层 P4 调用数因此固定为两次；P4 自己的快平衡内部
+迭代不计入该数字。本规格不新增 cadence、收敛容差或按性能调节的用户旋钮。
 
-该探针固定同一个 P2 candidate，禁止为半步增加 P2 随机事件或改变随机流；它
-只测量 P4↔P5 耦合离散误差，不测量 Cortial/Sekai 固定 `2 Myr` P2 程序模型的
-连续极限。P2 不是预测性地球动力学，因此本规格不对其宣称时间收敛阶。探针不把
-“非零差值”误判为失败，也不在代码中钉未获批准的容差。
+### 4.4 有界校正候选与离线参考
 
-如果现有误差控制不能在完整形成时间表上满足性能预算，先用生产算子记录误差
-与耗时，再以显式规格修订选择有出处的多速率策略；不得静默减少物理时长、
-跳过气候反馈或发布未满足现有门禁的结果。
+若生产单次分裂未满足**既有**最终态质量包络，可以在显式修订后改用一次固定
+predictor-corrector：
 
-### 4.4 稳态与 PTC 的降级
+1. 从 P3 初态用 start P4 完成一次 P5 predictor；
+2. 在预测终态重建 forcing 并求 predicted endpoint P4；
+3. 丢弃 predictor 的 P5 累计状态，从同一个 P3/P5 初态在 predicted endpoint
+   P4 下完整重跑一次 P5 corrector；
+4. 从校正终态重建 forcing，求 final endpoint P4，并零时间重算终点诊断。
+
+该候选固定一轮校正，即三次外层 P4、两次 P5；不迭代到容差，也不同时保留为
+用户可选生产模式。只有离线证据证明单次分裂不能满足既有最终态要求时才实施，
+避免为尚未出现的误差预付第二次 P5 成本。
+
+上一版 start/midpoint/endpoint 每宏步耦合 cadence 只存在于一个私有
+ignored/release 参考探针。探针在 `Standard`/seed `42` 上运行完整 P2 timeline，
+并把同一个 `100,000 yr` P5 horizon 精确分配到全部 P2 窗口，避免用不同 P5
+物理时域比较算法；它记录参考与生产候选
+的最终地形组成、`SurfaceWaterGeometry`、climate fields、沉积/水库、既有质量
+指标、守恒残差、wall time、peak RSS 和全部相关指纹。它不保存中间轨迹，不做
+`2/1/0.5 Myr` 细化，不产生新误差包络，也不进入常规测试、每次构建或发布门。
+
+生产单次分裂若破坏守恒、有限性、支持域、最终身份或既有质量门禁，必须更换
+求解策略；不得 clamp 或后处理结果。若全部硬不变式、既有质量与性能门禁通过，
+离线参考中的非零差值只作为适用范围记录，不自动把地图生成器升级为轨迹收敛
+模拟器。
+
+### 4.5 稳态与 PTC 的降级
 
 动态平衡残差保留为当前状态诊断，但不再是所有世界的充分或必要发布条件。
 活动构造区允许发布非零 `dh/dt`，前提是当前速率有单位、各过程有归因、库存
@@ -341,14 +420,15 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 - 完整 `f64` 状态非有限或超出 artifact 支持域；
 - P4 快平衡子问题不收敛；
 - 最终 P4 forcing 与最终地形/`SurfaceWaterGeometry` 身份不一致；
-- 耦合步长细化没有形成可审查趋势，或尚无获批的误差包络；
+- 生产近似破坏既有最终态质量门禁或任一硬不变式；
 - 资源上限或用户取消。
 
 “当前局部速率非零”不再是错误。“固定强迫绝对地貌无稳态根”只作为被退役
 外层方程的诊断证据，不再触发无限 continuation。错误报告不得携带可发布的
-“最佳中间态”。
+“最佳中间态”。离线参考与生产结果存在非零差值不是运行时错误；只有该差异已经
+表现为上述硬不变式或既有质量门禁失败时，才要求调整求解策略。
 
-## 8. 实施阶段与决策门
+## 8. 实施阶段与验收
 
 ### 阶段 A：冻结契约与基线
 
@@ -379,33 +459,35 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 
 ### 阶段 D：引入私有因果形成协调器
 
-- 提取可单步推进的 P2 固体工作区；
-- 建立 P3 组成差分和保留式 `f64` formation state；
-- 接入每个耦合窗口起点—中点—终点的 P4 快平衡与两段 P5 稳定子步；
+- 保持 P2 one-shot 生产循环，仅为离线参考提供 `#[cfg(test)]` accepted-step
+  observer；
+- 完成 P2 resolved timeline 后以最终 P3 投影建立 `f64` formation state；
+- 接入 start P4、一次完整 P5 稳定推进和 endpoint P4 的生产 Lie-style 分裂；
 - 终点 P4 后只重算水文/过程率诊断，并强制校验终点 forcing 身份；
-- 完成步长加倍、守恒、确定性、取消和性能探针；
+- 完成守恒、确定性、取消、性能和代表性离线参考探针；
 - 删除外层绝对地貌 PTC 和普遍稳态发布门禁。
 
 交付物：只返回最终当前态、内部有物理时间且不要求不存在的稳态根的生产生成器。
 
-### 阶段 D→E：不可绕过的科学与性能决策门
+### 阶段 D→E：最终态与性能门
 
-进入公开 bundle、生产图和 UI 迁移前，必须提交完整参考时间线的机器/编译档、
-seed/profile、逐域耗时、峰值内存、取消延迟、终点 forcing 身份，以及同一
-post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
-以下条件同时成立才可继续：
+进入公开 bundle、生产图和 UI 迁移前，生产 Lie-style 路径必须同时满足：
 
-- 每个发布候选的最终 P4 都与最终完整地形/`SurfaceWaterGeometry` forcing
-  身份一致；
-- solid/sediment/water/component 与现有数值稳定性门禁全部通过；
-- 细化结果呈可审查的误差下降趋势；
-- 原始耦合误差已有文献、既有项目门禁或用户裁定形成的明确验收包络；
+- 最终 P4 与最终完整地形/`SurfaceWaterGeometry` forcing 身份一致；
+- solid/sediment/water/component、有限性、支持域和现有数值稳定性门禁通过；
+- 既有 P2/P3/P4/P5 最终态质量包络通过；
 - 现有 profile 的时间、内存和取消门禁通过。
 
-即使性能通过，只要误差包络尚未获批，也必须在证据提交后停止，由用户审阅并
-通过显式规格修订冻结包络。若趋势不收敛或性能不通过，必须记录成因并提出有
-出处的耦合策略修订；不得跳过终点 P4、缩短形成时域、放宽既有守恒/稳定性门禁
-或静默继续阶段 E。
+耦合策略改变时另运行一次 `Standard`/seed `42` 高成本参考探针，并把机器、
+编译档、最终态原始差值、守恒、质量指标、逐域耗时、峰值内存和指纹记录为研发
+证据。该探针不在每次构建或常规发布门中执行，也不要求先新造一个误差包络。
+
+若生产路径因耦合离散误差未通过前三项，必须记录成因，再显式修订为一次有界
+predictor-corrector 或其他有出处的耦合策略；若仅性能门失败，则先定位 P2/P4/
+P5 成本，再选择有出处的近似线性解、多分辨率工作域或内部有界求解，不能用会
+增加成本的 predictor-corrector 冒充性能修复。两类失败都不得跳过 endpoint P4、
+缩短形成时域、放宽守恒/稳定性门禁或以 clamp 修补。若已有门禁全部通过，不因
+离线参考存在非零轨迹/终态差异而停止阶段 E；最终产品仍由 UI 中的当前态验收。
 
 ### 阶段 E：原子 artifact 与生产图迁移
 
@@ -441,12 +523,14 @@ post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
 
 - `f64` 子 ULP 真越界被拒绝，`f32` 假越界不再出现；
 - 单一无补偿沉降率在有限物理时间内产生解析位移，而不是被要求收敛到零；
-- 高程组成恒等式、Airy 加载/卸载和全部库存逐步闭合；
-- 缩步误差随步长下降；不满足门禁时 typed failure 且无 artifact；
+- 高程组成恒等式、Airy 加载/卸载和全部库存闭合；
+- 一次完整生产构建只执行 start/endpoint 两次外层 P4 和一次完整 P5 推进；
 - 最终 P4 forcing 指纹等于从最终地形/`SurfaceWaterGeometry` 重建的 forcing
   指纹；
 - 终点诊断重算不推进 P5 时间或再次改变质量/水量库存；
 - 活动构造格元允许非零当前速率，过程归因必须完整。
+- `Standard`/seed `42` ignored/release 探针记录生产路径与高成本参考的原始最终态
+  差值、既有质量、守恒和耗时，但不把差值变成新发布阈值。
 
 ### 9.3 产品与 UI
 
@@ -460,6 +544,8 @@ post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
 
 - 不在本修订中新增深海压实、化学沉淀、俯冲沉积 sink 或经验盆地填充系数；
 - 不新增用户年龄、高程上限或稳态容差旋钮；
+- 不在本修订实现参数异质性、分布编辑 UI 或新的通用参数场 schema；§2.6 只冻结
+  后期真实消费者必须满足的输入/所有权边界；
 - 不发布地质历史、时间序列或恢复 checkpoint；
 - 不把通用 engine 改造成循环数据流框架；
 - 不保留无人消费的 trait、adapter 或双写 wire；
@@ -477,10 +563,15 @@ post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
    schema/缓存；私有协调器已经足够。
 5. **修改通用 Stage 支持循环或多输出。** 当前只有自然形成链一个真实消费者，
    属于投机性通用化。
-6. **每个 `2 Myr` 宏步只求一次 P4 并让它驱动整个 P5 宏步。** 该方案会冻结
-   宏步内反馈，并使最后一次 P5 推进后的发布气候滞后于最终地貌。
-7. **先按性能选 cadence，再补科学容差。** 违反先测后钉；参考路径与误差证据
-   必须先完成，包络须有出处或用户明确裁定。
+6. **生产中每个 `2 Myr` 宏步都执行 start/midpoint/endpoint P4。** 这是预测
+   模拟器级的轨迹细化成本；最终态地图没有证据需要为 128 个宏步支付该成本。
+7. **整次生成只求一个 P4，或以 start P4 直接发布。** 最后一次 P5 推进后会使
+   发布气候 forcing 滞后于最终地形/水面几何；最小生产路径仍必须 endpoint
+   closure。
+8. **把 `2/1/0.5 Myr` step-doubling 和新造误差包络设为每次发布门。** 高成本
+   参考应服务离线算法选择，不应把完整轨迹收敛升级为地图产品契约。
+9. **增加独立“噪声阶段”改写最终高程、边界或年龄。** 参数异质性只能让原
+   算法读取有出处的局部分布参数；中央事后抖动会破坏过程所有权与因果归属。
 
 ## 12. 每项承重技术的出处
 
@@ -492,15 +583,43 @@ post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
 - `128` 步参考形成时域：Sekai 已批准的现有产品参数
   `EVOLUTION_STEP_COUNT`；本修订只将其提升为 resolved model identity，
   不伪装成文献常量。未来改变该值必须先测量并走显式规格/UI 修订。
-- 地形—气候按物理时间共演而非冻结一侧：Paik & Kim (2021),
-  *Simulating the evolution of the topography–climate coupled system*, HESS 25,
-  DOI `10.5194/hess-25-2459-2021`。
-- 起点—中点—终点分裂顺序的数值背景：Strang (1968), *On the Construction
-  and Comparison of Difference Schemes*, DOI `10.1137/0705041`。Sekai
-  参考路径不据此宣称全系统二阶精度。
-- step doubling 的局部误差估计背景：Hairer, Nørsett & Wanner (1993),
-  *Solving Ordinary Differential Equations I*, second edition。它只支持测量
-  与细化比较，不提供 Sekai 的耦合误差容差。
+- P5 `100,000 yr` coarse-grained formation horizon：沿用已批准的
+  `2026-08-18-coupled-geomorphic-formation-p5-design.md` §5 产品参数，实施唯一
+  事实源为 `SURFACE_FORMATION_HORIZON_YEARS`。它不是地球地貌达到稳态的文献
+  常量，也不等于 P2 的 `256 Myr`；本修订只减少外层互调次数，不改变该时域。
+- 生产 Lie-style 顺序分裂的数值依据：Trotter (1959), *On the Product of Semi-Groups of
+  Operators*, DOI `10.1090/S0002-9939-1959-0108732-6`。它支持用顺序算子积近似
+  同一演化问题，不为 Sekai 的总时域、误差或“两次外层 P4”提供现成常量。
+- 过程耦合频率会改变离散结果，因而应离线测量而非假定轨迹已收敛：Santos,
+  Caldwell & Bretherton (2021), *Cloud Process Coupling and Time Integration in
+  the E3SM Atmosphere Model*, DOI `10.1029/2020MS002359`。该论文是顺序分裂
+  与耦合频率敏感性的工业级气候模型证据，不直接给出 Sekai cadence。
+- 地形—气候反馈存在但可按相异时间尺度异步耦合：Paik & Kim (2021),
+  *Simulating the evolution of the topography–climate coupled system*, DOI
+  `10.5194/hess-25-2459-2021`；Shen, Lynch, Poulsen & Yanites (2021),
+  *A modeling framework (WRF-Landlab) for simulating orogen-scale
+  climate-erosion coupling*, DOI `10.1016/j.cageo.2020.104625`。两者支持保留
+  feedback 机制和离线敏感性检查，不要求地图产品逐宏步高频互调。
+- 固定次数 predictor-corrector 与高成本迭代参考的类比：Schüller, Lemarié,
+  Birken & Blayo (2025), *Quantifying coupling errors in atmosphere-ocean-sea
+  ice models*, DOI `10.5194/gmd-18-9167-2025`，比较非迭代与迭代耦合并指出
+  非光滑参数化可能妨碍迭代收敛；Strang (1968), DOI `10.1137/0705041`，只为
+  离线 start/midpoint/endpoint 对称排序提供数值背景。本规格不据此声称 Sekai
+  全系统二阶或必须迭代收敛。
+- 球面相关参数场的数学依据：Lang & Schwab (2015), *Isotropic Gaussian Random
+  Fields on the Sphere*, DOI `10.1214/14-AAP1067`；一般流形/三角网格上的 Matérn
+  场与稀疏表示：Lindgren, Rue & Lindström (2011), DOI
+  `10.1111/j.1467-9868.2011.00777.x`；有方向和频谱控制的程序场：Lagae et al.
+  (2009), *Procedural Noise using Sparse Gabor Convolution*, ACM TOG 28(3)。
+- 参数采样的确定性与子流正交沿用现有可复核实现
+  `generators/natural/random.rs::LabeledSubstreams`：一次捕获 32-byte 根材料，
+  以长度分帧的 BLAKE3 标签派生 `rand_chacha::ChaCha8Rng`。这只定义重放和模块
+  隔离，不为任何物理参数的分布提供科学出处。
+- 海床空间异质性的直接地学类比：Goff & Jordan (1988), *Stochastic Modeling of
+  Seafloor Morphology*, DOI `10.1029/JB093iB11p13589`，使用带振幅、方向、特征
+  波数和分形维的各向异性协方差。它不证明任意 P2/P3/P5 物理参数应采用同一
+  分布；每个参数的边际/联合分布、相关尺度和因果映射仍须另找直接出处，否则
+  作为开放问题交用户裁定。
 - 基岩侵蚀、沉积输运与其他表面过程的组件化耦合：Shobe, Tucker & Barnhart
   (2017), *The SPACE 1.0 model*, GMD 10, DOI `10.5194/gmd-10-4577-2017`。
 - 地质时间上的构造、陆地—海岸—海洋沉积演化：Salles, Ding & Brocard
@@ -515,6 +634,7 @@ post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
   Higham (2002), *Accuracy and Stability of Numerical Algorithms*, second
   edition。
 
-上述来源支持机制和数值方法，不为 Sekai 新增任何未测量的门禁阈值。后续若
-需要新的 coupling cadence、误差容差或用户参数范围，必须先用生产算子测量，
-再以具名规格修订冻结。
+上述来源支持机制和数值方法，不为 Sekai 新增任何未测量的门禁阈值、具体耦合
+次数或参数分布。后续若需从生产 Lie-style 路径升级求解策略，或为某个物理参数引入
+空间分布，必须先用生产算子与代表性离线参考测量，再以具名规格修订冻结其直接
+出处、单位、支持域、适用范围和 UI 交付；不得用一个通用“自然感”系数代替。

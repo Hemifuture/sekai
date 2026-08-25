@@ -4,31 +4,34 @@
 
 **Goal:** 恢复 P2→P3→P4→P5 的单一过程所有权，以私有有限物理时间演化生成一个原子当前态 bundle，消除兼容高程污染、绝对地貌稳态误用和跨步 `f32` 状态回流，同时保持现有 UI 字段能力。
 
-**Architecture:** `world` 提供唯一 resolved formation timeline、借用型权威构造视图、P4/P5 sibling 当前态 bundle schema 与数值/守恒契约；`generators/natural` 内的领域协调器持有 P2/P3/P4/P5 私有工作状态，每个耦合窗口按起点—中点—终点 P4 与两段 P5 推进，验证终点 forcing 后原子接受，不改通用 `engine::Stage`。生产图最终只发布一个 `NaturalFormationBundleArtifact`，UI 从该 bundle 的最终 sibling 快照读取字段，不发布历史、伪时间或求解中间态。
+**Architecture:** `world` 提供唯一 resolved formation timeline、借用型权威构造视图、P4/P5 sibling 当前态 bundle schema 与数值/守恒契约；`generators/natural` 内的领域协调器先完成 P2 timeline 和最终 P3 投影，再以 start P4 → 一次完整 P5 → endpoint P4/零时间终点诊断执行生产 Lie-style sequential split，验证最终 forcing 后原子发布，不改通用 `engine::Stage`。生产图最终只发布一个 `NaturalFormationBundleArtifact`，UI 从该 bundle 的最终 sibling 快照读取字段，不发布历史、伪时间或求解中间态。
 
 **Tech Stack:** Rust 2024、serde、thiserror、blake3、现有 Stage/Artifact/BuildCancellation、现有 P2–P5 生产算子与 egui/eframe 呈现层；不新增第三方依赖。
 
 **Spec:** `docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md`
 
-**2026-08-25 科学修订：** 本计划已按规格 §0 重写耦合顺序、P4/P5 所有权、
-时间表出处与 D→E 决策门。实现不得恢复原稿“一宏步一次 P4”或把 P4 嵌入 P5。
+**2026-08-25 最终态/效率显式修订：** 本计划已按规格 §0 删除每宏步三次 P4、
+`2/1/0.5 Myr` 三层细化发布门和人工误差包络。生产只实现单次 Lie-style 分裂与
+endpoint closure；原三次 P4 路径仅保留为一个 `Standard`/seed `42` 离线参考
+探针。P4/P5 sibling 所有权和最终 forcing 身份要求不变。
 
 ## Global Constraints
 
 - 只发布最终当前态；P2/P3/P4/P5 的逐步状态、候选、拒绝步、伪时间和重试日程不得进入 schema、artifact、缓存恢复契约或 UI。
 - P2 只拥有固体地球演化、地壳物质与构造成因；P3 只做同一时刻固体状态到基础地形的投影；P4 只解当前边界上的快平衡；P5 只拥有地表、水圈、沉积和地表载荷 Airy 响应。
-- 每个耦合窗口必须执行 start P4 → 前半段 P5 → midpoint P4 → 后半段 P5 → endpoint P4 → 终点诊断重算；终点 P4 的 forcing 必须由终点完整地形及其 `SurfaceWaterGeometry` 重建。
+- 一次完整生产构建必须执行：P2 完成自己的 resolved timeline → 最终 P3 投影 → start P4 → P5 完整消费 `SURFACE_FORMATION_HORIZON_YEARS` → endpoint P4 → 零时间终点诊断；不得在每个 P2 宏步调用 P4，也不得把 P2 的 `128 × 2 Myr` 时域误传给 P5。终点 P4 forcing 必须由最终完整地形及其 `SurfaceWaterGeometry` 重建。
 - P4 climate 与 P5 surface formation 在 bundle 中是 sibling；P5 snapshot 不嵌入 climate，只以 `formation_climate_checkpoint_fingerprint` 绑定最终 P4。
 - 生产 P3/P4/P5 不得读取 `compatibility.tectonic_elevation_m`；只改这一兼容字段不得改变任何权威下游结果。
 - 跨步累计的高程组成和沉积质量库存保留 `f64`；`f32` 只在经过完整 `f64` 校验后生成 wire/GPU 快照，且不得回流成为下一步状态。
 - 不得 clamp 科学状态，不得扩大 `ELEVATION_MIN_M`/`ELEVATION_MAX_M`，不得按目标地貌做重映射、经验修形或特殊格元分支。
 - 不增加世界年龄、最高程、耦合 cadence、收敛容差或显示范围旋钮；形成时间线是 resolved 输入身份，不是本轮 UI 配置。
+- 后期“统一噪声”只表示同一物理算法的某些参数可由常数推广为有出处的空间分布。当前计划只记录 §0/规格 §2.6 的输入边界，不增加分布 schema、用户旋钮、中央噪声 stage 或无人消费的泛型抽象。
 - 不增加通用循环 stage、多输出 stage、反馈 trait 或无人消费的适配器；领域协调发生在 `src/generators/natural/`。
 - 每个任务严格 RED→GREEN→提交；无法产生 RED 的纯删除/文档步骤使用变异探针证明守门能力，并在提交正文如实说明。
 - 当前工作树已有未提交的 P5 R4、`f64`、UI 发布事务和测试改动。不得 reset、checkout、删除或混入无关提交；修改重叠文件时使用 `git add -p -- <paths>`，提交前必须检查 `git diff --cached --name-only` 与 `git diff --cached`。
 - 迭代期 P5/全链目标测试使用 `--release`；最终必须运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo check --target wasm32-unknown-unknown --all-features --lib` 和完整调试回归。
 - 算法任务在 UI 接入并由用户亲自验证前不得宣称交付完成。
-- Task 10 的公开 artifact/UI 迁移门同时检查终点一致性、守恒/稳定性、step-doubling 细化趋势、获批误差包络和既有性能包络；即使性能通过，只要误差包络未获批就必须停止。
+- Task 10 的公开 artifact/UI 迁移门只检查终点身份、硬不变式、既有质量包络和既有性能/取消包络；离线参考原始差值是研发证据，不新增发布阈值。
 
 ---
 
@@ -39,10 +42,10 @@
 - `src/world/natural/formation_bundle.rs`：最终当前态 bundle、schema、严格验证和只读子域访问器。
 - `src/generators/natural/causal_formation.rs`：P2/P3/P4/P5 私有因果协调器；只编排现有算子，不复制方程。
 - `src/generators/natural/causal_formation_stage.rs`：单输出 `NaturalFormationBundleArtifact`、质量报告封装和生产 stage/graph。
-- `src/generators/natural/surface_formation/state.rs`：跨步 `f64` 高程组成与沉积质量库存；最终 wire 投影的唯一入口。
+- `src/generators/natural/surface_formation/state.rs`：P5 子步间保留的 `f64` 高程组成与沉积质量库存；最终 wire 投影的唯一入口。
 - `tests/geologic_pipeline_contracts.rs`：模块所有权、兼容字段消融、bundle 原子性和生产图契约。
 - `tests/causal_formation_generation.rs`：有限时间、确定性、守恒、无重置与错误分类集成测试。
-- `tests/causal_formation_performance.rs`：Release-only 完整时间线、内存、取消和步长误差实测。
+- `tests/causal_formation_performance.rs`：Release-only 生产时间线、内存和取消实测；高成本参考只在 Task 9 ignored probe 中运行。
 - `tests/support/causal_formation.rs`：跨集成测试共享的生产输入/构建 fixture，不重写算法。
 
 ### 重点修改文件
@@ -65,19 +68,17 @@
 ResolvedWorldFormation.timeline()
         │
         ▼
-EvolvedTectonicStepper::propose_next()
-        │  EvolvedTectonicSnapshot
+EvolvedTectonicGenerator::generate_final()
+        │  final EvolvedTectonicSnapshot
         ▼
 AuthoritativeTectonicView ──► GeologicSubstrateGenerator
-        │                     PrimaryReliefGenerator
-        ▼
-FormationState::apply_geologic_delta()
+                              PrimaryReliefGenerator
         │
         ▼
-start forcing/P4 ─► first-half P5
+FormationState::from_final_p3()
         │
         ▼
-midpoint forcing/P4 ─► second-half P5
+start forcing/P4 ─► one complete P5 advance
         │
         ▼
 endpoint forcing/P4 ─► terminal P5 diagnostics (zero time advance)
@@ -91,16 +92,39 @@ NaturalFormationBundleArtifact
         └── surface_formation: NaturalSurfaceFormationSnapshot
                                                 │
                                                 ▼
-                              SphericalFormationFieldDocument/UI
+                               SphericalFormationFieldDocument/UI
 ```
+
+### 后期参数分布接缝（本计划不实现）
+
+后期去规则化任务沿用现有 `ResolvedWorldFormation` 输入通道，不给
+`CausalNaturalFormationInputs` 增加第二份 noise config。每个真实消费者在自己
+的 P2/P3/P5 resolved spec 中声明一个具体参数的分布配方；常数行为就是零离散度
+配方。共享实现只复用现有 `morphology::noise`、`FieldRecipe`/`GaborKernel` 与
+`LabeledSubstreams`，不创建能改写任意 artifact 的通用 stage/trait。
+
+后期每个具体配方至少需要：参数/方程项/所有者、单位与科学支持域、带出处的
+边际分布族及位置/尺度/形状、物理或角相关尺度与频带、确有需要时的各向异性及
+方向场、世界球面/物质随体/过程局部采样坐标、因果条件字段、有直接依据时的
+联合分布/交叉协方差、版本化子流标签、
+必须保持的总体矩或守恒约束，以及 `SurfaceRef`/半径/真实单元面积。工作分辨率
+只用于派生可解析频带，不作为 UI 旋钮；分布支持域按构造合法，禁止采样后 clamp。
+
+输出是原算法本次调用所读的私有 `f64` 参数值，不是新的世界字段。配方版本和
+标签进入输入/产物指纹，但采样场不进入历史 schema。P2 边界与洋壳条带若未来
+去规则化，应优先让已有阻力、裂谷倾向或铺展参数产生有出处的空间异质性，而非
+直接给最终边界或年龄数组加噪声。具体参数分布尚无统一直接出处，实施前必须
+逐项“先测后钉”；本计划不得预建类型、默认数值或 UI。
 
 ## 已完成的 Phase A 基线（本计划不重复改写）
 
-- 原设计事实已在 commit `e0af32d` 冻结并于 2026-08-25 获用户批准；其耦合 cadence、P4/P5 所有权与出处归因已由同日规格 §0 显式科学修订替代。
+- 原设计事实已在 commit `e0af32d` 冻结并于 2026-08-25 获用户批准；其耦合 cadence 已由规格 §0 的最终态/效率显式修订替代，P4/P5 sibling 所有权继续有效。
 - `cargo test --release --lib generators::natural::surface_formation::generation::tests::` 已通过 `3/3`；`cargo test --release --test formation_coast_isostasy` 已通过 `7/7`，锁住完整 `f64` 域内/真实越界两个方向。
 - Draft/seed `42` 已复现 `CellId(19366)` 的真实下界失败：完整候选 `-11000.000274626422 m`，唯一非零项是 `0.024603449 - 1.040666938 mm/year` 的构造净沉降；这否决外层绝对高程求根，不授权 clamp。
 - 当前生产 `compatibility()` 消费清单：`geologic_substrate.rs` 读取 crust kind/thickness/age；`primary_relief.rs` 读取 plate/crust geometry 且错误读取 compatibility elevation；`quality/primary_relief.rs` 做 P3 证据；`app/spherical_formation_display.rs` 只呈现 plate/crust category；`quality/evolved_tectonics.rs` 与 evolved tests 审计 legacy V3 产品。Task 2/3 迁移前三项；呈现与 P2 legacy 审计可继续使用 compatibility，但不得把高程传回权威科学链。
-- R4 固定 `100 ka` 探针已记录九组整步/两半步耗时 `13.8–17.9 min`，证明该固定时域与既有产品预算不相容；该数值只作失败基线，不进入新常量。Task 10 重新测量完整因果时间线。
+- R4 在既有 `100 ka` 构造时域上记录九组旧整步/两半步耦合路径耗时
+  `13.8–17.9 min`，证明旧求解与互调方式不满足既有产品预算；它不否定 P5
+  已冻结的构造时域，也不授权缩短时域。Task 10 重新测量新的单次生产分裂。
 
 ---
 
@@ -429,7 +453,7 @@ fn compose_primary_elevation(
 }
 ```
 
-现有各物理分量自身有出处的输入域限制保持；任何生成结果超出分量或总高程 artifact 域都 typed fail，不对结果 clamp。另把 `MantleGenerator::generate_spherical_from_streams`、`GeologicSubstrateGenerator::generate_from_streams` 与 `PrimaryReliefGenerator::generate_from_streams` 定为 crate-private；现有 public `generate` 只负责 capture 一次 `LabeledSubstreams` 后转调，协调器则在每个宏步复用同一组标签身份。
+现有各物理分量自身有出处的输入域限制保持；任何生成结果超出分量或总高程 artifact 域都 typed fail，不对结果 clamp。另把 `MantleGenerator::generate_spherical_from_streams`、`GeologicSubstrateGenerator::generate_from_streams` 与 `PrimaryReliefGenerator::generate_from_streams` 定为 crate-private；现有 public `generate` 只负责 capture 一次 `LabeledSubstreams` 后转调，协调器则在最终 P3 投影时复用同一组标签身份。
 
 - [ ] **Step 4: 运行 GREEN 与 P3 质量否决门**
 
@@ -578,102 +602,73 @@ git commit -m "Separate solid-earth aging from legacy relief" -m "Keep surface e
 
 ---
 
-### Task 5: 把 P2 runner 提取为可提议/接受的逐步演化器
+### Task 5: 保持 P2 单次生产入口并提供 test-only 参考观察点
 
 **Files:**
-- Create: `src/generators/natural/spherical_tectonics/stepper.rs`
 - Modify: `src/generators/natural/spherical_tectonics.rs`
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Modify: `src/generators/natural/spherical_tectonics/publication.rs`
-- Modify: `src/generators/natural/spherical_tectonics/workspace.rs`
-- Modify: `src/generators/natural/random.rs`
-- Test: `tests/evolved_tectonic_generation.rs`
-- Test: `tests/spherical_tectonic_causality.rs`
+- Test: `src/generators/natural/spherical_tectonics/runner.rs`
 
 **Interfaces:**
-- Consumes: `ProfileSurfaceBundle`, `ResolvedWorldFormation::timeline()`, P2 process kernels与 conservative remap。
-- Produces: crate-private `EvolvedTectonicStepper<'a>`、`TectonicStepCandidate`、`propose_next()`, `accept()`, `finish()`；协调器只能取得候选权威 snapshot，不能直接改 P2 workspace。
+- Consumes: `ProfileSurfaceBundle`、`ResolvedWorldFormation::timeline()`、P2 process kernels 与 conservative remap。
+- Produces: 生产仍只通过既有 one-shot P2 入口返回最终 `EvolvedTectonicSnapshot`；另有一个 `#[cfg(test)]`、crate-private 的 accepted-step observer 只供 Task 9 高成本参考探针使用，不返回历史集合。
 
-- [ ] **Step 1: 写 monolithic/stepper 等价 RED**
-
-在 `evolved_tectonic_generation.rs` 增加测试辅助入口（仅 `#[cfg(test)]` 对外）：
+- [ ] **Step 1: 写 one-shot/observer 最终产品等价 RED**
 
 ```rust
 #[test]
-fn accepted_stepper_sequence_matches_the_monolithic_p2_product() {
+fn test_only_step_observer_preserves_the_monolithic_p2_product() {
     for seed in [3_u64, 7, 42] {
         let fixture = evolved_fixture_for_seed(seed);
         let monolithic = generate_evolved(&fixture);
-        let stepped = generate_evolved_step_by_step(&fixture);
-        assert_eq!(stepped, monolithic, "seed {seed}");
+        let (observed_final, accepted_steps) =
+            generate_evolved_with_test_step_observer(&fixture);
+        assert_eq!(observed_final, monolithic, "seed {seed}");
+        assert_eq!(accepted_steps, fixture.formation.timeline().step_count());
     }
 }
 ```
 
-另加拒绝候选测试：`propose_next` 后不调用 `accept`，再次提议必须产生与第一次逐位相同的 candidate。
+该测试放在 `runner.rs` 的 crate 内部 `#[cfg(test)]` 模块；不得为了让 integration
+test 访问观察入口而放宽 production library 可见性。
 
 - [ ] **Step 2: 运行 RED**
 
-Run: `cargo test --release --test evolved_tectonic_generation accepted_stepper_sequence_`
+Run: `cargo test --release --lib test_only_step_observer_`
 
-Expected: 编译失败，指出 stepper 测试入口不存在。
+Expected: 编译失败，指出 test-only observer 不存在。
 
-- [ ] **Step 3: 提取逐步状态机而不改变 P2 方程顺序**
+- [ ] **Step 3: 在既有 P2 循环增加零成本生产观察边界**
 
-固定接口：
+把现有 runner 的循环体提取为 private
+`evolve_control_state_v5_with_observer(..., on_accepted_step)`；生产入口传 no-op
+closure，`#[cfg(test)]` helper 才把每个已通过 P2 自身预算/发布校验的 snapshot
+借给 Task 9 reference closure。observer 不取得 workspace/ledger 可变引用，不保存
+snapshot，不改变随机流，也不进入 serde/artifact/UI。
 
-```rust
-pub(in crate::generators::natural) struct EvolvedTectonicStepper<'a> {
-    bundle: &'a ProfileSurfaceBundle,
-    timeline: ResolvedFormationTimeline,
-    next_step: u16,
-    workspace: TectonicWorkspace,
-    material_ledger: EvolutionMaterialLedger,
-    lineage_ledger: EvolutionLineageLedger,
-    streams: LabeledSubstreams,
-    last_snapshot: EvolvedTectonicSnapshot,
-}
-
-pub(in crate::generators::natural) struct TectonicStepCandidate {
-    step_index: u16,
-    workspace: TectonicWorkspace,
-    material_ledger: EvolutionMaterialLedger,
-    lineage_ledger: EvolutionLineageLedger,
-    snapshot: EvolvedTectonicSnapshot,
-}
-
-impl<'a> EvolvedTectonicStepper<'a> {
-    pub fn new(
-        bundle: &'a ProfileSurfaceBundle,
-        spec: &TectonicSpec,
-        formation: &ResolvedWorldFormation,
-        streams: LabeledSubstreams,
-    ) -> Result<Self, EvolvedPublicationError>;
-    pub fn current_snapshot(&self) -> &EvolvedTectonicSnapshot;
-    pub fn propose_next(&self) -> Result<TectonicStepCandidate, EvolvedPublicationError>;
-    pub fn accept(&mut self, candidate: TectonicStepCandidate) -> Result<(), EvolvedPublicationError>;
-    pub fn finish(self) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError>;
-}
-```
-
-给 `LabeledSubstreams`、workspace 与 ledger 增加仅为候选事务所需的 `Clone`。`new` 从初始固体状态生成并保存 `last_snapshot`，让协调器能在第一宏步前建立 P3/P5 初态。`propose_next` 复制当前/next 双缓冲和两个 ledger，按原 runner 的既定顺序执行恰好一宏步，在临时候选上做必要 resample/remap 和预算校验；失败不触及 `self`。`accept` 校验 `candidate.step_index == self.next_step` 后替换工作状态与 `last_snapshot`。`finish` 只允许 `next_step == timeline.step_count()`，返回最后一个已接受 snapshot。原 `evolve_control_state_v5` 改为循环 `propose_next`/`accept`/`finish`，成为等价适配器。
+禁止创建 `EvolvedTectonicStepper`、`TectonicStepCandidate`、通用回调 trait，禁止
+仅为候选事务给 workspace、ledger 或 `LabeledSubstreams` 增加 `Clone`。生产仍
+运行原 one-shot 循环并只返回终点；reference closure 是第二个且唯一的实际
+调用者。
 
 - [ ] **Step 4: 运行 GREEN、确定性和预算回归**
 
 Run: `cargo test --release --test evolved_tectonic_generation --test spherical_tectonic_causality --test evolved_tectonic_material --test evolved_tectonic_publication`
 
-Expected: 全部 PASS；三 seed 最终产品逐位等价，拒绝候选不改变下一次提议。
+Expected: 全部 PASS；三 seed 的 observer/no-op 最终产品逐位等价，observer 次数
+等于 timeline step count，生产 API/序列化面没有新增历史状态。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/spherical_tectonics/stepper.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/workspace.rs src/generators/natural/random.rs tests/evolved_tectonic_generation.rs tests/spherical_tectonic_causality.rs
-git commit -m "Expose atomic tectonic evolution steps" -m "Let the natural formation coordinator couple to P2 without publishing history or mutating rejected candidates."
+git add src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs
+git commit -m "Expose a test-only tectonic reference observer" -m "Keep production P2 one-shot while allowing one offline coupling probe to inspect accepted steps without publishing history."
 ```
 
 ---
 
-### Task 6: 建立跨步 `f64` 地形组成状态
+### Task 6: 建立 P5 `f64` 地形组成状态
 
 **Files:**
 - Create: `src/generators/natural/surface_formation/state.rs`
@@ -685,9 +680,9 @@ git commit -m "Expose atomic tectonic evolution steps" -m "Let the natural forma
 
 **Interfaces:**
 - Consumes: `PrimaryReliefSnapshot`, `FormationElevationComponents`, `LocalAiryIsostasy::response_from_validated_surface`。
-- Produces: `FormationState::from_primary(&PrimaryReliefSnapshot) -> Result<Self, FormationStateError>`、`apply_geologic_delta(&mut self, previous_primary_m: &[f32], current_primary_m: &[f32]) -> Result<(), FormationStateError>`、`apply_surface_displacement_f64(&mut self, displacement_m: &[f64]) -> Result<(), FormationStateError>`、`current_elevation_exact_m(&self) -> &[f64]`、`current_elevation_f32(&self) -> &[f32]` 和 `wire_components(&self) -> Result<FormationElevationComponents, FormationStateError>`；`#[cfg(test)] pub(super) from_primary_values(Vec<f32>)` 只供 `surface_formation` 模块树内解析测试。所有累计值保存在 `f64`，不另设 f32 位移写入口。
+- Produces: `FormationState::from_primary(&PrimaryReliefSnapshot) -> Result<Self, FormationStateError>`、`apply_surface_displacement_f64(&mut self, displacement_m: &[f64]) -> Result<(), FormationStateError>`、`current_elevation_exact_m(&self) -> &[f64]`、`current_elevation_f32(&self) -> &[f32]` 和 `wire_components(&self) -> Result<FormationElevationComponents, FormationStateError>`；`#[cfg(test)] pub(super) from_primary_values(Vec<f32>)` 只供解析测试，`#[cfg(test)] replace_primary_for_offline_reference(...)` 只服务 Task 9 的单一高成本参考。所有生产累计值保存在 `f64`，不另设 f32 位移写入口。
 
-- [ ] **Step 1: 写亚 ULP、地质差量和真实越界 RED**
+- [ ] **Step 1: 写亚 ULP、test-only 参考差量和真实越界 RED**
 
 在 `state.rs` 单元测试固定三个解析契约：
 
@@ -702,10 +697,10 @@ fn sub_ulp_surface_changes_accumulate_without_f32_feedback() {
 }
 
 #[test]
-fn geologic_delta_preserves_the_retained_surface_history() {
+fn offline_reference_primary_replacement_preserves_surface_history() {
     let mut state = FormationState::from_primary_values(vec![100.0]).unwrap();
     state.apply_surface_displacement_f64(&[-12.0]).unwrap();
-    state.apply_geologic_delta(&[100.0], &[130.0]).unwrap();
+    state.replace_primary_for_offline_reference(&[100.0], &[130.0]).unwrap();
     assert_eq!(state.primary_relief_exact_m(), &[130.0]);
     assert_eq!(state.surface_adjustment_m(), &[-12.0]);
     assert_eq!(state.current_elevation_exact_m(), &[118.0]);
@@ -720,6 +715,10 @@ fn exact_f64_state_rejects_a_true_overflow_before_wire_rounding() {
     ));
 }
 ```
+
+`replace_primary_for_offline_reference` 必须受 `#[cfg(test)]` 约束，并只校验/应用
+新旧 P3 primary 的 `f64` 差量以保留参考路径的 P5 累计状态；生产 Lie-style 路径从最终
+P3 恰好调用一次 `from_primary`，不得暴露或调用该替换入口。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -916,11 +915,11 @@ git commit -m "Retain sediment inventory as f64 mass" -m "Make five-source solid
 
 **Interfaces:**
 - Consumes: `FormationState`、当前 P4、P5 hydrology/stream-power/hillslope/coast/sediment/Airy kernel。
-- Produces: `advance_surface_processes(state, inputs, duration_years, cancellation) -> SurfaceAdvanceReport`，恰好消费请求物理时长；`recompute_surface_diagnostics(state, endpoint_inputs, cancellation) -> TerminalSurfaceDiagnostics` 在零时间推进下重算终点水文/过程率；`finalize_surface_formation(..., upstream, ...) -> NaturalSurfaceFormationSnapshot` 是唯一纯 P5 wire 发布入口，`upstream` 只带最终 climate checkpoint 指纹而不嵌入 P4，也不再把 P2 瞬时率再次积分进地形。
+- Produces: world 层 `SURFACE_FORMATION_HORIZON_YEARS`（沿用已冻结 P5 规格的 coarse-grained horizon，不从 P2 timeline 派生）；`advance_surface_processes(state, inputs, duration_years, cancellation) -> SurfaceAdvanceReport` 恰好消费请求物理时长；`recompute_surface_diagnostics(state, endpoint_inputs, cancellation) -> TerminalSurfaceDiagnostics` 在零时间推进下重算终点水文/过程率；`finalize_surface_formation(..., upstream, ...) -> NaturalSurfaceFormationSnapshot` 是唯一纯 P5 wire 发布入口，`upstream` 只带最终 climate checkpoint 指纹而不嵌入 P4，也不再把 P2 瞬时率再次积分进地形。
 
 - [ ] **Step 1: 写有限时间与无双计数 RED**
 
-在 `generation.rs` 的 `#[cfg(test)]` 模块写测试，以便直接调用最小可见性的 state/stepper；integration test 不放宽生产可见性：
+在 `generation.rs` 的 `#[cfg(test)]` 模块写测试，以便直接调用最小可见性的 state/advance functions；integration test 不放宽生产可见性：
 
 ```rust
 #[test]
@@ -939,10 +938,9 @@ fn surface_step_consumes_the_complete_requested_duration() {
 }
 
 #[test]
-fn tectonic_delta_is_applied_once_by_the_coordinator_boundary() {
+fn surface_advance_does_not_reapply_final_p3_or_tectonic_rates() {
     let fixture = zero_surface_process_fixture();
-    let mut state = FormationState::from_primary_values(vec![100.0]).unwrap();
-    state.apply_geologic_delta(&[100.0], &[125.0]).unwrap();
+    let mut state = FormationState::from_primary_values(vec![125.0]).unwrap();
     advance_surface_processes(
         &mut state,
         fixture.inputs(),
@@ -1010,7 +1008,7 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
 ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError>;
 ```
 
-实现以 `remaining_years` 循环；每次取 `min(remaining_years, maximum_stable_step_years, maximum_elevation_domain_step_years)`，在 clone 候选上跑完整 hydrology→stream power→hillslope→coast→sediment→Airy→water 验证，成功才扣减 remaining。`ImplicitStreamPowerSolver` 拆成“当前 P2 rate 诊断”和“fluvial height solve”；该函数不再应用 `tectonic_displacement_m`，因为 P3 delta 已由协调器加入。
+实现以 `remaining_years` 循环；每次取 `min(remaining_years, maximum_stable_step_years, maximum_elevation_domain_step_years)`，在 clone 候选上跑完整 hydrology→stream power→hillslope→coast→sediment→Airy→water 验证，成功才扣减 remaining。`ImplicitStreamPowerSolver` 拆成“当前 P2 rate 诊断”和“fluvial height solve”；该函数不再积分 `tectonic_displacement_m`，因为生产 formation state 已从最终 P3 完整初始化，P2 当前率只作为终态诊断/有单位 forcing，不得在 P5 再次生成一份构造高程。
 
 `recompute_surface_diagnostics` 只在终点 P4 下重建 hydrology 和瞬时过程率，
 不得调用任何会改变 elevation component、sediment inventory、water reservoir
@@ -1068,16 +1066,16 @@ git commit -m "Advance P5 over finite physical time" -m "Retire the global absol
 - Test: `src/generators/natural/causal_formation.rs`
 
 **Interfaces:**
-- Consumes: Tasks 1–8 的 timeline、P2 stepper、P3 投影、P4 solver、`FormationState`、`advance_surface_processes` 和 `recompute_surface_diagnostics`。
+- Consumes: Tasks 1–8 的 timeline、P2 one-shot generator、P3 投影、P4 solver、`FormationState`、`advance_surface_processes` 和 `recompute_surface_diagnostics`；test-only reference 另消费 Task 5 observer。
 - Produces: crate-private `CausalNaturalFormationGenerator::generate_working(...) -> CausalFormationOutput`；output 包含最终 P2/P3/P4/P5 子域快照，以及只供终点身份/质量评估的私有 forcing，不包含历史或重复领域报告。
 
-- [ ] **Step 1: 写顺序、原子接受、确定性 RED**
+- [ ] **Step 1: 写顺序、失败全弃、确定性 RED**
 
 在 `causal_formation.rs` 的 `#[cfg(test)]` 模块增加：
 
 ```rust
 #[test]
-fn two_causal_steps_apply_geology_without_erasing_surface_history() {
+fn two_p2_steps_feed_one_p5_advance_over_the_p5_horizon() {
     let (inputs, mut rng) = causal_inputs_for_test_steps(RootSeed::new(42), 2);
     let output = CausalNaturalFormationGenerator::generate_working(
         inputs,
@@ -1086,7 +1084,7 @@ fn two_causal_steps_apply_geology_without_erasing_surface_history() {
     ).unwrap();
     assert_eq!(
         output.surface.evolution_report().integrated_duration_years().to_bits(),
-        4_000_000.0_f64.to_bits(),
+        SURFACE_FORMATION_HORIZON_YEARS.to_bits(),
     );
     assert!(output.surface.terrain_fields().elevation_components()
         .equilibrium_adjustment_m().iter().any(|value| *value != 0.0));
@@ -1097,13 +1095,22 @@ fn two_causal_steps_apply_geology_without_erasing_surface_history() {
 }
 
 #[test]
-fn a_rejected_surface_candidate_does_not_advance_p2_or_p5() {
+fn production_outer_schedule_is_two_p4_solves_and_one_p5_advance() {
+    let trace = production_schedule_trace_for_test(RootSeed::new(42), 2).unwrap();
+    assert_eq!(trace.p2_accepted_steps(), 2);
+    assert_eq!(trace.p3_projections(), 1);
+    assert_eq!(trace.p4_solves(), 2);
+    assert_eq!(trace.p5_advances(), 1);
+    assert_eq!(trace.terminal_diagnostic_recomputes(), 1);
+}
+
+#[test]
+fn a_failed_surface_candidate_is_deterministic_and_does_not_mutate_inputs() {
     let fixture = causal_failure_fixture();
-    let first = fixture.coordinator.propose_next().unwrap_err();
-    let second = fixture.coordinator.propose_next().unwrap_err();
+    let first = fixture.run_from_pristine_inputs().unwrap_err();
+    let second = fixture.run_from_pristine_inputs().unwrap_err();
     assert_eq!(first.to_string(), second.to_string());
-    assert_eq!(fixture.coordinator.accepted_step_count(), 0);
-    assert_eq!(fixture.coordinator.formation_state_bits(), fixture.initial_state_bits);
+    assert_eq!(fixture.source_artifact_fingerprints(), fixture.initial_source_fingerprints());
 }
 
 #[test]
@@ -1133,8 +1140,9 @@ fn endpoint_climate_is_forced_by_final_terrain_and_surface_water_geometry() {
 `ResolvedFormationTimeline::test_prefix(step_count)` 构造保持生产
 `2 Myr` 步长的 locked timeline 前缀；production `generate_working` 永远
 传 `formation.timeline()`。该 constructor 不允许改 P2 step duration，也不
-导出到非测试 library、serde、artifact 或 UI。P4/P5 的步长细化由下述私有
-surface-coupling helper 完成，禁止通过增加 P2 随机步伪造。
+导出到非测试 library、serde、artifact 或 UI。`production_schedule_trace_for_test`
+只记录外层调用类别和次数，不携带科学状态，不进入 production、serde、artifact
+或 UI；不得为测试公开协调器内部工作区。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -1142,7 +1150,7 @@ Run: `cargo test --release --lib generators::natural::causal_formation::tests`
 
 Expected: 编译失败，协调器不存在。
 
-- [ ] **Step 3: 实现唯一宏步顺序**
+- [ ] **Step 3: 实现唯一生产分裂顺序**
 
 ```rust
 pub(in crate::generators::natural) struct CausalNaturalFormationInputs<'a> {
@@ -1171,58 +1179,66 @@ pub(in crate::generators::natural) struct CausalFormationOutput {
 协调器和 bundle factory 校验终点 forcing 身份并评估最终 P4，既不进入 world
 bundle，也不序列化。
 
-每一宏步严格执行：
+一次完整构建严格执行：
 
-1. P2 `propose_next` → 当前 substrate/P3 → `apply_geologic_delta`；
-2. 从 post-geology 完整 terrain/`SurfaceWaterGeometry` 重建 forcing 并求
-   start P4；
-3. P5 以现有稳定子步消费 `step_duration_years / 2`；
-4. 从 midpoint terrain/`SurfaceWaterGeometry` 重建 forcing 并求 midpoint
-   P4；
-5. P5 再消费 `step_duration_years / 2`；
-6. 从 final terrain/`SurfaceWaterGeometry` 重建 forcing 并求 endpoint P4；
-7. 在 endpoint P4 下调用 `recompute_surface_diagnostics`，不推进时间；
-8. 校验 solid/sediment/water/component、最终 climate checkpoint 绑定和 endpoint
+1. 调用 P2 one-shot generator 完整消费 resolved timeline；其内部循环不调用
+   P3/P4/P5；
+2. 从最终 `AuthoritativeTectonicView` 生成一次 substrate/P3，并据此初始化
+   `FormationState`；
+3. 从该完整 terrain/`SurfaceWaterGeometry` 重建 forcing 并求 start P4；
+4. `advance_surface_processes` 以现有稳定子步恰好消费
+   `SURFACE_FORMATION_HORIZON_YEARS`；该值属于 P5，不从 P2 timeline 派生；
+5. 从 final terrain/`SurfaceWaterGeometry` 重建 forcing 并求 endpoint P4；
+6. 在 endpoint P4 下调用 `recompute_surface_diagnostics`，不推进时间；
+7. 校验 solid/sediment/water/component、最终 climate checkpoint 绑定和 endpoint
    forcing identity；
-9. 同时 accept P2 candidate 与 P5 candidate。
+8. 只有全部成功才组装 output；失败或取消不返回部分 P2/P5 artifact。
 
-该 start/midpoint/endpoint 序列是直接科学参考路径，不是可按性能跳过的 cadence
-旋钮，也不宣称整个非光滑离散系统具有形式二阶精度。P2/P3 随机形态都从协调器
-一次 capture 的 `LabeledSubstreams` 固定标签派生，重复调用不消耗相邻模块
-随机流。最后一个宏步也必须执行 endpoint P4；禁止用 midpoint P4 发布终态。
+这是一轮 Lie-style 顺序分裂，不是可配置 cadence。P2 和 P5 保留各自已批准且
+来源不同的 resolved horizon，因此不宣称同一 `Δt` 上的形式 Trotter 收敛阶。
+P2/P3 随机形态都从协调器一次 capture 的 `LabeledSubstreams` 固定标签派生，
+重复调用不消耗相邻模块随机流。实现不得预建 predictor-corrector 分支；只有
+离线证据证明该生产路径未满足既有最终态质量包络时，才按规格显式修订为一次
+固定校正。endpoint P4 始终必需，禁止以 start P4 发布终态。
 
-- [ ] **Step 4: 运行 GREEN 的短前缀解析/确定性测试和步长实测**
+- [ ] **Step 4: 运行 GREEN 的短前缀解析/确定性测试和离线参考探针**
 
 Run: `cargo test --release --lib generators::natural::causal_formation::tests`
 
-Expected: 全部 PASS；两步 fixture 的 accepted 顺序、无重置和拒绝原子性成立。
+Expected: 全部 PASS；两步 fixture 的 P2 accepted 顺序、单次 P3/P5、两次外层
+P4、终点闭合和拒绝原子性成立。
 
-同一模块提取不增加配置面的
-`advance_coupled_surface_window(post_geology_state, window_duration_years, ...)`；
-production 每个 P2 macro 调用一次并传完整宏步时长。增加 ignored
-`measure_one_macro_step_doubling`：在缩小的生产球面 fixture 上先生成恰好
-一个 post-geology P2/P3 candidate，然后从同一 candidate、同一 P5 状态和同一
-RNG 身份分别运行一个 `2 Myr`、两个 `1 Myr`、四个 `0.5 Myr` P4/P5
-coupling windows；不得增加 P2 step 或重抽 P2/P3 事件。
+同一模块增加 `#[cfg(test)]` 且 ignored 的
+`compare_production_split_with_high_cost_reference`。它固定使用生产
+`Standard`/seed `42`、相同 resolved inputs 和标签子流，分别运行：
 
-每个 coupling window 都执行完整 start/midpoint/endpoint P4 序列。使用生产
-访问器记录 exact elevation components、五来源 sediment mass、water
-reservoirs、最终 climate fields 与 checkpoint/forcing fingerprints，再输出
-`h→h/2`、`h/2→h/4` 的逐量原始差、范数和差值比到
-`target/natural-quality/causal-formation/step-doubling.json` 及 blake3。它只
-测量 P4↔P5 耦合误差，不新增通过阈值，也不对固定 P2 程序步声称收敛阶。
+- 生产路径：完整 P2 → 最终 P3 → start P4 → 一次完整 P5 → endpoint P4；
+- 高成本参考：每个 P2 宏步生成对应 P3 组成变化，把
+  `SURFACE_FORMATION_HORIZON_YEARS / timeline.step_count()` 的 P5 时长分配给
+  该窗口，并执行 start P4 → half P5 → midpoint P4 → half P5 → endpoint P4。
+  所有窗口的 P5 时长之和必须与生产路径相同；不得让 P5 跟随 P2 累计成
+  `256 Myr`。
 
-Run: `cargo test --release --lib measure_one_macro_step_doubling -- --ignored --nocapture`
+参考 helper、逐步状态和 trace 全部保持 test-private，不进入 library API、serde、
+artifact 或 cache。两条路径只输出最终 exact elevation components、
+`SurfaceWaterGeometry`、五来源 sediment mass、water reservoirs、climate fields、
+既有 quality metrics、守恒残差、wall time、peak RSS 与相关
+checkpoint/forcing/bundle fingerprints 到
+`target/natural-quality/causal-formation/offline-reference-standard-seed-42.json`
+及 blake3。不得生成 `2/1/0.5 Myr` 路径、差值比或新通过阈值。
 
-Expected: probe PASS 并生成非空 JSON；文件明确记录三条路径都消费 `2 Myr`、
-共享同一个 P2/P3 candidate、每个窗口的三次 P4 身份、终点 forcing 一致性、
-两层原始差与差值比，不进入 artifact。
+Run: `cargo test --release --lib compare_production_split_with_high_cost_reference -- --ignored --nocapture`
+
+Expected: probe 完成并生成非空 JSON；两条路径分别消费相同的 P2 timeline 和
+相同的 P5 horizon，并共享输入/随机身份，各自满足硬不变式；文件记录原始最终态
+差值与成本且不进入 artifact。该
+命令只在耦合策略改变或明确的离线研发复核时运行，不属于常规构建/CI 门。
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add src/generators/natural/causal_formation.rs src/generators/natural/mod.rs src/world/natural/formation.rs
-git commit -m "Coordinate causal natural formation" -m "Couple P2 through P5 over the resolved timeline with atomic candidate acceptance."
+git commit -m "Coordinate causal natural formation" -m "Run one production split over the resolved timeline and close the published climate against final terrain."
 ```
 
 ---
@@ -1360,35 +1376,39 @@ Expected: 全部 PASS；取消、数值越界、预算失败都没有 `NaturalFo
 
 `tests/causal_formation_performance.rs` 使用既有 P5 门禁事实：Draft/Standard/High
 分别 `15/90/300 s`，High retained dense state `1 GiB`，取消 `250 ms`；
-测试分别记录每个宏步 start/midpoint/endpoint P4 wall time 与 forcing/checkpoint
-fingerprint、两个 P5 half-macro wall time/substeps、P2/P3 wall time、peak RSS
-和最终 bundle fingerprint。Task 9 的 `step-doubling.json` 与本次完整时间线
-证据一起进入决策记录，但不自行钉新误差阈值。
+测试记录完整 P2 timeline、最终 P3、start P4、一次 P5 advance、endpoint P4、
+终点诊断各自的 wall time，P5 stable substeps、forcing/checkpoint fingerprints、
+peak RSS、取消延迟和最终 bundle fingerprint。不得为满足预算跳过 endpoint P4、
+缩短 P2 timeline/P5 horizon、把二者混成一个时域或新写一个 cadence。
 
 Run: `cargo test --release --test causal_formation_performance -- --ignored --nocapture`
 
-Expected: 生成 `target/natural-quality/causal-formation/performance.json` 与 `step-doubling.json`，且无部分 artifact。
+Expected: 生成 `target/natural-quality/causal-formation/performance.json`，生产外层
+调用数为两次 P4/一次 P5，且无部分 artifact。Task 9 的离线参考 JSON 单独保留，
+不由本性能测试重复运行。
 
-- [ ] **Step 6: 执行不可绕过的决策门并提交**
+- [ ] **Step 6: 验证既有最终态/性能门并提交**
 
-把机器、编译档、seed、profile、逐阶段耗时、峰值内存、取消延迟、每个终点
-forcing/checkpoint 身份、step-doubling 原始差/范数/细化趋势和文件 blake3 写入
-设计规格“实测修订”。决策门同时要求：
+把机器、编译档、seed、profile、逐阶段耗时、峰值内存、取消延迟、最终
+forcing/checkpoint 身份和文件 blake3 写入设计规格“实测修订”。Task 9 的
+`Standard`/seed `42` 离线参考另记录两条路径的原始最终态差值、既有质量、
+守恒和成本；它不产生新 envelope。迁移门同时要求：
 
-1. 所有 endpoint P4 forcing identity、solid/sediment/water/component 与现有
-   数值稳定性门禁通过；
-2. 同一 post-geology candidate 的 `2/1/0.5 Myr` 三层结果呈可审查的误差
-   下降趋势；只有 `2/1 Myr` 两层差值不得作为趋势结论；
-3. 原始耦合误差已有文献、既有项目门禁或用户裁定形成的明确验收包络；
+1. endpoint P4 forcing identity 与 sibling checkpoint identity 通过；
+2. solid/sediment/water/component、有限性、支持域和现有数值稳定性门禁通过；
+3. 既有 P2/P3/P4/P5 最终态质量包络通过；
 4. 既有 profile 时间/内存/取消门禁通过；
-5. 用户审阅实测修订并明确批准继续公开生产图/UI 迁移。
+5. 代表性离线参考文件及 blake3 已记录，且没有把中间轨迹写入 artifact。
 
-- 五项全部通过：提交本任务并继续 Task 11。
-- 仅缺误差包络或用户批准：提交短前缀实现与实测证据后停止，不得因性能通过
-  自动继续。
-- 趋势、科学身份、守恒/稳定性或性能任一失败：提交可复核证据后停止执行
-  Task 11–13，提出有出处的多速率策略规格修订；不得减少 Sekai `128 × 2 Myr`
-  参考时域、跳过 endpoint P4、放宽误差或发布未完成状态。
+- 五项全部通过：提交本任务并继续 Task 11；离线原始差值本身不构成失败。
+- 1–3 因耦合离散误差失败：提交可复核证据后停止执行 Task 11–13，判断是否需
+  显式修订为一次固定 predictor-corrector。仅第 4 项性能失败时，先定位 P2/P4/
+  P5 成本，再按规格允许的近似线性解、多分辨率工作域或内部有界求解另作有出处
+  修订；predictor-corrector 会增加成本，不是性能修复。两类失败都不得预先实现
+  双路径、减少 P2 timeline/P5 horizon、跳过 endpoint P4、放宽门禁或发布未完成
+  状态。
+- 仅参考探针因明确资源限制无法完成：记录机器与失败点，不把生产路径伪称为
+  已与参考一致；该离线研发缺口不在常规构建中反复支付，也不放宽 1–4。
 
 ```bash
 git add src/world/natural/formation_bundle.rs src/world/natural/mod.rs src/generators/natural/causal_formation_stage.rs src/generators/natural/mod.rs src/generators/natural/quality/global_circulation.rs src/generators/natural/quality/mod.rs tests/support/causal_formation.rs tests/support/mod.rs tests/geologic_pipeline_contracts.rs tests/causal_formation_generation.rs tests/causal_formation_performance.rs docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md
@@ -1598,7 +1618,7 @@ fn compatibility_elevation_ablation_preserves_p3_p4_p5_authority() {
 }
 ```
 
-该测试放在 `causal_formation.rs` 的 private test module；`generate_with_test_compatibility_mutation` 在每个 P2 candidate 生成后、任何 P3/P4/P5 消费前，只改 compatibility elevation 数组。helper 与 mutation enum 均受 `#[cfg(test)]` 约束，不增加 production 注入点。
+该测试放在 `causal_formation.rs` 的 private test module；`generate_with_test_compatibility_mutation` 在最终 P2 snapshot 生成后、任何 P3/P4/P5 消费前，只改 compatibility elevation 数组。helper 与 mutation enum 均受 `#[cfg(test)]` 约束，不增加 production 注入点。
 
 补全 seed `3/7/42` Draft，现有 atlas/evidence corpus，至少一个 Standard release build；断言非零当前 `dh/dt` 合法、所有位移可归因、solid/sediment/water/component budget 闭合。
 
@@ -1616,7 +1636,9 @@ Expected: 全部 PASS；atlas/golden 只因已批准的科学状态变化更新�
 
 Run: `cargo test --release --test causal_formation_performance -- --ignored --nocapture`
 
-Expected: 已在 Task 10 获准的完整时间线策略满足规格修订中记录的 gate；取消 latency、peak RSS、完整时长和 cache identity 全部 PASS。
+Expected: 生产 Lie-style 路径满足规格修订中的既有最终态/性能门；取消 latency、
+peak RSS、完整时长和 cache identity 全部 PASS。不得在这里重复运行高成本参考，
+也不得要求三层细化或新误差包络。
 
 - [ ] **Step 4: 运行项目级静态门禁**
 
@@ -1636,7 +1658,9 @@ Expected: 全部 PASS；按项目说明预留约 40 分钟，保留最终摘要�
 
 - [ ] **Step 6: 写完成记录并提交**
 
-完成记录必须包含：task/commit 对照、所有命令与退出码、性能 JSON/hash、兼容消融 hash、schema/stage version 变化、删除清单、已知开放问题，以及以下用户验收步骤：
+完成记录必须包含：task/commit 对照、所有命令与退出码、生产性能 JSON/hash、
+`offline-reference-standard-seed-42.json`/hash、兼容消融 hash、schema/stage version
+变化、删除清单、已知开放问题，以及以下用户验收步骤：
 
 1. 启动应用：`cargo run --release`。
 2. 在自然世界流程选择 Draft，seed 输入 `42`，执行生成。
@@ -1660,16 +1684,40 @@ git commit -m "Verify causal formation end to end" -m "Record scientific, perfor
   预测性地球动力学。
 - `128` 步参考形成时域与 current/next 双缓冲：步数沿用用户已批准的 Sekai
   产品参数 `EVOLUTION_STEP_COUNT`，作为 resolved model identity；它不是
-  Cortial 常量，也不宣称世界真实年龄。双缓冲是私有候选事务实现，不属于论文
-  科学结论。
-- 当前态由私有有限历史积分得到、产品只发布终点，且地形—气候反馈不能无证据
-  冻结：Paik & Kim (2021), *Simulating the evolution of the
-  topography–climate coupled system*, DOI `10.5194/hess-25-2459-2021`。
-- start/midpoint/endpoint 参考耦合顺序的数值背景：Strang (1968), DOI
-  `10.1137/0705041`；本计划不据此声称带拓扑/阈值的全系统具有形式二阶精度。
-  step doubling 与局部误差估计参考 Hairer, Nørsett & Wanner (1993),
-  *Solving Ordinary Differential Equations I*, 2nd ed.；它不提供 Sekai 的
-  误差容差，包络必须先测后钉并由用户批准。
+  Cortial 常量，也不宣称世界真实年龄。双缓冲是现有 P2 one-shot 循环的私有
+  实现细节，不开放为跨模块逐步候选接口，也不属于论文科学结论。
+- P5 `SURFACE_FORMATION_HORIZON_YEARS`：沿用已批准的
+  `2026-08-18-coupled-geomorphic-formation-p5-design.md` §5 `100,000 yr`
+  coarse-grained 产品参数；不是地球稳态时间，也不从 P2 的 `128 × 2 Myr`
+  timeline 派生。本计划只让 P5 恰好消费一次该 horizon，不新增数值。
+- 生产单次顺序分裂：Trotter (1959), *On the Product of Semi-Groups of
+  Operators*, DOI `10.1090/S0002-9939-1959-0108732-6`。它支持用顺序算子积
+  近似同一演化问题，不给出 Sekai 的总时域、误差或“两次外层 P4”常量。P2/P5
+  使用各自 resolved horizon，故本计划只主张 Lie-style 调用结构，不主张形式
+  Trotter 收敛阶；这是明确的工程类比和开放问题。
+- 当前态由私有有限历史得到、产品只发布终点，且反馈机制保留但可异步/低频
+  耦合：Paik & Kim (2021), DOI `10.5194/hess-25-2459-2021`；Shen, Lynch,
+  Poulsen & Yanites (2021), DOI `10.1016/j.cageo.2020.104625`。Santos,
+  Caldwell & Bretherton (2021), *Cloud Process Coupling and Time Integration
+  in the E3SM Atmosphere Model*, DOI `10.1029/2020MS002359`，直接说明顺序
+  过程耦合会对 cadence 敏感，因此本计划离线测量而不假定轨迹收敛。
+- 一次固定 predictor-corrector 和高成本迭代参考的数值类比：Schüller et al.
+  (2025), DOI `10.5194/gmd-18-9167-2025`，比较非迭代/迭代 Earth-system
+  coupling 并记录非光滑参数化的非收敛风险；Strang (1968), DOI
+  `10.1137/0705041`，只支持离线参考的对称排序背景。本计划不预实现校正路径，
+  也不声称全系统二阶。
+- 后期空间参数分布的数学入口：Lang & Schwab (2015), DOI
+  `10.1214/14-AAP1067`（球面相关随机场与频谱截断）；Lindgren, Rue &
+  Lindström (2011), DOI `10.1111/j.1467-9868.2011.00777.x`（流形/三角网格上的
+  Matérn/SPDE 场）；Lagae et al. (2009), *Procedural Noise using Sparse Gabor
+  Convolution*（方向/频谱控制）；Goff & Jordan (1988), DOI
+  `10.1029/JB093iB11p13589`（各向异性海床协方差的地学类比）。这些来源不为
+  任何具体 P2/P3/P5 参数给出通用分布；边际/联合分布、尺度、条件关系和值仍须
+  逐参数找直接出处，否则明确列为开放问题。
+- 参数采样的确定性/正交性沿用现有 `LabeledSubstreams` 工业实现：固定 32-byte
+  根材料经长度分帧的 BLAKE3 标签派生 `rand_chacha::ChaCha8Rng`；实现位于
+  `src/generators/natural/random.rs`，并由既有跨标签不干扰测试守门。该机制只
+  负责可重放与模块隔离，不替代物理分布出处。
 - 河流侵蚀的隐式下游栈：Braun & Willett (2013), DOI `10.1016/j.geomorph.2012.10.008`；抬升—侵蚀响应背景：Whipple & Tucker (1999), DOI `10.1029/1999JB900120`。
 - 河流侵蚀—输运—沉积连续方程与解析递推：Davy & Lague (2009), DOI `10.1029/2008JF001146`；Barnhart et al. (2019), DOI `10.5194/gmd-12-1267-2019`；pyBadlands/SPACE 的守恒库存实践见 Salles (2018) 与 Shobe et al. (2017)。
 - 非线性坡面稳定子步与离散最大值：Eymard, Gallouët & Herbin (2000), DOI `10.1016/S1570-8659(00)07005-8`；Landlab `TaylorNonLinearDiffuser` commit `8f59a66279cefa288b146735a939d95e9a6730c2`。
