@@ -66,6 +66,30 @@
   物理：偏离的是参数取值，不是方程（用户裁定：过程守物理，结果归玩家，
   系统只给建议值）。
 
+## 产品边界：最终态与科学近似（用户指令，2026-08-25）
+
+- Sekai 是**地图生成器**，不是生态、气候或地球动力学预测模拟器。产品是一次
+  生成结束时原子发布的最终当前态；时间轨迹、耦合中间态、迭代序列、拒绝步和
+  高精度参考解只属于私有求解过程，不是最终产物，不得仅为“模拟完整”而进入
+  artifact、持久缓存契约或 UI。
+- 科学性首先约束**机制**：方程与过程来源、单位、因果归属、质量/水量守恒、
+  数值域、跨层身份和最终态自洽必须正确。不得用无成因修形、魔法系数、
+  事后重映射或科学状态 clamp 掩盖机制或账本错误。
+- 效率允许约束**求解策略**：可以采用有数值分析或工业实践依据的算子分裂、
+  显式/隐式方法、预测—校正、固定或有界迭代、近似线性解、较低频率耦合和
+  多分辨率工作域。类似为同一数学问题选择牛顿法、拟牛顿法或其他迭代器；
+  近似可以改变求解成本和误差，不得偷换被求解的物理机制。
+- 默认选择满足最终态质量与性能目标的最小求解方案。除非最终地图有已证明的
+  真实需求，不得默认要求单次生成的完整时间轨迹收敛、保存历史，或把多级
+  步长加密/高精度参考求解设为每次构建的发布门禁。
+- 新增或改变近似策略时，先在代表性 seed/profile 语料上用生产算子与更高成本
+  的参考路径做离线对照，记录最终态误差、守恒、质量指标、耗时和适用范围。
+  参考路径只提供研发证据，不进入产品 schema；验收以最终态不变式、既有质量
+  包络、性能门禁和 UI 结果为准。若需要新的误差阈值，仍须遵循“先测后钉”和
+  出处纪律。
+- 近似导致最终态不守恒、身份不一致、非有限或越出科学支持域时，必须调整
+  求解器、步长或耦合策略；不得以地图生成器为理由放宽硬不变式或裁剪结果。
+
 ## 验收纪律：算法必须与 UI 同步交付（用户指令，2026-08-19）
 
 - 算法与生成管线的验收一定要与 UI 同步：任何一条生成链路、任何算法改动
@@ -119,10 +143,25 @@ histogram remapping, no fitted curves or magic coefficients to hit a
 number — a missed metric is a cause to find, not a result to edit. Where no
 source fits, record it as an open question for the user instead of inventing
 one. A world may leave Earth's parameter values (water inventory, land
-fraction); its mechanisms may not leave physics. Acceptance: algorithm work
-is delivered only
-when it reaches the UI and the user personally verifies it; agent
-self-checks are necessary but never sufficient. Workflow: task-per-commit
+fraction); its mechanisms may not leave physics. Product boundary: Sekai is a
+map generator, not a predictive ecosystem, climate, or geodynamics simulator.
+Only the atomically published final current state is a product; trajectories,
+iterations, rejected steps, and high-accuracy references remain private solver
+work. Physical mechanisms, units, causal ownership, conservation, numeric
+domains, artifact identity, and final-state consistency are hard constraints.
+Numerical strategy may use sourced and measured approximations—operator
+splitting, explicit/implicit or predictor-corrector schemes, bounded iteration,
+approximate linear solves, reduced coupling cadence, and multiresolution work
+domains—just as one chooses an iterative solver for the same mathematical
+problem. Choose the least expensive method that meets final-state quality and
+performance; do not require trajectory convergence, history publication, or a
+high-accuracy reference solve on every build without a demonstrated final-map
+need. Validate new approximations offline on representative seeds against a
+costlier reference path, while keeping conservation and final-state invariants
+mandatory and following measure-before-pinning for any new tolerance.
+Acceptance: algorithm work is delivered only when it reaches the UI and the
+user personally verifies it; agent self-checks are necessary but never
+sufficient. Workflow: task-per-commit
 plans in docs/superpowers/plans, frozen specs with explicit amendments,
 fmt/clippy/wasm gates, release-mode iteration for the slow P5 suites with
 a full debug regression at the end.
