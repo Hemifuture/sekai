@@ -205,6 +205,13 @@ NaturalFormationBundleArtifact
   物化和质量门清单断言应删除而非改为 ignored，并在 Task 9/11 按下述恢复门重建。
   测试不得硬编码具体 `CellId` 或完整越界数值，因为后续权威输入与 `f64` retained
   state 会合法改变首次失败位置；必须断言域关系、精度区别和重复运行确定性。
+- **实现期差异清单修订（2026-08-25）：**最终暂存审计确认
+  `src/generators/natural/surface_formation/mod.rs` 在 Task 0 起点 HEAD、tracked dirty
+  snapshot `32e0ca43a8055bf4a3c39e8c62cbb441de106734` 与完成候选中的 blob 均为
+  `85eebf590e963644b8e0bbae70df54d13ec778a7`，没有可提交差异。Task 0 仍逐字对
+  36 个具名路径执行 `git add` 以证明边界完整，但 Git 的 staged/commit name list
+  应为其余 35 个有实质差异的路径；不得为满足机械计数制造空白、注释或重导出
+  改动。该事实修订不改变代码范围、接口或后续任务所有权。
 
 ---
 
@@ -327,8 +334,9 @@ git diff --cached --check
 git commit -m "Land the inherited P5 publication baseline" -m "Make the existing R4 scientific and UI transaction work reproducible from its own commit before the contract-restoration tasks build on it."
 ```
 
-Expected: staged name list 与本任务清单完全一致；提交后相关路径干净，未跟踪
-`debug.log` 原字节仍在且未进入提交。
+Expected: 对完整 36 路径清单逐字执行 `git add`；按“实现期差异清单修订”，实际
+staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，且不得出现
+清单外路径。提交后相关路径干净，未跟踪 `debug.log` 原字节仍在且未进入提交。
 
 ---
 
