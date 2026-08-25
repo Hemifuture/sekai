@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准（2026-08-25），实施受 §8 决策门约束**
+状态：**用户已批准；2026-08-25 科学正确性修订待用户复核，实施受 §8 决策门约束**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -15,6 +15,30 @@
 本设计不另起一条地质管线。它恢复项目立项时已经冻结的单向职责边界，关闭
 后来登记但未退役的兼容债务，并更正“只发布当前状态”被误推导为“固定瞬时
 强迫下必须存在绝对高程稳态”的求解语义。
+
+## 0. 2026-08-25 科学正确性修订
+
+本修订显式替代原批准稿中“P4 按未定义控制器 cadence 求解”以及“P4 嵌入 P5
+snapshot”的部分，不改变 §1 的用户裁定。修订理由与结果如下：
+
+1. 地形—气候反馈不能在一个 `2 Myr` 构造宏步内无误差证据地冻结。直接参考
+   路径固定为宏步起点、时间中点和终点各求一次 P4；P5 分两个半宏步推进。
+2. 终点 P4 必须由终点完整地形及其 `SurfaceWaterGeometry` 重新构造 forcing
+   后求得；随后只重算终点水文与当前过程率，不再推进 P5 时间。因而发布的气候
+   不滞后于发布的地貌。
+3. P4 与 P5 是 bundle 中的 sibling artifact。P5 snapshot 只拥有地表、水圈、
+   沉积与当前过程诊断，通过最终 P4 checkpoint 指纹绑定其 forcing，但不复制
+   或嵌套气候科学状态。
+4. `2 Myr` 离散步由 Cortial et al. (2019) 的程序构造模型支持；`128` 步是
+   Sekai 当前已批准的参考形成时域参数，不是该论文给出的常量，也不代表地球
+   年龄。
+5. 直接参考路径在公开 artifact 与 UI 迁移前必须通过 §8 的科学与性能人工
+   决策门。三层步长加倍只产生原始误差与细化趋势，不自行发明容差。
+
+这里的起点—中点—终点序列是可复核的参考耦合路径，不宣称对包含拓扑变化、
+阈值和快平衡重求解的整个离散系统具有形式二阶精度。Strang 分裂与 step
+doubling 只为调用顺序和误差测量提供数值方法依据；Sekai 的实际收敛阶与可接受
+包络必须由生产算子实测并经用户批准。
 
 ## 1. 用户裁定与问题归因
 
@@ -88,9 +112,12 @@ P3 是同一时刻事实之间的确定性投影，不自行推进地质时间�
 
 ### 2.3 P4：当前边界条件上的快平衡
 
-P4 唯一拥有大气—海洋快时间尺度求解。它只读取当前完整地形、水库和已验证
-forcing，不读取 P5 累计器或 P2 工作区。P4 可以在一次私有因果演化中被多次
-调用，但只发布终态地形上的最后一次一致解。
+P4 唯一拥有大气—海洋快时间尺度求解。P4 solver 只读取已验证 forcing，不读取
+P5 累计器或 P2 工作区；唯一 forcing builder 把当前完整地形及其
+`SurfaceWaterGeometry` 投影为 P4 forcing。P4 可以在一次私有因果演化中被
+多次调用，但只发布终态地形/水面几何上的最后一次一致解。最终 P4 的
+`forcing_fingerprint` 必须等于从最终形成地形及其水面几何重建的 forcing
+指纹；缺少该一致性是 typed failure，不允许回退到宏步起点或中点气候。
 
 ### 2.4 P5：地表过程与水圈演化
 
@@ -103,7 +130,9 @@ P5 唯一拥有：
 - 当前高程组成与地表物质、水量账本。
 
 P5 不改变板块身份、地壳物质谱或构造事件。构造只以 P2 的权威状态变化或
-有单位强迫进入 P5；P5 不从兼容高度图反推构造成因。
+有单位强迫进入 P5；P5 不从兼容高度图反推构造成因。P5 snapshot 不拥有 P4
+snapshot；P5 算子显式借用当前 P4，发布时只记录最终 P4 checkpoint 指纹，
+防止跨域状态复制。
 
 ### 2.5 因果协调器：只编排，不拥有方程
 
@@ -171,14 +200,18 @@ S_current = evolve_causally(S_initial, resolved_formation_timeline)
 
 ### 4.2 形成时间的唯一事实源
 
-现有 P2 参考实现使用 Cortial et al. (2019) 的 `2 Myr` 离散步和 `128` 步有界
-演化。实施时把这两个执行事实从 `spherical_tectonics::runner` 私有常量提升为
-`world` 层的 resolved formation timeline；P2 与因果协调器只能消费这一份
-事实源。
+现有 P2 参考实现使用 `2 Myr` 离散步和 `128` 步有界演化。Cortial et al.
+(2019) 为球面程序板块过程和 `2 Myr` 离散步提供直接依据，但不为 `128` 步
+提供依据；`128` 是 Sekai 当前已批准、需要保持产品身份连续性的参考形成时域
+参数。实施时把这两个来源不同的执行事实从 `spherical_tectonics::runner`
+私有常量提升为 `world` 层的 resolved formation timeline；P2 与因果协调器
+只能消费这一份 resolved 事实源。
 
-该时间表是当前参考形成模型的参数，不宣称为所有世界的真实年龄。它进入输入
-身份和构建指纹，但本修订不增加用户年龄旋钮，也不把内部逐步历史发布到 UI。
-未来若用户可编辑形成时长，必须另做规格、性能包络和 UI 设计。
+P2 是有地质过程依据的程序形成模型，不是预测性地球动力学模拟。该时间表是
+当前参考形成模型的产品参数，不宣称为地球年龄、所有世界的真实年龄或论文
+校准常量。它进入输入身份和构建指纹，但本修订不增加用户年龄旋钮，也不把
+内部逐步历史发布到 UI。未来若用户可编辑形成时长，必须另做规格、性能包络
+和 UI 设计。
 
 ### 4.3 多速率调用顺序
 
@@ -188,15 +221,32 @@ S_current = evolve_causally(S_initial, resolved_formation_timeline)
 advance solid-earth state
 derive current authoritative geological components
 apply the geological-component delta to the retained f64 formation state
-solve P4 on the current complete surface when the coupling controller requires
-advance P5 surface/water processes with stable physical substeps
-validate solid, sediment, water and component identities
+rebuild forcing and solve start P4 from post-geology terrain/SurfaceWaterGeometry
+advance P5 through the first half-macro with stable physical substeps
+rebuild forcing and solve midpoint P4 from midpoint terrain/SurfaceWaterGeometry
+advance P5 through the second half-macro with stable physical substeps
+rebuild forcing and solve endpoint P4 from final terrain/SurfaceWaterGeometry
+recompute terminal hydrology and current process rates under endpoint P4
+validate solid, sediment, water, component and endpoint-forcing identities
 accept the complete candidate atomically
 ```
 
 P3 组成只能以新旧权威固体状态的组成差进入已保留地表；不得在每个宏步从 P3
 整张重置地形，否则会抹除 P5 历史。P5 子步长度由现有生产稳定性/误差算子
-决定；本规格不新增经验 cadence、收敛阈值或为性能拍定的魔法步长。
+决定。半宏步是 resolved 宏步时长的精确二分；终点诊断重算不增加物理时间、
+不重复沉积/侵蚀/水量积分。本规格不新增经验 cadence、收敛阈值或为性能拍定
+的魔法步长。
+
+三层步长加倍探针从同一个 post-geology P2/P3 candidate 和同一个 P5 起始状态
+出发，在相同 `2 Myr` 物理时域内比较一个 `2 Myr`、两个 `1 Myr` 和四个
+`0.5 Myr` 耦合窗口；每个窗口均完整执行自己的起点—中点—终点 P4 序列。
+探针记录高程组成、沉积库存、水库和气候场的原始差值、范数、指纹，以及
+`h→h/2` 与 `h/2→h/4` 的差值比。只有两层结果不能声称存在细化趋势。
+
+该探针固定同一个 P2 candidate，禁止为半步增加 P2 随机事件或改变随机流；它
+只测量 P4↔P5 耦合离散误差，不测量 Cortial/Sekai 固定 `2 Myr` P2 程序模型的
+连续极限。P2 不是预测性地球动力学，因此本规格不对其宣称时间收敛阶。探针不把
+“非零差值”误判为失败，也不在代码中钉未获批准的容差。
 
 如果现有误差控制不能在完整形成时间表上满足性能预算，先用生产算子记录误差
 与耗时，再以显式规格修订选择有出处的多速率策略；不得静默减少物理时长、
@@ -240,6 +290,33 @@ Pseudo-transient continuation 只允许用于已定义且预期存在根的内�
 - P5 hydrology、sediment、water reservoirs 与当前过程通量；
 - 各子域质量/水量/数值误差报告。
 
+所有权布局固定为：
+
+```text
+NaturalFormationBundle
+├── timeline
+├── tectonics
+├── substrate
+├── primary_relief
+├── climate: GlobalCirculationSnapshot
+├── surface_formation: NaturalSurfaceFormationSnapshot
+└── quality reports
+```
+
+`NaturalSurfaceFormationSnapshot` 不再包含 `formation_climate`。
+`SurfaceFormationUpstreamFingerprints` 只保留
+`formation_climate_checkpoint_fingerprint`，用于声明终点 P5 诊断由哪个
+sibling P4 checkpoint 驱动。world 层 bundle 结构 validator 必须验证共同
+`SurfaceRef`/timeline，以及
+`surface_formation.checkpoint().upstream()` 的 climate checkpoint 指纹等于
+sibling P4 checkpoint 指纹。需要 climate spec/work domain 的
+terrain→forcing 关系由 generators 层唯一 artifact factory 使用协调器保留的
+同一个 final forcing 做 contextual validation：sibling P4 的
+`forcing_fingerprint` 必须等于该 forcing 指纹，而该 forcing 必须由最终
+formation terrain 及其 water geometry 直接构造。world 不得越层调用 forcing
+builder，也不得为了无上下文反序列化复制一份 forcing 方程。P5 质量评估器显式
+接收 sibling climate 或完整 bundle，不从 P5 内部反向取得 P4。
+
 bundle 是一次耦合构建的事务边界，不是把各领域合并成一个算法模块。其内部
 payload 继续使用既有领域 snapshot 与验证器；下游只能通过具名只读访问器消费
 最终子域事实。
@@ -263,6 +340,8 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 - 固体、沉积或水量账本不闭合；
 - 完整 `f64` 状态非有限或超出 artifact 支持域；
 - P4 快平衡子问题不收敛；
+- 最终 P4 forcing 与最终地形/`SurfaceWaterGeometry` 身份不一致；
+- 耦合步长细化没有形成可审查趋势，或尚无获批的误差包络；
 - 资源上限或用户取消。
 
 “当前局部速率非零”不再是错误。“固定强迫绝对地貌无稳态根”只作为被退役
@@ -302,11 +381,31 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 
 - 提取可单步推进的 P2 固体工作区；
 - 建立 P3 组成差分和保留式 `f64` formation state；
-- 接入 P4 快平衡与 P5 稳定子步；
-- 完成相同步长细化、守恒、确定性、取消和性能探针；
+- 接入每个耦合窗口起点—中点—终点的 P4 快平衡与两段 P5 稳定子步；
+- 终点 P4 后只重算水文/过程率诊断，并强制校验终点 forcing 身份；
+- 完成步长加倍、守恒、确定性、取消和性能探针；
 - 删除外层绝对地貌 PTC 和普遍稳态发布门禁。
 
 交付物：只返回最终当前态、内部有物理时间且不要求不存在的稳态根的生产生成器。
+
+### 阶段 D→E：不可绕过的科学与性能决策门
+
+进入公开 bundle、生产图和 UI 迁移前，必须提交完整参考时间线的机器/编译档、
+seed/profile、逐域耗时、峰值内存、取消延迟、终点 forcing 身份，以及同一
+post-geology candidate 上 `2/1/0.5 Myr` 三层 step-doubling 的原始证据。
+以下条件同时成立才可继续：
+
+- 每个发布候选的最终 P4 都与最终完整地形/`SurfaceWaterGeometry` forcing
+  身份一致；
+- solid/sediment/water/component 与现有数值稳定性门禁全部通过；
+- 细化结果呈可审查的误差下降趋势；
+- 原始耦合误差已有文献、既有项目门禁或用户裁定形成的明确验收包络；
+- 现有 profile 的时间、内存和取消门禁通过。
+
+即使性能通过，只要误差包络尚未获批，也必须在证据提交后停止，由用户审阅并
+通过显式规格修订冻结包络。若趋势不收敛或性能不通过，必须记录成因并提出有
+出处的耦合策略修订；不得跳过终点 P4、缩短形成时域、放宽既有守恒/稳定性门禁
+或静默继续阶段 E。
 
 ### 阶段 E：原子 artifact 与生产图迁移
 
@@ -333,6 +432,8 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 
 - 兼容高程扰动不改变权威 P3/P5；
 - P2/P3/P4/P5 每个事实只有一个序列化所有者；
+- P4 climate 与 P5 surface formation 是 bundle sibling，P5 不嵌套气候；
+- P5 记录的终点 climate checkpoint 指纹等于 sibling P4 checkpoint 指纹；
 - 最终 bundle 不含中间状态序列、接受/拒绝步或伪时间；
 - 同 seed/spec 原生重复构建字节一致；WASM 量化事实一致。
 
@@ -342,6 +443,9 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
 - 单一无补偿沉降率在有限物理时间内产生解析位移，而不是被要求收敛到零；
 - 高程组成恒等式、Airy 加载/卸载和全部库存逐步闭合；
 - 缩步误差随步长下降；不满足门禁时 typed failure 且无 artifact；
+- 最终 P4 forcing 指纹等于从最终地形/`SurfaceWaterGeometry` 重建的 forcing
+  指纹；
+- 终点诊断重算不推进 P5 时间或再次改变质量/水量库存；
 - 活动构造格元允许非零当前速率，过程归因必须完整。
 
 ### 9.3 产品与 UI
@@ -373,15 +477,30 @@ payload 继续使用既有领域 snapshot 与验证器；下游只能通过具�
    schema/缓存；私有协调器已经足够。
 5. **修改通用 Stage 支持循环或多输出。** 当前只有自然形成链一个真实消费者，
    属于投机性通用化。
+6. **每个 `2 Myr` 宏步只求一次 P4 并让它驱动整个 P5 宏步。** 该方案会冻结
+   宏步内反馈，并使最后一次 P5 推进后的发布气候滞后于最终地貌。
+7. **先按性能选 cadence，再补科学容差。** 违反先测后钉；参考路径与误差证据
+   必须先完成，包络须有出处或用户明确裁定。
 
 ## 12. 每项承重技术的出处
 
-- 球面程序板块、`2 Myr` 步和 `128` 步有界演化：Cortial, Peytavie,
-  Galin & Guérin (2019), *Procedural Tectonic Planets*, Computer Graphics
-  Forum 38(2), DOI `10.1111/cgf.13628`。
+- 球面程序板块与 `2 Myr` 离散步：Cortial, Peytavie, Galin & Guérin
+  (2019), *Procedural Tectonic Planets*, Computer Graphics Forum 38(2),
+  DOI `10.1111/cgf.13614`，§3 与 Appendix A 的 `δt = 2 My`。论文支持
+  “有地质过程依据的程序近似”，不支持把 P2 宣称为预测性地球动力学，也未给出
+  Sekai 的 `128` 步。
+- `128` 步参考形成时域：Sekai 已批准的现有产品参数
+  `EVOLUTION_STEP_COUNT`；本修订只将其提升为 resolved model identity，
+  不伪装成文献常量。未来改变该值必须先测量并走显式规格/UI 修订。
 - 地形—气候按物理时间共演而非冻结一侧：Paik & Kim (2021),
   *Simulating the evolution of the topography–climate coupled system*, HESS 25,
   DOI `10.5194/hess-25-2459-2021`。
+- 起点—中点—终点分裂顺序的数值背景：Strang (1968), *On the Construction
+  and Comparison of Difference Schemes*, DOI `10.1137/0705041`。Sekai
+  参考路径不据此宣称全系统二阶精度。
+- step doubling 的局部误差估计背景：Hairer, Nørsett & Wanner (1993),
+  *Solving Ordinary Differential Equations I*, second edition。它只支持测量
+  与细化比较，不提供 Sekai 的耦合误差容差。
 - 基岩侵蚀、沉积输运与其他表面过程的组件化耦合：Shobe, Tucker & Barnhart
   (2017), *The SPACE 1.0 model*, GMD 10, DOI `10.5194/gmd-10-4577-2017`。
 - 地质时间上的构造、陆地—海岸—海洋沉积演化：Salles, Ding & Brocard
