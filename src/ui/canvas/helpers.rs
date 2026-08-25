@@ -24,16 +24,12 @@ pub fn draw_grid(ui: &mut egui::Ui, canvas_state: &CanvasState, screen_rect: egu
 
     // 计算两个级别的透明度
     let t = level_f.fract();
-    let alpha_1;
-    let alpha_2;
-    if t >= 0.0 {
-        alpha_1 = ((1.0 - t) * 255.0) as u8;
-        alpha_2 = (t * 255.0) as u8;
+    let (alpha_1, alpha_2) = if t >= 0.0 {
+        (((1.0 - t) * 255.0) as u8, (t * 255.0) as u8)
     } else {
         let t = t.abs();
-        alpha_1 = (t * 255.0) as u8;
-        alpha_2 = ((1.0 - t) * 255.0) as u8;
-    }
+        ((t * 255.0) as u8, ((1.0 - t) * 255.0) as u8)
+    };
 
     // println!("alpha_1: {:?}", alpha_1);
     // println!("alpha_2: {:?}", alpha_2);
