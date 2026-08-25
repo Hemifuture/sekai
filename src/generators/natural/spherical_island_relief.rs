@@ -1,8 +1,8 @@
 use super::fractal::FractalProfile;
 use super::morphology::noise::SphericalNoise3d;
 use crate::world::natural::{
-    CrustKind, SphericalMantleSnapshot, SphericalTectonicSnapshot, VOLCANIC_OFFSET_MAX_M,
-    VOLCANIC_OFFSET_MIN_M,
+    CrustKind, CrustKindField, PlateIdField, SphericalMantleSnapshot, SphericalPlate,
+    VOLCANIC_OFFSET_MAX_M,
 };
 use crate::world::spatial::{
     central_angle, project_tangent, SphericalSurfaceSnapshot, UnitVector3,
@@ -31,10 +31,12 @@ const SUPPORTED_BACKGROUND_FRACTION: f64 = 0.015;
 /// is disposable local geometry, not a stored reconstruction or global map axis.
 pub(super) fn synthesize_spherical_hotspot_offset(
     surface: &SphericalSurfaceSnapshot,
-    tectonic: &SphericalTectonicSnapshot,
+    plates: &[SphericalPlate],
+    cell_plates: &PlateIdField,
+    crust_kinds: &CrustKindField,
     mantle: &SphericalMantleSnapshot,
     morphology_seed: u32,
-) -> Vec<f32> {
+) -> Vec<f64> {
     let sample_spacing_m = representative_cell_spacing_m(surface);
     let mut result = mantle
         .volcanic_influence()
@@ -45,9 +47,8 @@ pub(super) fn synthesize_spherical_hotspot_offset(
                 return 0.0;
             }
             let cell = CellId::from_raw(index as u32);
-            let amplitude = volcanic_amplitude(tectonic, cell);
-            (f64::from(amplitude) * SUPPORTED_BACKGROUND_FRACTION * f64::from(influence).powi(2))
-                as f32
+            let amplitude = volcanic_amplitude(crust_kinds, cell);
+            amplitude * SUPPORTED_BACKGROUND_FRACTION * f64::from(influence).powi(2)
         })
         .collect::<Vec<_>>();
 
@@ -57,10 +58,10 @@ pub(super) fn synthesize_spherical_hotspot_offset(
             .cell(source)
             .expect("validated hotspot source is surface aligned")
             .centroid;
-        let source_plate = tectonic
-            .plate_for_cell(source)
+        let source_plate = cell_plates
+            .get(source.raw() as usize)
             .expect("validated tectonic field is cell aligned");
-        let velocity = tectonic.plates()[source_plate.raw() as usize]
+        let velocity = plates[source_plate.raw() as usize]
             .rotation()
             .velocity_mm_per_year(surface.radius(), source_radial)
             .expect("validated Euler rotation is radius compatible");
@@ -86,7 +87,7 @@ pub(super) fn synthesize_spherical_hotspot_offset(
                 continue;
             }
             let cell = CellId::from_raw(index as u32);
-            if tectonic.plate_for_cell(cell) != Some(source_plate) {
+            if cell_plates.get(cell.raw() as usize) != Some(source_plate) {
                 continue;
             }
             let radial = surface
@@ -122,36 +123,34 @@ pub(super) fn synthesize_spherical_hotspot_offset(
             let ridges = noise.ridged_coordinate(local, surface_ridges).powf(2.2);
             let surface_detail = 0.72 + 0.18 * fbm + 0.10 * ridges;
             let support = mantle_envelope.powf(0.35);
-            let amplitude = f64::from(volcanic_amplitude(tectonic, cell));
+            let amplitude = volcanic_amplitude(crust_kinds, cell);
             let strength_response = 0.55 + 0.45 * strength;
             let candidate =
                 amplitude * strength_response * morphology.powf(1.15) * support * surface_detail;
-            *value = value.max(candidate as f32);
+            *value = value.max(candidate);
         }
 
         let source_index = source.raw() as usize;
         if mantle.volcanic_influence()[source_index] > 0.0 {
-            let source_amplitude = volcanic_amplitude(tectonic, source);
-            result[source_index] = result[source_index].max(source_amplitude * strength as f32);
+            let source_amplitude = volcanic_amplitude(crust_kinds, source);
+            result[source_index] = result[source_index].max(source_amplitude * strength);
         }
     }
 
     for (index, value) in result.iter_mut().enumerate() {
         if mantle.volcanic_influence()[index] <= 0.0 {
             *value = 0.0;
-        } else {
-            *value = value.clamp(VOLCANIC_OFFSET_MIN_M, VOLCANIC_OFFSET_MAX_M);
         }
     }
     result
 }
 
-fn volcanic_amplitude(tectonic: &SphericalTectonicSnapshot, cell: CellId) -> f32 {
-    match tectonic
-        .crust_kind(cell)
+fn volcanic_amplitude(crust_kinds: &CrustKindField, cell: CellId) -> f64 {
+    match crust_kinds
+        .get(cell.raw() as usize)
         .expect("validated tectonic field is cell aligned")
     {
-        CrustKind::Oceanic => VOLCANIC_OFFSET_MAX_M,
+        CrustKind::Oceanic => f64::from(VOLCANIC_OFFSET_MAX_M),
         CrustKind::Continental => 2_400.0,
     }
 }

@@ -349,6 +349,7 @@ fn relief_generation_failure(error: SphericalReliefGenerationError) -> StageErro
             invalid_relief_input(error.to_string())
         }
         SphericalReliefGenerationError::InvalidLandFraction { .. }
+        | SphericalReliefGenerationError::InvalidLandFractionProjection { .. }
         | SphericalReliefGenerationError::InvalidReliefField(_) => {
             StageError::new(RELIEF_BUILD_FAILED_CODE, error.to_string())
         }

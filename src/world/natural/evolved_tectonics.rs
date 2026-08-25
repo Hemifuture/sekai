@@ -1040,6 +1040,34 @@ impl<'a> AuthoritativeTectonicView<'a> {
     pub(crate) fn crust_age_myr(self) -> &'a [f32] {
         self.snapshot.compatibility.crust_age_myr()
     }
+
+    pub(crate) fn plates(self) -> &'a [super::SphericalPlate] {
+        self.snapshot.compatibility.plates()
+    }
+
+    pub(crate) const fn cell_plates(self) -> &'a super::PlateIdField {
+        self.snapshot.compatibility.cell_plates()
+    }
+
+    pub(crate) fn boundaries(self) -> &'a [super::BoundaryRecord] {
+        self.snapshot.compatibility.boundaries()
+    }
+
+    pub(crate) fn lineation_east(self) -> &'a [f32] {
+        self.snapshot.compatibility.lineation_east()
+    }
+
+    pub(crate) fn lineation_north(self) -> &'a [f32] {
+        self.snapshot.compatibility.lineation_north()
+    }
+
+    pub(crate) fn orogeny_kind(self) -> &'a [super::SphericalOrogenyKind] {
+        self.snapshot.compatibility.orogeny_kind()
+    }
+
+    pub(crate) fn orogeny_age_myr(self) -> &'a [f32] {
+        self.snapshot.compatibility.orogeny_age_myr()
+    }
 }
 
 /// Immutable authoritative V5 tectonic causes and conservative diagnostics.

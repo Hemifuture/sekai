@@ -2,16 +2,15 @@ use std::sync::OnceLock;
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
-    gdh1_ocean_depth_m, oceanic_isostatic_elevation_m, oceanic_sediment_seafloor_rise_m,
-    EvolvedTectonicGenerator, GeologicSubstrateGenerator, PrimaryReliefGenerationError,
-    PrimaryReliefGenerator,
+    continental_airy_elevation_m, gdh1_ocean_depth_m, oceanic_isostatic_elevation_m,
+    oceanic_sediment_seafloor_rise_m, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
+    PrimaryReliefGenerationError, PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    CrustKind, EvolvedTectonicSnapshot, GeologicSpec, GeologicSubstrateSnapshot,
-    NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    TectonicSpec, WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    EvolvedTectonicSnapshot, GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile,
+    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
+    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -73,7 +72,7 @@ fn fixture() -> &'static Fixture {
 fn relief_rng(cancellation: Option<&BuildCancellation>) -> StageRng {
     let seed = derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.primary-relief", 1, "sekai.core"),
+        StageIdentity::new("natural.primary-relief", 3, "sekai.core"),
     );
     cancellation.map_or_else(
         || StageRng::from_seed(seed),
@@ -115,16 +114,6 @@ fn gdh1_depth_sediment_blanket_and_oceanic_buoyancy_keep_physical_ordering() {
 }
 
 #[test]
-fn dynamic_response_preserves_accumulated_relief_and_present_forcing_signs() {
-    assert_eq!(causal_accumulated_response_m(-3_000.0, 1.0, 0.0), 0.0);
-    assert_eq!(causal_accumulated_response_m(500.0, 0.0, 1.0), 0.0);
-    assert_eq!(causal_accumulated_response_m(-2_600.0, 0.0, 0.0), -2_600.0);
-    assert_eq!(dynamic_tectonic_response_m(1_000.0, 0.0, 0.0), 650.0);
-    assert_eq!(dynamic_tectonic_response_m(0.0, 1.0, 0.0), 250.0);
-    assert_eq!(dynamic_tectonic_response_m(0.0, 0.0, 1.0), -250.0);
-}
-
-#[test]
 fn generated_relief_closes_components_water_and_all_causal_supports() {
     let fixture = fixture();
     let surface = fixture.bundle.authoritative_surface();
@@ -155,62 +144,11 @@ fn generated_relief_closes_components_water_and_all_causal_supports() {
     }
     for index in 0..surface.cells().len() {
         let calculated = relief.isostatic_base_m()[index]
-            + relief.dynamic_tectonic_offset_m()[index]
             + relief.volcanic_construction_m()[index]
             + relief.passive_margin_offset_m()[index]
             + relief.conditioned_regional_detail_m()[index];
         assert!((relief.elevation_m()[index] - calculated).abs() <= 0.01);
     }
-}
-
-#[test]
-fn generated_dynamic_component_preserves_v5_response_with_causal_sign_projection() {
-    let fixture = fixture();
-    let surface = fixture.bundle.authoritative_surface();
-    let mut diagnostics = Vec::<Diagnostic>::new();
-    let relief = PrimaryReliefGenerator::generate(
-        surface,
-        &fixture.evolved,
-        &fixture.substrate,
-        &ReliefSpec::default(),
-        &mut relief_rng(None),
-        &mut diagnostics,
-    )
-    .unwrap();
-    let forcing = fixture.evolved.forcing();
-    let compatibility = fixture.evolved.compatibility();
-    // Continental crust inherits the causal V5 response; oceanic crust keeps
-    // only the rate response because its compatibility elevation is the same
-    // plate-cooling depth the Parsons-Sclater base already carries (T0
-    // calibration spec §4 L0).
-    let matching = (0..surface.cells().len())
-        .filter(|&index| {
-            let inherited = if fixture.substrate.crust_kind(index) == Some(CrustKind::Oceanic) {
-                0.0
-            } else {
-                causal_accumulated_response_m(
-                    compatibility.tectonic_elevation_m()[index],
-                    forcing.uplift_rate_mm_per_year()[index],
-                    forcing.subsidence_rate_mm_per_year()[index],
-                )
-            };
-            let expected = dynamic_tectonic_response_m(
-                inherited,
-                forcing.uplift_rate_mm_per_year()[index],
-                forcing.subsidence_rate_mm_per_year()[index],
-            );
-            (relief.dynamic_tectonic_offset_m()[index] - expected).abs() <= 0.13
-        })
-        .count();
-    assert!(
-        matching as f64 / surface.cells().len() as f64 >= 0.99,
-        "only {matching}/{} dynamic cells preserve the causal V5 response",
-        surface.cells().len()
-    );
-    let oceanic_cells = (0..surface.cells().len())
-        .filter(|&index| fixture.substrate.crust_kind(index) == Some(CrustKind::Oceanic))
-        .count();
-    assert!(oceanic_cells > 0);
 }
 
 #[test]

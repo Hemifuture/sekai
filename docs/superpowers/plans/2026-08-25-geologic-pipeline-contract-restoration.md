@@ -698,6 +698,8 @@ GREEN：把 Airy exact 方程及其 mantle/reference 常量收拢为 world 层�
 - Modify: `src/generators/natural/spherical_island_relief.rs`
 - Modify: `src/generators/natural/spherical_relief.rs`
 - Modify: `src/generators/natural/spherical_relief/directed_noise.rs`
+- Modify: `src/generators/natural/spherical_relief/tectonic_heightmap.rs`（只同步 legacy f64 helper 出口收窄）
+- Modify: `src/generators/natural/spherical_stage.rs`（只穷举映射新增 typed projection failure）
 - Modify: `src/generators/natural/spherical_mantle.rs`
 - Modify: `src/generators/natural/geologic_substrate.rs`
 - Modify: `src/world/natural/evolved_tectonics.rs`
@@ -715,6 +717,9 @@ GREEN：把 Airy exact 方程及其 mantle/reference 常量收拢为 world 层�
 - Test: `tests/primary_relief_generation.rs`
 - Test: `tests/primary_relief_quality.rs`
 - Test: `tests/primary_relief_stage.rs`
+- Test: `tests/relief_contracts.rs`
+- Test: `tests/spherical_relief_contracts.rs`
+- Test: `tests/natural_field_registry_spherical.rs`
 - Test: `tests/surface_water_geometry.rs`
 - Test: `tests/water_volume_sea_level.rs`
 - Test: `tests/terrain_audit_probe.rs`
@@ -814,6 +819,8 @@ Run: `cargo test --release --lib generators::natural::primary_relief::tests`
 Run: `cargo test --release --lib generators::natural::land_fraction::tests`
 
 Run: `cargo test --release --test surface_water_geometry --test water_volume_sea_level --test primary_relief_contracts --test primary_relief_stage`
+
+Run: `cargo test --release --test relief_contracts --test spherical_relief_contracts --test natural_field_registry_spherical`
 
 Expected: FAIL。当前大陆 compatibility elevation/current-rate 增益仍改变 P3；
 exact water API、V3 重复字段删除和 stage version 3 尚不存在。模块级 `--lib`
@@ -928,6 +935,8 @@ Run: `cargo test --release --lib generators::natural::land_fraction::tests`
 
 Run: `cargo test --release --test surface_water_geometry --test water_volume_sea_level --test primary_relief_contracts --test primary_relief_stage`
 
+Run: `cargo test --release --test relief_contracts --test spherical_relief_contracts --test natural_field_registry_spherical`
+
 Run: `cargo test --release --test primary_relief_generation --test primary_relief_quality --test primary_relief_evidence --test primary_relief_atlas --test terrain_audit_probe`
 
 Run: `cargo test --release --test primary_relief_performance`
@@ -942,7 +951,7 @@ P3 质量/证据全 PASS。若其余 morphology envelope 失败，本任务停�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/primary_relief.rs src/generators/natural/primary_relief_stage.rs src/generators/natural/mod.rs src/generators/natural/land_fraction.rs src/generators/natural/surface_water_geometry.rs src/generators/natural/spherical_island_relief.rs src/generators/natural/spherical_relief.rs src/generators/natural/spherical_relief/directed_noise.rs src/generators/natural/spherical_mantle.rs src/generators/natural/geologic_substrate.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/quality/primary_relief.rs src/world/natural/evolved_tectonics.rs src/world/natural/primary_relief.rs src/world/natural/surface_water_geometry.rs src/world/natural/relief.rs src/world/natural/mod.rs tests/geologic_pipeline_contracts.rs tests/primary_relief_atlas.rs tests/primary_relief_contracts.rs tests/primary_relief_evidence.rs tests/primary_relief_generation.rs tests/primary_relief_quality.rs tests/primary_relief_stage.rs tests/surface_water_geometry.rs tests/water_volume_sea_level.rs tests/terrain_audit_probe.rs
+git add docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md docs/superpowers/plans/2026-08-25-geologic-pipeline-contract-restoration.md src/generators/natural/primary_relief.rs src/generators/natural/primary_relief_stage.rs src/generators/natural/mod.rs src/generators/natural/land_fraction.rs src/generators/natural/surface_water_geometry.rs src/generators/natural/spherical_island_relief.rs src/generators/natural/spherical_relief.rs src/generators/natural/spherical_relief/directed_noise.rs src/generators/natural/spherical_relief/tectonic_heightmap.rs src/generators/natural/spherical_stage.rs src/generators/natural/spherical_mantle.rs src/generators/natural/geologic_substrate.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/quality/primary_relief.rs src/world/natural/evolved_tectonics.rs src/world/natural/primary_relief.rs src/world/natural/surface_water_geometry.rs src/world/natural/relief.rs src/world/natural/mod.rs tests/geologic_pipeline_contracts.rs tests/natural_field_registry_spherical.rs tests/primary_relief_atlas.rs tests/primary_relief_contracts.rs tests/primary_relief_evidence.rs tests/primary_relief_generation.rs tests/primary_relief_quality.rs tests/primary_relief_stage.rs tests/relief_contracts.rs tests/spherical_relief_contracts.rs tests/surface_water_geometry.rs tests/water_volume_sea_level.rs tests/terrain_audit_probe.rs
 git diff --cached --check
 git commit -m "Restore P3 as an authoritative projection" -m "Remove compatibility and unsourced rate-to-height inheritance, retain exact f64 working elevation, and reject unsupported values without post-hoc reshaping."
 ```

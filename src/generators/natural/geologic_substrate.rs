@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use super::random::LabeledSubstreams;
 use super::{MantleGenerator, SphericalMantleGenerationError};
 use crate::engine::StageRng;
 use crate::world::natural::{
@@ -39,16 +40,30 @@ impl GeologicSubstrateGenerator {
         formation: &ResolvedWorldFormation,
         rng: &mut StageRng,
     ) -> Result<GeologicSubstrateSnapshot, GeologicSubstrateGenerationError> {
+        validate_inputs(surface, evolved, spec, formation)?;
         rng.check_cancelled()
             .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
-        spec.validate()?;
-        formation.validate()?;
-        evolved.validate_against(surface)?;
+        let streams = LabeledSubstreams::capture(rng);
+        Self::generate_from_streams(surface, evolved, spec, formation, &streams)
+    }
 
-        let mantle =
-            MantleGenerator::generate_spherical(surface, spec, formation.mantle_bias(), rng)?;
-        rng.check_cancelled()
-            .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
+    pub(in crate::generators::natural) fn generate_from_streams(
+        surface: &SphericalSurfaceSnapshot,
+        evolved: &EvolvedTectonicSnapshot,
+        spec: &GeologicSpec,
+        formation: &ResolvedWorldFormation,
+        streams: &LabeledSubstreams,
+    ) -> Result<GeologicSubstrateSnapshot, GeologicSubstrateGenerationError> {
+        validate_inputs(surface, evolved, spec, formation)?;
+        check_cancelled(streams)?;
+
+        let mantle = MantleGenerator::generate_spherical_from_streams(
+            surface,
+            spec,
+            formation.mantle_bias(),
+            streams,
+        )?;
+        check_cancelled(streams)?;
 
         let count = surface.cells().len();
         let tectonic = evolved.authoritative_view();
@@ -62,8 +77,7 @@ impl GeologicSubstrateGenerator {
 
         for index in 0..count {
             if index % CANCELLATION_POLL_STRIDE == 0 {
-                rng.check_cancelled()
-                    .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
+                check_cancelled(streams)?;
             }
             let crust = tectonic
                 .crust_kinds()
@@ -101,8 +115,7 @@ impl GeologicSubstrateGenerator {
             permeability.push(local_permeability);
         }
 
-        rng.check_cancelled()
-            .map_err(|_| GeologicSubstrateGenerationError::Cancelled)?;
+        check_cancelled(streams)?;
         let sediment_sources = SedimentSourceKindField::from_kinds(
             bedrock
                 .iter()
@@ -127,6 +140,24 @@ impl GeologicSubstrateGenerator {
         snapshot.validate_against(surface, evolved)?;
         Ok(snapshot)
     }
+}
+
+fn validate_inputs(
+    surface: &SphericalSurfaceSnapshot,
+    evolved: &EvolvedTectonicSnapshot,
+    spec: &GeologicSpec,
+    formation: &ResolvedWorldFormation,
+) -> Result<(), GeologicSubstrateGenerationError> {
+    spec.validate()?;
+    formation.validate()?;
+    evolved.validate_against(surface)?;
+    Ok(())
+}
+
+fn check_cancelled(streams: &LabeledSubstreams) -> Result<(), GeologicSubstrateGenerationError> {
+    streams
+        .check_cancelled()
+        .map_err(|_| GeologicSubstrateGenerationError::Cancelled)
 }
 
 /// Applies the locked P3 causal lithology priority to one validated cell.

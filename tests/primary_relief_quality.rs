@@ -105,7 +105,6 @@ fn per_world_report_has_the_exact_locked_inventory_and_all_hard_gates_pass() {
             "coast-plate-boundary-overlap",
             "component-closure-max-error-m",
             "continental-ocean-median-separation-m",
-            "convergent-positive-dynamic-fraction",
             "elevation-safety-violation-count",
             "hotspot-positive-construction-fraction",
             "maximum-plate-area-fraction",
@@ -113,7 +112,6 @@ fn per_world_report_has_the_exact_locked_inventory_and_all_hard_gates_pass() {
             "old-young-ocean-depth-separation-m",
             "physical-land-area-fraction",
             "regional-detail-rms-ratio",
-            "subduction-negative-dynamic-fraction",
             "upstream-p2-hard-failure-count",
             "water-inventory-ratio",
             "water-volume-relative-error",
@@ -210,12 +208,10 @@ fn corpus_report_contains_only_statistics_and_recomputes_from_raw_samples() {
         vec![
             "coast-plate-boundary-overlap",
             "continental-ocean-median-separation-m",
-            "convergent-positive-dynamic-fraction",
             "hotspot-positive-construction-fraction",
             "old-young-ocean-depth-separation-m",
             "physical-land-area-fraction",
             "regional-detail-rms-ratio",
-            "subduction-negative-dynamic-fraction",
             "water-inventory-ratio",
         ]
     );
@@ -283,7 +279,7 @@ fn fixed_p0_corpus_passes_every_locked_p3_statistical_gate() {
             &mut stage_rng(seed, "natural.primary-relief", 1),
             &mut Vec::new(),
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("seed {seed} failed P3 generation: {error:?}"));
         evolved.push(tectonic);
         substrates.push(substrate);
         reliefs.push(relief);
@@ -296,35 +292,26 @@ fn fixed_p0_corpus_passes_every_locked_p3_statistical_gate() {
     let report = evaluate_primary_relief_corpus_quality(surface, &samples).unwrap();
     let mut continental_base = Vec::new();
     let mut ocean_base = Vec::new();
-    let mut continental_dynamic = Vec::new();
-    let mut ocean_dynamic = Vec::new();
     let mut continental_passive = Vec::new();
     let mut ocean_passive = Vec::new();
     let mut sea_levels = Vec::new();
     for index in 0..SEEDS.len() {
         sea_levels.push(f64::from(reliefs[index].sea_level_m()));
         for cell in 0..surface.cells().len() {
-            let (base, dynamic, passive) = if substrates[index].crust_kind(cell)
+            let (base, passive) = if substrates[index].crust_kind(cell)
                 == Some(sekai::world::natural::CrustKind::Continental)
             {
-                (
-                    &mut continental_base,
-                    &mut continental_dynamic,
-                    &mut continental_passive,
-                )
+                (&mut continental_base, &mut continental_passive)
             } else {
-                (&mut ocean_base, &mut ocean_dynamic, &mut ocean_passive)
+                (&mut ocean_base, &mut ocean_passive)
             };
             base.push(f64::from(reliefs[index].isostatic_base_m()[cell]));
-            dynamic.push(f64::from(reliefs[index].dynamic_tectonic_offset_m()[cell]));
             passive.push(f64::from(reliefs[index].passive_margin_offset_m()[cell]));
         }
     }
     for values in [
         &mut continental_base,
         &mut ocean_base,
-        &mut continental_dynamic,
-        &mut ocean_dynamic,
         &mut continental_passive,
         &mut ocean_passive,
         &mut sea_levels,
@@ -332,12 +319,10 @@ fn fixed_p0_corpus_passes_every_locked_p3_statistical_gate() {
         values.sort_by(f64::total_cmp);
     }
     eprintln!(
-        "P3 components medians: continental base/dynamic/passive={:.2}/{:.2}/{:.2}; ocean={:.2}/{:.2}/{:.2}; sea={:.2}",
+        "P3 components medians: continental base/passive={:.2}/{:.2}; ocean={:.2}/{:.2}; sea={:.2}",
         median_sorted(&continental_base),
-        median_sorted(&continental_dynamic),
         median_sorted(&continental_passive),
         median_sorted(&ocean_base),
-        median_sorted(&ocean_dynamic),
         median_sorted(&ocean_passive),
         median_sorted(&sea_levels),
     );

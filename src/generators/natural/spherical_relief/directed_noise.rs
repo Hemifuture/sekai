@@ -73,7 +73,7 @@ impl DirectedDetailNoise {
         lineation_north: f32,
         orogeny_kind: SphericalOrogenyKind,
         orogeny_age_myr: f32,
-    ) -> f32 {
+    ) -> f64 {
         let lineation = tangent_from_components(radial, lineation_east, lineation_north);
         let detail = match crust_kind {
             CrustKind::Continental => {
@@ -102,7 +102,7 @@ impl DirectedDetailNoise {
                 broad + fabric
             }
         };
-        detail as f32
+        detail
     }
 }
 

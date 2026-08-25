@@ -65,7 +65,7 @@ pub(super) fn build_tectonic_heightmap(
             tectonic.lineation_north()[index],
             tectonic.orogeny_kind()[index],
             tectonic.orogeny_age_myr()[index],
-        ))
+        ) as f32)
         .clamp(REGIONAL_OFFSET_MIN_M, REGIONAL_OFFSET_MAX_M);
 
         for (component, value) in [

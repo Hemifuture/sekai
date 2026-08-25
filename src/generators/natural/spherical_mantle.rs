@@ -8,7 +8,7 @@ use super::random::{LabeledSubstreams, HOTSPOT_SEEDS_LABEL};
 use super::topology::{farthest_point_seeds, NaturalTopologyIndex};
 use crate::engine::StageRng;
 use crate::world::natural::{
-    GeologicSpec, GeologicSpecError, MantleFormationBias, MantleValidationError,
+    GeologicSpec, GeologicSpecError, MantleActivity, MantleFormationBias, MantleValidationError,
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
 use crate::world::spatial::{
@@ -24,18 +24,19 @@ impl MantleGenerator {
         formation_bias: MantleFormationBias,
         rng: &mut StageRng,
     ) -> Result<SphericalMantleSnapshot, SphericalMantleGenerationError> {
-        spec.validate()?;
-        surface.validate()?;
-        let (hotspot_count, mantle_activity) = resolve_mantle_profile(spec, formation_bias);
-        if usize::from(hotspot_count) > surface.cells().len() {
-            return Err(SphericalMantleGenerationError::HotspotCountExceedsCells {
-                hotspots: hotspot_count,
-                cells: surface.cells().len(),
-            });
-        }
-
-        let view = SphericalNaturalSurface::from_validated(surface)?;
+        validate_inputs(surface, spec, formation_bias)?;
         let streams = LabeledSubstreams::capture(rng);
+        Self::generate_spherical_from_streams(surface, spec, formation_bias, &streams)
+    }
+
+    pub(in crate::generators::natural) fn generate_spherical_from_streams(
+        surface: &SphericalSurfaceSnapshot,
+        spec: &GeologicSpec,
+        formation_bias: MantleFormationBias,
+        streams: &LabeledSubstreams,
+    ) -> Result<SphericalMantleSnapshot, SphericalMantleGenerationError> {
+        let (hotspot_count, mantle_activity) = validate_inputs(surface, spec, formation_bias)?;
+        let view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&view);
         let mut seed_rng = streams.stream(HOTSPOT_SEEDS_LABEL);
         let sources =
@@ -45,7 +46,7 @@ impl MantleGenerator {
             sources,
             mantle_activity,
             PI * surface.radius().get(),
-            &streams,
+            streams,
         )?;
         let snapshot = SphericalMantleSnapshot::new(
             MANTLE_SNAPSHOT_SCHEMA_V2,
@@ -57,6 +58,23 @@ impl MantleGenerator {
         snapshot.validate_against_validated_surface(surface)?;
         Ok(snapshot)
     }
+}
+
+fn validate_inputs(
+    surface: &SphericalSurfaceSnapshot,
+    spec: &GeologicSpec,
+    formation_bias: MantleFormationBias,
+) -> Result<(u16, MantleActivity), SphericalMantleGenerationError> {
+    spec.validate()?;
+    surface.validate()?;
+    let (hotspot_count, mantle_activity) = resolve_mantle_profile(spec, formation_bias);
+    if usize::from(hotspot_count) > surface.cells().len() {
+        return Err(SphericalMantleGenerationError::HotspotCountExceedsCells {
+            hotspots: hotspot_count,
+            cells: surface.cells().len(),
+        });
+    }
+    Ok((hotspot_count, mantle_activity))
 }
 
 /// Errors returned while generating surface-bound spherical mantle forcing.

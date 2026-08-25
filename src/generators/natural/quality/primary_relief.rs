@@ -3,19 +3,17 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::generators::natural::evaluate_evolved_tectonic_quality;
 use crate::world::natural::{
-    BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
-    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
-    ELEVATION_MAX_M, ELEVATION_MIN_M,
+    CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot, NaturalQualityReport,
+    PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus, ELEVATION_MAX_M, ELEVATION_MIN_M,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 const METRIC_NAMESPACE: &str = "sekai.primary-relief-v1";
 const METRIC_VERSION: u16 = 1;
-const EXPECTED_METRIC_NAMES: [&str; 15] = [
+const EXPECTED_METRIC_NAMES: [&str; 13] = [
     "coast-plate-boundary-overlap",
     "component-closure-max-error-m",
     "continental-ocean-median-separation-m",
-    "convergent-positive-dynamic-fraction",
     "elevation-safety-violation-count",
     "hotspot-positive-construction-fraction",
     "maximum-plate-area-fraction",
@@ -23,7 +21,6 @@ const EXPECTED_METRIC_NAMES: [&str; 15] = [
     "old-young-ocean-depth-separation-m",
     "physical-land-area-fraction",
     "regional-detail-rms-ratio",
-    "subduction-negative-dynamic-fraction",
     "upstream-p2-hard-failure-count",
     "water-inventory-ratio",
     "water-volume-relative-error",
@@ -173,14 +170,6 @@ fn record_statistical_metrics(
         2_500.0,
     )?;
     builder.record_observation_at_least(
-        metric_id("convergent-positive-dynamic-fraction")?,
-        raw.convergent.finish(
-            "no active convergent uplift cells in the quality sample",
-            "convergent-dynamic",
-        )?,
-        0.80,
-    )?;
-    builder.record_observation_at_least(
         metric_id("hotspot-positive-construction-fraction")?,
         raw.hotspots.finish(
             "no mantle hotspots in the quality sample",
@@ -207,14 +196,6 @@ fn record_statistical_metrics(
         0.01,
         0.30,
     )?;
-    builder.record_observation_at_least(
-        metric_id("subduction-negative-dynamic-fraction")?,
-        raw.subduction.finish(
-            "no descending subduction cells in the quality sample",
-            "subduction-dynamic",
-        )?,
-        0.80,
-    )?;
     builder.record_observation_unbounded(
         metric_id("water-inventory-ratio")?,
         median_observation(
@@ -230,8 +211,6 @@ fn record_statistical_metrics(
 struct RawReliefMetrics {
     continental_elevation: Vec<f32>,
     ocean_elevation: Vec<f32>,
-    convergent: FractionAggregate,
-    subduction: FractionAggregate,
     young_ocean_depth: Vec<f32>,
     old_ocean_depth: Vec<f32>,
     detail_weighted_square: f64,
@@ -278,7 +257,6 @@ impl RawReliefMetrics {
             raw.elevation_weighted_square += area * f64::from(elevation).powi(2);
             raw.rms_samples += 1;
         }
-        append_boundary_samples(surface, evolved, relief, &mut raw)?;
         for hotspot in substrate.mantle().hotspots() {
             raw.hotspots.push(
                 relief.volcanic_construction_m()[hotspot.source_cell().raw() as usize] > 0.0,
@@ -301,8 +279,6 @@ impl RawReliefMetrics {
         self.continental_elevation
             .extend(other.continental_elevation);
         self.ocean_elevation.extend(other.ocean_elevation);
-        self.convergent.extend(other.convergent)?;
-        self.subduction.extend(other.subduction)?;
         self.young_ocean_depth.extend(other.young_ocean_depth);
         self.old_ocean_depth.extend(other.old_ocean_depth);
         self.detail_weighted_square += other.detail_weighted_square;
@@ -346,62 +322,6 @@ impl RawReliefMetrics {
     }
 }
 
-fn append_boundary_samples(
-    surface: &SphericalSurfaceSnapshot,
-    evolved: &EvolvedTectonicSnapshot,
-    relief: &PrimaryReliefSnapshot,
-    raw: &mut RawReliefMetrics,
-) -> Result<(), QualityBuildError> {
-    let tectonic = evolved.compatibility();
-    let forcing = evolved.forcing();
-    for (edge, boundary) in surface.edges().iter().zip(tectonic.boundaries()) {
-        let [first, second] = edge.cells.map(|cell| cell.raw() as usize);
-        match boundary.kind {
-            BoundaryKind::Subduction => {
-                let descending = boundary.subducting_plate.ok_or_else(|| {
-                    invalid_input("subduction", "missing descending plate".to_owned())
-                })?;
-                let first_owner = tectonic
-                    .plate_for_cell(edge.cells[0])
-                    .ok_or_else(|| invalid_input("cell-plates", format!("missing cell {first}")))?;
-                let (descending_cell, overriding_cell) = if first_owner == descending {
-                    (first, second)
-                } else {
-                    (second, first)
-                };
-                if forcing.subsidence_rate_mm_per_year()[descending_cell]
-                    > forcing.uplift_rate_mm_per_year()[descending_cell]
-                {
-                    raw.subduction
-                        .push(relief.dynamic_tectonic_offset_m()[descending_cell] < 0.0)?;
-                }
-                if forcing.uplift_rate_mm_per_year()[overriding_cell]
-                    > forcing.subsidence_rate_mm_per_year()[overriding_cell]
-                {
-                    raw.convergent
-                        .push(relief.dynamic_tectonic_offset_m()[overriding_cell] > 0.0)?;
-                }
-            }
-            BoundaryKind::ContinentalCollision => {
-                for index in [first, second] {
-                    if forcing.uplift_rate_mm_per_year()[index]
-                        > forcing.subsidence_rate_mm_per_year()[index]
-                    {
-                        raw.convergent
-                            .push(relief.dynamic_tectonic_offset_m()[index] > 0.0)?;
-                    }
-                }
-            }
-            BoundaryKind::None
-            | BoundaryKind::Weak
-            | BoundaryKind::ContinentalRift
-            | BoundaryKind::OceanicRidge
-            | BoundaryKind::Transform => {}
-        }
-    }
-    Ok(())
-}
-
 fn coast_plate_overlap(
     surface: &SphericalSurfaceSnapshot,
     evolved: &EvolvedTectonicSnapshot,
@@ -439,7 +359,6 @@ fn component_closure(relief: &PrimaryReliefSnapshot) -> (f64, usize) {
     let maximum = (0..relief.elevation_m().len())
         .map(|index| {
             let calculated = relief.isostatic_base_m()[index]
-                + relief.dynamic_tectonic_offset_m()[index]
                 + relief.volcanic_construction_m()[index]
                 + relief.passive_margin_offset_m()[index]
                 + relief.conditioned_regional_detail_m()[index];
@@ -461,7 +380,6 @@ fn non_finite_count(
         substrate.heat_flow_mw_m2(),
         substrate.volcanic_influence(),
         relief.isostatic_base_m(),
-        relief.dynamic_tectonic_offset_m(),
         relief.volcanic_construction_m(),
         relief.passive_margin_offset_m(),
         relief.conditioned_regional_detail_m(),

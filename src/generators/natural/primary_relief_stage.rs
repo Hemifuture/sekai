@@ -234,7 +234,7 @@ impl Stage for PrimaryReliefStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {
@@ -330,8 +330,9 @@ fn relief_failure(error: PrimaryReliefGenerationError) -> StageError {
         | PrimaryReliefGenerationError::InvalidEvolved(_)
         | PrimaryReliefGenerationError::InvalidSubstrate(_)
         | PrimaryReliefGenerationError::InvalidSpec(_) => invalid_input(error.to_string()),
-        PrimaryReliefGenerationError::InvalidReliefField(_)
-        | PrimaryReliefGenerationError::InvalidCompatibility(_)
+        PrimaryReliefGenerationError::ComponentLengthMismatch { .. }
+        | PrimaryReliefGenerationError::ComponentOutOfRange { .. }
+        | PrimaryReliefGenerationError::ElevationOutOfRange { .. }
         | PrimaryReliefGenerationError::InvalidWaterSolve(_)
         | PrimaryReliefGenerationError::InvalidLandFractionSelection(_)
         | PrimaryReliefGenerationError::InvalidSnapshot(_) => {

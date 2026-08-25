@@ -5,7 +5,7 @@ use crate::world::natural::LandOceanKind;
 /// One deterministic area-weighted sea-level selection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct LandFractionSelection {
-    pub(super) sea_level_m: f32,
+    pub(super) sea_level_m: f64,
     pub(super) actual_land_fraction: f64,
     pub(super) target_land_fraction: f64,
 }
@@ -22,7 +22,7 @@ pub(super) enum LandFractionSelectionError {
     #[error("total surface area must be finite and positive, found {found}")]
     InvalidTotalArea { found: f64 },
     #[error("elevation at index {index} must be finite, found {found}")]
-    InvalidElevation { index: usize, found: f32 },
+    InvalidElevation { index: usize, found: f64 },
     #[error("target land fraction must be finite and within 0..=1, found {found}")]
     InvalidTarget { found: f64 },
     #[error("no finite sea level can represent the selected land prefix")]
@@ -32,7 +32,7 @@ pub(super) enum LandFractionSelectionError {
 /// Selects the closest representable land fraction without splitting equal-height plateaus.
 pub(super) fn select_area_weighted_sea_level(
     cell_areas: &[f64],
-    elevations_m: &[f32],
+    elevations_m: &[f64],
     target_land_fraction: f64,
 ) -> Result<LandFractionSelection, LandFractionSelectionError> {
     if cell_areas.is_empty() && elevations_m.is_empty() {
@@ -64,7 +64,7 @@ pub(super) fn select_area_weighted_sea_level(
         }
         total_area += area;
         ranked.push((
-            LandOceanKind::quantized_centimeters(elevation),
+            LandOceanKind::quantized_centimeters_exact(elevation),
             index,
             elevation,
             area,
@@ -104,7 +104,8 @@ pub(super) fn select_area_weighted_sea_level(
         .iter()
         .zip(elevations_m)
         .filter_map(|(&area, &elevation)| {
-            (LandOceanKind::classify(elevation, sea_level_m) == LandOceanKind::Land).then_some(area)
+            (LandOceanKind::classify_exact(elevation, sea_level_m) == LandOceanKind::Land)
+                .then_some(area)
         })
         .sum::<f64>();
     Ok(LandFractionSelection {
@@ -114,30 +115,10 @@ pub(super) fn select_area_weighted_sea_level(
     })
 }
 
-fn sea_level_above_plateau(plateau: i64) -> Option<f32> {
-    if plateau == i64::MAX {
-        return None;
-    }
-    let mut candidate = ((plateau as f64 + 1.0) / 100.0) as f32;
-    while candidate.is_finite() && LandOceanKind::quantized_centimeters(candidate) <= plateau {
-        candidate = next_up(candidate)?;
-    }
-    candidate.is_finite().then_some(candidate)
-}
-
-fn next_up(value: f32) -> Option<f32> {
-    if value == f32::INFINITY {
-        return None;
-    }
-    if value == 0.0 {
-        return Some(f32::from_bits(1));
-    }
-    let bits = value.to_bits();
-    Some(f32::from_bits(if value > 0.0 {
-        bits + 1
-    } else {
-        bits - 1
-    }))
+fn sea_level_above_plateau(plateau: i64) -> Option<f64> {
+    let next = plateau.checked_add(1)?;
+    let candidate = LandOceanKind::meters_from_quantized_centimeters_exact(next)?;
+    (LandOceanKind::quantized_centimeters_exact(candidate) > plateau).then_some(candidate)
 }
 
 #[cfg(test)]
@@ -146,15 +127,15 @@ mod tests {
 
     #[test]
     fn weighted_selection_uses_surface_area_instead_of_cell_count() {
-        let elevations = [100.0_f32, 90.0, 80.0, 70.0];
-        let original_bits = elevations.map(f32::to_bits);
+        let elevations = [100.0_f64, 90.0, 80.0, 70.0];
+        let original_bits = elevations.map(f64::to_bits);
 
         let selection =
             select_area_weighted_sea_level(&[0.60, 0.20, 0.10, 0.10], &elevations, 0.60).unwrap();
 
         assert_eq!(selection.sea_level_m, 100.0);
         assert!((selection.actual_land_fraction - 0.60).abs() <= f64::EPSILON);
-        assert_eq!(elevations.map(f32::to_bits), original_bits);
+        assert_eq!(elevations.map(f64::to_bits), original_bits);
     }
 
     #[test]
@@ -166,6 +147,23 @@ mod tests {
         assert!(selection.sea_level_m >= 100.001);
         assert!((selection.actual_land_fraction - 0.70).abs() <= f64::EPSILON);
         assert!((selection.target_land_fraction - 0.40).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn land_fraction_selection_consumes_exact_elevation() {
+        let threshold = 200_000.005_f64;
+        let projected = threshold as f32;
+        let f32_ulp = f64::from(f32::from_bits(projected.to_bits() + 1)) - f64::from(projected);
+        let high = threshold + 0.125 * f32_ulp;
+        let low = threshold - 0.125 * f32_ulp;
+        assert_eq!((high as f32).to_bits(), (low as f32).to_bits());
+        let elevations = [high, low, 0.0];
+
+        let selection =
+            select_area_weighted_sea_level(&[0.35, 0.35, 0.30], &elevations, 0.35).unwrap();
+
+        assert_eq!(selection.sea_level_m.to_bits(), high.to_bits());
+        assert!((selection.actual_land_fraction - 0.35).abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -203,7 +201,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            select_area_weighted_sea_level(&[1.0], &[f32::NAN], 0.5),
+            select_area_weighted_sea_level(&[1.0], &[f64::NAN], 0.5),
             Err(LandFractionSelectionError::InvalidElevation { .. })
         ));
         for target in [f64::NAN, -0.1, 1.1] {

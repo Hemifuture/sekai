@@ -4,6 +4,8 @@ use thiserror::Error;
 use crate::world::spatial::{SpatialSnapshot, Topology};
 use crate::world::CellId;
 
+use super::primary_relief::CRUST_BASE_ELEVATION_MAX_M;
+
 /// The supported version of the serialized relief snapshot schema.
 pub const RELIEF_SCHEMA_V1: u16 = 1;
 /// The legacy supported relief schema with an explicit 4,000 m volcanic component.
@@ -18,8 +20,6 @@ pub const ELEVATION_MIN_M: f32 = -11_000.0;
 pub const ELEVATION_MAX_M: f32 = 9_000.0;
 /// The minimum supported crust-base component, in meters.
 pub const CRUST_BASE_ELEVATION_MIN_M: f32 = -9_000.0;
-/// The maximum supported crust-base component, in meters.
-pub const CRUST_BASE_ELEVATION_MAX_M: f32 = 5_000.0;
 /// The minimum supported tectonic-event component, in meters.
 pub const TECTONIC_OFFSET_MIN_M: f32 = -6_000.0;
 /// The maximum supported tectonic-event component, in meters.
@@ -79,9 +79,12 @@ pub enum LandOceanKind {
 }
 
 impl LandOceanKind {
-    /// Returns the centimeter-quantized classification coordinate used by V1.
-    pub(crate) fn quantized_centimeters(elevation_m: f32) -> i64 {
-        quantized_centimeters(elevation_m)
+    pub(crate) fn quantized_centimeters_exact(elevation_m: f64) -> i64 {
+        quantized_centimeters_exact(elevation_m)
+    }
+
+    pub(crate) fn meters_from_quantized_centimeters_exact(value: i64) -> Option<f64> {
+        meters_from_quantized_centimeters_exact(value)
     }
 
     /// Decodes the stable V1 category value.
@@ -107,7 +110,12 @@ impl LandOceanKind {
     /// land; ocean therefore requires a value at least one quantized centimeter
     /// below sea level.
     pub fn classify(elevation_m: f32, sea_level_m: f32) -> Self {
-        if quantized_centimeters(elevation_m) < quantized_centimeters(sea_level_m) {
+        Self::classify_exact(f64::from(elevation_m), f64::from(sea_level_m))
+    }
+
+    /// Classifies retained scientific state without first narrowing to wire precision.
+    pub(crate) fn classify_exact(elevation_m: f64, sea_level_m: f64) -> Self {
+        if quantized_centimeters_exact(elevation_m) < quantized_centimeters_exact(sea_level_m) {
             Self::Ocean
         } else {
             Self::Land
@@ -459,8 +467,13 @@ fn validate_range(
     Ok(())
 }
 
-fn quantized_centimeters(value: f32) -> i64 {
-    (f64::from(value) * 100.0).round() as i64
+pub(crate) fn quantized_centimeters_exact(value: f64) -> i64 {
+    (value * 100.0).round() as i64
+}
+
+pub(crate) fn meters_from_quantized_centimeters_exact(value: i64) -> Option<f64> {
+    let meters = value as f64 / 100.0;
+    (meters.is_finite() && quantized_centimeters_exact(meters) == value).then_some(meters)
 }
 
 /// Errors returned when relief fields violate V2 numerical or alignment invariants.
@@ -550,4 +563,26 @@ pub enum ReliefValidationError {
         /// The spatial count.
         spatial: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quantized_centimeters_exact, LandOceanKind};
+
+    #[test]
+    fn exact_centimeter_classification_is_the_single_precision_source() {
+        let elevation = 100.004_999_999_f64;
+        let sea_level = 100.005_000_001_f64;
+
+        assert_eq!(quantized_centimeters_exact(elevation), 10_000);
+        assert_eq!(quantized_centimeters_exact(sea_level), 10_001);
+        assert_eq!(
+            LandOceanKind::classify_exact(elevation, sea_level),
+            LandOceanKind::Ocean
+        );
+        assert_eq!(
+            LandOceanKind::classify(100.0_f32, 100.0_f32),
+            LandOceanKind::classify_exact(100.0, 100.0)
+        );
+    }
 }

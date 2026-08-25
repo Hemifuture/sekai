@@ -6,15 +6,14 @@ use super::geology::validate_bedrock_crust_compatibility;
 use super::surface_water_geometry::surface_elevation_fingerprint;
 use super::{
     BedrockKind, BedrockKindField, CrustKind, CrustKindField, EvolvedTectonicSnapshot,
-    EvolvedTectonicValidationError, GeologicValidationError, LandOceanField, ReliefSpec,
-    ReliefSpecError, SeaLevelPolicy, SphericalMantleSnapshot, SphericalMantleValidationError,
-    SphericalReliefSnapshot, SphericalReliefValidationError, SurfaceWaterGeometry,
-    SurfaceWaterGeometryValidationError, TectonicValidationError, COMPONENT_IDENTITY_TOLERANCE_M,
-    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_CRUST_AGE_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM,
-    OCEANIC_CRUST_MIN_THICKNESS_KM, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
-    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    EvolvedTectonicValidationError, GeologicValidationError, LandOceanField, LandOceanKind,
+    ReliefSpec, ReliefSpecError, SeaLevelPolicy, SphericalMantleSnapshot,
+    SphericalMantleValidationError, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
+    TectonicValidationError, COMPONENT_IDENTITY_TOLERANCE_M, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_CRUST_AGE_MYR,
+    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM, VOLCANIC_OFFSET_MAX_M,
+    VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -29,12 +28,51 @@ pub const GEOLOGIC_SUBSTRATE_SCHEMA_V1: u16 = 1;
 pub const CONTINENTAL_CRUST_DENSITY_KG_M3: f32 = 2_800.0;
 /// Oceanic material density used by the P3 volume-weighted crust recipe.
 pub const OCEANIC_CRUST_DENSITY_KG_M3: f32 = 2_950.0;
+/// Mantle density in the P3 local Airy column balance (Turcotte & Schubert 2014).
+pub(crate) const PRIMARY_RELIEF_AIRY_MANTLE_DENSITY_KG_M3: f64 = 3_300.0;
+/// Continental reference thickness in the frozen P3 Airy column.
+pub(crate) const PRIMARY_RELIEF_CONTINENTAL_REFERENCE_THICKNESS_KM: f64 = 35.0;
+/// Continental freeboard paired with the frozen P3 Airy reference column.
+const PRIMARY_RELIEF_CONTINENTAL_REFERENCE_FREEBOARD_M: f64 = 250.0;
+/// Oceanic reference thickness paired with the frozen P3 buoyancy correction.
+pub(crate) const PRIMARY_RELIEF_OCEANIC_REFERENCE_THICKNESS_KM: f64 = 7.0;
+/// The single exact P3 continental Airy projection used by generation and
+/// support-domain derivation.
+pub(crate) const fn continental_airy_elevation_exact_m(
+    thickness_km: f64,
+    crust_density_kg_m3: f64,
+) -> f64 {
+    PRIMARY_RELIEF_CONTINENTAL_REFERENCE_FREEBOARD_M
+        + (((PRIMARY_RELIEF_AIRY_MANTLE_DENSITY_KG_M3 - crust_density_kg_m3) * thickness_km
+            - (PRIMARY_RELIEF_AIRY_MANTLE_DENSITY_KG_M3 - CONTINENTAL_CRUST_DENSITY_KG_M3 as f64)
+                * PRIMARY_RELIEF_CONTINENTAL_REFERENCE_THICKNESS_KM)
+            / PRIMARY_RELIEF_AIRY_MANTLE_DENSITY_KG_M3)
+            * 1_000.0
+}
+/// Exact upper image of the frozen P3 continental Airy input domain.
+pub(crate) const CRUST_BASE_ELEVATION_MAX_EXACT_M: f64 = continental_airy_elevation_exact_m(
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM as f64,
+    CONTINENTAL_CRUST_DENSITY_KG_M3 as f64,
+);
+/// Outward-rounded `f32` wire envelope for the exact P3 crust-base domain.
+///
+/// The scientific working-state check uses
+/// `CRUST_BASE_ELEVATION_MAX_EXACT_M`; this value only prevents the published
+/// schema from rounding its upper bound inward (Goldberg 1991; Higham 2002).
+pub const CRUST_BASE_ELEVATION_MAX_M: f32 = {
+    let nearest = CRUST_BASE_ELEVATION_MAX_EXACT_M as f32;
+    if nearest as f64 >= CRUST_BASE_ELEVATION_MAX_EXACT_M {
+        nearest
+    } else {
+        f32::from_bits(nearest.to_bits() + 1)
+    }
+};
 /// Inclusive safety floor for a published effective crust density.
 pub const CRUST_DENSITY_MIN_KG_M3: f32 = 2_500.0;
 /// Inclusive safety ceiling for a published effective crust density.
 pub const CRUST_DENSITY_MAX_KG_M3: f32 = 3_200.0;
-/// Physical primary relief retaining the authoritative fractional water geometry.
-pub const PRIMARY_RELIEF_SCHEMA_V2: u16 = 2;
+/// Physical primary relief with cause-only components and authoritative water geometry.
+pub const PRIMARY_RELIEF_SCHEMA_V3: u16 = 3;
 /// NOAA/NGDC Earth ocean inventory used by the locked P3 water budget.
 pub const EARTH_OCEAN_VOLUME_M3: f64 = 1.335e18;
 /// Earth-radius reference paired with the locked ocean inventory.
@@ -699,9 +737,7 @@ pub enum LandFractionConstraintStatus {
 pub struct PrimaryReliefSnapshot {
     schema_version: u16,
     surface_ref: SurfaceRef,
-    compatibility: SphericalReliefSnapshot,
     isostatic_base_m: Vec<f32>,
-    dynamic_tectonic_offset_m: Vec<f32>,
     volcanic_construction_m: Vec<f32>,
     passive_margin_offset_m: Vec<f32>,
     conditioned_regional_detail_m: Vec<f32>,
@@ -719,11 +755,8 @@ pub struct PrimaryReliefSnapshot {
 struct PrimaryReliefSnapshotWire {
     schema_version: u16,
     surface_ref: SurfaceRef,
-    compatibility: SphericalReliefSnapshot,
     #[serde(deserialize_with = "deserialize_dense_f32")]
     isostatic_base_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_dense_f32")]
-    dynamic_tectonic_offset_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_dense_f32")]
     volcanic_construction_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_dense_f32")]
@@ -746,9 +779,7 @@ impl PrimaryReliefSnapshot {
     pub fn new(
         schema_version: u16,
         surface_ref: SurfaceRef,
-        compatibility: SphericalReliefSnapshot,
         isostatic_base_m: Vec<f32>,
-        dynamic_tectonic_offset_m: Vec<f32>,
         volcanic_construction_m: Vec<f32>,
         passive_margin_offset_m: Vec<f32>,
         conditioned_regional_detail_m: Vec<f32>,
@@ -763,9 +794,7 @@ impl PrimaryReliefSnapshot {
         let snapshot = Self {
             schema_version,
             surface_ref,
-            compatibility,
             isostatic_base_m,
-            dynamic_tectonic_offset_m,
             volcanic_construction_m,
             passive_margin_offset_m,
             conditioned_regional_detail_m,
@@ -781,12 +810,12 @@ impl PrimaryReliefSnapshot {
         Ok(snapshot)
     }
 
-    /// Rechecks local component, compatibility, and budget-closure invariants.
+    /// Rechecks local component, identity, and budget-closure invariants.
     pub fn validate(&self) -> Result<(), PrimaryReliefValidationError> {
-        if self.schema_version != PRIMARY_RELIEF_SCHEMA_V2 {
+        if self.schema_version != PRIMARY_RELIEF_SCHEMA_V3 {
             return Err(PrimaryReliefValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: PRIMARY_RELIEF_SCHEMA_V2,
+                supported: PRIMARY_RELIEF_SCHEMA_V3,
             });
         }
         self.surface_ref.validate()?;
@@ -805,13 +834,6 @@ impl PrimaryReliefSnapshot {
             self.surface_ref.edge_count() as usize,
             MAX_SPHERICAL_EDGES,
         )?;
-        self.compatibility.validate()?;
-        if self.compatibility.surface_ref() != self.surface_ref {
-            return Err(PrimaryReliefValidationError::CompatibilitySurfaceMismatch {
-                snapshot: self.surface_ref,
-                compatibility: self.compatibility.surface_ref(),
-            });
-        }
         self.surface_water_geometry.validate()?;
         if self.surface_water_geometry.surface_ref() != self.surface_ref {
             return Err(PrimaryReliefValidationError::WaterGeometrySurfaceMismatch {
@@ -827,12 +849,6 @@ impl PrimaryReliefSnapshot {
                 self.isostatic_base_m.as_slice(),
                 CRUST_BASE_ELEVATION_MIN_M,
                 CRUST_BASE_ELEVATION_MAX_M,
-            ),
-            (
-                "dynamic_tectonic_offset_m",
-                self.dynamic_tectonic_offset_m.as_slice(),
-                TECTONIC_OFFSET_MIN_M,
-                TECTONIC_OFFSET_MAX_M,
             ),
             (
                 "volcanic_construction_m",
@@ -862,24 +878,9 @@ impl PrimaryReliefSnapshot {
             validate_primary_field(field, values, expected, minimum, maximum)?;
         }
 
-        if self.compatibility.crust_base_elevation_m().values() != self.isostatic_base_m
-            || self.compatibility.tectonic_offset_m().values() != self.dynamic_tectonic_offset_m
-            || self.compatibility.volcanic_offset_m().values() != self.volcanic_construction_m
-            || self.compatibility.elevation_m().values() != self.elevation_m
-        {
-            return Err(PrimaryReliefValidationError::CompatibilityComponentMismatch);
-        }
         for index in 0..expected {
             let cell = CellId::from_raw(index as u32);
-            let regional =
-                self.passive_margin_offset_m[index] + self.conditioned_regional_detail_m[index];
-            if (self.compatibility.regional_offset_m().values()[index] - regional).abs()
-                > COMPONENT_IDENTITY_TOLERANCE_M
-            {
-                return Err(PrimaryReliefValidationError::CompatibilityRegionalMismatch { cell });
-            }
             let calculated = self.isostatic_base_m[index]
-                + self.dynamic_tectonic_offset_m[index]
                 + self.volcanic_construction_m[index]
                 + self.passive_margin_offset_m[index]
                 + self.conditioned_regional_detail_m[index];
@@ -897,27 +898,11 @@ impl PrimaryReliefSnapshot {
         {
             return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
         }
-        if self.compatibility.sea_level_m().to_bits()
-            != self.surface_water_geometry.sea_level_m().to_bits()
-        {
-            return Err(
-                PrimaryReliefValidationError::WaterGeometrySeaLevelMismatch {
-                    stored: self.compatibility.sea_level_m(),
-                    geometry: self.surface_water_geometry.sea_level_m(),
-                },
-            );
-        }
-        if self.compatibility.land_ocean().raw_values()
-            != self.surface_water_geometry.land_ocean().raw_values()
-        {
-            return Err(PrimaryReliefValidationError::WaterGeometryLandOceanMismatch);
-        }
-
         validate_non_negative_f64("water_inventory_m3", self.water_inventory_m3)?;
         let realized_water_volume_m3 = self.surface_water_geometry.total_water_volume_m3();
         validate_non_negative_f64("realized_water_volume_m3", realized_water_volume_m3)?;
         let relative_error =
-            relative_water_error(realized_water_volume_m3, self.water_inventory_m3);
+            water_volume_relative_error(realized_water_volume_m3, self.water_inventory_m3);
         if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
             return Err(PrimaryReliefValidationError::WaterVolumeClosureExceeded {
                 realized: realized_water_volume_m3,
@@ -1020,8 +1005,6 @@ impl PrimaryReliefSnapshot {
     ) -> Result<(), PrimaryReliefValidationError> {
         self.validate()?;
         surface.validate()?;
-        self.compatibility
-            .validate_against_validated_surface(surface)?;
         let authoritative = SurfaceRef::for_spherical(surface);
         if self.surface_ref != authoritative {
             return Err(PrimaryReliefValidationError::SurfaceMismatch {
@@ -1075,20 +1058,12 @@ impl PrimaryReliefSnapshot {
         self.surface_ref.cell_count()
     }
 
-    pub const fn compatibility(&self) -> &SphericalReliefSnapshot {
-        &self.compatibility
-    }
-
     pub const fn surface_water_geometry(&self) -> &SurfaceWaterGeometry {
         &self.surface_water_geometry
     }
 
     pub fn isostatic_base_m(&self) -> &[f32] {
         &self.isostatic_base_m
-    }
-
-    pub fn dynamic_tectonic_offset_m(&self) -> &[f32] {
-        &self.dynamic_tectonic_offset_m
     }
 
     pub fn volcanic_construction_m(&self) -> &[f32] {
@@ -1135,7 +1110,7 @@ impl PrimaryReliefSnapshot {
     }
 
     pub fn water_volume_relative_error(&self) -> f64 {
-        relative_water_error(self.realized_water_volume_m3(), self.water_inventory_m3)
+        water_volume_relative_error(self.realized_water_volume_m3(), self.water_inventory_m3)
     }
 
     pub const fn requested_land_fraction(&self) -> f32 {
@@ -1164,9 +1139,7 @@ impl<'de> Deserialize<'de> for PrimaryReliefSnapshot {
         Self::new(
             wire.schema_version,
             wire.surface_ref,
-            wire.compatibility,
             wire.isostatic_base_m,
-            wire.dynamic_tectonic_offset_m,
             wire.volcanic_construction_m,
             wire.passive_margin_offset_m,
             wire.conditioned_regional_detail_m,
@@ -1201,7 +1174,7 @@ impl WaterVolumeSolution {
             });
         }
         let realized = geometry.total_water_volume_m3();
-        let relative_error = relative_water_error(realized, water_inventory_m3);
+        let relative_error = water_volume_relative_error(realized, water_inventory_m3);
         if relative_error > WATER_VOLUME_RELATIVE_TOLERANCE {
             return Err(WaterVolumeSolveError::ClosureExceeded {
                 realized,
@@ -1335,7 +1308,7 @@ fn validate_close_f64(
     Ok(())
 }
 
-fn relative_water_error(realized: f64, inventory: f64) -> f64 {
+pub(crate) fn water_volume_relative_error(realized: f64, inventory: f64) -> f64 {
     (realized - inventory).abs() / inventory.abs().max(1.0)
 }
 
@@ -1379,13 +1352,13 @@ pub enum WaterVolumeSolveError {
     #[error("elevation count {elevations} differs from surface cell count {areas}")]
     LengthMismatch { elevations: usize, areas: usize },
     #[error("invalid elevation {found} at dense index {index}")]
-    InvalidElevation { index: usize, found: f32 },
+    InvalidElevation { index: usize, found: f64 },
     #[error("invalid water inventory {found}")]
     InvalidInventory { found: f64 },
     #[error("invalid total surface area {found}")]
     InvalidSurfaceArea { found: f64 },
     #[error("invalid published sea level {found}")]
-    InvalidSeaLevel { found: f32 },
+    InvalidSeaLevel { found: f64 },
     #[error("physical sea-level solve produced non-finite or unrepresentable level {found}")]
     NonFiniteSolution { found: f64 },
     #[error("invalid authoritative surface: {0}")]
@@ -1394,6 +1367,33 @@ pub enum WaterVolumeSolveError {
     InvalidGeometry(#[from] SurfaceWaterGeometryValidationError),
     #[error("cell {cell:?} fan side {side} is not a valid positive-area triangle")]
     InvalidFanTriangle { cell: CellId, side: usize },
+    #[error("{field} fraction {found} at index {index} is outside 0..=1")]
+    InvalidWorkingFraction {
+        field: &'static str,
+        index: usize,
+        found: f64,
+    },
+    #[error("{field} value {found} at index {index} must be finite and non-negative")]
+    InvalidWorkingNonNegativeValue {
+        field: &'static str,
+        index: usize,
+        found: f64,
+    },
+    #[error(
+        "working water geometry surface {geometry:?} differs from authority {authoritative:?}"
+    )]
+    WorkingSurfaceMismatch {
+        geometry: SurfaceRef,
+        authoritative: SurfaceRef,
+    },
+    #[error(
+        "cell {cell:?} exact land/ocean kind {exact:?} differs from projected wire {projected:?}"
+    )]
+    LandOceanProjectionMismatch {
+        cell: CellId,
+        exact: LandOceanKind,
+        projected: LandOceanKind,
+    },
     #[error(
         "quantized water volume {realized} differs from inventory {inventory} by {relative_error}; maximum is {maximum}"
     )]
@@ -1414,13 +1414,6 @@ pub enum PrimaryReliefValidationError {
     InvalidSurfaceRef(#[from] SurfaceRefError),
     #[error("primary relief requires spherical_v1 geometry, found {found:?}")]
     InvalidSurfaceKind { found: SurfaceGeometryKind },
-    #[error("primary relief compatibility snapshot is invalid: {0}")]
-    InvalidCompatibility(#[from] SphericalReliefValidationError),
-    #[error("compatibility surface {compatibility:?} differs from primary relief {snapshot:?}")]
-    CompatibilitySurfaceMismatch {
-        snapshot: SurfaceRef,
-        compatibility: SurfaceRef,
-    },
     #[error(
         "surface-water geometry surface {geometry:?} differs from primary relief {snapshot:?}"
     )]
@@ -1442,10 +1435,6 @@ pub enum PrimaryReliefValidationError {
         minimum: f32,
         maximum: f32,
     },
-    #[error("compatibility base, tectonic, volcanic, or elevation differs from P3 components")]
-    CompatibilityComponentMismatch,
-    #[error("compatibility regional component differs from passive plus detail at {cell:?}")]
-    CompatibilityRegionalMismatch { cell: CellId },
     #[error("cell {cell:?} elevation {elevation} differs from causal sum {calculated}")]
     ComponentIdentityMismatch {
         cell: CellId,
@@ -1481,10 +1470,6 @@ pub enum PrimaryReliefValidationError {
         snapshot: SurfaceRef,
         authoritative: SurfaceRef,
     },
-    #[error("stored sea level {stored} differs from surface-water geometry {geometry}")]
-    WaterGeometrySeaLevelMismatch { stored: f32, geometry: f32 },
-    #[error("stored discrete land/ocean mask differs from surface-water geometry")]
-    WaterGeometryLandOceanMismatch,
     #[error("invalid relief authoring specification: {0}")]
     InvalidReliefSpec(#[from] ReliefSpecError),
     #[error("requested land fraction {stored} differs from authored {authored}")]

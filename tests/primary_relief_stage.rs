@@ -85,7 +85,7 @@ fn stages_publish_locked_keys_identities_and_exact_dependency_boundaries() {
     assert_eq!(GeologicSubstrateStage.version(), 1);
     assert_eq!(GeologicSubstrateStage.namespace(), "sekai.core");
     assert_eq!(PrimaryReliefStage.id().as_str(), "natural.primary-relief");
-    assert_eq!(PrimaryReliefStage.version(), 2);
+    assert_eq!(PrimaryReliefStage.version(), 3);
     assert_eq!(PrimaryReliefStage.namespace(), "sekai.core");
 
     let graph = primary_relief_graph().unwrap();
@@ -233,7 +233,7 @@ fn sea_level_policies_preserve_the_default_and_solve_the_authored_driver() {
             .to_string();
     assert_eq!(
         default_snapshot_hash,
-        "caa867e9e83ab3413600fdce83e2275bd2fe176580a2d93120c4b1a887441582"
+        "7f9f5e4b1e72cdc3706ba714167dc1db629206ddb134634f5d6f1d13f1d5e178"
     );
 
     let total_area = draft_surface().total_cell_area().get();
@@ -333,7 +333,7 @@ fn artifact_wires_are_strict_and_cancelled_graph_publishes_no_result() {
 
     let successful = BuildEngine::new(primary_relief_graph().unwrap())
         .build(
-            RootSeed::new(43),
+            RootSeed::new(42),
             external(ReliefSpec::default()),
             &mut MemoryStageCache::new(),
         )

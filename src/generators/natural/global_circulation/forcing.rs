@@ -769,10 +769,10 @@ mod formation_tests {
     };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile, ElevationField,
+        constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile,
         FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
-        NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot,
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V3, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
+        NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V3, PRIMARY_RELIEF_SCHEMA_V3,
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -800,31 +800,15 @@ mod formation_tests {
                 .collect::<Vec<_>>();
             let water_inventory = areas.iter().sum::<f64>() * 1_000.0;
             let water = solve_physical_sea_level(&surface, &primary, water_inventory).unwrap();
-            let elevation = ElevationField::from_values(primary.clone()).unwrap();
-            let land_ocean = water.geometry().land_ocean().clone();
-            let compatibility = SphericalReliefSnapshot::new(
-                RELIEF_SCHEMA_V4,
-                SurfaceRef::for_spherical(&surface),
-                water.sea_level_m(),
-                ElevationField::from_values(primary.clone()).unwrap(),
-                ElevationField::from_values(zero.clone()).unwrap(),
-                ElevationField::from_values(zero.clone()).unwrap(),
-                ElevationField::from_values(zero.clone()).unwrap(),
-                elevation,
-                land_ocean,
-            )
-            .unwrap();
             let physical = water
                 .geometry()
                 .global_land_area_fraction(&surface)
                 .unwrap();
             let tolerance = land_fraction_constraint_tolerance(&surface).unwrap();
             let relief = PrimaryReliefSnapshot::new(
-                PRIMARY_RELIEF_SCHEMA_V2,
+                PRIMARY_RELIEF_SCHEMA_V3,
                 SurfaceRef::for_spherical(&surface),
-                compatibility,
                 primary.clone(),
-                zero.clone(),
                 zero.clone(),
                 zero.clone(),
                 zero,

@@ -6,10 +6,10 @@ use super::relief::{reconcile_final_safety, ReliefGenerator};
 use super::spherical_island_relief::synthesize_spherical_hotspot_offset;
 use crate::engine::{Diagnostic, StageRng};
 use crate::world::natural::{
-    ElevationField, LandOceanField, ReliefSpec, ReliefSpecError, ReliefValidationError,
-    SphericalMantleSnapshot, SphericalMantleValidationError, SphericalReliefSnapshot,
-    SphericalReliefValidationError, SphericalTectonicSnapshot, SphericalTectonicValidationError,
-    RELIEF_SCHEMA_V4,
+    CrustKindField, ElevationField, LandOceanField, LandOceanKind, ReliefSpec, ReliefSpecError,
+    ReliefValidationError, SphericalMantleSnapshot, SphericalMantleValidationError,
+    SphericalOrogenyKind, SphericalReliefSnapshot, SphericalReliefValidationError,
+    SphericalTectonicSnapshot, SphericalTectonicValidationError, RELIEF_SCHEMA_V4,
 };
 use crate::world::spatial::{
     NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
@@ -24,9 +24,14 @@ use tectonic_heightmap::{build_tectonic_heightmap, TectonicHeightmapError};
 
 pub(super) fn synthesize_conditioned_regional_detail(
     surface: &SphericalSurfaceSnapshot,
-    tectonic: &SphericalTectonicSnapshot,
+    crust_kinds: &CrustKindField,
+    crust_age_myr: &[f32],
+    lineation_east: &[f32],
+    lineation_north: &[f32],
+    orogeny_kind: &[SphericalOrogenyKind],
+    orogeny_age_myr: &[f32],
     streams: &LabeledSubstreams,
-) -> Result<Vec<f32>, crate::engine::BuildCancellationError> {
+) -> Result<Vec<f64>, crate::engine::BuildCancellationError> {
     let sample_spacing_m = (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
     let detail_noise =
         DirectedDetailNoise::from_streams(streams, surface.radius().get(), sample_spacing_m);
@@ -39,14 +44,14 @@ pub(super) fn synthesize_conditioned_regional_detail(
         detail.push(
             detail_noise.sample_m(
                 surface_cell.centroid,
-                tectonic
-                    .crust_kind(cell)
+                crust_kinds
+                    .get(cell.raw() as usize)
                     .expect("validated spherical crust is cell aligned"),
-                tectonic.crust_age_myr()[index],
-                tectonic.lineation_east()[index],
-                tectonic.lineation_north()[index],
-                tectonic.orogeny_kind()[index],
-                tectonic.orogeny_age_myr()[index],
+                crust_age_myr[index],
+                lineation_east[index],
+                lineation_north[index],
+                orogeny_kind[index],
+                orogeny_age_myr[index],
             ),
         );
     }
@@ -77,8 +82,17 @@ impl ReliefGenerator {
 
         use rand::RngCore as _;
         let mut hotspot_rng = streams.stream(RELIEF_HOTSPOT_MORPHOLOGY_LABEL);
-        let mut volcanic_offset =
-            synthesize_spherical_hotspot_offset(surface, tectonic, mantle, hotspot_rng.next_u32());
+        let mut volcanic_offset = synthesize_spherical_hotspot_offset(
+            surface,
+            tectonic.plates(),
+            tectonic.cell_plates(),
+            tectonic.crust_kinds(),
+            mantle,
+            hotspot_rng.next_u32(),
+        )
+        .into_iter()
+        .map(|value| value as f32)
+        .collect::<Vec<_>>();
         let mut regional_offset = components.directed_detail_m;
         let elevation = reconcile_final_safety(
             &mut crust_base,
@@ -98,12 +112,34 @@ impl ReliefGenerator {
             .iter()
             .map(|cell| cell.area.get())
             .collect::<Vec<_>>();
+        let exact_elevation = elevation
+            .values()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect::<Vec<_>>();
         let selection = select_area_weighted_sea_level(
             &cell_areas,
-            elevation.values(),
+            &exact_elevation,
             f64::from(relief_spec.target_land_fraction),
         )?;
-        let land_ocean = LandOceanField::classify(&elevation, selection.sea_level_m);
+        let sea_level_m = selection.sea_level_m as f32;
+        if !sea_level_m.is_finite()
+            || elevation.values().iter().zip(&exact_elevation).any(
+                |(&projected_elevation, &exact)| {
+                    LandOceanKind::classify(projected_elevation, sea_level_m)
+                        != LandOceanKind::classify_exact(exact, selection.sea_level_m)
+                },
+            )
+        {
+            return Err(
+                SphericalReliefGenerationError::InvalidLandFractionProjection {
+                    exact_sea_level_m: selection.sea_level_m,
+                    projected_sea_level_m: sea_level_m,
+                },
+            );
+        }
+        let land_ocean = LandOceanField::classify(&elevation, sea_level_m);
         debug_assert_eq!(
             selection.target_land_fraction,
             f64::from(relief_spec.target_land_fraction)
@@ -118,7 +154,7 @@ impl ReliefGenerator {
         let snapshot = SphericalReliefSnapshot::new(
             RELIEF_SCHEMA_V4,
             view.surface_ref(),
-            selection.sea_level_m,
+            sea_level_m,
             crust_base,
             tectonic_offset,
             volcanic_offset,
@@ -155,6 +191,14 @@ pub enum SphericalReliefGenerationError {
     /// The generated height field could not be classified by authoritative area.
     #[error("invalid land-area selection: {message}")]
     InvalidLandFraction { message: String },
+    /// The legacy f32 wire cannot preserve the exact centimeter classification.
+    #[error(
+        "exact sea level {exact_sea_level_m} cannot project to legacy level {projected_sea_level_m} without changing classification"
+    )]
+    InvalidLandFractionProjection {
+        exact_sea_level_m: f64,
+        projected_sea_level_m: f32,
+    },
     /// A generated dense field violated the shared relief semantics.
     #[error("invalid generated relief field: {0}")]
     InvalidReliefField(#[from] ReliefValidationError),

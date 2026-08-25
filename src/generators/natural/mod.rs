@@ -145,9 +145,8 @@ pub use hydro_erosion_stage::{HydroErosionArtifact, HydroErosionStage, HydroEros
 pub use hydrology::{HydrologyGenerationError, HydrologyGenerator};
 pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use primary_relief::{
-    causal_accumulated_response_m, continental_airy_elevation_m, dynamic_tectonic_response_m,
-    gdh1_ocean_depth_m, oceanic_isostatic_elevation_m, oceanic_sediment_seafloor_rise_m,
-    PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    continental_airy_elevation_m, gdh1_ocean_depth_m, oceanic_isostatic_elevation_m,
+    oceanic_sediment_seafloor_rise_m, PrimaryReliefGenerationError, PrimaryReliefGenerator,
 };
 pub use primary_relief_stage::{
     primary_relief_graph, GeologicSubstrateArtifact, GeologicSubstrateStage,

@@ -2,9 +2,8 @@ use sekai::engine::BuildCancellation;
 use sekai::generators::natural::solve_physical_sea_level;
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    scaled_earth_ocean_inventory_m3, ElevationField, LandFractionConstraintStatus,
-    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy,
-    SphericalReliefSnapshot, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
+    scaled_earth_ocean_inventory_m3, LandFractionConstraintStatus, NaturalQualityProfile,
+    PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy, PRIMARY_RELIEF_SCHEMA_V3,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::Meters;
@@ -23,7 +22,6 @@ fn surface() -> SphericalSurfaceSnapshot {
 fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     let count = surface.cells().len();
     let isostatic = vec![0.0; count];
-    let dynamic = vec![0.0; count];
     let volcanic = vec![0.0; count];
     let passive = vec![0.0; count];
     let detail = vec![0.0; count];
@@ -35,27 +33,6 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
         .collect::<Vec<_>>();
     let inventory = scaled_earth_ocean_inventory_m3(areas.iter().sum()).unwrap();
     let solution = solve_physical_sea_level(surface, &elevation, inventory).unwrap();
-    let elevation_field = ElevationField::from_values(elevation.clone()).unwrap();
-    let land_ocean = solution.geometry().land_ocean().clone();
-    let compatibility = SphericalReliefSnapshot::new(
-        RELIEF_SCHEMA_V4,
-        SurfaceRef::for_spherical(surface),
-        solution.sea_level_m(),
-        ElevationField::from_values(isostatic.clone()).unwrap(),
-        ElevationField::from_values(dynamic.clone()).unwrap(),
-        ElevationField::from_values(volcanic.clone()).unwrap(),
-        ElevationField::from_values(
-            passive
-                .iter()
-                .zip(&detail)
-                .map(|(&margin, &regional)| margin + regional)
-                .collect(),
-        )
-        .unwrap(),
-        elevation_field,
-        land_ocean,
-    )
-    .unwrap();
     let physical = solution
         .geometry()
         .global_land_area_fraction(surface)
@@ -69,11 +46,9 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     .max(0.02) as f32;
 
     PrimaryReliefSnapshot::new(
-        PRIMARY_RELIEF_SCHEMA_V2,
+        PRIMARY_RELIEF_SCHEMA_V3,
         SurfaceRef::for_spherical(surface),
-        compatibility,
         isostatic,
-        dynamic,
         volcanic,
         passive,
         detail,
@@ -128,7 +103,7 @@ fn strict_wire_rejects_unknown_schema_and_component_drift() {
     assert!(serde_json::from_value::<PrimaryReliefSnapshot>(unknown).is_err());
 
     let mut schema = encoded.clone();
-    schema["schema_version"] = serde_json::json!(1);
+    schema["schema_version"] = serde_json::json!(2);
     assert!(serde_json::from_value::<PrimaryReliefSnapshot>(schema).is_err());
 
     let mut component = encoded;
@@ -137,12 +112,23 @@ fn strict_wire_rejects_unknown_schema_and_component_drift() {
 }
 
 #[test]
-fn compatibility_mapping_cannot_diverge_from_causal_components() {
+fn primary_relief_v3_removes_compatibility_and_dynamic_duplicates_and_rejects_v2() {
     let surface = surface();
-    let mut encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
-    encoded["compatibility"]["regional_offset_m"][0] = serde_json::json!(5.0);
-    encoded["compatibility"]["elevation_m"][0] = serde_json::json!(5.0);
-    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(encoded).is_err());
+    let encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+    assert!(encoded.get("compatibility").is_none());
+    assert!(encoded.get("dynamic_tectonic_offset_m").is_none());
+
+    let mut v2 = encoded.clone();
+    v2["schema_version"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(v2).is_err());
+
+    let mut compatibility = encoded.clone();
+    compatibility["compatibility"] = serde_json::json!({});
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(compatibility).is_err());
+
+    let mut dynamic = encoded;
+    dynamic["dynamic_tectonic_offset_m"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(dynamic).is_err());
 }
 
 #[test]
@@ -154,20 +140,6 @@ fn surface_cross_validation_recomputes_area_weighted_constraint_status() {
     assert!(stale
         .validate_against_surface(&surface, &ReliefSpec::default())
         .is_err());
-}
-
-#[test]
-fn retained_water_geometry_cannot_diverge_from_compatibility_payload() {
-    let surface = surface();
-    let encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
-
-    let mut sea_level = encoded.clone();
-    sea_level["compatibility"]["sea_level_m"] = serde_json::json!(1.0);
-    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(sea_level).is_err());
-
-    let mut land_ocean = encoded;
-    land_ocean["compatibility"]["land_ocean_kind"][0] = serde_json::json!(1);
-    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(land_ocean).is_err());
 }
 
 #[test]

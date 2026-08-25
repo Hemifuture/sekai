@@ -20,11 +20,11 @@ use natural_quality::QUALITY_SEEDS;
 use sekai::app::default_spherical_space_spec;
 use sekai::engine::{BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    continental_airy_elevation_m, dynamic_tectonic_response_m, gdh1_ocean_depth_m,
-    solve_physical_sea_level, spherical_natural_foundation_graph, water_volume_at_sea_level_m3,
-    AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
-    ReliefSpecArtifact, RulePackSetArtifact, SphericalReliefArtifact, SphericalTectonicArtifact,
-    TectonicSpecArtifact, WorldFormationSpecArtifact,
+    continental_airy_elevation_m, gdh1_ocean_depth_m, solve_physical_sea_level,
+    spherical_natural_foundation_graph, water_volume_at_sea_level_m3, AuthorConstraintsArtifact,
+    ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact,
+    RulePackSetArtifact, SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
+    WorldFormationSpecArtifact,
 };
 use sekai::generators::spatial::{
     ProfileSurfaceBuilder, SphericalSpaceArtifact, SphericalSurfaceArtifact,
@@ -950,9 +950,8 @@ fn probe_t0_hypsometric_attribution() {
         land_p3,
         inventory,
     );
-    let components: [(&str, &[f32]); 6] = [
+    let components: [(&str, &[f32]); 5] = [
         ("isostatic_base", relief.isostatic_base_m()),
-        ("dynamic_tectonic", relief.dynamic_tectonic_offset_m()),
         ("volcanic", relief.volcanic_construction_m()),
         ("passive_margin", relief.passive_margin_offset_m()),
         ("regional_detail", relief.conditioned_regional_detail_m()),
@@ -1200,87 +1199,6 @@ fn probe_t0_hypsometric_attribution() {
         }),
     );
 
-    // L0 what-if: drop the inherited V5 compatibility elevation from the P3
-    // dynamic term and keep only the rate response (the production recipe with
-    // a zero accumulated response), first on oceanic crust, then everywhere,
-    // each followed by the uniform continental thickening trials.
-    println!("\n#### (L0 what-if) P3 dynamic term without the inherited compatibility elevation");
-    let inherited = evolved.compatibility().tectonic_elevation_m();
-    for (label, kind) in [
-        ("oceanic", CrustKind::Oceanic),
-        ("continental", CrustKind::Continental),
-    ] {
-        print_quantiles(
-            &format!(
-                "v5 compatibility tectonic_elevation_m inherited by P3 over {label} crust (m)"
-            ),
-            &Weighted::collect(inherited, &areas, |i| kinds[i] == kind),
-        );
-    }
-    for (label, predicate) in [
-        ("net uplift", (|rate: f32| rate > 0.0) as fn(f32) -> bool),
-        ("net subsidence", |rate: f32| rate < 0.0),
-        ("no normal forcing", |rate: f32| rate == 0.0),
-    ] {
-        let samples = Weighted::collect(relief.dynamic_tectonic_offset_m(), &areas, |i| {
-            kinds[i] == CrustKind::Oceanic && predicate(net_rate[i])
-        });
-        println!(
-            "p3 dynamic_tectonic over oceanic crust with {label}: area share={:.4} mean={:.1} m p50={:.1} m",
-            samples.total() / total_area,
-            samples.mean(),
-            samples.quantile(0.5),
-        );
-    }
-    let rate_only: Vec<f32> = (0..n)
-        .map(|i| {
-            dynamic_tectonic_response_m(
-                0.0,
-                forcing.uplift_rate_mm_per_year()[i],
-                forcing.subsidence_rate_mm_per_year()[i],
-            )
-        })
-        .collect();
-    for (scope, applies) in [
-        (
-            "oceanic-kind cells",
-            kinds
-                .iter()
-                .map(|&k| k == CrustKind::Oceanic)
-                .collect::<Vec<bool>>(),
-        ),
-        ("every cell", vec![true; n]),
-    ] {
-        let stripped: Vec<f32> = (0..n)
-            .map(|i| {
-                if applies[i] {
-                    relief.elevation_m()[i] - relief.dynamic_tectonic_offset_m()[i] + rate_only[i]
-                } else {
-                    relief.elevation_m()[i]
-                }
-            })
-            .collect();
-        for thickening_km in CLOSURE_THICKENING_TRIALS_KM {
-            let lift_m = thickening_km * airy_slope_m_per_km;
-            let elevation: Vec<f32> = stripped
-                .iter()
-                .zip(&continental_weight)
-                .map(|(&base, &weight)| base + lift_m * weight)
-                .collect();
-            let water = solve_physical_sea_level(surface, &elevation, inventory).unwrap();
-            hypsometry(
-                &format!(
-                    "L0 on p3/primary over {scope}, uniform continental thickening {thickening_km:.0} km"
-                ),
-                &areas,
-                &elevation,
-                water.sea_level_m(),
-                water.geometry().land_ocean().raw_values(),
-                inventory,
-            );
-        }
-    }
-
     // L1 what-if: re-reference the continental freeboard datum to the solved sea.
     println!("\n#### (L1 what-if) freeboard closure on the P3 column and on the P5 product");
     for thickening_km in CLOSURE_THICKENING_TRIALS_KM {
@@ -1316,11 +1234,11 @@ fn probe_t0_hypsometric_attribution() {
 }
 
 // ---------------------------------------------------------------------------
-// T0 corpus hypsometry (calibration spec §8.6 "measure, then pin"): the P3
+// T0 corpus hypsometry (calibration spec 搂8.6 "measure, then pin"): the P3
 // land hypsometry and the V5 continental inventory of every quality seed.
 // ---------------------------------------------------------------------------
 
-/// Thickness ceilings whose area shares bound the inventory tails (spec §4 L2).
+/// Thickness ceilings whose area shares bound the inventory tails (spec 搂4 L2).
 const INVENTORY_THIN_CEILING_KM: f32 = 28.0;
 const INVENTORY_THICK_FLOOR_KM: f32 = 44.0;
 

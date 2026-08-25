@@ -122,7 +122,7 @@ fn legacy_planar_registry_bytes_are_frozen_before_spherical_parameterization() {
 
     assert_eq!(
         actual,
-        "7daf32cc8d7d00033b9bc541c8642bbe6482d30cb85ab99aa0f0a4cf18f9e740"
+        "4a6517cee46cdfab4411175172752d7a02a38eef3edc88dae61701756d1aade1"
     );
 }
 
