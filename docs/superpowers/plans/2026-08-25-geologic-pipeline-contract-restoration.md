@@ -18,6 +18,9 @@ endpoint closure；原三次 P4 路径仅保留为一个 `Standard`/seed `42` �
 仍暗示“构造率只诊断”“两项 aggregate 组成”或“kernel 读取 f32 scratch”的旧句。
 联合终审还删除 P3 中无出处、等效额外积分 `250 kyr` 的当前构造率增益，避免与
 P5 的唯一构造位移积分双计数；P4/P5 sibling 所有权和最终 forcing 身份要求不变。
+第二轮 Codex/Claude 精度边界复核由规格 §0.1(10–12) 显式冻结：同域 retained/
+守恒状态必须 `f64`，P3/P5 水面几何不得经 wire 回流；P4 内部暂不扩成无实测依据
+的 `f64` 重写，最终 forcing 则必须锚定唯一一次、可反序列化重放的 final wire。
 
 ## Global Constraints
 
@@ -38,9 +41,12 @@ P5 的唯一构造位移积分双计数；P4/P5 sibling 所有权和最终 forci
   fluvial erosion、hillslope erosion/deposition、routed sediment deposition、
   coastal erosion/deposition、isostatic response；最终高程只由生产恒等式求和。
   不得用 `equilibrium_adjustment`/`surface_adjustment` aggregate 替代这些最终事实。
-- 科学 kernel 的 elevation、displacement、process/hydrology input/output 和沉积
-  质量库存端到端保留 `f64`；`f32` 只在完整 `f64` 状态通过校验后生成最终
-  wire/GPU 快照，且不得成为任何后续 kernel 输入。
+- 同一领域、同一权威球面上跨子步保留/累计或参与守恒、组成、数值域验收的
+  elevation、displacement、海平面/水面几何、水量/沉积库存和
+  process/hydrology input/output 端到端保留 `f64`；同域内不得经 `f32` 往返。
+  `f32` 只用于已经验证并接受的领域 wire/GPU 快照；下游可把它当跨层边界条件
+  并展宽，但不得把它当成本领域 retained state。P4 内部预报态/`PlanetForcing`
+  本轮维持现状并列为需离线对照的开放问题，不以此放宽 P3/P5 精度或守恒。
 - 不得 clamp 科学状态，不得扩大 `ELEVATION_MIN_M`/`ELEVATION_MAX_M`，不得按目标地貌做重映射、经验修形或特殊格元分支。
 - 不增加世界年龄、最高程、耦合 cadence、收敛容差或显示范围旋钮；形成时间线是 resolved 输入身份，不是本轮 UI 配置。
 - 后期“统一噪声”只表示同一物理算法的某些参数可由常数推广为有出处的空间分布。当前计划只记录 §0/规格 §2.6 的输入边界，不增加分布 schema、用户旋钮、中央噪声 stage 或无人消费的泛型抽象。
@@ -100,10 +106,11 @@ AuthoritativeTectonicView ──► GeologicSubstrateGenerator
                               PrimaryReliefGenerator
         │
         ▼
-PrimaryReliefWorkingState (private f64) ─► final P3 wire projection
+PrimaryReliefWorkingState (private f64 elevation + water geometry)
+        ├───────────────────────────────► final P3 wire projection
         │
         ▼
-FormationState::from_primary_working()
+FormationState::from_primary_working() (private f64 retained state)
         │
         ▼
 start forcing/P4 ─► one complete P5 advance
@@ -125,10 +132,10 @@ NaturalFormationBundleArtifact
 
 `one complete P5 advance` 显式借用最终 `EvolvedTectonicSnapshot`，在 P5 horizon
 内只积分当前构造率；上游 P3 已经包含的累计固体几何不在这里重放。图中的
-`PrimaryReliefWorkingState` 与 `FormationState` 内部都是 `f64`；P3 的最终
-`f32` wire 只用于已接受 snapshot/呈现，不得作为 P5 初态或任何后续 kernel 输入。
-`FormationState` 内部是九项因果组成和最终和的 retained state，图外不存在可
-回流的 `f32` 科学 scratch。
+`PrimaryReliefWorkingState` 与 `FormationState` 内部的高程、水量及水面几何都是
+`f64`；P3 的最终 `f32` wire 只作为已接受 snapshot 供 start-P4/呈现使用，不得
+作为 P5 初态。`FormationState` 内部是九项因果组成、最终和、沉积库存及 working
+water geometry 的 retained state，子步间不存在可回流的 `f32` 科学 scratch。
 
 ### 后期参数分布接缝（本计划不实现）
 
@@ -662,21 +669,39 @@ git commit -m "Isolate authoritative tectonic inputs" -m "Give P3 a borrowed cau
 
 ### Task 3: 让 P3 成为无历史权威投影并删除事后高程修形
 
+**2026-08-25 实现前联合复核修订：** 本任务同时关闭 P3 water-ledger 的 `f32`
+回流边界，并刷新已经改变语义的 snapshot/stage 身份。下列后写内容替代本任务
+旧的窄文件清单、会从集成测试访问 private `exact` 字段的示例，以及只运行一个
+RED filter 的命令；不把修订扩成 P4 solver 的 `f64` 迁移。
+
 **Files:**
 - Modify: `src/generators/natural/primary_relief.rs`
+- Modify: `src/generators/natural/primary_relief_stage.rs`
 - Modify: `src/generators/natural/mod.rs`
+- Modify: `src/generators/natural/land_fraction.rs`
+- Modify: `src/generators/natural/surface_water_geometry.rs`
 - Modify: `src/generators/natural/spherical_island_relief.rs`
 - Modify: `src/generators/natural/spherical_relief.rs`
 - Modify: `src/generators/natural/spherical_relief/directed_noise.rs`
 - Modify: `src/generators/natural/spherical_mantle.rs`
 - Modify: `src/generators/natural/geologic_substrate.rs`
+- Modify: `src/world/natural/evolved_tectonics.rs`
+- Modify: `src/generators/natural/global_circulation/forcing.rs`（只同步 P3 schema fixture）
 - Modify: `src/generators/natural/quality/primary_relief.rs`
 - Modify: `src/world/natural/primary_relief.rs`
-- Test: `tests/geologic_pipeline_contracts.rs`
+- Modify: `src/world/natural/surface_water_geometry.rs`
+- Modify: `src/world/natural/relief.rs`
+- Modify: `src/world/natural/mod.rs`
+- Test: `src/generators/natural/primary_relief.rs`
+- Create: `tests/geologic_pipeline_contracts.rs`
 - Test: `tests/primary_relief_atlas.rs`
+- Test: `tests/primary_relief_contracts.rs`
 - Test: `tests/primary_relief_evidence.rs`
 - Test: `tests/primary_relief_generation.rs`
 - Test: `tests/primary_relief_quality.rs`
+- Test: `tests/primary_relief_stage.rs`
+- Test: `tests/surface_water_geometry.rs`
+- Test: `tests/water_volume_sea_level.rs`
 - Test: `tests/terrain_audit_probe.rs`
 
 **Interfaces:**
@@ -684,13 +709,37 @@ git commit -m "Isolate authoritative tectonic inputs" -m "Give P3 a borrowed cau
 - Produces: `PrimaryReliefGenerator::generate` 的签名保持不变；新增 crate-private
   `GeologicSubstrateGenerator::generate_from_streams` 与
   `PrimaryReliefGenerator::generate_working_from_streams` 供协调器复用同一随机身份；
-  后者返回私有 `PrimaryReliefWorkingState`（各组成、完整高程与水面几何均为
-  `f64`）及最终 snapshot 投影。内部所有构造读取改走 view；删除
-  `dynamic_tectonic_response_m` 与 `DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR`。
+  后者返回 `pub(in crate::generators::natural)` 的 `PrimaryReliefWorkingState`
+  （各组成、完整高程、水量账本与水面几何均为 `f64`）及最终 snapshot 投影。
+  内部所有构造读取改走 view；删除 `dynamic_tectonic_response_m` 与
+  `DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR`。
+- 新增仅在 `generators/natural` 内可见的
+  `SurfaceWaterWorkingGeometry`/`SurfaceWaterWorkingSolution`：海平面、海洋面积
+  比例、湿边比例和逐格体积为 `f64`，海陆分类复用 world SSOT；
+  `solve_physical_sea_level_exact(surface, &[f64], inventory, cancellation)`、
+  `build_surface_water_working_geometry(surface, &[f64], sea_level, cancellation)` 和
+  `select_area_weighted_sea_level(..., &[f64], ...)` 只服务当前 P3/P5 消费者。
+  `SurfaceWaterWorkingGeometry::to_wire(&self, surface, projected_elevation_f32,
+  cancellation)` 是唯一水面几何发布投影：它在已投影高程上经同一个 reconstruction
+  core 和既有三候选 `f32` 选择重新形成 wire，而不是直接 cast exact 数组；若
+  wire 无法复现 exact 厘米分类则返回 typed failure。
+- `SurfaceWaterGeometry` wire/schema 保持 V1。改变因果语义的
+  `PrimaryReliefSnapshot` 升为 `PRIMARY_RELIEF_SCHEMA_V3`，同时删除已无独立
+  消费者的顶层 `dynamic_tectonic_offset_m` 和整个
+  `compatibility: SphericalReliefSnapshot` 字段/accessor、交叉校验与专属错误；旧
+  V2 以及仍携带任一旧字段的 wire 明确拒绝。独立 legacy
+  `SphericalReliefArtifact`/`SphericalReliefSnapshot` 类型和展示链不在本任务删除；
+  `PrimaryReliefStage::version()` 从 2 升为 3，使缓存身份随语义变化。现有公开
+  f32 water helper 仍有 wire/跨域测试与 P4 fixture 消费者，保留其现有零水量
+  早退（返回输入中心高程的 `f32` 最小值）、非零水量量化加三邻点选择行为，并
+  改为 exact core 的薄适配器；不得改变既有 f32 wrapper 的可观测结果，不得再造
+  兼容入口或双写重建公式。exact 零水量路径对应选择输入 `f64` 中心高程最小值。
 
 - [ ] **Step 1: 写兼容高程消融 RED**
 
-在新测试文件中复用生产 P2/P3 fixture，唯一变异 compatibility elevation：
+在 `tests/geologic_pipeline_contracts.rs` 复用生产 P2/P3 fixture，唯一变异
+compatibility elevation；集成测试只比较公开 snapshot，不越过 private working
+state 边界：
 
 ```rust
 #[test]
@@ -711,44 +760,64 @@ fn compatibility_elevation_alone_cannot_change_authoritative_p3() {
     assert_eq!(changed.relief, original.relief);
 }
 
-#[test]
-fn p3_projection_does_not_integrate_current_tectonic_rates() {
-    let fixture = authoritative_p3_fixture(RootSeed::new(42));
-    let changed = fixture.with_only_current_forcing_rates_changed();
-    let original = generate_p3_from_evolved(&fixture, &fixture.evolved);
-    let projected = generate_p3_from_evolved(&fixture, &changed);
-    assert_eq!(
-        projected.exact.primary_elevation_m(),
-        original.exact.primary_elevation_m(),
-    );
-    assert!(projected
-        .exact
-        .dynamic_tectonic_offset_m()
-        .iter()
-        .all(|value| value.to_bits() == 0.0_f64.to_bits()));
-}
 ```
 
 `authoritative_p3_fixture` 与 `generate_p3_from_evolved` 写在同一测试文件，直接调用 `GeologicSubstrateGenerator`、`PrimaryReliefGenerator` 和固定 `derive_stage_seed`；不得复制 P3 公式。
-第二个 fixture 只变异 uplift/subsidence rate，保持 material、crust age、orogeny、
-lineation、boundary kind 与所有随机标签不变。P3 的 passive-margin 分类改读上述
-固体几何事实，不再把当前 forcing rate 当作地形高度或分类替身；因此完整 working
-elevation 对只改当前率保持不变。
+“只改 uplift/subsidence rate，完整 exact working elevation 不变且 P3 不产生率位移
+字段”的断言放进 `primary_relief.rs` 同模块单元测试，通过 private 构造入口测试；
+不得为集成测试放宽可见性。fixture 保持 material、crust age、orogeny、lineation、
+boundary kind 与所有随机标签不变。P3 的 passive-margin 分类改读固体几何事实，
+不再把当前 forcing rate 当作地形高度或分类替身。
+
+同一 RED 批次增加：
+
+- `p3_water_ledger_is_solved_on_exact_f64_elevation`：生产 working state 的 exact
+  water inventory 对 exact elevation 满足既有 `WATER_VOLUME_RELATIVE_TOLERANCE`，
+  并报告它与“先投影 `f32` 再解”的原始差值，不为该差值新造门限；
+- `working_water_geometry_projects_to_a_revalidatable_wire` 与
+  `primary_relief_working_state_and_wire_agree_on_land_ocean`：唯一投影可通过
+  `validate_against`，分类逐格一致，否则 typed fail；
+- `land_fraction_selection_consumes_exact_elevation`：签名和亚 `f32` ULP plateau
+  fixture 证明选择器确实消费 `&[f64]`，厘米分组只读 world SSOT；
+- `legacy_land_fraction_projection_preserves_plateau_side_or_fails`：唯一 legacy
+  `f64→f32` 海平面出口收窄后重新检查厘米分箱；不能保持严格高于 plateau 时返回
+  typed failure，不静默翻转海陆分类；
+- `primary_relief_v3_removes_compatibility_and_dynamic_duplicates_and_rejects_v2`：
+  旧 V2 拒绝，V3 wire 不再接受顶层 dynamic 字段或整个 `compatibility` 子快照；
+  `primary_relief_stage` 断言 stage version 为 3，缓存指纹随版本变化；
+- exact/f32 adapter 在既有 f32 语料上保持 bitwise 结果；代表性 production fixture
+  另记录 exact-vs-wire 水量差、exact relative error 和 exact→wire 额外 wall time。
+  现有二分循环不因新路径增加迭代；若用 `#[cfg(test)]` 计数证明，计数不得进入
+  production report、artifact 或通用 observer 接口。
 
 - [ ] **Step 2: 运行 RED**
 
 Run: `cargo test --release --test geologic_pipeline_contracts compatibility_elevation_alone_`
 
-Expected: FAIL，当前大陆 compatibility elevation 和无出处的 current-rate 增益会
-改变 `dynamic_tectonic_offset_m`/最终 relief。
+Run: `cargo test --release --lib generators::natural::primary_relief::tests`
+
+Run: `cargo test --release --lib generators::natural::land_fraction::tests`
+
+Run: `cargo test --release --test surface_water_geometry --test water_volume_sea_level --test primary_relief_contracts --test primary_relief_stage`
+
+Expected: FAIL。当前大陆 compatibility elevation/current-rate 增益仍改变 P3；
+exact water API、V3 重复字段删除和 stage version 3 尚不存在。模块级 `--lib`
+命令必须实际执行本批全部 private RED，不得只跑单个 filter 后误判 RED 已完整建立。
 
 - [ ] **Step 3: 删除兼容/当前率位移并建立 `f64` P3 working state**
 
 删除 `DYNAMIC_ACCUMULATED_RESPONSE_WEIGHT`、
 `DYNAMIC_RATE_RESPONSE_M_PER_MM_PER_YEAR`、`causal_accumulated_response_m` 与
 `dynamic_tectonic_response_m`。P3 不再把 compatibility elevation 或当前 forcing
-rate 变成 additive elevation；既有 `dynamic_tectonic_offset_m` wire 在本轮表示
-“P3 没有独立动态位移”的精确零场，不能成为未来偷偷恢复经验项的接缝。
+rate 变成 additive elevation；同步删除 `PrimaryReliefSnapshot` 顶层
+`dynamic_tectonic_offset_m` 和整个 `compatibility: SphericalReliefSnapshot`
+字段/accessor、serde wire 成员、交叉校验及仅服务这些校验的错误变体，不为已删除
+机制保留零数组或派生子快照。P3 不再构造 `SphericalReliefSnapshot`；独立 legacy
+类型、`RELIEF_SCHEMA_V4`、`SphericalReliefArtifact` 与旧 UI 链不动。删除
+`compatibility_mapping_cannot_diverge_from_causal_components`、
+`retained_water_geometry_cannot_diverge_from_compatibility_payload` 这类只看守重复
+payload 的测试，改由顶层组成恒等式、exact/wire 水面重验和 unknown-field 拒绝
+覆盖同一硬不变式。
 `quality/primary_relief.rs` 中
 `subduction-negative-dynamic-fraction` 与
 `convergent-positive-dynamic-fraction` 的被测对象因此按设计消失：删除这两个
@@ -769,7 +838,6 @@ metric、`EXPECTED_METRIC_NAMES` 条目及对应测试，不把它们重定向�
 ```rust
 fn compose_primary_elevation(
     isostatic: &[f64],
-    dynamic: &[f64],
     volcanic: &[f64],
     passive: &[f64],
     detail: &[f64],
@@ -777,7 +845,6 @@ fn compose_primary_elevation(
     let mut elevation = Vec::with_capacity(isostatic.len());
     for index in 0..isostatic.len() {
         let exact = isostatic[index]
-            + dynamic[index]
             + volcanic[index]
             + passive[index]
             + detail[index];
@@ -801,6 +868,37 @@ fn compose_primary_elevation(
 公开 `generate` 用它生成 snapshot，协调器/P5 则直接消费其 `f64` 值，绝不从
 snapshot 的 `f32` wire 反读。
 
+P3 的 water ledger 也必须从同一个 exact elevation 构造。把
+`SurfaceWaterReconstruction` 的权威 elevation/sea-level 入口统一为 `f64`，内部
+既有 `f64` 三角积分与二分循环只保留一份。当前实现本来就以 `f64` 二分到中点
+等于端点，随后才量化并检查 `f32` 下邻/本值/上邻；exact API 在量化前返回
+working solution。exact 下界以 `f64::total_cmp` 从输入中心高程取得，只接受有限
+`f64` 求解域，不携带 `f32::MAX` 形状约束。公开 f32 wrapper 则保留原 `f32`
+最小值/上界守卫、零水量候选前早退，以及非零水量三候选选择，现有 fixture
+必须 bitwise 不变。最终水量仍由既有 `WATER_VOLUME_RELATIVE_TOLERANCE` 验收，
+不得引入迭代次数、绝对残差或用户容差。
+
+world 层建立唯一的 `f64` 厘米量化/反量化与 `LandOceanKind::classify_exact`
+事实源；既有 f32 classification API 只做展宽后委托。`land_fraction.rs` 的 elevation
+与 `LandFractionSelection.sea_level_m` 都改为 `f64`，不再硬编码第二份 `/ 100.0`
+换算，也不保留本地 `next_up_f32`。legacy `spherical_relief.rs` 的唯一 `f32` 出口
+在收窄后必须复检 plateau fallback 仍严格落在目标厘米分箱之上，否则 typed fail；
+不得让 round-to-nearest 把海平面舍回原分箱并翻转分类。
+
+working reconstruction 的最终 `wet_area / cell.area` 和 `cell_water_volume_m3` 不得
+用结果 `.clamp(0.0, 1.0)` 或 `.max(0.0)` 修正；有限性、`0..=1` 和非负域不成立就
+回报包含原始值/格元的 typed failure。`integrate_positive_linear_triangle` 与
+`wet_line_fraction` 内部数学值本应属于 `[0,1]` 的无量纲线性交点/面积比例护栏
+按既有 bitwise 语义保留；它们只是 Goldberg/Higham 意义下的局部舍入防护，不能
+修改 elevation、sea level、water volume 或掩盖最终域失败。`to_wire` 在 projected
+f32 elevation 上重跑相同 core/旧 f32 候选选择，再验证 wire 能逐格重现 exact 分类并通过
+`validate_against`；失败时 typed fail，不调整海平面、不加容差，也不把该 RED
+降级为开放问题。
+
+V3 同时删除顶层 dynamic 字段和整个 P3 compatibility 子快照，stage version 3
+和所有冻结 hash fixture 在本任务一起更新。新增 typed generation error 后同步补全
+`primary_relief_stage.rs` 的穷举映射，保持取消/输入/构建失败分类。
+
 现有各物理分量自身有出处的输入域限制保持；任何生成结果超出分量或总高程 artifact 域都 typed fail，不对结果 clamp。另把 `MantleGenerator::generate_spherical_from_streams`、`GeologicSubstrateGenerator::generate_from_streams` 与 `PrimaryReliefGenerator::generate_working_from_streams` 定为 crate-private；现有 public `generate` 只负责 capture 一次 `LabeledSubstreams` 后转调，协调器则在最终 P3 投影时复用同一组标签身份。
 删除对应旧 re-export 时同步修改 `src/generators/natural/mod.rs`。现有
 `ReliefSpecArtifact` 仍留在 `relief_spec.rs`；本任务不移动 artifact 定义。
@@ -809,16 +907,28 @@ snapshot 的 `f32` wire 反读。
 
 Run: `cargo test --release --test geologic_pipeline_contracts compatibility_elevation_alone_`
 
+Run: `cargo test --release --lib generators::natural::primary_relief::tests`
+
+Run: `cargo test --release --lib generators::natural::land_fraction::tests`
+
+Run: `cargo test --release --test surface_water_geometry --test water_volume_sea_level --test primary_relief_contracts --test primary_relief_stage`
+
 Run: `cargo test --release --test primary_relief_generation --test primary_relief_quality --test primary_relief_evidence --test primary_relief_atlas --test terrain_audit_probe`
 
-Expected: 消融 PASS，两个失去物理被测对象的 dynamic-sign metric 已删除，其余 P3
-质量/证据全 PASS。若其余 morphology envelope 失败，本任务停在 RED，输出失败指标
-并按规格登记“物质/过程缺口”；禁止恢复兼容高程、恢复修形或调系数。
+Run: `cargo test --release --test primary_relief_performance`
+
+Expected: 消融、current-rate、exact-water、投影重验、V3/stage/cache 身份全部
+PASS；报告 production fixture 的 exact-vs-wire 原始 water delta 与 exact relative
+error 及 exact→wire 额外 wall time，但不新增阈值；既有 P3 性能包络若回退则停下
+归因，不把投影成本推迟到 Task 13。两个失去物理被测对象的 dynamic-sign metric 已删除，其余
+P3 质量/证据全 PASS。若其余 morphology envelope 失败，本任务停在 RED，输出失败
+指标并按规格登记“物质/过程缺口”；禁止恢复兼容高程、恢复修形或调系数。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/primary_relief.rs src/generators/natural/spherical_island_relief.rs src/generators/natural/spherical_relief.rs src/generators/natural/spherical_relief/directed_noise.rs src/generators/natural/spherical_mantle.rs src/generators/natural/geologic_substrate.rs src/generators/natural/quality/primary_relief.rs src/generators/natural/mod.rs src/world/natural/primary_relief.rs tests/geologic_pipeline_contracts.rs tests/primary_relief_atlas.rs tests/primary_relief_evidence.rs tests/primary_relief_generation.rs tests/primary_relief_quality.rs tests/terrain_audit_probe.rs
+git add src/generators/natural/primary_relief.rs src/generators/natural/primary_relief_stage.rs src/generators/natural/mod.rs src/generators/natural/land_fraction.rs src/generators/natural/surface_water_geometry.rs src/generators/natural/spherical_island_relief.rs src/generators/natural/spherical_relief.rs src/generators/natural/spherical_relief/directed_noise.rs src/generators/natural/spherical_mantle.rs src/generators/natural/geologic_substrate.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/quality/primary_relief.rs src/world/natural/evolved_tectonics.rs src/world/natural/primary_relief.rs src/world/natural/surface_water_geometry.rs src/world/natural/relief.rs src/world/natural/mod.rs tests/geologic_pipeline_contracts.rs tests/primary_relief_atlas.rs tests/primary_relief_contracts.rs tests/primary_relief_evidence.rs tests/primary_relief_generation.rs tests/primary_relief_quality.rs tests/primary_relief_stage.rs tests/surface_water_geometry.rs tests/water_volume_sea_level.rs tests/terrain_audit_probe.rs
+git diff --cached --check
 git commit -m "Restore P3 as an authoritative projection" -m "Remove compatibility and unsourced rate-to-height inheritance, retain exact f64 working elevation, and reject unsupported values without post-hoc reshaping."
 ```
 
@@ -1108,10 +1218,15 @@ git commit -m "Measure one P5 formation advance" -m "Attribute the full-horizon 
 
 ---
 
-### Task 7: 建立 P5 `f64` 九项因果地形组成状态
+### Task 7: 建立 P5 `f64` 九项因果地形组成与水面状态
+
+**精度边界修订：** 九项 elevation 不是本任务唯一的 retained state；Task 3 的
+exact water geometry 也必须随 `FormationState` 跨子步保留，并直接进入所有地表
+kernel。后写条款替代任何仍允许 coast/sediment/isostasy 读取 f32 wire 的旧句。
 
 **Files:**
 - Create: `src/generators/natural/surface_formation/state.rs`
+- Modify: `src/generators/natural/mod.rs`
 - Modify: `src/generators/natural/surface_formation/mod.rs`
 - Modify: `src/generators/natural/surface_formation/generation.rs`
 - Modify: `src/generators/natural/surface_formation/hydrology.rs`
@@ -1121,7 +1236,8 @@ git commit -m "Measure one P5 formation advance" -m "Attribute the full-horizon 
 - Modify: `src/generators/natural/surface_formation/coast.rs`
 - Modify: `src/generators/natural/surface_formation/isostasy.rs`
 - Modify: `src/generators/natural/quality/surface_formation.rs`
-- Modify: `src/generators/natural/global_circulation/forcing.rs`（同步九项测试 fixture）
+- Modify: `src/generators/natural/global_circulation/forcing.rs`（同步九项测试 fixture；
+  生产 `build_for_formation_terrain` 的入参与 wire-anchored 语义不变）
 - Modify: `src/app/spherical_formation_display.rs`（只迁移九项 payload，不提前切 bundle）
 - Modify: `src/world/natural/surface_formation.rs`
 - Modify: `src/world/natural/fields.rs`
@@ -1152,10 +1268,20 @@ git commit -m "Measure one P5 formation advance" -m "Attribute the full-horizon 
   `wire_components(&self) -> Result<FormationElevationComponents, FormationStateError>`；
   `pub(super) from_legacy_primary_wire_for_migration(&PrimaryReliefSnapshot)` 只有
   Task 7–10 的旧独立 P5 wrapper 一个消费者，并与该 wrapper 在 Task 11 同时删除；
-  `#[cfg(test)] pub(super) from_primary_values(Vec<f64>)` 只供解析测试，
+  `#[cfg(test)] formation_state_for_values(Vec<f64>)` 只在同模块用 production 小球面
+  fixture 与 Task 3 exact water core 构造完整测试态，不给 `FormationState` 增加
+  缺失 water geometry 的半成品构造器；
   `#[cfg(test)] replace_primary_for_offline_reference(...)` 只服务 Task 10 的单一高成本
-  参考。所有 retained state 与所有会反馈后续状态的 kernel 输入/输出均为 `f64`；
-  不提供 `current_elevation_f32` 科学入口或 f32 位移写入口。
+  参考。`FormationState` 同时持有 Task 3 的 `SurfaceWaterWorkingGeometry`。
+  保留当前 production operator 的**两个**水量闭合边界：候选入口/上个子步末的
+  exact geometry 供 hydrology 与 hillslope 使用；fluvial+hillslope 更新后重解一次
+  供 coast/sediment 使用；sediment+Airy 更新后再重解一次，成为接受候选和下一
+  子步的 retained geometry。不得在九项组成每次局部写入后重解，也不得合并掉
+  这两个现有物理边界。coast 的 `wet_edge_fraction`/`ocean_area_fraction`、sediment
+  与 isostasy 的 `sea_level_m`、hydrology 的 elevation/water 分类输入均为 `f64`；
+  kernel 不接受 `&SurfaceWaterGeometry` wire。所有 retained state 与所有会反馈
+  后续状态的 kernel 输入/输出均为 `f64`，不提供 `current_elevation_f32` 科学入口
+  或 f32 位移/水面写入口。
 
 - [ ] **Step 1: 写亚 ULP、test-only 参考差量和真实越界 RED**
 
@@ -1164,7 +1290,7 @@ git commit -m "Measure one P5 formation advance" -m "Attribute the full-horizon 
 ```rust
 #[test]
 fn sub_ulp_surface_changes_accumulate_without_f32_feedback() {
-    let mut state = FormationState::from_primary_values(vec![9_000.0]).unwrap();
+    let mut state = formation_state_for_values(vec![9_000.0]).unwrap();
     state.apply_fluvial_erosion_f64(&[0.0003]).unwrap();
     state.apply_fluvial_erosion_f64(&[0.0003]).unwrap();
     assert_eq!(state.fluvial_erosion_m()[0].to_bits(), 0.0006_f64.to_bits());
@@ -1173,7 +1299,7 @@ fn sub_ulp_surface_changes_accumulate_without_f32_feedback() {
 
 #[test]
 fn offline_reference_primary_replacement_preserves_accumulated_components() {
-    let mut state = FormationState::from_primary_values(vec![100.0]).unwrap();
+    let mut state = formation_state_for_values(vec![100.0]).unwrap();
     state.apply_routed_sediment_deposition_f64(&[12.0]).unwrap();
     state.replace_primary_for_offline_reference(&[100.0], &[130.0]).unwrap();
     assert_eq!(state.primary_elevation_m(), &[130.0]);
@@ -1183,7 +1309,7 @@ fn offline_reference_primary_replacement_preserves_accumulated_components() {
 
 #[test]
 fn exact_f64_state_rejects_a_true_overflow_before_wire_rounding() {
-    let mut state = FormationState::from_primary_values(vec![f64::from(ELEVATION_MAX_M)]).unwrap();
+    let mut state = formation_state_for_values(vec![f64::from(ELEVATION_MAX_M)]).unwrap();
     assert!(matches!(
         state.apply_tectonic_displacement_f64(&[0.000_01]),
         Err(FormationStateError::ElevationOutOfRange { found, .. }) if found > 9_000.0
@@ -1191,12 +1317,18 @@ fn exact_f64_state_rejects_a_true_overflow_before_wire_rounding() {
 }
 
 #[test]
-fn every_scientific_kernel_reads_exact_f64_elevation() {
-    let mut state = FormationState::from_primary_values(vec![9_000.0]).unwrap();
+fn every_scientific_kernel_reads_exact_f64_elevation_and_water_geometry() {
+    let mut state = formation_state_for_values(vec![9_000.0]).unwrap();
     state.apply_fluvial_erosion_f64(&[0.0003]).unwrap();
-    let observed = probe_all_surface_kernel_elevation_inputs(&state).unwrap();
-    assert!(observed.into_iter().all(|value| value.to_bits()
-        == state.current_elevation_exact_m()[0].to_bits()));
+    let observed = probe_all_surface_kernel_inputs(&state).unwrap();
+    assert_eq!(observed.elevation_m.to_bits(),
+        state.current_elevation_exact_m()[0].to_bits());
+    assert_eq!(observed.sea_level_m.to_bits(),
+        state.surface_water_geometry().sea_level_m().to_bits());
+    assert_eq!(observed.ocean_area_fraction.to_bits(),
+        state.surface_water_geometry().ocean_area_fraction()[0].to_bits());
+    assert_eq!(observed.wet_edge_fraction.to_bits(),
+        state.surface_water_geometry().wet_edge_fraction()[0].to_bits());
 }
 ```
 
@@ -1225,6 +1357,7 @@ pub(in crate::generators::natural) struct FormationState {
     coastal_deposition_m: Vec<f64>,
     isostatic_response_m: Vec<f64>,
     current_elevation_m: Vec<f64>,
+    surface_water_geometry: SurfaceWaterWorkingGeometry,
 }
 
 impl FormationState {
@@ -1277,6 +1410,17 @@ payload 绑定九项 wire slice。Task 11 只把 payload 来源原子切到 bund
 第二份求和公式。`PrimaryReliefSnapshot` 的 `f32` elevation 在最终协调器路径只用于
 已接受 snapshot/呈现，不得传入 `FormationState`。
 
+`FormationState::from_primary_working` 必须直接接管 P3 exact water geometry；后续
+按上述两个既有 operator 边界在 `f64` 上重建，coast/sediment/isostasy/hydrology
+只借用该 working 类型。删除 `isostasy.rs` 中仅转调公共 water core 的
+`FormationSeaLevelSolver` 及 `surface_formation/mod.rs`、`natural/mod.rs` re-export；
+调用点直接使用 Task 3 exact API。`LocalAiryIsostasy` 只计算加载响应，不在内部
+另解海平面；Airy 后的第二次闭合仍由 generation 编排在既定边界执行。
+`sediment.rs` 对 sea level 的
+`ELEVATION_MIN_M..=ELEVATION_MAX_M` 检查改为 exact `f64` 域并在 typed error 中
+保留未裁剪值。任何 kernel 所需的 wire 只允许在最终候选发布路径投影；Task 9
+将从子步编排中彻底移除 `FormationTerrainFields` 构造/回读。
+
 为让 Task 7–10 的旧独立 P5 stage 在原子 bundle 切换前保持逐提交可编译，
 `from_legacy_primary_wire_for_migration` 只把该旧 stage 已有的 primary wire 一次扩展为
 `f64`，随后所有 P5 retained state 与 kernel 仍全程 `f64`。这是对进入本轮前精度
@@ -1307,7 +1451,7 @@ Expected: 全部 PASS；`9000.000260834617` 一类 f32 身份误报不再出现�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/surface_formation/state.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/hydrology.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/surface_formation/sediment.rs src/generators/natural/surface_formation/hillslope.rs src/generators/natural/surface_formation/coast.rs src/generators/natural/surface_formation/isostasy.rs src/generators/natural/quality/surface_formation.rs src/generators/natural/global_circulation/forcing.rs src/app/spherical_formation_display.rs src/world/natural/surface_formation.rs src/world/natural/fields.rs src/world/natural/mod.rs src/ui/field/localization.rs tests/formation_hydrology.rs tests/formation_stream_power.rs tests/formation_sediment.rs tests/formation_hillslope.rs tests/formation_coast_isostasy.rs tests/surface_formation_generation.rs tests/surface_formation_atlas.rs tests/surface_formation_contracts.rs tests/surface_formation_quality.rs tests/surface_formation_evidence.rs tests/surface_formation_stage.rs tests/terrain_audit_probe.rs tests/natural_field_registry_spherical.rs tests/field_display_integration.rs
+git add src/generators/natural/surface_formation/state.rs src/generators/natural/mod.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/hydrology.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/surface_formation/sediment.rs src/generators/natural/surface_formation/hillslope.rs src/generators/natural/surface_formation/coast.rs src/generators/natural/surface_formation/isostasy.rs src/generators/natural/quality/surface_formation.rs src/generators/natural/global_circulation/forcing.rs src/app/spherical_formation_display.rs src/world/natural/surface_formation.rs src/world/natural/fields.rs src/world/natural/mod.rs src/ui/field/localization.rs tests/formation_hydrology.rs tests/formation_stream_power.rs tests/formation_sediment.rs tests/formation_hillslope.rs tests/formation_coast_isostasy.rs tests/surface_formation_generation.rs tests/surface_formation_atlas.rs tests/surface_formation_contracts.rs tests/surface_formation_quality.rs tests/surface_formation_evidence.rs tests/surface_formation_stage.rs tests/terrain_audit_probe.rs tests/natural_field_registry_spherical.rs tests/field_display_integration.rs
 git diff --cached --check
 git commit -m "Retain causal formation components in f64" -m "Preserve all nine final-state causes and prevent wire precision from feeding any scientific kernel."
 ```
@@ -1442,14 +1586,23 @@ git commit -m "Retain sediment inventory as f64 mass" -m "Make five-source solid
 
 ### Task 9: 提取有限物理时间 P5 步进并退役外层绝对稳态求根
 
+**精度边界修订：** 本任务把“子步间不存在 wire”落实到编排结构：
+`FormationTerrainFields` 不再是 `advance_surface_processes` 的状态成员，只在完整
+exact candidate 验收后投影一次，并由 endpoint forcing 与 finalize 共同复用。
+
 **Files:**
 - Modify: `src/generators/natural/surface_formation/generation.rs`
+- Modify: `src/generators/natural/surface_formation/hydrology.rs`
 - Modify: `src/generators/natural/surface_formation/stream_power.rs`
 - Modify: `src/generators/natural/surface_formation/mod.rs`
+- Modify: `src/generators/natural/surface_formation_stage.rs`（过渡 stage 版本 2→3）
+- Modify: `src/generators/natural/global_circulation/forcing.rs`（清理获得真实消费者的
+  endpoint forcing 入口上的过期 `dead_code` suppressor）
 - Modify: `src/generators/natural/quality/surface_formation.rs`
 - Modify: `src/world/natural/surface_formation.rs`
 - Modify: `src/world/natural/mod.rs`
 - Test: `src/generators/natural/surface_formation/generation.rs`
+- Test: `tests/formation_hydrology.rs`
 - Test: `tests/formation_stream_power.rs`
 - Test: `tests/surface_formation_contracts.rs`
 - Test: `tests/surface_formation_generation.rs`
@@ -1464,7 +1617,7 @@ git commit -m "Retain sediment inventory as f64 mass" -m "Make five-source solid
 - Consumes: Task 6 从 HEAD 恢复的 world 层
   `SURFACE_FORMATION_HORIZON_YEARS`（P5 coarse-grained horizon，不从 P2
   timeline 派生）。
-- Produces: `advance_surface_processes(state, inputs, duration_years, cancellation) -> SurfaceAdvanceReport` 恰好消费请求物理时长，并把最终 P2 构造率在该时长内积分一次；`recompute_surface_diagnostics(state, endpoint_inputs, cancellation) -> TerminalSurfaceDiagnostics` 在零时间推进下重算终点水文/过程率；`finalize_surface_formation(..., upstream, ...) -> NaturalSurfaceFormationSnapshot` 是唯一纯 P5 wire 发布入口。Task 9 先把 checkpoint 改为最终 climate 身份；现有嵌套 climate 只作为编译期过渡保留到 Task 11 的 bundle/UI/T1 原子迁移，不新增第二份写入路径。
+- Produces: `advance_surface_processes(state, inputs, duration_years, cancellation) -> SurfaceAdvanceReport` 恰好消费请求物理时长，并把最终 P2 构造率在该时长内积分一次；`recompute_surface_diagnostics(state, endpoint_inputs, cancellation) -> TerminalSurfaceDiagnostics` 在零时间推进下重算终点水文/过程率；`FormationState::project_final_terrain()` 是候选接受后的唯一 `f64→f32` terrain/water 投影；`finalize_surface_formation(state, final_terrain, ..., upstream, ...) -> NaturalSurfaceFormationSnapshot` 只接收并移动该已投影对象，不自行重建。Task 9 先把 checkpoint 改为最终 climate 身份；现有嵌套 climate 只作为编译期过渡保留到 Task 11 的 bundle/UI/T1 原子迁移，不新增第二份写入路径。
 
 - [ ] **Step 1: 写有限时间与无双计数 RED**
 
@@ -1489,7 +1642,7 @@ fn surface_step_consumes_the_complete_requested_duration() {
 #[test]
 fn zero_tectonic_rate_does_not_reapply_final_p3_displacement() {
     let fixture = zero_surface_process_fixture();
-    let mut state = FormationState::from_primary_values(vec![125.0]).unwrap();
+    let mut state = formation_state_for_values(vec![125.0]).unwrap();
     advance_surface_processes(
         &mut state,
         fixture.inputs(),
@@ -1505,7 +1658,7 @@ fn final_p2_rate_is_integrated_once_over_the_p5_horizon() {
     let uplift_rate = 0.25_f32;
     let subsidence_rate = 0.05_f32;
     let fixture = constant_tectonic_rate_fixture(uplift_rate, subsidence_rate);
-    let mut state = FormationState::from_primary_values(vec![125.0]).unwrap();
+    let mut state = formation_state_for_values(vec![125.0]).unwrap();
     advance_surface_processes(
         &mut state,
         fixture.inputs(),
@@ -1538,6 +1691,21 @@ fn transitional_surface_snapshot_binds_the_endpoint_climate() {
         endpoint_climate.checkpoint().fingerprint(),
     );
 }
+
+#[test]
+fn no_wire_projection_occurs_between_surface_substeps() {
+    let fixture = two_substep_sub_ulp_fixture();
+    let mut state = FormationState::from_primary_working(fixture.primary_working()).unwrap();
+    advance_surface_processes(
+        &mut state,
+        fixture.inputs(),
+        fixture.duration_years(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    assert_eq!(state.fluvial_erosion_m()[fixture.probe_cell()].to_bits(),
+        fixture.expected_exact_accumulation_m().to_bits());
+}
 ```
 
 同一 test module 增加 `zero_surface_process_fixture()` 与
@@ -1545,12 +1713,20 @@ fn transitional_surface_snapshot_binds_the_endpoint_climate() {
 surface/tectonics/substrate/climate/spec，只通过现有 snapshot constructors 构造
 零降水、零 active surface-water 和零 erodibility 条件；不复制 stream-power
 或构造位移方程。
+`two_substep_sub_ulp_fixture` 使用 production step selection 与 kernel，仅把已有物理
+参数取到可解析的亚 wire-ULP 语料；它不注入第二套推进函数。类型结构同时要求
+`advance_surface_processes` 只能持有/借用 `FormationState`，不能取得
+`FormationTerrainFields` 构造入口；实现后再用调用点审计证明 wire 投影只在
+`project_final_terrain` 中出现，不为该断言增加运行时计数器或通用 hook。
 
 - [ ] **Step 2: 运行 RED**
 
 Run: `cargo test --release --lib generators::natural::surface_formation::generation::tests`
 
-Expected: 编译失败；现有入口只有 PTC absolute fixed-point solve。
+Run: `rg -n "FormationTerrainFields::new|wire_components|to_wire" src/generators/natural/surface_formation`
+
+Expected: 单元测试编译失败；现有入口只有 PTC absolute fixed-point solve。调用点
+审计会显示逐子步 terrain/water wire 构造与下一步回读，作为结构性 RED 证据。
 
 - [ ] **Step 3: 建立只含表面过程的完整时长推进**
 
@@ -1581,6 +1757,7 @@ pub(in crate::generators::natural) fn recompute_surface_diagnostics(
 
 pub(in crate::generators::natural) fn finalize_surface_formation(
     state: FormationState,
+    final_terrain: FormationTerrainFields,
     surface: &SphericalSurfaceSnapshot,
     quality_profile: NaturalQualityProfile,
     endpoint_climate: GlobalCirculationSnapshot,
@@ -1596,7 +1773,8 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
 
 实现以 `remaining_years` 循环；每次取
 `min(remaining_years, maximum_stable_step_years, maximum_elevation_domain_step_years)`，
-在 clone 候选上跑完整 hydrology→stream power→hillslope→coast→sediment→Airy→water
+在 clone 候选上跑完整 hydrology→stream power→hillslope→mid-water→coast→
+sediment→Airy→end-water
 验证，成功才扣减 remaining。`ImplicitStreamPowerSolver` 把最终 P2 uplift/subsidence
 率先以 `f64::from` 扩展为该调用窗口的常量 forcing。每次调用 advance 时记录
 入口 `tectonic_displacement_m` 为 base；每个被接受候选按累计
@@ -1614,6 +1792,22 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
 `requested_duration_years - remaining_years`；完整成功时显式归一为原请求时长，
 不通过逐子步浮点求和另造时间身份。这样 Step 1 的位精确时长契约不依赖稳定子步
 是否能用二进制精确表示。
+
+`advance_surface_processes` 内不得构造 `FormationTerrainFields`，也不得调用
+`SurfaceWaterWorkingGeometry::to_wire`。子步间唯一状态是 `FormationState` 的九项
+`f64` 组成、`f64` sediment stock、water inventory 与 `f64` working water
+geometry；hydrology 直接读取其 exact elevation/working geometry，不再从
+`state.terrain` 或任何 `f32` `ElevationField` 重建。完整 advance 结束且 exact
+candidate 通过组成/水量/数值域校验后，调用一次 `project_final_terrain`；旧独立
+wrapper 与后续协调器都把同一个 `final_terrain` 借给
+`build_for_formation_terrain`，再移动进 `finalize_surface_formation`。finalize
+只做身份复核/组装，禁止第二次投影。删除逐子步 `state.terrain =
+FormationTerrainFields::new(...)`、下一步从该 wire 回读 hydrology 的路径以及相关
+f32 scratch；让错误路径在类型上不可达，不加运行时投影计数器。
+子步内部仍严格保留 Task 7 冻结的两个 exact water solve：第一个位于
+fluvial+hillslope 与 coast/sediment 之间，第二个位于 sediment+Airy 之后；这两个
+闭合都写 working state 而非 wire，不得扩成“每次组成变化重解”，也不得以性能
+名义跳过。
 
 `recompute_surface_diagnostics` 只在终点 P4 下重建 hydrology 和瞬时过程率，
 不得调用任何会改变 elevation component、sediment inventory、water reservoir
@@ -1650,6 +1844,10 @@ stage 的唯一编译桥：它必须把输入 `initial_climate` 当作 start P4�
 和 P4 solver 得到 endpoint climate，零时间重算诊断后才 finalize 上述过渡 snapshot；
 不得把 start climate 冒充 endpoint。Task 11 在 causal coordinator/bundle 成为唯一
 生产入口时连同旧 stage 删除该 wrapper，不能长期保留第二条 P4/P5 编排路径。
+该 wrapper 首次使 `build_for_formation_terrain` 成为真实生产消费者时，同步删除
+`global_circulation/forcing.rs` 中三处失真的
+`#[allow(dead_code)] // consumed by the P5 compositor added in Task 7`，不把清理拖到
+Task 10。
 `SurfaceFormationUpstreamFingerprints` 的
 `initial_climate_checkpoint_fingerprint` 改名为
 `formation_climate_checkpoint_fingerprint`。P2 accepted step 与 P4 solve
@@ -1663,6 +1861,9 @@ count 只由协调器/性能证据统计，不进入 P5 report；不在协调器
 `surface_formation_state_fingerprint` 同步删除 climate 参数，只散列实际保留
 的 P5 terrain/process/hydrology；P4 绑定只由 checkpoint 的 upstream 指纹承担，
 不得在 state fingerprint 内暗中保留第二份气候所有权。
+旧独立 stage 虽将在 Task 11 删除，但 Task 9 到 Task 10 仍是可缓存生产桥；因此
+`SurfaceFormationStage::version()` 必须随有限时域/新 schema 语义从 2 升为 3，
+同步更新 stage 身份测试，不能只依赖 snapshot 内部 model fingerprint 避免旧缓存。
 
 `quality/surface_formation.rs` 同步删除
 `equilibrium-current-flux-residual` 的 `max <= 1` release gate。若当前 UI/研发证据
@@ -1676,10 +1877,14 @@ max aggregate。所有旧
 
 Run: `cargo test --release --lib generators::natural::surface_formation::generation::tests`
 
-Run: `cargo test --release --test formation_stream_power --test surface_formation_contracts --test surface_formation_generation --test surface_formation_evidence --test surface_formation_quality --test surface_formation_performance --test surface_formation_stage`
+Run: `cargo test --release --test formation_hydrology --test formation_stream_power --test surface_formation_contracts --test surface_formation_generation --test surface_formation_evidence --test surface_formation_quality --test surface_formation_performance --test surface_formation_stage`
+
+Run: `rg -n "FormationTerrainFields::new|wire_components|to_wire" src/generators/natural/surface_formation`
 
 Expected: 全部 PASS；有限时间测试允许非零 `dh/dt`，只要求归因、守恒、时长完整和数值稳定；终点诊断不改变状态。过渡 P5 snapshot 的 climate 与 checkpoint
-严格一致；真正去嵌套由 Task 11 与 sibling 消费者一起原子完成。
+严格一致；审计输出中的发布投影只位于 `project_final_terrain`/finalize 边界，
+advance/hydrology 子步路径无命中。真正去嵌套由 Task 11 与 sibling 消费者一起
+原子完成；过渡 `SurfaceFormationStage` 的版本为 3，旧版本缓存不命中。
 
 Task 0 暂时冻结的无根失败在本任务按以下恢复门退役：
 
@@ -1696,7 +1901,7 @@ Task 0 暂时冻结的无根失败在本任务按以下恢复门退役：
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/quality/surface_formation.rs src/world/natural/surface_formation.rs src/world/natural/mod.rs tests/formation_stream_power.rs tests/surface_formation_contracts.rs tests/surface_formation_generation.rs tests/surface_formation_evidence.rs tests/surface_formation_quality.rs tests/surface_formation_performance.rs tests/surface_formation_stage.rs
+git add src/generators/natural/surface_formation/generation.rs src/generators/natural/surface_formation/hydrology.rs src/generators/natural/surface_formation/stream_power.rs src/generators/natural/surface_formation/mod.rs src/generators/natural/surface_formation_stage.rs src/generators/natural/global_circulation/forcing.rs src/generators/natural/quality/surface_formation.rs src/world/natural/surface_formation.rs src/world/natural/mod.rs tests/formation_hydrology.rs tests/formation_stream_power.rs tests/surface_formation_contracts.rs tests/surface_formation_generation.rs tests/surface_formation_evidence.rs tests/surface_formation_quality.rs tests/surface_formation_performance.rs tests/surface_formation_stage.rs
 git diff --cached --check
 git commit -m "Advance P5 over finite physical time" -m "Retire the global absolute-landscape root while integrating held tectonic forcing once with attributed surface processes."
 ```
@@ -1708,7 +1913,6 @@ git commit -m "Advance P5 over finite physical time" -m "Retire the global absol
 **Files:**
 - Create: `src/generators/natural/causal_formation.rs`
 - Modify: `src/generators/natural/mod.rs`
-- Modify: `src/generators/natural/global_circulation/forcing.rs`
 - Modify: `src/world/natural/formation.rs`（只增加 `#[cfg(test)]` schedule constructor）
 - Test: `src/generators/natural/causal_formation.rs`
 
@@ -1749,7 +1953,16 @@ fn production_outer_schedule_is_two_p4_solves_and_one_p5_advance() {
     assert_eq!(trace.p3_projections(), 1);
     assert_eq!(trace.p4_solves(), 2);
     assert_eq!(trace.p5_advances(), 1);
+    assert_eq!(trace.final_terrain_projections(), 1);
     assert_eq!(trace.terminal_diagnostic_recomputes(), 1);
+}
+
+#[test]
+fn production_path_projects_the_final_terrain_exactly_once() {
+    let trace = production_schedule_trace_for_test(RootSeed::new(42), 2).unwrap();
+    assert_eq!(trace.final_terrain_projections(), 1);
+    assert_eq!(trace.endpoint_forcing_builds(), 1);
+    assert!(trace.endpoint_forcing_and_finalize_share_projection());
 }
 
 #[test]
@@ -1789,8 +2002,8 @@ fn endpoint_climate_is_forced_by_final_terrain_and_surface_water_geometry() {
 `2 Myr` 步长的 locked timeline 前缀；production `generate_working` 永远
 传 `formation.timeline()`。该 constructor 不允许改 P2 step duration，也不
 导出到非测试 library、serde、artifact 或 UI。`production_schedule_trace_for_test`
-只记录外层调用类别和次数，不携带科学状态，不进入 production、serde、artifact
-或 UI；不得为测试公开协调器内部工作区。
+只记录外层调用类别、投影对象身份和次数，不携带科学字段，不进入 production、
+serde、artifact 或 UI；不得为测试公开协调器内部工作区。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -1834,16 +2047,26 @@ bundle，也不序列化。
 2. 从最终 `AuthoritativeTectonicView` 生成一次 substrate/P3 私有
    `PrimaryReliefWorkingState`，从其 `f64` 完整高程初始化 `FormationState`，并
    单独生成只供最终发布的 P3 snapshot；不得从 snapshot 反读 `f32`；
-3. 从该完整 terrain/`SurfaceWaterGeometry` 重建 forcing 并求 start P4；
+3. 从已经由同一 P3 working state 验收/投影的 `PrimaryReliefSnapshot` 调用现有
+   `GlobalClimateForcingBuilder::build`，求 start P4。start P4 不发布；forcing
+   建在 P3 f32 wire、P5 初态保留 exact f64，因此可能存在次 ULP 边界差。该差异
+   是已接受的跨领域边界条件近似，不得为消除它而从 private exact state 另造
+   forcing，也不授权 P5 从 snapshot 回读；
 4. `advance_surface_processes` 以现有稳定子步恰好消费
    `SURFACE_FORMATION_HORIZON_YEARS`，显式借用 final
    `EvolvedTectonicSnapshot` 并把其当前 uplift/subsidence forcing 积分一次；该值
    属于 P5，不从 P2 timeline 派生；
-5. 从 final terrain/`SurfaceWaterGeometry` 重建 forcing 并求 endpoint P4；
+5. P5 exact state 先完成九项组成、水量和数值域校验，再调用
+   `project_final_terrain` **恰好一次**；把该同一个 `FormationTerrainFields` 对象
+   借给 `build_for_formation_terrain` 并求 endpoint P4，不得直接从 exact state
+   构造 forcing；
 6. 在 endpoint P4 下调用 `recompute_surface_diagnostics`，不推进时间；
-7. 校验 solid/sediment/water/component、最终 climate checkpoint 绑定和 endpoint
-   forcing identity；
-8. 只有全部成功才组装 output；失败或取消不返回部分 P2/P5 artifact。
+7. 校验 endpoint climate 的 `forcing_fingerprint` 等于上述 forcing 指纹，P5
+   checkpoint 的 climate 指纹等于 endpoint checkpoint，并复核
+   solid/sediment/water/component；
+8. 把第 5 步的同一个 `FormationTerrainFields` 移交给
+   `finalize_surface_formation`；只有全部成功才组装 output，失败或取消不返回
+   部分 P2/P5 artifact。finalize 不得再次投影。
 
 这是一轮 Lie-style 顺序分裂，不是可配置 cadence。P2 和 P5 保留各自已批准且
 来源不同的 resolved horizon，因此不宣称同一 `Δt` 上的形式 Trotter 收敛阶。
@@ -1853,9 +2076,9 @@ P2/P3 随机形态都从协调器一次 capture 的 `LabeledSubstreams` 固定�
 固定校正。endpoint P4 始终必需，禁止以 start P4 发布终态。
 start/endpoint P4 均固定调用现有 `ClimateModelProfile::C2LayeredV1`；它是模型
 身份而不是本任务新旋钮。
-同步删除 `global_circulation/forcing.rs` 中全部三处已失真的
-`#[allow(dead_code)] // consumed by the P5 compositor added in Task 7`；这些入口已有
-当前生产消费者，不保留过期 suppressor/任务号注释。
+endpoint forcing 与 finalize 复用对象的断言沿用同一个 test-only schedule trace，
+不新增生产计数器、通用投影 trait 或第二份 terrain cache。相关过期
+`dead_code` suppressor 已随 Task 9 的第一个真实生产消费者删除，本任务不重复清理。
 
 - [ ] **Step 4: 运行 GREEN 的短前缀解析/确定性测试和离线参考探针**
 
@@ -1916,7 +2139,7 @@ Expected: 前缀估算必定生成非空 JSON；资源允许时完整 probe 另�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/causal_formation.rs src/generators/natural/mod.rs src/generators/natural/global_circulation/forcing.rs src/world/natural/formation.rs
+git add src/generators/natural/causal_formation.rs src/generators/natural/mod.rs src/world/natural/formation.rs
 git commit -m "Coordinate causal natural formation" -m "Run one production split over the resolved timeline and close the published climate against final terrain."
 ```
 
@@ -2500,7 +2723,25 @@ git commit -m "Verify causal formation end to end" -m "Record scientific, perfor
 - 海岸交换、沉积库存和 generalized Exner 质量账本：Paola & Voller (2005), DOI `10.1029/2004JF000274`；具体项目适用边界按上位规格保留。
 - 局部 Airy 加载/卸载：Turcotte & Schubert (2014), *Geodynamics*, 3rd ed., ch. 5；响应直接记入完整 `f64` 状态，不按 artifact 边界裁剪。
 - PTC 只用于有根的内部快平衡，不再作为全地貌绝对稳态：Kelley & Keyes (1998), DOI `10.1137/S0036142996304796`；PETSc 只作数值实现类比，不提供 Sekai 科学容差。
-- 浮点身份、先定义精确状态再做发布舍入：Goldberg (1991), DOI `10.1145/103162.103163`；稳定误差解释参考 Higham (2002), *Accuracy and Stability of Numerical Algorithms*, 2nd ed.
+- 浮点身份、先定义精确状态再做发布舍入：Goldberg (1991), DOI
+  `10.1145/103162.103163`；稳定误差解释参考 Higham (2002), *Accuracy and
+  Stability of Numerical Algorithms*, 2nd ed.。该依据直接约束同域 retained/验收
+  状态及最终 wire 舍入边界，不直接规定 P4 快平衡的内部精度。
+- P4 内部维持现有单精度的工业类比：Váňa et al. (2017), *Single Precision in
+  Weather Forecasting Models: An Evaluation with the IFS*, DOI
+  `10.1175/MWR-D-16-0228.1`。它证明经专门验证的 ECMWF IFS 单精度配置在其语料上
+  可行，不给出 Sekai P4 的误差界；本轮因此只把“不做无证据迁移、以后用生产
+  `f32/f64` 对照测量”列为开放问题，不把单精度写成科学常量。
+- P3/P5 exact 海平面二分以相邻 `f64` 可表示数为实现终点：当前 production core
+  已经使用该 `f64` 循环，旧公开路径只是在循环后量化为 `f32` 并检查下邻/本值/
+  上邻；零水量则在候选选择前返回输入中心高程最小值。Task 3 暴露量化前 exact
+  working result，保留旧 f32 adapter 的零水量早退与非零候选选择，并在 final
+  projection 上重建/核对分类；不是增加一层更深的二分。P1 三角积分/湿边公式里
+  数学值本应位于 `[0,1]` 的无量纲舍入护栏按 Higham 的稳定浮点实现类比保留，
+  但对外 working fraction/volume 越域必须 typed fail。Goldberg/Higham 只给出
+  一般浮点背景，没有直接对口的 Sekai 水面文献，故仍明确属于数值类比与开放
+  问题。它不新增容差；科学验收继续复用已有
+  `WATER_VOLUME_RELATIVE_TOLERANCE`，并在 Task 3 记录原始误差与投影成本。
 - Task 6 的前置成本归因沿用项目既有 release wall-clock/peak-RSS/取消测量工业
   实践，只测量生产 operator，不创造科学阈值。若测量要求更换内部算法，隐式
   下游栈先采用 Braun & Willett (2013) 的直接依据；近似线性解或多分辨率工作域

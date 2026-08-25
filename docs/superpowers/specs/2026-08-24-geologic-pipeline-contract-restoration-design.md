@@ -115,6 +115,16 @@ commit `f1df994` 在本规格加入的以下要求：
    `subduction-negative-dynamic-fraction` 与
    `convergent-positive-dynamic-fraction` 随被测机制一并退役，不重定向到 P5、
    不以零场继续执行旧门禁。
+   调用点审计确认 `PrimaryReliefSnapshot.dynamic_tectonic_offset_m` 与整个
+   `PrimaryReliefSnapshot.compatibility: SphericalReliefSnapshot` 都没有运行时
+   生产或 UI 读者；现有测试只验证这份重复 payload 的交叉校验。后者只是由顶层
+   P3 组成、海平面和海陆分类反向拼出的第二份 payload。
+   V3 因此在同一次 schema 迁移中删除这两个字段、accessor、交叉校验与专属错误，
+   不把零数组或派生子快照保留为投机性接缝。独立 legacy
+   `SphericalReliefArtifact`/`SphericalReliefGenerator` 仍有 field registry/UI
+   消费者，继续使用 `SphericalReliefSnapshot`/`RELIEF_SCHEMA_V4`；本修订不删除
+   该类型或 legacy 路径。该裁定落实 §3.3“失去真实消费者即按 YAGNI 删除”，并让
+   P3 顶层组成与 `SurfaceWaterGeometry` 分别成为地形和水面事实的唯一来源。
    P2 当前率到高程位移的唯一生产所有者是 P5；若未来需要独立的动态地形机制，
    必须另给方程、时标与直接出处，不能复活该经验增益。
 9. **显式替代 R3 §14.5 的固定时域否决结论。** 上位
@@ -123,6 +133,58 @@ commit `f1df994` 在本规格加入的以下要求：
    `SURFACE_FORMATION_HORIZON_YEARS = 100_000.0` 作为 P5 coarse-grained
    产品时域。§14.5 的九组运行结果只保留为旧外层重复求解的成本证据，不证明
    单次新 kernel 的成本，也不授权缩短该时域。
+10. **`f64` 硬约束按保留与验收边界判定。** §0(1) 的“`f64` 科学状态”与本节
+    第 3 项具体指：凡在**同一领域、同一权威球面上跨子步保留或累计**，或参与
+    守恒、组成、数值域验收的量，都必须端到端使用 `f64`，同域内不得经 `f32`
+    往返。当前明确包括 P3 working elevation 及其水量/海平面/水面几何，P5
+    九项高程组成、沉积质量库存、水量库存，以及 hydrology/process kernel 的
+    输入和会反馈保留态的输出。已经验证并接受的领域发布快照仍可使用既有
+    `f32` wire；下游领域只把它当跨层边界条件，并按需要以 `f64::from` 展宽，
+    不得把它作为本领域保留态载体。P3/P5 在同一权威球面上的 wire 回读不属于
+    合法跨层通信。
+
+    本轮不迁移 P4 大气—海洋快平衡的内部预报状态与 `PlanetForcing`：P4 通过
+    已验证 snapshot 与 P3/P5 通信，其上下游本来就各执行一次到/自不同分辨率
+    气候工作网格的守恒重映射；本轮没有 P4 精度导致最终态失败的实测证据。
+    这不是把 P4 单精度宣布为科学定论。Váňa et al. (2017) 对 ECMWF IFS 的
+    单精度评估只提供工业可行性类比，不直接证明 Sekai P4 的误差适用性；P4
+    精度仍是**开放问题**。若要迁移，须另立规格，先用同一生产算子做 `f32/f64`
+    最终态质量、守恒与性能对照，不得凭类型口号扩写实现。
+11. **P3/P5 水面几何属于 `f64` working state。** 海平面求解、逐格水量、湿边
+    比例、海洋面积比例及其对 coast/sediment/isostasy/hydrology 的输入均在
+    `f64` 上形成和流转；`SurfaceWaterGeometry` 只是唯一的 `f32` 发布投影，
+    schema 保持现有版本。海陆分类必须复用 `world` 层唯一的厘米量化语义；投影
+    后的 `f32` 高程/海平面若不能逐格复现 exact working state 的同一分类，必须
+    typed fail，不得 clamp、加容差或另写第二套分类。现有求解器本来就在 `f64`
+    上二分，直至中点等于某个端点；旧路径随后才量化为 `f32` 并在相邻三个
+    representable candidate 中选择水量误差最小者。零水量是既有 adapter 的明确
+    例外：它在候选选择前直接返回输入中心高程的 `f32` 最小值；exact 路径对应返回
+    输入 `f64` 中心高程的最小值。Task 3 复用并暴露既有 `f64` 二分结果，公开
+    `f32` adapter 保留上述零水量早退、原候选选择和逐 bit wire 行为，因而不增加
+    二分层数。exact core 用 `f64::total_cmp` 取得下界，只检查有限 `f64` 求解域；
+    `f32::MAX` 可表示性守卫只属于旧 adapter/最终投影。最终 wire 必须在已投影
+    `f32` 高程上通过同一重建 core 重新形成，再与 exact 分类逐格核对；不得直接
+    cast exact fraction/volume 数组。
+
+    working geometry 对外保留的面积比例和水量不得用结果 `.clamp`/`.max` 修正；
+    越域时返回包含原始值与格元的 typed failure。P1 三角积分和湿边线性交点公式
+    内部、数学值本应位于闭区间 `[0,1]` 的无量纲舍入护栏仍可保留；它们只约束
+    局部插值比例，不得修改高程、海平面或水量账本，也不得演化成经验容差。
+    `TargetLandFraction` 选择器同样以 `f64` 高程和海平面工作；唯一 legacy `f32`
+    出口必须在收窄后复检 plateau fallback 仍位于原厘米分箱的严格上方，否则
+    typed fail，不得因 round-to-nearest 静默翻转分类。
+    验收仍只使用既有 `WATER_VOLUME_RELATIVE_TOLERANCE`，不新增阈值或旋钮。
+    “以相邻可表示数作为浮点求根实现终点”只有 Goldberg/Higham 的一般数值背景，
+    没有直接对口的 Sekai 水面文献，明确标为**数值类比与开放问题**；Task 3
+    必须先记录生产语料上的相对水量误差和额外投影成本，不预钉新包络。
+12. **终点 forcing 锚定唯一已接受 wire。** P5 的 exact final state 先完成九项
+    组成、水量与数值域校验，再恰好投影一次为最终 `FormationTerrainFields` 及其
+    `SurfaceWaterGeometry`；endpoint forcing 与 P5 finalize 必须复用同一个对象。
+    forcing 不得直接从协调器私有 exact state 构造，否则 bundle 反序列化后无法
+    从发布 payload 重放其指纹。start P4 不发布，明确从已接受的 P3 snapshot 经
+    现有 `GlobalClimateForcingBuilder::build` 构造；它与 P5 exact 初态之间可能有
+    次 ULP 边界差，这是跨领域 wire 边界的已知近似，不授权同域 P5 回读 wire，
+    也不放宽最终 endpoint forcing/checkpoint 身份。
 
 ## 1. 用户裁定与问题归因
 
@@ -281,8 +343,9 @@ owner、事件序列或既有低频结果。
 能读取这些事实，但该视图**不暴露** `tectonic_elevation_m`。
 
 该视图不是新的序列化 snapshot，不复制数组，不构成第二事实源。现有
-`compatibility()` 仅供旧 V3 呈现、冻结回归和迁移诊断；生产 P3/P4/P5 不得
-调用它取得高程响应。
+`EvolvedTectonicSnapshot::compatibility()` 仅供旧 V3 呈现、冻结回归和迁移诊断；
+生产 P3/P4/P5 不得调用它取得高程响应。P3 自身曾嵌套的
+`PrimaryReliefSnapshot.compatibility` 已按 §0.1(8) 删除，不属于该保留边界。
 
 ### 3.2 必须成立的不变式
 
@@ -734,7 +797,19 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
 - 浮点表示、舍入和误差身份：Goldberg (1991), *What Every Computer Scientist
   Should Know About Floating-Point Arithmetic*, DOI `10.1145/103162.103163`；
   Higham (2002), *Accuracy and Stability of Numerical Algorithms*, second
-  edition。
+  edition。本依据要求同域 retained/验收状态在发布舍入前保留精确身份；它不
+  直接规定 P4 快平衡必须使用哪种浮点精度。
+- P4 内部保留现有单精度的工业类比：Váňa et al. (2017), *Single Precision in
+  Weather Forecasting Models: An Evaluation with the IFS*, DOI
+  `10.1175/MWR-D-16-0228.1`。该研究证明经专门验证的 IFS 单精度配置可保持其
+  被测预报质量并降低成本，但不直接给出 Sekai P4 的误差界；因此本轮只据此把
+  “维持现状并离线实测”列为可审查策略，仍按 §0.1(10) 保留为开放问题。
+- `f64` 海平面二分在相邻可表示数之间终止，沿用 Goldberg (1991)/Higham
+  (2002) 的浮点表示与稳定性背景。当前 production core 已经使用该终止方式，
+  旧公开路径只在其后量化为 `f32` 并检查三个相邻 candidate；Task 3 暴露量化前
+  exact result，不增加二分层数，并保留原 f32 adapter 行为。没有直接对口的
+  Sekai 水量求解文献，故该终止方式仍只作数值类比与开放问题。科学验收继续
+  复用既有 `WATER_VOLUME_RELATIVE_TOLERANCE`，不从实现细节派生新阈值。
 
 上述来源支持机制和数值方法，不为 Sekai 新增任何未测量的门禁阈值、具体耦合
 次数或参数分布。后续若需从生产 Lie-style 路径升级求解策略，或为某个物理参数引入
