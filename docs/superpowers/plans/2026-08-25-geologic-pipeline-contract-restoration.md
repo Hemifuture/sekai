@@ -356,6 +356,7 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 - Modify: `src/generators/natural/spherical_tectonics/forcing.rs`
 - Modify: `src/generators/natural/evolved_tectonics.rs`
 - Test: `tests/world_formation_spec.rs`
+- Test: `tests/spherical_natural_stage_graph.rs`
 
 **实现期清单修订（2026-08-25）：**仓库及完整 git 历史均不存在
 `tests/evolved_tectonic_generation.rs`；现有固定 seed 球面 P2 等价回归目标是
@@ -383,6 +384,15 @@ formation 传递。清单以该真实生产消费者替换不存在的测试文�
 访问器取得 step count、step duration 与 total duration。Task 1 最终共 13 个路径；
 其他测试中用于非法输入、几何或任意局部算例且不表达产品时间身份的数值不因
 “看起来相同”扩张范围。
+
+**实现期身份 consumer 修订（2026-08-25）：**完整调试回归证明
+`tests/spherical_natural_stage_graph.rs` 冻结了包含 resolved formation lineage 的
+最终 graph `result_hash`。timeline 成为 `ResolvedWorldFormation` serde 身份后，
+该最终 hash 必须确定性刷新；同一测试实测的 surface/tectonic/mantle/relief/
+geology/climate/hydro/quality 八个领域 artifact hash 均保持逐字不变。Task 1 因而
+把该直接 consumer 纳入第 14 路径：只有先断言八个子域 hash 和两次生成确定性都
+不变，才可把打印出的 final result old→new 值按“新增 validated timeline lineage”
+因果重钉；不得改任何领域 golden 或仅为过测试批量刷新 hash。
 
 **Interfaces:**
 - Consumes: `ResolvedWorldFormation::new(u16, WorldFormationPreset, ResolvedWorldFormationPreset)`；该构造器签名保持不变。
@@ -515,14 +525,18 @@ Run: `cargo test --lib spherical_tectonics::processes::`
 
 Run: `cargo test --lib spherical_tectonics::forcing::`
 
+Run: `cargo test --test spherical_natural_stage_graph whole_graph_cross_validates_and_has_frozen_semantic_hashes`
+
 Expected: 全部 PASS；固定 seed 的 P2 物理数组与预算不变。由于 timeline 新进入
 resolved input 序列化身份，任何包含该输入或其 lineage 的 artifact/stage
-fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹伪装不变。
+fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹伪装不变。stage graph
+测试的八个领域 artifact hash 必须保持旧值，只有 final result hash 以记录的
+old→new 因果刷新。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/kinematics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
+git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/kinematics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs tests/spherical_natural_stage_graph.rs
 git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's authored horizon and Cortial's sourced step duration distinct inside validated input identity."
 ```
 
