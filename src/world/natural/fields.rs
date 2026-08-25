@@ -765,44 +765,54 @@ fn schemas(
     ])
 }
 
-/// Returns the stable P5 primary (pre-formation) elevation field ID.
-pub fn primary_elevation_m_field_id() -> FieldId {
-    field_id("primary_elevation_m")
+/// Returns the stable P5 immutable primary-relief field ID.
+pub fn primary_relief_m_field_id() -> FieldId {
+    field_id("primary_relief_m")
 }
 
-/// Returns the stable P5 cumulative tectonic displacement field ID.
-pub fn tectonic_displacement_m_field_id() -> FieldId {
-    field_id("tectonic_displacement_m")
+/// Returns the stable P5 current equilibrium adjustment field ID.
+pub fn equilibrium_adjustment_m_field_id() -> FieldId {
+    field_id("equilibrium_adjustment_m")
 }
 
-/// Returns the stable P5 hillslope erosion component field ID.
-pub fn hillslope_erosion_m_field_id() -> FieldId {
-    field_id("hillslope_erosion_m")
+/// Returns the stable P5 current tectonic displacement-rate field ID.
+pub fn tectonic_displacement_rate_m_per_year_field_id() -> FieldId {
+    field_id("tectonic_displacement_rate_m_per_year")
 }
 
-/// Returns the stable P5 hillslope deposition component field ID.
-pub fn hillslope_deposition_m_field_id() -> FieldId {
-    field_id("hillslope_deposition_m")
+/// Returns the stable P5 current fluvial erosion-rate field ID.
+pub fn fluvial_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("fluvial_erosion_rate_m_per_year")
 }
 
-/// Returns the stable P5 routed sediment deposition component field ID.
-pub fn routed_sediment_deposition_m_field_id() -> FieldId {
-    field_id("routed_sediment_deposition_m")
+/// Returns the stable P5 current hillslope erosion-rate field ID.
+pub fn hillslope_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("hillslope_erosion_rate_m_per_year")
 }
 
-/// Returns the stable P5 coastal erosion component field ID.
-pub fn coastal_erosion_m_field_id() -> FieldId {
-    field_id("coastal_erosion_m")
+/// Returns the stable P5 current hillslope deposition-rate field ID.
+pub fn hillslope_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("hillslope_deposition_rate_m_per_year")
 }
 
-/// Returns the stable P5 coastal deposition component field ID.
-pub fn coastal_deposition_m_field_id() -> FieldId {
-    field_id("coastal_deposition_m")
+/// Returns the stable P5 current routed-sediment deposition-rate field ID.
+pub fn routed_sediment_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("routed_sediment_deposition_rate_m_per_year")
 }
 
-/// Returns the stable P5 isostatic response component field ID.
-pub fn isostatic_response_m_field_id() -> FieldId {
-    field_id("isostatic_response_m")
+/// Returns the stable P5 current coastal erosion-rate field ID.
+pub fn coastal_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("coastal_erosion_rate_m_per_year")
+}
+
+/// Returns the stable P5 current coastal deposition-rate field ID.
+pub fn coastal_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("coastal_deposition_rate_m_per_year")
+}
+
+/// Returns the stable P5 current isostatic response-rate field ID.
+pub fn isostatic_response_rate_m_per_year_field_id() -> FieldId {
+    field_id("isostatic_response_rate_m_per_year")
 }
 
 /// Returns the stable P4 circulation annual precipitation field ID.
@@ -888,15 +898,16 @@ fn formation_schemas(
     let plate_id = plate_id_field_id();
     let crust_kind = crust_kind_field_id();
     let crust_thickness = crust_thickness_field_id();
-    let primary_elevation = primary_elevation_m_field_id();
-    let tectonic_displacement = tectonic_displacement_m_field_id();
-    let fluvial_erosion_depth = fluvial_erosion_depth_m_field_id();
-    let hillslope_erosion = hillslope_erosion_m_field_id();
-    let hillslope_deposition = hillslope_deposition_m_field_id();
-    let routed_sediment_deposition = routed_sediment_deposition_m_field_id();
-    let coastal_erosion = coastal_erosion_m_field_id();
-    let coastal_deposition = coastal_deposition_m_field_id();
-    let isostatic_response = isostatic_response_m_field_id();
+    let primary_relief = primary_relief_m_field_id();
+    let equilibrium_adjustment = equilibrium_adjustment_m_field_id();
+    let tectonic_displacement_rate = tectonic_displacement_rate_m_per_year_field_id();
+    let fluvial_erosion_rate = fluvial_erosion_rate_m_per_year_field_id();
+    let hillslope_erosion_rate = hillslope_erosion_rate_m_per_year_field_id();
+    let hillslope_deposition_rate = hillslope_deposition_rate_m_per_year_field_id();
+    let routed_sediment_deposition_rate = routed_sediment_deposition_rate_m_per_year_field_id();
+    let coastal_erosion_rate = coastal_erosion_rate_m_per_year_field_id();
+    let coastal_deposition_rate = coastal_deposition_rate_m_per_year_field_id();
+    let isostatic_response_rate = isostatic_response_rate_m_per_year_field_id();
     let sediment_deposition_thickness = sediment_deposition_thickness_m_field_id();
     let surface_elevation = surface_elevation_m_field_id();
     let land_ocean = land_ocean_field_id();
@@ -946,7 +957,7 @@ fn formation_schemas(
             vec![crust_kind.clone()],
         )?,
         scalar_schema(
-            primary_elevation.clone(),
+            primary_relief.clone(),
             FieldDomain::Cells,
             custom_unit("meter", "m"),
             ELEVATION_MIN_M,
@@ -956,84 +967,78 @@ fn formation_schemas(
             vec![crust_kind.clone(), crust_thickness.clone()],
         )?,
         scalar_schema(
-            tectonic_displacement.clone(),
+            equilibrium_adjustment.clone(),
             FieldDomain::Cells,
             custom_unit("meter", "m"),
             -MAX_DEPOSITION_THICKNESS_M,
             MAX_DEPOSITION_THICKNESS_M,
             FieldPaletteHint::Diverging,
             1,
+            vec![primary_relief.clone()],
+        )?,
+        unbounded_scalar_schema(
+            tectonic_displacement_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Diverging,
+            4,
             vec![plate_id.clone()],
         )?,
-        scalar_schema(
-            fluvial_erosion_depth.clone(),
+        unbounded_scalar_schema(
+            fluvial_erosion_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_EROSION_DEPTH_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            1,
-            vec![primary_elevation.clone()],
+            4,
+            vec![primary_relief.clone()],
         )?,
-        scalar_schema(
-            hillslope_erosion.clone(),
+        unbounded_scalar_schema(
+            hillslope_erosion_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_EROSION_DEPTH_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            1,
-            vec![primary_elevation.clone()],
+            4,
+            vec![primary_relief.clone()],
         )?,
-        scalar_schema(
-            hillslope_deposition.clone(),
+        unbounded_scalar_schema(
+            hillslope_deposition_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_DEPOSITION_THICKNESS_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            1,
-            vec![hillslope_erosion.clone()],
+            4,
+            vec![hillslope_erosion_rate.clone()],
         )?,
-        scalar_schema(
-            routed_sediment_deposition.clone(),
+        unbounded_scalar_schema(
+            routed_sediment_deposition_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_DEPOSITION_THICKNESS_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            1,
-            vec![fluvial_erosion_depth.clone()],
+            4,
+            vec![fluvial_erosion_rate.clone()],
         )?,
-        scalar_schema(
-            coastal_erosion.clone(),
+        unbounded_scalar_schema(
+            coastal_erosion_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_EROSION_DEPTH_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            2,
-            vec![primary_elevation.clone()],
+            6,
+            vec![primary_relief.clone()],
         )?,
-        scalar_schema(
-            coastal_deposition.clone(),
+        unbounded_scalar_schema(
+            coastal_deposition_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            0.0,
-            MAX_DEPOSITION_THICKNESS_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Sequential,
-            2,
-            vec![coastal_erosion.clone()],
+            6,
+            vec![coastal_erosion_rate.clone()],
         )?,
-        scalar_schema(
-            isostatic_response.clone(),
+        unbounded_scalar_schema(
+            isostatic_response_rate.clone(),
             FieldDomain::Cells,
-            custom_unit("meter", "m"),
-            -MAX_DEPOSITION_THICKNESS_M,
-            MAX_DEPOSITION_THICKNESS_M,
+            custom_unit("meter-per-year", "m/year"),
             FieldPaletteHint::Diverging,
-            1,
-            vec![fluvial_erosion_depth.clone()],
+            6,
+            vec![fluvial_erosion_rate.clone()],
         )?,
         scalar_schema(
             sediment_deposition_thickness.clone(),
@@ -1044,8 +1049,8 @@ fn formation_schemas(
             FieldPaletteHint::Sequential,
             1,
             vec![
-                routed_sediment_deposition.clone(),
-                hillslope_deposition.clone(),
+                routed_sediment_deposition_rate.clone(),
+                hillslope_deposition_rate.clone(),
             ],
         )?,
         scalar_schema(
@@ -1056,11 +1061,7 @@ fn formation_schemas(
             ELEVATION_MAX_M,
             FieldPaletteHint::Hypsometric,
             0,
-            vec![
-                primary_elevation.clone(),
-                fluvial_erosion_depth.clone(),
-                sediment_deposition_thickness.clone(),
-            ],
+            vec![primary_relief.clone(), equilibrium_adjustment.clone()],
         )?,
         category_schema_with_palette(
             land_ocean.clone(),

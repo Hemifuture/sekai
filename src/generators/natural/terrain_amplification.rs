@@ -437,7 +437,7 @@ impl TerrainAmplifier {
         Self::new(
             surface,
             AmplificationFieldsView {
-                final_elevation_m: terrain.final_elevation_m(),
+                final_elevation_m: terrain.current_elevation_m(),
                 sea_level_m: terrain.sea_level_m(),
                 sediment_thickness_m: terrain.sediment().sediment_thickness_m(),
                 erodibility: substrate.erodibility(),

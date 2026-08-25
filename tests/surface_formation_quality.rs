@@ -1,99 +1,123 @@
 mod support;
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    evaluate_surface_formation_corpus_hypsometry, evaluate_surface_formation_quality,
-    NaturalSurfaceFormationArtifact, PrimaryReliefGenerator, QualityBuildError,
+    evaluate_surface_formation_quality, FormationHydrologyGenerator, PrimaryReliefGenerator,
+    QualityBuildError,
 };
-use sekai::world::natural::{QualityMetricStatus, ReliefSpec};
+use sekai::world::natural::{
+    surface_formation_state_fingerprint, FormationElevationComponents, FormationProcessRates,
+    FormationResiduals, FormationSedimentFields, FormationSolveReport, FormationTerrainFields,
+    HydroErosionSpec, NaturalQualityProfile, NaturalSurfaceFormationSnapshot, ReliefSpec,
+    SedimentBudgetReport, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
+    SurfaceFormationUpstreamFingerprints, FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+    NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+};
+use sekai::world::spatial::SurfaceRef;
 use sekai::world::RootSeed;
 
-use support::surface_formation::{published_formation, surface_formation_fixture};
+use support::surface_formation::surface_formation_fixture;
 
-const METRIC_NAMESPACE: &str = "sekai.surface-formation-v1";
-const EXPECTED_METRIC_NAMES: [&str; 22] = [
-    "component-identity-mismatch-count",
-    "deposited-sediment-enrichment-ratio",
-    "final-land-fraction-absolute-change",
-    "fixed-point-normalized-residual",
-    "fluvial-incision-support-enrichment-ratio",
-    "land-area-share-below-100m",
-    "land-outlet-path-area-fraction",
-    "land-relief-mean-m",
-    "land-relief-p05-m",
-    "land-relief-p25-m",
-    "land-relief-p50-m",
-    "land-relief-p75-m",
-    "land-relief-p95-m",
-    "largest-network-strahler-order",
-    "ocean-depth-p50-m",
-    "primary-final-elevation-correlation",
-    "provenance-mass-relative-error",
-    "receiver-adjacency-violation-count",
-    "river-reach-count",
-    "sediment-mass-relative-error",
-    "through-ocean-land-river-count",
-    "water-volume-relative-error",
-];
-
-#[test]
-fn the_locked_gate_inventory_passes_on_the_published_draft_product() {
-    let fixture = surface_formation_fixture();
-    let report = evaluate_surface_formation_quality(
-        fixture.upstream.bundle.authoritative_surface(),
-        &fixture.upstream.relief,
-        published_formation(),
+fn zero_sediment(count: usize) -> FormationSedimentFields {
+    FormationSedimentFields::new(
+        vec![0.0; count],
+        vec![[0.0; 5]; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
     )
-    .unwrap();
-    report.validate().unwrap();
-    assert_eq!(report.metrics().len(), EXPECTED_METRIC_NAMES.len());
-    for (metric, expected_name) in report.metrics().iter().zip(EXPECTED_METRIC_NAMES) {
-        assert_eq!(metric.id().namespace(), METRIC_NAMESPACE);
-        assert_eq!(metric.id().version(), 1);
-        assert_eq!(metric.id().name(), expected_name);
-        assert_eq!(
-            metric.status(),
-            QualityMetricStatus::Pass,
-            "metric {expected_name} returned {:?} ({:?}) with value {:?}",
-            metric.status(),
-            metric.reason(),
-            metric.value()
-        );
-    }
-    assert_eq!(
-        report.subject_fingerprint(),
-        Some(published_formation().checkpoint().fingerprint())
-    );
-    assert_eq!(
-        report.surface_ref(),
-        published_formation().surface_ref(),
-        "the report must be bound to formation authority"
-    );
+    .unwrap()
+}
+
+fn zero_process_rates(count: usize) -> FormationProcessRates {
+    FormationProcessRates::new(
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+    )
+    .unwrap()
+}
+
+/// Minimal non-production snapshot used only to exercise evaluator failures
+/// while the default absolute-steady-state product is correctly unavailable.
+/// It is never treated as evidence that P5 generation succeeds.
+fn synthetic_formation() -> &'static NaturalSurfaceFormationSnapshot {
+    static SNAPSHOT: OnceLock<NaturalSurfaceFormationSnapshot> = OnceLock::new();
+    SNAPSHOT.get_or_init(|| {
+        let fixture = surface_formation_fixture();
+        let surface = fixture.upstream.bundle.authoritative_surface();
+        let relief = &fixture.upstream.relief;
+        let count = surface.cells().len();
+        let terrain = FormationTerrainFields::new(
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+            FormationElevationComponents::new(
+                relief.elevation_m().to_vec(),
+                vec![0.0; count],
+                relief.elevation_m().to_vec(),
+            )
+            .unwrap(),
+            relief.surface_water_geometry().clone(),
+            relief.water_inventory_m3(),
+            zero_sediment(count),
+        )
+        .unwrap();
+        let process_rates = zero_process_rates(count);
+        let hydrology = FormationHydrologyGenerator::generate(
+            surface,
+            &terrain,
+            &fixture.upstream.substrate,
+            &fixture.initial_climate,
+            &HydroErosionSpec::default(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let climate = fixture.initial_climate.clone();
+        let state_fingerprint =
+            surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology, &climate);
+        let checkpoint = SurfaceFormationCheckpoint::new(
+            SurfaceRef::for_spherical(surface),
+            NaturalQualityProfile::Draft,
+            SurfaceFormationUpstreamFingerprints::new(
+                [1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [7; 32],
+            )
+            .unwrap(),
+            state_fingerprint,
+        )
+        .unwrap();
+        NaturalSurfaceFormationSnapshot::new(
+            NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+            SurfaceRef::for_spherical(surface),
+            checkpoint,
+            terrain,
+            process_rates,
+            hydrology,
+            climate,
+            FormationSolveReport::new(
+                8,
+                1,
+                FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
+                8_192,
+            )
+            .unwrap(),
+            SedimentBudgetReport::new(0.0, 0.0, 0.0, 0.0, 0.0, [0.0; 5], [0.0; 5]).unwrap(),
+            SurfaceFormationCapabilitySet::p5(),
+        )
+        .unwrap()
+    })
 }
 
 #[test]
-fn repeated_evaluation_of_one_product_is_identical() {
-    let fixture = surface_formation_fixture();
-    let surface = fixture.upstream.bundle.authoritative_surface();
-    let first = evaluate_surface_formation_quality(
-        surface,
-        &fixture.upstream.relief,
-        published_formation(),
-    )
-    .unwrap();
-    let second = evaluate_surface_formation_quality(
-        surface,
-        &fixture.upstream.relief,
-        published_formation(),
-    )
-    .unwrap();
-    assert_eq!(first, second);
-}
-
-#[test]
-fn the_evaluator_rejects_a_same_surface_relief_that_did_not_produce_the_product() {
+fn the_evaluator_rejects_a_same_surface_relief_that_did_not_produce_the_snapshot() {
     let fixture = surface_formation_fixture();
     let surface = fixture.upstream.bundle.authoritative_surface();
     let mut relief_rng = StageRng::from_seed(derive_stage_seed(
@@ -119,51 +143,12 @@ fn the_evaluator_rejects_a_same_surface_relief_that_did_not_produce_the_product(
         fixture.upstream.relief.elevation_m()
     );
     assert!(matches!(
-        evaluate_surface_formation_quality(surface, &other_relief, published_formation()),
+        evaluate_surface_formation_quality(surface, &other_relief, synthetic_formation()),
         Err(QualityBuildError::InvalidInput {
             input: "primary_relief",
             ..
         })
     ));
-}
-
-#[test]
-fn the_product_factory_remeasures_instead_of_accepting_a_forged_pass_report() {
-    let fixture = surface_formation_fixture();
-    let surface = fixture.upstream.bundle.authoritative_surface();
-    let report = evaluate_surface_formation_quality(
-        surface,
-        &fixture.upstream.relief,
-        published_formation(),
-    )
-    .unwrap();
-    let mut wire = serde_json::to_value(&report).unwrap();
-    for metric in wire
-        .get_mut("metrics")
-        .and_then(serde_json::Value::as_array_mut)
-        .unwrap()
-    {
-        let min = metric["bounds"]["min"].as_f64();
-        let max = metric["bounds"]["max"].as_f64();
-        metric["status"] = serde_json::json!("pass");
-        metric["value"] = serde_json::json!(min.or(max).unwrap_or(0.0));
-    }
-    let forged: sekai::world::natural::NaturalQualityReport = serde_json::from_value(wire).unwrap();
-    forged.validate().unwrap();
-    assert_ne!(
-        forged, report,
-        "the fixture must produce non-boundary measurements"
-    );
-
-    let artifact =
-        NaturalSurfaceFormationArtifact::generate(fixture.inputs(), &BuildCancellation::new())
-            .unwrap();
-    assert_eq!(artifact.quality_report(), &report);
-    assert_ne!(artifact.quality_report(), &forged);
-    assert_eq!(
-        artifact.snapshot().checkpoint().state_fingerprint(),
-        published_formation().checkpoint().state_fingerprint()
-    );
 }
 
 #[test]
@@ -176,7 +161,7 @@ fn cancelled_quality_evaluation_publishes_no_partial_report() {
         sekai::generators::natural::evaluate_surface_formation_quality_cancellable(
             surface,
             &fixture.upstream.relief,
-            published_formation(),
+            synthetic_formation(),
             &signal,
         ),
         Err(QualityBuildError::Cancelled)
@@ -191,7 +176,7 @@ fn cancelled_quality_evaluation_publishes_no_partial_report() {
                 .bundle
                 .authoritative_surface(),
             &surface_formation_fixture().upstream.relief,
-            published_formation(),
+            synthetic_formation(),
             &worker_signal,
         )
     });
@@ -206,51 +191,6 @@ fn cancelled_quality_evaluation_publishes_no_partial_report() {
     }
 }
 
-#[test]
-fn the_hypsometric_envelope_is_a_corpus_median_gate_over_unbounded_world_measurements() {
-    let fixture = surface_formation_fixture();
-    let report = evaluate_surface_formation_quality(
-        fixture.upstream.bundle.authoritative_surface(),
-        &fixture.upstream.relief,
-        published_formation(),
-    )
-    .unwrap();
-    let hypsometric = report
-        .metrics()
-        .iter()
-        .filter(|metric| {
-            metric.id().name().starts_with("land-relief-")
-                || metric.id().name() == "land-area-share-below-100m"
-                || metric.id().name() == "ocean-depth-p50-m"
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(hypsometric.len(), 8);
-    assert!(hypsometric.iter().all(|metric| {
-        metric.bounds().min().is_none()
-            && metric.bounds().max().is_none()
-            && metric.status() == QualityMetricStatus::Pass
-            && metric.value().is_some()
-    }));
-
-    // A corpus of identical worlds has every median equal to the world value,
-    // and the corpus metrics carry the frozen envelope bounds.
-    let corpus =
-        evaluate_surface_formation_corpus_hypsometry(&[report.clone(), report.clone()]).unwrap();
-    assert_eq!(corpus.metrics().len(), 8);
-    for metric in corpus.metrics() {
-        let name = metric.id().name().strip_prefix("corpus-median-").unwrap();
-        let world = hypsometric
-            .iter()
-            .find(|candidate| candidate.id().name() == name)
-            .unwrap();
-        assert_eq!(metric.value(), world.value(), "{name}");
-        assert!(metric.bounds().min().is_some(), "{name}");
-        eprintln!(
-            "corpus hypsometry {name}: value={:?} bounds={:?} status={:?}",
-            metric.value(),
-            metric.bounds(),
-            metric.status()
-        );
-    }
-    assert!(evaluate_surface_formation_corpus_hypsometry(&[]).is_err());
-}
+// Task 9 restores quality inventory and corpus-envelope assertions on a real
+// default product; Task 0 retains only evaluator failure and cancellation
+// behavior without manufacturing a successful scientific artifact.

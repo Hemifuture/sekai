@@ -8,8 +8,9 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     LandOceanKind, NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField,
-    SurfaceWaterGeometry, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
-    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, WATER_VOLUME_RELATIVE_TOLERANCE,
+    SurfaceWaterGeometry, ELEVATION_MAX_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
+    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{Meters, SphericalSpaceSpec};
@@ -37,6 +38,7 @@ struct CoastFields {
     geometry: SurfaceWaterGeometry,
     erodibility: Vec<f32>,
     sediment_thickness_m: Vec<f32>,
+    sediment_provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     density_kg_m3: Vec<f32>,
     sources: SedimentSourceKindField,
     wind_m_s: Vec<[[f32; 3]; 12]>,
@@ -50,6 +52,7 @@ impl CoastFields {
             surface_water_geometry: &self.geometry,
             substrate_erodibility: &self.erodibility,
             sediment_thickness_m: &self.sediment_thickness_m,
+            sediment_provenance_fraction: &self.sediment_provenance_fraction,
             substrate_density_kg_m3: &self.density_kg_m3,
             sediment_sources: &self.sources,
             near_surface_wind_m_s: &self.wind_m_s,
@@ -83,6 +86,7 @@ fn exposed_coast(surface: &SphericalSurfaceSnapshot) -> (usize, CoastFields) {
             geometry,
             erodibility: vec![0.8; count],
             sediment_thickness_m: vec![0.0; count],
+            sediment_provenance_fraction: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
             density_kg_m3: vec![2_700.0; count],
             sources: SedimentSourceKindField::from_kinds(vec![
                 SedimentSourceKind::Volcaniclastic;
@@ -163,6 +167,7 @@ fn sediment_cover_shields_coast_without_changing_the_forcing_exposure() {
             .unwrap();
     let mut covered = exposed_coast(&surface).1;
     covered.sediment_thickness_m[land] = 90.0;
+    covered.sediment_provenance_fraction[land][2] = 1.0;
     let covered_result = CoastalExchange::advance(
         &surface,
         covered.inputs(),
@@ -326,6 +331,31 @@ fn airy_response_has_local_unloading_and_loading_signs_and_sea_level_closes_wate
         water.geometry().land_ocean().get(1),
         Some(LandOceanKind::Land)
     );
+}
+
+#[test]
+fn airy_response_outside_the_elevation_domain_fails_instead_of_clipping() {
+    let surface = surface(10_000.0, 42);
+    let count = surface.cells().len();
+    let area_m2 = surface.cells()[0].area.get();
+    let mut removed_mass_kg = vec![0.0; count];
+    removed_mass_kg[0] = FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2 * 2.0;
+    let mut elevation_m = vec![0.0; count];
+    elevation_m[0] = ELEVATION_MAX_M - 1.0;
+
+    assert!(matches!(
+        LocalAiryIsostasy::apply(
+            &surface,
+            &elevation_m,
+            &removed_mass_kg,
+            &vec![0.0; count],
+            &BuildCancellation::new(),
+        ),
+        Err(IsostasyGenerationError::ElevationOutOfRange {
+            cell,
+            found,
+        }) if cell.raw() == 0 && found > f64::from(ELEVATION_MAX_M)
+    ));
 }
 
 #[test]

@@ -16,14 +16,14 @@ use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, Surfa
 use crate::world::MAX_SPHERICAL_CELL_COUNT;
 
 /// Coupled formation product retaining one authoritative fractional water geometry.
-pub const NATURAL_SURFACE_FORMATION_SCHEMA_V2: u16 = 2;
-/// The first strict P5 resume/checkpoint schema.
-pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1: u16 = 1;
+pub const NATURAL_SURFACE_FORMATION_SCHEMA_V3: u16 = 3;
+/// Current-state-only P5 checkpoint schema.
+pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2: u16 = 2;
 /// Retained terrain with one authoritative fractional water geometry.
-pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V2: u16 = 2;
+pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V3: u16 = 3;
 /// The fixed number of retained sediment-source provenance channels.
 pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
-/// The bounded outer climate/terrain fixed-point iteration count.
+/// Maximum number of coupled climate solves in one atomic P5 build.
 ///
 /// Raised 4 → 8 (spec amendment A1, 2026-08-21): observed trajectories
 /// contract geometrically with the slow mode in `log1p(discharge)`, and
@@ -31,13 +31,17 @@ pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
 /// 4 (measured seed 3945477593443907072: draft 0.96 at iteration 4,
 /// standard 1.39 and failing). Seeds converging within the old budget
 /// keep bit-identical products — the loop exits on the same iterate.
-pub const SURFACE_FORMATION_MAX_OUTER_ITERATIONS: u8 = 8;
-/// The complete geomorphic solve count within one outer iteration.
-pub const SURFACE_FORMATION_MACRO_STEPS: u16 = 8;
-/// The declared coarse-grained geomorphic formation horizon.
-pub const SURFACE_FORMATION_HORIZON_YEARS: f64 = 100_000.0;
-/// The fixed duration of each geomorphic macro step.
-pub const SURFACE_FORMATION_MACRO_STEP_YEARS: f64 = 12_500.0;
+pub const SURFACE_FORMATION_MAX_CLIMATE_SOLVES: u16 = 8;
+/// Private pseudo-transient continuation updates evaluated per climate solve.
+pub const SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE: u16 = 8;
+/// Maximum equilibrium updates in one atomic P5 build.
+pub const SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS: u16 =
+    SURFACE_FORMATION_MAX_CLIMATE_SOLVES * SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE;
+/// Successful-step growth factor for pseudo-transient continuation.
+///
+/// PETSc `TSPseudoTimeStepDefault` sets `dt_increment = 1.1` at commit
+/// `dcb28d8e36d8acfcd2d433a2c37cd7f20e0641c1` (reviewed 2026-08-24).
+pub(crate) const SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR: f64 = 1.1;
 /// Minimum precipitation fraction retained as effective P5 runoff.
 pub const FORMATION_RUNOFF_MIN_FRACTION: f64 = 0.15;
 /// Additional runoff fraction removed linearly by unit permeability.
@@ -84,16 +88,18 @@ pub const FORMATION_HILLSLOPE_WEATHERING_RANGE: f64 = 0.50;
 pub const FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM: f64 = 1_000.0;
 /// Maximum normalized annual precipitation before weathering saturates.
 pub const FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX: f64 = 4.0;
-/// Maximum fraction of local relief changed at either end of one edge per step.
-pub const FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION: f64 = 0.25;
-/// Reference routed-sediment transport concentration.
-pub const FORMATION_SEDIMENT_CAPACITY_KG_M3: f64 = 0.5;
-/// Slope scale in the bounded routed-sediment capacity response.
-pub const FORMATION_SEDIMENT_SLOPE_SCALE: f64 = 0.001;
 /// Fixed coarse alluvial bulk density used for every retained deposit.
 pub const FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3: f64 = 1_800.0;
-/// Maximum non-lake floodplain accommodation per macro step.
+/// T1 valley-relief presentation reference; P5 sediment routing does not use it.
 pub const FORMATION_FLOODPLAIN_ACCOMMODATION_M: f64 = 50.0;
+/// Effective settling velocity for the production detachment-limited end member.
+///
+/// Davy & Lague (2009), equations (7)-(9), define deposition through
+/// `V_eff = d* v_s` and show that `V_eff = 0` is the infinite transport-length,
+/// detachment-limited limit. P5 deliberately selects that exact end member
+/// until grain size, Rouse number, and channel hydraulic geometry exist; it
+/// does not substitute an uncalibrated nonzero example value.
+pub(crate) const FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR: f64 = 0.0;
 /// Fixed coarse shelf-break depth limiting marine accommodation.
 pub const FORMATION_SHELF_BREAK_DEPTH_M: f64 = 200.0;
 /// Normal-wind scale in the bounded coastal exposure proxy.
@@ -102,8 +108,6 @@ pub const FORMATION_COASTAL_WIND_REFERENCE_M_S: f64 = 15.0;
 pub const FORMATION_COASTAL_CURRENT_REFERENCE_M_S: f64 = 1.0;
 /// Sediment-cover thickness that halves coastal bedrock exposure.
 pub const FORMATION_COASTAL_COVER_SHIELD_M: f64 = 10.0;
-/// Exposure multiplier applied to marine transport capacity.
-pub const FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE: f64 = 4.0;
 /// Maximum annual bedrock-coast erosion rate.
 pub const FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR: f64 = 2.0e-5;
 /// Mantle density used by the local Airy response.
@@ -117,26 +121,16 @@ pub const SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX: f64 = 1.0e-7;
 /// Maximum conservative dense-owner report admitted by the P5 schema.
 pub const SURFACE_FORMATION_DENSE_STATE_BYTES_MAX: u64 = 1_073_741_824;
 
-/// Elevation RMS scale used by the outer fixed-point residual.
-pub const FORMATION_ELEVATION_RESIDUAL_SCALE_M: f64 = 100.0;
-/// Receiver-change scale used by the outer fixed-point residual.
-pub const FORMATION_RECEIVER_RESIDUAL_SCALE: f64 = 0.05;
-/// Log-discharge RMS scale used by the outer fixed-point residual.
+/// Maximum dimensionless current-flux residual admitted by the P5 solve.
 ///
-/// Raised 0.15 → 0.25 (spec amendment A2, 2026-08-21): discharge is a
-/// direct projection of the P4 precipitation, and the P4 formation solve
-/// itself only converges to `FORMATION_RESIDUAL_TARGET = 0.24` relative
-/// state change — successive climate solves on a settled terrain can
-/// legitimately wobble wet-basin discharge by that order. A tolerance
-/// tighter than the driver's is unreachable for climatically marginal
-/// worlds (observed plateaus 0.151–0.181 with every other component at
-/// 1–3 % of its scale), so the downstream tolerance must sit above the
-/// upstream one; a unit test pins that ordering.
-pub const FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE: f64 = 0.25;
-/// Sediment-thickness RMS scale used by the outer fixed-point residual.
-pub const FORMATION_SEDIMENT_RESIDUAL_SCALE_M: f64 = 10.0;
-/// Coastline area-change scale used by the outer fixed-point residual.
-pub const FORMATION_COASTLINE_RESIDUAL_SCALE: f64 = 0.005;
+/// This is a numerical root-finding tolerance, not a geomorphic rate or an
+/// Earth-data acceptance envelope. P5 retains its state and process fields as
+/// `f32`, so it adopts PETSc `TSPSEUDO`'s single-precision default relative
+/// function tolerance (`frtol = 1e-5`) from PETSc commit
+/// `dcb28d8e36d8acfcd2d433a2c37cd7f20e0641c1`, `posindep.c` (reviewed
+/// 2026-08-24). The residual itself is the current dimensionless flux backward
+/// error; no initial or intermediate iterate enters the product.
+pub const FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX: f64 = 1.0e-5;
 
 /// Converts published P4 mean daily rates into the single bounded monthly
 /// formation precipitation envelope every P5 process forcing is derived from.
@@ -220,20 +214,19 @@ const PROVENANCE_SUM_TOLERANCE: f64 = 1.0e-6;
 #[serde(rename_all = "kebab-case")]
 pub enum SurfaceFormationModelId {
     /// Priority-Flood + implicit stream power + paired nonlinear hillslope,
-    /// provenance sediment, coastal exchange, and local Airy isostasy.
-    PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1,
+    /// Davy-Lague detachment-limited sediment continuity, coastal exchange,
+    /// and local Airy isostasy.
+    PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
 }
 
 /// Returns the canonical identity of every equation and frozen P5 constant.
 pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-equations.v2\0");
+    hasher.update(b"sekai.surface-formation-equations.v5\0");
     hasher.update(&[surface_formation_model_tag(
-        SurfaceFormationModelId::PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1,
+        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
     )]);
     for value in [
-        SURFACE_FORMATION_HORIZON_YEARS,
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
         FORMATION_RUNOFF_MIN_FRACTION,
         FORMATION_RUNOFF_PERMEABILITY_RANGE,
         FORMATION_MINIMUM_LAKE_DEPTH_M,
@@ -257,50 +250,49 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_HILLSLOPE_WEATHERING_RANGE,
         FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM,
         FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX,
-        FORMATION_HILLSLOPE_RELIEF_LIMIT_FRACTION,
-        FORMATION_SEDIMENT_CAPACITY_KG_M3,
-        FORMATION_SEDIMENT_SLOPE_SCALE,
         FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
-        FORMATION_FLOODPLAIN_ACCOMMODATION_M,
+        FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
         FORMATION_SHELF_BREAK_DEPTH_M,
         FORMATION_COASTAL_WIND_REFERENCE_M_S,
         FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
         FORMATION_COASTAL_COVER_SHIELD_M,
-        FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE,
         FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
         FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
         FORMATION_ENDORHEIC_RESIDENCE_YEARS,
         CLIMATOLOGICAL_YEAR_SECONDS,
         MEAN_SOLAR_DAY_SECONDS,
         f64::from(ANNUAL_PRECIPITATION_MAX_MM),
-        FORMATION_ELEVATION_RESIDUAL_SCALE_M,
-        FORMATION_RECEIVER_RESIDUAL_SCALE,
-        FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE,
-        FORMATION_SEDIMENT_RESIDUAL_SCALE_M,
-        FORMATION_COASTLINE_RESIDUAL_SCALE,
+        FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX,
         SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
         SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX,
         WATER_VOLUME_RELATIVE_TOLERANCE,
     ] {
         hasher.update(&value.to_bits().to_le_bytes());
     }
-    hasher.update(&SURFACE_FORMATION_MACRO_STEPS.to_le_bytes());
-    hasher.update(&[SURFACE_FORMATION_MAX_OUTER_ITERATIONS]);
     hasher.update(b"priority-flood-stable-dag-v1\0");
     hasher.update(b"braun-willett-n1-backward-euler-v1\0");
     hasher.update(b"roering-paired-finite-volume-v1\0");
-    hasher.update(b"five-source-upstream-sediment-ledger-v1\0");
-    hasher.update(b"sources:felsic,mafic,volcaniclastic,sedimentary,metamorphic\0");
+    hasher.update(b"davy-lague-analytic-five-source-sediment-continuity-v1\0");
+    hasher.update(b"fluvial-transport:detachment-limited-v-eff-zero\0");
+    hasher.update(b"pseudo-transient-current-flux-equilibrium-v2\0");
+    hasher.update(&SURFACE_FORMATION_MAX_CLIMATE_SOLVES.to_le_bytes());
+    hasher.update(&SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE.to_le_bytes());
     hasher.update(
-        b"elevation:primary+tectonic-fluvial-hillslope_erosion+hillslope_deposition+routed_deposition-coastal_erosion+coastal_deposition+isostatic\0",
+        &SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR
+            .to_bits()
+            .to_le_bytes(),
     );
+    hasher.update(b"sources:felsic,mafic,volcaniclastic,sedimentary,metamorphic\0");
+    hasher.update(b"elevation:primary_relief+equilibrium_adjustment=current_elevation\0");
     hasher.update(b"fixed-water-volume-piecewise-linear-sea-level-v1\0");
     *hasher.finalize().as_bytes()
 }
 
 const fn surface_formation_model_tag(model: SurfaceFormationModelId) -> u8 {
     match model {
-        SurfaceFormationModelId::PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1 => 1,
+        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3 => {
+            3
+        }
     }
 }
 
@@ -462,7 +454,7 @@ impl<'de> Deserialize<'de> for SurfaceFormationUpstreamFingerprints {
     }
 }
 
-/// Strict resume identity for one bounded outer P5 solve.
+/// Identity of one atomically published current P5 state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurfaceFormationCheckpoint {
@@ -472,7 +464,6 @@ pub struct SurfaceFormationCheckpoint {
     model: SurfaceFormationModelId,
     model_fingerprint: [u8; 32],
     upstream: SurfaceFormationUpstreamFingerprints,
-    outer_iterations: u8,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -486,7 +477,6 @@ struct SurfaceFormationCheckpointWire {
     model: SurfaceFormationModelId,
     model_fingerprint: [u8; 32],
     upstream: SurfaceFormationUpstreamFingerprints,
-    outer_iterations: u8,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -496,17 +486,16 @@ impl SurfaceFormationCheckpoint {
         surface_ref: SurfaceRef,
         quality_profile: NaturalQualityProfile,
         upstream: SurfaceFormationUpstreamFingerprints,
-        outer_iterations: u8,
         state_fingerprint: [u8; 32],
     ) -> Result<Self, SurfaceFormationValidationError> {
         let mut checkpoint = Self {
-            schema_version: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1,
+            schema_version: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2,
             surface_ref,
             quality_profile,
-            model: SurfaceFormationModelId::PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1,
+            model:
+                SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
             model_fingerprint: surface_formation_model_fingerprint(),
             upstream,
-            outer_iterations,
             state_fingerprint,
             fingerprint: [0; 32],
         };
@@ -524,11 +513,11 @@ impl SurfaceFormationCheckpoint {
     }
 
     fn validate_identity(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1 {
+        if self.schema_version != SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "surface_formation_checkpoint",
                 found: self.schema_version,
-                supported: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1,
+                supported: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -544,16 +533,10 @@ impl SurfaceFormationCheckpoint {
         }
         self.upstream.validate()?;
         if self.model
-            != SurfaceFormationModelId::PriorityFloodFastscapeSedimentHillslopeCoastIsostasyV1
+            != SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3
             || self.model_fingerprint != surface_formation_model_fingerprint()
         {
             return Err(SurfaceFormationValidationError::ModelIdentityMismatch);
-        }
-        if !(1..=SURFACE_FORMATION_MAX_OUTER_ITERATIONS).contains(&self.outer_iterations) {
-            return Err(SurfaceFormationValidationError::InvalidOuterIterations {
-                found: self.outer_iterations,
-                maximum: SURFACE_FORMATION_MAX_OUTER_ITERATIONS,
-            });
         }
         if self.state_fingerprint == [0; 32] {
             return Err(SurfaceFormationValidationError::ZeroFingerprint {
@@ -565,14 +548,13 @@ impl SurfaceFormationCheckpoint {
 
     fn canonical_fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.surface-formation-checkpoint.v1\0");
+        hasher.update(b"sekai.surface-formation-checkpoint.v2\0");
         hasher.update(&self.schema_version.to_le_bytes());
         update_surface_ref_hash(&mut hasher, self.surface_ref);
         hasher.update(&[natural_quality_profile_tag(self.quality_profile)]);
         hasher.update(&[surface_formation_model_tag(self.model)]);
         hasher.update(&self.model_fingerprint);
         self.upstream.update_hasher(&mut hasher);
-        hasher.update(&[self.outer_iterations]);
         hasher.update(&self.state_fingerprint);
         *hasher.finalize().as_bytes()
     }
@@ -630,10 +612,6 @@ impl SurfaceFormationCheckpoint {
         &self.upstream
     }
 
-    pub const fn outer_iterations(&self) -> u8 {
-        self.outer_iterations
-    }
-
     pub const fn state_fingerprint(&self) -> &[u8; 32] {
         &self.state_fingerprint
     }
@@ -649,12 +627,12 @@ impl<'de> Deserialize<'de> for SurfaceFormationCheckpoint {
         D: Deserializer<'de>,
     {
         let wire = SurfaceFormationCheckpointWire::deserialize(deserializer)?;
-        if wire.schema_version != SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1 {
+        if wire.schema_version != SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2 {
             return Err(D::Error::custom(
                 SurfaceFormationValidationError::UnsupportedSchema {
                     object: "surface_formation_checkpoint",
                     found: wire.schema_version,
-                    supported: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V1,
+                    supported: SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2,
                 },
             ));
         }
@@ -662,7 +640,6 @@ impl<'de> Deserialize<'de> for SurfaceFormationCheckpoint {
             wire.surface_ref,
             wire.quality_profile,
             wire.upstream,
-            wire.outer_iterations,
             wire.state_fingerprint,
         )
         .map_err(D::Error::custom)?;
@@ -821,178 +798,88 @@ const fn expected_capability_availability(
     }
 }
 
-/// Returns the exact retained P5 elevation identity in its declared order.
-#[allow(clippy::too_many_arguments)]
+/// Returns the sole retained current-state P5 elevation identity.
 pub fn formation_elevation_from_components(
-    primary_elevation_m: f32,
-    tectonic_displacement_m: f32,
-    fluvial_erosion_m: f32,
-    hillslope_erosion_m: f32,
-    hillslope_deposition_m: f32,
-    routed_sediment_deposition_m: f32,
-    coastal_erosion_m: f32,
-    coastal_deposition_m: f32,
-    isostatic_response_m: f32,
+    primary_relief_m: f32,
+    equilibrium_adjustment_m: f32,
 ) -> f32 {
-    (f64::from(primary_elevation_m) + f64::from(tectonic_displacement_m)
-        - f64::from(fluvial_erosion_m)
-        - f64::from(hillslope_erosion_m)
-        + f64::from(hillslope_deposition_m)
-        + f64::from(routed_sediment_deposition_m)
-        - f64::from(coastal_erosion_m)
-        + f64::from(coastal_deposition_m)
-        + f64::from(isostatic_response_m)) as f32
+    (f64::from(primary_relief_m) + f64::from(equilibrium_adjustment_m)) as f32
 }
 
-/// Retained causal elevation components, aligned to authoritative cells.
+/// Current elevation and its one adjustment from immutable P3 relief.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormationElevationComponents {
-    primary_elevation_m: Vec<f32>,
-    tectonic_displacement_m: Vec<f32>,
-    fluvial_erosion_m: Vec<f32>,
-    hillslope_erosion_m: Vec<f32>,
-    hillslope_deposition_m: Vec<f32>,
-    routed_sediment_deposition_m: Vec<f32>,
-    coastal_erosion_m: Vec<f32>,
-    coastal_deposition_m: Vec<f32>,
-    isostatic_response_m: Vec<f32>,
-    final_elevation_m: Vec<f32>,
+    primary_relief_m: Vec<f32>,
+    equilibrium_adjustment_m: Vec<f32>,
+    current_elevation_m: Vec<f32>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FormationElevationComponentsWire {
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    primary_elevation_m: Vec<f32>,
+    primary_relief_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    tectonic_displacement_m: Vec<f32>,
+    equilibrium_adjustment_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    fluvial_erosion_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    hillslope_erosion_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    hillslope_deposition_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    routed_sediment_deposition_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    coastal_erosion_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    coastal_deposition_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    isostatic_response_m: Vec<f32>,
-    #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    final_elevation_m: Vec<f32>,
+    current_elevation_m: Vec<f32>,
 }
 
 impl FormationElevationComponents {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        primary_elevation_m: Vec<f32>,
-        tectonic_displacement_m: Vec<f32>,
-        fluvial_erosion_m: Vec<f32>,
-        hillslope_erosion_m: Vec<f32>,
-        hillslope_deposition_m: Vec<f32>,
-        routed_sediment_deposition_m: Vec<f32>,
-        coastal_erosion_m: Vec<f32>,
-        coastal_deposition_m: Vec<f32>,
-        isostatic_response_m: Vec<f32>,
-        final_elevation_m: Vec<f32>,
+        primary_relief_m: Vec<f32>,
+        equilibrium_adjustment_m: Vec<f32>,
+        current_elevation_m: Vec<f32>,
     ) -> Result<Self, SurfaceFormationValidationError> {
         let components = Self {
-            primary_elevation_m,
-            tectonic_displacement_m,
-            fluvial_erosion_m,
-            hillslope_erosion_m,
-            hillslope_deposition_m,
-            routed_sediment_deposition_m,
-            coastal_erosion_m,
-            coastal_deposition_m,
-            isostatic_response_m,
-            final_elevation_m,
+            primary_relief_m,
+            equilibrium_adjustment_m,
+            current_elevation_m,
         };
         components.validate()?;
         Ok(components)
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        let count = self.primary_elevation_m.len();
+        let count = self.primary_relief_m.len();
         validate_dense_count(count)?;
         for (field, found) in [
             (
-                "tectonic_displacement_m",
-                self.tectonic_displacement_m.len(),
+                "equilibrium_adjustment_m",
+                self.equilibrium_adjustment_m.len(),
             ),
-            ("fluvial_erosion_m", self.fluvial_erosion_m.len()),
-            ("hillslope_erosion_m", self.hillslope_erosion_m.len()),
-            ("hillslope_deposition_m", self.hillslope_deposition_m.len()),
-            (
-                "routed_sediment_deposition_m",
-                self.routed_sediment_deposition_m.len(),
-            ),
-            ("coastal_erosion_m", self.coastal_erosion_m.len()),
-            ("coastal_deposition_m", self.coastal_deposition_m.len()),
-            ("isostatic_response_m", self.isostatic_response_m.len()),
-            ("final_elevation_m", self.final_elevation_m.len()),
+            ("current_elevation_m", self.current_elevation_m.len()),
         ] {
             validate_field_length(field, found, count)?;
         }
         validate_f32_slice(
-            "primary_elevation_m",
-            &self.primary_elevation_m,
+            "primary_relief_m",
+            &self.primary_relief_m,
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
         )?;
         validate_f32_slice(
-            "tectonic_displacement_m",
-            &self.tectonic_displacement_m,
-            -MAX_COMPONENT_ABS_M,
-            MAX_COMPONENT_ABS_M,
-        )?;
-        for (field, values) in [
-            ("fluvial_erosion_m", self.fluvial_erosion_m.as_slice()),
-            ("hillslope_erosion_m", self.hillslope_erosion_m.as_slice()),
-            (
-                "hillslope_deposition_m",
-                self.hillslope_deposition_m.as_slice(),
-            ),
-            (
-                "routed_sediment_deposition_m",
-                self.routed_sediment_deposition_m.as_slice(),
-            ),
-            ("coastal_erosion_m", self.coastal_erosion_m.as_slice()),
-            ("coastal_deposition_m", self.coastal_deposition_m.as_slice()),
-        ] {
-            validate_f32_slice(field, values, 0.0, MAX_COMPONENT_ABS_M)?;
-        }
-        validate_f32_slice(
-            "isostatic_response_m",
-            &self.isostatic_response_m,
+            "equilibrium_adjustment_m",
+            &self.equilibrium_adjustment_m,
             -MAX_COMPONENT_ABS_M,
             MAX_COMPONENT_ABS_M,
         )?;
         validate_f32_slice(
-            "final_elevation_m",
-            &self.final_elevation_m,
+            "current_elevation_m",
+            &self.current_elevation_m,
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
         )?;
         for index in 0..count {
             let expected = formation_elevation_from_components(
-                self.primary_elevation_m[index],
-                self.tectonic_displacement_m[index],
-                self.fluvial_erosion_m[index],
-                self.hillslope_erosion_m[index],
-                self.hillslope_deposition_m[index],
-                self.routed_sediment_deposition_m[index],
-                self.coastal_erosion_m[index],
-                self.coastal_deposition_m[index],
-                self.isostatic_response_m[index],
+                self.primary_relief_m[index],
+                self.equilibrium_adjustment_m[index],
             );
-            if self.final_elevation_m[index].to_bits() != expected.to_bits() {
+            if self.current_elevation_m[index].to_bits() != expected.to_bits() {
                 return Err(SurfaceFormationValidationError::ComponentIdentityMismatch {
                     cell: index,
-                    stored: self.final_elevation_m[index],
+                    stored: self.current_elevation_m[index],
                     expected,
                 });
             }
@@ -1001,51 +888,23 @@ impl FormationElevationComponents {
     }
 
     pub fn len(&self) -> usize {
-        self.primary_elevation_m.len()
+        self.primary_relief_m.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.primary_elevation_m.is_empty()
+        self.primary_relief_m.is_empty()
     }
 
-    pub fn primary_elevation_m(&self) -> &[f32] {
-        &self.primary_elevation_m
+    pub fn primary_relief_m(&self) -> &[f32] {
+        &self.primary_relief_m
     }
 
-    pub fn tectonic_displacement_m(&self) -> &[f32] {
-        &self.tectonic_displacement_m
+    pub fn equilibrium_adjustment_m(&self) -> &[f32] {
+        &self.equilibrium_adjustment_m
     }
 
-    pub fn fluvial_erosion_m(&self) -> &[f32] {
-        &self.fluvial_erosion_m
-    }
-
-    pub fn hillslope_erosion_m(&self) -> &[f32] {
-        &self.hillslope_erosion_m
-    }
-
-    pub fn hillslope_deposition_m(&self) -> &[f32] {
-        &self.hillslope_deposition_m
-    }
-
-    pub fn routed_sediment_deposition_m(&self) -> &[f32] {
-        &self.routed_sediment_deposition_m
-    }
-
-    pub fn coastal_erosion_m(&self) -> &[f32] {
-        &self.coastal_erosion_m
-    }
-
-    pub fn coastal_deposition_m(&self) -> &[f32] {
-        &self.coastal_deposition_m
-    }
-
-    pub fn isostatic_response_m(&self) -> &[f32] {
-        &self.isostatic_response_m
-    }
-
-    pub fn final_elevation_m(&self) -> &[f32] {
-        &self.final_elevation_m
+    pub fn current_elevation_m(&self) -> &[f32] {
+        &self.current_elevation_m
     }
 }
 
@@ -1056,16 +915,9 @@ impl<'de> Deserialize<'de> for FormationElevationComponents {
     {
         let wire = FormationElevationComponentsWire::deserialize(deserializer)?;
         Self::new(
-            wire.primary_elevation_m,
-            wire.tectonic_displacement_m,
-            wire.fluvial_erosion_m,
-            wire.hillslope_erosion_m,
-            wire.hillslope_deposition_m,
-            wire.routed_sediment_deposition_m,
-            wire.coastal_erosion_m,
-            wire.coastal_deposition_m,
-            wire.isostatic_response_m,
-            wire.final_elevation_m,
+            wire.primary_relief_m,
+            wire.equilibrium_adjustment_m,
+            wire.current_elevation_m,
         )
         .map_err(D::Error::custom)
     }
@@ -1077,10 +929,10 @@ impl<'de> Deserialize<'de> for FormationElevationComponents {
 pub struct FormationSedimentFields {
     sediment_thickness_m: Vec<f32>,
     provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
-    sediment_throughput_kg: Vec<f64>,
-    shelf_delivery_kg: Vec<f64>,
-    deep_ocean_delivery_kg: Vec<f64>,
-    endorheic_storage_kg: Vec<f64>,
+    sediment_throughput_kg_per_year: Vec<f64>,
+    shelf_deposition_kg_per_year: Vec<f64>,
+    deep_ocean_export_kg_per_year: Vec<f64>,
+    endorheic_deposition_kg_per_year: Vec<f64>,
     delta_potential: Vec<f32>,
 }
 
@@ -1092,13 +944,13 @@ struct FormationSedimentFieldsWire {
     #[serde(deserialize_with = "deserialize_formation_provenance_values")]
     provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     #[serde(deserialize_with = "deserialize_formation_f64_values")]
-    sediment_throughput_kg: Vec<f64>,
+    sediment_throughput_kg_per_year: Vec<f64>,
     #[serde(deserialize_with = "deserialize_formation_f64_values")]
-    shelf_delivery_kg: Vec<f64>,
+    shelf_deposition_kg_per_year: Vec<f64>,
     #[serde(deserialize_with = "deserialize_formation_f64_values")]
-    deep_ocean_delivery_kg: Vec<f64>,
+    deep_ocean_export_kg_per_year: Vec<f64>,
     #[serde(deserialize_with = "deserialize_formation_f64_values")]
-    endorheic_storage_kg: Vec<f64>,
+    endorheic_deposition_kg_per_year: Vec<f64>,
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
     delta_potential: Vec<f32>,
 }
@@ -1108,19 +960,19 @@ impl FormationSedimentFields {
     pub fn new(
         sediment_thickness_m: Vec<f32>,
         provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
-        sediment_throughput_kg: Vec<f64>,
-        shelf_delivery_kg: Vec<f64>,
-        deep_ocean_delivery_kg: Vec<f64>,
-        endorheic_storage_kg: Vec<f64>,
+        sediment_throughput_kg_per_year: Vec<f64>,
+        shelf_deposition_kg_per_year: Vec<f64>,
+        deep_ocean_export_kg_per_year: Vec<f64>,
+        endorheic_deposition_kg_per_year: Vec<f64>,
         delta_potential: Vec<f32>,
     ) -> Result<Self, SurfaceFormationValidationError> {
         let fields = Self {
             sediment_thickness_m,
             provenance_fraction,
-            sediment_throughput_kg,
-            shelf_delivery_kg,
-            deep_ocean_delivery_kg,
-            endorheic_storage_kg,
+            sediment_throughput_kg_per_year,
+            shelf_deposition_kg_per_year,
+            deep_ocean_export_kg_per_year,
+            endorheic_deposition_kg_per_year,
             delta_potential,
         };
         fields.validate()?;
@@ -1132,10 +984,22 @@ impl FormationSedimentFields {
         validate_dense_count(count)?;
         for (field, found) in [
             ("provenance_fraction", self.provenance_fraction.len()),
-            ("sediment_throughput_kg", self.sediment_throughput_kg.len()),
-            ("shelf_delivery_kg", self.shelf_delivery_kg.len()),
-            ("deep_ocean_delivery_kg", self.deep_ocean_delivery_kg.len()),
-            ("endorheic_storage_kg", self.endorheic_storage_kg.len()),
+            (
+                "sediment_throughput_kg_per_year",
+                self.sediment_throughput_kg_per_year.len(),
+            ),
+            (
+                "shelf_deposition_kg_per_year",
+                self.shelf_deposition_kg_per_year.len(),
+            ),
+            (
+                "deep_ocean_export_kg_per_year",
+                self.deep_ocean_export_kg_per_year.len(),
+            ),
+            (
+                "endorheic_deposition_kg_per_year",
+                self.endorheic_deposition_kg_per_year.len(),
+            ),
             ("delta_potential", self.delta_potential.len()),
         ] {
             validate_field_length(field, found, count)?;
@@ -1147,21 +1011,26 @@ impl FormationSedimentFields {
             MAX_SEDIMENT_THICKNESS_M,
         )?;
         validate_f64_slice(
-            "sediment_throughput_kg",
-            &self.sediment_throughput_kg,
-            0.0,
-            f64::MAX,
-        )?;
-        validate_f64_slice("shelf_delivery_kg", &self.shelf_delivery_kg, 0.0, f64::MAX)?;
-        validate_f64_slice(
-            "deep_ocean_delivery_kg",
-            &self.deep_ocean_delivery_kg,
+            "sediment_throughput_kg_per_year",
+            &self.sediment_throughput_kg_per_year,
             0.0,
             f64::MAX,
         )?;
         validate_f64_slice(
-            "endorheic_storage_kg",
-            &self.endorheic_storage_kg,
+            "shelf_deposition_kg_per_year",
+            &self.shelf_deposition_kg_per_year,
+            0.0,
+            f64::MAX,
+        )?;
+        validate_f64_slice(
+            "deep_ocean_export_kg_per_year",
+            &self.deep_ocean_export_kg_per_year,
+            0.0,
+            f64::MAX,
+        )?;
+        validate_f64_slice(
+            "endorheic_deposition_kg_per_year",
+            &self.endorheic_deposition_kg_per_year,
             0.0,
             f64::MAX,
         )?;
@@ -1212,20 +1081,20 @@ impl FormationSedimentFields {
         &self.provenance_fraction
     }
 
-    pub fn sediment_throughput_kg(&self) -> &[f64] {
-        &self.sediment_throughput_kg
+    pub fn sediment_throughput_kg_per_year(&self) -> &[f64] {
+        &self.sediment_throughput_kg_per_year
     }
 
-    pub fn shelf_delivery_kg(&self) -> &[f64] {
-        &self.shelf_delivery_kg
+    pub fn shelf_deposition_kg_per_year(&self) -> &[f64] {
+        &self.shelf_deposition_kg_per_year
     }
 
-    pub fn deep_ocean_delivery_kg(&self) -> &[f64] {
-        &self.deep_ocean_delivery_kg
+    pub fn deep_ocean_export_kg_per_year(&self) -> &[f64] {
+        &self.deep_ocean_export_kg_per_year
     }
 
-    pub fn endorheic_storage_kg(&self) -> &[f64] {
-        &self.endorheic_storage_kg
+    pub fn endorheic_deposition_kg_per_year(&self) -> &[f64] {
+        &self.endorheic_deposition_kg_per_year
     }
 
     pub fn delta_potential(&self) -> &[f32] {
@@ -1258,10 +1127,10 @@ impl<'de> Deserialize<'de> for FormationSedimentFields {
         Self::new(
             wire.sediment_thickness_m,
             wire.provenance_fraction,
-            wire.sediment_throughput_kg,
-            wire.shelf_delivery_kg,
-            wire.deep_ocean_delivery_kg,
-            wire.endorheic_storage_kg,
+            wire.sediment_throughput_kg_per_year,
+            wire.shelf_deposition_kg_per_year,
+            wire.deep_ocean_export_kg_per_year,
+            wire.endorheic_deposition_kg_per_year,
             wire.delta_potential,
         )
         .map_err(D::Error::custom)
@@ -1309,11 +1178,11 @@ impl FormationTerrainFields {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V2 {
+        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V3 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "formation_terrain_fields",
                 found: self.schema_version,
-                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
+                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
             });
         }
         self.elevation_components.validate()?;
@@ -1327,7 +1196,7 @@ impl FormationTerrainFields {
         )?;
         validate_field_length("sediment", self.sediment.len(), count)?;
         if self.surface_water_geometry.elevation_fingerprint()
-            != &surface_elevation_fingerprint(self.elevation_components.final_elevation_m())
+            != &surface_elevation_fingerprint(self.elevation_components.current_elevation_m())
         {
             return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
         }
@@ -1363,25 +1232,18 @@ impl FormationTerrainFields {
     ) -> Result<(), SurfaceFormationValidationError> {
         self.validate()?;
         self.surface_water_geometry
-            .validate_against(surface, self.final_elevation_m())?;
+            .validate_against(surface, self.current_elevation_m())?;
         Ok(())
     }
 
     pub fn fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.formation-terrain-fields.v2\0");
+        hasher.update(b"sekai.formation-terrain-fields.v3\0");
         hasher.update(&self.schema_version.to_le_bytes());
         for values in [
-            self.elevation_components.primary_elevation_m(),
-            self.elevation_components.tectonic_displacement_m(),
-            self.elevation_components.fluvial_erosion_m(),
-            self.elevation_components.hillslope_erosion_m(),
-            self.elevation_components.hillslope_deposition_m(),
-            self.elevation_components.routed_sediment_deposition_m(),
-            self.elevation_components.coastal_erosion_m(),
-            self.elevation_components.coastal_deposition_m(),
-            self.elevation_components.isostatic_response_m(),
-            self.elevation_components.final_elevation_m(),
+            self.elevation_components.primary_relief_m(),
+            self.elevation_components.equilibrium_adjustment_m(),
+            self.elevation_components.current_elevation_m(),
             self.sediment.sediment_thickness_m(),
             self.sediment.delta_potential(),
         ] {
@@ -1393,10 +1255,10 @@ impl FormationTerrainFields {
             update_f32_slice_hash(&mut hasher, fractions);
         }
         for values in [
-            self.sediment.sediment_throughput_kg(),
-            self.sediment.shelf_delivery_kg(),
-            self.sediment.deep_ocean_delivery_kg(),
-            self.sediment.endorheic_storage_kg(),
+            self.sediment.sediment_throughput_kg_per_year(),
+            self.sediment.shelf_deposition_kg_per_year(),
+            self.sediment.deep_ocean_export_kg_per_year(),
+            self.sediment.endorheic_deposition_kg_per_year(),
         ] {
             update_f64_slice_hash(&mut hasher, values);
         }
@@ -1411,8 +1273,8 @@ impl FormationTerrainFields {
         &self.elevation_components
     }
 
-    pub fn final_elevation_m(&self) -> &[f32] {
-        self.elevation_components.final_elevation_m()
+    pub fn current_elevation_m(&self) -> &[f32] {
+        self.elevation_components.current_elevation_m()
     }
 
     pub const fn surface_water_geometry(&self) -> &SurfaceWaterGeometry {
@@ -1457,41 +1319,249 @@ impl<'de> Deserialize<'de> for FormationTerrainFields {
     }
 }
 
-/// One complete outer-iteration fixed-point residual vector.
+/// Current geomorphic process rates evaluated on the published terrain.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormationProcessRates {
+    tectonic_displacement_rate_m_per_year: Vec<f32>,
+    fluvial_erosion_rate_m_per_year: Vec<f32>,
+    hillslope_erosion_rate_m_per_year: Vec<f32>,
+    hillslope_deposition_rate_m_per_year: Vec<f32>,
+    routed_sediment_deposition_rate_m_per_year: Vec<f32>,
+    coastal_erosion_rate_m_per_year: Vec<f32>,
+    coastal_deposition_rate_m_per_year: Vec<f32>,
+    isostatic_response_rate_m_per_year: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormationProcessRatesWire {
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    tectonic_displacement_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    fluvial_erosion_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    hillslope_erosion_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    hillslope_deposition_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    routed_sediment_deposition_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    coastal_erosion_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    coastal_deposition_rate_m_per_year: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    isostatic_response_rate_m_per_year: Vec<f32>,
+}
+
+impl FormationProcessRates {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tectonic_displacement_rate_m_per_year: Vec<f32>,
+        fluvial_erosion_rate_m_per_year: Vec<f32>,
+        hillslope_erosion_rate_m_per_year: Vec<f32>,
+        hillslope_deposition_rate_m_per_year: Vec<f32>,
+        routed_sediment_deposition_rate_m_per_year: Vec<f32>,
+        coastal_erosion_rate_m_per_year: Vec<f32>,
+        coastal_deposition_rate_m_per_year: Vec<f32>,
+        isostatic_response_rate_m_per_year: Vec<f32>,
+    ) -> Result<Self, SurfaceFormationValidationError> {
+        let rates = Self {
+            tectonic_displacement_rate_m_per_year,
+            fluvial_erosion_rate_m_per_year,
+            hillslope_erosion_rate_m_per_year,
+            hillslope_deposition_rate_m_per_year,
+            routed_sediment_deposition_rate_m_per_year,
+            coastal_erosion_rate_m_per_year,
+            coastal_deposition_rate_m_per_year,
+            isostatic_response_rate_m_per_year,
+        };
+        rates.validate()?;
+        Ok(rates)
+    }
+
+    pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
+        let count = self.tectonic_displacement_rate_m_per_year.len();
+        validate_dense_count(count)?;
+        for (field, found) in [
+            (
+                "fluvial_erosion_rate_m_per_year",
+                self.fluvial_erosion_rate_m_per_year.len(),
+            ),
+            (
+                "hillslope_erosion_rate_m_per_year",
+                self.hillslope_erosion_rate_m_per_year.len(),
+            ),
+            (
+                "hillslope_deposition_rate_m_per_year",
+                self.hillslope_deposition_rate_m_per_year.len(),
+            ),
+            (
+                "routed_sediment_deposition_rate_m_per_year",
+                self.routed_sediment_deposition_rate_m_per_year.len(),
+            ),
+            (
+                "coastal_erosion_rate_m_per_year",
+                self.coastal_erosion_rate_m_per_year.len(),
+            ),
+            (
+                "coastal_deposition_rate_m_per_year",
+                self.coastal_deposition_rate_m_per_year.len(),
+            ),
+            (
+                "isostatic_response_rate_m_per_year",
+                self.isostatic_response_rate_m_per_year.len(),
+            ),
+        ] {
+            validate_field_length(field, found, count)?;
+        }
+        validate_f32_slice(
+            "tectonic_displacement_rate_m_per_year",
+            &self.tectonic_displacement_rate_m_per_year,
+            -MAX_COMPONENT_ABS_M,
+            MAX_COMPONENT_ABS_M,
+        )?;
+        validate_f32_slice(
+            "isostatic_response_rate_m_per_year",
+            &self.isostatic_response_rate_m_per_year,
+            -MAX_COMPONENT_ABS_M,
+            MAX_COMPONENT_ABS_M,
+        )?;
+        for (field, values) in [
+            (
+                "fluvial_erosion_rate_m_per_year",
+                self.fluvial_erosion_rate_m_per_year.as_slice(),
+            ),
+            (
+                "hillslope_erosion_rate_m_per_year",
+                self.hillslope_erosion_rate_m_per_year.as_slice(),
+            ),
+            (
+                "hillslope_deposition_rate_m_per_year",
+                self.hillslope_deposition_rate_m_per_year.as_slice(),
+            ),
+            (
+                "routed_sediment_deposition_rate_m_per_year",
+                self.routed_sediment_deposition_rate_m_per_year.as_slice(),
+            ),
+            (
+                "coastal_erosion_rate_m_per_year",
+                self.coastal_erosion_rate_m_per_year.as_slice(),
+            ),
+            (
+                "coastal_deposition_rate_m_per_year",
+                self.coastal_deposition_rate_m_per_year.as_slice(),
+            ),
+        ] {
+            validate_f32_slice(field, values, 0.0, MAX_COMPONENT_ABS_M)?;
+        }
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.tectonic_displacement_rate_m_per_year.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tectonic_displacement_rate_m_per_year.is_empty()
+    }
+
+    pub fn tectonic_displacement_rate_m_per_year(&self) -> &[f32] {
+        &self.tectonic_displacement_rate_m_per_year
+    }
+
+    pub fn fluvial_erosion_rate_m_per_year(&self) -> &[f32] {
+        &self.fluvial_erosion_rate_m_per_year
+    }
+
+    pub fn hillslope_erosion_rate_m_per_year(&self) -> &[f32] {
+        &self.hillslope_erosion_rate_m_per_year
+    }
+
+    pub fn hillslope_deposition_rate_m_per_year(&self) -> &[f32] {
+        &self.hillslope_deposition_rate_m_per_year
+    }
+
+    pub fn routed_sediment_deposition_rate_m_per_year(&self) -> &[f32] {
+        &self.routed_sediment_deposition_rate_m_per_year
+    }
+
+    pub fn coastal_erosion_rate_m_per_year(&self) -> &[f32] {
+        &self.coastal_erosion_rate_m_per_year
+    }
+
+    pub fn coastal_deposition_rate_m_per_year(&self) -> &[f32] {
+        &self.coastal_deposition_rate_m_per_year
+    }
+
+    pub fn isostatic_response_rate_m_per_year(&self) -> &[f32] {
+        &self.isostatic_response_rate_m_per_year
+    }
+}
+
+impl<'de> Deserialize<'de> for FormationProcessRates {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = FormationProcessRatesWire::deserialize(deserializer)?;
+        Self::new(
+            wire.tectonic_displacement_rate_m_per_year,
+            wire.fluvial_erosion_rate_m_per_year,
+            wire.hillslope_erosion_rate_m_per_year,
+            wire.hillslope_deposition_rate_m_per_year,
+            wire.routed_sediment_deposition_rate_m_per_year,
+            wire.coastal_erosion_rate_m_per_year,
+            wire.coastal_deposition_rate_m_per_year,
+            wire.isostatic_response_rate_m_per_year,
+        )
+        .map_err(D::Error::custom)
+    }
+}
+
+/// Terminal physical residuals evaluated on one current P5 state.
+///
+/// Every dimensional value is an instantaneous rate. No field compares two
+/// iterates or records a pseudo-time path.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormationResiduals {
-    elevation_rms_m: f64,
-    receiver_changed_fraction: f64,
-    log_discharge_rms: f64,
-    sediment_thickness_rms_m: f64,
-    coastline_area_changed_fraction: f64,
+    net_surface_rate_rms_m_per_year: f64,
+    gross_surface_rate_rms_m_per_year: f64,
+    mean_elevation_rate_m_per_year: f64,
+    rms_relief_rate_m_per_year: f64,
+    sediment_stock_change_kg_per_year: f64,
+    sediment_stock_change_ratio: f64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FormationResidualsWire {
-    elevation_rms_m: f64,
-    receiver_changed_fraction: f64,
-    log_discharge_rms: f64,
-    sediment_thickness_rms_m: f64,
-    coastline_area_changed_fraction: f64,
+    net_surface_rate_rms_m_per_year: f64,
+    gross_surface_rate_rms_m_per_year: f64,
+    mean_elevation_rate_m_per_year: f64,
+    rms_relief_rate_m_per_year: f64,
+    sediment_stock_change_kg_per_year: f64,
+    sediment_stock_change_ratio: f64,
 }
 
 impl FormationResiduals {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        elevation_rms_m: f64,
-        receiver_changed_fraction: f64,
-        log_discharge_rms: f64,
-        sediment_thickness_rms_m: f64,
-        coastline_area_changed_fraction: f64,
+        net_surface_rate_rms_m_per_year: f64,
+        gross_surface_rate_rms_m_per_year: f64,
+        mean_elevation_rate_m_per_year: f64,
+        rms_relief_rate_m_per_year: f64,
+        sediment_stock_change_kg_per_year: f64,
+        sediment_stock_change_ratio: f64,
     ) -> Result<Self, SurfaceFormationValidationError> {
         let residuals = Self {
-            elevation_rms_m,
-            receiver_changed_fraction,
-            log_discharge_rms,
-            sediment_thickness_rms_m,
-            coastline_area_changed_fraction,
+            net_surface_rate_rms_m_per_year,
+            gross_surface_rate_rms_m_per_year,
+            mean_elevation_rate_m_per_year,
+            rms_relief_rate_m_per_year,
+            sediment_stock_change_kg_per_year,
+            sediment_stock_change_ratio,
         };
         residuals.validate()?;
         Ok(residuals)
@@ -1499,13 +1569,13 @@ impl FormationResiduals {
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
         for (field, value) in [
-            ("elevation_rms_m", self.elevation_rms_m),
-            ("receiver_changed_fraction", self.receiver_changed_fraction),
-            ("log_discharge_rms", self.log_discharge_rms),
-            ("sediment_thickness_rms_m", self.sediment_thickness_rms_m),
             (
-                "coastline_area_changed_fraction",
-                self.coastline_area_changed_fraction,
+                "net_surface_rate_rms_m_per_year",
+                self.net_surface_rate_rms_m_per_year,
+            ),
+            (
+                "gross_surface_rate_rms_m_per_year",
+                self.gross_surface_rate_rms_m_per_year,
             ),
         ] {
             if !value.is_finite() || value < 0.0 {
@@ -1516,48 +1586,108 @@ impl FormationResiduals {
             }
         }
         for (field, value) in [
-            ("receiver_changed_fraction", self.receiver_changed_fraction),
             (
-                "coastline_area_changed_fraction",
-                self.coastline_area_changed_fraction,
+                "mean_elevation_rate_m_per_year",
+                self.mean_elevation_rate_m_per_year,
+            ),
+            (
+                "rms_relief_rate_m_per_year",
+                self.rms_relief_rate_m_per_year,
+            ),
+            (
+                "sediment_stock_change_kg_per_year",
+                self.sediment_stock_change_kg_per_year,
             ),
         ] {
-            if value > 1.0 {
+            if !value.is_finite() {
                 return Err(SurfaceFormationValidationError::InvalidValue {
                     field,
                     found: value,
                 });
             }
         }
+        if self.net_surface_rate_rms_m_per_year > self.gross_surface_rate_rms_m_per_year {
+            return Err(SurfaceFormationValidationError::InvalidValue {
+                field: "net_surface_rate_rms_m_per_year",
+                found: self.net_surface_rate_rms_m_per_year,
+            });
+        }
+        if !self.sediment_stock_change_ratio.is_finite()
+            || !(0.0..=1.0).contains(&self.sediment_stock_change_ratio)
+        {
+            return Err(SurfaceFormationValidationError::InvalidValue {
+                field: "sediment_stock_change_ratio",
+                found: self.sediment_stock_change_ratio,
+            });
+        }
         Ok(())
     }
 
     pub fn normalized_max(&self) -> f64 {
-        (self.elevation_rms_m / FORMATION_ELEVATION_RESIDUAL_SCALE_M)
-            .max(self.receiver_changed_fraction / FORMATION_RECEIVER_RESIDUAL_SCALE)
-            .max(self.log_discharge_rms / FORMATION_LOG_DISCHARGE_RESIDUAL_SCALE)
-            .max(self.sediment_thickness_rms_m / FORMATION_SEDIMENT_RESIDUAL_SCALE_M)
-            .max(self.coastline_area_changed_fraction / FORMATION_COASTLINE_RESIDUAL_SCALE)
+        self.mean_elevation_flux_balance_ratio()
+            .max(self.rms_relief_flux_balance_ratio())
+            .max(self.sediment_stock_change_ratio)
+            / FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX
     }
 
-    pub const fn elevation_rms_m(&self) -> f64 {
-        self.elevation_rms_m
+    /// Area-weighted local disequilibrium retained as a diagnostic.
+    ///
+    /// Quasi-steady landscapes can keep simultaneous local erosion and
+    /// deposition, so this value is deliberately not a publication gate.
+    pub fn local_surface_flux_imbalance_ratio(&self) -> f64 {
+        formation_relative_flux_imbalance(
+            self.net_surface_rate_rms_m_per_year,
+            self.gross_surface_rate_rms_m_per_year,
+        )
     }
 
-    pub const fn receiver_changed_fraction(&self) -> f64 {
-        self.receiver_changed_fraction
+    pub fn mean_elevation_flux_balance_ratio(&self) -> f64 {
+        formation_relative_flux_imbalance(
+            self.mean_elevation_rate_m_per_year.abs(),
+            self.gross_surface_rate_rms_m_per_year,
+        )
     }
 
-    pub const fn log_discharge_rms(&self) -> f64 {
-        self.log_discharge_rms
+    pub fn rms_relief_flux_balance_ratio(&self) -> f64 {
+        formation_relative_flux_imbalance(
+            self.rms_relief_rate_m_per_year.abs(),
+            self.gross_surface_rate_rms_m_per_year,
+        )
     }
 
-    pub const fn sediment_thickness_rms_m(&self) -> f64 {
-        self.sediment_thickness_rms_m
+    pub const fn net_surface_rate_rms_m_per_year(&self) -> f64 {
+        self.net_surface_rate_rms_m_per_year
     }
 
-    pub const fn coastline_area_changed_fraction(&self) -> f64 {
-        self.coastline_area_changed_fraction
+    pub const fn gross_surface_rate_rms_m_per_year(&self) -> f64 {
+        self.gross_surface_rate_rms_m_per_year
+    }
+
+    pub const fn mean_elevation_rate_m_per_year(&self) -> f64 {
+        self.mean_elevation_rate_m_per_year
+    }
+
+    pub const fn rms_relief_rate_m_per_year(&self) -> f64 {
+        self.rms_relief_rate_m_per_year
+    }
+
+    pub const fn sediment_stock_change_kg_per_year(&self) -> f64 {
+        self.sediment_stock_change_kg_per_year
+    }
+
+    pub const fn sediment_stock_change_ratio(&self) -> f64 {
+        self.sediment_stock_change_ratio
+    }
+}
+
+/// Symmetric current-flux backward error with no arbitrary zero floor.
+pub(crate) fn formation_relative_flux_imbalance(net_abs: f64, gross_abs: f64) -> f64 {
+    debug_assert!(net_abs.is_finite() && net_abs >= 0.0);
+    debug_assert!(gross_abs.is_finite() && gross_abs >= 0.0);
+    if net_abs == 0.0 {
+        0.0
+    } else {
+        net_abs / gross_abs.max(net_abs)
     }
 }
 
@@ -1568,23 +1698,24 @@ impl<'de> Deserialize<'de> for FormationResiduals {
     {
         let wire = FormationResidualsWire::deserialize(deserializer)?;
         Self::new(
-            wire.elevation_rms_m,
-            wire.receiver_changed_fraction,
-            wire.log_discharge_rms,
-            wire.sediment_thickness_rms_m,
-            wire.coastline_area_changed_fraction,
+            wire.net_surface_rate_rms_m_per_year,
+            wire.gross_surface_rate_rms_m_per_year,
+            wire.mean_elevation_rate_m_per_year,
+            wire.rms_relief_rate_m_per_year,
+            wire.sediment_stock_change_kg_per_year,
+            wire.sediment_stock_change_ratio,
         )
         .map_err(D::Error::custom)
     }
 }
 
-/// Bounded work and fixed-point convergence evidence for P5.
+/// Bounded work and terminal convergence evidence for the current P5 state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormationSolveReport {
-    outer_iterations: u8,
-    geomorphic_macro_steps: u16,
-    residuals: Vec<FormationResiduals>,
+    equilibrium_iterations: u16,
+    climate_solve_count: u16,
+    terminal_residual: FormationResiduals,
     converged: bool,
     dense_state_bytes: u64,
 }
@@ -1592,35 +1723,25 @@ pub struct FormationSolveReport {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FormationSolveReportWire {
-    outer_iterations: u8,
-    geomorphic_macro_steps: u16,
-    #[serde(deserialize_with = "deserialize_formation_residuals")]
-    residuals: Vec<FormationResiduals>,
+    equilibrium_iterations: u16,
+    climate_solve_count: u16,
+    terminal_residual: FormationResiduals,
     converged: bool,
     dense_state_bytes: u64,
 }
 
 impl FormationSolveReport {
     pub fn new(
-        residuals: Vec<FormationResiduals>,
+        equilibrium_iterations: u16,
+        climate_solve_count: u16,
+        terminal_residual: FormationResiduals,
         dense_state_bytes: u64,
     ) -> Result<Self, SurfaceFormationValidationError> {
-        if residuals.is_empty() || residuals.len() > SURFACE_FORMATION_MAX_OUTER_ITERATIONS as usize
-        {
-            return Err(SurfaceFormationValidationError::InvalidOuterIterations {
-                found: residuals.len().min(u8::MAX as usize) as u8,
-                maximum: SURFACE_FORMATION_MAX_OUTER_ITERATIONS,
-            });
-        }
-        let outer_iterations = residuals.len() as u8;
-        let geomorphic_macro_steps = u16::from(outer_iterations) * SURFACE_FORMATION_MACRO_STEPS;
-        let converged = residuals
-            .last()
-            .is_some_and(|residual| residual.normalized_max() <= 1.0);
+        let converged = terminal_residual.normalized_max() <= 1.0;
         let report = Self {
-            outer_iterations,
-            geomorphic_macro_steps,
-            residuals,
+            equilibrium_iterations,
+            climate_solve_count,
+            terminal_residual,
             converged,
             dense_state_bytes,
         };
@@ -1629,33 +1750,25 @@ impl FormationSolveReport {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.residuals.len() != self.outer_iterations as usize
-            || !(1..=SURFACE_FORMATION_MAX_OUTER_ITERATIONS).contains(&self.outer_iterations)
-        {
-            return Err(SurfaceFormationValidationError::InvalidOuterIterations {
-                found: self.outer_iterations,
-                maximum: SURFACE_FORMATION_MAX_OUTER_ITERATIONS,
+        if self.equilibrium_iterations > SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS {
+            return Err(
+                SurfaceFormationValidationError::InvalidEquilibriumIterations {
+                    found: self.equilibrium_iterations,
+                    maximum: SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS,
+                },
+            );
+        }
+        if !(1..=SURFACE_FORMATION_MAX_CLIMATE_SOLVES).contains(&self.climate_solve_count) {
+            return Err(SurfaceFormationValidationError::InvalidClimateSolveCount {
+                found: self.climate_solve_count,
+                maximum: SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
             });
         }
-        let expected_steps = u16::from(self.outer_iterations) * SURFACE_FORMATION_MACRO_STEPS;
-        if self.geomorphic_macro_steps != expected_steps {
-            return Err(SurfaceFormationValidationError::SolveWorkMismatch {
-                field: "geomorphic_macro_steps",
-            });
-        }
-        for residual in &self.residuals {
-            residual.validate()?;
-        }
-        let expected_converged = self
-            .residuals
-            .last()
-            .is_some_and(|residual| residual.normalized_max() <= 1.0);
+        self.terminal_residual.validate()?;
+        let expected_converged = self.terminal_residual.normalized_max() <= 1.0;
         if self.converged != expected_converged || !self.converged {
             return Err(SurfaceFormationValidationError::FormationNotConverged {
-                normalized_residual: self
-                    .residuals
-                    .last()
-                    .map_or(f64::INFINITY, FormationResiduals::normalized_max),
+                normalized_residual: self.terminal_residual.normalized_max(),
             });
         }
         if self.dense_state_bytes == 0
@@ -1669,22 +1782,16 @@ impl FormationSolveReport {
         Ok(())
     }
 
-    pub const fn outer_iterations(&self) -> u8 {
-        self.outer_iterations
+    pub const fn equilibrium_iterations(&self) -> u16 {
+        self.equilibrium_iterations
     }
 
-    pub const fn geomorphic_macro_steps(&self) -> u16 {
-        self.geomorphic_macro_steps
+    pub const fn climate_solve_count(&self) -> u16 {
+        self.climate_solve_count
     }
 
-    pub fn residuals(&self) -> &[FormationResiduals] {
-        &self.residuals
-    }
-
-    pub fn final_residual(&self) -> &FormationResiduals {
-        self.residuals
-            .last()
-            .expect("validated solve report has at least one residual")
+    pub const fn terminal_residual(&self) -> &FormationResiduals {
+        &self.terminal_residual
     }
 
     pub const fn converged(&self) -> bool {
@@ -1702,11 +1809,14 @@ impl<'de> Deserialize<'de> for FormationSolveReport {
         D: Deserializer<'de>,
     {
         let wire = FormationSolveReportWire::deserialize(deserializer)?;
-        let report = Self::new(wire.residuals, wire.dense_state_bytes).map_err(D::Error::custom)?;
-        if report.outer_iterations != wire.outer_iterations
-            || report.geomorphic_macro_steps != wire.geomorphic_macro_steps
-            || report.converged != wire.converged
-        {
+        let report = Self::new(
+            wire.equilibrium_iterations,
+            wire.climate_solve_count,
+            wire.terminal_residual,
+            wire.dense_state_bytes,
+        )
+        .map_err(D::Error::custom)?;
+        if report.converged != wire.converged {
             return Err(D::Error::custom(
                 SurfaceFormationValidationError::SolveWorkMismatch {
                     field: "derived_report_fields",
@@ -1721,13 +1831,13 @@ impl<'de> Deserialize<'de> for FormationSolveReport {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SedimentBudgetReport {
-    produced_mass_kg: f64,
-    land_lake_deposited_mass_kg: f64,
-    shelf_deposited_mass_kg: f64,
-    deep_ocean_delivery_mass_kg: f64,
-    final_in_transit_mass_kg: f64,
-    produced_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
-    accounted_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+    produced_mass_kg_per_year: f64,
+    land_lake_deposition_kg_per_year: f64,
+    shelf_deposition_kg_per_year: f64,
+    deep_ocean_export_kg_per_year: f64,
+    in_transit_kg_per_year: f64,
+    produced_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+    accounted_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
     global_relative_error: f64,
     provenance_relative_errors: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
 }
@@ -1735,13 +1845,13 @@ pub struct SedimentBudgetReport {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SedimentBudgetReportWire {
-    produced_mass_kg: f64,
-    land_lake_deposited_mass_kg: f64,
-    shelf_deposited_mass_kg: f64,
-    deep_ocean_delivery_mass_kg: f64,
-    final_in_transit_mass_kg: f64,
-    produced_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
-    accounted_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+    produced_mass_kg_per_year: f64,
+    land_lake_deposition_kg_per_year: f64,
+    shelf_deposition_kg_per_year: f64,
+    deep_ocean_export_kg_per_year: f64,
+    in_transit_kg_per_year: f64,
+    produced_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+    accounted_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
     global_relative_error: f64,
     provenance_relative_errors: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
 }
@@ -1749,30 +1859,33 @@ struct SedimentBudgetReportWire {
 impl SedimentBudgetReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        produced_mass_kg: f64,
-        land_lake_deposited_mass_kg: f64,
-        shelf_deposited_mass_kg: f64,
-        deep_ocean_delivery_mass_kg: f64,
-        final_in_transit_mass_kg: f64,
-        produced_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
-        accounted_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+        produced_mass_kg_per_year: f64,
+        land_lake_deposition_kg_per_year: f64,
+        shelf_deposition_kg_per_year: f64,
+        deep_ocean_export_kg_per_year: f64,
+        in_transit_kg_per_year: f64,
+        produced_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+        accounted_by_source_kg_per_year: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
     ) -> Result<Self, SurfaceFormationValidationError> {
-        let accounted = land_lake_deposited_mass_kg
-            + shelf_deposited_mass_kg
-            + deep_ocean_delivery_mass_kg
-            + final_in_transit_mass_kg;
-        let global_relative_error = relative_error(produced_mass_kg, accounted);
+        let accounted = land_lake_deposition_kg_per_year
+            + shelf_deposition_kg_per_year
+            + deep_ocean_export_kg_per_year
+            + in_transit_kg_per_year;
+        let global_relative_error = relative_error(produced_mass_kg_per_year, accounted);
         let provenance_relative_errors = std::array::from_fn(|index| {
-            relative_error(produced_by_source_kg[index], accounted_by_source_kg[index])
+            relative_error(
+                produced_by_source_kg_per_year[index],
+                accounted_by_source_kg_per_year[index],
+            )
         });
         let report = Self {
-            produced_mass_kg,
-            land_lake_deposited_mass_kg,
-            shelf_deposited_mass_kg,
-            deep_ocean_delivery_mass_kg,
-            final_in_transit_mass_kg,
-            produced_by_source_kg,
-            accounted_by_source_kg,
+            produced_mass_kg_per_year,
+            land_lake_deposition_kg_per_year,
+            shelf_deposition_kg_per_year,
+            deep_ocean_export_kg_per_year,
+            in_transit_kg_per_year,
+            produced_by_source_kg_per_year,
+            accounted_by_source_kg_per_year,
             global_relative_error,
             provenance_relative_errors,
         };
@@ -1782,17 +1895,20 @@ impl SedimentBudgetReport {
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
         for (field, value) in [
-            ("produced_mass_kg", self.produced_mass_kg),
+            ("produced_mass_kg_per_year", self.produced_mass_kg_per_year),
             (
-                "land_lake_deposited_mass_kg",
-                self.land_lake_deposited_mass_kg,
+                "land_lake_deposition_kg_per_year",
+                self.land_lake_deposition_kg_per_year,
             ),
-            ("shelf_deposited_mass_kg", self.shelf_deposited_mass_kg),
             (
-                "deep_ocean_delivery_mass_kg",
-                self.deep_ocean_delivery_mass_kg,
+                "shelf_deposition_kg_per_year",
+                self.shelf_deposition_kg_per_year,
             ),
-            ("final_in_transit_mass_kg", self.final_in_transit_mass_kg),
+            (
+                "deep_ocean_export_kg_per_year",
+                self.deep_ocean_export_kg_per_year,
+            ),
+            ("in_transit_kg_per_year", self.in_transit_kg_per_year),
         ] {
             if !value.is_finite() || value < 0.0 {
                 return Err(SurfaceFormationValidationError::InvalidValue {
@@ -1802,8 +1918,14 @@ impl SedimentBudgetReport {
             }
         }
         for (field, values) in [
-            ("produced_by_source_kg", self.produced_by_source_kg),
-            ("accounted_by_source_kg", self.accounted_by_source_kg),
+            (
+                "produced_by_source_kg_per_year",
+                self.produced_by_source_kg_per_year,
+            ),
+            (
+                "accounted_by_source_kg_per_year",
+                self.accounted_by_source_kg_per_year,
+            ),
         ] {
             for value in values {
                 if !value.is_finite() || value < 0.0 {
@@ -1814,8 +1936,8 @@ impl SedimentBudgetReport {
                 }
             }
         }
-        let accounted = self.accounted_mass_kg();
-        let expected_global = relative_error(self.produced_mass_kg, accounted);
+        let accounted = self.accounted_mass_kg_per_year();
+        let expected_global = relative_error(self.produced_mass_kg_per_year, accounted);
         if self.global_relative_error.to_bits() != expected_global.to_bits()
             || expected_global > SEDIMENT_BUDGET_RELATIVE_ERROR_MAX
         {
@@ -1825,13 +1947,13 @@ impl SedimentBudgetReport {
                 maximum: SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
             });
         }
-        let produced_source_sum = self.produced_by_source_kg.iter().sum::<f64>();
-        let accounted_source_sum = self.accounted_by_source_kg.iter().sum::<f64>();
+        let produced_source_sum = self.produced_by_source_kg_per_year.iter().sum::<f64>();
+        let accounted_source_sum = self.accounted_by_source_kg_per_year.iter().sum::<f64>();
         for (field, left, right) in [
             (
                 "produced_source_total",
                 produced_source_sum,
-                self.produced_mass_kg,
+                self.produced_mass_kg_per_year,
             ),
             ("accounted_source_total", accounted_source_sum, accounted),
         ] {
@@ -1846,8 +1968,8 @@ impl SedimentBudgetReport {
         }
         for index in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
             let expected = relative_error(
-                self.produced_by_source_kg[index],
-                self.accounted_by_source_kg[index],
+                self.produced_by_source_kg_per_year[index],
+                self.accounted_by_source_kg_per_year[index],
             );
             if self.provenance_relative_errors[index].to_bits() != expected.to_bits()
                 || expected > SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX
@@ -1864,39 +1986,41 @@ impl SedimentBudgetReport {
         Ok(())
     }
 
-    pub const fn produced_mass_kg(&self) -> f64 {
-        self.produced_mass_kg
+    pub const fn produced_mass_kg_per_year(&self) -> f64 {
+        self.produced_mass_kg_per_year
     }
 
-    pub fn accounted_mass_kg(&self) -> f64 {
-        self.land_lake_deposited_mass_kg
-            + self.shelf_deposited_mass_kg
-            + self.deep_ocean_delivery_mass_kg
-            + self.final_in_transit_mass_kg
+    pub fn accounted_mass_kg_per_year(&self) -> f64 {
+        self.land_lake_deposition_kg_per_year
+            + self.shelf_deposition_kg_per_year
+            + self.deep_ocean_export_kg_per_year
+            + self.in_transit_kg_per_year
     }
 
-    pub const fn land_lake_deposited_mass_kg(&self) -> f64 {
-        self.land_lake_deposited_mass_kg
+    pub const fn land_lake_deposition_kg_per_year(&self) -> f64 {
+        self.land_lake_deposition_kg_per_year
     }
 
-    pub const fn shelf_deposited_mass_kg(&self) -> f64 {
-        self.shelf_deposited_mass_kg
+    pub const fn shelf_deposition_kg_per_year(&self) -> f64 {
+        self.shelf_deposition_kg_per_year
     }
 
-    pub const fn deep_ocean_delivery_mass_kg(&self) -> f64 {
-        self.deep_ocean_delivery_mass_kg
+    pub const fn deep_ocean_export_kg_per_year(&self) -> f64 {
+        self.deep_ocean_export_kg_per_year
     }
 
-    pub const fn final_in_transit_mass_kg(&self) -> f64 {
-        self.final_in_transit_mass_kg
+    pub const fn in_transit_kg_per_year(&self) -> f64 {
+        self.in_transit_kg_per_year
     }
 
-    pub const fn produced_by_source_kg(&self) -> &[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
-        &self.produced_by_source_kg
+    pub const fn produced_by_source_kg_per_year(&self) -> &[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
+        &self.produced_by_source_kg_per_year
     }
 
-    pub const fn accounted_by_source_kg(&self) -> &[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
-        &self.accounted_by_source_kg
+    pub const fn accounted_by_source_kg_per_year(
+        &self,
+    ) -> &[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
+        &self.accounted_by_source_kg_per_year
     }
 
     pub const fn global_relative_error(&self) -> f64 {
@@ -1915,13 +2039,13 @@ impl<'de> Deserialize<'de> for SedimentBudgetReport {
     {
         let wire = SedimentBudgetReportWire::deserialize(deserializer)?;
         let report = Self::new(
-            wire.produced_mass_kg,
-            wire.land_lake_deposited_mass_kg,
-            wire.shelf_deposited_mass_kg,
-            wire.deep_ocean_delivery_mass_kg,
-            wire.final_in_transit_mass_kg,
-            wire.produced_by_source_kg,
-            wire.accounted_by_source_kg,
+            wire.produced_mass_kg_per_year,
+            wire.land_lake_deposition_kg_per_year,
+            wire.shelf_deposition_kg_per_year,
+            wire.deep_ocean_export_kg_per_year,
+            wire.in_transit_kg_per_year,
+            wire.produced_by_source_kg_per_year,
+            wire.accounted_by_source_kg_per_year,
         )
         .map_err(D::Error::custom)?;
         if report.global_relative_error.to_bits() != wire.global_relative_error.to_bits()
@@ -1941,12 +2065,16 @@ impl<'de> Deserialize<'de> for SedimentBudgetReport {
 /// Returns the identity of all retained final P5 state.
 pub fn surface_formation_state_fingerprint(
     terrain_fields: &FormationTerrainFields,
+    process_rates: &FormationProcessRates,
     hydrology: &SphericalHydrologySnapshot,
     formation_climate: &GlobalCirculationSnapshot,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.surface-formation-state.v2\0");
     hasher.update(&terrain_fields.fingerprint());
+    hasher.update(b"process-rates-json-v1\0");
+    serde_json::to_writer(Blake3Writer(&mut hasher), process_rates)
+        .expect("validated process rates always serialize to canonical JSON");
     hasher.update(b"hydrology-json-v2\0");
     serde_json::to_writer(Blake3Writer(&mut hasher), hydrology)
         .expect("validated hydrology always serializes to canonical JSON");
@@ -1963,6 +2091,7 @@ pub struct NaturalSurfaceFormationSnapshot {
     surface_ref: SurfaceRef,
     checkpoint: SurfaceFormationCheckpoint,
     terrain_fields: FormationTerrainFields,
+    process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
     formation_climate: GlobalCirculationSnapshot,
     solve_report: FormationSolveReport,
@@ -1977,6 +2106,7 @@ struct NaturalSurfaceFormationSnapshotWire {
     surface_ref: SurfaceRef,
     checkpoint: SurfaceFormationCheckpoint,
     terrain_fields: FormationTerrainFields,
+    process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
     formation_climate: GlobalCirculationSnapshot,
     solve_report: FormationSolveReport,
@@ -1991,6 +2121,7 @@ impl NaturalSurfaceFormationSnapshot {
         surface_ref: SurfaceRef,
         checkpoint: SurfaceFormationCheckpoint,
         terrain_fields: FormationTerrainFields,
+        process_rates: FormationProcessRates,
         hydrology: SphericalHydrologySnapshot,
         formation_climate: GlobalCirculationSnapshot,
         solve_report: FormationSolveReport,
@@ -2002,6 +2133,7 @@ impl NaturalSurfaceFormationSnapshot {
             surface_ref,
             checkpoint,
             terrain_fields,
+            process_rates,
             hydrology,
             formation_climate,
             solve_report,
@@ -2013,11 +2145,11 @@ impl NaturalSurfaceFormationSnapshot {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V2 {
+        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V3 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "natural_surface_formation_snapshot",
                 found: self.schema_version,
-                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V2,
+                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V3,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2033,6 +2165,7 @@ impl NaturalSurfaceFormationSnapshot {
         }
         self.checkpoint.validate()?;
         self.terrain_fields.validate()?;
+        self.process_rates.validate()?;
         self.hydrology.validate().map_err(|error| {
             SurfaceFormationValidationError::InvalidNested {
                 role: "hydrology",
@@ -2048,6 +2181,17 @@ impl NaturalSurfaceFormationSnapshot {
         self.solve_report.validate()?;
         self.sediment_budget_report.validate()?;
         self.capabilities.validate()?;
+
+        let residual = self.solve_report.terminal_residual();
+        let expected_stock_ratio = formation_relative_flux_imbalance(
+            residual.sediment_stock_change_kg_per_year().abs(),
+            self.sediment_budget_report.produced_mass_kg_per_year(),
+        );
+        if residual.sediment_stock_change_ratio().to_bits() != expected_stock_ratio.to_bits() {
+            return Err(SurfaceFormationValidationError::SolveWorkMismatch {
+                field: "sediment_stock_change_ratio",
+            });
+        }
 
         if self.checkpoint.surface_ref() != self.surface_ref {
             return Err(
@@ -2068,10 +2212,18 @@ impl NaturalSurfaceFormationSnapshot {
                 });
             }
         }
-        if self.terrain_fields.final_elevation_m().len() != self.surface_ref.cell_count() as usize {
+        if self.terrain_fields.current_elevation_m().len() != self.surface_ref.cell_count() as usize
+        {
             return Err(SurfaceFormationValidationError::FieldLengthMismatch {
                 field: "terrain_fields",
-                found: self.terrain_fields.final_elevation_m().len(),
+                found: self.terrain_fields.current_elevation_m().len(),
+                expected: self.surface_ref.cell_count() as usize,
+            });
+        }
+        if self.process_rates.len() != self.surface_ref.cell_count() as usize {
+            return Err(SurfaceFormationValidationError::FieldLengthMismatch {
+                field: "process_rates",
+                found: self.process_rates.len(),
                 expected: self.surface_ref.cell_count() as usize,
             });
         }
@@ -2082,16 +2234,12 @@ impl NaturalSurfaceFormationSnapshot {
                 expected: self.surface_ref,
             });
         }
-        if self.solve_report.outer_iterations() != self.checkpoint.outer_iterations() {
-            return Err(SurfaceFormationValidationError::SolveWorkMismatch {
-                field: "outer_iterations",
-            });
-        }
         if self.capabilities != SurfaceFormationCapabilitySet::p5() {
             return Err(SurfaceFormationValidationError::CapabilityProfileMismatch);
         }
         let expected_state = surface_formation_state_fingerprint(
             &self.terrain_fields,
+            &self.process_rates,
             &self.hydrology,
             &self.formation_climate,
         );
@@ -2167,6 +2315,10 @@ impl NaturalSurfaceFormationSnapshot {
         &self.terrain_fields
     }
 
+    pub const fn process_rates(&self) -> &FormationProcessRates {
+        &self.process_rates
+    }
+
     pub const fn hydrology(&self) -> &SphericalHydrologySnapshot {
         &self.hydrology
     }
@@ -2199,6 +2351,7 @@ impl<'de> Deserialize<'de> for NaturalSurfaceFormationSnapshot {
             wire.surface_ref,
             wire.checkpoint,
             wire.terrain_fields,
+            wire.process_rates,
             wire.hydrology,
             wire.formation_climate,
             wire.solve_report,
@@ -2272,8 +2425,10 @@ pub enum SurfaceFormationValidationError {
     CheckpointFingerprintMismatch,
     #[error("surface-formation model identity does not match the locked P5 equation")]
     ModelIdentityMismatch,
-    #[error("outer iteration count {found} is outside 1..={maximum}")]
-    InvalidOuterIterations { found: u8, maximum: u8 },
+    #[error("equilibrium iteration count {found} is outside 1..={maximum}")]
+    InvalidEquilibriumIterations { found: u16, maximum: u16 },
+    #[error("climate solve count {found} is outside 1..={maximum}")]
+    InvalidClimateSolveCount { found: u16, maximum: u16 },
     #[error("checkpoint identity field {field} does not match authoritative input")]
     CheckpointIdentityMismatch { field: &'static str },
     #[error("capability inventory has {found} entries, expected {expected}")]
@@ -2446,13 +2601,4 @@ where
     D: Deserializer<'de>,
 {
     deserialize_bounded_vec::<_, _, 8>(deserializer)
-}
-
-fn deserialize_formation_residuals<'de, D>(
-    deserializer: D,
-) -> Result<Vec<FormationResiduals>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_vec::<_, _, 4>(deserializer)
 }

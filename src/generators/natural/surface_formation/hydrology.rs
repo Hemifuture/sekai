@@ -63,16 +63,16 @@ impl FormationHydrologyGenerator {
     ) -> Result<SphericalHydrologySnapshot, FormationHydrologyGenerationError> {
         check_cancelled(cancellation)?;
         let expected = surface.cells().len();
-        if terrain.final_elevation_m().len() != expected {
+        if terrain.current_elevation_m().len() != expected {
             return Err(FormationHydrologyGenerationError::CellCountMismatch {
                 input: "formation_terrain",
                 expected,
-                found: terrain.final_elevation_m().len(),
+                found: terrain.current_elevation_m().len(),
             });
         }
         check_cancelled(cancellation)?;
 
-        let elevation = ElevationField::from_values(terrain.final_elevation_m().to_vec())
+        let elevation = ElevationField::from_values(terrain.current_elevation_m().to_vec())
             .map_err(crate::generators::natural::HydrologyGenerationError::from)
             .map_err(SphericalHydrologyGenerationError::from)
             .map_err(FormationHydrologyGenerationError::Solve)?;

@@ -229,6 +229,16 @@ struct PendingWorldBuild {
     cancellation: crate::engine::BuildCancellation,
     started_at: std::time::Instant,
     replacement: bool,
+    retained_stage_cache: Option<MemoryStageCache>,
+    /// The finished worker payload together with the egui pass that parked
+    /// it. Settlement is refused inside that same pass, so the cancel button
+    /// is always drawn at least once between reception and publication.
+    ///
+    /// `cumulative_pass_nr` is a same-pass guard only, not a wall-clock frame
+    /// or delay guarantee: egui may run several passes inside one
+    /// `Context::run`. Holding the cancel button is covered by its
+    /// pointer-down semantics, not by this counter.
+    completion: Option<(u64, WorldBuildCompletion)>,
 }
 
 /// Everything the worker bakes for the amplified display of one world.
@@ -563,6 +573,47 @@ struct WorldBuildCompletion {
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
     amplified: Option<AmplifiedDisplayBundle>,
+}
+
+/// Starts one worker attempt while keeping P5 cache writes private until publication.
+fn prepare_pending_world_build(
+    pipeline: WorldPipeline,
+    published_stage_cache: MemoryStageCache,
+    receiver: std::sync::mpsc::Receiver<WorldBuildCompletion>,
+    cancellation: crate::engine::BuildCancellation,
+    replacement: bool,
+) -> (MemoryStageCache, PendingWorldBuild) {
+    let (working_stage_cache, retained_stage_cache) = if pipeline == WorldPipeline::Formation {
+        (published_stage_cache.clone(), Some(published_stage_cache))
+    } else {
+        (published_stage_cache, None)
+    };
+    (
+        working_stage_cache,
+        PendingWorldBuild {
+            receiver,
+            cancellation,
+            started_at: std::time::Instant::now(),
+            replacement,
+            retained_stage_cache,
+            completion: None,
+        },
+    )
+}
+
+/// Settles a Formation/P5 cache transaction after its publication outcome is known.
+///
+/// Legacy builds have no retained snapshot and preserve their existing move-through behavior.
+fn settle_world_build_stage_cache(
+    candidate: MemoryStageCache,
+    retained: Option<MemoryStageCache>,
+    published: bool,
+) -> MemoryStageCache {
+    if published {
+        candidate
+    } else {
+        retained.unwrap_or(candidate)
+    }
 }
 
 /// Persisted provenance of the currently authored world.
@@ -1027,8 +1078,6 @@ impl TemplateApp {
             &render_state.device,
             render_state.target_format,
         );
-        self.store_amplified_bundle(amplified);
-        self.upload_amplified_display(&mut renderer, render_state);
         let published = {
             let mut gpu = SphericalRendererPreparer::new(
                 &mut renderer,
@@ -1043,6 +1092,12 @@ impl TemplateApp {
             let _ = failure;
             PublishedSphericalPresentation::try_new(candidate, &mut gpu)?
         };
+        // The amplified display is committed only after the publication
+        // succeeded, exactly like the replacement path: a failed lineage,
+        // GPU or validation step must leave no mesh, rivers or detail engine
+        // behind (and no engine that could overwrite the install error).
+        self.store_amplified_bundle(amplified);
+        self.upload_amplified_display(&mut renderer, render_state);
 
         render_state
             .renderer
@@ -1391,9 +1446,9 @@ impl TemplateApp {
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
+        let pipeline = self.world_pipeline;
         let stage_cache = std::mem::take(&mut self.stage_cache);
         let formation_surface = self.formation_surface.take();
-        let pipeline = self.world_pipeline;
         let quality_profile = self.formation_quality_profile;
         let root_seed = RootSeed::new(self.world_seed);
         let space = self.spherical_space_spec.clone();
@@ -1407,6 +1462,13 @@ impl TemplateApp {
             .spherical_presentation
             .read_resource(|current| current.as_ref().map(|p| p.replacement_token()));
         let is_replacement = replacement.is_some();
+        let (stage_cache, pending_build) = prepare_pending_world_build(
+            pipeline,
+            stage_cache,
+            receiver,
+            cancellation,
+            is_replacement,
+        );
         std::thread::spawn(move || {
             let mut stage_cache = stage_cache;
             let mut formation_surface = formation_surface;
@@ -1531,64 +1593,174 @@ impl TemplateApp {
                 amplified,
             });
         });
-        self.world_build = Some(PendingWorldBuild {
-            receiver,
-            cancellation,
-            started_at: std::time::Instant::now(),
-            replacement: is_replacement,
-        });
+        self.world_build = Some(pending_build);
         self.spherical_runtime_error = None;
     }
 
-    /// Installs a finished worker build, or keeps waiting without blocking.
+    fn show_pending_world_build_status(&self, ui: &mut egui::Ui) -> Option<egui::Rect> {
+        let pending = self.world_build.as_ref()?;
+        let mut cancel_rect = None;
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new());
+            ui.label(format!(
+                "正在生成世界…已用 {:.0} 秒",
+                pending.started_at.elapsed().as_secs_f32()
+            ));
+            let cancel = ui.button("取消");
+            cancel_rect = Some(cancel.rect);
+            // `clicked()` only fires on the release pass, so a user pressing
+            // and holding 取消 while the worker's completion is staged in that
+            // same pass would be published over. Pointer-down cancels at once;
+            // `clicked()` keeps keyboard activation working.
+            if cancel.clicked() || cancel.is_pointer_button_down_on() {
+                pending.cancellation.cancel();
+            }
+        });
+        cancel_rect
+    }
+
+    /// Advances the pending worker build by one poll.
+    ///
+    /// Reception and settlement are split across two egui passes so the
+    /// cancel button is drawn between them and its input is linearized
+    /// *before* any world or cache commit:
+    /// [`Self::stage_world_build_completion`] only parks the finished payload
+    /// and leaves the cancel button live for the rest of the pass, and
+    /// [`Self::settle_staged_world_build`] commits or rolls it back in a later
+    /// pass. Polling twice inside one pass therefore stages and waits.
+    ///
+    /// `TemplateApp::update` calls this *after* the control panel drew
+    /// [`Self::show_pending_world_build_status`], because the settling pass is
+    /// itself a pass the user can press 取消 in: polling first would commit
+    /// before that press — already present in this pass's `RawInput` — was
+    /// ever handed to the button.
     fn poll_world_build(&mut self, ctx: &egui::Context) {
-        let Some(pending) = &self.world_build else {
+        let Some(pending) = self.world_build.as_ref() else {
             return;
         };
-        match pending.receiver.try_recv() {
+        let Some((staged_pass_nr, _)) = pending.completion.as_ref() else {
+            self.stage_world_build_completion(ctx);
+            return;
+        };
+        if *staged_pass_nr == ctx.cumulative_pass_nr() {
+            // Same pass as the staging poll: the cancel button has not been
+            // drawn since, so publishing here would skip that input.
+            return;
+        }
+        self.settle_staged_world_build();
+        // The panels of this pass were drawn against the pre-settlement world,
+        // so their summaries need one more pass to catch up.
+        ctx.request_repaint();
+    }
+
+    /// Parks a finished worker payload without publishing anything this frame.
+    fn stage_world_build_completion(&mut self, ctx: &egui::Context) {
+        let received = self
+            .world_build
+            .as_ref()
+            .expect("the staged world build was pending")
+            .receiver
+            .try_recv();
+        match received {
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.world_build = None;
+                let pending = self
+                    .world_build
+                    .take()
+                    .expect("the disconnected world build was pending");
+                // The worker died holding the working cache, so only a retained
+                // P5 snapshot can come back; legacy builds keep the remnant.
+                let orphaned = std::mem::take(&mut self.stage_cache);
+                self.stage_cache =
+                    settle_world_build_stage_cache(orphaned, pending.retained_stage_cache, false);
                 self.spherical_runtime_error = Some("世界构建线程意外终止".to_owned());
+                // The status row of this pass was drawn before this poll, and
+                // the pending build that kept asking for repaints is gone, so
+                // the error needs one requested pass to become visible.
+                ctx.request_repaint();
             }
             Ok(completion) => {
-                let was_replacement = pending.replacement;
-                let was_cancelled = pending.cancellation.is_cancelled();
-                self.world_build = None;
-                self.stage_cache = completion.stage_cache;
-                if completion.formation_surface.is_some() {
-                    self.formation_surface = completion.formation_surface;
+                self.world_build
+                    .as_mut()
+                    .expect("the completed world build was pending")
+                    .completion = Some((ctx.cumulative_pass_nr(), completion));
+                // Settlement waits for a later pass, so cancel input landing
+                // after this point still precedes the world and cache commit.
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Commits or rolls back the payload staged by an earlier pass.
+    ///
+    /// That pass drew the cancel button and observed its input, so a cancelled
+    /// build never reaches `install_*` and its private P5 cache writes are
+    /// discarded in favour of the retained publication snapshot.
+    fn settle_staged_world_build(&mut self) {
+        let mut pending = self
+            .world_build
+            .take()
+            .expect("the staged world build completion was pending");
+        let (_, completion) = pending
+            .completion
+            .take()
+            .expect("the pending world build completion was staged");
+        let was_replacement = pending.replacement;
+        let cancellation = pending.cancellation;
+        let retained_stage_cache = pending.retained_stage_cache;
+        let WorldBuildCompletion {
+            result,
+            stage_cache,
+            formation_surface,
+            amplified,
+        } = completion;
+        if formation_surface.is_some() {
+            self.formation_surface = formation_surface;
+        }
+        match result {
+            Ok(candidate) => {
+                // Cancellation is decided first: a cancelled build is a
+                // cancelled build whether or not a renderer is available.
+                if cancellation.is_cancelled() {
+                    self.stage_cache =
+                        settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
+                    self.spherical_runtime_error = Some("已取消本次世界构建".to_owned());
+                    return;
                 }
-                let amplified = completion.amplified;
-                match completion.result {
-                    Ok(candidate) => {
-                        let Some(render_state) = self.render_state.clone() else {
-                            self.spherical_runtime_error =
-                                Some("渲染状态不可用，无法发布新世界".to_owned());
-                            return;
-                        };
-                        let install = if was_replacement {
-                            self.install_replacement_candidate(candidate, &render_state, amplified)
-                        } else {
-                            self.install_initial_spherical_candidate(
-                                candidate,
-                                &render_state,
-                                amplified,
-                                MigrationFailurePoint::None,
-                            )
-                        };
-                        self.spherical_runtime_error = install.err().map(|error| error.to_string());
-                    }
-                    Err(error) => {
-                        self.spherical_runtime_error = if was_cancelled {
-                            Some("已取消本次世界构建".to_owned())
-                        } else {
-                            Some(error)
-                        };
-                    }
-                }
+                let Some(render_state) = self.render_state.clone() else {
+                    self.stage_cache =
+                        settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
+                    self.spherical_runtime_error =
+                        Some("渲染状态不可用，无法发布新世界".to_owned());
+                    return;
+                };
+                let install = if was_replacement {
+                    self.install_replacement_candidate(candidate, &render_state, amplified)
+                } else {
+                    self.install_initial_spherical_candidate(
+                        candidate,
+                        &render_state,
+                        amplified,
+                        MigrationFailurePoint::None,
+                    )
+                };
+                self.stage_cache = settle_world_build_stage_cache(
+                    stage_cache,
+                    retained_stage_cache,
+                    install.is_ok(),
+                );
+                self.spherical_runtime_error = install.err().map(|error| error.to_string());
+            }
+            Err(error) => {
+                self.stage_cache =
+                    settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
+                self.spherical_runtime_error = if cancellation.is_cancelled() {
+                    Some("已取消本次世界构建".to_owned())
+                } else {
+                    Some(error)
+                };
             }
         }
     }
@@ -2022,7 +2194,6 @@ impl eframe::App for TemplateApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_world_build(ctx);
         self.poll_amplified_detail(ctx);
         let update_time_seconds = ctx.input(|input| input.time);
         let toggle_frame_sampler = ctx.input(|input| {
@@ -2255,18 +2426,7 @@ impl eframe::App for TemplateApp {
                     if ui.button("按当前参数重建").clicked() {
                         rebuild = true;
                     }
-                    if let Some(pending) = &self.world_build {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new());
-                            ui.label(format!(
-                                "正在生成世界…已用 {:.0} 秒",
-                                pending.started_at.elapsed().as_secs_f32()
-                            ));
-                            if ui.button("取消").clicked() {
-                                pending.cancellation.cancel();
-                            }
-                        });
-                    }
+                    let _ = self.show_pending_world_build_status(ui);
 
                     if let Some(compatibility) = legacy_compatibility_ui(self) {
                         ui.separator();
@@ -2372,6 +2532,11 @@ impl eframe::App for TemplateApp {
                     }
                 });
             });
+
+        // The control panel above drew the pending build's status row, so this
+        // pass's 取消 input is already observed: a staged completion may settle
+        // now, and this pass's actions and canvas then see the settled world.
+        self.poll_world_build(ctx);
 
         for action in field_actions {
             self.apply_field_control_action(action);
@@ -2813,15 +2978,17 @@ mod natural_app_tests {
 
     use super::{
         apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
-        configure_frame_stats_scenario, default_world_spec, formation_authoring_control_state,
-        formation_provenance_label, show_formation_area_summary, show_spherical_area_summary,
-        AppRuntimeError, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
-        NaturalWorldBuildError, P4WaterEnergySummary, PersistedWorldOrigin,
-        PublishedSphericalPresentation, SphericalWorldAreaSummary, TemplateApp, WorldPipeline,
+        build_spherical_presentation_candidate_for_view, configure_frame_stats_scenario,
+        default_world_spec, formation_authoring_control_state, formation_provenance_label,
+        prepare_pending_world_build, settle_world_build_stage_cache, show_formation_area_summary,
+        show_spherical_area_summary, AppRuntimeError, AppRuntimeGraph, DisplayRevisionClock,
+        FormationAreaSummary, MigrationFailurePoint, NaturalWorldBuildError, P4WaterEnergySummary,
+        PersistedWorldOrigin, PublishedSphericalPresentation, SphericalPresentationCandidate,
+        SphericalWorldAreaSummary, TemplateApp, WorldBuildCompletion, WorldPipeline,
         CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
         INITIAL_PLATE_COUNT_LABEL,
     };
-    use crate::engine::ExternalArtifacts;
+    use crate::engine::{BuildCancellation, ExternalArtifacts, MemoryStageCache};
     use crate::generators::natural::{
         AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
         HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
@@ -3373,12 +3540,1112 @@ mod natural_app_tests {
         let context = egui::Context::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         while app.world_build.is_some() {
-            app.poll_world_build(&context);
+            // One poll per egui pass: staging and settlement never share a
+            // pass, so the loop must advance `cumulative_pass_nr` itself.
+            let _ = context.run(egui::RawInput::default(), |context| {
+                app.poll_world_build(context);
+            });
             assert!(
                 std::time::Instant::now() <= deadline,
                 "asynchronous world build timed out"
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    fn prepare_test_replacement_candidate(
+        app: &TemplateApp,
+        root_seed: RootSeed,
+        stage_cache: &mut MemoryStageCache,
+    ) -> SphericalPresentationCandidate {
+        app.spherical_presentation
+            .read_resource(|current| {
+                current
+                    .as_ref()
+                    .expect("the fixture is published")
+                    .prepare_replacement_candidate_for_view(
+                        root_seed,
+                        &app.spherical_space_spec,
+                        &app.formation_spec,
+                        &app.tectonic_spec,
+                        &app.relief_spec,
+                        &app.geologic_spec,
+                        stage_cache,
+                        app.spherical_canvas_state.presentation_view_state(),
+                        app.spherical_canvas_state.field_state(),
+                    )
+            })
+            .unwrap()
+    }
+
+    fn world_build_raw_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..egui::RawInput::default()
+        }
+    }
+
+    fn run_world_build_frame(
+        app: &mut TemplateApp,
+        context: &egui::Context,
+        input: egui::RawInput,
+    ) -> Option<egui::Rect> {
+        let mut cancel_rect = None;
+        let _ = context.run(input, |context| {
+            // This is the production order in `TemplateApp::update`: the author
+            // controls process this pass's cancel input first, and only then
+            // does the poll stage or settle.
+            egui::CentralPanel::default().show(context, |ui| {
+                cancel_rect = app.show_pending_world_build_status(ui);
+            });
+            app.poll_world_build(context);
+        });
+        cancel_rect
+    }
+
+    fn settle_queued_world_build(app: &mut TemplateApp) {
+        let context = egui::Context::default();
+        // Staging and settlement are separate egui passes: only `Context::run`
+        // advances `cumulative_pass_nr`, and a staged completion never settles
+        // inside the pass that staged it.
+        let _ = context.run(egui::RawInput::default(), |context| {
+            app.poll_world_build(context);
+        });
+        assert!(
+            app.world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some()),
+            "the first pass only stages the completion"
+        );
+        let _ = context.run(egui::RawInput::default(), |context| {
+            app.poll_world_build(context);
+        });
+        assert!(app.world_build.is_none());
+    }
+
+    fn published_source(app: &TemplateApp) -> crate::view::SphericalPresentationSource {
+        app.spherical_presentation.read_resource(|current| {
+            current
+                .as_ref()
+                .expect("the fixture is published")
+                .source()
+                .clone()
+        })
+    }
+
+    /// Rebuilds the published world's own seed against `cache` and returns
+    /// `(cache hits, cache misses)`.
+    ///
+    /// This is a content identity probe, not a size probe: a rollback that
+    /// handed back a fresh cache of the same length would miss every stage.
+    /// The probe only discriminates while it actually hits, so the
+    /// precondition is asserted here rather than at each call site: a fixture
+    /// that drifted to zero hits would turn every `assert_eq!` against it into
+    /// a self-proving `(0, n) == (0, n)`.
+    fn published_cache_hits(app: &TemplateApp, cache: &MemoryStageCache) -> (usize, usize) {
+        let mut probe = cache.clone();
+        let candidate =
+            prepare_test_replacement_candidate(app, RootSeed::new(app.world_seed), &mut probe);
+        let report = candidate.report();
+        assert!(
+            report.cache_hits() > 0,
+            "the probed cache must actually serve the published seed"
+        );
+        (report.cache_hits(), report.cache_misses())
+    }
+
+    /// One amplified bundle whose detail context comes from the production
+    /// T1 v2 engine (`GeodesicVoronoiBuilder` + `HierarchicalEvaluator`) over a
+    /// 162-cell surface, so `river_radius_m` and the background detail engine
+    /// are the real thing. The mesh is a minimal one-triangle stand-in and
+    /// there are no rivers: the install path only stores and clears these
+    /// fields, so what is asserted never depends on their contents.
+    fn test_amplified_bundle() -> super::AmplifiedDisplayBundle {
+        use crate::generators::natural::{AmplificationFieldsView, HierarchicalEvaluator};
+        use crate::generators::spatial::GeodesicVoronoiBuilder;
+        use crate::world::natural::SphericalOrogenyKind;
+        use crate::world::{Meters, SphericalSpaceSpec};
+
+        let surface = GeodesicVoronoiBuilder::build_cancellable(
+            &SphericalSpaceSpec {
+                radius: Meters::new(6_371_000.0).unwrap(),
+                target_cell_count: 162,
+            },
+            || false,
+        )
+        .expect("the 162-cell fixture surface builds");
+        let count = surface.cells().len();
+        let zeros = vec![0.0_f32; count];
+        let ones = vec![1.0_f32; count];
+        let kinds = vec![SphericalOrogenyKind::None; count];
+        let evaluator = HierarchicalEvaluator::new(
+            &surface,
+            AmplificationFieldsView {
+                final_elevation_m: &zeros,
+                sea_level_m: 0.0,
+                sediment_thickness_m: &zeros,
+                erodibility: &zeros,
+                annual_precipitation_mm: &ones,
+                crust_age_myr: &zeros,
+                lineation_east: &ones,
+                lineation_north: &zeros,
+                orogeny_kind: &kinds,
+                orogeny_age_myr: &zeros,
+            },
+            RootSeed::new(7),
+        )
+        .expect("the fixture fields are valid amplifier inputs");
+        super::AmplifiedDisplayBundle {
+            mesh: crate::view::AmplifiedSurfaceMesh::new(
+                vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                vec![[0; 4]; 3],
+                vec![0, 1, 2],
+            )
+            .expect("one triangle is a valid amplified mesh"),
+            rivers: Vec::new(),
+            river_radius_m: evaluator.radius_m(),
+            detail: Arc::new(super::amplified_mesh::AmplifiedDetailContext {
+                evaluator,
+                sea_level_m: 0.0,
+                display_radius_m: 2_000.0,
+                river_cells: Vec::new(),
+                river_orders: Vec::new(),
+            }),
+            initial_hash: 0,
+        }
+    }
+
+    fn assert_no_amplified_display_state(app: &TemplateApp) {
+        assert!(
+            app.amplified_mesh.is_none(),
+            "a failed install must leave no amplified mesh"
+        );
+        assert!(
+            app.amplified_map_projected.is_none(),
+            "a failed install must leave no projected amplified map"
+        );
+        assert!(
+            app.river_polylines.is_none(),
+            "a failed install must leave no river polylines"
+        );
+        assert!(
+            app.river_radius_m.is_none(),
+            "a failed install must leave no river radius"
+        );
+        assert!(
+            app.amplified_detail.is_none(),
+            "no background detail engine may outlive a failed install"
+        );
+    }
+
+    /// M1: the initial Formation install carries `Some(amplified)`. When the
+    /// publication itself fails — here on the real `validate_initial()`
+    /// lineage guard, with no test-only injection — none of the amplified
+    /// state may be committed and the real install error must survive.
+    #[test]
+    fn failed_initial_formation_install_commits_no_amplified_display_state() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = published_source(&app);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let identity_before = published_cache_hits(&app, &published_cache);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            false,
+        );
+        // A replacement-lineage candidate routed through the *initial* install
+        // path is rejected by `PublishedSphericalPresentation::try_new`.
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: Some(test_amplified_bundle()),
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        settle_queued_world_build(&mut app);
+
+        let install_error = app
+            .spherical_runtime_error
+            .clone()
+            .expect("the failed install reports its own error");
+        assert_no_amplified_display_state(&app);
+        // Nothing survives that could overwrite the real install error.
+        app.poll_amplified_detail(&egui::Context::default());
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some(install_error.as_str())
+        );
+        assert_eq!(published_source(&app), source_before);
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            published_cache_hits(&app, &app.stage_cache),
+            identity_before,
+            "the rolled-back cache must still be the published world's cache"
+        );
+    }
+
+    /// M3: two `poll_world_build` calls inside one egui pass must stage and
+    /// then wait. Settling on the second call would publish before this
+    /// pass's cancel input has been drawn at all.
+    #[test]
+    fn a_second_poll_in_the_same_pass_stages_without_settling() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = published_source(&app);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            true,
+        );
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        let working_len = working_cache.len();
+        assert!(working_len > published_len);
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+
+        let context = egui::Context::default();
+        let mut staged_by_first_poll = false;
+        let _ = context.run(world_build_raw_input(Vec::new()), |context| {
+            app.poll_world_build(context);
+            staged_by_first_poll = app
+                .world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some());
+            app.poll_world_build(context);
+        });
+        assert!(staged_by_first_poll, "the first poll stages the completion");
+        assert!(
+            app.world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some()),
+            "a second poll inside the staging pass must not settle it"
+        );
+        assert_eq!(
+            published_source(&app),
+            source_before,
+            "nothing may publish inside the staging pass"
+        );
+
+        // A later pass is allowed to settle it.
+        let _ = context.run(world_build_raw_input(Vec::new()), |context| {
+            app.poll_world_build(context);
+        });
+        assert!(app.world_build.is_none());
+        assert_ne!(published_source(&app), source_before);
+        assert_eq!(app.stage_cache.len(), working_len);
+        assert!(app.spherical_runtime_error.is_none());
+    }
+
+    /// L3: cancellation is the same semantics as M2 and must be decided
+    /// before the render-state guard, so a cancelled build always reports the
+    /// cancellation instead of a missing renderer.
+    #[test]
+    fn cancellation_is_decided_before_the_render_state_guard() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let identity_before = published_cache_hits(&app, &published_cache);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = BuildCancellation::new();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            cancellation.clone(),
+            true,
+        );
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        cancellation.cancel();
+        app.render_state = None;
+        settle_queued_world_build(&mut app);
+
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("已取消本次世界构建")
+        );
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            published_cache_hits(&app, &app.stage_cache),
+            identity_before,
+            "the rolled-back cache must still be the published world's cache"
+        );
+    }
+
+    /// M2 must not trade one input path for another: keyboard activation
+    /// still cancels, with no pointer ever touching the button.
+    #[test]
+    fn keyboard_activated_cancel_still_cancels_the_pending_build() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = BuildCancellation::new();
+        let (_working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            std::mem::take(&mut app.stage_cache),
+            receiver,
+            cancellation.clone(),
+            true,
+        );
+        app.world_build = Some(pending);
+
+        let context = egui::Context::default();
+        run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()))
+            .expect("the pending build exposes its cancel button");
+        // Tab moves focus onto 取消 — the only focusable widget in the status
+        // row — and Space activates it without any pointer input.
+        for key in [egui::Key::Tab, egui::Key::Space] {
+            run_world_build_frame(
+                &mut app,
+                &context,
+                world_build_raw_input(vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]),
+            );
+        }
+        assert!(
+            cancellation.is_cancelled(),
+            "keyboard activation must keep cancelling the pending build"
+        );
+    }
+
+    /// The M1 rollback must stay a rollback: a successful initial install
+    /// still commits the amplified display and spawns its detail engine.
+    #[test]
+    fn successful_initial_install_commits_the_amplified_display_state() {
+        let render_state = request_test_render_state();
+        let mut app = TemplateApp {
+            render_state: Some(render_state.clone()),
+            ..TemplateApp::default()
+        };
+        app.spherical_space_spec.target_cell_count = 162;
+        let requested_state = app.spherical_canvas_state.field_state().clone();
+        let candidate = build_spherical_presentation_candidate_for_view(
+            RootSeed::new(app.world_seed),
+            &app.spherical_space_spec,
+            &app.formation_spec,
+            &app.tectonic_spec,
+            &app.relief_spec,
+            &app.geologic_spec,
+            &mut app.stage_cache,
+            app.spherical_canvas_state.presentation_view_state(),
+            &requested_state,
+            &DisplayRevisionClock::default(),
+        )
+        .expect("the 162-cell fixture world builds");
+        let bundle = test_amplified_bundle();
+        let expected_radius_m = bundle.river_radius_m;
+        app.install_initial_spherical_candidate(
+            candidate,
+            &render_state,
+            Some(bundle),
+            MigrationFailurePoint::None,
+        )
+        .expect("the initial publication succeeds");
+
+        assert!(app.amplified_mesh.is_some());
+        assert!(app.river_polylines.is_some());
+        assert_eq!(app.river_radius_m, Some(expected_radius_m));
+        assert!(app.amplified_detail.is_some());
+    }
+
+    /// R1.1's success corner on the *initial* path: only `install_*` returning
+    /// `Ok` may turn the working fork into the published cache.
+    /// [`successful_initial_install_commits_the_amplified_display_state`] calls
+    /// the install directly and never settles, and the settled success case is
+    /// otherwise only covered for `replacement = true`, so this drives the
+    /// whole transaction. Production reaches the initial path only with
+    /// nothing published yet, so the fixture publishes nothing and warms the
+    /// published cache with an unrelated seed instead.
+    #[test]
+    fn successful_initial_settlement_commits_the_working_stage_cache() {
+        let render_state = request_test_render_state();
+        let mut app = TemplateApp {
+            render_state: Some(render_state.clone()),
+            ..TemplateApp::default()
+        };
+        app.spherical_space_spec.target_cell_count = 162;
+        let requested_state = app.spherical_canvas_state.field_state().clone();
+        let _warm = build_spherical_presentation_candidate_for_view(
+            RootSeed::new(99),
+            &app.spherical_space_spec,
+            &app.formation_spec,
+            &app.tectonic_spec,
+            &app.relief_spec,
+            &app.geologic_spec,
+            &mut app.stage_cache,
+            app.spherical_canvas_state.presentation_view_state(),
+            &requested_state,
+            &DisplayRevisionClock::default(),
+        )
+        .expect("the unrelated warm-up world builds");
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        assert!(published_len > 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            false,
+        );
+        let candidate = build_spherical_presentation_candidate_for_view(
+            RootSeed::new(app.world_seed),
+            &app.spherical_space_spec,
+            &app.formation_spec,
+            &app.tectonic_spec,
+            &app.relief_spec,
+            &app.geologic_spec,
+            &mut working_cache,
+            app.spherical_canvas_state.presentation_view_state(),
+            &requested_state,
+            &DisplayRevisionClock::default(),
+        )
+        .expect("the 162-cell fixture world builds");
+        let working_len = working_cache.len();
+        assert!(working_len > published_len);
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: Some(test_amplified_bundle()),
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        settle_queued_world_build(&mut app);
+
+        assert!(app.spherical_runtime_error.is_none());
+        assert!(app.spherical_presentation.read_resource(Option::is_some));
+        assert_eq!(
+            app.stage_cache.len(),
+            working_len,
+            "a published initial world commits its working fork, not the retained snapshot"
+        );
+        assert!(app.amplified_mesh.is_some());
+    }
+
+    /// M2: `Response::clicked()` only fires on the release pass. A user who
+    /// presses 取消 and keeps holding it while that same pass stages the
+    /// worker's completion must still cancel *before* anything is published.
+    #[test]
+    fn held_cancel_button_precedes_a_same_pass_completion_commit() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = published_source(&app);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let identity_before = published_cache_hits(&app, &published_cache);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = BuildCancellation::new();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            cancellation.clone(),
+            true,
+        );
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        app.world_build = Some(pending);
+
+        let context = egui::Context::default();
+        let cancel_rect =
+            run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()))
+                .expect("the pending build exposes its cancel button");
+        let cancel_position = cancel_rect.center();
+        // The worker finishes before the user lifts the button.
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        // This pass stages the completion and the pointer goes down on 取消
+        // — and never lifts, so no `clicked()` pass will ever arrive.
+        run_world_build_frame(
+            &mut app,
+            &context,
+            world_build_raw_input(vec![
+                egui::Event::PointerMoved(cancel_position),
+                egui::Event::PointerButton {
+                    pos: cancel_position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+        );
+        assert!(
+            cancellation.is_cancelled(),
+            "holding 取消 must linearize the cancellation before publication"
+        );
+        assert!(
+            app.world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some()),
+            "the completion is staged, not settled, in the pointer-down pass"
+        );
+        assert_eq!(published_source(&app), source_before);
+
+        // The next pass rolls the cancelled build back.
+        run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()));
+        assert!(app.world_build.is_none());
+        assert_eq!(published_source(&app), source_before);
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("已取消本次世界构建")
+        );
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            published_cache_hits(&app, &app.stage_cache),
+            identity_before,
+            "the rolled-back cache must still be the published world's cache"
+        );
+    }
+
+    /// L1: the pass that settles a staged completion is itself a pass the
+    /// user can still cancel in. Its pointer-down event is already in that
+    /// pass's `RawInput`, so the status row has to process it *before* the
+    /// settlement runs — otherwise the press is swallowed and the world is
+    /// published over it. Unlike
+    /// [`held_cancel_button_precedes_a_same_pass_completion_commit`] the
+    /// pointer never touches 取消 until the settling pass itself.
+    #[test]
+    fn pointer_down_in_the_settling_pass_precedes_the_world_and_cache_commit() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = published_source(&app);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let identity_before = published_cache_hits(&app, &published_cache);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = BuildCancellation::new();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            cancellation.clone(),
+            true,
+        );
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        app.world_build = Some(pending);
+
+        let context = egui::Context::default();
+        // Pass 1 only locates the button; no pointer has touched it yet.
+        let cancel_rect =
+            run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()))
+                .expect("the pending build exposes its cancel button");
+        let cancel_position = cancel_rect.center();
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        // Pass 2 stages the completion with no input at all.
+        run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()));
+        assert!(
+            app.world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some()),
+            "the completion is staged, not settled, in its own pass"
+        );
+        assert!(!cancellation.is_cancelled());
+
+        // Pass 3 is allowed to settle — and carries the user's first press.
+        run_world_build_frame(
+            &mut app,
+            &context,
+            world_build_raw_input(vec![
+                egui::Event::PointerMoved(cancel_position),
+                egui::Event::PointerButton {
+                    pos: cancel_position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+        );
+        assert!(
+            cancellation.is_cancelled(),
+            "the settling pass must draw 取消 and observe its input before committing"
+        );
+        assert!(app.world_build.is_none(), "the settling pass still settles");
+        assert_eq!(published_source(&app), source_before);
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("已取消本次世界构建")
+        );
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            published_cache_hits(&app, &app.stage_cache),
+            identity_before,
+            "the rolled-back cache must still be the published world's cache"
+        );
+    }
+
+    #[test]
+    fn formation_cache_fork_is_shared_by_initial_and_replacement_requests() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        assert!(published_len > 0);
+        assert!(published_len < published_cache.max_entries());
+
+        for (offset, replacement) in [false, true].into_iter().enumerate() {
+            let (_sender, receiver) = std::sync::mpsc::channel();
+            let (mut working_cache, pending) = prepare_pending_world_build(
+                WorldPipeline::Formation,
+                published_cache.clone(),
+                receiver,
+                BuildCancellation::new(),
+                replacement,
+            );
+            assert_eq!(pending.replacement, replacement);
+            assert!(pending.completion.is_none());
+            assert_eq!(working_cache.len(), published_len);
+            assert_eq!(
+                pending
+                    .retained_stage_cache
+                    .as_ref()
+                    .map(MemoryStageCache::len),
+                Some(published_len)
+            );
+
+            let _candidate = prepare_test_replacement_candidate(
+                &app,
+                RootSeed::new(8 + offset as u64),
+                &mut working_cache,
+            );
+            assert!(working_cache.len() > published_len);
+            assert_eq!(
+                pending
+                    .retained_stage_cache
+                    .as_ref()
+                    .map(MemoryStageCache::len),
+                Some(published_len),
+                "working-cache writes must not alias the retained rollback cache"
+            );
+            let rollback =
+                settle_world_build_stage_cache(working_cache, pending.retained_stage_cache, false);
+            assert_eq!(rollback.len(), published_len);
+        }
+    }
+
+    #[test]
+    fn legacy_world_build_keeps_moving_the_stage_cache_without_a_rollback_snapshot() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        assert!(published_len > 0);
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::LegacyFoundation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            false,
+        );
+        assert!(
+            pending.retained_stage_cache.is_none(),
+            "the P5 cache transaction must not widen to the legacy pipeline"
+        );
+        assert_eq!(working_cache.len(), published_len);
+        // Without a snapshot every legacy settlement keeps the moved-through
+        // cache, which is exactly the pre-P5 behaviour.
+        let settled =
+            settle_world_build_stage_cache(working_cache, pending.retained_stage_cache, false);
+        assert_eq!(settled.len(), published_len);
+    }
+
+    #[test]
+    fn failed_p5_completion_discards_candidate_stage_cache_and_keeps_current_world() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = app.spherical_presentation.read_resource(|current| {
+            current
+                .as_ref()
+                .expect("the fixture is published")
+                .source()
+                .clone()
+        });
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            true,
+        );
+        let _candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        sender
+            .send(WorldBuildCompletion {
+                result: Err("surface formation did not converge".to_owned()),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        settle_queued_world_build(&mut app);
+
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            app.spherical_presentation.read_resource(|current| {
+                current
+                    .as_ref()
+                    .expect("the fixture stays published")
+                    .source()
+                    .clone()
+            }),
+            source_before
+        );
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("surface formation did not converge")
+        );
+    }
+
+    #[test]
+    fn same_frame_cancel_precedes_successful_world_and_cache_commit() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(
+            TemplateApp {
+                world_seed: 7,
+                ..TemplateApp::default()
+            },
+            &render_state,
+        );
+        let source_before = app.spherical_presentation.read_resource(|current| {
+            current
+                .as_ref()
+                .expect("the fixture is published")
+                .source()
+                .clone()
+        });
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        let identity_before = published_cache_hits(&app, &published_cache);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = BuildCancellation::new();
+        let (mut working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            cancellation.clone(),
+            true,
+        );
+        let candidate =
+            prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+        assert!(working_cache.len() > published_len);
+        app.world_build = Some(pending);
+
+        let context = egui::Context::default();
+        let cancel_rect =
+            run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()))
+                .expect("the pending build exposes its cancel button");
+        let cancel_position = cancel_rect.center();
+        run_world_build_frame(
+            &mut app,
+            &context,
+            world_build_raw_input(vec![
+                egui::Event::PointerMoved(cancel_position),
+                egui::Event::PointerButton {
+                    pos: cancel_position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]),
+        );
+        // Pointer-down already linearizes the cancellation; the release pass
+        // below only has to keep it cancelled.
+        assert!(cancellation.is_cancelled());
+
+        sender
+            .send(WorldBuildCompletion {
+                result: Ok(candidate),
+                stage_cache: working_cache,
+                formation_surface: None,
+                amplified: None,
+            })
+            .unwrap();
+        run_world_build_frame(
+            &mut app,
+            &context,
+            world_build_raw_input(vec![egui::Event::PointerButton {
+                pos: cancel_position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]),
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(
+            app.world_build
+                .as_ref()
+                .is_some_and(|pending| pending.completion.is_some()),
+            "completion and click share a frame, but settlement waits for the next frame"
+        );
+        assert_eq!(
+            app.spherical_presentation.read_resource(|current| {
+                current
+                    .as_ref()
+                    .expect("the fixture stays published")
+                    .source()
+                    .clone()
+            }),
+            source_before
+        );
+
+        // The settling pass still draws 取消 first — that is what lets it
+        // observe its own cancel input — and only then rolls the build back.
+        assert!(
+            run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()),).is_some()
+        );
+        assert!(app.world_build.is_none());
+        assert!(
+            run_world_build_frame(&mut app, &context, world_build_raw_input(Vec::new()),).is_none(),
+            "a settled build no longer draws a status row"
+        );
+
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            published_cache_hits(&app, &app.stage_cache),
+            identity_before,
+            "the rolled-back cache must still be the published world's cache"
+        );
+        assert_eq!(
+            app.spherical_presentation.read_resource(|current| {
+                current
+                    .as_ref()
+                    .expect("the fixture stays published")
+                    .source()
+                    .clone()
+            }),
+            source_before
+        );
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("已取消本次世界构建")
+        );
+    }
+
+    #[test]
+    fn formation_channel_disconnect_restores_published_stage_cache() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let published_cache = std::mem::take(&mut app.stage_cache);
+        let published_len = published_cache.len();
+        assert!(published_len > 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (working_cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            published_cache,
+            receiver,
+            BuildCancellation::new(),
+            false,
+        );
+        drop(working_cache);
+        drop(sender);
+        app.world_build = Some(pending);
+
+        // The poll runs alone in a warmed context so the repaint probe below
+        // measures this branch and nothing else: egui's very first pass always
+        // asks for an immediate repaint, and the real status row's `Spinner`
+        // animates every pass it is drawn in.
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |_| {});
+        let output = context.run(egui::RawInput::default(), |context| {
+            app.poll_world_build(context);
+        });
+
+        assert!(app.world_build.is_none());
+        assert_eq!(app.stage_cache.len(), published_len);
+        assert_eq!(
+            app.spherical_runtime_error.as_deref(),
+            Some("世界构建线程意外终止")
+        );
+        // The status row of this pass was drawn before the poll, so the error
+        // only becomes visible in a later pass — and nothing else is left to
+        // ask for one: the pending build, its worker and its 150 ms poll timer
+        // are all gone.
+        assert_eq!(
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .expect("the root viewport ran this pass")
+                .repaint_delay,
+            std::time::Duration::ZERO,
+            "a dead worker must wake the UI to show its error"
+        );
+    }
+
+    #[test]
+    fn formation_initial_and_replacement_install_failures_restore_published_stage_cache() {
+        for replacement in [false, true] {
+            let render_state = request_test_render_state();
+            let mut app = create_from_persisted(
+                TemplateApp {
+                    world_seed: 7,
+                    ..TemplateApp::default()
+                },
+                &render_state,
+            );
+            let source_before = app.spherical_presentation.read_resource(|current| {
+                current
+                    .as_ref()
+                    .expect("the fixture is published")
+                    .source()
+                    .clone()
+            });
+            let published_cache = std::mem::take(&mut app.stage_cache);
+            let published_len = published_cache.len();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let (mut working_cache, pending) = prepare_pending_world_build(
+                WorldPipeline::Formation,
+                published_cache,
+                receiver,
+                BuildCancellation::new(),
+                replacement,
+            );
+            let candidate =
+                prepare_test_replacement_candidate(&app, RootSeed::new(8), &mut working_cache);
+            assert!(working_cache.len() > published_len);
+
+            if replacement {
+                let empty_renderer = crate::gpu::spherical::SphericalFieldRenderer::new(
+                    &render_state.device,
+                    render_state.target_format,
+                );
+                render_state
+                    .renderer
+                    .write()
+                    .callback_resources
+                    .insert::<crate::gpu::spherical::SphericalFieldRenderer>(empty_renderer);
+            }
+            sender
+                .send(WorldBuildCompletion {
+                    result: Ok(candidate),
+                    stage_cache: working_cache,
+                    formation_surface: None,
+                    amplified: None,
+                })
+                .unwrap();
+            app.world_build = Some(pending);
+            settle_queued_world_build(&mut app);
+
+            assert_eq!(app.stage_cache.len(), published_len);
+            assert!(app.spherical_runtime_error.is_some());
+            assert_eq!(
+                app.spherical_presentation.read_resource(|current| {
+                    current
+                        .as_ref()
+                        .expect("the fixture stays published")
+                        .source()
+                        .clone()
+                }),
+                source_before
+            );
         }
     }
 

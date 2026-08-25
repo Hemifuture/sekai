@@ -1,8 +1,7 @@
 use std::sync::OnceLock;
 
 use sekai::engine::{
-    Artifact, BuildCancellation, BuildEngine, BuildOutcome, ExternalArtifacts, MemoryStageCache,
-    Stage,
+    Artifact, BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage,
 };
 use sekai::generators::natural::{
     global_circulation_graph, surface_formation_graph, ClimateWorkDomainArtifact,
@@ -11,14 +10,15 @@ use sekai::generators::natural::{
     ReliefSpecArtifact, ResolvedClimateInput, ResolvedClimateInputArtifact, ResolvedGeologicInput,
     ResolvedGeologicInputArtifact, ResolvedHydroErosionInput, ResolvedHydroErosionInputArtifact,
     ResolvedTectonicInput, ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact,
+    SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
     SurfaceFormationStage,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, SphericalSurfaceArtifact};
 use sekai::rules::{ClimateModel, GeologicModel, HydroErosionModel, TectonicModel};
 use sekai::world::natural::{
     ClimateSpec, GeologicSpec, HydroErosionSpec, NaturalQualityProfile, ReliefSpec,
-    ResolvedWorldFormation, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicSpec,
-    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -34,124 +34,6 @@ fn surface() -> &'static sekai::world::spatial::SphericalSurfaceSnapshot {
         .authoritative_surface()
         .clone()
     })
-}
-
-/// Builds the full draft-tier formation product the presentation-layer
-/// engines consume (shared by the frozen T1 fingerprint gates).
-fn draft_formation_outcome(root_seed: RootSeed) -> BuildOutcome {
-    draft_formation_outcome_with_relief(root_seed, &ReliefSpec::default())
-}
-
-fn draft_formation_outcome_with_relief(
-    root_seed: RootSeed,
-    relief_spec: &ReliefSpec,
-) -> BuildOutcome {
-    let external = sekai::app::build_spherical_formation_external_artifacts(
-        root_seed,
-        NaturalQualityProfile::Draft,
-        surface(),
-        &sekai::world::natural::WorldFormationSpec::default(),
-        &TectonicSpec::default(),
-        relief_spec,
-        &GeologicSpec::default(),
-    )
-    .unwrap();
-    BuildEngine::new(surface_formation_graph().unwrap())
-        .build(root_seed, external, &mut MemoryStageCache::new())
-        .unwrap()
-}
-
-#[test]
-fn target_land_fraction_inventory_reaches_p5_and_preserves_release_evidence() {
-    // The frozen T0 artifact is a release artifact; the observed debug build
-    // has a distinct serialized identity. Keep the exact production-identity
-    // gate in release while retaining all semantic checks in both profiles.
-    #[cfg(not(debug_assertions))]
-    {
-        let default = draft_formation_outcome(RootSeed::new(42));
-        let default_formation = default
-            .artifacts
-            .get::<NaturalSurfaceFormationArtifact>()
-            .unwrap();
-        assert_eq!(
-            blake3::hash(&serde_json::to_vec(default_formation.as_ref()).unwrap())
-                .to_hex()
-                .to_string(),
-            "14b21a1a863408fcfdac56c78ad2ab82d9994b82695ae86d5ea6e152d8f62437"
-        );
-    }
-
-    let target = draft_formation_outcome_with_relief(
-        RootSeed::new(42),
-        &ReliefSpec {
-            target_land_fraction: 0.38,
-            sea_level_policy: SeaLevelPolicy::TargetLandFraction,
-            ..ReliefSpec::default()
-        },
-    );
-    let primary = target.artifacts.get::<PrimaryReliefArtifact>().unwrap();
-    let formation = target
-        .artifacts
-        .get::<NaturalSurfaceFormationArtifact>()
-        .unwrap();
-    let implicit_ratio = primary
-        .quality_report()
-        .metrics()
-        .iter()
-        .find(|metric| metric.id().name() == "water-inventory-ratio")
-        .and_then(|metric| metric.value())
-        .expect("P3 publishes the implicit target-mode water ratio");
-    let p3_artifact_hash = blake3::hash(&serde_json::to_vec(primary.as_ref()).unwrap())
-        .to_hex()
-        .to_string();
-    let p5_artifact_hash = blake3::hash(&serde_json::to_vec(formation.as_ref()).unwrap())
-        .to_hex()
-        .to_string();
-    println!(
-        "target_driver_seed42 p3_artifact={} p5_artifact={} implicit_water_ratio={implicit_ratio:.12} p3_sea_level_m={:.6} p3_land_fraction={:.9} p5_sea_level_m={:.6}",
-        p3_artifact_hash,
-        p5_artifact_hash,
-        primary.snapshot().sea_level_m(),
-        primary.snapshot().physical_land_fraction(),
-        formation.snapshot().terrain_fields().sea_level_m(),
-    );
-    #[cfg(not(debug_assertions))]
-    {
-        assert_eq!(
-            p3_artifact_hash,
-            "6da4f8574c6818933779dce65364eeb3b8fcc9f19add3f97c8db034f2b67170f"
-        );
-        assert_eq!(
-            p5_artifact_hash,
-            "976f72985b2b11569ff217f243182224f83b2b2fc92461e8e4aea70b4b239c23"
-        );
-    }
-    let document =
-        sekai::app::SphericalFormationFieldDocument::from_build_outcome(&target).unwrap();
-    assert_eq!(
-        document.area_summary().sea_level_policy(),
-        SeaLevelPolicy::TargetLandFraction
-    );
-    assert_eq!(
-        document.area_summary().water_inventory_ratio().to_bits(),
-        implicit_ratio.to_bits()
-    );
-    assert_eq!(
-        formation
-            .snapshot()
-            .terrain_fields()
-            .water_inventory_m3()
-            .to_bits(),
-        primary.snapshot().water_inventory_m3().to_bits()
-    );
-    let drift = formation
-        .quality_report()
-        .metrics()
-        .iter()
-        .find(|metric| metric.id().name() == "final-land-fraction-absolute-change")
-        .and_then(|metric| metric.value())
-        .expect("P5 reports its production land-fraction drift gate");
-    assert!(drift <= 0.01, "target-mode P5 land-fraction drift {drift}");
 }
 
 fn p5_external(climate_spec: ClimateSpec, formation_spec: HydroErosionSpec) -> ExternalArtifacts {
@@ -337,544 +219,69 @@ fn the_p5_stage_publishes_a_locked_key_identity_and_exact_dependency_boundary() 
 }
 
 #[test]
-fn the_p5_graph_reuses_p4_hashes_and_republishes_only_on_formation_input_changes() {
+fn default_absolute_steady_state_fails_atomically_with_f64_domain_evidence() {
+    let root_seed = RootSeed::new(42);
+    let climate_spec = ClimateSpec::default();
+    let formation_spec = HydroErosionSpec::default();
     let mut cache = MemoryStageCache::new();
     let p4 = BuildEngine::new(global_circulation_graph().unwrap())
-        .build(
-            RootSeed::new(42),
-            p4_external(ClimateSpec::default()),
-            &mut cache,
-        )
+        .build(root_seed, p4_external(climate_spec.clone()), &mut cache)
         .unwrap();
-    let engine = BuildEngine::new(surface_formation_graph().unwrap());
-    let first = engine
-        .build(
-            RootSeed::new(42),
-            p5_external(ClimateSpec::default(), HydroErosionSpec::default()),
-            &mut cache,
-        )
-        .unwrap();
-    assert_eq!(first.report.cache_hits(), 5);
-    for unchanged in [
-        (
-            p4.artifacts
-                .hash::<EvolvedTectonicArtifact>()
-                .unwrap()
-                .as_bytes(),
-            first
-                .artifacts
-                .hash::<EvolvedTectonicArtifact>()
-                .unwrap()
-                .as_bytes(),
-        ),
-        (
-            p4.artifacts
-                .hash::<GeologicSubstrateArtifact>()
-                .unwrap()
-                .as_bytes(),
-            first
-                .artifacts
-                .hash::<GeologicSubstrateArtifact>()
-                .unwrap()
-                .as_bytes(),
-        ),
-        (
-            p4.artifacts
-                .hash::<PrimaryReliefArtifact>()
-                .unwrap()
-                .as_bytes(),
-            first
-                .artifacts
-                .hash::<PrimaryReliefArtifact>()
-                .unwrap()
-                .as_bytes(),
-        ),
-        (
-            p4.artifacts
-                .hash::<ClimateWorkDomainArtifact>()
-                .unwrap()
-                .as_bytes(),
-            first
-                .artifacts
-                .hash::<ClimateWorkDomainArtifact>()
-                .unwrap()
-                .as_bytes(),
-        ),
-        (
-            p4.artifacts
-                .hash::<GlobalCirculationArtifact>()
-                .unwrap()
-                .as_bytes(),
-            first
-                .artifacts
-                .hash::<GlobalCirculationArtifact>()
-                .unwrap()
-                .as_bytes(),
-        ),
-    ] {
-        assert_eq!(unchanged.0, unchanged.1);
-    }
+    assert_eq!(cache.len(), 5, "P4 must publish all five upstream stages");
 
-    let formation = first
-        .artifacts
-        .get::<NaturalSurfaceFormationArtifact>()
-        .unwrap();
-    formation.validate().unwrap();
-    formation.snapshot().validate_against(surface()).unwrap();
-    assert!(formation.snapshot().solve_report().converged());
-
-    let repeated = engine
-        .build(
-            RootSeed::new(42),
-            p5_external(ClimateSpec::default(), HydroErosionSpec::default()),
-            &mut cache,
-        )
-        .unwrap();
-    assert_eq!(repeated.report.cache_hits(), 6);
-    assert_eq!(
-        repeated
-            .artifacts
-            .hash::<NaturalSurfaceFormationArtifact>()
-            .unwrap()
-            .as_bytes(),
-        first
-            .artifacts
-            .hash::<NaturalSurfaceFormationArtifact>()
-            .unwrap()
-            .as_bytes()
-    );
-
-    let changed_spec = HydroErosionSpec {
-        river_discharge_threshold_deci_m3_s: HydroErosionSpec::default()
-            .river_discharge_threshold_deci_m3_s
-            / 2,
-        ..HydroErosionSpec::default()
-    };
-    let changed = engine
-        .build(
-            RootSeed::new(42),
-            p5_external(ClimateSpec::default(), changed_spec),
-            &mut cache,
-        )
-        .unwrap();
-    assert_eq!(changed.report.cache_hits(), 5);
-    assert_ne!(
-        changed
-            .artifacts
-            .hash::<NaturalSurfaceFormationArtifact>()
-            .unwrap()
-            .as_bytes(),
-        first
-            .artifacts
-            .hash::<NaturalSurfaceFormationArtifact>()
-            .unwrap()
-            .as_bytes()
-    );
-    assert_eq!(
-        changed
-            .artifacts
-            .hash::<GlobalCirculationArtifact>()
-            .unwrap()
-            .as_bytes(),
-        first
-            .artifacts
-            .hash::<GlobalCirculationArtifact>()
-            .unwrap()
-            .as_bytes(),
-        "changing only the formation spec must not disturb the P4 product"
-    );
-}
-
-#[test]
-fn the_formation_document_materializes_every_field_from_the_app_build_path() {
-    use sekai::world::natural::{
-        annual_local_runoff_mm_field_id, circulation_annual_evaporation_mm_field_id,
-        circulation_annual_precipitation_mm_field_id,
-        circulation_mean_absorbed_shortwave_w_m2_field_id,
-        circulation_mean_air_temperature_c_field_id,
-        circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
-        circulation_surface_albedo_field_id, climatological_annual_total_mm,
-        climatological_monthly_mean, coastal_deposition_m_field_id, coastal_erosion_m_field_id,
-        crust_kind_field_id, crust_thickness_field_id, drainage_area_km2_field_id,
-        fluvial_erosion_depth_m_field_id, hillslope_deposition_m_field_id,
-        hillslope_erosion_m_field_id, isostatic_response_m_field_id, lake_depth_m_field_id,
-        land_ocean_field_id, mean_annual_discharge_m3_s_field_id, plate_id_field_id,
-        primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
-        sediment_deposition_thickness_m_field_id, strahler_stream_order_field_id,
-        surface_elevation_m_field_id, surface_water_kind_field_id,
-        tectonic_displacement_m_field_id, WorldFormationSpec,
-    };
-
-    let root_seed = RootSeed::new(42);
-    let external = sekai::app::build_spherical_formation_external_artifacts(
-        root_seed,
-        NaturalQualityProfile::Draft,
-        surface(),
-        &WorldFormationSpec::default(),
-        &TectonicSpec::default(),
-        &ReliefSpec::default(),
-        &GeologicSpec::default(),
+    let tectonics = p4.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
+    let substrate = p4.artifacts.get::<GeologicSubstrateArtifact>().unwrap();
+    let relief = p4.artifacts.get::<PrimaryReliefArtifact>().unwrap();
+    let domain = p4.artifacts.get::<ClimateWorkDomainArtifact>().unwrap();
+    let climate = p4.artifacts.get::<GlobalCirculationArtifact>().unwrap();
+    let direct_error = SurfaceFormationGenerator::generate(
+        SurfaceFormationInputs {
+            surface: surface(),
+            quality_profile: NaturalQualityProfile::Draft,
+            tectonics: tectonics.snapshot(),
+            substrate: substrate.snapshot(),
+            relief: relief.snapshot(),
+            domain: domain.snapshot(),
+            climate_spec: &climate_spec,
+            initial_climate: climate.snapshot(),
+            formation_spec: &formation_spec,
+        },
+        &BuildCancellation::new(),
     )
-    .unwrap();
-    let outcome = BuildEngine::new(surface_formation_graph().unwrap())
-        .build(root_seed, external, &mut MemoryStageCache::new())
-        .unwrap();
-    let document =
-        sekai::app::SphericalFormationFieldDocument::from_build_outcome(&outcome).unwrap();
-
-    let cell_count = document.surface().cells().len();
-    assert_eq!(cell_count, surface().cells().len());
-    let catalog = document.catalog().unwrap();
-    let expected_fields = [
-        plate_id_field_id(),
-        crust_kind_field_id(),
-        crust_thickness_field_id(),
-        primary_elevation_m_field_id(),
-        tectonic_displacement_m_field_id(),
-        fluvial_erosion_depth_m_field_id(),
-        hillslope_erosion_m_field_id(),
-        hillslope_deposition_m_field_id(),
-        routed_sediment_deposition_m_field_id(),
-        coastal_erosion_m_field_id(),
-        coastal_deposition_m_field_id(),
-        isostatic_response_m_field_id(),
-        sediment_deposition_thickness_m_field_id(),
-        surface_elevation_m_field_id(),
-        land_ocean_field_id(),
-        circulation_annual_evaporation_mm_field_id(),
-        circulation_annual_precipitation_mm_field_id(),
-        circulation_mean_absorbed_shortwave_w_m2_field_id(),
-        circulation_mean_air_temperature_c_field_id(),
-        circulation_mean_outgoing_longwave_w_m2_field_id(),
-        circulation_prevailing_wind_m_s_field_id(),
-        circulation_surface_albedo_field_id(),
-        annual_local_runoff_mm_field_id(),
-        lake_depth_m_field_id(),
-        surface_water_kind_field_id(),
-        mean_annual_discharge_m3_s_field_id(),
-        drainage_area_km2_field_id(),
-        strahler_stream_order_field_id(),
-    ];
-    assert_eq!(catalog.entries().len(), expected_fields.len());
-    for field in &expected_fields {
-        let view = catalog
-            .get(field)
-            .unwrap_or_else(|| panic!("field {field:?} is missing from the formation catalog"))
-            .view()
-            .unwrap_or_else(|| panic!("field {field:?} did not materialize a payload"));
-        assert_eq!(view.len(), cell_count, "cardinality of {field:?}");
-    }
-
-    let climate = document.formation_snapshot().formation_climate();
-    let fields = climate.fields();
-    let expected_scalar_fields = [
-        (
-            circulation_annual_evaporation_mm_field_id(),
-            fields
-                .monthly_evaporation_mm_day()
-                .values()
-                .iter()
-                .map(|monthly| climatological_annual_total_mm(monthly) as f32)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            circulation_annual_precipitation_mm_field_id(),
-            fields
-                .monthly_precipitation_mm_day()
-                .values()
-                .iter()
-                .map(|monthly| climatological_annual_total_mm(monthly) as f32)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            circulation_mean_absorbed_shortwave_w_m2_field_id(),
-            fields
-                .monthly_absorbed_shortwave_w_m2()
-                .values()
-                .iter()
-                .map(climatological_monthly_mean)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            circulation_mean_outgoing_longwave_w_m2_field_id(),
-            fields
-                .monthly_outgoing_longwave_w_m2()
-                .values()
-                .iter()
-                .map(climatological_monthly_mean)
-                .collect::<Vec<_>>(),
-        ),
-        (
-            circulation_surface_albedo_field_id(),
-            fields.surface_albedo().to_vec(),
-        ),
-    ];
-    for (field, expected) in expected_scalar_fields {
-        let displayed = catalog
-            .get(&field)
-            .unwrap()
-            .view()
-            .unwrap()
-            .scalar_values()
-            .unwrap();
-        assert_eq!(
-            displayed
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            expected
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            "formation map/globe payload for {field:?} must be the final P5 climate reduction"
-        );
-        assert!(displayed.iter().all(|value| value.is_finite()));
-        assert_eq!(
-            document.preferred_range(&field),
-            Some(sekai::view::DisplayRangeMode::Data)
-        );
-        let mut state = sekai::view::SphericalFieldDisplayState::default();
-        state.select_fill(field.clone());
-        let mut clock = sekai::view::DisplayRevisionClock::default();
-        let layers = sekai::view::prepare_spherical_field_layers(
-            document.presentation_source(),
-            &catalog,
-            cell_count,
-            document.surface().edges().len(),
-            document.diagnostics(),
-            document.preferred_field(),
-            |field| document.preferred_range(field),
-            &mut state,
-            &mut clock,
-        )
-        .unwrap();
-        assert_eq!(layers.fill().field_id(), &field);
-        assert_eq!(
-            layers.fill().raw_values(),
-            displayed
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
-        );
-    }
-
-    assert_eq!(
-        document.preferred_field(),
-        Some(surface_elevation_m_field_id())
-    );
-    let Some(sekai::view::DisplayRangeMode::Manual(range)) =
-        document.preferred_range(&surface_elevation_m_field_id())
-    else {
-        panic!("the formation surface elevation must use a sea-anchored manual range");
+    .unwrap_err();
+    let found = match &direct_error {
+        SurfaceFormationGenerationError::ElevationOutOfRange { found, .. } => *found,
+        other => panic!("default absolute steady state returned the wrong typed failure: {other}"),
     };
-    let summary = document.area_summary();
-    let budget = climate.budget_report();
-    let displayed_budget = summary.p4_water_energy();
-    assert_eq!(
-        displayed_budget.evaporation_global_mean_mm_day().to_bits(),
-        budget.evaporation_global_mean_mm_day().to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .precipitation_global_mean_mm_day()
-            .to_bits(),
-        budget.precipitation_global_mean_mm_day().to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .evaporation_minus_precipitation_global_mean_mm_day()
-            .to_bits(),
-        budget
-            .evaporation_minus_precipitation_global_mean_mm_day()
-            .to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .evaporation_precipitation_relative_imbalance()
-            .to_bits(),
-        budget
-            .evaporation_precipitation_relative_imbalance()
-            .to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .absorbed_shortwave_global_mean_w_m2()
-            .to_bits(),
-        budget.absorbed_shortwave_global_mean_w_m2().to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .outgoing_longwave_global_mean_w_m2()
-            .to_bits(),
-        budget.outgoing_longwave_global_mean_w_m2().to_bits()
-    );
-    assert_eq!(
-        displayed_budget
-            .toa_net_radiation_global_mean_w_m2()
-            .to_bits(),
-        budget.toa_net_radiation_global_mean_w_m2().to_bits()
-    );
-    assert_eq!(
-        displayed_budget.planetary_albedo_global_mean().to_bits(),
-        budget.planetary_albedo_global_mean().to_bits()
-    );
-    let sea = summary.sea_level_m();
-    assert!(((range.min() + range.max()) * 0.5 - sea).abs() < 0.5);
-    assert_eq!(summary.sea_level_policy(), SeaLevelPolicy::WaterInventory);
-    assert_eq!(
-        summary.target_land_fraction().to_bits(),
-        ReliefSpec::default().target_land_fraction.to_bits()
-    );
-    assert_eq!(summary.water_inventory_ratio().to_bits(), 1.0_f64.to_bits());
     assert!(
-        summary.evolved_continental_fraction() > 0.2,
-        "v5 conserves continental area, got {}",
-        summary.evolved_continental_fraction()
+        found < f64::from(ELEVATION_MIN_M) || found > f64::from(ELEVATION_MAX_M),
+        "the full-f64 candidate must truly lie outside the publishable domain"
     );
     assert!(
-        (0.05..0.95).contains(&summary.actual_land_fraction()),
-        "land fraction {}",
-        summary.actual_land_fraction()
+        (ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&(found as f32)),
+        "the legacy f32 projection must demonstrate its false-green rounding"
     );
 
-    let source = document.presentation_source();
-    assert_eq!(source.root_seed(), root_seed);
-    assert_eq!(source.graph_contract_version(), 2);
-}
-
-#[test]
-fn the_t1_amplifier_matches_its_frozen_product_fingerprint() {
-    use sekai::generators::natural::{fibonacci_probe, AmplificationLod, TerrainAmplifier};
-
-    let root_seed = RootSeed::new(42);
-    let outcome = draft_formation_outcome(root_seed);
-    let evolved = outcome.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
-    let substrate = outcome
-        .artifacts
-        .get::<GeologicSubstrateArtifact>()
-        .unwrap();
-    let formation = outcome
-        .artifacts
-        .get::<NaturalSurfaceFormationArtifact>()
-        .unwrap();
-
-    let amplifier = TerrainAmplifier::from_formation_product(
-        surface(),
-        evolved.snapshot().compatibility(),
-        substrate.snapshot(),
-        formation.snapshot(),
-        root_seed,
-    )
-    .unwrap();
-
-    // M1 bake LOD from the spec §6 Nyquist rule (4096-wide equirect).
-    let bake_footprint_m = 40_075_000.0 / 4_096.0;
-    let lod =
-        AmplificationLod::for_sampling_footprint(amplifier.base_wavelength_m(), bake_footprint_m);
-    let fingerprint = amplifier.probe_fingerprint(lod);
-    let hex: String = fingerprint
+    let failure = BuildEngine::new(surface_formation_graph().unwrap())
+        .build(
+            root_seed,
+            p5_external(climate_spec, formation_spec),
+            &mut cache,
+        )
+        .unwrap_err();
+    assert_eq!(failure.report.cache_hits(), 5);
+    assert_eq!(failure.report.cache_misses(), 1);
+    assert_eq!(cache.len(), 5, "the failed P5 product must not enter cache");
+    assert!(failure.report.result_hash().is_none());
+    let diagnostic = failure
+        .report
+        .diagnostics()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    eprintln!(
-        "t1 probe fingerprint (draft, seed 42, lod {}): {hex}",
-        lod.levels()
-    );
-    assert_eq!(
-        hex, "d2d966fee7e699e3d84c7396c4476e46fbe8052edaca48ab1bab8e6924393ee6",
-        "the frozen T1 probe fingerprint changed; record an amendment in the T1 spec"
-    );
-
-    // Spec §8 invariant 4 on the real product: amplified classification must
-    // keep the land fraction within one percentage point of T0's.
-    let terrain = formation.snapshot().terrain_fields();
-    let sea = terrain.sea_level_m();
-    let total = 16_384_usize;
-    let mut t0_land = 0_u32;
-    let mut amplified_land = 0_u32;
-    for index in 0..total {
-        let probe = fibonacci_probe(index, total);
-        let sample = amplifier.sample(probe, lod);
-        if sample.elevation_m >= sea {
-            amplified_land += 1;
-        }
-        let baseline = amplifier.sample(probe, AmplificationLod::new(0));
-        if baseline.elevation_m >= sea {
-            t0_land += 1;
-        }
-    }
-    let drift = (f64::from(t0_land) - f64::from(amplified_land)).abs() / total as f64;
-    assert!(drift <= 0.01, "product land-fraction drift {drift}");
+        .find(|diagnostic| diagnostic.code() == "surface-formation.build-failed")
+        .expect("the graph must retain the typed P5 failure at its stage boundary");
+    assert_eq!(diagnostic.message(), direct_error.to_string());
 }
 
-#[test]
-fn the_t1v2_hierarchical_engine_matches_its_frozen_product_fingerprint() {
-    use sekai::generators::natural::{fibonacci_probe, HierarchicalEvaluator};
-    use sekai::world::CellId;
-
-    let root_seed = RootSeed::new(42);
-    let outcome = draft_formation_outcome(root_seed);
-    let evolved = outcome.artifacts.get::<EvolvedTectonicArtifact>().unwrap();
-    let substrate = outcome
-        .artifacts
-        .get::<GeologicSubstrateArtifact>()
-        .unwrap();
-    let formation = outcome
-        .artifacts
-        .get::<NaturalSurfaceFormationArtifact>()
-        .unwrap();
-
-    let evaluator = HierarchicalEvaluator::from_formation_product(
-        surface(),
-        evolved.snapshot().compatibility(),
-        substrate.snapshot(),
-        formation.snapshot(),
-        root_seed,
-    )
-    .unwrap();
-
-    // Spec §7 invariant 4 on the real product: every L0 cell primitive
-    // is the published T0 elevation, bit for bit.
-    let terrain = formation.snapshot().terrain_fields();
-    for (index, &elevation) in terrain.final_elevation_m().iter().enumerate() {
-        assert_eq!(
-            evaluator
-                .cell_value(CellId::from_raw(index as u32))
-                .elevation_m
-                .to_bits(),
-            elevation.to_bits()
-        );
-    }
-
-    // Spec §6: the frozen hierarchical probe fingerprint (value history
-    // in the spec amendments — A4 froze it; A6.7, A7, A8, A9, and A10
-    // refreshed it).
-    let fingerprint = evaluator.probe_fingerprint();
-    let hex: String = fingerprint
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    eprintln!("t1 v2 hierarchical probe fingerprint (draft, seed 42): {hex}");
-    assert_eq!(
-        hex, "8da656cc94f754f92e8ef062c19216d25700a5167684ba890b8951777cba8863",
-        "the frozen T1 v2 hierarchical probe fingerprint changed; record an amendment in the spec"
-    );
-
-    // Spec §7 invariant 6 on the real product: the deep-level land
-    // fraction stays within one percentage point of the L0 stair field.
-    let sea = terrain.sea_level_m();
-    let total = 16_384_usize;
-    let mut l0_land = 0_u32;
-    let mut deep_land = 0_u32;
-    for index in 0..total {
-        let probe = fibonacci_probe(index, total);
-        if evaluator.sample(probe, 0).elevation_m >= sea {
-            l0_land += 1;
-        }
-        if evaluator.sample(probe, 6).elevation_m >= sea {
-            deep_land += 1;
-        }
-    }
-    let drift = (f64::from(l0_land) - f64::from(deep_land)).abs() / total as f64;
-    assert!(drift <= 0.01, "product land-fraction drift {drift}");
-}
+// Task 0 intentionally has no successful default/target P5 artifact to hash.
+// The real field payload and T1/T1v2 product fingerprints return with the
+// Task 11 bundle/UI restoration; Task 9 first restores default P5 success.

@@ -63,22 +63,22 @@ impl LocalAiryIsostasy {
     ) -> Result<IsostaticAdjustmentStep, IsostasyGenerationError> {
         check_cancelled(cancellation)?;
         let count = surface.cells().len();
-        for (field, found) in [
-            ("elevation_m", elevation_m.len()),
-            ("removed_mass_kg", removed_mass_kg.len()),
-            ("deposited_mass_kg", deposited_mass_kg.len()),
-        ] {
-            if found != count {
-                return Err(IsostasyGenerationError::CellCountMismatch {
-                    field,
-                    expected: count,
-                    found,
-                });
-            }
+        if elevation_m.len() != count {
+            return Err(IsostasyGenerationError::CellCountMismatch {
+                field: "elevation_m",
+                expected: count,
+                found: elevation_m.len(),
+            });
         }
+        let exact_response = Self::response_from_validated_surface(
+            surface,
+            removed_mass_kg,
+            deposited_mass_kg,
+            cancellation,
+        )?;
         let mut response = Vec::with_capacity(count);
         let mut result = Vec::with_capacity(count);
-        for index in 0..count {
+        for (index, &adjustment) in exact_response.iter().enumerate() {
             poll_cancelled(cancellation, index)?;
             let cell = CellId::from_raw(index as u32);
             let base = elevation_m[index];
@@ -89,30 +89,18 @@ impl LocalAiryIsostasy {
                     found: f64::from(base),
                 });
             }
-            for (field, value) in [
-                ("removed_mass_kg", removed_mass_kg[index]),
-                ("deposited_mass_kg", deposited_mass_kg[index]),
-            ] {
-                if !value.is_finite() || value < 0.0 {
-                    return Err(IsostasyGenerationError::InvalidCellValue {
-                        field,
-                        cell,
-                        found: value,
-                    });
-                }
+            let unquantized_elevation = f64::from(base) + adjustment;
+            if !unquantized_elevation.is_finite()
+                || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M))
+                    .contains(&unquantized_elevation)
+            {
+                return Err(IsostasyGenerationError::ElevationOutOfRange {
+                    cell,
+                    found: unquantized_elevation,
+                });
             }
-            let area_m2 = surface.cells()[index].area.get();
-            let adjustment = (removed_mass_kg[index] - deposited_mass_kg[index])
-                / (FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2);
-            // The owning process yields at the publishable safety bound (P5
-            // design §5): the retained response is reduced so a column already
-            // at the bound does not leave the range; the mass ledger is not
-            // an elevation and stays exact.
-            let retained =
-                (adjustment as f32).clamp(ELEVATION_MIN_M - base, ELEVATION_MAX_M - base);
-            let final_elevation = formation_elevation_from_components(
-                base, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, retained,
-            );
+            let retained = adjustment as f32;
+            let final_elevation = formation_elevation_from_components(base, retained);
             if !final_elevation.is_finite()
                 || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&final_elevation)
             {
@@ -129,6 +117,54 @@ impl LocalAiryIsostasy {
             isostatic_response_m: response,
             elevation_m: result,
         })
+    }
+
+    /// Computes the exact local response without binding it to a quantized
+    /// working elevation. The coupled solver owns the complete component state
+    /// and validates the composed candidate there.
+    pub(super) fn response_from_validated_surface(
+        surface: &SphericalSurfaceSnapshot,
+        removed_mass_kg: &[f64],
+        deposited_mass_kg: &[f64],
+        cancellation: &BuildCancellation,
+    ) -> Result<Vec<f64>, IsostasyGenerationError> {
+        check_cancelled(cancellation)?;
+        let count = surface.cells().len();
+        for (field, found) in [
+            ("removed_mass_kg", removed_mass_kg.len()),
+            ("deposited_mass_kg", deposited_mass_kg.len()),
+        ] {
+            if found != count {
+                return Err(IsostasyGenerationError::CellCountMismatch {
+                    field,
+                    expected: count,
+                    found,
+                });
+            }
+        }
+        let mut response = Vec::with_capacity(count);
+        for index in 0..count {
+            poll_cancelled(cancellation, index)?;
+            let cell = CellId::from_raw(index as u32);
+            for (field, value) in [
+                ("removed_mass_kg", removed_mass_kg[index]),
+                ("deposited_mass_kg", deposited_mass_kg[index]),
+            ] {
+                if !value.is_finite() || value < 0.0 {
+                    return Err(IsostasyGenerationError::InvalidCellValue {
+                        field,
+                        cell,
+                        found: value,
+                    });
+                }
+            }
+            let area_m2 = surface.cells()[index].area.get();
+            let adjustment = (removed_mass_kg[index] - deposited_mass_kg[index])
+                / (FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2);
+            response.push(adjustment);
+        }
+        check_cancelled(cancellation)?;
+        Ok(response)
     }
 }
 

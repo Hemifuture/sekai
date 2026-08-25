@@ -1,10 +1,15 @@
 use std::f64::consts::PI;
 
-use sekai::world::fields::{FieldId, FieldRegistry};
+use sekai::world::fields::{FieldId, FieldRegistry, FieldValueType};
 use sekai::world::natural::{
     circulation_annual_evaporation_mm_field_id, circulation_annual_precipitation_mm_field_id,
-    drainage_area_km2_field_id, mean_annual_discharge_m3_s_field_id, natural_field_registry,
-    spherical_formation_field_registry, spherical_natural_field_registry,
+    coastal_deposition_rate_m_per_year_field_id, coastal_erosion_rate_m_per_year_field_id,
+    drainage_area_km2_field_id, equilibrium_adjustment_m_field_id,
+    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_rate_m_per_year_field_id,
+    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_rate_m_per_year_field_id,
+    mean_annual_discharge_m3_s_field_id, natural_field_registry, primary_relief_m_field_id,
+    routed_sediment_deposition_rate_m_per_year_field_id, spherical_formation_field_registry,
+    spherical_natural_field_registry, tectonic_displacement_rate_m_per_year_field_id,
     NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
 };
 
@@ -20,6 +25,79 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
         .to_hex()
         .to_string();
 
+    let r4_current_state_fields = [
+        (primary_relief_m_field_id(), "primary_relief_m", "m", false),
+        (
+            equilibrium_adjustment_m_field_id(),
+            "equilibrium_adjustment_m",
+            "m",
+            false,
+        ),
+        (
+            tectonic_displacement_rate_m_per_year_field_id(),
+            "tectonic_displacement_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            fluvial_erosion_rate_m_per_year_field_id(),
+            "fluvial_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            hillslope_erosion_rate_m_per_year_field_id(),
+            "hillslope_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            hillslope_deposition_rate_m_per_year_field_id(),
+            "hillslope_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            routed_sediment_deposition_rate_m_per_year_field_id(),
+            "routed_sediment_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            coastal_erosion_rate_m_per_year_field_id(),
+            "coastal_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            coastal_deposition_rate_m_per_year_field_id(),
+            "coastal_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            isostatic_response_rate_m_per_year_field_id(),
+            "isostatic_response_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+    ];
+    assert_eq!(registry.len(), 29);
+    for (field, expected_name, expected_unit, is_unbounded) in r4_current_state_fields {
+        assert_eq!(field.name(), expected_name);
+        let schema = registry
+            .get(&field)
+            .unwrap_or_else(|| panic!("R4 field {expected_name} is missing"));
+        assert_eq!(schema.value_type, FieldValueType::ScalarF32);
+        assert_eq!(schema.unit.symbol(), expected_unit);
+        assert_eq!(
+            schema.display.label_key(),
+            format!("field.sekai.core.natural.{expected_name}"),
+            "the registry key must remain the localization lookup key"
+        );
+        assert_eq!(schema.valid_range.is_none(), is_unbounded);
+    }
+
     for field in [
         circulation_annual_evaporation_mm_field_id(),
         circulation_annual_precipitation_mm_field_id(),
@@ -32,7 +110,7 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
 
     assert_eq!(
         actual,
-        "a9dbe80b57cd69cdaf2bebafd362a8f803b43cdde5c667970f81a8d3a2f5c11a"
+        "be7c169b774d82d8600e936c67215aeb3bd600217fce9eaabf41ee2234e341db"
     );
 }
 

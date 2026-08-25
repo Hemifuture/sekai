@@ -7,7 +7,7 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField, SurfaceWaterField,
-    SurfaceWaterKind, SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    SurfaceWaterKind, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -55,10 +55,9 @@ struct Fields {
     elevation_m: Vec<f32>,
     water: SurfaceWaterField,
     receiver: Vec<Option<CellId>>,
-    drainage_surface_m: Vec<f32>,
-    lake_depth_m: Vec<f32>,
     discharge_m3_s: Vec<f32>,
-    fluvial_erosion_m: Vec<f32>,
+    effective_settling_velocity_m_per_year: f64,
+    fluvial_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     hillslope_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     hillslope_deposited_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     coastal_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
@@ -68,6 +67,7 @@ struct Fields {
     sources: SedimentSourceKindField,
     previous_thickness_m: Vec<f32>,
     previous_provenance: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    sediment_stock_removed_kg: Vec<f64>,
 }
 
 impl Fields {
@@ -77,20 +77,29 @@ impl Fields {
             sea_level_m: 0.0,
             surface_water: &self.water,
             flow_receiver: &self.receiver,
-            drainage_surface_elevation_m: &self.drainage_surface_m,
-            lake_depth_m: &self.lake_depth_m,
             mean_annual_discharge_m3_s: &self.discharge_m3_s,
-            fluvial_erosion_m: &self.fluvial_erosion_m,
+            effective_settling_velocity_m_per_year: self.effective_settling_velocity_m_per_year,
+            fluvial_removed_by_source_kg: &self.fluvial_removed_by_source_kg,
             hillslope_removed_by_source_kg: &self.hillslope_removed_by_source_kg,
             hillslope_deposited_by_source_kg: &self.hillslope_deposited_by_source_kg,
             coastal_removed_by_source_kg: &self.coastal_removed_by_source_kg,
             coastal_ocean_injection_by_source_kg: &self.coastal_ocean_injection_by_source_kg,
             marine_exposure: &self.marine_exposure,
-            substrate_density_kg_m3: &self.density_kg_m3,
-            sediment_sources: &self.sources,
             previous_sediment_thickness_m: &self.previous_thickness_m,
             previous_provenance_fraction: &self.previous_provenance,
+            sediment_stock_removed_kg: &self.sediment_stock_removed_kg,
         }
+    }
+
+    fn add_fluvial_erosion_m(
+        &mut self,
+        surface: &SphericalSurfaceSnapshot,
+        index: usize,
+        erosion_m: f64,
+    ) {
+        let source = self.sources.get(index).unwrap().raw() as usize;
+        self.fluvial_removed_by_source_kg[index][source] +=
+            erosion_m * surface.cells()[index].area.get() * f64::from(self.density_kg_m3[index]);
     }
 }
 
@@ -100,10 +109,9 @@ fn zero_fields(surface: &SphericalSurfaceSnapshot) -> Fields {
         elevation_m: vec![100.0; count],
         water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
         receiver: vec![None; count],
-        drainage_surface_m: vec![100.0; count],
-        lake_depth_m: vec![0.0; count],
         discharge_m3_s: vec![0.0; count],
-        fluvial_erosion_m: vec![0.0; count],
+        effective_settling_velocity_m_per_year: 0.0,
+        fluvial_removed_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
         hillslope_removed_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
         hillslope_deposited_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
         coastal_removed_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
@@ -113,6 +121,7 @@ fn zero_fields(surface: &SphericalSurfaceSnapshot) -> Fields {
         sources: SedimentSourceKindField::from_kinds(vec![SedimentSourceKind::Felsic; count]),
         previous_thickness_m: vec![0.0; count],
         previous_provenance: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
+        sediment_stock_removed_kg: vec![0.0; count],
     }
 }
 
@@ -130,11 +139,11 @@ fn five_sources_and_paired_hillslope_close_without_rerouting_or_source_free_depo
     let mut kinds = vec![SedimentSourceKind::Felsic; surface.cells().len()];
     for (index, &kind) in source_kinds.iter().enumerate() {
         kinds[index] = kind;
-        if index < 4 {
-            fields.fluvial_erosion_m[index] = 0.01;
-        }
     }
     fields.sources = SedimentSourceKindField::from_kinds(kinds);
+    for index in 0..4 {
+        fields.add_fluvial_erosion_m(&surface, index, 0.01);
+    }
     let paired_mass_kg = 12_345.0;
     fields.hillslope_removed_by_source_kg[4][4] = paired_mass_kg;
     fields.hillslope_deposited_by_source_kg[5][4] = paired_mass_kg;
@@ -150,21 +159,21 @@ fn five_sources_and_paired_hillslope_close_without_rerouting_or_source_free_depo
         .all(|&error| error <= 1.0e-7));
     assert!(result
         .budget_report()
-        .produced_by_source_kg()
+        .produced_by_source_kg_per_year()
         .iter()
         .all(|&mass| mass > 0.0));
     assert_eq!(
         result.fields().dominant_source(5),
         Some(SedimentSourceKind::Metamorphic)
     );
-    assert_eq!(result.fields().sediment_throughput_kg()[5], 0.0);
-    assert!(result.fields().endorheic_storage_kg()[0] > 0.0);
+    assert_eq!(result.fields().sediment_throughput_kg_per_year()[5], 0.0);
+    assert!(result.fields().endorheic_deposition_kg_per_year()[0] > 0.0);
 
     let zero = zero_fields(&surface);
     let zero =
         ProvenanceSedimentRouter::route(&surface, zero.inputs(), 1.0, &BuildCancellation::new())
             .unwrap();
-    assert_eq!(zero.budget_report().produced_mass_kg(), 0.0);
+    assert_eq!(zero.budget_report().produced_mass_kg_per_year(), 0.0);
     assert!(zero
         .fields()
         .sediment_thickness_m()
@@ -188,7 +197,6 @@ fn routed_chain(surface: &SphericalSurfaceSnapshot, discharge_m3_s: f32) -> (Vec
     for (position, &cell) in path.iter().enumerate() {
         let index = cell.raw() as usize;
         fields.elevation_m[index] = [300.0, 200.0, 100.0, -50.0][position];
-        fields.drainage_surface_m[index] = fields.elevation_m[index];
         fields.discharge_m3_s[index] = discharge_m3_s;
         if position < 3 {
             let mut kinds = fields.water.raw_values().to_vec();
@@ -197,15 +205,17 @@ fn routed_chain(surface: &SphericalSurfaceSnapshot, discharge_m3_s: f32) -> (Vec
             fields.receiver[index] = Some(path[position + 1]);
         }
     }
-    fields.fluvial_erosion_m[path[0].raw() as usize] = 0.5;
+    fields.add_fluvial_erosion_m(surface, path[0].raw() as usize, 0.5);
     (path, fields)
 }
 
 #[test]
-fn transport_capacity_orders_floodplain_deposition_and_downstream_throughput() {
+fn davy_lague_recurrence_closes_analytically_and_discharge_controls_deposition() {
     let surface = surface(10_000.0, 42);
-    let (path, low) = routed_chain(&surface, 1.0);
-    let (_, high) = routed_chain(&surface, 1_000_000.0);
+    let (path, mut low) = routed_chain(&surface, 1.0);
+    let (_, mut high) = routed_chain(&surface, 1_000_000.0);
+    low.effective_settling_velocity_m_per_year = 1.0;
+    high.effective_settling_velocity_m_per_year = 1.0;
     let low_result =
         ProvenanceSedimentRouter::route(&surface, low.inputs(), 1.0, &BuildCancellation::new())
             .unwrap();
@@ -219,31 +229,87 @@ fn transport_capacity_orders_floodplain_deposition_and_downstream_throughput() {
             > high_result.routed_sediment_deposition_m()[head]
     );
     assert!(
-        high_result.fields().sediment_throughput_kg()[ocean]
-            > low_result.fields().sediment_throughput_kg()[ocean]
+        high_result.fields().sediment_throughput_kg_per_year()[ocean]
+            > low_result.fields().sediment_throughput_kg_per_year()[ocean]
     );
-    assert!(high_result.fields().shelf_delivery_kg()[ocean] > 0.0);
+    assert!(high_result.fields().shelf_deposition_kg_per_year()[ocean] > 0.0);
     assert!(high_result.budget_report().global_relative_error() <= 1.0e-8);
+
+    let (_, mut half_per_cell) = routed_chain(&surface, 0.0);
+    half_per_cell.effective_settling_velocity_m_per_year = 1.0;
+    half_per_cell.marine_exposure[path[3].raw() as usize] = 1.0;
+    for &cell in &path[..3] {
+        let index = cell.raw() as usize;
+        half_per_cell.discharge_m3_s[index] = (surface.cells()[index].area.get()
+            / sekai::world::natural::CLIMATOLOGICAL_YEAR_SECONDS)
+            as f32;
+    }
+    let source_mass = half_per_cell.fluvial_removed_by_source_kg[path[0].raw() as usize][0];
+    let half_result = ProvenanceSedimentRouter::route(
+        &surface,
+        half_per_cell.inputs(),
+        1.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    for (position, &cell) in path[..3].iter().enumerate() {
+        let index = cell.raw() as usize;
+        let deposited_mass = f64::from(half_result.routed_sediment_deposition_m()[index])
+            * surface.cells()[index].area.get()
+            * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+        let expected = source_mass / 2.0_f64.powi(position as i32 + 1);
+        assert!((deposited_mass - expected).abs() / expected < 1.0e-5);
+    }
+    let ocean = path[3].raw() as usize;
+    let expected_export = source_mass / 8.0;
+    assert!(
+        (half_result.fields().deep_ocean_export_kg_per_year()[ocean] - expected_export).abs()
+            / expected_export
+            < 1.0e-5
+    );
+    assert!(half_result.budget_report().global_relative_error() <= 1.0e-8);
+}
+
+#[test]
+fn detachment_limited_zero_settling_routes_all_fluvial_mass_to_the_terminal() {
+    let surface = surface(10_000.0, 42);
+    let (path, mut fields) = routed_chain(&surface, 10.0);
+    fields.effective_settling_velocity_m_per_year = 0.0;
+    fields.marine_exposure[path[3].raw() as usize] = 1.0;
+    let source_mass = fields.fluvial_removed_by_source_kg[path[0].raw() as usize][0];
+    let result =
+        ProvenanceSedimentRouter::route(&surface, fields.inputs(), 1.0, &BuildCancellation::new())
+            .unwrap();
+    for &cell in &path[..3] {
+        assert_eq!(
+            result.routed_sediment_deposition_m()[cell.raw() as usize],
+            0.0
+        );
+    }
+    let ocean = path[3].raw() as usize;
+    assert_eq!(
+        result.fields().deep_ocean_export_kg_per_year()[ocean],
+        source_mass
+    );
 }
 
 #[test]
 fn lake_and_closed_basin_store_mass_while_exposed_shelf_exports_more_to_deep_ocean() {
     let surface = surface(10_000.0, 42);
     let mut inland = zero_fields(&surface);
-    inland.fluvial_erosion_m[0] = 0.02;
-    inland.fluvial_erosion_m[1] = 0.02;
+    inland.add_fluvial_erosion_m(&surface, 0, 0.02);
+    inland.add_fluvial_erosion_m(&surface, 1, 0.02);
     let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
     water[0] = SurfaceWaterKind::Lake;
     inland.water = SurfaceWaterField::from_kinds(water);
-    inland.lake_depth_m[0] = 10.0;
     let inland_result =
         ProvenanceSedimentRouter::route(&surface, inland.inputs(), 1.0, &BuildCancellation::new())
             .unwrap();
-    assert!(inland_result.fields().endorheic_storage_kg()[0] > 0.0);
-    assert!(inland_result.fields().endorheic_storage_kg()[1] > 0.0);
+    assert!(inland_result.fields().endorheic_deposition_kg_per_year()[0] > 0.0);
+    assert!(inland_result.fields().endorheic_deposition_kg_per_year()[1] > 0.0);
     assert!(inland_result
         .fields()
-        .deep_ocean_delivery_kg()
+        .deep_ocean_export_kg_per_year()
         .iter()
         .all(|&mass| mass == 0.0));
 
@@ -257,7 +323,6 @@ fn lake_and_closed_basin_store_mass_while_exposed_shelf_exports_more_to_deep_oce
         fields.water = SurfaceWaterField::from_kinds(water);
         fields.elevation_m[land] = 100.0;
         fields.elevation_m[ocean] = -100.0;
-        fields.drainage_surface_m = fields.elevation_m.clone();
         fields.discharge_m3_s[ocean] = 1_000.0;
         fields.marine_exposure[ocean] = exposure;
         let mass = 2.0e9;
@@ -268,14 +333,47 @@ fn lake_and_closed_basin_store_mass_while_exposed_shelf_exports_more_to_deep_oce
     };
     let calm = marine(0.0);
     let exposed = marine(0.9);
-    assert!(calm.fields().shelf_delivery_kg()[ocean] > exposed.fields().shelf_delivery_kg()[ocean]);
     assert!(
-        exposed.fields().deep_ocean_delivery_kg()[ocean]
-            > calm.fields().deep_ocean_delivery_kg()[ocean]
+        calm.fields().shelf_deposition_kg_per_year()[ocean]
+            > exposed.fields().shelf_deposition_kg_per_year()[ocean]
+    );
+    assert!(
+        exposed.fields().deep_ocean_export_kg_per_year()[ocean]
+            > calm.fields().deep_ocean_export_kg_per_year()[ocean]
     );
     assert!(calm.fields().delta_potential()[ocean] > exposed.fields().delta_potential()[ocean]);
     assert!(calm.coastal_deposition_m()[ocean] > 0.0);
     assert!(calm.budget_report().global_relative_error() <= 1.0e-8);
+}
+
+#[test]
+fn reworked_sediment_is_removed_from_current_stock_before_new_deposition() {
+    let surface = surface(10_000.0, 42);
+    let mut fields = zero_fields(&surface);
+    let index = 0;
+    let initial_thickness_m = 2.0_f32;
+    let removed_thickness_m = 0.75_f64;
+    let mut water = fields.water.raw_values().to_vec();
+    water[index] = SurfaceWaterKind::Ocean.raw();
+    fields.water = SurfaceWaterField::from_raw(water).unwrap();
+    fields.marine_exposure[index] = 1.0;
+    fields.previous_thickness_m[index] = initial_thickness_m;
+    fields.previous_provenance[index] = [0.25, 0.75, 0.0, 0.0, 0.0];
+    fields.sediment_stock_removed_kg[index] = removed_thickness_m
+        * surface.cells()[index].area.get()
+        * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+    fields.fluvial_removed_by_source_kg[index][0] = fields.sediment_stock_removed_kg[index] * 0.25;
+    fields.fluvial_removed_by_source_kg[index][1] = fields.sediment_stock_removed_kg[index] * 0.75;
+
+    let result =
+        ProvenanceSedimentRouter::route(&surface, fields.inputs(), 1.0, &BuildCancellation::new())
+            .unwrap();
+    let retained = result.fields().sediment_thickness_m()[index];
+    assert!(
+        (f64::from(retained) - (f64::from(initial_thickness_m) - removed_thickness_m)).abs()
+            < 1.0e-6
+    );
+    assert!(result.budget_report().global_relative_error() <= 1.0e-8);
 }
 
 #[test]

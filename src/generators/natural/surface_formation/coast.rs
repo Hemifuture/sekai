@@ -4,12 +4,14 @@ use crate::engine::BuildCancellation;
 use crate::world::natural::{
     SedimentSourceKindField, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
     CLIMATE_MONTH_COUNT, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_COASTAL_COVER_SHIELD_M, FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
-    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, FORMATION_COASTAL_WIND_REFERENCE_M_S,
-    SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3, FORMATION_COASTAL_COVER_SHIELD_M,
+    FORMATION_COASTAL_CURRENT_REFERENCE_M_S, FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
+    FORMATION_COASTAL_WIND_REFERENCE_M_S, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
+
+use super::sediment::split_mass_by_weights;
 
 const CANCELLATION_POLL_MASK: usize = 255;
 
@@ -20,6 +22,7 @@ pub struct CoastalInputs<'a> {
     pub surface_water_geometry: &'a SurfaceWaterGeometry,
     pub substrate_erodibility: &'a [f32],
     pub sediment_thickness_m: &'a [f32],
+    pub sediment_provenance_fraction: &'a [[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub substrate_density_kg_m3: &'a [f32],
     pub sediment_sources: &'a SedimentSourceKindField,
     pub near_surface_wind_m_s: &'a [[[f32; 3]; CLIMATE_MONTH_COUNT]],
@@ -36,6 +39,7 @@ pub struct CoastalExchangeStep {
     ocean_injection_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     produced_mass_kg: f64,
     produced_by_source_kg: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+    sediment_stock_removed_kg: Vec<f64>,
 }
 
 impl CoastalExchangeStep {
@@ -65,6 +69,10 @@ impl CoastalExchangeStep {
 
     pub const fn produced_by_source_kg(&self) -> &[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
         &self.produced_by_source_kg
+    }
+
+    pub fn sediment_stock_removed_kg(&self) -> &[f64] {
+        &self.sediment_stock_removed_kg
     }
 }
 
@@ -159,6 +167,7 @@ impl CoastalExchange {
         let mut removed_by_source_kg = vec![[0.0_f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count];
         let mut ocean_injection_by_source_kg =
             vec![[0.0_f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count];
+        let mut sediment_stock_removed_kg = vec![0.0_f64; count];
 
         for land in 0..count {
             poll_cancelled(cancellation, land)?;
@@ -179,15 +188,24 @@ impl CoastalExchange {
                 continue;
             }
             coastal_erosion_m[land] = retained_erosion_m;
-            let source_index = inputs
+            let substrate_source = inputs
                 .sediment_sources
                 .get(land)
                 .expect("validated source field covers every cell")
                 .raw() as usize;
-            let produced_mass_kg = f64::from(retained_erosion_m)
-                * surface.cells()[land].area.get()
+            let area_m2 = surface.cells()[land].area.get();
+            let sediment_erosion_m = retained_erosion_m.min(inputs.sediment_thickness_m[land]);
+            let sediment_mass_kg =
+                f64::from(sediment_erosion_m) * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+            sediment_stock_removed_kg[land] = sediment_mass_kg;
+            removed_by_source_kg[land] = split_mass_by_weights(
+                sediment_mass_kg,
+                inputs.sediment_provenance_fraction[land].map(f64::from),
+            );
+            let substrate_mass_kg = f64::from(retained_erosion_m - sediment_erosion_m)
+                * area_m2
                 * f64::from(inputs.substrate_density_kg_m3[land]);
-            removed_by_source_kg[land][source_index] = produced_mass_kg;
+            removed_by_source_kg[land][substrate_source] += substrate_mass_kg;
             let cell = CellId::from_raw(land as u32);
             let mut receivers = Vec::new();
             let mut total_weight = 0.0_f64;
@@ -227,18 +245,23 @@ impl CoastalExchange {
             }
             if total_weight == 0.0 {
                 coastal_erosion_m[land] = 0.0;
+                sediment_stock_removed_kg[land] = 0.0;
+                removed_by_source_kg[land] = [0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT];
                 continue;
             }
-            let mut remaining = produced_mass_kg;
             let last = receivers.len() - 1;
-            for (position, &(receiver, weight)) in receivers.iter().enumerate() {
-                let mass = if position == last {
-                    remaining
-                } else {
-                    produced_mass_kg * weight / total_weight
-                };
-                remaining -= mass;
-                ocean_injection_by_source_kg[receiver][source_index] += mass;
+            for source in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
+                let source_mass = removed_by_source_kg[land][source];
+                let mut remaining = source_mass;
+                for (position, &(receiver, weight)) in receivers.iter().enumerate() {
+                    let mass = if position == last {
+                        remaining
+                    } else {
+                        source_mass * weight / total_weight
+                    };
+                    remaining -= mass;
+                    ocean_injection_by_source_kg[receiver][source] += mass;
+                }
             }
         }
 
@@ -259,6 +282,7 @@ impl CoastalExchange {
             ocean_injection_by_source_kg,
             produced_mass_kg,
             produced_by_source_kg,
+            sediment_stock_removed_kg,
         })
     }
 }
@@ -304,6 +328,10 @@ fn validate_inputs(
         ("elevation_m", inputs.elevation_m.len()),
         ("substrate_erodibility", inputs.substrate_erodibility.len()),
         ("sediment_thickness_m", inputs.sediment_thickness_m.len()),
+        (
+            "sediment_provenance_fraction",
+            inputs.sediment_provenance_fraction.len(),
+        ),
         (
             "substrate_density_kg_m3",
             inputs.substrate_density_kg_m3.len(),
@@ -361,6 +389,21 @@ fn validate_inputs(
                     found: f64::from(value),
                 });
             }
+        }
+        let provenance_sum = inputs.sediment_provenance_fraction[index]
+            .iter()
+            .map(|&value| f64::from(value))
+            .sum::<f64>();
+        if inputs.sediment_provenance_fraction[index]
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+            || (inputs.sediment_thickness_m[index] > 0.0 && provenance_sum <= 0.0)
+        {
+            return Err(CoastGenerationError::InvalidCellValue {
+                field: "sediment_provenance_fraction",
+                cell: CellId::from_raw(index as u32),
+                found: provenance_sum,
+            });
         }
         for (field, months) in [
             (

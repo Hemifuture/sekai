@@ -341,14 +341,13 @@ impl GlobalClimateForcingBuilder {
         let surface_water_geometry = terrain.surface_water_geometry();
         let source_fingerprint = formation_terrain_climate_fingerprint(
             source_ref,
-            terrain,
             surface_water_geometry,
             Some(cancellation),
         )?;
         let input = ClimateTerrainInput {
             source_ref,
             source_fingerprint,
-            elevation_m: terrain.final_elevation_m(),
+            elevation_m: terrain.current_elevation_m(),
             surface_water_geometry,
         };
         Self::build_from_validated_terrain(input, climate_spec, domain, cancellation)
@@ -558,10 +557,10 @@ fn validate_formation_terrain_against_surface(
         }
     })?;
     let expected = surface.cells().len();
-    let found = terrain.final_elevation_m().len();
+    let found = terrain.current_elevation_m().len();
     if found != expected {
         return Err(GlobalClimateForcingError::FieldLengthMismatch {
-            field: "formation_terrain.final_elevation_m",
+            field: "formation_terrain.current_elevation_m",
             found,
             expected,
         });
@@ -591,7 +590,6 @@ fn relief_fingerprint_impl(
     cancellation: Option<&BuildCancellation>,
 ) -> Result<[u8; 32], GlobalClimateForcingError> {
     climate_terrain_fingerprint_impl(
-        relief.schema_version(),
         relief.surface_ref(),
         relief.surface_water_geometry(),
         cancellation,
@@ -601,20 +599,13 @@ fn relief_fingerprint_impl(
 #[allow(dead_code)] // consumed by the P5 compositor added in Task 7
 fn formation_terrain_climate_fingerprint(
     surface_ref: SurfaceRef,
-    terrain: &FormationTerrainFields,
     surface_water_geometry: &SurfaceWaterGeometry,
     cancellation: Option<&BuildCancellation>,
 ) -> Result<[u8; 32], GlobalClimateForcingError> {
-    climate_terrain_fingerprint_impl(
-        terrain.schema_version(),
-        surface_ref,
-        surface_water_geometry,
-        cancellation,
-    )
+    climate_terrain_fingerprint_impl(surface_ref, surface_water_geometry, cancellation)
 }
 
 fn climate_terrain_fingerprint_impl(
-    climate_terrain_schema: u16,
     surface_ref: SurfaceRef,
     surface_water_geometry: &SurfaceWaterGeometry,
     cancellation: Option<&BuildCancellation>,
@@ -622,7 +613,6 @@ fn climate_terrain_fingerprint_impl(
     check_optional_cancelled(cancellation)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.climate-terrain-input.v2\0");
-    hasher.update(&climate_terrain_schema.to_le_bytes());
     hasher.update(&surface_ref.fingerprint());
     hasher.update(surface_water_geometry.fingerprint());
     check_optional_cancelled(cancellation)?;
@@ -782,7 +772,7 @@ mod formation_tests {
         constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile, ElevationField,
         FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
         NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot,
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V2, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V3, PRIMARY_RELIEF_SCHEMA_V2, RELIEF_SCHEMA_V4,
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -885,22 +875,12 @@ mod formation_tests {
         let count = surface.cells().len();
         assert_eq!(primary.len(), count);
         let zero = vec![0.0; count];
-        let components = FormationElevationComponents::new(
-            primary.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            zero.clone(),
-            primary.clone(),
-        )
-        .unwrap();
+        let components =
+            FormationElevationComponents::new(primary.clone(), zero.clone(), primary.clone())
+                .unwrap();
         let water = solve_physical_sea_level(surface, &primary, water_inventory_m3).unwrap();
         FormationTerrainFields::new(
-            FORMATION_TERRAIN_FIELDS_SCHEMA_V2,
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
             components,
             water.into_geometry(),
             water_inventory_m3,

@@ -5,18 +5,43 @@ use thiserror::Error;
 
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    FormationSedimentFields, SedimentBudgetReport, SedimentSourceKindField,
-    SurfaceFormationValidationError, SurfaceWaterField, SurfaceWaterKind,
-    CLIMATOLOGICAL_YEAR_SECONDS, CRUST_DENSITY_MAX_KG_M3, CRUST_DENSITY_MIN_KG_M3, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3, FORMATION_FLOODPLAIN_ACCOMMODATION_M,
-    FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE, FORMATION_SEDIMENT_CAPACITY_KG_M3,
-    FORMATION_SEDIMENT_SLOPE_SCALE, FORMATION_SHELF_BREAK_DEPTH_M,
-    SEDIMENT_BUDGET_RELATIVE_ERROR_MAX, SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    FormationSedimentFields, SedimentBudgetReport, SurfaceFormationValidationError,
+    SurfaceWaterField, SurfaceWaterKind, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+    FORMATION_SHELF_BREAK_DEPTH_M, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
+    SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
 
 const CANCELLATION_POLL_MASK: usize = 255;
+
+pub(super) fn split_mass_by_weights(
+    mass_kg: f64,
+    weights: [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT],
+) -> [f64; SEDIMENT_PROVENANCE_SOURCE_COUNT] {
+    if mass_kg == 0.0 {
+        return [0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT];
+    }
+    let weight_sum = weights.iter().sum::<f64>();
+    let remainder_source = weights
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1).then_with(|| right.0.cmp(&left.0)))
+        .map(|(index, _)| index)
+        .expect("the fixed provenance inventory is non-empty");
+    let mut result = [0.0_f64; SEDIMENT_PROVENANCE_SOURCE_COUNT];
+    let mut assigned = 0.0_f64;
+    for source in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
+        if source == remainder_source {
+            continue;
+        }
+        result[source] = mass_kg * weights[source] / weight_sum;
+        assigned += result[source];
+    }
+    result[remainder_source] = mass_kg - assigned;
+    result
+}
 
 /// Borrowed retained process fields consumed by one sediment-routing pass.
 #[derive(Debug, Clone, Copy)]
@@ -25,19 +50,18 @@ pub struct SedimentInputs<'a> {
     pub sea_level_m: f32,
     pub surface_water: &'a SurfaceWaterField,
     pub flow_receiver: &'a [Option<CellId>],
-    pub drainage_surface_elevation_m: &'a [f32],
-    pub lake_depth_m: &'a [f32],
     pub mean_annual_discharge_m3_s: &'a [f32],
-    pub fluvial_erosion_m: &'a [f32],
+    /// Davy-Lague effective settling velocity `d* v_s`, in meters per year.
+    pub effective_settling_velocity_m_per_year: f64,
+    pub fluvial_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub hillslope_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub hillslope_deposited_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub coastal_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub coastal_ocean_injection_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub marine_exposure: &'a [f32],
-    pub substrate_density_kg_m3: &'a [f32],
-    pub sediment_sources: &'a SedimentSourceKindField,
     pub previous_sediment_thickness_m: &'a [f32],
     pub previous_provenance_fraction: &'a [[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+    pub sediment_stock_removed_kg: &'a [f64],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -111,7 +135,7 @@ impl SedimentTransportStep {
     }
 }
 
-/// One stable upstream-to-downstream, capacity-limited provenance pass.
+/// One stable upstream-to-downstream Davy-Lague provenance pass.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProvenanceSedimentRouter;
 
@@ -159,20 +183,13 @@ impl ProvenanceSedimentRouter {
             poll_cancelled(cancellation, index)?;
             packets[index].coastal = inputs.coastal_ocean_injection_by_source_kg[index];
             deposited_packets[index].routed = inputs.hillslope_deposited_by_source_kg[index];
-            let source = inputs
-                .sediment_sources
-                .get(index)
-                .expect("validated source field covers every cell")
-                .raw() as usize;
-            let fluvial_mass = f64::from(inputs.fluvial_erosion_m[index])
-                * surface.cells()[index].area.get()
-                * f64::from(inputs.substrate_density_kg_m3[index]);
-            packets[index].routed[source] =
-                checked_sum(packets[index].routed[source], fluvial_mass)?;
             for source_index in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
+                let fluvial_mass = inputs.fluvial_removed_by_source_kg[index][source_index];
+                packets[index].routed[source_index] =
+                    checked_sum(packets[index].routed[source_index], fluvial_mass)?;
                 produced_by_source[source_index] = checked_sum(
                     produced_by_source[source_index],
-                    fluvial_mass * f64::from((source_index == source) as u8)
+                    fluvial_mass
                         + inputs.hillslope_removed_by_source_kg[index][source_index]
                         + inputs.coastal_removed_by_source_kg[index][source_index],
                 )?;
@@ -182,29 +199,29 @@ impl ProvenanceSedimentRouter {
                 deposited_mass_kg[index] = checked_sum(deposited_mass_kg[index], direct_deposit)?;
                 removed_mass_kg[index] = checked_sum(
                     removed_mass_kg[index],
-                    fluvial_mass * f64::from((source_index == source) as u8)
+                    fluvial_mass
                         + inputs.hillslope_removed_by_source_kg[index][source_index]
                         + inputs.coastal_removed_by_source_kg[index][source_index],
                 )?;
             }
         }
 
-        let step_seconds = step_years * CLIMATOLOGICAL_YEAR_SECONDS;
         for (position, cell) in order.iter().copied().enumerate() {
             poll_cancelled(cancellation, position)?;
             let index = cell.raw() as usize;
             let available = packets[index].total();
-            throughput_kg[index] = available;
             if available == 0.0 {
                 continue;
             }
             if inputs.surface_water.get(index) == Some(SurfaceWaterKind::Ocean) {
+                throughput_kg[index] = available;
                 let exposure = f64::from(inputs.marine_exposure[index]);
                 let water_depth_m =
                     (f64::from(inputs.sea_level_m) - f64::from(inputs.elevation_m[index])).max(0.0);
-                let accommodation_kg = water_depth_m.min(FORMATION_SHELF_BREAK_DEPTH_M)
-                    * surface.cells()[index].area.get()
-                    * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+                let accommodation_kg = load_compensated_accommodation_mass_kg(
+                    water_depth_m.min(FORMATION_SHELF_BREAK_DEPTH_M),
+                    surface.cells()[index].area.get(),
+                );
                 let shelf_mass = (available * (1.0 - exposure)).min(accommodation_kg);
                 let shelf_packet = packets[index].take_fraction(shelf_mass / available);
                 let deep_packet = std::mem::take(&mut packets[index]);
@@ -220,16 +237,7 @@ impl ProvenanceSedimentRouter {
                 }
                 shelf_delivery_kg[index] = shelf_packet.total();
                 deep_ocean_delivery_kg[index] = deep_packet.total();
-                let marine_capacity = FORMATION_SEDIMENT_CAPACITY_KG_M3
-                    * f64::from(inputs.mean_annual_discharge_m3_s[index])
-                    * step_seconds
-                    * (1.0 + FORMATION_MARINE_CAPACITY_EXPOSURE_RANGE * exposure);
-                let denominator = available + marine_capacity;
-                delta_potential[index] = if denominator > 0.0 {
-                    (available / denominator * (1.0 - exposure)) as f32
-                } else {
-                    0.0
-                };
+                delta_potential[index] = (shelf_mass / available) as f32;
                 continue;
             }
 
@@ -245,26 +253,12 @@ impl ProvenanceSedimentRouter {
                 continue;
             };
             let receiver_index = receiver.raw() as usize;
-            let length_m = receiver_length_m(surface, cell, receiver)?;
-            let slope = ((f64::from(inputs.drainage_surface_elevation_m[index])
-                - f64::from(inputs.drainage_surface_elevation_m[receiver_index]))
-                / length_m)
-                .max(0.0);
-            let capacity = FORMATION_SEDIMENT_CAPACITY_KG_M3
-                * f64::from(inputs.mean_annual_discharge_m3_s[index])
-                * step_seconds
-                * (slope / (slope + FORMATION_SEDIMENT_SLOPE_SCALE)).sqrt();
-            let accommodation_depth_m = match inputs.surface_water.get(index) {
-                Some(SurfaceWaterKind::Lake) => f64::from(inputs.lake_depth_m[index]),
-                _ => (f64::from(inputs.drainage_surface_elevation_m[index])
-                    - f64::from(inputs.drainage_surface_elevation_m[receiver_index]))
-                .clamp(0.0, FORMATION_FLOODPLAIN_ACCOMMODATION_M),
-            };
-            let accommodation_kg = accommodation_depth_m
-                * surface.cells()[index].area.get()
-                * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
-            let deposit_mass = (available - capacity).max(0.0).min(accommodation_kg);
-            let deposit = packets[index].take_fraction(deposit_mass / available);
+            let deposit_fraction = davy_lague_deposition_fraction(
+                f64::from(inputs.mean_annual_discharge_m3_s[index]) * CLIMATOLOGICAL_YEAR_SECONDS,
+                inputs.effective_settling_velocity_m_per_year,
+                surface.cells()[index].area.get(),
+            )?;
+            let deposit = packets[index].take_fraction(deposit_fraction);
             record_deposit(
                 &mut deposited_packets[index],
                 deposit,
@@ -272,6 +266,7 @@ impl ProvenanceSedimentRouter {
                 &mut deposited_mass_kg[index],
             )?;
             let outgoing = std::mem::take(&mut packets[index]);
+            throughput_kg[index] = outgoing.total();
             packets[receiver_index].add(outgoing)?;
         }
 
@@ -293,10 +288,22 @@ impl ProvenanceSedimentRouter {
             let previous_mass = f64::from(inputs.previous_sediment_thickness_m[index])
                 * area_m2
                 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+            let retained_previous_mass =
+                (previous_mass - inputs.sediment_stock_removed_kg[index]).max(0.0);
+            let previous_fraction_sum = inputs.previous_provenance_fraction[index]
+                .iter()
+                .map(|&fraction| f64::from(fraction))
+                .sum::<f64>();
             let mut combined = [0.0_f64; SEDIMENT_PROVENANCE_SOURCE_COUNT];
             for (source, combined_mass) in combined.iter_mut().enumerate() {
-                *combined_mass = previous_mass
-                    * f64::from(inputs.previous_provenance_fraction[index][source])
+                let retained_source_mass = if retained_previous_mass == 0.0 {
+                    0.0
+                } else {
+                    retained_previous_mass
+                        * f64::from(inputs.previous_provenance_fraction[index][source])
+                        / previous_fraction_sum
+                };
+                *combined_mass = retained_source_mass
                     + deposited_packet.routed[source]
                     + deposited_packet.coastal[source];
             }
@@ -321,10 +328,10 @@ impl ProvenanceSedimentRouter {
         let fields = FormationSedimentFields::new(
             sediment_thickness_m,
             provenance_fraction,
-            throughput_kg,
-            shelf_delivery_kg,
-            deep_ocean_delivery_kg,
-            endorheic_storage_kg,
+            annualize_mass(throughput_kg, step_years),
+            annualize_mass(shelf_delivery_kg, step_years),
+            annualize_mass(deep_ocean_delivery_kg, step_years),
+            annualize_mass(endorheic_storage_kg, step_years),
             delta_potential,
         )?;
         let accounted_by_source = std::array::from_fn(|source| {
@@ -334,13 +341,13 @@ impl ProvenanceSedimentRouter {
                 + final_in_transit_by_source[source]
         });
         let budget_report = SedimentBudgetReport::new(
-            produced_by_source.iter().sum(),
-            land_lake_by_source.iter().sum(),
-            shelf_by_source.iter().sum(),
-            deep_by_source.iter().sum(),
-            final_in_transit_by_source.iter().sum(),
-            produced_by_source,
-            accounted_by_source,
+            produced_by_source.iter().sum::<f64>() / step_years,
+            land_lake_by_source.iter().sum::<f64>() / step_years,
+            shelf_by_source.iter().sum::<f64>() / step_years,
+            deep_by_source.iter().sum::<f64>() / step_years,
+            final_in_transit_by_source.iter().sum::<f64>() / step_years,
+            produced_by_source.map(|mass| mass / step_years),
+            accounted_by_source.map(|mass| mass / step_years),
         )?;
         check_cancelled(cancellation)?;
         Ok(SedimentTransportStep {
@@ -352,6 +359,41 @@ impl ProvenanceSedimentRouter {
             deposited_mass_kg,
         })
     }
+}
+
+/// Analytic Davy-Lague deposition fraction for one finite-volume cell.
+///
+/// This is algebraically `V_eff A / (Q + V_eff A)`. Scaling both terms before
+/// division avoids overflowing a valid finite ratio.
+fn davy_lague_deposition_fraction(
+    discharge_m3_per_year: f64,
+    effective_settling_velocity_m_per_year: f64,
+    area_m2: f64,
+) -> Result<f64, SedimentGenerationError> {
+    let settling_volume_m3_per_year = effective_settling_velocity_m_per_year * area_m2;
+    if !settling_volume_m3_per_year.is_finite() {
+        return Err(SedimentGenerationError::NumericalOverflow);
+    }
+    if settling_volume_m3_per_year == 0.0 {
+        return Ok(0.0);
+    }
+    if discharge_m3_per_year == 0.0 {
+        return Ok(1.0);
+    }
+    let scale = discharge_m3_per_year.max(settling_volume_m3_per_year);
+    let scaled_discharge = discharge_m3_per_year / scale;
+    let scaled_settling = settling_volume_m3_per_year / scale;
+    Ok(scaled_settling / (scaled_discharge + scaled_settling))
+}
+
+fn load_compensated_accommodation_mass_kg(depth_m: f64, area_m2: f64) -> f64 {
+    let retained_surface_fraction =
+        1.0 - FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 / FORMATION_AIRY_MANTLE_DENSITY_KG_M3;
+    depth_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 / retained_surface_fraction
+}
+
+fn annualize_mass(values: Vec<f64>, step_years: f64) -> Vec<f64> {
+    values.into_iter().map(|value| value / step_years).collect()
 }
 
 fn record_deposit(
@@ -461,15 +503,13 @@ fn validate_inputs(
         ("surface_water", inputs.surface_water.len()),
         ("flow_receiver", inputs.flow_receiver.len()),
         (
-            "drainage_surface_elevation_m",
-            inputs.drainage_surface_elevation_m.len(),
-        ),
-        ("lake_depth_m", inputs.lake_depth_m.len()),
-        (
             "mean_annual_discharge_m3_s",
             inputs.mean_annual_discharge_m3_s.len(),
         ),
-        ("fluvial_erosion_m", inputs.fluvial_erosion_m.len()),
+        (
+            "fluvial_removed_by_source_kg",
+            inputs.fluvial_removed_by_source_kg.len(),
+        ),
         (
             "hillslope_removed_by_source_kg",
             inputs.hillslope_removed_by_source_kg.len(),
@@ -488,17 +528,16 @@ fn validate_inputs(
         ),
         ("marine_exposure", inputs.marine_exposure.len()),
         (
-            "substrate_density_kg_m3",
-            inputs.substrate_density_kg_m3.len(),
-        ),
-        ("sediment_sources", inputs.sediment_sources.len()),
-        (
             "previous_sediment_thickness_m",
             inputs.previous_sediment_thickness_m.len(),
         ),
         (
             "previous_provenance_fraction",
             inputs.previous_provenance_fraction.len(),
+        ),
+        (
+            "sediment_stock_removed_kg",
+            inputs.sediment_stock_removed_kg.len(),
         ),
     ] {
         if found != count {
@@ -508,6 +547,13 @@ fn validate_inputs(
                 found,
             });
         }
+    }
+    if !inputs.effective_settling_velocity_m_per_year.is_finite()
+        || inputs.effective_settling_velocity_m_per_year < 0.0
+    {
+        return Err(SedimentGenerationError::InvalidEffectiveSettlingVelocity {
+            found: inputs.effective_settling_velocity_m_per_year,
+        });
     }
     for index in 0..count {
         poll_cancelled(cancellation, index)?;
@@ -520,36 +566,12 @@ fn validate_inputs(
                 ELEVATION_MAX_M,
             ),
             (
-                "drainage_surface_elevation_m",
-                inputs.drainage_surface_elevation_m[index],
-                ELEVATION_MIN_M,
-                ELEVATION_MAX_M,
-            ),
-            (
-                "lake_depth_m",
-                inputs.lake_depth_m[index],
-                0.0,
-                ELEVATION_MAX_M - ELEVATION_MIN_M,
-            ),
-            (
                 "mean_annual_discharge_m3_s",
                 inputs.mean_annual_discharge_m3_s[index],
                 0.0,
                 f32::MAX,
             ),
-            (
-                "fluvial_erosion_m",
-                inputs.fluvial_erosion_m[index],
-                0.0,
-                ELEVATION_MAX_M - ELEVATION_MIN_M,
-            ),
             ("marine_exposure", inputs.marine_exposure[index], 0.0, 1.0),
-            (
-                "substrate_density_kg_m3",
-                inputs.substrate_density_kg_m3[index],
-                CRUST_DENSITY_MIN_KG_M3,
-                CRUST_DENSITY_MAX_KG_M3,
-            ),
             (
                 "previous_sediment_thickness_m",
                 inputs.previous_sediment_thickness_m[index],
@@ -570,6 +592,22 @@ fn validate_inputs(
         } else {
             1.0
         };
+        let previous_stock_kg = f64::from(inputs.previous_sediment_thickness_m[index])
+            * surface.cells()[index].area.get()
+            * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+        let stock_removed_kg = inputs.sediment_stock_removed_kg[index];
+        let stock_tolerance_kg =
+            previous_stock_kg.abs().max(1.0) * SEDIMENT_BUDGET_RELATIVE_ERROR_MAX;
+        if !stock_removed_kg.is_finite()
+            || stock_removed_kg < 0.0
+            || stock_removed_kg > previous_stock_kg + stock_tolerance_kg
+        {
+            return Err(SedimentGenerationError::InvalidCellValue {
+                field: "sediment_stock_removed_kg",
+                cell,
+                found: stock_removed_kg,
+            });
+        }
         let mut fraction_sum = 0.0_f64;
         for source in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
             let fraction = inputs.previous_provenance_fraction[index][source];
@@ -582,6 +620,10 @@ fn validate_inputs(
             }
             fraction_sum += f64::from(fraction);
             for (field, value) in [
+                (
+                    "fluvial_removed_by_source_kg",
+                    inputs.fluvial_removed_by_source_kg[index][source],
+                ),
                 (
                     "hillslope_removed_by_source_kg",
                     inputs.hillslope_removed_by_source_kg[index][source],
@@ -750,6 +792,8 @@ pub enum SedimentGenerationError {
     InvalidSeaLevel { found: f32 },
     #[error("sediment step duration must be finite and positive, got {found}")]
     InvalidStepYears { found: f64 },
+    #[error("effective settling velocity must be finite and nonnegative, got {found}")]
+    InvalidEffectiveSettlingVelocity { found: f64 },
     #[error("sediment receiver {receiver:?} is not adjacent to {cell:?}")]
     ReceiverNotAdjacent { cell: CellId, receiver: CellId },
     #[error("sediment receiver graph contains a cycle")]

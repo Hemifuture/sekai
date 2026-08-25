@@ -30,17 +30,17 @@ const SEEDS: [u64; 17] = [
 
 #[derive(Debug, Clone, Copy)]
 enum AtlasField {
-    PrimaryElevation,
-    FinalElevation,
-    ElevationChange,
-    TectonicDisplacement,
-    FluvialErosion,
-    HillslopeErosion,
-    HillslopeDeposition,
-    RoutedSedimentDeposition,
-    CoastalErosion,
-    CoastalDeposition,
-    IsostaticResponse,
+    PrimaryRelief,
+    CurrentElevation,
+    EquilibriumAdjustment,
+    TectonicDisplacementRate,
+    FluvialErosionRate,
+    HillslopeErosionRate,
+    HillslopeDepositionRate,
+    RoutedSedimentDepositionRate,
+    CoastalErosionRate,
+    CoastalDepositionRate,
+    IsostaticResponseRate,
     SurfaceWater,
     MeanAnnualDischarge,
     StrahlerOrder,
@@ -48,22 +48,22 @@ enum AtlasField {
     DominantProvenance,
     DeltaPotential,
     FormationPrecipitation,
-    ShelfDelivery,
+    ShelfDepositionRate,
 }
 
 impl AtlasField {
     const ALL: [Self; 19] = [
-        Self::PrimaryElevation,
-        Self::FinalElevation,
-        Self::ElevationChange,
-        Self::TectonicDisplacement,
-        Self::FluvialErosion,
-        Self::HillslopeErosion,
-        Self::HillslopeDeposition,
-        Self::RoutedSedimentDeposition,
-        Self::CoastalErosion,
-        Self::CoastalDeposition,
-        Self::IsostaticResponse,
+        Self::PrimaryRelief,
+        Self::CurrentElevation,
+        Self::EquilibriumAdjustment,
+        Self::TectonicDisplacementRate,
+        Self::FluvialErosionRate,
+        Self::HillslopeErosionRate,
+        Self::HillslopeDepositionRate,
+        Self::RoutedSedimentDepositionRate,
+        Self::CoastalErosionRate,
+        Self::CoastalDepositionRate,
+        Self::IsostaticResponseRate,
         Self::SurfaceWater,
         Self::MeanAnnualDischarge,
         Self::StrahlerOrder,
@@ -71,22 +71,22 @@ impl AtlasField {
         Self::DominantProvenance,
         Self::DeltaPotential,
         Self::FormationPrecipitation,
-        Self::ShelfDelivery,
+        Self::ShelfDepositionRate,
     ];
 
     const fn label(self) -> &'static str {
         match self {
-            Self::PrimaryElevation => "primary-elevation-m",
-            Self::FinalElevation => "final-elevation-m",
-            Self::ElevationChange => "final-minus-primary-elevation-m",
-            Self::TectonicDisplacement => "tectonic-displacement-m",
-            Self::FluvialErosion => "fluvial-erosion-m",
-            Self::HillslopeErosion => "hillslope-erosion-m",
-            Self::HillslopeDeposition => "hillslope-deposition-m",
-            Self::RoutedSedimentDeposition => "routed-sediment-deposition-m",
-            Self::CoastalErosion => "coastal-erosion-m",
-            Self::CoastalDeposition => "coastal-deposition-m",
-            Self::IsostaticResponse => "isostatic-response-m",
+            Self::PrimaryRelief => "primary-relief-m",
+            Self::CurrentElevation => "current-elevation-m",
+            Self::EquilibriumAdjustment => "equilibrium-adjustment-m",
+            Self::TectonicDisplacementRate => "tectonic-displacement-rate-m-per-year",
+            Self::FluvialErosionRate => "fluvial-erosion-rate-m-per-year",
+            Self::HillslopeErosionRate => "hillslope-erosion-rate-m-per-year",
+            Self::HillslopeDepositionRate => "hillslope-deposition-rate-m-per-year",
+            Self::RoutedSedimentDepositionRate => "routed-sediment-deposition-rate-m-per-year",
+            Self::CoastalErosionRate => "coastal-erosion-rate-m-per-year",
+            Self::CoastalDepositionRate => "coastal-deposition-rate-m-per-year",
+            Self::IsostaticResponseRate => "isostatic-response-rate-m-per-year",
             Self::SurfaceWater => "surface-water-class",
             Self::MeanAnnualDischarge => "mean-annual-discharge-m3-s",
             Self::StrahlerOrder => "strahler-order",
@@ -94,7 +94,7 @@ impl AtlasField {
             Self::DominantProvenance => "dominant-sediment-source",
             Self::DeltaPotential => "delta-potential",
             Self::FormationPrecipitation => "formation-precipitation-mm-day",
-            Self::ShelfDelivery => "shelf-delivery-kg",
+            Self::ShelfDepositionRate => "shelf-deposition-kg-per-year",
         }
     }
 }
@@ -208,38 +208,42 @@ fn field_color(
 ) -> Rgba<u8> {
     let terrain = snapshot.terrain_fields();
     let components = terrain.elevation_components();
+    let rates = snapshot.process_rates();
     let sediment = terrain.sediment();
     let hydrology = snapshot.hydrology();
     match field {
-        AtlasField::PrimaryElevation => elevation_color(relief.elevation_m()[cell]),
-        AtlasField::FinalElevation => elevation_color(terrain.final_elevation_m()[cell]),
-        AtlasField::ElevationChange => signed_color(
-            terrain.final_elevation_m()[cell] - components.primary_elevation_m()[cell],
-            200.0,
+        AtlasField::PrimaryRelief => elevation_color(relief.elevation_m()[cell]),
+        AtlasField::CurrentElevation => elevation_color(terrain.current_elevation_m()[cell]),
+        AtlasField::EquilibriumAdjustment => {
+            signed_color(components.equilibrium_adjustment_m()[cell], 200.0)
+        }
+        AtlasField::TectonicDisplacementRate => {
+            signed_color(rates.tectonic_displacement_rate_m_per_year()[cell], 0.005)
+        }
+        AtlasField::FluvialErosionRate => {
+            sequential_color(rates.fluvial_erosion_rate_m_per_year()[cell], 0.0, 0.005)
+        }
+        AtlasField::HillslopeErosionRate => {
+            sequential_color(rates.hillslope_erosion_rate_m_per_year()[cell], 0.0, 0.005)
+        }
+        AtlasField::HillslopeDepositionRate => sequential_color(
+            rates.hillslope_deposition_rate_m_per_year()[cell],
+            0.0,
+            0.005,
         ),
-        AtlasField::TectonicDisplacement => {
-            signed_color(components.tectonic_displacement_m()[cell], 200.0)
+        AtlasField::RoutedSedimentDepositionRate => sequential_color(
+            rates.routed_sediment_deposition_rate_m_per_year()[cell],
+            0.0,
+            0.005,
+        ),
+        AtlasField::CoastalErosionRate => {
+            sequential_color(rates.coastal_erosion_rate_m_per_year()[cell], 0.0, 0.000_02)
         }
-        AtlasField::FluvialErosion => {
-            sequential_color(components.fluvial_erosion_m()[cell], 0.0, 200.0)
+        AtlasField::CoastalDepositionRate => {
+            sequential_color(rates.coastal_deposition_rate_m_per_year()[cell], 0.0, 0.005)
         }
-        AtlasField::HillslopeErosion => {
-            sequential_color(components.hillslope_erosion_m()[cell], 0.0, 200.0)
-        }
-        AtlasField::HillslopeDeposition => {
-            sequential_color(components.hillslope_deposition_m()[cell], 0.0, 200.0)
-        }
-        AtlasField::RoutedSedimentDeposition => {
-            sequential_color(components.routed_sediment_deposition_m()[cell], 0.0, 400.0)
-        }
-        AtlasField::CoastalErosion => {
-            sequential_color(components.coastal_erosion_m()[cell], 0.0, 5.0)
-        }
-        AtlasField::CoastalDeposition => {
-            sequential_color(components.coastal_deposition_m()[cell], 0.0, 400.0)
-        }
-        AtlasField::IsostaticResponse => {
-            signed_color(components.isostatic_response_m()[cell], 100.0)
+        AtlasField::IsostaticResponseRate => {
+            signed_color(rates.isostatic_response_rate_m_per_year()[cell], 0.005)
         }
         AtlasField::SurfaceWater => match hydrology.surface_water().get(cell) {
             Some(SurfaceWaterKind::Ocean) => Rgba([26, 62, 122, 255]),
@@ -274,8 +278,10 @@ fn field_color(
             0.0,
             20.0,
         ),
-        AtlasField::ShelfDelivery => sequential_color(
-            sediment.shelf_delivery_kg()[cell].max(0.0).ln_1p() as f32,
+        AtlasField::ShelfDepositionRate => sequential_color(
+            sediment.shelf_deposition_kg_per_year()[cell]
+                .max(0.0)
+                .ln_1p() as f32,
             0.0,
             32.0,
         ),

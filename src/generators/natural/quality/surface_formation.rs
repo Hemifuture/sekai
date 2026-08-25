@@ -51,8 +51,8 @@ const HYPSOMETRY_ENVELOPE: [(&str, Option<f64>, Option<f64>); 8] = [
 const EXPECTED_METRIC_NAMES: [&str; 22] = [
     "component-identity-mismatch-count",
     "deposited-sediment-enrichment-ratio",
+    "equilibrium-current-flux-residual",
     "final-land-fraction-absolute-change",
-    "fixed-point-normalized-residual",
     "fluvial-incision-support-enrichment-ratio",
     "land-area-share-below-100m",
     "land-outlet-path-area-fraction",
@@ -84,8 +84,8 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
     [
         (None, Some(0.0)),
         (Some(1.25), None),
-        (None, Some(0.03)),
         (None, Some(1.0)),
+        (None, Some(0.03)),
         (Some(1.50), None),
         (None, None),
         (Some(0.95), None),
@@ -168,7 +168,7 @@ fn evaluate_impl(
         != snapshot
             .terrain_fields()
             .elevation_components()
-            .primary_elevation_m()
+            .primary_relief_m()
         || relief.water_inventory_m3() != snapshot.terrain_fields().water_inventory_m3()
     {
         return Err(QualityBuildError::InvalidInput {
@@ -198,18 +198,18 @@ fn evaluate_impl(
         state.deposited_sediment_enrichment(),
         minimum(name),
     )?;
+    let name = "equilibrium-current-flux-residual";
+    builder.record_at_most(
+        metric_id(name)?,
+        snapshot.solve_report().terminal_residual().normalized_max(),
+        u32::from(snapshot.solve_report().climate_solve_count()),
+        maximum(name),
+    )?;
     let name = "final-land-fraction-absolute-change";
     builder.record_at_most(
         metric_id(name)?,
         state.land_fraction_absolute_change,
         cells,
-        maximum(name),
-    )?;
-    let name = "fixed-point-normalized-residual";
-    builder.record_at_most(
-        metric_id(name)?,
-        snapshot.solve_report().final_residual().normalized_max(),
-        u32::from(snapshot.solve_report().outer_iterations()),
         maximum(name),
     )?;
     let name = "fluvial-incision-support-enrichment-ratio";
@@ -386,9 +386,10 @@ impl FormationQualityState {
     ) -> Result<Self, QualityBuildError> {
         let terrain = snapshot.terrain_fields();
         let components = terrain.elevation_components();
+        let process_rates = snapshot.process_rates();
         let hydrology = snapshot.hydrology();
         let sediment = terrain.sediment();
-        let elevation = terrain.final_elevation_m();
+        let elevation = terrain.current_elevation_m();
         let drainage = hydrology.drainage_surface_elevation_m().values();
         let discharge = hydrology.mean_annual_discharge_m3_s();
         let count = surface.cells().len();
@@ -436,19 +437,12 @@ impl FormationQualityState {
             poll_cancelled(cancellation, index)?;
             let area_m2 = surface.cells()[index].area.get();
             state.total_area_m2 += area_m2;
-            primary_sum += area_m2 * f64::from(components.primary_elevation_m()[index]);
+            primary_sum += area_m2 * f64::from(components.primary_relief_m()[index]);
             final_sum += area_m2 * f64::from(elevation[index]);
 
             let expected = formation_elevation_from_components(
-                components.primary_elevation_m()[index],
-                components.tectonic_displacement_m()[index],
-                components.fluvial_erosion_m()[index],
-                components.hillslope_erosion_m()[index],
-                components.hillslope_deposition_m()[index],
-                components.routed_sediment_deposition_m()[index],
-                components.coastal_erosion_m()[index],
-                components.coastal_deposition_m()[index],
-                components.isostatic_response_m()[index],
+                components.primary_relief_m()[index],
+                components.equilibrium_adjustment_m()[index],
             );
             if elevation[index].to_bits() != expected.to_bits() {
                 state.component_identity_mismatch_count += 1.0;
@@ -490,7 +484,8 @@ impl FormationQualityState {
                 state.eligible_cell_count += 1;
             }
 
-            let incision_m3 = f64::from(components.fluvial_erosion_m()[index]) * area_m2;
+            let incision_m3 =
+                f64::from(process_rates.fluvial_erosion_rate_m_per_year()[index]) * area_m2;
             if is_land {
                 state.incision_volume_m3 += incision_m3;
                 let slope = receiver_slope(surface, hydrology.flow_receiver(), drainage, index);
@@ -525,7 +520,7 @@ impl FormationQualityState {
         state.land_fraction_absolute_change = (final_land_fraction - relief_land_fraction).abs();
         state.primary_final_correlation = area_weighted_correlation(
             surface,
-            components.primary_elevation_m(),
+            components.primary_relief_m(),
             elevation,
             primary_sum / state.total_area_m2,
             final_sum / state.total_area_m2,
@@ -543,7 +538,7 @@ impl FormationQualityState {
                     state.support_area_m2 += area_m2;
                     state.support_cell_count += 1;
                     state.support_incision_volume_m3 +=
-                        f64::from(components.fluvial_erosion_m()[index]) * area_m2;
+                        f64::from(process_rates.fluvial_erosion_rate_m_per_year()[index]) * area_m2;
                 }
             }
         }

@@ -7,7 +7,7 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField, SurfaceWaterField,
-    SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE,
+    SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -28,6 +28,8 @@ struct Fields {
     annual_precipitation_mm: Vec<f32>,
     substrate_density_kg_m3: Vec<f32>,
     sediment_sources: SedimentSourceKindField,
+    sediment_thickness_m: Vec<f32>,
+    sediment_provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 impl Fields {
@@ -40,6 +42,8 @@ impl Fields {
             annual_precipitation_mm: &self.annual_precipitation_mm,
             substrate_density_kg_m3: &self.substrate_density_kg_m3,
             sediment_sources: &self.sediment_sources,
+            sediment_thickness_m: &self.sediment_thickness_m,
+            sediment_provenance_fraction: &self.sediment_provenance_fraction,
         }
     }
 }
@@ -56,6 +60,8 @@ fn uniform_fields(count: usize, elevation_m: f32) -> Fields {
             SedimentSourceKind::Felsic;
             count
         ]),
+        sediment_thickness_m: vec![0.0; count],
+        sediment_provenance_fraction: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
     }
 }
 
@@ -191,7 +197,62 @@ fn nonlinear_flux_accelerates_near_critical_slope_without_inversion() {
 }
 
 #[test]
-fn normalized_edge_flux_is_resolution_invariant_before_the_shared_limiter() {
+fn finite_volume_cfl_rejects_an_unstable_step_instead_of_clipping_flux() {
+    let surface = surface(10_000.0, 42);
+    let (high, low, fields) = isolated_edge_fields(
+        &surface,
+        FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.5,
+        0.5,
+        0.5,
+        1_000.0,
+    );
+    let maximum = match NonlinearHillslopeTransport::advance(
+        &surface,
+        fields.inputs(),
+        1.0e12,
+        &mut HillslopeWorkspace::default(),
+        &BuildCancellation::new(),
+    ) {
+        Err(HillslopeGenerationError::UnstableStep { found, maximum }) => {
+            assert_eq!(found, 1.0e12);
+            maximum
+        }
+        other => panic!("an unstable explicit step must be rejected: {other:?}"),
+    };
+    assert!(maximum.is_finite() && maximum > 0.0 && maximum < 1.0e12);
+
+    let stable = NonlinearHillslopeTransport::advance(
+        &surface,
+        fields.inputs(),
+        maximum,
+        &mut HillslopeWorkspace::default(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let input_minimum = fields
+        .elevation_m
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    let input_maximum = fields
+        .elevation_m
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(stable
+        .elevation_m()
+        .iter()
+        .all(|&elevation| (input_minimum..=input_maximum).contains(&elevation)));
+    assert!(stable.elevation_m()[high.raw() as usize] < fields.elevation_m[high.raw() as usize]);
+    assert!(stable.elevation_m()[low.raw() as usize] > fields.elevation_m[low.raw() as usize]);
+    assert_eq!(
+        stable.removed_mass_kg().to_bits(),
+        stable.deposited_mass_kg().to_bits()
+    );
+}
+
+#[test]
+fn normalized_edge_flux_is_resolution_invariant_within_the_monotone_step() {
     let slope = FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.20;
     let normalized = |target_cell_count| {
         let surface = surface(10_000.0, target_cell_count);

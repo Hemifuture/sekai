@@ -35,7 +35,7 @@ pub struct StreamPowerInputs<'a> {
     pub substrate_erodibility: &'a [f32],
 }
 
-/// Retained output of one tectonic-plus-fluvial macro step.
+/// Private output of one tectonic-plus-fluvial continuation update.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamPowerStep {
     elevation_m: Vec<f32>,
@@ -90,26 +90,21 @@ impl ImplicitStreamPowerSolver {
         let mut fluvial_erosion_m = vec![0.0_f32; count];
         let mut elevation_m = Vec::with_capacity(count);
 
+        // Rock columns move with the plate whether their top is exposed or
+        // submerged, so the current forcing carries no surface-water mask. Only
+        // the subaerial incision pass below reads `SurfaceWaterKind`.
         for (index, retained_displacement_slot) in tectonic_displacement_m.iter_mut().enumerate() {
             poll_cancelled(cancellation, index)?;
             let initial = inputs.elevation_m[index];
             let net_rate_m_per_year = (f64::from(inputs.uplift_rate_mm_per_year[index])
                 - f64::from(inputs.subsidence_rate_mm_per_year[index]))
                 / MILLIMETERS_PER_METER;
-            let unclamped = f64::from(initial) + net_rate_m_per_year * step_years;
-            let bounded = unclamped.clamp(f64::from(ELEVATION_MIN_M), f64::from(ELEVATION_MAX_M));
-            let retained_displacement = (bounded - f64::from(initial)) as f32;
+            let forced = f64::from(initial) + net_rate_m_per_year * step_years;
+            let retained_displacement = (forced - f64::from(initial)) as f32;
             *retained_displacement_slot = retained_displacement;
             elevation_m.push(formation_elevation_from_components(
                 initial,
                 retained_displacement,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
             ));
         }
 
@@ -157,14 +152,7 @@ impl ImplicitStreamPowerSolver {
             let retained_erosion = (forced_height - candidate) as f32;
             let mut retained_height = formation_elevation_from_components(
                 inputs.elevation_m[index],
-                tectonic_displacement_m[index],
-                retained_erosion,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
+                tectonic_displacement_m[index] - retained_erosion,
             );
             let receiver_height_f32 = elevation_m[receiver_index];
             let mut adjusted_erosion = retained_erosion;
@@ -172,18 +160,19 @@ impl ImplicitStreamPowerSolver {
                 adjusted_erosion = next_down_nonnegative(adjusted_erosion);
                 retained_height = formation_elevation_from_components(
                     inputs.elevation_m[index],
-                    tectonic_displacement_m[index],
-                    adjusted_erosion,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
+                    tectonic_displacement_m[index] - adjusted_erosion,
                 );
             }
             fluvial_erosion_m[index] = adjusted_erosion;
             elevation_m[index] = retained_height;
+        }
+        for (index, &elevation) in elevation_m.iter().enumerate() {
+            if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+                return Err(StreamPowerGenerationError::ElevationOutOfRange {
+                    cell: CellId::from_raw(index as u32),
+                    found: f64::from(elevation),
+                });
+            }
         }
         check_cancelled(cancellation)?;
         Ok(StreamPowerStep {
@@ -539,4 +528,6 @@ pub enum StreamPowerGenerationError {
     InvalidScalarInput { field: &'static str, found: f64 },
     #[error("implicit scalar stream-power update produced invalid height {found}")]
     InvalidScalarResult { found: f64 },
+    #[error("stream-power elevation at {cell:?} is outside the supported range: {found}")]
+    ElevationOutOfRange { cell: CellId, found: f64 },
 }
