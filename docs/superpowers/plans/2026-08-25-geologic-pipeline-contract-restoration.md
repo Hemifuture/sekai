@@ -346,6 +346,7 @@ staged name list 恰为除零差异 `surface_formation/mod.rs` 外的 35 条，�
 - Modify: `src/world/natural/formation.rs`
 - Modify: `src/world/natural/mod.rs`
 - Modify: `src/generators/natural/spherical_tectonics.rs`
+- Modify: `src/generators/natural/spherical_tectonics/kinematics.rs`
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Modify: `src/generators/natural/spherical_tectonics/publication.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/mod.rs`
@@ -368,12 +369,20 @@ formation 传递。清单以该真实生产消费者替换不存在的测试文�
 **实现期时间消费者修订（2026-08-25）：**GREEN 调用图审计进一步发现
 `processes/rifting.rs::maybe_rift_plates` 把 Poisson 事件窗口以字面量 `2` Myr
 传给已有 `poisson_event(..., delta_myr: u16)`。这是第四份隐藏步长事实，若不迁移
-就会让 rift 概率继续绕过 resolved timeline。Task 1 因而增加该真实算法消费者，
-共 12 个路径；函数显式接收经整除与 checked conversion 从
+就会让 rift 概率继续绕过 resolved timeline。Task 1 因而增加该真实算法消费者；
+函数显式接收经整除与 checked conversion 从
 `timeline.step_duration_kyr()` 派生的整数 Myr，V4/V5 两条 runner 传同一个值，
 文件内测试复用 production timeline 常量/访问器。不得保留字面量 `2`、在 rifting
 内部调用 `sekai_reference()`，或把 Poisson 模型改成会改变现有随机阈值舍入的
 另一套时间单位。
+
+**实现期测试 SSOT 修订（2026-08-25）：**完整数值搜索还发现
+`spherical_tectonics/kinematics.rs` 的解析回归把 reference horizon 复制成
+`128 × 2.0 = 256.0`。它不是任意局部 fixture，而是在证明逐步旋转与完整生产时域
+一次旋转等价，因此必须从 `ResolvedFormationTimeline::sekai_reference()` 的三个
+访问器取得 step count、step duration 与 total duration。Task 1 最终共 13 个路径；
+其他测试中用于非法输入、几何或任意局部算例且不表达产品时间身份的数值不因
+“看起来相同”扩张范围。
 
 **Interfaces:**
 - Consumes: `ResolvedWorldFormation::new(u16, WorldFormationPreset, ResolvedWorldFormationPreset)`；该构造器签名保持不变。
@@ -485,6 +494,8 @@ impl ResolvedFormationTimeline {
 `src/generators/natural/spherical_tectonics.rs` 的 control/direct 两条 runner 调用及其
 crate 内单元 fixture 同步传完整 resolved formation；不得在调用点重建 reference
 timeline。
+`kinematics.rs` 的完整 horizon 解析回归直接引用 production timeline 访问器，
+不得继续复制 `128`、`2.0` 或 `256.0`；算法自身仍只接收显式 `delta_myr`。
 `forcing.rs` 的 metres-per-step→mm/year 换算显式接收同一
 `timeline.step_duration_myr()`；`subduction.rs` 不再把每步 uplift 固化为含
 `DEFAULT_DELTA_MYR` 的常量，而是保留有单位 rate 并在调用时乘本步时长；
@@ -511,7 +522,7 @@ fingerprint 必须按现有身份规则确定性刷新；不得要求旧指纹�
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
+git add src/world/natural/formation.rs src/world/natural/mod.rs src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/kinematics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/processes/rifting.rs src/generators/natural/spherical_tectonics/processes/spreading.rs src/generators/natural/spherical_tectonics/processes/subduction.rs src/generators/natural/spherical_tectonics/forcing.rs src/generators/natural/evolved_tectonics.rs tests/world_formation_spec.rs
 git commit -m "Move formation timing into resolved world state" -m "Keep Sekai's authored horizon and Cortial's sourced step duration distinct inside validated input identity."
 ```
 
