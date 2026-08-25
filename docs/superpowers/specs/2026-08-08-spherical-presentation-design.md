@@ -657,5 +657,5 @@ S0C 只有在以下条件全部满足后完成：
   稳态在默认语料无域内解，Task 0 因而不以合成成功产物冒充真实 payload 物化；
   默认成功 artifact 与真实字段值验证按恢复计划留给 Task 9/11。本条只记录
   Task 0 的继承因果，不改变
-  `2026-08-24-geologic-pipeline-contract-restoration-design.md` §0.1(2) 对 Task 1
+  `2026-08-24-geologic-pipeline-contract-restoration-design.md` §0.1(2) 对 Task 7
   九项最终因果组成的恢复要求，也不提前实现该任务。
