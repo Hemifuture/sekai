@@ -185,6 +185,9 @@ pub fn expected_surface_formation_dense_state_bytes(
     const WORKING_ELEVATION_BYTES_PER_CELL: u64 = 2 * 8;
     /// Current and candidate exact rates for all eight formation processes.
     const EXACT_PROCESS_RATE_BYTES_PER_CELL: u64 = 2 * 8 * 8;
+    /// Current state, cloned trial state, transfer candidate, zero transfer,
+    /// and router result for all five exact sediment-source masses.
+    const EXACT_SEDIMENT_STOCK_BYTES_PER_CELL: u64 = 5 * 5 * 8;
     /// Current state, cloned trial state, and replacement exact water geometry:
     /// two `f64` cell fields plus one `u32` land/ocean field.
     const EXACT_WATER_BYTES_PER_CELL: u64 = 3 * (2 * 8 + 4);
@@ -212,6 +215,7 @@ pub fn expected_surface_formation_dense_state_bytes(
     let per_cell = COMPONENT_ACCUMULATOR_BYTES_PER_CELL
         + WORKING_ELEVATION_BYTES_PER_CELL
         + EXACT_PROCESS_RATE_BYTES_PER_CELL
+        + EXACT_SEDIMENT_STOCK_BYTES_PER_CELL
         + EXACT_WATER_BYTES_PER_CELL
         + WIRE_WATER_BYTES_PER_CELL
         + RETAINED_TERRAIN_BYTES_PER_CELL

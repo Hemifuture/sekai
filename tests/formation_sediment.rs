@@ -64,9 +64,7 @@ struct Fields {
     marine_exposure: Vec<f64>,
     density_kg_m3: Vec<f32>,
     sources: SedimentSourceKindField,
-    previous_thickness_m: Vec<f32>,
-    previous_provenance: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
-    sediment_stock_removed_kg: Vec<f64>,
+    retained_sediment_mass_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 impl Fields {
@@ -83,9 +81,7 @@ impl Fields {
             coastal_removed_by_source_kg: &self.coastal_removed_by_source_kg,
             coastal_ocean_injection_by_source_kg: &self.coastal_ocean_injection_by_source_kg,
             marine_exposure: &self.marine_exposure,
-            previous_sediment_thickness_m: &self.previous_thickness_m,
-            previous_provenance_fraction: &self.previous_provenance,
-            sediment_stock_removed_kg: &self.sediment_stock_removed_kg,
+            retained_sediment_mass_by_source_kg: &self.retained_sediment_mass_by_source_kg,
         }
     }
 
@@ -116,9 +112,7 @@ fn zero_fields(surface: &SphericalSurfaceSnapshot) -> Fields {
         marine_exposure: vec![0.0; count],
         density_kg_m3: vec![2_700.0; count],
         sources: SedimentSourceKindField::from_kinds(vec![SedimentSourceKind::Felsic; count]),
-        previous_thickness_m: vec![0.0; count],
-        previous_provenance: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
-        sediment_stock_removed_kg: vec![0.0; count],
+        retained_sediment_mass_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
     }
 }
 
@@ -333,7 +327,7 @@ fn closed_basins_store_mass_while_exposed_shelf_exports_more_to_deep_ocean() {
 }
 
 #[test]
-fn reworked_sediment_is_removed_from_current_stock_before_new_deposition() {
+fn retained_exact_stock_is_projected_after_reworked_sediment_export() {
     let surface = surface(10_000.0, 42);
     let mut fields = zero_fields(&surface);
     let index = 0;
@@ -341,13 +335,16 @@ fn reworked_sediment_is_removed_from_current_stock_before_new_deposition() {
     let removed_thickness_m = 0.75_f64;
     fields.elevation_m[index] = -100.0;
     fields.marine_exposure[index] = 1.0;
-    fields.previous_thickness_m[index] = initial_thickness_m;
-    fields.previous_provenance[index] = [0.25, 0.75, 0.0, 0.0, 0.0];
-    fields.sediment_stock_removed_kg[index] = removed_thickness_m
+    let removed_mass_kg = removed_thickness_m
         * surface.cells()[index].area.get()
         * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
-    fields.fluvial_removed_by_source_kg[index][0] = fields.sediment_stock_removed_kg[index] * 0.25;
-    fields.fluvial_removed_by_source_kg[index][1] = fields.sediment_stock_removed_kg[index] * 0.75;
+    let retained_mass_kg = (f64::from(initial_thickness_m) - removed_thickness_m)
+        * surface.cells()[index].area.get()
+        * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+    fields.retained_sediment_mass_by_source_kg[index][0] = retained_mass_kg * 0.25;
+    fields.retained_sediment_mass_by_source_kg[index][1] = retained_mass_kg * 0.75;
+    fields.fluvial_removed_by_source_kg[index][0] = removed_mass_kg * 0.25;
+    fields.fluvial_removed_by_source_kg[index][1] = removed_mass_kg * 0.75;
 
     let result =
         ProvenanceSedimentRouter::route(&surface, fields.inputs(), 1.0, &BuildCancellation::new())

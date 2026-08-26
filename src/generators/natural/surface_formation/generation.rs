@@ -431,42 +431,32 @@ struct GeomorphicState {
     terrain: FormationTerrainFields,
 }
 
-fn quantize_nonnegative_not_above(value: f64) -> f32 {
-    debug_assert!(value.is_finite() && value >= 0.0);
-    let rounded = value as f32;
-    if f64::from(rounded) <= value || rounded == 0.0 {
-        rounded
-    } else {
-        f32::from_bits(rounded.to_bits() - 1)
-    }
-}
-
 struct FluvialCoverRemoval {
-    remaining_thickness_m: Vec<f32>,
-    removed_stock_kg: Vec<f64>,
+    removed_stock_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 fn remove_fluvial_sediment_cover(
     surface: &SphericalSurfaceSnapshot,
-    sediment: &FormationSedimentFields,
+    sediment_mass_by_source_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     substrate: &GeologicSubstrateSnapshot,
     fluvial_erosion_m: &[f64],
     cancellation: &BuildCancellation,
 ) -> Result<FluvialCoverRemoval, SurfaceFormationGenerationError> {
     let count = surface.cells().len();
-    let mut remaining_thickness_m = Vec::with_capacity(count);
-    let mut removed_stock_kg = Vec::with_capacity(count);
+    let mut removed_stock_by_source_kg = Vec::with_capacity(count);
     let mut removed_by_source_kg = Vec::with_capacity(count);
     for (index, &fluvial_erosion_m) in fluvial_erosion_m.iter().enumerate().take(count) {
         poll_cancelled(cancellation, index)?;
         let erosion_m = fluvial_erosion_m;
-        let stock_thickness_m = f64::from(sediment.sediment_thickness_m()[index]);
-        let stock_erosion_m = erosion_m.min(stock_thickness_m);
         let area_m2 = surface.cells()[index].area.get();
-        let stock_mass_kg = stock_erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
-        let weights = sediment.provenance_fraction()[index].map(f64::from);
-        let mut by_source = split_mass_by_weights(stock_mass_kg, weights);
+        let stock_mass_kg = sediment_mass_by_source_kg[index].iter().sum::<f64>();
+        let stock_thickness_m = stock_mass_kg / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3);
+        let stock_erosion_m = erosion_m.min(stock_thickness_m);
+        let removed_stock_kg = stock_erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+        let removed_stock_by_source =
+            split_mass_by_weights(removed_stock_kg, sediment_mass_by_source_kg[index]);
+        let mut by_source = removed_stock_by_source;
         let substrate_erosion_m = erosion_m - stock_erosion_m;
         let substrate_source = substrate
             .sediment_sources()
@@ -475,47 +465,31 @@ fn remove_fluvial_sediment_cover(
             .raw() as usize;
         by_source[substrate_source] +=
             substrate_erosion_m * area_m2 * f64::from(substrate.crust_density_kg_m3()[index]);
-        remaining_thickness_m.push(quantize_nonnegative_not_above(
-            stock_thickness_m - stock_erosion_m,
-        ));
-        removed_stock_kg.push(stock_mass_kg);
+        removed_stock_by_source_kg.push(removed_stock_by_source);
         removed_by_source_kg.push(by_source);
     }
     Ok(FluvialCoverRemoval {
-        remaining_thickness_m,
-        removed_stock_kg,
+        removed_stock_by_source_kg,
         removed_by_source_kg,
     })
 }
 
-fn remaining_sediment_thickness(
-    surface: &SphericalSurfaceSnapshot,
-    thickness_m: &[f32],
-    removed_stock_kg: &[f64],
-    cancellation: &BuildCancellation,
-) -> Result<Vec<f32>, SurfaceFormationGenerationError> {
-    let mut remaining = Vec::with_capacity(surface.cells().len());
-    for index in 0..surface.cells().len() {
-        poll_cancelled(cancellation, index)?;
-        let removed_thickness_m = removed_stock_kg[index]
-            / (surface.cells()[index].area.get() * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3);
-        remaining.push(quantize_nonnegative_not_above(
-            (f64::from(thickness_m[index]) - removed_thickness_m).max(0.0),
-        ));
-    }
-    Ok(remaining)
-}
-
 fn sum_sediment_stock_removal(
-    fluvial_kg: &[f64],
-    hillslope_kg: &[f64],
-    coastal_kg: &[f64],
+    fluvial_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+    hillslope_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+    coastal_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     cancellation: &BuildCancellation,
 ) -> Result<Vec<f64>, SurfaceFormationGenerationError> {
     let mut total = Vec::with_capacity(fluvial_kg.len());
     for index in 0..fluvial_kg.len() {
         poll_cancelled(cancellation, index)?;
-        total.push(fluvial_kg[index] + hillslope_kg[index] + coastal_kg[index]);
+        total.push(
+            fluvial_kg[index]
+                .iter()
+                .chain(&hillslope_kg[index])
+                .chain(&coastal_kg[index])
+                .sum(),
+        );
     }
     Ok(total)
 }
@@ -909,6 +883,8 @@ fn advance_geomorphic_window(
 ) -> Result<CurrentProcessEvaluation, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
     let surface = inputs.surface;
+    let zero_sediment_transfer =
+        vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; surface.cells().len()];
     let annual_precipitation_mm = annual_precipitation_mm(climate, cancellation)?;
     let hydrology = FormationHydrologyGenerator::generate_from_validated_exact(
         surface,
@@ -927,8 +903,7 @@ fn advance_geomorphic_window(
         annual_precipitation_mm: &annual_precipitation_mm,
         substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
         sediment_sources: inputs.substrate.sediment_sources(),
-        sediment_thickness_m: state.terrain.sediment().sediment_thickness_m(),
-        sediment_provenance_fraction: state.terrain.sediment().provenance_fraction(),
+        sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
     };
     let maximum_hillslope_step_years =
         NonlinearHillslopeTransport::maximum_stable_step_years_from_validated_surface(
@@ -957,10 +932,14 @@ fn advance_geomorphic_window(
 
     let fluvial_cover = remove_fluvial_sediment_cover(
         surface,
-        state.terrain.sediment(),
+        state.components.sediment_stock().as_slice(),
         inputs.substrate,
         stream.fluvial_erosion_m(),
         cancellation,
+    )?;
+    state.components.sediment_stock_mut().apply_transfer(
+        &fluvial_cover.removed_stock_by_source_kg,
+        &zero_sediment_transfer,
     )?;
 
     let hillslope = NonlinearHillslopeTransport::advance_from_validated_surface(
@@ -973,8 +952,7 @@ fn advance_geomorphic_window(
             annual_precipitation_mm: &annual_precipitation_mm,
             substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
             sediment_sources: inputs.substrate.sediment_sources(),
-            sediment_thickness_m: &fluvial_cover.remaining_thickness_m,
-            sediment_provenance_fraction: state.terrain.sediment().provenance_fraction(),
+            sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
         },
         *step_years,
         workspace,
@@ -986,12 +964,9 @@ fn advance_geomorphic_window(
     state
         .components
         .apply_hillslope_deposition_f64(hillslope.hillslope_deposition_m())?;
-
-    let coastal_cover_thickness_m = remaining_sediment_thickness(
-        surface,
-        &fluvial_cover.remaining_thickness_m,
-        hillslope.sediment_stock_removed_kg(),
-        cancellation,
+    state.components.sediment_stock_mut().apply_transfer(
+        hillslope.sediment_stock_removed_by_source_kg(),
+        &zero_sediment_transfer,
     )?;
 
     let coast_water = solve_physical_sea_level_exact(
@@ -1015,8 +990,7 @@ fn advance_geomorphic_window(
                 .surface_water_geometry()
                 .wet_edge_fraction(),
             substrate_erodibility: inputs.substrate.erodibility(),
-            sediment_thickness_m: &coastal_cover_thickness_m,
-            sediment_provenance_fraction: state.terrain.sediment().provenance_fraction(),
+            sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
             substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
             sediment_sources: inputs.substrate.sediment_sources(),
             near_surface_wind_m_s: climate.fields().near_surface_wind_m_s().values(),
@@ -1028,11 +1002,15 @@ fn advance_geomorphic_window(
     state
         .components
         .apply_coastal_erosion_f64(coast.coastal_erosion_m())?;
+    state.components.sediment_stock_mut().apply_transfer(
+        coast.sediment_stock_removed_by_source_kg(),
+        &zero_sediment_transfer,
+    )?;
 
     let sediment_stock_removed_kg = sum_sediment_stock_removal(
-        &fluvial_cover.removed_stock_kg,
-        hillslope.sediment_stock_removed_kg(),
-        coast.sediment_stock_removed_kg(),
+        &fluvial_cover.removed_stock_by_source_kg,
+        hillslope.sediment_stock_removed_by_source_kg(),
+        coast.sediment_stock_removed_by_source_kg(),
         cancellation,
     )?;
     let sediment = ProvenanceSedimentRouter::route_from_validated_surface(
@@ -1050,9 +1028,7 @@ fn advance_geomorphic_window(
             coastal_removed_by_source_kg: coast.removed_by_source_kg(),
             coastal_ocean_injection_by_source_kg: coast.ocean_injection_by_source_kg(),
             marine_exposure: coast.marine_exposure(),
-            previous_sediment_thickness_m: state.terrain.sediment().sediment_thickness_m(),
-            previous_provenance_fraction: state.terrain.sediment().provenance_fraction(),
-            sediment_stock_removed_kg: &sediment_stock_removed_kg,
+            retained_sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
         },
         *step_years,
         cancellation,
@@ -1063,6 +1039,10 @@ fn advance_geomorphic_window(
     state
         .components
         .apply_coastal_deposition_f64(sediment.coastal_deposition_m())?;
+    state
+        .components
+        .sediment_stock_mut()
+        .apply_transfer(&zero_sediment_transfer, sediment.deposited_by_source_kg())?;
     let budget = *sediment.budget_report();
     let sediment_stock_change_kg_per_year = sediment_stock_change_kg_per_year(
         sediment.deposited_mass_kg(),

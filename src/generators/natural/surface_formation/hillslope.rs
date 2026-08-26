@@ -29,8 +29,7 @@ pub struct HillslopeInputs<'a> {
     pub annual_precipitation_mm: &'a [f32],
     pub substrate_density_kg_m3: &'a [f32],
     pub sediment_sources: &'a SedimentSourceKindField,
-    pub sediment_thickness_m: &'a [f32],
-    pub sediment_provenance_fraction: &'a [[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+    pub sediment_mass_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,7 +110,7 @@ pub struct HillslopeTransportStep {
     removed_mass_kg: f64,
     deposited_mass_kg: f64,
     retained_mass_relative_error: f64,
-    sediment_stock_removed_kg: Vec<f64>,
+    sediment_stock_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 impl HillslopeTransportStep {
@@ -159,8 +158,10 @@ impl HillslopeTransportStep {
         self.retained_mass_relative_error
     }
 
-    pub fn sediment_stock_removed_kg(&self) -> &[f64] {
-        &self.sediment_stock_removed_kg
+    pub fn sediment_stock_removed_by_source_kg(
+        &self,
+    ) -> &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]] {
+        &self.sediment_stock_removed_by_source_kg
     }
 }
 
@@ -249,32 +250,31 @@ impl NonlinearHillslopeTransport {
             .map(|transfer| transfer.mass_kg)
             .sum::<f64>();
 
-        let mut sediment_stock_removed_kg = Vec::with_capacity(cell_count);
+        let mut sediment_stock_removed_by_source_kg = Vec::with_capacity(cell_count);
         let mut source_fractions = vec![[0.0_f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]; cell_count];
         for (index, source_fraction) in source_fractions.iter_mut().enumerate() {
             poll_cancelled(cancellation, index)?;
             let removed = workspace.erosion_mass_kg[index];
-            let stock = f64::from(inputs.sediment_thickness_m[index])
-                * surface.cells()[index].area.get()
-                * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+            let stock_by_source_kg = inputs.sediment_mass_by_source_kg[index];
+            let stock = stock_by_source_kg.iter().sum::<f64>();
             let stock_removed = stock.min(removed);
-            sediment_stock_removed_kg.push(stock_removed);
+            let stock_removed_by_source_kg =
+                split_mass_by_weights(stock_removed, stock_by_source_kg);
+            sediment_stock_removed_by_source_kg.push(stock_removed_by_source_kg);
             if removed == 0.0 {
                 continue;
             }
-            let stock_fraction = stock_removed / removed;
-            for (fraction, &provenance) in source_fraction
-                .iter_mut()
-                .zip(&inputs.sediment_provenance_fraction[index])
+            for (fraction, stock_mass_kg) in
+                source_fraction.iter_mut().zip(stock_removed_by_source_kg)
             {
-                *fraction = stock_fraction * f64::from(provenance);
+                *fraction = stock_mass_kg / removed;
             }
             let substrate_source = inputs
                 .sediment_sources
                 .get(index)
                 .expect("validated source field covers every cell")
                 .raw() as usize;
-            source_fraction[substrate_source] += 1.0 - stock_fraction;
+            source_fraction[substrate_source] += (removed - stock_removed) / removed;
             let source_sum = source_fraction.iter().sum::<f64>();
             for fraction in source_fraction {
                 *fraction /= source_sum;
@@ -296,11 +296,14 @@ impl NonlinearHillslopeTransport {
         let mut retained_removed_mass_kg = 0.0_f64;
         let mut retained_deposited_mass_kg = 0.0_f64;
         let mut removed_volume_m3 = 0.0_f64;
-        for (index, &stock_removed_kg) in sediment_stock_removed_kg.iter().enumerate() {
+        for index in 0..sediment_stock_removed_by_source_kg.len() {
             poll_cancelled(cancellation, index)?;
+            let stock_removed_kg = inputs.sediment_mass_by_source_kg[index]
+                .iter()
+                .sum::<f64>()
+                .min(workspace.erosion_mass_kg[index]);
             let area_m2 = surface.cells()[index].area.get();
-            let substrate_removed_kg =
-                (workspace.erosion_mass_kg[index] - stock_removed_kg).max(0.0);
+            let substrate_removed_kg = workspace.erosion_mass_kg[index] - stock_removed_kg;
             let erosion_volume_m3 = stock_removed_kg / FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3
                 + substrate_removed_kg / f64::from(inputs.substrate_density_kg_m3[index]);
             let erosion_m = erosion_volume_m3 / area_m2;
@@ -349,7 +352,7 @@ impl NonlinearHillslopeTransport {
             removed_mass_kg: transported_mass_kg,
             deposited_mass_kg: transported_mass_kg,
             retained_mass_relative_error,
-            sediment_stock_removed_kg,
+            sediment_stock_removed_by_source_kg,
         })
     }
 }
@@ -469,10 +472,9 @@ fn validate_inputs(
             inputs.substrate_density_kg_m3.len(),
         ),
         ("sediment_sources", inputs.sediment_sources.len()),
-        ("sediment_thickness_m", inputs.sediment_thickness_m.len()),
         (
-            "sediment_provenance_fraction",
-            inputs.sediment_provenance_fraction.len(),
+            "sediment_mass_by_source_kg",
+            inputs.sediment_mass_by_source_kg.len(),
         ),
     ] {
         if found != count {
@@ -513,11 +515,6 @@ fn validate_inputs(
                 inputs.substrate_density_kg_m3[index],
                 CRUST_DENSITY_MAX_KG_M3,
             ),
-            (
-                "sediment_thickness_m",
-                inputs.sediment_thickness_m[index],
-                ELEVATION_MAX_M - ELEVATION_MIN_M,
-            ),
         ] {
             let minimum = if field == "substrate_density_kg_m3" {
                 CRUST_DENSITY_MIN_KG_M3
@@ -532,19 +529,19 @@ fn validate_inputs(
                 });
             }
         }
-        let provenance_sum = inputs.sediment_provenance_fraction[index]
+        let sediment_mass_kg = inputs.sediment_mass_by_source_kg[index]
             .iter()
-            .map(|&value| f64::from(value))
+            .copied()
             .sum::<f64>();
-        if inputs.sediment_provenance_fraction[index]
-            .iter()
-            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-            || (inputs.sediment_thickness_m[index] > 0.0 && provenance_sum <= 0.0)
+        if !sediment_mass_kg.is_finite()
+            || inputs.sediment_mass_by_source_kg[index]
+                .iter()
+                .any(|&value| !value.is_finite() || value < 0.0)
         {
             return Err(HillslopeGenerationError::InvalidCellValue {
-                field: "sediment_provenance_fraction",
+                field: "sediment_mass_by_source_kg",
                 cell,
-                found: provenance_sum,
+                found: sediment_mass_kg,
             });
         }
     }

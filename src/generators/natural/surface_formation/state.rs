@@ -2,10 +2,167 @@ use thiserror::Error;
 
 use super::super::surface_water_geometry::SurfaceWaterWorkingGeometry;
 use crate::world::natural::{
-    formation_elevation_from_components, FormationElevationComponents, PrimaryReliefSnapshot,
-    SurfaceFormationValidationError, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    formation_elevation_from_components, FormationElevationComponents, FormationSedimentFields,
+    PrimaryReliefSnapshot, SurfaceFormationValidationError, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use crate::world::CellId;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SedimentStockState {
+    mass_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+}
+
+impl SedimentStockState {
+    fn empty(cell_count: usize) -> Self {
+        Self {
+            mass_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; cell_count],
+        }
+    }
+
+    pub(super) fn from_mass_by_source_kg(
+        mass_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    ) -> Result<Self, FormationStateError> {
+        for (cell, values) in mass_by_source_kg.iter().enumerate() {
+            for (source_index, &found) in values.iter().enumerate() {
+                if !found.is_finite() || found < 0.0 {
+                    return Err(FormationStateError::SedimentMassOutOfRange {
+                        cell: CellId::from_raw(cell as u32),
+                        source_index,
+                        found,
+                    });
+                }
+            }
+            let total = values.iter().sum::<f64>();
+            if !total.is_finite() {
+                return Err(FormationStateError::SedimentMassOutOfRange {
+                    cell: CellId::from_raw(cell as u32),
+                    source_index: 0,
+                    found: total,
+                });
+            }
+        }
+        Ok(Self { mass_by_source_kg })
+    }
+
+    pub(super) fn apply_transfer(
+        &mut self,
+        removed_by_source_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+        deposited_by_source_kg: &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
+    ) -> Result<(), FormationStateError> {
+        if removed_by_source_kg.len() != self.mass_by_source_kg.len()
+            || deposited_by_source_kg.len() != self.mass_by_source_kg.len()
+        {
+            return Err(FormationStateError::SedimentLengthMismatch {
+                expected: self.mass_by_source_kg.len(),
+                removed: removed_by_source_kg.len(),
+                deposited: deposited_by_source_kg.len(),
+            });
+        }
+        let mut candidate = self.mass_by_source_kg.clone();
+        for cell in 0..candidate.len() {
+            for source in 0..SEDIMENT_PROVENANCE_SOURCE_COUNT {
+                let removed = removed_by_source_kg[cell][source];
+                let deposited = deposited_by_source_kg[cell][source];
+                let next = candidate[cell][source] - removed + deposited;
+                if !removed.is_finite()
+                    || !deposited.is_finite()
+                    || removed < 0.0
+                    || deposited < 0.0
+                    || !next.is_finite()
+                    || next < 0.0
+                {
+                    return Err(FormationStateError::SedimentMassOutOfRange {
+                        cell: CellId::from_raw(cell as u32),
+                        source_index: source,
+                        found: next,
+                    });
+                }
+                candidate[cell][source] = next;
+            }
+        }
+        self.mass_by_source_kg = candidate;
+        Ok(())
+    }
+
+    pub(super) fn to_wire_fields(
+        &self,
+        cell_area_m2: &[f64],
+        bulk_density_kg_m3: &[f64],
+    ) -> Result<FormationSedimentFields, FormationStateError> {
+        let count = self.mass_by_source_kg.len();
+        for (field, found) in [
+            ("cell_area_m2", cell_area_m2.len()),
+            ("bulk_density_kg_m3", bulk_density_kg_m3.len()),
+        ] {
+            if found != count {
+                return Err(FormationStateError::LengthMismatch {
+                    field,
+                    expected: count,
+                    found,
+                });
+            }
+        }
+        let mut sediment_thickness_m = Vec::with_capacity(count);
+        let mut provenance_fraction = Vec::with_capacity(count);
+        for (index, mass_by_source_kg) in self.mass_by_source_kg.iter().enumerate() {
+            let area_m2 = cell_area_m2[index];
+            let density_kg_m3 = bulk_density_kg_m3[index];
+            if !area_m2.is_finite() || area_m2 <= 0.0 {
+                return Err(FormationStateError::InvalidSedimentProjectionInput {
+                    field: "cell_area_m2",
+                    cell: CellId::from_raw(index as u32),
+                    found: area_m2,
+                });
+            }
+            if !density_kg_m3.is_finite() || density_kg_m3 <= 0.0 {
+                return Err(FormationStateError::InvalidSedimentProjectionInput {
+                    field: "bulk_density_kg_m3",
+                    cell: CellId::from_raw(index as u32),
+                    found: density_kg_m3,
+                });
+            }
+            let total_mass_kg = mass_by_source_kg.iter().sum::<f64>();
+            if !total_mass_kg.is_finite() || total_mass_kg < 0.0 {
+                return Err(FormationStateError::InvalidSedimentProjectionInput {
+                    field: "total_mass_kg",
+                    cell: CellId::from_raw(index as u32),
+                    found: total_mass_kg,
+                });
+            }
+            let thickness_m = total_mass_kg / (area_m2 * density_kg_m3);
+            sediment_thickness_m.push(if total_mass_kg > 0.0 && thickness_m as f32 == 0.0 {
+                f32::from_bits(1)
+            } else {
+                thickness_m as f32
+            });
+            provenance_fraction.push(if total_mass_kg == 0.0 {
+                [0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]
+            } else {
+                mass_by_source_kg.map(|mass_kg| (mass_kg / total_mass_kg) as f32)
+            });
+        }
+        let zero_f64 = vec![0.0; count];
+        Ok(FormationSedimentFields::new(
+            sediment_thickness_m,
+            provenance_fraction,
+            zero_f64.clone(),
+            zero_f64.clone(),
+            zero_f64.clone(),
+            zero_f64,
+            vec![0.0; count],
+        )?)
+    }
+
+    pub(super) fn as_slice(&self) -> &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]] {
+        &self.mass_by_source_kg
+    }
+
+    #[cfg(test)]
+    fn mass_by_source_kg(&self) -> &[[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]] {
+        &self.mass_by_source_kg
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::generators::natural) struct FormationState {
@@ -19,6 +176,7 @@ pub(in crate::generators::natural) struct FormationState {
     coastal_deposition_m: Vec<f64>,
     isostatic_response_m: Vec<f64>,
     current_elevation_m: Vec<f64>,
+    sediment_stock: SedimentStockState,
     surface_water_geometry: SurfaceWaterWorkingGeometry,
 }
 
@@ -44,6 +202,7 @@ impl FormationState {
             coastal_deposition_m: vec![0.0; count],
             isostatic_response_m: vec![0.0; count],
             current_elevation_m: vec![0.0; count],
+            sediment_stock: SedimentStockState::empty(count),
             surface_water_geometry: SurfaceWaterWorkingGeometry::from_wire_for_migration(
                 primary.surface_water_geometry(),
             ),
@@ -327,6 +486,14 @@ impl FormationState {
         &self.surface_water_geometry
     }
 
+    pub(super) const fn sediment_stock(&self) -> &SedimentStockState {
+        &self.sediment_stock
+    }
+
+    pub(super) fn sediment_stock_mut(&mut self) -> &mut SedimentStockState {
+        &mut self.sediment_stock
+    }
+
     pub(super) fn replace_surface_water_geometry(
         &mut self,
         surface_water_geometry: SurfaceWaterWorkingGeometry,
@@ -434,6 +601,26 @@ pub(in crate::generators::natural) enum FormationStateError {
         found: f64,
     },
     #[error(
+        "sediment transfer lengths are removed={removed}, deposited={deposited}; expected {expected}"
+    )]
+    SedimentLengthMismatch {
+        expected: usize,
+        removed: usize,
+        deposited: usize,
+    },
+    #[error("sediment mass at {cell:?}, source {source_index} is invalid after transfer: {found}")]
+    SedimentMassOutOfRange {
+        cell: CellId,
+        source_index: usize,
+        found: f64,
+    },
+    #[error("sediment projection input {field} at {cell:?} is invalid: {found}")]
+    InvalidSedimentProjectionInput {
+        field: &'static str,
+        cell: CellId,
+        found: f64,
+    },
+    #[error(
         "offline reference primary at {cell:?} is {supplied}, but retained state stores {stored}"
     )]
     #[cfg(test)]
@@ -481,13 +668,41 @@ pub(super) fn formation_state_for_value(value_m: f64) -> FormationState {
         coastal_erosion_m: vec![0.0; count],
         coastal_deposition_m: vec![0.0; count],
         isostatic_response_m: vec![0.0; count],
+        sediment_stock: SedimentStockState::empty(count),
         surface_water_geometry,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{formation_state_for_value, FormationStateError};
+    use super::{formation_state_for_value, FormationStateError, SedimentStockState};
+
+    #[test]
+    fn sub_wire_sediment_mass_survives_repeated_steps() {
+        let mut stock = SedimentStockState::empty(1);
+        for _ in 0..1_000 {
+            stock
+                .apply_transfer(&[[0.0, 0.0, 0.0, 0.0, 0.0]], &[[0.01, 0.0, 0.0, 0.0, 0.0]])
+                .unwrap();
+        }
+
+        assert!((stock.mass_by_source_kg()[0][0] - 10.0).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn wire_projection_never_becomes_the_next_stock() {
+        let mut stock = SedimentStockState::empty(1);
+        stock
+            .apply_transfer(
+                &[[0.0, 0.0, 0.0, 0.0, 0.0]],
+                &[[0.01, 0.02, 0.03, 0.04, 0.05]],
+            )
+            .unwrap();
+
+        let _wire = stock.to_wire_fields(&[1_000_000.0], &[2_000.0]).unwrap();
+
+        assert_eq!(stock.mass_by_source_kg()[0], [0.01, 0.02, 0.03, 0.04, 0.05]);
+    }
 
     #[test]
     fn sub_ulp_surface_changes_accumulate_without_f32_feedback() {

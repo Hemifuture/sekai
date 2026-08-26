@@ -28,8 +28,7 @@ struct Fields {
     annual_precipitation_mm: Vec<f32>,
     substrate_density_kg_m3: Vec<f32>,
     sediment_sources: SedimentSourceKindField,
-    sediment_thickness_m: Vec<f32>,
-    sediment_provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
+    sediment_mass_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 impl Fields {
@@ -42,8 +41,7 @@ impl Fields {
             annual_precipitation_mm: &self.annual_precipitation_mm,
             substrate_density_kg_m3: &self.substrate_density_kg_m3,
             sediment_sources: &self.sediment_sources,
-            sediment_thickness_m: &self.sediment_thickness_m,
-            sediment_provenance_fraction: &self.sediment_provenance_fraction,
+            sediment_mass_by_source_kg: &self.sediment_mass_by_source_kg,
         }
     }
 }
@@ -60,8 +58,7 @@ fn uniform_fields(count: usize, elevation_m: f64) -> Fields {
             SedimentSourceKind::Felsic;
             count
         ]),
-        sediment_thickness_m: vec![0.0; count],
-        sediment_provenance_fraction: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
+        sediment_mass_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
     }
 }
 
