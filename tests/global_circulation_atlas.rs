@@ -5,15 +5,16 @@ use std::path::PathBuf;
 use image::{Rgba, RgbaImage};
 use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    ClimateWorkDomainBuilder, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
-    GlobalCirculationArtifact, GlobalClimateForcingBuilder, PrimaryReliefGenerator,
+    evaluate_global_circulation_quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator,
+    GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
+    PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationSnapshot,
-    NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-    RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
+    GlobalCirculationSnapshot, NaturalQualityProfile, NaturalQualityReport, PrimaryReliefSnapshot,
+    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
+    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot};
 use sekai::world::{Meters, RootSeed};
@@ -116,7 +117,7 @@ struct AtlasImage {
     bytes: usize,
     blake3: String,
     checkpoint_fingerprint: String,
-    artifact_json_hash: String,
+    snapshot_json_hash: String,
 }
 
 #[derive(Serialize)]
@@ -132,14 +133,15 @@ struct AtlasSeedMetadata {
     reverse_overlaps: u32,
     maximum_remap_margin_error: f64,
     checkpoint_fingerprint: String,
-    artifact_json_bytes: usize,
-    artifact_json_hash: String,
+    snapshot_json_bytes: usize,
+    snapshot_json_hash: String,
     quality_metric_count: usize,
 }
 
 struct AtlasWorld {
     relief: PrimaryReliefSnapshot,
-    artifact: GlobalCirculationArtifact,
+    snapshot: GlobalCirculationSnapshot,
+    report: NaturalQualityReport,
 }
 
 #[test]
@@ -170,19 +172,19 @@ fn render_global_circulation_atlas() {
     )
     .unwrap();
     let formation = formation();
-    let expected_artifact_hashes = load_evidence_artifact_hashes();
+    let expected_snapshot_hashes = load_evidence_snapshot_hashes();
     let map = map_cell_raster(surface);
     let globe = globe_cell_raster(surface);
     let mut images = Vec::new();
     for seed in SEEDS {
         let world = generate_world(&bundle, &domain, &formation, seed);
-        let climate = world.artifact.snapshot();
-        let artifact_json = serde_json::to_vec(&world.artifact).unwrap();
-        let artifact_json_hash = blake3::hash(&artifact_json).to_hex().to_string();
+        let climate = &world.snapshot;
+        let snapshot_json = serde_json::to_vec(climate).unwrap();
+        let snapshot_json_hash = blake3::hash(&snapshot_json).to_hex().to_string();
         assert_eq!(
-            expected_artifact_hashes.get(&seed),
-            Some(&artifact_json_hash),
-            "atlas seed {seed} must render the exact quality-gated evidence product"
+            expected_snapshot_hashes.get(&seed),
+            Some(&snapshot_json_hash),
+            "atlas seed {seed} must render the exact evidence snapshot"
         );
         let checkpoint_fingerprint = hex(climate.checkpoint().fingerprint());
         let sheet = render_sheet(surface, &world.relief, climate, &map, &globe);
@@ -206,9 +208,9 @@ fn render_global_circulation_atlas() {
                 reverse_overlaps: remap.reverse_overlap_count(),
                 maximum_remap_margin_error: max_remap,
                 checkpoint_fingerprint: checkpoint_fingerprint.clone(),
-                artifact_json_bytes: artifact_json.len(),
-                artifact_json_hash: artifact_json_hash.clone(),
-                quality_metric_count: world.artifact.quality_report().metrics().len(),
+                snapshot_json_bytes: snapshot_json.len(),
+                snapshot_json_hash: snapshot_json_hash.clone(),
+                quality_metric_count: world.report.metrics().len(),
             })
             .unwrap(),
         )
@@ -225,7 +227,7 @@ fn render_global_circulation_atlas() {
             bytes: bytes.len(),
             blake3: blake3::hash(&bytes).to_hex().to_string(),
             checkpoint_fingerprint,
-            artifact_json_hash,
+            snapshot_json_hash,
         });
     }
     let manifest = AtlasManifest {
@@ -291,18 +293,26 @@ fn generate_world(
         &BuildCancellation::new(),
     )
     .unwrap();
-    let artifact = GlobalCirculationArtifact::generate(
+    let snapshot = GlobalCirculationGenerator::generate(
         surface,
         domain,
         &forcing,
-        &relief,
+        ClimateModelProfile::C2LayeredV1,
         &BuildCancellation::new(),
     )
     .unwrap();
-    AtlasWorld { relief, artifact }
+    let report =
+        evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot).unwrap();
+    snapshot.validate().unwrap();
+    report.validate().unwrap();
+    AtlasWorld {
+        relief,
+        snapshot,
+        report,
+    }
 }
 
-fn load_evidence_artifact_hashes() -> BTreeMap<u64, String> {
+fn load_evidence_snapshot_hashes() -> BTreeMap<u64, String> {
     let path = output_directory().join("evidence.json");
     let bytes = std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
@@ -318,9 +328,9 @@ fn load_evidence_artifact_hashes() -> BTreeMap<u64, String> {
         .map(|seed| {
             (
                 seed["seed"].as_u64().expect("evidence seed id"),
-                seed["artifact_json_hash"]
+                seed["snapshot_json_hash"]
                     .as_str()
-                    .expect("evidence artifact hash")
+                    .expect("evidence snapshot hash")
                     .to_owned(),
             )
         })

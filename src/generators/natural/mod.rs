@@ -8,7 +8,6 @@ mod climate_stage;
 mod climate_work_domain;
 mod connectivity;
 mod erosion;
-mod evolved_tectonic_stage;
 mod evolved_tectonics;
 mod formation;
 mod formation_stage;
@@ -30,7 +29,6 @@ mod land_fraction;
 mod mantle;
 mod morphology;
 mod primary_relief;
-mod primary_relief_stage;
 mod quality;
 mod random;
 mod relief;
@@ -62,6 +60,7 @@ mod topology;
 
 pub mod circulation;
 
+pub use causal_formation_stage::NaturalQualityProfileArtifact;
 pub use causal_formation_stage::{
     causal_natural_formation_graph, CausalNaturalFormationStage, CausalNaturalFormationStageInputs,
     NaturalFormationBundleArtifact,
@@ -81,10 +80,6 @@ pub(crate) use climate_work_domain::{
 };
 pub use climate_work_domain::{ClimateWorkDomainBuildError, ClimateWorkDomainBuilder};
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
-pub use evolved_tectonic_stage::{
-    evolved_tectonic_graph, EvolvedTectonicArtifact, EvolvedTectonicStage,
-    EvolvedTectonicStageInputs, NaturalQualityProfileArtifact,
-};
 pub use evolved_tectonics::{EvolvedTectonicGenerationError, EvolvedTectonicGenerator};
 pub use formation::{WorldFormationGenerationError, WorldFormationGenerator};
 pub use formation_stage::{
@@ -131,9 +126,7 @@ pub use global_circulation::{
     SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use global_circulation_stage::{
-    global_circulation_graph, ClimateWorkDomainArtifact, ClimateWorkDomainStage,
-    ClimateWorkDomainStageInputs, GlobalCirculationArtifact, GlobalCirculationProductError,
-    GlobalCirculationStage, GlobalCirculationStageInputs,
+    ClimateWorkDomainArtifact, ClimateWorkDomainStage, ClimateWorkDomainStageInputs,
 };
 pub use hierarchical_derivation::{
     HierarchicalEvaluator, HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue,
@@ -152,11 +145,6 @@ pub use mantle::{MantleGenerationError, MantleGenerator};
 pub use primary_relief::{
     continental_airy_elevation_m, gdh1_ocean_depth_m, oceanic_isostatic_elevation_m,
     oceanic_sediment_seafloor_rise_m, PrimaryReliefGenerationError, PrimaryReliefGenerator,
-};
-pub use primary_relief_stage::{
-    primary_relief_graph, GeologicSubstrateArtifact, GeologicSubstrateStage,
-    GeologicSubstrateStageInputs, PrimaryReliefArtifact, PrimaryReliefStage,
-    PrimaryReliefStageInputs,
 };
 pub use quality::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,

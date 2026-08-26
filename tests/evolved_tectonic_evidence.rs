@@ -1,10 +1,10 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use sekai::engine::{derive_stage_seed, Artifact, BuildCancellation, StageIdentity, StageRng};
+use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
-    EvolvedTectonicArtifact, EvolvedTectonicGenerator,
+    EvolvedTectonicGenerator,
 };
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
@@ -39,8 +39,8 @@ struct P2Evidence {
 #[derive(Serialize)]
 struct SeedEvidence {
     seed: u64,
-    artifact_json_bytes: usize,
-    artifact_json_hash: String,
+    snapshot_json_bytes: usize,
+    snapshot_json_hash: String,
     plate_count: usize,
     boundary_segment_count: usize,
     material_budget: SphericalTectonicMaterialBudget,
@@ -71,42 +71,37 @@ fn write_evolved_tectonic_evidence() {
     .unwrap();
     let formation = formation();
     let spec = TectonicSpec::default();
-    let mut artifacts = Vec::new();
+    let mut snapshots = Vec::new();
+    let mut reports = Vec::new();
     let mut seeds = Vec::new();
     for seed in SEEDS {
         let snapshot = generate(&bundle, &spec, &formation, seed);
         let report =
             evaluate_evolved_tectonic_quality(bundle.authoritative_surface(), &snapshot).unwrap();
-        let artifact = EvolvedTectonicArtifact::new(snapshot, report);
-        artifact.validate().unwrap();
-        let artifact_bytes = serde_json::to_vec(&artifact).unwrap();
+        snapshot.validate().unwrap();
+        report.validate().unwrap();
+        let snapshot_bytes = serde_json::to_vec(&snapshot).unwrap();
         eprintln!(
-            "P2 seed={seed} plates={} artifact_bytes={} hash={}",
-            artifact.snapshot().compatibility().plates().len(),
-            artifact_bytes.len(),
-            blake3::hash(&artifact_bytes).to_hex(),
+            "P2 seed={seed} plates={} snapshot_bytes={} hash={}",
+            snapshot.compatibility().plates().len(),
+            snapshot_bytes.len(),
+            blake3::hash(&snapshot_bytes).to_hex(),
         );
         seeds.push(SeedEvidence {
             seed,
-            artifact_json_bytes: artifact_bytes.len(),
-            artifact_json_hash: blake3::hash(&artifact_bytes).to_hex().to_string(),
-            plate_count: artifact.snapshot().compatibility().plates().len(),
-            boundary_segment_count: artifact
-                .snapshot()
-                .compatibility()
-                .boundary_segments()
-                .len(),
-            material_budget: *artifact.snapshot().material_budget(),
-            lineage_budget: *artifact.snapshot().lineage_budget(),
-            metrics: metric_evidence(artifact.quality_report()),
+            snapshot_json_bytes: snapshot_bytes.len(),
+            snapshot_json_hash: blake3::hash(&snapshot_bytes).to_hex().to_string(),
+            plate_count: snapshot.compatibility().plates().len(),
+            boundary_segment_count: snapshot.compatibility().boundary_segments().len(),
+            material_budget: *snapshot.material_budget(),
+            lineage_budget: *snapshot.lineage_budget(),
+            metrics: metric_evidence(&report),
         });
-        artifacts.push(artifact);
+        snapshots.push(snapshot);
+        reports.push(report);
     }
 
-    let references = artifacts
-        .iter()
-        .map(EvolvedTectonicArtifact::snapshot)
-        .collect::<Vec<_>>();
+    let references = snapshots.iter().collect::<Vec<_>>();
     let corpus =
         evaluate_evolved_tectonic_corpus_quality(bundle.authoritative_surface(), &references)
             .unwrap();
@@ -114,9 +109,8 @@ fn write_evolved_tectonic_evidence() {
         .metrics()
         .iter()
         .all(|metric| metric.status() == QualityMetricStatus::Pass));
-    assert!(artifacts.iter().all(|artifact| {
-        artifact
-            .quality_report()
+    assert!(reports.iter().all(|report| {
+        report
             .metrics()
             .iter()
             .filter(|metric| {
@@ -137,12 +131,8 @@ fn write_evolved_tectonic_evidence() {
     let repeated_report =
         evaluate_evolved_tectonic_quality(bundle.authoritative_surface(), &repeated_snapshot)
             .unwrap();
-    let repeated = EvolvedTectonicArtifact::new(repeated_snapshot, repeated_report);
-    assert_eq!(
-        serde_json::to_vec(&artifacts[0]).unwrap(),
-        serde_json::to_vec(&repeated).unwrap(),
-        "the fixed-seed V5 artifact changed within one evidence run"
-    );
+    assert_eq!(snapshots[0], repeated_snapshot);
+    assert_eq!(reports[0], repeated_report);
 
     let evidence = P2Evidence {
         schema_version: 1,

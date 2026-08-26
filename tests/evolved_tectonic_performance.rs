@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 
 use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
-    evaluate_evolved_tectonic_quality, EvolvedTectonicArtifact, EvolvedTectonicGenerationError,
-    EvolvedTectonicGenerator,
+    evaluate_evolved_tectonic_quality, EvolvedTectonicGenerationError, EvolvedTectonicGenerator,
 };
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
@@ -31,7 +30,7 @@ struct ProfilePerformance {
     bundle_build_micros: u128,
     generation_micros: Option<u128>,
     cancellation_latency_micros: Option<u128>,
-    artifact_json_bytes: Option<usize>,
+    snapshot_json_bytes: Option<usize>,
 }
 
 #[test]
@@ -60,7 +59,7 @@ fn measure_evolved_tectonic_profiles() {
         let control_cells = bundle.tectonic_control_surface().cells().len();
         let overlaps = bundle.control_to_authoritative_map().overlap_count();
 
-        let (generation_micros, cancellation_latency_micros, artifact_json_bytes) =
+        let (generation_micros, cancellation_latency_micros, snapshot_json_bytes) =
             if profile == NaturalQualityProfile::Draft {
                 let generation_started = Instant::now();
                 let mut rng = StageRng::from_seed(derive_stage_seed(
@@ -77,8 +76,8 @@ fn measure_evolved_tectonic_profiles() {
                 let report =
                     evaluate_evolved_tectonic_quality(bundle.authoritative_surface(), &snapshot)
                         .unwrap();
-                let artifact = EvolvedTectonicArtifact::new(snapshot, report);
-                let bytes = serde_json::to_vec(&artifact).unwrap().len();
+                report.validate().unwrap();
+                let bytes = serde_json::to_vec(&snapshot).unwrap().len();
                 let elapsed = generation_started.elapsed();
                 assert!(
                     elapsed <= Duration::from_secs(120),
@@ -122,7 +121,7 @@ fn measure_evolved_tectonic_profiles() {
             };
 
         eprintln!(
-            "P2 performance profile={profile:?} authority={authoritative_cells} control={control_cells} overlaps={overlaps} bundle={bundle_elapsed:?} generation_us={generation_micros:?} cancellation_us={cancellation_latency_micros:?} artifact_bytes={artifact_json_bytes:?}"
+            "P2 performance profile={profile:?} authority={authoritative_cells} control={control_cells} overlaps={overlaps} bundle={bundle_elapsed:?} generation_us={generation_micros:?} cancellation_us={cancellation_latency_micros:?} snapshot_bytes={snapshot_json_bytes:?}"
         );
         records.push(ProfilePerformance {
             profile,
@@ -132,7 +131,7 @@ fn measure_evolved_tectonic_profiles() {
             bundle_build_micros: bundle_elapsed.as_micros(),
             generation_micros,
             cancellation_latency_micros,
-            artifact_json_bytes,
+            snapshot_json_bytes,
         });
     }
     let evidence = PerformanceEvidence {

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_primary_relief_quality, EvolvedTectonicGenerationError, EvolvedTectonicGenerator,
-    GeologicSubstrateGenerator, PrimaryReliefArtifact, PrimaryReliefGenerator,
+    GeologicSubstrateGenerator, PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
@@ -37,7 +37,7 @@ struct ProfilePerformance {
     total_pipeline_micros: Option<u128>,
     cancellation_phase: Option<&'static str>,
     cancellation_latency_micros: Option<u128>,
-    artifact_json_bytes: Option<usize>,
+    snapshot_json_bytes: Option<usize>,
 }
 
 #[test]
@@ -126,8 +126,8 @@ fn measure_primary_relief_profiles() {
             )
             .unwrap();
             let quality_elapsed = quality_started.elapsed();
-            let artifact_bytes =
-                serde_json::to_vec(&PrimaryReliefArtifact::new(relief, report)).unwrap();
+            report.validate().unwrap();
+            let snapshot_bytes = serde_json::to_vec(&relief).unwrap();
             let pipeline_elapsed = pipeline_started.elapsed();
             assert!(
                 pipeline_elapsed <= Duration::from_secs(180),
@@ -146,7 +146,7 @@ fn measure_primary_relief_profiles() {
                 total_pipeline_micros: Some(pipeline_elapsed.as_micros()),
                 cancellation_phase: None,
                 cancellation_latency_micros: None,
-                artifact_json_bytes: Some(artifact_bytes.len()),
+                snapshot_json_bytes: Some(snapshot_bytes.len()),
             }
         } else {
             let cancellation = BuildCancellation::new();
@@ -193,7 +193,7 @@ fn measure_primary_relief_profiles() {
                 total_pipeline_micros: None,
                 cancellation_phase: Some("evolved-tectonics-upstream"),
                 cancellation_latency_micros: Some(latency.as_micros()),
-                artifact_json_bytes: None,
+                snapshot_json_bytes: None,
             }
         };
 

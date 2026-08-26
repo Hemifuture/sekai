@@ -1,11 +1,11 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use sekai::engine::{derive_stage_seed, Artifact, BuildCancellation, StageIdentity, StageRng};
+use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_global_circulation_quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator,
-    GeologicSubstrateGenerator, GlobalCirculationArtifact, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, PrimaryReliefGenerator,
+    GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
+    PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -51,8 +51,8 @@ struct P4Evidence {
 #[derive(Serialize)]
 struct SeedEvidence {
     seed: u64,
-    artifact_json_bytes: usize,
-    artifact_json_hash: String,
+    snapshot_json_bytes: usize,
+    snapshot_json_hash: String,
     sea_level_m: f32,
     physical_land_fraction: f32,
     formation_cycles: u16,
@@ -170,7 +170,6 @@ struct GeneratedWorld {
     relief: sekai::world::natural::PrimaryReliefSnapshot,
     snapshot: GlobalCirculationSnapshot,
     report: NaturalQualityReport,
-    artifact: GlobalCirculationArtifact,
 }
 
 #[test]
@@ -230,14 +229,15 @@ fn write_global_circulation_evidence() {
 
     let mut seeds = Vec::new();
     for (seed, world) in SEEDS.into_iter().zip(&worlds) {
-        world.artifact.validate().unwrap();
-        let bytes = serde_json::to_vec(&world.artifact).unwrap();
+        world.snapshot.validate().unwrap();
+        world.report.validate().unwrap();
+        let bytes = serde_json::to_vec(&world.snapshot).unwrap();
         let solve = world.snapshot.solve_report();
         let budget = world.snapshot.budget_report();
         seeds.push(SeedEvidence {
             seed,
-            artifact_json_bytes: bytes.len(),
-            artifact_json_hash: blake3::hash(&bytes).to_hex().to_string(),
+            snapshot_json_bytes: bytes.len(),
+            snapshot_json_hash: blake3::hash(&bytes).to_hex().to_string(),
             sea_level_m: world.relief.sea_level_m(),
             physical_land_fraction: world.relief.physical_land_fraction(),
             formation_cycles: solve.formation_cycles(),
@@ -400,74 +400,20 @@ fn generate_world(
         &BuildCancellation::new(),
     )
     .unwrap();
-    let artifact = GlobalCirculationArtifact::generate(
+    let snapshot = GlobalCirculationGenerator::generate(
         surface,
         domain,
         &forcing,
-        &relief,
+        ClimateModelProfile::C2LayeredV1,
         &BuildCancellation::new(),
     )
-    .unwrap_or_else(|error| {
-        let snapshot = GlobalCirculationGenerator::generate(
-            surface,
-            domain,
-            &forcing,
-            ClimateModelProfile::C2LayeredV1,
-            &BuildCancellation::new(),
-        )
-        .unwrap_or_else(|diagnostic_error| {
-            panic!(
-                "P4 product seed {seed} rejected: {error}; diagnostic raw generation also failed: {diagnostic_error}"
-            )
-        });
-        let report = evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot)
-            .expect("diagnostic quality evaluation after product rejection");
-        for metric in report.metrics() {
-            eprintln!(
-                "P4 diagnostic seed={seed} metric={} status={:?} value={:?} bounds={:?}",
-                metric.id().name(),
-                metric.status(),
-                metric.value(),
-                metric.bounds(),
-            );
-        }
-        let wind = snapshot.fields().near_surface_wind_m_s().values();
-        for month in 0..12 {
-            let mut positive = 0_u32;
-            let mut total = 0_u32;
-            let mut zonal_sum = 0.0_f64;
-            for (cell, values) in surface.cells().iter().zip(wind) {
-                let radial = cell.centroid.components();
-                let latitude = radial[2].asin().to_degrees().abs();
-                if !(35.0..=60.0).contains(&latitude) {
-                    continue;
-                }
-                let cosine = radial[0].hypot(radial[1]);
-                let east = [-radial[1] / cosine, radial[0] / cosine, 0.0];
-                let zonal = values[month]
-                    .iter()
-                    .zip(east)
-                    .map(|(value, basis)| f64::from(*value) * basis)
-                    .sum::<f64>();
-                total += 1;
-                positive += u32::from(zonal > 0.0);
-                zonal_sum += zonal;
-            }
-            eprintln!(
-                "P4 diagnostic seed={seed} month={month} mid_westerly_fraction={} mid_mean_zonal_m_s={}",
-                f64::from(positive) / f64::from(total),
-                zonal_sum / f64::from(total),
-            );
-        }
-        panic!("P4 product seed {seed} rejected: {error}");
-    });
-    let snapshot = artifact.snapshot().clone();
-    let report = artifact.quality_report().clone();
+    .unwrap();
+    let report =
+        evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot).unwrap();
     GeneratedWorld {
         relief,
         snapshot,
         report,
-        artifact,
     }
 }
 

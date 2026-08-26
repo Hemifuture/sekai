@@ -1,13 +1,11 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use sekai::engine::{
-    derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
-};
+use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_primary_relief_corpus_quality, evaluate_primary_relief_quality,
-    EvolvedTectonicGenerator, GeologicSubstrateArtifact, GeologicSubstrateGenerator,
-    PrimaryReliefArtifact, PrimaryReliefGenerator, PrimaryReliefQualitySample,
+    EvolvedTectonicGenerator, GeologicSubstrateGenerator, PrimaryReliefGenerator,
+    PrimaryReliefQualitySample,
 };
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
@@ -49,8 +47,8 @@ struct SeedEvidence {
     seed: u64,
     substrate_json_bytes: usize,
     substrate_json_hash: String,
-    primary_artifact_json_bytes: usize,
-    primary_artifact_json_hash: String,
+    primary_snapshot_json_bytes: usize,
+    primary_snapshot_json_hash: String,
     sea_level_m: f32,
     physical_land_fraction: f32,
     requested_land_fraction: f32,
@@ -130,16 +128,15 @@ fn write_primary_relief_evidence() {
             .iter()
             .filter(|metric| HARD_METRICS.contains(&metric.id().name()))
             .all(|metric| metric.status() == QualityMetricStatus::Pass));
-        PrimaryReliefArtifact::new(world.relief.clone(), world.report.clone())
-            .validate()
-            .unwrap();
+        world.relief.validate().unwrap();
+        world.report.validate().unwrap();
         let seed_evidence = seed_evidence(seed, world, &world.report);
         eprintln!(
             "P3 seed={seed} sea={:.2} land={:.6} substrate_hash={} relief_hash={}",
             world.relief.sea_level_m(),
             world.relief.physical_land_fraction(),
             seed_evidence.substrate_json_hash,
-            seed_evidence.primary_artifact_json_hash,
+            seed_evidence.primary_snapshot_json_hash,
         );
         seeds.push(seed_evidence);
     }
@@ -279,17 +276,17 @@ fn bedrock_counts(substrate: &sekai::world::natural::GeologicSubstrateSnapshot) 
 }
 
 fn seed_evidence(seed: u64, world: &GeneratedWorld, report: &NaturalQualityReport) -> SeedEvidence {
-    let substrate_artifact = GeologicSubstrateArtifact::new(world.substrate.clone());
-    substrate_artifact.validate().unwrap();
-    let relief_artifact = PrimaryReliefArtifact::new(world.relief.clone(), report.clone());
-    let substrate_bytes = serde_json::to_vec(&substrate_artifact).unwrap();
-    let artifact_bytes = serde_json::to_vec(&relief_artifact).unwrap();
+    world.substrate.validate().unwrap();
+    world.relief.validate().unwrap();
+    report.validate().unwrap();
+    let substrate_bytes = serde_json::to_vec(&world.substrate).unwrap();
+    let snapshot_bytes = serde_json::to_vec(&world.relief).unwrap();
     SeedEvidence {
         seed,
         substrate_json_bytes: substrate_bytes.len(),
         substrate_json_hash: blake3::hash(&substrate_bytes).to_hex().to_string(),
-        primary_artifact_json_bytes: artifact_bytes.len(),
-        primary_artifact_json_hash: blake3::hash(&artifact_bytes).to_hex().to_string(),
+        primary_snapshot_json_bytes: snapshot_bytes.len(),
+        primary_snapshot_json_hash: blake3::hash(&snapshot_bytes).to_hex().to_string(),
         sea_level_m: world.relief.sea_level_m(),
         physical_land_fraction: world.relief.physical_land_fraction(),
         requested_land_fraction: world.relief.requested_land_fraction(),

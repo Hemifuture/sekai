@@ -1,32 +1,15 @@
 mod support;
 
-use sekai::engine::{derive_stage_seed, Artifact, BuildCancellation, StageIdentity, StageRng};
+use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
-    GlobalCirculationArtifact, GlobalCirculationGenerationError, GlobalCirculationGenerator,
-    GlobalCirculationProductError, GlobalClimateForcingBuilder, GlobalClimateForcingError,
-    PrimaryReliefGenerator, QualityBuildError,
+    GlobalCirculationGenerator, GlobalClimateForcingBuilder, PrimaryReliefGenerator,
+    QualityBuildError,
 };
 use sekai::world::natural::{ClimateModelProfile, ClimateSpec, QualityMetricStatus, ReliefSpec};
 use sekai::world::RootSeed;
 
 use support::global_circulation::global_circulation_fixture;
-
-#[test]
-fn public_product_error_flattens_cancellation_from_every_dense_phase() {
-    assert_eq!(
-        GlobalCirculationProductError::from(GlobalClimateForcingError::Cancelled),
-        GlobalCirculationProductError::Cancelled
-    );
-    assert_eq!(
-        GlobalCirculationProductError::from(GlobalCirculationGenerationError::Cancelled),
-        GlobalCirculationProductError::Cancelled
-    );
-    assert_eq!(
-        GlobalCirculationProductError::from(QualityBuildError::Cancelled),
-        GlobalCirculationProductError::Cancelled
-    );
-}
 
 #[test]
 fn generated_c2_publishes_finite_diagnostics_and_passes_physical_closures() {
@@ -171,83 +154,6 @@ fn quality_report_is_deterministic_and_bound_to_the_authoritative_surface() {
         first.subject_fingerprint(),
         Some(snapshot.checkpoint().fingerprint())
     );
-}
-
-#[test]
-fn public_product_factory_owns_generation_and_selects_the_locked_integrator() {
-    let fixture = global_circulation_fixture();
-    let surface = fixture.bundle.authoritative_surface();
-    let independently_generated = GlobalCirculationGenerator::generate(
-        surface,
-        &fixture.domain,
-        &fixture.forcing,
-        ClimateModelProfile::C2LayeredV1,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    let report = evaluate_global_circulation_quality(
-        surface,
-        &fixture.relief,
-        &fixture.forcing,
-        &independently_generated,
-    )
-    .unwrap();
-    let artifact = GlobalCirculationArtifact::generate(
-        surface,
-        &fixture.domain,
-        &fixture.forcing,
-        &fixture.relief,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    artifact.validate().unwrap();
-    assert_eq!(artifact.quality_report(), &report);
-    assert_eq!(artifact.snapshot(), &independently_generated);
-}
-
-#[test]
-fn product_artifact_factory_remeasures_instead_of_accepting_forged_pass_values() {
-    let fixture = global_circulation_fixture();
-    let surface = fixture.bundle.authoritative_surface();
-    let snapshot = GlobalCirculationGenerator::generate(
-        surface,
-        &fixture.domain,
-        &fixture.forcing,
-        ClimateModelProfile::C2LayeredV1,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    let report =
-        evaluate_global_circulation_quality(surface, &fixture.relief, &fixture.forcing, &snapshot)
-            .unwrap();
-    let mut wire = serde_json::to_value(&report).unwrap();
-    let metrics = wire
-        .get_mut("metrics")
-        .and_then(serde_json::Value::as_array_mut)
-        .unwrap();
-    for metric in metrics {
-        let min = metric["bounds"]["min"].as_f64();
-        let max = metric["bounds"]["max"].as_f64();
-        metric["status"] = serde_json::json!("pass");
-        metric["value"] = serde_json::json!(min.or(max).unwrap_or(0.0));
-    }
-    let forged: sekai::world::natural::NaturalQualityReport = serde_json::from_value(wire).unwrap();
-    forged.validate().unwrap();
-    assert_ne!(
-        forged, report,
-        "fixture must produce non-boundary measurements"
-    );
-
-    let artifact = GlobalCirculationArtifact::generate(
-        surface,
-        &fixture.domain,
-        &fixture.forcing,
-        &fixture.relief,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    assert_eq!(artifact.quality_report(), &report);
-    assert_ne!(artifact.quality_report(), &forged);
 }
 
 #[test]
@@ -399,13 +305,6 @@ fn zero_axial_tilt_marks_seasonal_phase_not_applicable_without_rejecting_product
         assert_eq!(metric.sample_count(), 0);
         assert!(metric.reason().unwrap().contains("below 0.5 C"));
     }
-    let artifact = GlobalCirculationArtifact::generate(
-        surface,
-        &fixture.domain,
-        &forcing,
-        &fixture.relief,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    artifact.validate().unwrap();
+    snapshot.validate().unwrap();
+    report.validate().unwrap();
 }

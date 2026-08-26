@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::causal_formation::{
@@ -17,10 +17,9 @@ use super::quality::{
     validate_surface_formation_quality_report, QualityBuildError,
 };
 use super::{
-    ClimateWorkDomainArtifact, ClimateWorkDomainStage, NaturalQualityProfileArtifact,
-    ReliefSpecArtifact, ResolvedClimateInputArtifact, ResolvedGeologicInputArtifact,
-    ResolvedHydroErosionInputArtifact, ResolvedTectonicInputArtifact,
-    ResolvedWorldFormationArtifact, SurfaceFormationGenerationError,
+    ClimateWorkDomainArtifact, ClimateWorkDomainStage, ReliefSpecArtifact,
+    ResolvedClimateInputArtifact, ResolvedGeologicInputArtifact, ResolvedHydroErosionInputArtifact,
+    ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact, SurfaceFormationGenerationError,
 };
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
@@ -32,11 +31,12 @@ use crate::generators::spatial::{
 };
 use crate::world::natural::{
     NaturalFormationBundle, NaturalFormationBundleParts, NaturalFormationBundleValidationError,
-    NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
+    NaturalQualityProfile, NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
 };
 use crate::world::spatial::SurfaceRef;
 
 const INVALID_INPUT_CODE: &str = "causal-formation.invalid-input";
+const INVALID_PROFILE_CODE: &str = "causal-formation.invalid-profile";
 const NUMERICAL_STABILITY_CODE: &str = "causal-formation.numerical-stability";
 const SOLID_BUDGET_CODE: &str = "causal-formation.solid-budget";
 const SEDIMENT_BUDGET_CODE: &str = "causal-formation.sediment-budget";
@@ -46,6 +46,41 @@ const ENDPOINT_FORCING_MISMATCH_CODE: &str = "causal-formation.endpoint-forcing-
 const ELEVATION_OUT_OF_RANGE_CODE: &str = "causal-formation.elevation-out-of-range";
 const RESOURCE_LIMIT_CODE: &str = "causal-formation.resource-limit";
 const CANCELLED_CODE: &str = "engine.cancelled";
+
+/// Strict external selection of one coordinated natural-world quality level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NaturalQualityProfileArtifact {
+    profile: NaturalQualityProfile,
+}
+
+impl NaturalQualityProfileArtifact {
+    /// Wraps one semantic natural-world quality profile.
+    pub const fn new(profile: NaturalQualityProfile) -> Self {
+        Self { profile }
+    }
+
+    /// Returns the selected profile.
+    pub const fn profile(&self) -> NaturalQualityProfile {
+        self.profile
+    }
+}
+
+impl Artifact for NaturalQualityProfileArtifact {
+    const KEY: ArtifactKey = ArtifactKey::new("natural.quality-profile");
+
+    fn validate(&self) -> Result<(), ArtifactValidationError> {
+        if self.profile.authoritative_target_cell_count() == 0
+            || self.profile.tectonic_control_target_cell_count() == 0
+        {
+            return Err(ArtifactValidationError::new(
+                INVALID_PROFILE_CODE,
+                "natural quality profile resolves to an empty work grid",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Serialize-only engine envelope for one validated formation current state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
