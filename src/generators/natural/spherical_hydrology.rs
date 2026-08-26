@@ -81,7 +81,7 @@ pub(crate) fn generate_formation_spherical_from_validated_inputs(
     surface_snapshot: &SphericalSurfaceSnapshot,
     surface: &SphericalNaturalSurface<'_>,
     topology: &NaturalTopologyIndex,
-    surface_elevation_m: &ElevationField,
+    surface_elevation_m: &[f64],
     land_ocean: &LandOceanField,
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; crate::world::natural::CLIMATE_MONTH_COUNT]],

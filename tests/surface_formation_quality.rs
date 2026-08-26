@@ -13,7 +13,7 @@ use sekai::world::natural::{
     FormationResiduals, FormationSedimentFields, FormationSolveReport, FormationTerrainFields,
     HydroErosionSpec, NaturalQualityProfile, NaturalSurfaceFormationSnapshot, ReliefSpec,
     SedimentBudgetReport, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
-    SurfaceFormationUpstreamFingerprints, FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+    SurfaceFormationUpstreamFingerprints, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
     NATURAL_SURFACE_FORMATION_SCHEMA_V3,
 };
 use sekai::world::spatial::SurfaceRef;
@@ -59,9 +59,16 @@ fn synthetic_formation() -> &'static NaturalSurfaceFormationSnapshot {
         let relief = &fixture.upstream.relief;
         let count = surface.cells().len();
         let terrain = FormationTerrainFields::new(
-            FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
             FormationElevationComponents::new(
                 relief.elevation_m().to_vec(),
+                vec![0.0; count],
+                vec![0.0; count],
+                vec![0.0; count],
+                vec![0.0; count],
+                vec![0.0; count],
+                vec![0.0; count],
+                vec![0.0; count],
                 vec![0.0; count],
                 relief.elevation_m().to_vec(),
             )

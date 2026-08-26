@@ -168,7 +168,7 @@ fn evaluate_impl(
         != snapshot
             .terrain_fields()
             .elevation_components()
-            .primary_relief_m()
+            .primary_elevation_m()
         || relief.water_inventory_m3() != snapshot.terrain_fields().water_inventory_m3()
     {
         return Err(QualityBuildError::InvalidInput {
@@ -437,14 +437,21 @@ impl FormationQualityState {
             poll_cancelled(cancellation, index)?;
             let area_m2 = surface.cells()[index].area.get();
             state.total_area_m2 += area_m2;
-            primary_sum += area_m2 * f64::from(components.primary_relief_m()[index]);
+            primary_sum += area_m2 * f64::from(components.primary_elevation_m()[index]);
             final_sum += area_m2 * f64::from(elevation[index]);
 
             let expected = formation_elevation_from_components(
-                components.primary_relief_m()[index],
-                components.equilibrium_adjustment_m()[index],
+                f64::from(components.primary_elevation_m()[index]),
+                f64::from(components.tectonic_displacement_m()[index]),
+                f64::from(components.fluvial_erosion_m()[index]),
+                f64::from(components.hillslope_erosion_m()[index]),
+                f64::from(components.hillslope_deposition_m()[index]),
+                f64::from(components.routed_sediment_deposition_m()[index]),
+                f64::from(components.coastal_erosion_m()[index]),
+                f64::from(components.coastal_deposition_m()[index]),
+                f64::from(components.isostatic_response_m()[index]),
             );
-            if elevation[index].to_bits() != expected.to_bits() {
+            if elevation[index].to_bits() != (expected as f32).to_bits() {
                 state.component_identity_mismatch_count += 1.0;
             }
 
@@ -520,7 +527,7 @@ impl FormationQualityState {
         state.land_fraction_absolute_change = (final_land_fraction - relief_land_fraction).abs();
         state.primary_final_correlation = area_weighted_correlation(
             surface,
-            components.primary_relief_m(),
+            components.primary_elevation_m(),
             elevation,
             primary_sum / state.total_area_m2,
             final_sum / state.total_area_m2,

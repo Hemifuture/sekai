@@ -20,8 +20,42 @@ pub(in crate::generators::natural) struct SurfaceWaterWorkingGeometry {
 }
 
 impl SurfaceWaterWorkingGeometry {
-    #[cfg(test)]
-    pub(super) const fn land_ocean(&self) -> &LandOceanField {
+    pub(in crate::generators::natural) fn from_wire_for_migration(
+        geometry: &SurfaceWaterGeometry,
+    ) -> Self {
+        Self {
+            surface_ref: geometry.surface_ref(),
+            sea_level_m: f64::from(geometry.sea_level_m()),
+            ocean_area_fraction: geometry
+                .ocean_area_fraction()
+                .iter()
+                .copied()
+                .map(f64::from)
+                .collect(),
+            wet_edge_fraction: geometry
+                .wet_edge_fraction()
+                .iter()
+                .copied()
+                .map(f64::from)
+                .collect(),
+            cell_water_volume_m3: geometry.cell_water_volume_m3().to_vec(),
+            land_ocean: geometry.land_ocean().clone(),
+        }
+    }
+
+    pub(in crate::generators::natural) const fn sea_level_m(&self) -> f64 {
+        self.sea_level_m
+    }
+
+    pub(in crate::generators::natural) fn ocean_area_fraction(&self) -> &[f64] {
+        &self.ocean_area_fraction
+    }
+
+    pub(in crate::generators::natural) fn wet_edge_fraction(&self) -> &[f64] {
+        &self.wet_edge_fraction
+    }
+
+    pub(in crate::generators::natural) const fn land_ocean(&self) -> &LandOceanField {
         &self.land_ocean
     }
 

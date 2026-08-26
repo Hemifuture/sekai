@@ -649,7 +649,7 @@ fn probe_p5_terrain_structure() {
     let surface = inputs.surface;
     let terrain = formation.terrain_fields();
     let current_elevation = terrain.current_elevation_m();
-    let primary = terrain.elevation_components().primary_relief_m();
+    let primary = terrain.elevation_components().primary_elevation_m();
     let sea = terrain.sea_level_m();
     let land = terrain.land_ocean().raw_values();
 
@@ -1046,8 +1046,8 @@ fn probe_t0_hypsometric_attribution() {
             * f64::from(airy_slope_m_per_km),
     );
 
-    // (3) Current P3 relief -> current P5 equilibrium adjustment and process rates.
-    println!("\n#### (3) P3 relief -> P5 current-state adjustment and process rates");
+    // (3) Current P3 relief -> retained P5 causal components and process rates.
+    println!("\n#### (3) P3 relief -> P5 causal components and process rates");
     let q_p5 = hypsometry(
         "p5/current",
         &areas,
@@ -1071,14 +1071,47 @@ fn probe_t0_hypsometric_attribution() {
             / total_area,
     );
     let elevation_components = terrain.elevation_components();
-    print_quantiles(
-        "p5 equilibrium adjustment over land (m)",
-        &Weighted::collect(
-            elevation_components.equilibrium_adjustment_m(),
-            &areas,
-            |i| land_p5[i] == 1,
+    let net: Vec<f32> = terrain
+        .current_elevation_m()
+        .iter()
+        .zip(elevation_components.primary_elevation_m())
+        .map(|(&final_m, &primary_m)| final_m - primary_m)
+        .collect();
+    let p5_components: [(&str, &[f32]); 9] = [
+        (
+            "tectonic_displacement",
+            elevation_components.tectonic_displacement_m(),
         ),
-    );
+        ("fluvial_erosion", elevation_components.fluvial_erosion_m()),
+        (
+            "hillslope_erosion",
+            elevation_components.hillslope_erosion_m(),
+        ),
+        (
+            "hillslope_deposition",
+            elevation_components.hillslope_deposition_m(),
+        ),
+        (
+            "routed_sediment_deposition",
+            elevation_components.routed_sediment_deposition_m(),
+        ),
+        ("coastal_erosion", elevation_components.coastal_erosion_m()),
+        (
+            "coastal_deposition",
+            elevation_components.coastal_deposition_m(),
+        ),
+        (
+            "isostatic_response",
+            elevation_components.isostatic_response_m(),
+        ),
+        ("net final-primary", &net),
+    ];
+    for (name, values) in p5_components {
+        print_quantiles(
+            &format!("p5 {name} over land (m)"),
+            &Weighted::collect(values, &areas, |i| land_p5[i] == 1),
+        );
+    }
     let process_rates = formation.process_rates();
     let p5_rates: [(&str, &[f32]); 8] = [
         (

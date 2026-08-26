@@ -22,7 +22,7 @@ use sekai::world::natural::{
     FORMATION_STREAM_POWER_AREA_EXPONENT, FORMATION_STREAM_POWER_ERODIBILITY_BASE,
     FORMATION_STREAM_POWER_ERODIBILITY_RANGE, FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
     FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN, FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM,
-    FORMATION_STREAM_POWER_SLOPE_EXPONENT, FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+    FORMATION_STREAM_POWER_SLOPE_EXPONENT, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
     GLOBAL_CIRCULATION_SCHEMA_V2, HYDROLOGY_SCHEMA_V1, HYDROLOGY_SCHEMA_V2,
     NATURAL_SURFACE_FORMATION_SCHEMA_V3, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
     SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
@@ -195,19 +195,26 @@ fn terrain_for_surface(surface: &SphericalSurfaceSnapshot) -> FormationTerrainFi
     let components = FormationElevationComponents::new(
         vec![-1_000.0; count],
         vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
         vec![-1_000.0; count],
     )
     .unwrap();
     let geometry = build_surface_water_geometry(
         surface,
-        components.current_elevation_m(),
+        components.final_elevation_m(),
         0.0,
         &BuildCancellation::new(),
     )
     .unwrap();
     let realized = geometry.total_water_volume_m3();
     FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
         components,
         geometry,
         realized,
@@ -223,13 +230,6 @@ fn serialized_p5_contract_retains_current_state_without_work_history() {
     let terrain_wire = serde_json::to_value(&terrain).unwrap();
     let elevation = terrain_wire["elevation_components"].as_object().unwrap();
     for current_field in [
-        "primary_relief_m",
-        "equilibrium_adjustment_m",
-        "current_elevation_m",
-    ] {
-        assert!(elevation.contains_key(current_field));
-    }
-    for historical_field in [
         "primary_elevation_m",
         "tectonic_displacement_m",
         "fluvial_erosion_m",
@@ -240,6 +240,13 @@ fn serialized_p5_contract_retains_current_state_without_work_history() {
         "coastal_deposition_m",
         "isostatic_response_m",
         "final_elevation_m",
+    ] {
+        assert!(elevation.contains_key(current_field));
+    }
+    for historical_field in [
+        "primary_relief_m",
+        "equilibrium_adjustment_m",
+        "current_elevation_m",
     ] {
         assert!(!elevation.contains_key(historical_field));
     }
@@ -408,7 +415,7 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
     );
 
     let mut drift = serde_json::to_value(&terrain).unwrap();
-    drift["elevation_components"]["current_elevation_m"][0] = serde_json::json!(999.0);
+    drift["elevation_components"]["final_elevation_m"][0] = serde_json::json!(999.0);
     assert!(serde_json::from_value::<FormationTerrainFields>(drift).is_err());
 
     let mut invalid_provenance = serde_json::to_value(&terrain).unwrap();
@@ -426,16 +433,25 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
     assert!(serde_json::from_value::<FormationTerrainFields>(invalid_water).is_err());
 
     let mut oversized_wire = serde_json::to_value(&terrain).unwrap();
-    oversized_wire["elevation_components"]["primary_relief_m"] =
+    oversized_wire["elevation_components"]["primary_elevation_m"] =
         serde_json::to_value(vec![0.0_f32; MAX_SPHERICAL_CELL_COUNT as usize + 1]).unwrap();
     let error = serde_json::from_value::<FormationTerrainFields>(oversized_wire).unwrap_err();
     assert!(error.to_string().contains("at most"));
 
     let oversized = vec![0.0; MAX_SPHERICAL_CELL_COUNT as usize + 1];
-    assert!(
-        FormationElevationComponents::new(oversized.clone(), oversized.clone(), oversized,)
-            .is_err()
-    );
+    assert!(FormationElevationComponents::new(
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized.clone(),
+        oversized,
+    )
+    .is_err());
 }
 
 #[test]

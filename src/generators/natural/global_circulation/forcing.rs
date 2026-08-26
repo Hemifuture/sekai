@@ -772,7 +772,7 @@ mod formation_tests {
         constraint_status, land_fraction_constraint_tolerance, ClimateModelProfile,
         FormationElevationComponents, FormationSedimentFields, FormationTerrainFields,
         NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec,
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V3, PRIMARY_RELIEF_SCHEMA_V3,
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V4, PRIMARY_RELIEF_SCHEMA_V3,
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -859,12 +859,22 @@ mod formation_tests {
         let count = surface.cells().len();
         assert_eq!(primary.len(), count);
         let zero = vec![0.0; count];
-        let components =
-            FormationElevationComponents::new(primary.clone(), zero.clone(), primary.clone())
-                .unwrap();
+        let components = FormationElevationComponents::new(
+            primary.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero.clone(),
+            zero,
+            primary.clone(),
+        )
+        .unwrap();
         let water = solve_physical_sea_level(surface, &primary, water_inventory_m3).unwrap();
         FormationTerrainFields::new(
-            FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
             components,
             water.into_geometry(),
             water_inventory_m3,

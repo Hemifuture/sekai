@@ -19,8 +19,8 @@ use crate::world::MAX_SPHERICAL_CELL_COUNT;
 pub const NATURAL_SURFACE_FORMATION_SCHEMA_V3: u16 = 3;
 /// Current-state-only P5 checkpoint schema.
 pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2: u16 = 2;
-/// Retained terrain with one authoritative fractional water geometry.
-pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V3: u16 = 3;
+/// Retained terrain with nine causal elevation components and one water geometry.
+pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V4: u16 = 4;
 /// The fixed number of retained sediment-source provenance channels.
 pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
 /// Declared coarse-grained physical time consumed by one P5 map formation.
@@ -181,8 +181,16 @@ pub fn expected_surface_formation_dense_state_bytes(
 ) -> Option<u64> {
     /// Eight signed `f64` component accumulators.
     const COMPONENT_ACCUMULATOR_BYTES_PER_CELL: u64 = 8 * 8;
-    /// Immutable primary relief plus the working retained elevation.
-    const WORKING_ELEVATION_BYTES_PER_CELL: u64 = 2 * 4;
+    /// Immutable primary relief plus the exact working retained elevation.
+    const WORKING_ELEVATION_BYTES_PER_CELL: u64 = 2 * 8;
+    /// Current and candidate exact rates for all eight formation processes.
+    const EXACT_PROCESS_RATE_BYTES_PER_CELL: u64 = 2 * 8 * 8;
+    /// Current state, cloned trial state, and replacement exact water geometry:
+    /// two `f64` cell fields plus one `u32` land/ocean field.
+    const EXACT_WATER_BYTES_PER_CELL: u64 = 3 * (2 * 8 + 4);
+    /// Current state, cloned trial state, and replacement wire water geometry:
+    /// one `f32`, one `f64`, and one `u32` cell field.
+    const WIRE_WATER_BYTES_PER_CELL: u64 = 3 * (4 + 8 + 4);
     /// Previous and candidate retained terrain: ten components, sediment
     /// thickness, five provenance fractions, four `f64` ledgers, and the delta
     /// potential.
@@ -197,16 +205,23 @@ pub fn expected_surface_formation_dense_state_bytes(
     const SEDIMENT_ROUTER_BYTES_PER_CELL: u64 = 2 * 10 * 8 + 6 * 8 + 4;
     /// One requested paired transfer per authoritative edge.
     const HILLSLOPE_WORKSPACE_BYTES_PER_EDGE: u64 = 32;
+    /// Current state, cloned trial state, and replacement exact/wire wet-edge
+    /// fractions.
+    const WATER_BYTES_PER_EDGE: u64 = 3 * (8 + 4);
 
     let per_cell = COMPONENT_ACCUMULATOR_BYTES_PER_CELL
         + WORKING_ELEVATION_BYTES_PER_CELL
+        + EXACT_PROCESS_RATE_BYTES_PER_CELL
+        + EXACT_WATER_BYTES_PER_CELL
+        + WIRE_WATER_BYTES_PER_CELL
         + RETAINED_TERRAIN_BYTES_PER_CELL
         + HYDROLOGY_BYTES_PER_CELL
         + HILLSLOPE_WORKSPACE_BYTES_PER_CELL
         + SEDIMENT_ROUTER_BYTES_PER_CELL;
+    let per_edge = HILLSLOPE_WORKSPACE_BYTES_PER_EDGE + WATER_BYTES_PER_EDGE;
     u64::from(cell_count)
         .checked_mul(per_cell)?
-        .checked_add(u64::from(edge_count).checked_mul(HILLSLOPE_WORKSPACE_BYTES_PER_EDGE)?)
+        .checked_add(u64::from(edge_count).checked_mul(per_edge)?)
         .filter(|bytes| *bytes > 0 && *bytes <= SURFACE_FORMATION_DENSE_STATE_BYTES_MAX)
 }
 
@@ -289,7 +304,8 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
             .to_le_bytes(),
     );
     hasher.update(b"sources:felsic,mafic,volcaniclastic,sedimentary,metamorphic\0");
-    hasher.update(b"elevation:primary_relief+equilibrium_adjustment=current_elevation\0");
+    hasher.update(b"nine-causal-elevation-components-v4\0");
+    hasher.update(&FORMATION_TERRAIN_FIELDS_SCHEMA_V4.to_le_bytes());
     hasher.update(b"fixed-water-volume-piecewise-linear-sea-level-v1\0");
     *hasher.finalize().as_bytes()
 }
@@ -804,88 +820,181 @@ const fn expected_capability_availability(
     }
 }
 
-/// Returns the sole retained current-state P5 elevation identity.
+/// Returns the exact retained P5 elevation identity in its declared causal order.
+///
+/// Tectonic displacement and isostatic response are signed and added. Fluvial,
+/// hillslope, and coastal erosion are nonnegative depths and subtracted.
+/// Hillslope, routed-sediment, and coastal deposition are nonnegative
+/// thicknesses and added.
+#[allow(clippy::too_many_arguments)]
 pub fn formation_elevation_from_components(
-    primary_relief_m: f32,
-    equilibrium_adjustment_m: f32,
-) -> f32 {
-    (f64::from(primary_relief_m) + f64::from(equilibrium_adjustment_m)) as f32
+    primary_elevation_m: f64,
+    tectonic_displacement_m: f64,
+    fluvial_erosion_m: f64,
+    hillslope_erosion_m: f64,
+    hillslope_deposition_m: f64,
+    routed_sediment_deposition_m: f64,
+    coastal_erosion_m: f64,
+    coastal_deposition_m: f64,
+    isostatic_response_m: f64,
+) -> f64 {
+    primary_elevation_m + tectonic_displacement_m - fluvial_erosion_m - hillslope_erosion_m
+        + hillslope_deposition_m
+        + routed_sediment_deposition_m
+        - coastal_erosion_m
+        + coastal_deposition_m
+        + isostatic_response_m
 }
 
-/// Current elevation and its one adjustment from immutable P3 relief.
+/// Final current elevation and its nine retained causal components.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormationElevationComponents {
-    primary_relief_m: Vec<f32>,
-    equilibrium_adjustment_m: Vec<f32>,
-    current_elevation_m: Vec<f32>,
+    primary_elevation_m: Vec<f32>,
+    tectonic_displacement_m: Vec<f32>,
+    fluvial_erosion_m: Vec<f32>,
+    hillslope_erosion_m: Vec<f32>,
+    hillslope_deposition_m: Vec<f32>,
+    routed_sediment_deposition_m: Vec<f32>,
+    coastal_erosion_m: Vec<f32>,
+    coastal_deposition_m: Vec<f32>,
+    isostatic_response_m: Vec<f32>,
+    final_elevation_m: Vec<f32>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FormationElevationComponentsWire {
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    primary_relief_m: Vec<f32>,
+    primary_elevation_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    equilibrium_adjustment_m: Vec<f32>,
+    tectonic_displacement_m: Vec<f32>,
     #[serde(deserialize_with = "deserialize_formation_f32_values")]
-    current_elevation_m: Vec<f32>,
+    fluvial_erosion_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    hillslope_erosion_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    hillslope_deposition_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    routed_sediment_deposition_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    coastal_erosion_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    coastal_deposition_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    isostatic_response_m: Vec<f32>,
+    #[serde(deserialize_with = "deserialize_formation_f32_values")]
+    final_elevation_m: Vec<f32>,
 }
 
 impl FormationElevationComponents {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        primary_relief_m: Vec<f32>,
-        equilibrium_adjustment_m: Vec<f32>,
-        current_elevation_m: Vec<f32>,
+        primary_elevation_m: Vec<f32>,
+        tectonic_displacement_m: Vec<f32>,
+        fluvial_erosion_m: Vec<f32>,
+        hillslope_erosion_m: Vec<f32>,
+        hillslope_deposition_m: Vec<f32>,
+        routed_sediment_deposition_m: Vec<f32>,
+        coastal_erosion_m: Vec<f32>,
+        coastal_deposition_m: Vec<f32>,
+        isostatic_response_m: Vec<f32>,
+        final_elevation_m: Vec<f32>,
     ) -> Result<Self, SurfaceFormationValidationError> {
         let components = Self {
-            primary_relief_m,
-            equilibrium_adjustment_m,
-            current_elevation_m,
+            primary_elevation_m,
+            tectonic_displacement_m,
+            fluvial_erosion_m,
+            hillslope_erosion_m,
+            hillslope_deposition_m,
+            routed_sediment_deposition_m,
+            coastal_erosion_m,
+            coastal_deposition_m,
+            isostatic_response_m,
+            final_elevation_m,
         };
         components.validate()?;
         Ok(components)
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        let count = self.primary_relief_m.len();
+        let count = self.primary_elevation_m.len();
         validate_dense_count(count)?;
         for (field, found) in [
             (
-                "equilibrium_adjustment_m",
-                self.equilibrium_adjustment_m.len(),
+                "tectonic_displacement_m",
+                self.tectonic_displacement_m.len(),
             ),
-            ("current_elevation_m", self.current_elevation_m.len()),
+            ("fluvial_erosion_m", self.fluvial_erosion_m.len()),
+            ("hillslope_erosion_m", self.hillslope_erosion_m.len()),
+            ("hillslope_deposition_m", self.hillslope_deposition_m.len()),
+            (
+                "routed_sediment_deposition_m",
+                self.routed_sediment_deposition_m.len(),
+            ),
+            ("coastal_erosion_m", self.coastal_erosion_m.len()),
+            ("coastal_deposition_m", self.coastal_deposition_m.len()),
+            ("isostatic_response_m", self.isostatic_response_m.len()),
+            ("final_elevation_m", self.final_elevation_m.len()),
         ] {
             validate_field_length(field, found, count)?;
         }
         validate_f32_slice(
-            "primary_relief_m",
-            &self.primary_relief_m,
+            "primary_elevation_m",
+            &self.primary_elevation_m,
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
         )?;
         validate_f32_slice(
-            "equilibrium_adjustment_m",
-            &self.equilibrium_adjustment_m,
+            "tectonic_displacement_m",
+            &self.tectonic_displacement_m,
+            -MAX_COMPONENT_ABS_M,
+            MAX_COMPONENT_ABS_M,
+        )?;
+        for (field, values) in [
+            ("fluvial_erosion_m", self.fluvial_erosion_m.as_slice()),
+            ("hillslope_erosion_m", self.hillslope_erosion_m.as_slice()),
+            (
+                "hillslope_deposition_m",
+                self.hillslope_deposition_m.as_slice(),
+            ),
+            (
+                "routed_sediment_deposition_m",
+                self.routed_sediment_deposition_m.as_slice(),
+            ),
+            ("coastal_erosion_m", self.coastal_erosion_m.as_slice()),
+            ("coastal_deposition_m", self.coastal_deposition_m.as_slice()),
+        ] {
+            validate_f32_slice(field, values, 0.0, MAX_COMPONENT_ABS_M)?;
+        }
+        validate_f32_slice(
+            "isostatic_response_m",
+            &self.isostatic_response_m,
             -MAX_COMPONENT_ABS_M,
             MAX_COMPONENT_ABS_M,
         )?;
         validate_f32_slice(
-            "current_elevation_m",
-            &self.current_elevation_m,
+            "final_elevation_m",
+            &self.final_elevation_m,
             ELEVATION_MIN_M,
             ELEVATION_MAX_M,
         )?;
         for index in 0..count {
             let expected = formation_elevation_from_components(
-                self.primary_relief_m[index],
-                self.equilibrium_adjustment_m[index],
-            );
-            if self.current_elevation_m[index].to_bits() != expected.to_bits() {
+                f64::from(self.primary_elevation_m[index]),
+                f64::from(self.tectonic_displacement_m[index]),
+                f64::from(self.fluvial_erosion_m[index]),
+                f64::from(self.hillslope_erosion_m[index]),
+                f64::from(self.hillslope_deposition_m[index]),
+                f64::from(self.routed_sediment_deposition_m[index]),
+                f64::from(self.coastal_erosion_m[index]),
+                f64::from(self.coastal_deposition_m[index]),
+                f64::from(self.isostatic_response_m[index]),
+            ) as f32;
+            if self.final_elevation_m[index].to_bits() != expected.to_bits() {
                 return Err(SurfaceFormationValidationError::ComponentIdentityMismatch {
                     cell: index,
-                    stored: self.current_elevation_m[index],
+                    stored: self.final_elevation_m[index],
                     expected,
                 });
             }
@@ -894,23 +1003,51 @@ impl FormationElevationComponents {
     }
 
     pub fn len(&self) -> usize {
-        self.primary_relief_m.len()
+        self.primary_elevation_m.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.primary_relief_m.is_empty()
+        self.primary_elevation_m.is_empty()
     }
 
-    pub fn primary_relief_m(&self) -> &[f32] {
-        &self.primary_relief_m
+    pub fn primary_elevation_m(&self) -> &[f32] {
+        &self.primary_elevation_m
     }
 
-    pub fn equilibrium_adjustment_m(&self) -> &[f32] {
-        &self.equilibrium_adjustment_m
+    pub fn tectonic_displacement_m(&self) -> &[f32] {
+        &self.tectonic_displacement_m
     }
 
-    pub fn current_elevation_m(&self) -> &[f32] {
-        &self.current_elevation_m
+    pub fn fluvial_erosion_m(&self) -> &[f32] {
+        &self.fluvial_erosion_m
+    }
+
+    pub fn hillslope_erosion_m(&self) -> &[f32] {
+        &self.hillslope_erosion_m
+    }
+
+    pub fn hillslope_deposition_m(&self) -> &[f32] {
+        &self.hillslope_deposition_m
+    }
+
+    pub fn routed_sediment_deposition_m(&self) -> &[f32] {
+        &self.routed_sediment_deposition_m
+    }
+
+    pub fn coastal_erosion_m(&self) -> &[f32] {
+        &self.coastal_erosion_m
+    }
+
+    pub fn coastal_deposition_m(&self) -> &[f32] {
+        &self.coastal_deposition_m
+    }
+
+    pub fn isostatic_response_m(&self) -> &[f32] {
+        &self.isostatic_response_m
+    }
+
+    pub fn final_elevation_m(&self) -> &[f32] {
+        &self.final_elevation_m
     }
 }
 
@@ -921,9 +1058,16 @@ impl<'de> Deserialize<'de> for FormationElevationComponents {
     {
         let wire = FormationElevationComponentsWire::deserialize(deserializer)?;
         Self::new(
-            wire.primary_relief_m,
-            wire.equilibrium_adjustment_m,
-            wire.current_elevation_m,
+            wire.primary_elevation_m,
+            wire.tectonic_displacement_m,
+            wire.fluvial_erosion_m,
+            wire.hillslope_erosion_m,
+            wire.hillslope_deposition_m,
+            wire.routed_sediment_deposition_m,
+            wire.coastal_erosion_m,
+            wire.coastal_deposition_m,
+            wire.isostatic_response_m,
+            wire.final_elevation_m,
         )
         .map_err(D::Error::custom)
     }
@@ -1184,11 +1328,11 @@ impl FormationTerrainFields {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V3 {
+        if self.schema_version != FORMATION_TERRAIN_FIELDS_SCHEMA_V4 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "formation_terrain_fields",
                 found: self.schema_version,
-                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V3,
+                supported: FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
             });
         }
         self.elevation_components.validate()?;
@@ -1202,7 +1346,7 @@ impl FormationTerrainFields {
         )?;
         validate_field_length("sediment", self.sediment.len(), count)?;
         if self.surface_water_geometry.elevation_fingerprint()
-            != &surface_elevation_fingerprint(self.elevation_components.current_elevation_m())
+            != &surface_elevation_fingerprint(self.elevation_components.final_elevation_m())
         {
             return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
         }
@@ -1244,12 +1388,19 @@ impl FormationTerrainFields {
 
     pub fn fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.formation-terrain-fields.v3\0");
+        hasher.update(b"sekai.formation-terrain-fields.v4\0");
         hasher.update(&self.schema_version.to_le_bytes());
         for values in [
-            self.elevation_components.primary_relief_m(),
-            self.elevation_components.equilibrium_adjustment_m(),
-            self.elevation_components.current_elevation_m(),
+            self.elevation_components.primary_elevation_m(),
+            self.elevation_components.tectonic_displacement_m(),
+            self.elevation_components.fluvial_erosion_m(),
+            self.elevation_components.hillslope_erosion_m(),
+            self.elevation_components.hillslope_deposition_m(),
+            self.elevation_components.routed_sediment_deposition_m(),
+            self.elevation_components.coastal_erosion_m(),
+            self.elevation_components.coastal_deposition_m(),
+            self.elevation_components.isostatic_response_m(),
+            self.elevation_components.final_elevation_m(),
             self.sediment.sediment_thickness_m(),
             self.sediment.delta_potential(),
         ] {
@@ -1280,7 +1431,7 @@ impl FormationTerrainFields {
     }
 
     pub fn current_elevation_m(&self) -> &[f32] {
-        self.elevation_components.current_elevation_m()
+        self.elevation_components.final_elevation_m()
     }
 
     pub const fn surface_water_geometry(&self) -> &SurfaceWaterGeometry {

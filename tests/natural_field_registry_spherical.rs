@@ -3,14 +3,18 @@ use std::f64::consts::PI;
 use sekai::world::fields::{FieldId, FieldRegistry, FieldValueType};
 use sekai::world::natural::{
     circulation_annual_evaporation_mm_field_id, circulation_annual_precipitation_mm_field_id,
-    coastal_deposition_rate_m_per_year_field_id, coastal_erosion_rate_m_per_year_field_id,
-    drainage_area_km2_field_id, equilibrium_adjustment_m_field_id,
-    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_rate_m_per_year_field_id,
-    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_rate_m_per_year_field_id,
-    mean_annual_discharge_m3_s_field_id, natural_field_registry, primary_relief_m_field_id,
+    coastal_deposition_m_field_id, coastal_deposition_rate_m_per_year_field_id,
+    coastal_erosion_m_field_id, coastal_erosion_rate_m_per_year_field_id,
+    drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
+    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_m_field_id,
+    hillslope_deposition_rate_m_per_year_field_id, hillslope_erosion_m_field_id,
+    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_m_field_id,
+    isostatic_response_rate_m_per_year_field_id, mean_annual_discharge_m3_s_field_id,
+    natural_field_registry, primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
     routed_sediment_deposition_rate_m_per_year_field_id, spherical_formation_field_registry,
-    spherical_natural_field_registry, tectonic_displacement_rate_m_per_year_field_id,
-    NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
+    spherical_natural_field_registry, tectonic_displacement_m_field_id,
+    tectonic_displacement_rate_m_per_year_field_id, NaturalFieldRegistryError,
+    ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
 };
 
 fn maximum(registry: &FieldRegistry, id: FieldId) -> f32 {
@@ -25,11 +29,58 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
         .to_hex()
         .to_string();
 
-    let r4_current_state_fields = [
-        (primary_relief_m_field_id(), "primary_relief_m", "m", false),
+    let retained_and_rate_fields = [
         (
-            equilibrium_adjustment_m_field_id(),
-            "equilibrium_adjustment_m",
+            primary_elevation_m_field_id(),
+            "primary_elevation_m",
+            "m",
+            false,
+        ),
+        (
+            tectonic_displacement_m_field_id(),
+            "tectonic_displacement_m",
+            "m",
+            false,
+        ),
+        (
+            fluvial_erosion_depth_m_field_id(),
+            "fluvial_erosion_depth_m",
+            "m",
+            false,
+        ),
+        (
+            hillslope_erosion_m_field_id(),
+            "hillslope_erosion_m",
+            "m",
+            false,
+        ),
+        (
+            hillslope_deposition_m_field_id(),
+            "hillslope_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            routed_sediment_deposition_m_field_id(),
+            "routed_sediment_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            coastal_erosion_m_field_id(),
+            "coastal_erosion_m",
+            "m",
+            false,
+        ),
+        (
+            coastal_deposition_m_field_id(),
+            "coastal_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            isostatic_response_m_field_id(),
+            "isostatic_response_m",
             "m",
             false,
         ),
@@ -82,8 +133,8 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
             true,
         ),
     ];
-    assert_eq!(registry.len(), 29);
-    for (field, expected_name, expected_unit, is_unbounded) in r4_current_state_fields {
+    assert_eq!(registry.len(), 36);
+    for (field, expected_name, expected_unit, is_unbounded) in retained_and_rate_fields {
         assert_eq!(field.name(), expected_name);
         let schema = registry
             .get(&field)
@@ -110,7 +161,7 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
 
     assert_eq!(
         actual,
-        "be7c169b774d82d8600e936c67215aeb3bd600217fce9eaabf41ee2234e341db"
+        "9fa5da02e7adccd6e74c33d715bb9af679fc16072d696bb80b398af0ad0f5efa"
     );
 }
 

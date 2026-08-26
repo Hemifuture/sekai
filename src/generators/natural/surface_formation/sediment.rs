@@ -5,9 +5,9 @@ use thiserror::Error;
 
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    FormationSedimentFields, SedimentBudgetReport, SurfaceFormationValidationError,
-    SurfaceWaterField, SurfaceWaterKind, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+    FormationSedimentFields, LandOceanKind, SedimentBudgetReport, SurfaceFormationValidationError,
+    CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FORMATION_AIRY_MANTLE_DENSITY_KG_M3, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     FORMATION_SHELF_BREAK_DEPTH_M, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
@@ -46,9 +46,8 @@ pub(super) fn split_mass_by_weights(
 /// Borrowed retained process fields consumed by one sediment-routing pass.
 #[derive(Debug, Clone, Copy)]
 pub struct SedimentInputs<'a> {
-    pub elevation_m: &'a [f32],
-    pub sea_level_m: f32,
-    pub surface_water: &'a SurfaceWaterField,
+    pub elevation_m: &'a [f64],
+    pub sea_level_m: f64,
     pub flow_receiver: &'a [Option<CellId>],
     pub mean_annual_discharge_m3_s: &'a [f32],
     /// Davy-Lague effective settling velocity `d* v_s`, in meters per year.
@@ -58,7 +57,7 @@ pub struct SedimentInputs<'a> {
     pub hillslope_deposited_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub coastal_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub coastal_ocean_injection_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
-    pub marine_exposure: &'a [f32],
+    pub marine_exposure: &'a [f64],
     pub previous_sediment_thickness_m: &'a [f32],
     pub previous_provenance_fraction: &'a [[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub sediment_stock_removed_kg: &'a [f64],
@@ -103,8 +102,8 @@ impl SedimentPacket {
 pub struct SedimentTransportStep {
     fields: FormationSedimentFields,
     budget_report: SedimentBudgetReport,
-    routed_sediment_deposition_m: Vec<f32>,
-    coastal_deposition_m: Vec<f32>,
+    routed_sediment_deposition_m: Vec<f64>,
+    coastal_deposition_m: Vec<f64>,
     removed_mass_kg: Vec<f64>,
     deposited_mass_kg: Vec<f64>,
 }
@@ -118,11 +117,11 @@ impl SedimentTransportStep {
         &self.budget_report
     }
 
-    pub fn routed_sediment_deposition_m(&self) -> &[f32] {
+    pub fn routed_sediment_deposition_m(&self) -> &[f64] {
         &self.routed_sediment_deposition_m
     }
 
-    pub fn coastal_deposition_m(&self) -> &[f32] {
+    pub fn coastal_deposition_m(&self) -> &[f64] {
         &self.coastal_deposition_m
     }
 
@@ -213,11 +212,12 @@ impl ProvenanceSedimentRouter {
             if available == 0.0 {
                 continue;
             }
-            if inputs.surface_water.get(index) == Some(SurfaceWaterKind::Ocean) {
+            if LandOceanKind::classify_exact(inputs.elevation_m[index], inputs.sea_level_m)
+                == LandOceanKind::Ocean
+            {
                 throughput_kg[index] = available;
-                let exposure = f64::from(inputs.marine_exposure[index]);
-                let water_depth_m =
-                    (f64::from(inputs.sea_level_m) - f64::from(inputs.elevation_m[index])).max(0.0);
+                let exposure = inputs.marine_exposure[index];
+                let water_depth_m = (inputs.sea_level_m - inputs.elevation_m[index]).max(0.0);
                 let accommodation_kg = load_compensated_accommodation_mass_kg(
                     water_depth_m.min(FORMATION_SHELF_BREAK_DEPTH_M),
                     surface.cells()[index].area.get(),
@@ -316,12 +316,12 @@ impl ProvenanceSedimentRouter {
             sediment_thickness_m.push(thickness);
             provenance_fraction.push(provenance_fractions(combined, total_mass));
             routed_sediment_deposition_m.push(
-                (deposited_packet.routed.iter().sum::<f64>()
-                    / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3)) as f32,
+                deposited_packet.routed.iter().sum::<f64>()
+                    / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3),
             );
             coastal_deposition_m.push(
-                (deposited_packet.coastal.iter().sum::<f64>()
-                    / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3)) as f32,
+                deposited_packet.coastal.iter().sum::<f64>()
+                    / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3),
             );
         }
 
@@ -491,7 +491,7 @@ fn validate_inputs(
         return Err(SedimentGenerationError::InvalidStepYears { found: step_years });
     }
     if !inputs.sea_level_m.is_finite()
-        || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&inputs.sea_level_m)
+        || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&inputs.sea_level_m)
     {
         return Err(SedimentGenerationError::InvalidSeaLevel {
             found: inputs.sea_level_m,
@@ -500,7 +500,6 @@ fn validate_inputs(
     let count = surface.cells().len();
     for (field, found) in [
         ("elevation_m", inputs.elevation_m.len()),
-        ("surface_water", inputs.surface_water.len()),
         ("flow_receiver", inputs.flow_receiver.len()),
         (
             "mean_annual_discharge_m3_s",
@@ -558,20 +557,31 @@ fn validate_inputs(
     for index in 0..count {
         poll_cancelled(cancellation, index)?;
         let cell = CellId::from_raw(index as u32);
+        let elevation_m = inputs.elevation_m[index];
+        if !elevation_m.is_finite()
+            || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation_m)
+        {
+            return Err(SedimentGenerationError::InvalidCellValue {
+                field: "elevation_m",
+                cell,
+                found: elevation_m,
+            });
+        }
+        let marine_exposure = inputs.marine_exposure[index];
+        if !marine_exposure.is_finite() || !(0.0..=1.0).contains(&marine_exposure) {
+            return Err(SedimentGenerationError::InvalidCellValue {
+                field: "marine_exposure",
+                cell,
+                found: marine_exposure,
+            });
+        }
         for (field, value, minimum, maximum) in [
-            (
-                "elevation_m",
-                inputs.elevation_m[index],
-                ELEVATION_MIN_M,
-                ELEVATION_MAX_M,
-            ),
             (
                 "mean_annual_discharge_m3_s",
                 inputs.mean_annual_discharge_m3_s[index],
                 0.0,
                 f32::MAX,
             ),
-            ("marine_exposure", inputs.marine_exposure[index], 0.0, 1.0),
             (
                 "previous_sediment_thickness_m",
                 inputs.previous_sediment_thickness_m[index],
@@ -789,7 +799,7 @@ pub enum SedimentGenerationError {
         expected: f64,
     },
     #[error("sediment sea level is invalid: {found}")]
-    InvalidSeaLevel { found: f32 },
+    InvalidSeaLevel { found: f64 },
     #[error("sediment step duration must be finite and positive, got {found}")]
     InvalidStepYears { found: f64 },
     #[error("effective settling velocity must be finite and nonnegative, got {found}")]

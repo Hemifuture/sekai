@@ -118,7 +118,7 @@ pub(crate) fn generate_hydrology_core(
     outlet_policy: DrainageOutletPolicy,
 ) -> Result<HydrologySnapshot, HydrologyGenerationError> {
     let original_height_cm = quantized_surface_heights(surface_elevation_m, None)?;
-    let sea_level_cm = quantize_centimeters(sea_level_m);
+    let sea_level_cm = quantize_centimeters_exact(f64::from(sea_level_m));
     let ocean = original_height_cm
         .iter()
         .map(|&height| height < sea_level_cm)
@@ -145,7 +145,7 @@ pub(crate) fn generate_hydrology_core(
 pub(crate) fn generate_formation_hydrology_core(
     surface: &impl NaturalSurface,
     topology: &NaturalTopologyIndex,
-    surface_elevation_m: &ElevationField,
+    surface_elevation_m: &[f64],
     land_ocean: &LandOceanField,
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; CLIMATE_MONTH_COUNT]],
@@ -167,7 +167,8 @@ pub(crate) fn generate_formation_hydrology_core(
             found: land_ocean.len(),
         });
     }
-    let original_height_cm = quantized_surface_heights(surface_elevation_m, Some(cancellation))?;
+    let original_height_cm =
+        quantized_surface_heights_exact(surface_elevation_m, Some(cancellation))?;
     let mut ocean = Vec::with_capacity(land_ocean.len());
     for index in 0..land_ocean.len() {
         poll_cancelled(Some(cancellation), index)?;
@@ -314,7 +315,7 @@ fn generate_hydrology_core_impl(
 
 fn validate_dense_inputs(
     cell_count: usize,
-    surface_elevation_m: &ElevationField,
+    surface_elevation_m: &[f64],
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; CLIMATE_MONTH_COUNT]],
     cancellation: Option<&BuildCancellation>,
@@ -337,8 +338,10 @@ fn validate_dense_inputs(
     }
     for index in 0..cell_count {
         poll_cancelled(cancellation, index)?;
-        let elevation = surface_elevation_m.values()[index];
-        if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+        let elevation = surface_elevation_m[index];
+        if !elevation.is_finite()
+            || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation)
+        {
             return Err(HydrologyGenerationError::SurfaceElevationOutOfRange {
                 cell: CellId::from_raw(index as u32),
                 found: elevation,
@@ -370,7 +373,19 @@ fn quantized_surface_heights(
     let mut heights = Vec::with_capacity(surface_elevation_m.len());
     for (index, &value) in surface_elevation_m.values().iter().enumerate() {
         poll_cancelled(cancellation, index)?;
-        heights.push(quantize_centimeters(value));
+        heights.push(quantize_centimeters_exact(f64::from(value)));
+    }
+    Ok(heights)
+}
+
+fn quantized_surface_heights_exact(
+    surface_elevation_m: &[f64],
+    cancellation: Option<&BuildCancellation>,
+) -> Result<Vec<i64>, HydrologyGenerationError> {
+    let mut heights = Vec::with_capacity(surface_elevation_m.len());
+    for (index, &value) in surface_elevation_m.iter().enumerate() {
+        poll_cancelled(cancellation, index)?;
+        heights.push(quantize_centimeters_exact(value));
     }
     Ok(heights)
 }
@@ -414,7 +429,7 @@ fn validate_inputs_against_validated_spatial(
         if !found.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&found) {
             return Err(HydrologyGenerationError::SurfaceElevationOutOfRange {
                 cell: CellId::from_raw(index as u32),
-                found,
+                found: f64::from(found),
             });
         }
     }
@@ -1204,8 +1219,8 @@ fn update_strahler_aggregate(maximum: &mut u8, count: &mut u32, order: u8) {
     }
 }
 
-fn quantize_centimeters(value_m: f32) -> i64 {
-    (f64::from(value_m) * CENTIMETERS_PER_METER).round() as i64
+fn quantize_centimeters_exact(value_m: f64) -> i64 {
+    (value_m * CENTIMETERS_PER_METER).round() as i64
 }
 
 fn poll_cancelled(
@@ -1271,7 +1286,7 @@ pub enum HydrologyGenerationError {
         /// The affected cell.
         cell: CellId,
         /// The rejected elevation.
-        found: f32,
+        found: f64,
     },
     /// Relative permeability is invalid.
     #[error("relative permeability {found} at {cell:?} is outside finite 0..=1")]

@@ -57,7 +57,7 @@ fn simple_path(surface: &SphericalSurfaceSnapshot, length: usize) -> Vec<CellId>
 }
 
 struct Fields {
-    elevation_m: Vec<f32>,
+    elevation_m: Vec<f64>,
     receiver: Vec<Option<CellId>>,
     water: SurfaceWaterField,
     drainage_area_km2: Vec<f32>,
@@ -92,7 +92,7 @@ fn chain_fields(surface: &SphericalSurfaceSnapshot) -> (Vec<CellId>, Fields) {
     let mut annual_runoff_mm = vec![0.0; count];
     for (position, &cell) in path.iter().enumerate() {
         let index = cell.raw() as usize;
-        elevation_m[index] = (3 - position) as f32 * 1_000.0;
+        elevation_m[index] = f64::from((3 - position) as u32) * 1_000.0;
         drainage_area_km2[index] = (position + 1) as f32 * 4_000_000.0;
         annual_runoff_mm[index] = 1_000.0;
         if let Some(&downstream) = path.get(position + 1) {
@@ -197,7 +197,14 @@ fn spherical_chain_is_deterministic_monotone_base_safe_and_component_exact() {
             first.elevation_m()[index].to_bits(),
             formation_elevation_from_components(
                 fields.elevation_m[index],
-                first.tectonic_displacement_m()[index] - first.fluvial_erosion_m()[index],
+                first.tectonic_displacement_m()[index],
+                first.fluvial_erosion_m()[index],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             )
             .to_bits()
         );
@@ -250,7 +257,7 @@ fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exac
         .and_then(|&edge| surface.edge(edge))
         .unwrap();
     subthreshold.elevation_m[head] = subthreshold.elevation_m[downstream]
-        + (edge.center_distance.get() * FORMATION_STREAM_POWER_SLOPE_THRESHOLD * 0.5) as f32;
+        + edge.center_distance.get() * FORMATION_STREAM_POWER_SLOPE_THRESHOLD * 0.5;
     let subthreshold_result = ImplicitStreamPowerSolver::advance(
         &surface,
         subthreshold.inputs(),
@@ -351,7 +358,18 @@ fn submerged_cells_integrate_present_day_tectonic_forcing_without_fluvial_incisi
     );
     assert_eq!(
         result.elevation_m()[submerged].to_bits(),
-        formation_elevation_from_components(initial_elevation_m, displacement).to_bits()
+        formation_elevation_from_components(
+            initial_elevation_m,
+            displacement,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        .to_bits()
     );
 
     // Subaerial stream power still never reaches below the base level.
@@ -363,7 +381,7 @@ fn tectonic_forcing_outside_the_elevation_domain_fails_instead_of_clipping() {
     let surface = surface(42);
     let mut fields = chain_fields(&surface).1;
     let cell = fields.receiver.iter().position(Option::is_none).unwrap();
-    fields.elevation_m[cell] = ELEVATION_MAX_M - 1.0;
+    fields.elevation_m[cell] = f64::from(ELEVATION_MAX_M) - 1.0;
     fields.uplift_rate_mm_year[cell] = 1.0;
 
     assert!(matches!(

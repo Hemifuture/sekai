@@ -32,19 +32,22 @@ use crate::world::natural::{
     circulation_mean_absorbed_shortwave_w_m2_field_id, circulation_mean_air_temperature_c_field_id,
     circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
     circulation_surface_albedo_field_id, climatological_annual_total_mm,
-    climatological_monthly_mean, coastal_deposition_rate_m_per_year_field_id,
+    climatological_monthly_mean, coastal_deposition_m_field_id,
+    coastal_deposition_rate_m_per_year_field_id, coastal_erosion_m_field_id,
     coastal_erosion_rate_m_per_year_field_id, crust_kind_field_id, crust_thickness_field_id,
-    drainage_area_km2_field_id, equilibrium_adjustment_m_field_id,
-    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_rate_m_per_year_field_id,
-    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_rate_m_per_year_field_id,
-    lake_depth_m_field_id, land_ocean_field_id, mean_annual_discharge_m3_s_field_id,
-    plate_id_field_id, primary_relief_m_field_id,
-    routed_sediment_deposition_rate_m_per_year_field_id, sediment_deposition_thickness_m_field_id,
-    spherical_formation_field_registry, strahler_stream_order_field_id,
-    surface_elevation_m_field_id, surface_water_kind_field_id,
-    tectonic_displacement_rate_m_per_year_field_id, ClimateBudgetReport, GlobalCirculationFields,
-    NaturalFieldRegistryError, PrimaryReliefValidationError, SeaLevelPolicy,
-    SphericalTectonicValidationError, SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
+    drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
+    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_m_field_id,
+    hillslope_deposition_rate_m_per_year_field_id, hillslope_erosion_m_field_id,
+    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_m_field_id,
+    isostatic_response_rate_m_per_year_field_id, lake_depth_m_field_id, land_ocean_field_id,
+    mean_annual_discharge_m3_s_field_id, plate_id_field_id, primary_elevation_m_field_id,
+    routed_sediment_deposition_m_field_id, routed_sediment_deposition_rate_m_per_year_field_id,
+    sediment_deposition_thickness_m_field_id, spherical_formation_field_registry,
+    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
+    tectonic_displacement_m_field_id, tectonic_displacement_rate_m_per_year_field_id,
+    ClimateBudgetReport, GlobalCirculationFields, NaturalFieldRegistryError,
+    PrimaryReliefValidationError, SeaLevelPolicy, SphericalTectonicValidationError,
+    SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
@@ -578,12 +581,40 @@ impl FieldDocument for SphericalFormationFieldDocument {
                 FieldPayloadRef::ScalarF32(compatibility.crust_thickness_km()),
             ),
             (
-                primary_relief_m_field_id(),
-                FieldPayloadRef::ScalarF32(components.primary_relief_m()),
+                primary_elevation_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.primary_elevation_m()),
             ),
             (
-                equilibrium_adjustment_m_field_id(),
-                FieldPayloadRef::ScalarF32(components.equilibrium_adjustment_m()),
+                tectonic_displacement_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.tectonic_displacement_m()),
+            ),
+            (
+                fluvial_erosion_depth_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.fluvial_erosion_m()),
+            ),
+            (
+                hillslope_erosion_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.hillslope_erosion_m()),
+            ),
+            (
+                hillslope_deposition_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.hillslope_deposition_m()),
+            ),
+            (
+                routed_sediment_deposition_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.routed_sediment_deposition_m()),
+            ),
+            (
+                coastal_erosion_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.coastal_erosion_m()),
+            ),
+            (
+                coastal_deposition_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.coastal_deposition_m()),
+            ),
+            (
+                isostatic_response_m_field_id(),
+                FieldPayloadRef::ScalarF32(components.isostatic_response_m()),
             ),
             (
                 tectonic_displacement_rate_m_per_year_field_id(),
@@ -738,25 +769,32 @@ fn formation_preferred_range(
         circulation_mean_air_temperature_c_field_id(),
         circulation_mean_outgoing_longwave_w_m2_field_id(),
         circulation_surface_albedo_field_id(),
+        coastal_deposition_m_field_id(),
         coastal_deposition_rate_m_per_year_field_id(),
+        coastal_erosion_m_field_id(),
         coastal_erosion_rate_m_per_year_field_id(),
         drainage_area_km2_field_id(),
-        equilibrium_adjustment_m_field_id(),
         fluvial_erosion_rate_m_per_year_field_id(),
+        fluvial_erosion_depth_m_field_id(),
+        hillslope_deposition_m_field_id(),
         hillslope_deposition_rate_m_per_year_field_id(),
+        hillslope_erosion_m_field_id(),
         hillslope_erosion_rate_m_per_year_field_id(),
+        isostatic_response_m_field_id(),
         isostatic_response_rate_m_per_year_field_id(),
         lake_depth_m_field_id(),
         mean_annual_discharge_m3_s_field_id(),
+        routed_sediment_deposition_m_field_id(),
         routed_sediment_deposition_rate_m_per_year_field_id(),
         sediment_deposition_thickness_m_field_id(),
+        tectonic_displacement_m_field_id(),
         tectonic_displacement_rate_m_per_year_field_id(),
     ]
     .contains(field)
     {
         return Some(DisplayRangeMode::Data);
     }
-    (field == &surface_elevation_m_field_id() || field == &primary_relief_m_field_id())
+    (field == &surface_elevation_m_field_id() || field == &primary_elevation_m_field_id())
         .then_some(())?;
     registry.get(field)?;
     let radius = elevation_display_radius_m?;

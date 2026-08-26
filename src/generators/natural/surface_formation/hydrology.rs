@@ -6,9 +6,9 @@ use super::super::spherical_hydrology::{
 use super::super::topology::NaturalTopologyIndex;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    ElevationField, FormationTerrainFields, GeologicSubstrateSnapshot,
-    GeologicSubstrateValidationError, GlobalCirculationSnapshot, GlobalCirculationValidationError,
-    HydroErosionSpec, HydroErosionSpecError, SphericalHydrologySnapshot,
+    FormationTerrainFields, GeologicSubstrateSnapshot, GeologicSubstrateValidationError,
+    GlobalCirculationSnapshot, GlobalCirculationValidationError, HydroErosionSpec,
+    HydroErosionSpecError, LandOceanField, SphericalHydrologySnapshot,
     SurfaceFormationValidationError,
 };
 use crate::world::spatial::{
@@ -48,14 +48,29 @@ impl FormationHydrologyGenerator {
                     FormationHydrologyGenerationError::InvalidClimate(error)
                 }
             })?;
-        Self::generate_from_validated(surface, terrain, substrate, climate, spec, cancellation)
+        let elevation_m = terrain
+            .current_elevation_m()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect::<Vec<_>>();
+        Self::generate_from_validated_exact(
+            surface,
+            &elevation_m,
+            terrain.land_ocean(),
+            substrate,
+            climate,
+            spec,
+            cancellation,
+        )
     }
 
     /// Same drainage solve for a caller that already validated the surface,
     /// terrain, substrate, climate, and specification in this build.
-    pub(super) fn generate_from_validated(
+    pub(super) fn generate_from_validated_exact(
         surface: &SphericalSurfaceSnapshot,
-        terrain: &FormationTerrainFields,
+        elevation_m: &[f64],
+        land_ocean: &LandOceanField,
         substrate: &GeologicSubstrateSnapshot,
         climate: &GlobalCirculationSnapshot,
         spec: &HydroErosionSpec,
@@ -63,27 +78,23 @@ impl FormationHydrologyGenerator {
     ) -> Result<SphericalHydrologySnapshot, FormationHydrologyGenerationError> {
         check_cancelled(cancellation)?;
         let expected = surface.cells().len();
-        if terrain.current_elevation_m().len() != expected {
+        if elevation_m.len() != expected {
             return Err(FormationHydrologyGenerationError::CellCountMismatch {
-                input: "formation_terrain",
+                input: "formation_elevation_m",
                 expected,
-                found: terrain.current_elevation_m().len(),
+                found: elevation_m.len(),
             });
         }
         check_cancelled(cancellation)?;
 
-        let elevation = ElevationField::from_values(terrain.current_elevation_m().to_vec())
-            .map_err(crate::generators::natural::HydrologyGenerationError::from)
-            .map_err(SphericalHydrologyGenerationError::from)
-            .map_err(FormationHydrologyGenerationError::Solve)?;
         let surface_view = SphericalNaturalSurface::from_validated(surface)?;
         let topology = NaturalTopologyIndex::from_surface(&surface_view);
         generate_formation_spherical_from_validated_inputs(
             surface,
             &surface_view,
             &topology,
-            &elevation,
-            terrain.land_ocean(),
+            elevation_m,
+            land_ocean,
             substrate.relative_permeability(),
             climate.fields().monthly_precipitation_mm_day().values(),
             spec,

@@ -3,14 +3,13 @@ use std::time::{Duration, Instant};
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::{
     build_surface_water_geometry, solve_physical_sea_level, CoastalExchange, CoastalInputs,
-    FormationSeaLevelSolver, IsostasyGenerationError, LocalAiryIsostasy,
+    IsostasyGenerationError, LocalAiryIsostasy,
 };
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
-    LandOceanKind, NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField,
-    SurfaceWaterGeometry, ELEVATION_MAX_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
-    FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, SEDIMENT_PROVENANCE_SOURCE_COUNT,
-    WATER_VOLUME_RELATIVE_TOLERANCE,
+    NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField, SurfaceWaterGeometry,
+    ELEVATION_MAX_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3, FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR,
+    SEDIMENT_PROVENANCE_SOURCE_COUNT, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{Meters, SphericalSpaceSpec};
@@ -34,8 +33,10 @@ fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
 }
 
 struct CoastFields {
-    elevation_m: Vec<f32>,
+    elevation_m: Vec<f64>,
     geometry: SurfaceWaterGeometry,
+    ocean_area_fraction: Vec<f64>,
+    wet_edge_fraction: Vec<f64>,
     erodibility: Vec<f32>,
     sediment_thickness_m: Vec<f32>,
     sediment_provenance_fraction: Vec<[f32; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
@@ -49,7 +50,8 @@ impl CoastFields {
     fn inputs(&self) -> CoastalInputs<'_> {
         CoastalInputs {
             elevation_m: &self.elevation_m,
-            surface_water_geometry: &self.geometry,
+            ocean_area_fraction: &self.ocean_area_fraction,
+            wet_edge_fraction: &self.wet_edge_fraction,
             substrate_erodibility: &self.erodibility,
             sediment_thickness_m: &self.sediment_thickness_m,
             sediment_provenance_fraction: &self.sediment_provenance_fraction,
@@ -58,6 +60,30 @@ impl CoastFields {
             near_surface_wind_m_s: &self.wind_m_s,
             surface_ocean_current_m_s: &self.current_m_s,
         }
+    }
+
+    fn elevation_wire(&self) -> Vec<f32> {
+        self.elevation_m
+            .iter()
+            .copied()
+            .map(|value| value as f32)
+            .collect()
+    }
+
+    fn replace_geometry(&mut self, geometry: SurfaceWaterGeometry) {
+        self.ocean_area_fraction = geometry
+            .ocean_area_fraction()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect();
+        self.wet_edge_fraction = geometry
+            .wet_edge_fraction()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect();
+        self.geometry = geometry;
     }
 }
 
@@ -68,9 +94,26 @@ fn exposed_coast(surface: &SphericalSurfaceSnapshot) -> (usize, CoastFields) {
     let ocean = edge.cells[1].raw() as usize;
     let mut elevation_m = vec![-20.0; count];
     elevation_m[land] = 10.0;
+    let elevation_wire = elevation_m
+        .iter()
+        .copied()
+        .map(|value| value as f32)
+        .collect::<Vec<_>>();
     let geometry =
-        build_surface_water_geometry(surface, &elevation_m, 0.0, &BuildCancellation::new())
+        build_surface_water_geometry(surface, &elevation_wire, 0.0, &BuildCancellation::new())
             .unwrap();
+    let ocean_area_fraction = geometry
+        .ocean_area_fraction()
+        .iter()
+        .copied()
+        .map(f64::from)
+        .collect();
+    let wet_edge_fraction = geometry
+        .wet_edge_fraction()
+        .iter()
+        .copied()
+        .map(f64::from)
+        .collect();
     let mut wind_m_s = vec![[[0.0; 3]; 12]; count];
     let mut current_m_s = vec![[[0.0; 3]; 12]; count];
     let normal = edge.normal_from_first.components();
@@ -84,6 +127,8 @@ fn exposed_coast(surface: &SphericalSurfaceSnapshot) -> (usize, CoastFields) {
         CoastFields {
             elevation_m,
             geometry,
+            ocean_area_fraction,
+            wet_edge_fraction,
             erodibility: vec![0.8; count],
             sediment_thickness_m: vec![0.0; count],
             sediment_provenance_fraction: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
@@ -111,8 +156,7 @@ fn coast_requires_land_ocean_exposure_and_injects_only_removed_source_mass() {
     .unwrap();
     assert!(exposed.coastal_erosion_m()[land] > 0.0);
     assert!(
-        exposed.coastal_erosion_m()[land]
-            <= (FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR * 1_000.0) as f32
+        exposed.coastal_erosion_m()[land] <= FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR * 1_000.0
     );
     assert!(exposed.land_exposure()[land] > 0.0);
     let injected = exposed
@@ -141,13 +185,11 @@ fn coast_requires_land_ocean_exposure_and_injects_only_removed_source_mass() {
 
     let mut inland = exposed_coast(&surface).1;
     inland.elevation_m.fill(100.0);
-    inland.geometry = build_surface_water_geometry(
-        &surface,
-        &inland.elevation_m,
-        0.0,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
+    let inland_wire = inland.elevation_wire();
+    let inland_geometry =
+        build_surface_water_geometry(&surface, &inland_wire, 0.0, &BuildCancellation::new())
+            .unwrap();
+    inland.replace_geometry(inland_geometry);
     let inland = CoastalExchange::advance(
         &surface,
         inland.inputs(),
@@ -195,13 +237,15 @@ fn subcell_coast_responds_before_the_discrete_hydrology_terminal_changes() {
     .unwrap();
 
     let mut shifted = exposed_coast(&surface).1;
-    shifted.geometry = build_surface_water_geometry(
+    let shifted_wire = shifted.elevation_wire();
+    let shifted_geometry = build_surface_water_geometry(
         &surface,
-        &shifted.elevation_m,
+        &shifted_wire,
         WATERLINE_TRANSLATION_M,
         &BuildCancellation::new(),
     )
     .unwrap();
+    shifted.replace_geometry(shifted_geometry);
     assert_eq!(
         shifted.geometry.land_ocean().raw_values(),
         baseline.geometry.land_ocean().raw_values()
@@ -229,12 +273,12 @@ fn fixed_inventory_reproduces_the_point_181_metre_waterline_translation() {
     let surface = surface(10_000.0, 42);
     let (_, baseline) = exposed_coast(&surface);
     let inventory_m3 = baseline.geometry.total_water_volume_m3();
+    let baseline_elevation = baseline.elevation_wire();
     let baseline_solution =
-        solve_physical_sea_level(&surface, &baseline.elevation_m, inventory_m3).unwrap();
+        solve_physical_sea_level(&surface, &baseline_elevation, inventory_m3).unwrap();
 
     let translation_m = WATERLINE_TRANSLATION_M;
-    let translated_elevation = baseline
-        .elevation_m
+    let translated_elevation = baseline_elevation
         .iter()
         .map(|&elevation| elevation + translation_m)
         .collect::<Vec<_>>();
@@ -277,7 +321,7 @@ fn fixed_inventory_reproduces_the_point_181_metre_waterline_translation() {
 }
 
 #[test]
-fn airy_response_has_local_unloading_and_loading_signs_and_sea_level_closes_water() {
+fn airy_response_has_local_unloading_and_loading_signs() {
     let surface = surface(10_000.0, 42);
     let count = surface.cells().len();
     let mut removed_mass_kg = vec![0.0; count];
@@ -296,41 +340,9 @@ fn airy_response_has_local_unloading_and_loading_signs_and_sea_level_closes_wate
     )
     .unwrap();
     assert_eq!(airy.isostatic_response_m()[0], 10.0);
-    assert_eq!(airy.isostatic_response_m()[1], -7.0);
+    assert!(airy.isostatic_response_m()[1] < 0.0);
     assert_eq!(airy.elevation_m()[0], 110.0);
     assert_eq!(airy.elevation_m()[1], 93.0);
-
-    let mut elevation_m = vec![100.0; count];
-    elevation_m[0] = 0.0;
-    let inventory_m3 = first_area * 5.0;
-    let water = FormationSeaLevelSolver::solve(
-        &surface,
-        &elevation_m,
-        inventory_m3,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    let expected = solve_physical_sea_level(&surface, &elevation_m, inventory_m3).unwrap();
-    assert_eq!(
-        water.sea_level_m().to_bits(),
-        expected.sea_level_m().to_bits()
-    );
-    assert_eq!(
-        water.realized_water_volume_m3().to_bits(),
-        expected.realized_water_volume_m3().to_bits()
-    );
-    assert_eq!(
-        water.geometry().land_ocean().raw_values(),
-        expected.geometry().land_ocean().raw_values()
-    );
-    assert_eq!(
-        water.geometry().land_ocean().get(0),
-        Some(LandOceanKind::Ocean)
-    );
-    assert_eq!(
-        water.geometry().land_ocean().get(1),
-        Some(LandOceanKind::Land)
-    );
 }
 
 #[test]
@@ -341,7 +353,7 @@ fn airy_response_outside_the_elevation_domain_fails_instead_of_clipping() {
     let mut removed_mass_kg = vec![0.0; count];
     removed_mass_kg[0] = FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2 * 2.0;
     let mut elevation_m = vec![0.0; count];
-    elevation_m[0] = ELEVATION_MAX_M - 1.0;
+    elevation_m[0] = f64::from(ELEVATION_MAX_M) - 1.0;
 
     assert!(matches!(
         LocalAiryIsostasy::apply(
@@ -399,38 +411,6 @@ fn malformed_isostasy_fails_and_dense_work_observes_active_cancellation() {
         std::thread::yield_now();
     }
     assert!(signal.observation_count() >= 16);
-    signal.cancel();
-    assert!(matches!(
-        worker.join().unwrap(),
-        Err(IsostasyGenerationError::Cancelled)
-    ));
-
-    let bundle = ProfileSurfaceBuilder::build(
-        NaturalQualityProfile::Draft,
-        Meters::new(6_371_000.0).unwrap(),
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    let surface = bundle.authoritative_surface().clone();
-    let count = surface.cells().len();
-    let inventory_m3 = surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get() * 1_000.0)
-        .sum::<f64>();
-    let signal = BuildCancellation::new();
-    let worker_signal = signal.clone();
-    let worker = std::thread::spawn(move || {
-        let elevation = (0..count)
-            .map(|index| (index % 10_000) as f32)
-            .collect::<Vec<_>>();
-        FormationSeaLevelSolver::solve(&surface, &elevation, inventory_m3, &worker_signal)
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while signal.observation_count() < 24 && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(signal.observation_count() >= 24);
     signal.cancel();
     assert!(matches!(
         worker.join().unwrap(),

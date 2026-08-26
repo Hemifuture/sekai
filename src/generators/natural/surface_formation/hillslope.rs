@@ -22,7 +22,7 @@ const CANCELLATION_POLL_MASK: usize = 255;
 /// Borrowed physical fields consumed by one nonlinear hillslope step.
 #[derive(Debug, Clone, Copy)]
 pub struct HillslopeInputs<'a> {
-    pub elevation_m: &'a [f32],
+    pub elevation_m: &'a [f64],
     pub surface_water: &'a SurfaceWaterField,
     pub substrate_erodibility: &'a [f32],
     pub fracture_intensity: &'a [f32],
@@ -100,9 +100,9 @@ impl HillslopeWorkspace {
 /// Retained output and paired-volume evidence for one hillslope step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HillslopeTransportStep {
-    elevation_m: Vec<f32>,
-    hillslope_erosion_m: Vec<f32>,
-    hillslope_deposition_m: Vec<f32>,
+    elevation_m: Vec<f64>,
+    hillslope_erosion_m: Vec<f64>,
+    hillslope_deposition_m: Vec<f64>,
     removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     deposited_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     transported_mass_kg: f64,
@@ -115,15 +115,15 @@ pub struct HillslopeTransportStep {
 }
 
 impl HillslopeTransportStep {
-    pub fn elevation_m(&self) -> &[f32] {
+    pub fn elevation_m(&self) -> &[f64] {
         &self.elevation_m
     }
 
-    pub fn hillslope_erosion_m(&self) -> &[f32] {
+    pub fn hillslope_erosion_m(&self) -> &[f64] {
         &self.hillslope_erosion_m
     }
 
-    pub fn hillslope_deposition_m(&self) -> &[f32] {
+    pub fn hillslope_deposition_m(&self) -> &[f64] {
         &self.hillslope_deposition_m
     }
 
@@ -303,10 +303,9 @@ impl NonlinearHillslopeTransport {
                 (workspace.erosion_mass_kg[index] - stock_removed_kg).max(0.0);
             let erosion_volume_m3 = stock_removed_kg / FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3
                 + substrate_removed_kg / f64::from(inputs.substrate_density_kg_m3[index]);
-            let erosion_m = (erosion_volume_m3 / area_m2) as f32;
-            let deposition_m = (workspace.deposition_mass_kg[index]
-                / (FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 * area_m2))
-                as f32;
+            let erosion_m = erosion_volume_m3 / area_m2;
+            let deposition_m = workspace.deposition_mass_kg[index]
+                / (FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3 * area_m2);
             removed_volume_m3 += erosion_volume_m3;
             retained_removed_mass_kg += workspace.erosion_mass_kg[index];
             retained_deposited_mass_kg += workspace.deposition_mass_kg[index];
@@ -314,7 +313,14 @@ impl NonlinearHillslopeTransport {
             hillslope_deposition_m.push(deposition_m);
             elevation_m.push(formation_elevation_from_components(
                 inputs.elevation_m[index],
-                deposition_m - erosion_m,
+                0.0,
+                0.0,
+                erosion_m,
+                deposition_m,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ));
         }
         validate_no_new_extrema(inputs, &elevation_m)?;
@@ -369,8 +375,8 @@ fn edge_transport(
     {
         return None;
     }
-    let first_height = f64::from(inputs.elevation_m[first]);
-    let second_height = f64::from(inputs.elevation_m[second]);
+    let first_height = inputs.elevation_m[first];
+    let second_height = inputs.elevation_m[second];
     let (donor, receiver, relief_m) = if first_height > second_height {
         (first, second, first_height - second_height)
     } else if second_height > first_height {
@@ -481,11 +487,13 @@ fn validate_inputs(
         poll_cancelled(cancellation, index)?;
         let cell = CellId::from_raw(index as u32);
         let elevation = inputs.elevation_m[index];
-        if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+        if !elevation.is_finite()
+            || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation)
+        {
             return Err(HillslopeGenerationError::InvalidCellValue {
                 field: "elevation_m",
                 cell,
-                found: f64::from(elevation),
+                found: elevation,
             });
         }
         for (field, value, maximum) in [
@@ -545,18 +553,18 @@ fn validate_inputs(
 
 fn validate_no_new_extrema(
     inputs: HillslopeInputs<'_>,
-    result_elevation_m: &[f32],
+    result_elevation_m: &[f64],
 ) -> Result<(), HillslopeGenerationError> {
     let minimum = inputs
         .elevation_m
         .iter()
         .copied()
-        .fold(f32::INFINITY, f32::min);
+        .fold(f64::INFINITY, f64::min);
     let maximum = inputs
         .elevation_m
         .iter()
         .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+        .fold(f64::NEG_INFINITY, f64::max);
     if let Some((index, &found)) = result_elevation_m
         .iter()
         .enumerate()
@@ -619,8 +627,8 @@ pub enum HillslopeGenerationError {
     )]
     NewExtremum {
         cell: CellId,
-        found: f32,
-        minimum: f32,
-        maximum: f32,
+        found: f64,
+        minimum: f64,
+        maximum: f64,
     },
 }

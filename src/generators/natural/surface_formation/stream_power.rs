@@ -25,7 +25,7 @@ const CANCELLATION_POLL_MASK: usize = 255;
 /// Borrowed dense fields consumed by the standalone implicit stream-power kernel.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamPowerInputs<'a> {
-    pub elevation_m: &'a [f32],
+    pub elevation_m: &'a [f64],
     pub flow_receiver: &'a [Option<CellId>],
     pub surface_water: &'a SurfaceWaterField,
     pub drainage_area_km2: &'a [f32],
@@ -38,21 +38,21 @@ pub struct StreamPowerInputs<'a> {
 /// Private output of one tectonic-plus-fluvial continuation update.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamPowerStep {
-    elevation_m: Vec<f32>,
-    tectonic_displacement_m: Vec<f32>,
-    fluvial_erosion_m: Vec<f32>,
+    elevation_m: Vec<f64>,
+    tectonic_displacement_m: Vec<f64>,
+    fluvial_erosion_m: Vec<f64>,
 }
 
 impl StreamPowerStep {
-    pub fn elevation_m(&self) -> &[f32] {
+    pub fn elevation_m(&self) -> &[f64] {
         &self.elevation_m
     }
 
-    pub fn tectonic_displacement_m(&self) -> &[f32] {
+    pub fn tectonic_displacement_m(&self) -> &[f64] {
         &self.tectonic_displacement_m
     }
 
-    pub fn fluvial_erosion_m(&self) -> &[f32] {
+    pub fn fluvial_erosion_m(&self) -> &[f64] {
         &self.fluvial_erosion_m
     }
 }
@@ -86,8 +86,8 @@ impl ImplicitStreamPowerSolver {
         validate_inputs(surface, inputs, step_years, cancellation)?;
         let order = upstream_to_downstream_order(inputs.flow_receiver, cancellation)?;
         let count = surface.cells().len();
-        let mut tectonic_displacement_m = vec![0.0_f32; count];
-        let mut fluvial_erosion_m = vec![0.0_f32; count];
+        let mut tectonic_displacement_m = vec![0.0_f64; count];
+        let mut fluvial_erosion_m = vec![0.0_f64; count];
         let mut elevation_m = Vec::with_capacity(count);
 
         // Rock columns move with the plate whether their top is exposed or
@@ -99,12 +99,19 @@ impl ImplicitStreamPowerSolver {
             let net_rate_m_per_year = (f64::from(inputs.uplift_rate_mm_per_year[index])
                 - f64::from(inputs.subsidence_rate_mm_per_year[index]))
                 / MILLIMETERS_PER_METER;
-            let forced = f64::from(initial) + net_rate_m_per_year * step_years;
-            let retained_displacement = (forced - f64::from(initial)) as f32;
+            let forced = initial + net_rate_m_per_year * step_years;
+            let retained_displacement = forced - initial;
             *retained_displacement_slot = retained_displacement;
             elevation_m.push(formation_elevation_from_components(
                 initial,
                 retained_displacement,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ));
         }
 
@@ -118,8 +125,8 @@ impl ImplicitStreamPowerSolver {
                 continue;
             };
             let receiver_index = receiver.raw() as usize;
-            let receiver_height = f64::from(elevation_m[receiver_index]);
-            let forced_height = f64::from(elevation_m[index]);
+            let receiver_height = elevation_m[receiver_index];
+            let forced_height = elevation_m[index];
             let length_m = receiver_length_m(surface, cell, receiver)?;
             let annual_runoff_mm = f64::from(inputs.annual_local_runoff_mm[index]);
             let drainage_area_m2 =
@@ -149,28 +156,44 @@ impl ImplicitStreamPowerSolver {
             if candidate >= forced_height {
                 continue;
             }
-            let retained_erosion = (forced_height - candidate) as f32;
+            let retained_erosion = forced_height - candidate;
             let mut retained_height = formation_elevation_from_components(
                 inputs.elevation_m[index],
-                tectonic_displacement_m[index] - retained_erosion,
+                tectonic_displacement_m[index],
+                retained_erosion,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             );
-            let receiver_height_f32 = elevation_m[receiver_index];
+            let receiver_height = elevation_m[receiver_index];
             let mut adjusted_erosion = retained_erosion;
-            while retained_height < receiver_height_f32 && adjusted_erosion > 0.0 {
+            while retained_height < receiver_height && adjusted_erosion > 0.0 {
                 adjusted_erosion = next_down_nonnegative(adjusted_erosion);
                 retained_height = formation_elevation_from_components(
                     inputs.elevation_m[index],
-                    tectonic_displacement_m[index] - adjusted_erosion,
+                    tectonic_displacement_m[index],
+                    adjusted_erosion,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                 );
             }
             fluvial_erosion_m[index] = adjusted_erosion;
             elevation_m[index] = retained_height;
         }
         for (index, &elevation) in elevation_m.iter().enumerate() {
-            if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+            if !elevation.is_finite()
+                || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation)
+            {
                 return Err(StreamPowerGenerationError::ElevationOutOfRange {
                     cell: CellId::from_raw(index as u32),
-                    found: f64::from(elevation),
+                    found: elevation,
                 });
             }
         }
@@ -185,7 +208,7 @@ impl ImplicitStreamPowerSolver {
     /// Typed adapter used by the coupled P5 generator.
     pub fn advance_from_snapshots(
         surface: &SphericalSurfaceSnapshot,
-        initial_elevation_m: &[f32],
+        initial_elevation_m: &[f64],
         hydrology: &SphericalHydrologySnapshot,
         tectonics: &EvolvedTectonicSnapshot,
         substrate: &GeologicSubstrateSnapshot,
@@ -213,7 +236,7 @@ impl ImplicitStreamPowerSolver {
     /// tectonic, and substrate products in this build.
     pub(super) fn advance_from_validated_snapshots(
         surface: &SphericalSurfaceSnapshot,
-        initial_elevation_m: &[f32],
+        initial_elevation_m: &[f64],
         hydrology: &SphericalHydrologySnapshot,
         tectonics: &EvolvedTectonicSnapshot,
         substrate: &GeologicSubstrateSnapshot,
@@ -342,11 +365,13 @@ fn validate_inputs(
         poll_cancelled(cancellation, index)?;
         let cell = CellId::from_raw(index as u32);
         let elevation = inputs.elevation_m[index];
-        if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+        if !elevation.is_finite()
+            || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation)
+        {
             return Err(StreamPowerGenerationError::InvalidCellValue {
                 field: "elevation_m",
                 cell,
-                found: f64::from(elevation),
+                found: elevation,
             });
         }
         for (field, value) in [
@@ -461,11 +486,11 @@ fn receiver_length_m(
         .ok_or(StreamPowerGenerationError::ReceiverNotAdjacent { cell, receiver })
 }
 
-fn next_down_nonnegative(value: f32) -> f32 {
+fn next_down_nonnegative(value: f64) -> f64 {
     if value <= 0.0 {
         0.0
     } else {
-        f32::from_bits(value.to_bits() - 1)
+        f64::from_bits(value.to_bits() - 1)
     }
 }
 
