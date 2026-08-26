@@ -188,7 +188,7 @@ fn quality_evaluator_rejects_same_surface_relief_not_used_by_the_forcing() {
     assert!(matches!(
         evaluate_global_circulation_quality(surface, &other_relief, &fixture.forcing, &snapshot,),
         Err(QualityBuildError::InvalidInput {
-            input: "primary_relief",
+            input: "climate_terrain",
             ..
         })
     ));

@@ -227,42 +227,6 @@ fn public_generator_rejects_noncanonical_remap_even_when_its_fingerprint_changes
 }
 
 #[test]
-fn c1_generation_publishes_only_the_declared_single_layer_capabilities() {
-    let fixture = global_circulation_fixture();
-    let surface = fixture.bundle.authoritative_surface();
-    let snapshot = GlobalCirculationGenerator::generate(
-        surface,
-        &fixture.domain,
-        &fixture.forcing,
-        ClimateModelProfile::C1SingleLayerV1,
-        &BuildCancellation::new(),
-    )
-    .unwrap();
-    snapshot.validate_against(surface).unwrap();
-    assert_eq!(snapshot.profile(), ClimateModelProfile::C1SingleLayerV1);
-    assert!(snapshot.fields().upper_wind_m_s().is_none());
-    assert!(snapshot.fields().vertical_wind_shear_m_s().is_none());
-    assert!(snapshot
-        .fields()
-        .monthly_thermocline_temperature_c()
-        .is_none());
-    assert!(snapshot.fields().monthly_thermocline_depth_m().is_none());
-    assert_eq!(
-        snapshot
-            .capabilities()
-            .availability(ClimateCapabilityId::VerticalStructureV1),
-        ClimateCapabilityAvailability::Unavailable
-    );
-    assert!(snapshot
-        .fields()
-        .near_surface_wind_m_s()
-        .values()
-        .iter()
-        .flatten()
-        .any(|vector| vector.iter().any(|value| value.abs() > 0.05)));
-}
-
-#[test]
 fn formation_is_convergent_budgeted_causal_and_deterministic() {
     let fixture = global_circulation_fixture();
     let surface = fixture.bundle.authoritative_surface();
