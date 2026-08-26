@@ -90,6 +90,25 @@
 - 近似导致最终态不守恒、身份不一致、非有限或越出科学支持域时，必须调整
   求解器、步长或耦合策略；不得以地图生成器为理由放宽硬不变式或裁剪结果。
 
+## 测试范围纪律（用户指令，2026-08-26）
+
+- 测试遵循“最小充分证据”：每个新增或扩大的测试必须对应一个明确契约、风险或
+  已复现回归，并能说明更小测试层级为何不足；不得以“更保险”为由盲目增加
+  seed、profile、分辨率、迭代时域、模块或断言数量。
+- 优先选择能捕获该失败的最低成本层级：纯函数/单元测试 → 窄集成测试 →
+  代表性语料 → 全链/UI。局部行为不得默认通过多 seed 全管线生成来证明；已有
+  下游契约覆盖的事实不得在上游重复测试。
+- 只有性质本身跨 seed/profile、具有统计性，或涉及跨层原子身份时，才扩大语料；
+  范围必须取满足证据需求的最小代表集，并在测试或计划中写明消费者与选择理由。
+  新增语料规模、性能门禁或阈值仍须遵循“先测后钉”和出处纪律。
+- 高成本参考、敏感性分析与大语料探针默认使用 `#[ignore]`、Release 档和离线
+  运行，不进入日常单元测试或普通构建门禁。测试不得保存无人消费的历史状态，
+  也不得为便于测试新增生产抽象、公共 API、schema 或算法分支。
+- 测试复用生产侧事实源、构造器和校验器，不复制科学公式。若测试耗时显著增加，
+  先定位重复求解并缩窄 fixture/调用次数；不能用扩大超时掩盖不合理范围。
+- 本节约束测试设计与迭代期命令，不取消工作流程中明确要求的最终完整回归、
+  性能门禁和用户 UI 验收。
+
 ## 验收纪律：算法必须与 UI 同步交付（用户指令，2026-08-19）
 
 - 算法与生成管线的验收一定要与 UI 同步：任何一条生成链路、任何算法改动
@@ -159,6 +178,17 @@ high-accuracy reference solve on every build without a demonstrated final-map
 need. Validate new approximations offline on representative seeds against a
 costlier reference path, while keeping conservation and final-state invariants
 mandatory and following measure-before-pinning for any new tolerance.
+Testing follows minimal sufficient evidence: every new or enlarged test must
+name the contract, risk, or reproduced regression it covers and explain why a
+smaller layer is insufficient. Prefer the cheapest effective layer; do not
+blindly multiply seeds, profiles, resolutions, simulated duration, modules, or
+assertions. Expand corpora only for genuinely statistical, cross-profile, or
+cross-layer atomic properties, using the smallest representative set. Keep
+high-cost references and sensitivity probes ignored, Release-only, and
+offline; never add production APIs, schemas, history, or algorithm branches
+just for tests. Reuse production formulas and validators, and narrow repeated
+solves before increasing timeouts. This scope discipline does not remove the
+explicit final regression, performance, or user UI gates below.
 Acceptance: algorithm work is delivered only when it reaches the UI and the
 user personally verifies it; agent self-checks are necessary but never
 sufficient. Workflow: task-per-commit
