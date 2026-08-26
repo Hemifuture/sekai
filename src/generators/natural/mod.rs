@@ -1,7 +1,7 @@
 //! Deterministic generation of the current natural world slice.
 
-#[cfg_attr(not(test), allow(dead_code))]
 mod causal_formation;
+mod causal_formation_stage;
 mod climate;
 mod climate_rule_input;
 mod climate_stage;
@@ -55,7 +55,6 @@ mod spherical_stage;
 mod spherical_tectonics;
 mod stage;
 mod surface_formation;
-mod surface_formation_stage;
 mod surface_water_geometry;
 mod tectonics;
 mod terrain_amplification;
@@ -63,6 +62,10 @@ mod topology;
 
 pub mod circulation;
 
+pub use causal_formation_stage::{
+    causal_natural_formation_graph, CausalNaturalFormationStage, CausalNaturalFormationStageInputs,
+    NaturalFormationBundleArtifact,
+};
 pub use climate::{ClimateGenerationError, ClimateGenerator};
 pub use climate_rule_input::{
     ClimateRuleResolutionArtifact, ClimateSpecArtifact, ResolvedClimateInput,
@@ -208,18 +211,16 @@ pub use surface_formation::{
     ImplicitStreamPowerSolver, IsostasyGenerationError, IsostaticAdjustmentStep, LocalAiryIsostasy,
     NonlinearHillslopeTransport, ProvenanceSedimentRouter, SedimentGenerationError, SedimentInputs,
     SedimentTransportStep, StreamPowerGenerationError, StreamPowerInputs, StreamPowerStep,
-    SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
+    SurfaceFormationGenerationError,
 };
-pub use surface_formation_stage::{
-    surface_formation_graph, NaturalSurfaceFormationArtifact, SurfaceFormationProductError,
-    SurfaceFormationStage, SurfaceFormationStageInputs,
-};
+pub(crate) use surface_formation::{SurfaceFormationGenerator, SurfaceFormationInputs};
 pub use surface_water_geometry::{
     build_surface_water_geometry, solve_physical_sea_level, solve_physical_sea_level_cancellable,
     water_volume_at_sea_level_m3,
 };
 pub use tectonics::{TectonicGenerationError, TectonicGenerator};
 pub use terrain_amplification::{
-    fibonacci_probe, AmplificationFieldsView, AmplificationLod, AmplifiedSample, SurfaceRegime,
-    TerrainAmplificationError, TerrainAmplifier, PROBE_COUNT,
+    fibonacci_probe, AmplificationFieldsView, AmplificationLod, AmplifiedSample,
+    FormationDerivationInputs, SurfaceRegime, TerrainAmplificationError, TerrainAmplifier,
+    PROBE_COUNT,
 };

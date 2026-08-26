@@ -21,12 +21,12 @@ use blake3::Hasher;
 use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
-    surface_roughness_hurst, AmplificationFieldsView, ConditioningView, SurfaceRegime,
-    TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M, SHELF_TRANSITION_M,
+    surface_roughness_hurst, AmplificationFieldsView, ConditioningView, FormationDerivationInputs,
+    SurfaceRegime, TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M,
+    SHELF_TRANSITION_M,
 };
 use crate::world::natural::{
-    GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot, RiverSegment,
-    SphericalTectonicSnapshot, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_SHELF_BREAK_DEPTH_M,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
@@ -244,19 +244,11 @@ impl HierarchicalEvaluator {
     /// Assembles the engine straight from the published formation
     /// product, river network included.
     pub fn from_formation_product(
-        surface: &SphericalSurfaceSnapshot,
-        compatibility: &SphericalTectonicSnapshot,
-        substrate: &GeologicSubstrateSnapshot,
-        formation: &NaturalSurfaceFormationSnapshot,
+        inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
-        let amplifier = TerrainAmplifier::from_formation_product(
-            surface,
-            compatibility,
-            substrate,
-            formation,
-            root_seed,
-        )?;
+        let surface = inputs.surface;
+        let amplifier = TerrainAmplifier::from_formation_product(inputs, root_seed)?;
         Ok(Self::from_amplifier(amplifier, surface, root_seed))
     }
 

@@ -1,24 +1,23 @@
+mod support;
+
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use image::{Rgba, RgbaImage};
-use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
-use sekai::generators::natural::{
-    ClimateWorkDomainBuilder, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
-    GlobalCirculationGenerator, GlobalClimateForcingBuilder, NaturalSurfaceFormationArtifact,
-    PrimaryReliefGenerator, SurfaceFormationInputs,
-};
-use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
+use sekai::engine::BuildCancellation;
+use sekai::generators::natural::NaturalFormationBundleArtifact;
+use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, HydroErosionSpec,
-    NaturalQualityProfile, NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, ReliefSpec,
-    ResolvedWorldFormation, ResolvedWorldFormationPreset, SurfaceWaterKind, TectonicSpec,
-    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    GlobalCirculationSnapshot, NaturalQualityProfile, NaturalSurfaceFormationSnapshot,
+    PrimaryReliefSnapshot, SurfaceWaterKind,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
-use sekai::world::{Meters, RootSeed};
+use sekai::world::Meters;
 use serde::Serialize;
+
+use support::causal_formation::build_causal_formation;
 
 const RADIUS_M: f64 = 6_371_000.0;
 const WIDTH: u32 = 384;
@@ -128,15 +127,19 @@ fn render_surface_formation_atlas() {
     )
     .unwrap();
     let surface = bundle.authoritative_surface();
-    let domain =
-        ClimateWorkDomainBuilder::build(surface, NaturalQualityProfile::Draft, &cancellation)
-            .unwrap();
     let map = map_cell_raster(surface);
     let globe = globe_cell_raster(surface);
 
     for seed in SEEDS {
-        let (relief, artifact) = generate_world(&bundle, &domain, seed);
-        let sheet = render_sheet(&relief, artifact.snapshot(), &map, &globe);
+        let artifact = generate_world(surface, seed);
+        let formation = artifact.bundle();
+        let sheet = render_sheet(
+            formation.primary_relief(),
+            formation.climate(),
+            formation.surface_formation(),
+            &map,
+            &globe,
+        );
         sheet
             .save(output.join(format!("seed-{seed:02}.png")))
             .unwrap();
@@ -169,6 +172,7 @@ fn atlas_paths_are_isolated_under_target() {
 
 fn render_sheet(
     relief: &PrimaryReliefSnapshot,
+    climate: &GlobalCirculationSnapshot,
     snapshot: &NaturalSurfaceFormationSnapshot,
     map: &[usize],
     globe: &[usize],
@@ -184,14 +188,14 @@ fn render_sheet(
                     sheet.put_pixel(
                         x,
                         row_y + y,
-                        field_color(field, map[pixel], relief, snapshot),
+                        field_color(field, map[pixel], relief, climate, snapshot),
                     );
                 }
                 if globe[pixel] != usize::MAX {
                     sheet.put_pixel(
                         WIDTH + x,
                         row_y + y,
-                        field_color(field, globe[pixel], relief, snapshot),
+                        field_color(field, globe[pixel], relief, climate, snapshot),
                     );
                 }
             }
@@ -204,6 +208,7 @@ fn field_color(
     field: AtlasField,
     cell: usize,
     relief: &PrimaryReliefSnapshot,
+    climate: &GlobalCirculationSnapshot,
     snapshot: &NaturalSurfaceFormationSnapshot,
 ) -> Rgba<u8> {
     let terrain = snapshot.terrain_fields();
@@ -263,11 +268,7 @@ fn field_color(
         AtlasField::DominantProvenance => provenance_color(sediment.provenance_fraction()[cell]),
         AtlasField::DeltaPotential => sequential_color(sediment.delta_potential()[cell], 0.0, 1.0),
         AtlasField::FormationPrecipitation => sequential_color(
-            snapshot
-                .formation_climate()
-                .fields()
-                .monthly_precipitation_mm_day()
-                .values()[cell]
+            climate.fields().monthly_precipitation_mm_day().values()[cell]
                 .iter()
                 .sum::<f32>()
                 / 12.0,
@@ -346,78 +347,10 @@ fn gradient(low: Rgba<u8>, high: Rgba<u8>, amount: f32) -> Rgba<u8> {
 }
 
 fn generate_world(
-    bundle: &ProfileSurfaceBundle,
-    domain: &ClimateWorkDomainSnapshot,
+    surface: &SphericalSurfaceSnapshot,
     seed: u64,
-) -> (PrimaryReliefSnapshot, NaturalSurfaceFormationArtifact) {
-    let cancellation = BuildCancellation::new();
-    let surface = bundle.authoritative_surface();
-    let formation = ResolvedWorldFormation::new(
-        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-        WorldFormationPreset::Continents,
-        ResolvedWorldFormationPreset::Continents,
-    )
-    .unwrap();
-    let mut evolved_rng = stage_rng(seed, "natural.evolved-tectonics", 5);
-    let evolved = EvolvedTectonicGenerator::generate(
-        bundle,
-        &TectonicSpec::default(),
-        &formation,
-        &mut evolved_rng,
-    )
-    .unwrap();
-    let mut substrate_rng = stage_rng(seed, "natural.geologic-substrate", 1);
-    let substrate = GeologicSubstrateGenerator::generate(
-        surface,
-        &evolved,
-        &GeologicSpec::default(),
-        &formation,
-        &mut substrate_rng,
-    )
-    .unwrap();
-    let mut relief_rng = stage_rng(seed, "natural.primary-relief", 1);
-    let mut diagnostics = Vec::<Diagnostic>::new();
-    let relief = PrimaryReliefGenerator::generate(
-        surface,
-        &evolved,
-        &substrate,
-        &ReliefSpec::default(),
-        &mut relief_rng,
-        &mut diagnostics,
-    )
-    .unwrap();
-    let forcing = GlobalClimateForcingBuilder::build(
-        surface,
-        &relief,
-        &ClimateSpec::default(),
-        domain,
-        &cancellation,
-    )
-    .unwrap();
-    let initial_climate = GlobalCirculationGenerator::generate(
-        surface,
-        domain,
-        &forcing,
-        ClimateModelProfile::C2LayeredV1,
-        &cancellation,
-    )
-    .unwrap();
-    let artifact = NaturalSurfaceFormationArtifact::generate(
-        SurfaceFormationInputs {
-            surface,
-            quality_profile: NaturalQualityProfile::Draft,
-            tectonics: &evolved,
-            substrate: &substrate,
-            relief: &relief,
-            domain,
-            climate_spec: &ClimateSpec::default(),
-            initial_climate: &initial_climate,
-            formation_spec: &HydroErosionSpec::default(),
-        },
-        &cancellation,
-    )
-    .unwrap();
-    (relief, artifact)
+) -> Arc<NaturalFormationBundleArtifact> {
+    build_causal_formation(surface, NaturalQualityProfile::Draft, seed)
 }
 
 fn map_cell_raster(surface: &SphericalSurfaceSnapshot) -> Vec<usize> {
@@ -524,13 +457,6 @@ fn rotate_oblique([x, y, z]: [f64; 3]) -> [f64; 3] {
         pitch.cos() * yawed[1] - pitch.sin() * yawed[2],
         pitch.sin() * yawed[1] + pitch.cos() * yawed[2],
     ]
-}
-
-fn stage_rng(seed: u64, name: &'static str, version: u32) -> StageRng {
-    StageRng::from_seed(derive_stage_seed(
-        RootSeed::new(seed),
-        StageIdentity::new(name, version, "sekai.core"),
-    ))
 }
 
 fn output_directory() -> PathBuf {

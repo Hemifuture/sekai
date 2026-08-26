@@ -44,12 +44,12 @@ pub(in crate::generators::natural) struct CausalNaturalFormationInputs<'a> {
 /// Private complete output awaiting atomic bundle publication.
 #[derive(Debug)]
 pub(in crate::generators::natural) struct CausalFormationOutput {
-    evolved_tectonics: EvolvedTectonicSnapshot,
-    geologic_substrate: GeologicSubstrateSnapshot,
-    primary_relief: PrimaryReliefSnapshot,
-    final_climate: GlobalCirculationSnapshot,
-    surface: NaturalSurfaceFormationSnapshot,
-    final_climate_forcing: GlobalClimateForcing,
+    pub evolved_tectonics: EvolvedTectonicSnapshot,
+    pub geologic_substrate: GeologicSubstrateSnapshot,
+    pub primary_relief: PrimaryReliefSnapshot,
+    pub final_climate: GlobalCirculationSnapshot,
+    pub surface: NaturalSurfaceFormationSnapshot,
+    pub final_climate_forcing: GlobalClimateForcing,
 }
 
 impl CausalFormationOutput {
@@ -168,8 +168,7 @@ impl CausalNaturalFormationGenerator {
             formation_state,
             cancellation,
         )?;
-        let (surface, final_climate_forcing) = closure.into_parts();
-        let final_climate = surface.formation_climate().clone();
+        let (surface, final_climate, final_climate_forcing) = closure.into_parts();
         if final_climate.checkpoint().forcing_fingerprint() != final_climate_forcing.fingerprint() {
             return Err(CausalFormationGenerationError::EndpointForcingIdentityMismatch);
         }
@@ -431,7 +430,11 @@ mod tests {
                 == reference.output.evolved_tectonics
                 && production.geologic_substrate == reference.output.geologic_substrate
                 && production.primary_relief == reference.output.primary_relief,
-            differences: final_state_differences(&production.surface, &reference.output.surface),
+            differences: final_state_differences(
+                &production.surface,
+                &reference.output.surface,
+                production.final_climate == reference.output.final_climate,
+            ),
             production_surface: &production.surface,
             reference_surface: &reference.output.surface,
         };
@@ -749,14 +752,14 @@ mod tests {
             cancellation,
         )?;
         let upstream = upstream_fingerprints(final_inputs, &final_climate, cancellation)?;
-        let retained_final_climate = final_climate.clone();
+        let final_climate_checkpoint_fingerprint = *final_climate.checkpoint().fingerprint();
         let surface_snapshot = finalize_surface_formation(
             state,
             final_terrain,
             surface,
             SurfaceRef::for_spherical(surface),
             inputs.quality_profile,
-            final_climate,
+            final_climate_checkpoint_fingerprint,
             upstream,
             terminal_diagnostics,
             evolution_report,
@@ -766,7 +769,7 @@ mod tests {
             evolved_tectonics,
             geologic_substrate,
             primary_relief,
-            final_climate: retained_final_climate,
+            final_climate,
             surface: surface_snapshot,
             final_climate_forcing,
         };
@@ -833,6 +836,7 @@ mod tests {
     fn final_state_differences(
         production: &NaturalSurfaceFormationSnapshot,
         reference: &NaturalSurfaceFormationSnapshot,
+        endpoint_climate_equal: bool,
     ) -> FinalStateDifferences {
         let production_terrain = production.terrain_fields();
         let reference_terrain = reference.terrain_fields();
@@ -885,7 +889,7 @@ mod tests {
                 left_water.cell_water_volume_m3(),
                 right_water.cell_water_volume_m3(),
             ),
-            endpoint_climate_equal: production.formation_climate() == reference.formation_climate(),
+            endpoint_climate_equal,
         }
     }
 

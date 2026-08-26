@@ -29,7 +29,7 @@ use crate::world::natural::{
     SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError, WaterVolumeSolveError,
     ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
-    NATURAL_SURFACE_FORMATION_SCHEMA_V4, SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    NATURAL_SURFACE_FORMATION_SCHEMA_V5, SEDIMENT_PROVENANCE_SOURCE_COUNT,
     SURFACE_FORMATION_HORIZON_YEARS,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError};
@@ -56,38 +56,29 @@ pub struct SurfaceFormationInputs<'a> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SurfaceFormationGenerator;
 
-/// Final P5 snapshot plus the exact endpoint P4 forcing used to close it.
+/// Final P5 snapshot plus the endpoint P4 sibling and forcing used to close it.
 #[derive(Debug)]
 pub(in crate::generators::natural) struct SurfaceFormationClosureOutput {
     surface: NaturalSurfaceFormationSnapshot,
+    final_climate: GlobalCirculationSnapshot,
     final_climate_forcing: GlobalClimateForcing,
 }
 
 impl SurfaceFormationClosureOutput {
-    /// Moves the closed P5 snapshot and its endpoint forcing to the outer coordinator.
+    /// Moves the closed P5 snapshot, sibling P4, and forcing to the outer coordinator.
     pub(in crate::generators::natural) fn into_parts(
         self,
-    ) -> (NaturalSurfaceFormationSnapshot, GlobalClimateForcing) {
-        (self.surface, self.final_climate_forcing)
+    ) -> (
+        NaturalSurfaceFormationSnapshot,
+        GlobalCirculationSnapshot,
+        GlobalClimateForcing,
+    ) {
+        (self.surface, self.final_climate, self.final_climate_forcing)
     }
 }
 
 impl SurfaceFormationGenerator {
-    /// Advances P5 over its declared horizon and publishes one atomic final state.
-    pub fn generate(
-        inputs: SurfaceFormationInputs<'_>,
-        cancellation: &BuildCancellation,
-    ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
-        let surface_ref = validate_inputs(inputs, cancellation)?;
-        let state = initial_formation_state(inputs)?;
-        let (surface, _) =
-            Self::generate_from_validated_state(inputs, state, surface_ref, cancellation)?
-                .into_parts();
-        Ok(surface)
-    }
-
     /// Closes one exact P3-derived state through finite-time P5 and endpoint P4.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::generators::natural) fn generate_from_exact_state(
         inputs: SurfaceFormationInputs<'_>,
         state: FormationState,
@@ -142,13 +133,14 @@ impl SurfaceFormationGenerator {
             cancellation,
         )?;
         let upstream = upstream_fingerprints(inputs, &endpoint_climate, cancellation)?;
+        let endpoint_checkpoint_fingerprint = *endpoint_climate.checkpoint().fingerprint();
         let surface = finalize_surface_formation(
             state,
             final_terrain,
             surface,
             surface_ref,
             inputs.quality_profile,
-            endpoint_climate,
+            endpoint_checkpoint_fingerprint,
             upstream,
             terminal_diagnostics,
             evolution_report,
@@ -156,6 +148,7 @@ impl SurfaceFormationGenerator {
         )?;
         Ok(SurfaceFormationClosureOutput {
             surface,
+            final_climate: endpoint_climate,
             final_climate_forcing: forcing,
         })
     }
@@ -792,14 +785,6 @@ fn surface_rate_statistics(
     }
 }
 
-fn initial_formation_state(
-    inputs: SurfaceFormationInputs<'_>,
-) -> Result<FormationState, SurfaceFormationGenerationError> {
-    Ok(FormationState::from_legacy_primary_wire_for_migration(
-        inputs.relief,
-    )?)
-}
-
 #[derive(Clone, Copy)]
 struct SurfaceStepContext<'a> {
     inputs: SurfaceProcessInputs<'a>,
@@ -1170,7 +1155,7 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
     surface: &SphericalSurfaceSnapshot,
     surface_ref: SurfaceRef,
     quality_profile: NaturalQualityProfile,
-    endpoint_climate: GlobalCirculationSnapshot,
+    formation_climate_checkpoint_fingerprint: [u8; 32],
     upstream: SurfaceFormationUpstreamFingerprints,
     terminal_diagnostics: TerminalSurfaceDiagnostics,
     evolution_report: FormationEvolutionReport,
@@ -1188,6 +1173,14 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
             reason: "final terrain does not match the accepted exact state".to_owned(),
         });
     }
+    if upstream.formation_climate_checkpoint_fingerprint()
+        != &formation_climate_checkpoint_fingerprint
+    {
+        return Err(SurfaceFormationGenerationError::InvalidFormationState {
+            reason: "endpoint climate checkpoint does not match final P5 upstream identity"
+                .to_owned(),
+        });
+    }
     let process_rates = terminal_diagnostics.process_rates.to_wire()?;
     let state_fingerprint = surface_formation_state_fingerprint(
         &final_terrain,
@@ -1198,13 +1191,12 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
         SurfaceFormationCheckpoint::new(surface_ref, quality_profile, upstream, state_fingerprint)?;
     check_cancelled(cancellation)?;
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V4,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V5,
         surface_ref,
         checkpoint,
         final_terrain,
         process_rates,
         terminal_diagnostics.hydrology,
-        endpoint_climate,
         evolution_report,
         terminal_diagnostics.budget,
         SurfaceFormationCapabilitySet::p5(),

@@ -20,7 +20,7 @@ use crate::engine::{
     GraphError, MemoryStageCache,
 };
 use crate::generators::natural::{
-    spherical_natural_foundation_graph, surface_formation_graph, AuthorConstraintsArtifact,
+    causal_natural_formation_graph, spherical_natural_foundation_graph, AuthorConstraintsArtifact,
     ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
     NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedClimateInput,
     ResolvedClimateInputArtifact, ResolvedGeologicInput, ResolvedGeologicInputArtifact,
@@ -1567,7 +1567,7 @@ fn build_spherical_formation_candidate_with_lineage(
         relief,
         geologic,
     )?;
-    let outcome = BuildEngine::new(surface_formation_graph()?).build_with_cancellation(
+    let outcome = BuildEngine::new(causal_natural_formation_graph()?).build_with_cancellation(
         root_seed,
         external,
         cache,

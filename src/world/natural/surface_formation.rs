@@ -6,17 +6,17 @@ use thiserror::Error;
 
 use super::surface_water_geometry::surface_elevation_fingerprint;
 use super::{
-    GlobalCirculationSnapshot, LandOceanField, NaturalQualityProfile, SedimentSourceKind,
-    SphericalHydrologySnapshot, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
-    ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
+    LandOceanField, NaturalQualityProfile, SedimentSourceKind, SphericalHydrologySnapshot,
+    SurfaceWaterGeometry, SurfaceWaterGeometryValidationError, ANNUAL_PRECIPITATION_MAX_MM,
+    CLIMATE_MONTH_COUNT, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    MEAN_SOLAR_DAY_SECONDS, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
 use crate::world::MAX_SPHERICAL_CELL_COUNT;
 
 /// Finite-time formation product retaining one authoritative fractional water geometry.
-pub const NATURAL_SURFACE_FORMATION_SCHEMA_V4: u16 = 4;
+pub const NATURAL_SURFACE_FORMATION_SCHEMA_V5: u16 = 5;
 /// Current-state-only P5 checkpoint schema.
 pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2: u16 = 2;
 /// Retained terrain with nine causal elevation components and one water geometry.
@@ -2189,7 +2189,6 @@ pub struct NaturalSurfaceFormationSnapshot {
     terrain_fields: FormationTerrainFields,
     process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
-    formation_climate: GlobalCirculationSnapshot,
     evolution_report: FormationEvolutionReport,
     sediment_budget_report: SedimentBudgetReport,
     capabilities: SurfaceFormationCapabilitySet,
@@ -2204,7 +2203,6 @@ struct NaturalSurfaceFormationSnapshotWire {
     terrain_fields: FormationTerrainFields,
     process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
-    formation_climate: GlobalCirculationSnapshot,
     evolution_report: FormationEvolutionReport,
     sediment_budget_report: SedimentBudgetReport,
     capabilities: SurfaceFormationCapabilitySet,
@@ -2219,7 +2217,6 @@ impl NaturalSurfaceFormationSnapshot {
         terrain_fields: FormationTerrainFields,
         process_rates: FormationProcessRates,
         hydrology: SphericalHydrologySnapshot,
-        formation_climate: GlobalCirculationSnapshot,
         evolution_report: FormationEvolutionReport,
         sediment_budget_report: SedimentBudgetReport,
         capabilities: SurfaceFormationCapabilitySet,
@@ -2231,7 +2228,6 @@ impl NaturalSurfaceFormationSnapshot {
             terrain_fields,
             process_rates,
             hydrology,
-            formation_climate,
             evolution_report,
             sediment_budget_report,
             capabilities,
@@ -2241,11 +2237,11 @@ impl NaturalSurfaceFormationSnapshot {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V4 {
+        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V5 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "natural_surface_formation_snapshot",
                 found: self.schema_version,
-                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V4,
+                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V5,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2265,12 +2261,6 @@ impl NaturalSurfaceFormationSnapshot {
         self.hydrology.validate().map_err(|error| {
             SurfaceFormationValidationError::InvalidNested {
                 role: "hydrology",
-                reason: error.to_string(),
-            }
-        })?;
-        self.formation_climate.validate().map_err(|error| {
-            SurfaceFormationValidationError::InvalidNested {
-                role: "formation_climate",
                 reason: error.to_string(),
             }
         })?;
@@ -2296,22 +2286,7 @@ impl NaturalSurfaceFormationSnapshot {
                 },
             );
         }
-        if self
-            .checkpoint
-            .upstream()
-            .formation_climate_checkpoint_fingerprint()
-            != self.formation_climate.checkpoint().fingerprint()
-        {
-            return Err(
-                SurfaceFormationValidationError::CheckpointIdentityMismatch {
-                    field: "formation_climate_checkpoint_fingerprint",
-                },
-            );
-        }
-        for (role, found) in [
-            ("hydrology", self.hydrology.surface_ref()),
-            ("formation_climate", self.formation_climate.surface_ref()),
-        ] {
+        for (role, found) in [("hydrology", self.hydrology.surface_ref())] {
             if found != self.surface_ref {
                 return Err(SurfaceFormationValidationError::NestedSurfaceMismatch {
                     role,
@@ -2386,12 +2361,6 @@ impl NaturalSurfaceFormationSnapshot {
             }
         })?;
         self.terrain_fields.validate_against_surface(surface)?;
-        self.formation_climate
-            .validate_against(surface)
-            .map_err(|error| SurfaceFormationValidationError::InvalidNested {
-                role: "formation_climate",
-                reason: error.to_string(),
-            })?;
         Ok(())
     }
 
@@ -2430,10 +2399,6 @@ impl NaturalSurfaceFormationSnapshot {
         &self.hydrology
     }
 
-    pub const fn formation_climate(&self) -> &GlobalCirculationSnapshot {
-        &self.formation_climate
-    }
-
     pub const fn evolution_report(&self) -> &FormationEvolutionReport {
         &self.evolution_report
     }
@@ -2460,7 +2425,6 @@ impl<'de> Deserialize<'de> for NaturalSurfaceFormationSnapshot {
             wire.terrain_fields,
             wire.process_rates,
             wire.hydrology,
-            wire.formation_climate,
             wire.evolution_report,
             wire.sediment_budget_report,
             wire.capabilities,

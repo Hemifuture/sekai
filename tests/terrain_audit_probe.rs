@@ -39,8 +39,8 @@ use sekai::world::natural::{
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, RootSeed};
+use support::causal_formation::causal_formation_fixture;
 use support::global_circulation::{build_primary_relief, build_primary_relief_for};
-use support::surface_formation::{published_formation, surface_formation_fixture};
 
 /// The root seed of the world currently on the user's screen.
 const APP_SEED: u64 = 15_957_999_680_335_491_072;
@@ -643,10 +643,10 @@ fn probe_foundation_terrain_structure() {
 #[test]
 #[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
 fn probe_p5_terrain_structure() {
-    let fixture = surface_formation_fixture();
-    let formation = published_formation();
-    let inputs = fixture.inputs();
-    let surface = inputs.surface;
+    let fixture = causal_formation_fixture();
+    let bundle = fixture.artifact.bundle();
+    let formation = bundle.surface_formation();
+    let surface = &fixture.surface;
     let terrain = formation.terrain_fields();
     let current_elevation = terrain.current_elevation_m();
     let primary = terrain.elevation_components().primary_elevation_m();
@@ -674,7 +674,7 @@ fn probe_p5_terrain_structure() {
         deltas.iter().filter(|&&d| d > 10.0).count() as f64 / deltas.len() as f64,
     );
 
-    let compatibility = inputs.tectonics.compatibility();
+    let compatibility = bundle.tectonics().compatibility();
     let n = surface.cells().len();
     let kinds: Vec<CrustKind> = (0..n)
         .map(|i| {
@@ -686,7 +686,7 @@ fn probe_p5_terrain_structure() {
     let ages = compatibility.crust_age_myr();
     crust_composition("p5/evolved", surface, &kinds, ages, land);
 
-    let budget = inputs.tectonics.material_budget();
+    let budget = bundle.tectonics().material_budget();
     let total_area: f64 = surface.total_cell_area().get();
     println!(
         "evolved material budget: initial_continental_fraction={:.4} final_continental_fraction={:.4}",
@@ -911,13 +911,13 @@ fn freeboard_closure(
 #[test]
 #[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
 fn probe_t0_hypsometric_attribution() {
-    let fixture = surface_formation_fixture();
-    let formation = published_formation();
-    let upstream = fixture.upstream;
-    let surface = upstream.bundle.authoritative_surface();
-    let relief = &upstream.relief;
-    let evolved = &upstream.evolved;
-    let substrate = &upstream.substrate;
+    let fixture = causal_formation_fixture();
+    let bundle = fixture.artifact.bundle();
+    let formation = bundle.surface_formation();
+    let surface = &fixture.surface;
+    let relief = bundle.primary_relief();
+    let evolved = bundle.tectonics();
+    let substrate = bundle.substrate();
     let terrain = formation.terrain_fields();
     let n = surface.cells().len();
     let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();

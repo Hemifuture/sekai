@@ -65,6 +65,40 @@ impl GlobalClimateForcing {
         Ok(())
     }
 
+    pub(crate) fn validate_formation_terrain_identity(
+        &self,
+        terrain: &FormationTerrainFields,
+    ) -> Result<(), GlobalClimateForcingError> {
+        if terrain.surface_water_geometry().surface_ref() != self.source_ref
+            || formation_terrain_climate_fingerprint(
+                self.source_ref,
+                terrain.surface_water_geometry(),
+                None,
+            )? != self.source_relief_fingerprint
+        {
+            return Err(GlobalClimateForcingError::SourceMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_formation_terrain_identity_cancellable(
+        &self,
+        terrain: &FormationTerrainFields,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), GlobalClimateForcingError> {
+        check_cancelled(cancellation)?;
+        if terrain.surface_water_geometry().surface_ref() != self.source_ref
+            || climate_terrain_fingerprint_impl(
+                self.source_ref,
+                terrain.surface_water_geometry(),
+                Some(cancellation),
+            )? != self.source_relief_fingerprint
+        {
+            return Err(GlobalClimateForcingError::SourceMismatch);
+        }
+        Ok(())
+    }
+
     pub fn validate_against(
         &self,
         domain: &ClimateWorkDomainSnapshot,

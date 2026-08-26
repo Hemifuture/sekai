@@ -14,7 +14,7 @@ use sekai::world::natural::{
     HydroErosionSpec, NaturalQualityProfile, NaturalSurfaceFormationSnapshot, ReliefSpec,
     SedimentBudgetReport, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
-    NATURAL_SURFACE_FORMATION_SCHEMA_V4, SURFACE_FORMATION_HORIZON_YEARS,
+    NATURAL_SURFACE_FORMATION_SCHEMA_V5, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::SurfaceRef;
 use sekai::world::RootSeed;
@@ -106,13 +106,12 @@ fn synthetic_formation() -> &'static NaturalSurfaceFormationSnapshot {
         )
         .unwrap();
         NaturalSurfaceFormationSnapshot::new(
-            NATURAL_SURFACE_FORMATION_SCHEMA_V4,
+            NATURAL_SURFACE_FORMATION_SCHEMA_V5,
             SurfaceRef::for_spherical(surface),
             checkpoint,
             terrain,
             process_rates,
             hydrology,
-            climate,
             FormationEvolutionReport::new(
                 1,
                 SURFACE_FORMATION_HORIZON_YEARS,

@@ -21,9 +21,10 @@ use super::fractal::FractalProfile;
 use super::morphology::noise::{GaborKernel, SphericalNoise3d};
 use crate::generators::spatial::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 use crate::world::natural::{
-    formation_annual_precipitation_mm, GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot,
-    RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot, SurfaceWaterField,
-    SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_FLOODPLAIN_ACCOMMODATION_M,
+    formation_annual_precipitation_mm, GeologicSubstrateSnapshot, GlobalCirculationSnapshot,
+    NaturalSurfaceFormationSnapshot, RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot,
+    SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FORMATION_FLOODPLAIN_ACCOMMODATION_M,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, RootSeed};
@@ -167,6 +168,16 @@ pub struct AmplificationFieldsView<'a> {
     pub orogeny_kind: &'a [SphericalOrogenyKind],
     /// Orogeny age per cell (Myr).
     pub orogeny_age_myr: &'a [f32],
+}
+
+/// Final sibling snapshots required to construct T1 without copying bundle state.
+#[derive(Debug, Clone, Copy)]
+pub struct FormationDerivationInputs<'a> {
+    pub surface: &'a SphericalSurfaceSnapshot,
+    pub compatibility: &'a SphericalTectonicSnapshot,
+    pub substrate: &'a GeologicSubstrateSnapshot,
+    pub formation: &'a NaturalSurfaceFormationSnapshot,
+    pub climate: &'a GlobalCirculationSnapshot,
 }
 
 /// Errors returned while constructing the amplifier.
@@ -418,18 +429,18 @@ impl TerrainAmplifier {
 
     /// Assembles the amplifier straight from the published formation product.
     pub fn from_formation_product(
-        surface: &SphericalSurfaceSnapshot,
-        compatibility: &SphericalTectonicSnapshot,
-        substrate: &GeologicSubstrateSnapshot,
-        formation: &NaturalSurfaceFormationSnapshot,
+        inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
+        let FormationDerivationInputs {
+            surface,
+            compatibility,
+            substrate,
+            formation,
+            climate,
+        } = inputs;
         let terrain = formation.terrain_fields();
-        let monthly = formation
-            .formation_climate()
-            .fields()
-            .monthly_precipitation_mm_day()
-            .values();
+        let monthly = climate.fields().monthly_precipitation_mm_day().values();
         let annual_precipitation_mm: Vec<f32> = monthly
             .iter()
             .map(formation_annual_precipitation_mm)

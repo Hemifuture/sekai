@@ -17,9 +17,12 @@ pub(crate) use evolved_tectonics::validate_evolved_tectonic_quality_report;
 pub use evolved_tectonics::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
 };
-pub(crate) use global_circulation::validate_global_circulation_quality_report;
 pub use global_circulation::{
     evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
+};
+pub(crate) use global_circulation::{
+    evaluate_global_circulation_quality_for_formation_cancellable,
+    validate_global_circulation_quality_report,
 };
 pub(crate) use primary_relief::validate_primary_relief_quality_report;
 pub use primary_relief::{

@@ -1552,10 +1552,13 @@ impl TemplateApp {
                     let (sea_level_m, display_radius_m) = document.amplified_color_anchors()?;
                     let evaluator =
                         crate::generators::natural::HierarchicalEvaluator::from_formation_product(
-                            document.surface(),
-                            document.evolved_compatibility(),
-                            document.substrate(),
-                            document.formation_snapshot(),
+                            crate::generators::natural::FormationDerivationInputs {
+                                surface: document.surface(),
+                                compatibility: document.evolved_compatibility(),
+                                substrate: document.substrate(),
+                                formation: document.formation_snapshot(),
+                                climate: document.formation_climate(),
+                            },
                             root_seed,
                         )
                         .ok()?;

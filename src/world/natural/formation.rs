@@ -304,6 +304,17 @@ impl ResolvedFormationTimelineWire {
     }
 }
 
+impl<'de> Deserialize<'de> for ResolvedFormationTimeline {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ResolvedFormationTimelineWire::deserialize(deserializer)?
+            .resolve()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResolvedWorldFormationWire {

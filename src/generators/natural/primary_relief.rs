@@ -51,13 +51,11 @@ pub(in crate::generators::natural) struct PrimaryReliefWorkingState {
 
 impl PrimaryReliefWorkingState {
     /// Returns the exact retained P3 elevation before wire quantization.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::generators::natural) fn elevation_exact_m(&self) -> &[f64] {
         &self.elevation_m
     }
 
     /// Returns the exact fractional P3 water geometry carried into P5.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::generators::natural) const fn surface_water_geometry(
         &self,
     ) -> &SurfaceWaterWorkingGeometry {

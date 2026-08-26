@@ -1,24 +1,21 @@
+mod support;
+
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Instant;
 
-use sekai::engine::{
-    derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
-};
+use sekai::engine::{Artifact, BuildCancellation};
 use sekai::generators::natural::{
-    evaluate_surface_formation_corpus_hypsometry, ClimateWorkDomainBuilder,
-    EvolvedTectonicGenerator, GeologicSubstrateGenerator, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, NaturalSurfaceFormationArtifact, PrimaryReliefGenerator,
-    SurfaceFormationInputs,
+    evaluate_surface_formation_corpus_hypsometry, NaturalFormationBundleArtifact,
 };
-use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
+use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, HydroErosionSpec,
-    NaturalQualityProfile, NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricStatus,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, SurfaceFormationModelId,
-    TectonicSpec, WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    NaturalQualityProfile, NaturalQualityReport, QualityMetricStatus, SurfaceFormationModelId,
 };
-use sekai::world::{Meters, RootSeed};
+use sekai::world::Meters;
 use serde::Serialize;
+
+use support::causal_formation::build_causal_formation;
 
 const RADIUS_M: f64 = 6_371_000.0;
 /// Envelope rows the frozen T0 calibration spec records as open (§11.3 R4):
@@ -121,8 +118,7 @@ struct CorpusMetricEvidence {
 }
 
 struct GeneratedWorld {
-    relief: PrimaryReliefSnapshot,
-    artifact: NaturalSurfaceFormationArtifact,
+    artifact: Arc<NaturalFormationBundleArtifact>,
 }
 
 #[test]
@@ -137,14 +133,14 @@ fn write_surface_formation_evidence() {
     )
     .unwrap();
     let surface = bundle.authoritative_surface();
-    let domain =
-        ClimateWorkDomainBuilder::build(surface, NaturalQualityProfile::Draft, &cancellation)
-            .unwrap();
-
     let mut worlds = Vec::new();
     for seed in SEEDS {
-        let world = generate_world(&bundle, &domain, seed);
-        let report = world.artifact.snapshot().evolution_report();
+        let world = generate_world(surface, seed);
+        let report = world
+            .artifact
+            .bundle()
+            .surface_formation()
+            .evolution_report();
         eprintln!(
             "P5 evidence seed={seed} substeps={} duration={} years",
             report.accepted_surface_substeps(),
@@ -152,7 +148,8 @@ fn write_surface_formation_evidence() {
         );
         for metric in world
             .artifact
-            .quality_report()
+            .bundle()
+            .surface_quality()
             .metrics()
             .iter()
             .filter(|metric| metric.status() != QualityMetricStatus::Pass)
@@ -173,7 +170,8 @@ fn write_surface_formation_evidence() {
         assert!(
             world
                 .artifact
-                .quality_report()
+                .bundle()
+                .surface_quality()
                 .metrics()
                 .iter()
                 .all(|metric| metric.status() == QualityMetricStatus::Pass),
@@ -183,10 +181,20 @@ fn write_surface_formation_evidence() {
         seeds.push(seed_evidence(surface, seed, world));
     }
 
-    let repeated = generate_world(&bundle, &domain, SEEDS[0]);
+    let repeated = generate_world(surface, SEEDS[0]);
     assert_eq!(
-        worlds[0].artifact.snapshot().checkpoint().fingerprint(),
-        repeated.artifact.snapshot().checkpoint().fingerprint()
+        worlds[0]
+            .artifact
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .fingerprint(),
+        repeated
+            .artifact
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .fingerprint()
     );
     assert_eq!(worlds[0].artifact, repeated.artifact);
 
@@ -197,7 +205,7 @@ fn write_surface_formation_evidence() {
     let corpus_hypsometry = evaluate_surface_formation_corpus_hypsometry(
         &worlds
             .iter()
-            .map(|world| world.artifact.quality_report().clone())
+            .map(|world| world.artifact.bundle().surface_quality().clone())
             .collect::<Vec<_>>(),
     )
     .unwrap();
@@ -309,22 +317,23 @@ fn seed_evidence(
     seed: u64,
     world: &GeneratedWorld,
 ) -> SeedEvidence {
-    let snapshot = world.artifact.snapshot();
+    let bundle = world.artifact.bundle();
+    let snapshot = bundle.surface_formation();
     let terrain = snapshot.terrain_fields();
     let rates = snapshot.process_rates();
     let budget = snapshot.sediment_budget_report();
     let report = snapshot.evolution_report();
     let residual = report.current_rates();
-    let bytes = serde_json::to_vec(&world.artifact).unwrap();
+    let bytes = serde_json::to_vec(world.artifact.as_ref()).unwrap();
     SeedEvidence {
         seed,
         artifact_json_bytes: bytes.len(),
         artifact_json_hash: blake3::hash(&bytes).to_hex().to_string(),
         checkpoint_fingerprint: hex(*snapshot.checkpoint().fingerprint()),
         state_fingerprint: hex(*snapshot.checkpoint().state_fingerprint()),
-        primary_sea_level_m: world.relief.sea_level_m(),
+        primary_sea_level_m: bundle.primary_relief().sea_level_m(),
         current_sea_level_m: terrain.sea_level_m(),
-        primary_land_fraction: world.relief.physical_land_fraction(),
+        primary_land_fraction: bundle.primary_relief().physical_land_fraction(),
         accepted_surface_substeps: report.accepted_surface_substeps(),
         integrated_duration_years: report.integrated_duration_years(),
         terminal_net_surface_rate_rms_m_per_year: residual.net_surface_rate_rms_m_per_year(),
@@ -370,83 +379,17 @@ fn seed_evidence(
         basin_count: snapshot.hydrology().basins().len(),
         lake_count: snapshot.hydrology().lakes().len(),
         river_segment_count: snapshot.hydrology().river_segments().len(),
-        metrics: metric_evidence(world.artifact.quality_report()),
+        metrics: metric_evidence(bundle.surface_quality()),
     }
 }
 
 fn generate_world(
-    bundle: &ProfileSurfaceBundle,
-    domain: &ClimateWorkDomainSnapshot,
+    surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
     seed: u64,
 ) -> GeneratedWorld {
-    let cancellation = BuildCancellation::new();
-    let surface = bundle.authoritative_surface();
-    let formation = ResolvedWorldFormation::new(
-        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-        WorldFormationPreset::Continents,
-        ResolvedWorldFormationPreset::Continents,
-    )
-    .unwrap();
-    let mut evolved_rng = stage_rng(seed, "natural.evolved-tectonics", 5);
-    let evolved = EvolvedTectonicGenerator::generate(
-        bundle,
-        &TectonicSpec::default(),
-        &formation,
-        &mut evolved_rng,
-    )
-    .unwrap();
-    let mut substrate_rng = stage_rng(seed, "natural.geologic-substrate", 1);
-    let substrate = GeologicSubstrateGenerator::generate(
-        surface,
-        &evolved,
-        &GeologicSpec::default(),
-        &formation,
-        &mut substrate_rng,
-    )
-    .unwrap();
-    let mut relief_rng = stage_rng(seed, "natural.primary-relief", 1);
-    let mut diagnostics = Vec::<Diagnostic>::new();
-    let relief = PrimaryReliefGenerator::generate(
-        surface,
-        &evolved,
-        &substrate,
-        &ReliefSpec::default(),
-        &mut relief_rng,
-        &mut diagnostics,
-    )
-    .unwrap();
-    let forcing = GlobalClimateForcingBuilder::build(
-        surface,
-        &relief,
-        &ClimateSpec::default(),
-        domain,
-        &cancellation,
-    )
-    .unwrap();
-    let initial_climate = GlobalCirculationGenerator::generate(
-        surface,
-        domain,
-        &forcing,
-        ClimateModelProfile::C2LayeredV1,
-        &cancellation,
-    )
-    .unwrap();
-    let artifact = NaturalSurfaceFormationArtifact::generate(
-        SurfaceFormationInputs {
-            surface,
-            quality_profile: NaturalQualityProfile::Draft,
-            tectonics: &evolved,
-            substrate: &substrate,
-            relief: &relief,
-            domain,
-            climate_spec: &ClimateSpec::default(),
-            initial_climate: &initial_climate,
-            formation_spec: &HydroErosionSpec::default(),
-        },
-        &cancellation,
-    )
-    .unwrap();
-    GeneratedWorld { relief, artifact }
+    GeneratedWorld {
+        artifact: build_causal_formation(surface, NaturalQualityProfile::Draft, seed),
+    }
 }
 
 fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {
@@ -470,7 +413,7 @@ fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {
 }
 
 fn corpus_metric_evidence(worlds: &[GeneratedWorld]) -> Vec<CorpusMetricEvidence> {
-    let first = worlds[0].artifact.quality_report();
+    let first = worlds[0].artifact.bundle().surface_quality();
     first
         .metrics()
         .iter()
@@ -478,12 +421,14 @@ fn corpus_metric_evidence(worlds: &[GeneratedWorld]) -> Vec<CorpusMetricEvidence
         .map(|(index, metric)| {
             let values = worlds
                 .iter()
-                .filter_map(|world| world.artifact.quality_report().metrics()[index].value())
+                .filter_map(|world| {
+                    world.artifact.bundle().surface_quality().metrics()[index].value()
+                })
                 .collect::<Vec<_>>();
             let passing = worlds
                 .iter()
                 .filter(|world| {
-                    world.artifact.quality_report().metrics()[index].status()
+                    world.artifact.bundle().surface_quality().metrics()[index].status()
                         == QualityMetricStatus::Pass
                 })
                 .count();
@@ -566,13 +511,6 @@ fn area_mean_abs(surface: &sekai::world::spatial::SphericalSurfaceSnapshot, valu
         total += cell.area.get();
     }
     weighted / total
-}
-
-fn stage_rng(seed: u64, stage: &'static str, version: u32) -> StageRng {
-    StageRng::from_seed(derive_stage_seed(
-        RootSeed::new(seed),
-        StageIdentity::new(stage, version, "sekai.core"),
-    ))
 }
 
 fn hex(bytes: [u8; 32]) -> String {

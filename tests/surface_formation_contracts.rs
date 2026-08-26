@@ -17,7 +17,7 @@ use sekai::world::natural::{
     SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceWaterField, SurfaceWaterKind,
     FORMATION_TERRAIN_FIELDS_SCHEMA_V4, GLOBAL_CIRCULATION_SCHEMA_V2, HYDROLOGY_SCHEMA_V1,
-    HYDROLOGY_SCHEMA_V2, NATURAL_SURFACE_FORMATION_SCHEMA_V4, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
+    HYDROLOGY_SCHEMA_V2, NATURAL_SURFACE_FORMATION_SCHEMA_V5, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
     SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
@@ -507,7 +507,7 @@ fn evolution_budget_and_capability_reports_are_strict() {
 }
 
 #[test]
-fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
+fn atomic_snapshot_binds_terrain_hydrology_and_endpoint_checkpoint() {
     let source = surface();
     let terrain = terrain_for_surface(&source);
     let process_rates = zero_process_rates(source.cells().len());
@@ -524,13 +524,12 @@ fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
     )
     .unwrap();
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V4,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V5,
         SurfaceRef::for_spherical(&source),
         checkpoint,
         terrain,
         process_rates,
         hydrology,
-        climate,
         FormationEvolutionReport::new(
             1,
             SURFACE_FORMATION_HORIZON_YEARS,
@@ -551,6 +550,7 @@ fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
     let decoded: NaturalSurfaceFormationSnapshot = serde_json::from_slice(&bytes).unwrap();
     decoded.validate_against(&source).unwrap();
     assert_eq!(bytes, serde_json::to_vec(&decoded).unwrap());
+    assert!(serde_json::to_value(&decoded).unwrap()["formation_climate"].is_null());
 
     let mut unknown = serde_json::to_value(&snapshot).unwrap();
     unknown["surprise"] = serde_json::json!(true);

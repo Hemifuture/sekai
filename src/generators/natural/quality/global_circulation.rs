@@ -4,9 +4,10 @@ use super::{MetricAccumulator, MetricObservation, NaturalQualityReportBuilder, Q
 use crate::engine::BuildCancellation;
 use crate::generators::natural::global_circulation::GlobalClimateForcing;
 use crate::world::natural::{
-    GlobalCirculationSnapshot, LandOceanKind, NaturalQualityReport, PrimaryReliefSnapshot,
-    QualityMetricId, QualityMetricStatus, CLIMATE_MONTH_COUNT,
-    GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2, GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
+    FormationTerrainFields, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
+    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
+    CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -22,6 +23,47 @@ const NO_RESOLVED_SEASONAL_FORCING_REASON: &str =
     "January-July equilibrium-air-temperature amplitude is below 0.5 C";
 const NO_HIGH_LATITUDE_PRECIPITATION_REASON: &str =
     "high-latitude annual-mean precipitation is zero";
+
+/// The final terrain authority sampled by the shared P4 quality metrics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ClimateQualityTerrain<'a> {
+    Primary(&'a PrimaryReliefSnapshot),
+    Formation(&'a FormationTerrainFields),
+}
+
+impl<'a> ClimateQualityTerrain<'a> {
+    fn surface_ref(self) -> SurfaceRef {
+        match self {
+            Self::Primary(relief) => relief.surface_ref(),
+            Self::Formation(terrain) => terrain.surface_water_geometry().surface_ref(),
+        }
+    }
+
+    fn land_ocean(self) -> &'a LandOceanField {
+        match self {
+            Self::Primary(relief) => relief.land_ocean(),
+            Self::Formation(terrain) => terrain.land_ocean(),
+        }
+    }
+
+    fn elevation_m(self) -> &'a [f32] {
+        match self {
+            Self::Primary(relief) => relief.elevation_m(),
+            Self::Formation(terrain) => terrain.current_elevation_m(),
+        }
+    }
+
+    fn validate(self) -> Result<(), QualityBuildError> {
+        match self {
+            Self::Primary(relief) => relief
+                .validate()
+                .map_err(|error| invalid_input("primary_relief", error.to_string())),
+            Self::Formation(terrain) => terrain
+                .validate()
+                .map_err(|error| invalid_input("formation_terrain", error.to_string())),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ExpectedMetric {
@@ -92,7 +134,13 @@ pub fn evaluate_global_circulation_quality(
     forcing: &GlobalClimateForcing,
     snapshot: &GlobalCirculationSnapshot,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    evaluate_global_circulation_quality_impl(surface, relief, forcing, snapshot, None)
+    evaluate_global_circulation_quality_impl(
+        surface,
+        ClimateQualityTerrain::Primary(relief),
+        forcing,
+        snapshot,
+        None,
+    )
 }
 
 /// Cancellation-aware production path for Standard/High stage execution.
@@ -103,12 +151,34 @@ pub fn evaluate_global_circulation_quality_cancellable(
     snapshot: &GlobalCirculationSnapshot,
     cancellation: &BuildCancellation,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    evaluate_global_circulation_quality_impl(surface, relief, forcing, snapshot, Some(cancellation))
+    evaluate_global_circulation_quality_impl(
+        surface,
+        ClimateQualityTerrain::Primary(relief),
+        forcing,
+        snapshot,
+        Some(cancellation),
+    )
+}
+
+pub(crate) fn evaluate_global_circulation_quality_for_formation_cancellable(
+    surface: &SphericalSurfaceSnapshot,
+    terrain: &FormationTerrainFields,
+    forcing: &GlobalClimateForcing,
+    snapshot: &GlobalCirculationSnapshot,
+    cancellation: &BuildCancellation,
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    evaluate_global_circulation_quality_impl(
+        surface,
+        ClimateQualityTerrain::Formation(terrain),
+        forcing,
+        snapshot,
+        Some(cancellation),
+    )
 }
 
 fn evaluate_global_circulation_quality_impl(
     surface: &SphericalSurfaceSnapshot,
-    relief: &PrimaryReliefSnapshot,
+    terrain: ClimateQualityTerrain<'_>,
     forcing: &GlobalClimateForcing,
     snapshot: &GlobalCirculationSnapshot,
     cancellation: Option<&BuildCancellation>,
@@ -123,9 +193,7 @@ fn evaluate_global_circulation_quality_impl(
         surface
             .validate()
             .map_err(|error| invalid_input("surface", error.to_string()))?;
-        relief
-            .validate()
-            .map_err(|error| invalid_input("primary_relief", error.to_string()))?;
+        terrain.validate()?;
     }
     check_quality_cancelled(cancellation)?;
     let snapshot_validation = if let Some(cancellation) = cancellation {
@@ -143,22 +211,30 @@ fn evaluate_global_circulation_quality_impl(
     check_quality_cancelled(cancellation)?;
     let surface_ref = SurfaceRef::from_validated_spherical(surface)
         .map_err(|error| invalid_input("surface", error.to_string()))?;
-    if relief.surface_ref() != surface_ref || snapshot.surface_ref() != surface_ref {
+    if terrain.surface_ref() != surface_ref || snapshot.surface_ref() != surface_ref {
         return Err(QualityBuildError::SurfaceMismatch {
             input: "global_circulation",
             found: snapshot.surface_ref(),
             expected: surface_ref,
         });
     }
-    let relief_binding = match cancellation {
-        Some(cancellation) => forcing.validate_relief_identity_cancellable(relief, cancellation),
-        None => forcing.validate_relief_identity(relief),
+    let terrain_binding = match (terrain, cancellation) {
+        (ClimateQualityTerrain::Primary(relief), Some(cancellation)) => {
+            forcing.validate_relief_identity_cancellable(relief, cancellation)
+        }
+        (ClimateQualityTerrain::Primary(relief), None) => forcing.validate_relief_identity(relief),
+        (ClimateQualityTerrain::Formation(terrain), Some(cancellation)) => {
+            forcing.validate_formation_terrain_identity_cancellable(terrain, cancellation)
+        }
+        (ClimateQualityTerrain::Formation(terrain), None) => {
+            forcing.validate_formation_terrain_identity(terrain)
+        }
     };
-    relief_binding.map_err(|error| {
+    terrain_binding.map_err(|error| {
         if error == crate::generators::natural::GlobalClimateForcingError::Cancelled {
             QualityBuildError::Cancelled
         } else {
-            invalid_input("primary_relief", error.to_string())
+            invalid_input("climate_terrain", error.to_string())
         }
     })?;
     if forcing.fingerprint() != snapshot.checkpoint().forcing_fingerprint() {
@@ -248,7 +324,7 @@ fn evaluate_global_circulation_quality_impl(
         let absolute_latitude = latitude.abs();
         let area_m2 = cell.area.get();
         let (east, _) = canonical_east_north_basis(cell.centroid);
-        let land = relief.land_ocean().raw_values()[cell_index] == LandOceanKind::Land.raw();
+        let land = terrain.land_ocean().raw_values()[cell_index] == LandOceanKind::Land.raw();
         for month in 0..12 {
             let zonal = dot(lower[cell_index][month].map(f64::from), east);
             if (LOW_LATITUDE_WIND_MIN_ABS_DEGREES..=TROPICAL_MAX_ABS_LATITUDE_DEGREES)
@@ -314,9 +390,9 @@ fn evaluate_global_circulation_quality_impl(
 
     let seam_ratio = neighbor_speed_jump_ratio(surface, lower, cancellation)?;
     let (gyre_fraction, gyre_samples) =
-        basin_gyre_circulation(surface, relief, current, cancellation)?;
+        basin_gyre_circulation(surface, terrain, current, cancellation)?;
     let orographic =
-        orographic_neighbor_response(surface, relief, lower, precipitation, cancellation)?;
+        orographic_neighbor_response(surface, terrain, lower, precipitation, cancellation)?;
     let (orographic_fraction, orographic_samples) = orographic_precipitation_fraction(
         surface,
         precipitation,
@@ -325,7 +401,7 @@ fn evaluate_global_circulation_quality_impl(
     )?;
     let orographic_uplift = orographic_uplift_enrichment(
         surface,
-        relief,
+        terrain,
         lower,
         orographic_precipitation,
         cancellation,
@@ -778,11 +854,11 @@ fn pair_order(left: &(f64, f64), right: &(f64, f64)) -> std::cmp::Ordering {
 
 fn basin_gyre_circulation(
     surface: &SphericalSurfaceSnapshot,
-    relief: &PrimaryReliefSnapshot,
+    terrain: ClimateQualityTerrain<'_>,
     current: &[[[f32; 3]; 12]],
     cancellation: Option<&BuildCancellation>,
 ) -> Result<(f64, u32), QualityBuildError> {
-    let ocean = relief
+    let ocean = terrain
         .land_ocean()
         .raw_values()
         .iter()
@@ -914,12 +990,12 @@ struct OrographicNeighborResponse {
 
 fn orographic_neighbor_response(
     surface: &SphericalSurfaceSnapshot,
-    relief: &PrimaryReliefSnapshot,
+    terrain: ClimateQualityTerrain<'_>,
     wind: &[[[f32; 3]; 12]],
     precipitation: &[[f32; 12]],
     cancellation: Option<&BuildCancellation>,
 ) -> Result<OrographicNeighborResponse, QualityBuildError> {
-    let land = relief
+    let land = terrain
         .land_ocean()
         .raw_values()
         .iter()
@@ -928,7 +1004,7 @@ fn orographic_neighbor_response(
     orographic_neighbor_response_from_fields(
         surface,
         &land,
-        relief.elevation_m(),
+        terrain.elevation_m(),
         wind,
         precipitation,
         cancellation,
@@ -1045,12 +1121,12 @@ struct OrographicUpliftEnrichment {
 
 fn orographic_uplift_enrichment(
     surface: &SphericalSurfaceSnapshot,
-    relief: &PrimaryReliefSnapshot,
+    terrain: ClimateQualityTerrain<'_>,
     wind: &[[[f32; 3]; 12]],
     orographic: &[[f32; 12]],
     cancellation: Option<&BuildCancellation>,
 ) -> Result<OrographicUpliftEnrichment, QualityBuildError> {
-    let land = relief
+    let land = terrain
         .land_ocean()
         .raw_values()
         .iter()
@@ -1059,7 +1135,7 @@ fn orographic_uplift_enrichment(
     orographic_uplift_enrichment_from_fields(
         surface,
         &land,
-        relief.elevation_m(),
+        terrain.elevation_m(),
         wind,
         orographic,
         cancellation,

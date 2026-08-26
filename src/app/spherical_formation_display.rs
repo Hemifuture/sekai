@@ -1,7 +1,7 @@
 //! Immutable field document for the formation-product chain (P2v5→P5).
 //!
 //! Mirrors the natural-foundation document boundary: it extracts shared
-//! artifacts from one complete `surface_formation_graph()` build outcome,
+//! siblings from one complete causal-formation bundle build outcome,
 //! cross-validates their identities, and exposes the same renderer-independent
 //! [`FieldDocument`] surface the spherical presenters already consume.
 
@@ -16,9 +16,8 @@ use crate::engine::{
     BuildResultHash,
 };
 use crate::generators::natural::{
-    EvolvedTectonicArtifact, GeologicSubstrateArtifact, GlobalCirculationArtifact,
-    NaturalSurfaceFormationArtifact, PrimaryReliefArtifact, ReliefSpecArtifact,
-    ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    NaturalFormationBundleArtifact, ReliefSpecArtifact, ResolvedTectonicInput,
+    ResolvedTectonicInputArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::view::{
@@ -46,8 +45,8 @@ use crate::world::natural::{
     strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
     tectonic_displacement_m_field_id, tectonic_displacement_rate_m_per_year_field_id,
     ClimateBudgetReport, GlobalCirculationFields, NaturalFieldRegistryError,
-    PrimaryReliefValidationError, SeaLevelPolicy, SphericalTectonicValidationError,
-    SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
+    NaturalFormationBundleValidationError, PrimaryReliefValidationError, SeaLevelPolicy,
+    SphericalTectonicValidationError, SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
@@ -55,7 +54,7 @@ use crate::world::spatial::{
 };
 use crate::world::RootSeed;
 
-const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 2;
+const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 3;
 
 /// Stable provenance identity for one complete formation-product document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,10 +333,7 @@ fn display_annual_water_total_mm(
 pub struct SphericalFormationFieldDocument {
     pub(super) surface: Arc<SphericalSurfaceArtifact>,
     resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
-    tectonics: Arc<EvolvedTectonicArtifact>,
-    substrate: Arc<GeologicSubstrateArtifact>,
-    circulation: Arc<GlobalCirculationArtifact>,
-    pub(super) formation: Arc<NaturalSurfaceFormationArtifact>,
+    pub(super) formation: Arc<NaturalFormationBundleArtifact>,
     registry: FieldRegistry,
     diagnostics: Vec<OwnedViewDiagnostic>,
     cache: FormationDisplayCache,
@@ -362,12 +358,8 @@ impl SphericalFormationFieldDocument {
             provenance,
             outcome.artifacts.get::<SphericalSurfaceArtifact>()?,
             outcome.artifacts.get::<ResolvedTectonicInputArtifact>()?,
-            outcome.artifacts.get::<EvolvedTectonicArtifact>()?,
-            outcome.artifacts.get::<GeologicSubstrateArtifact>()?,
             outcome.artifacts.get::<ReliefSpecArtifact>()?,
-            outcome.artifacts.get::<PrimaryReliefArtifact>()?,
-            outcome.artifacts.get::<GlobalCirculationArtifact>()?,
-            outcome.artifacts.get::<NaturalSurfaceFormationArtifact>()?,
+            outcome.artifacts.get::<NaturalFormationBundleArtifact>()?,
             &outcome.report,
         )
     }
@@ -376,21 +368,19 @@ impl SphericalFormationFieldDocument {
         provenance: BuildProvenance,
         surface: Arc<SphericalSurfaceArtifact>,
         resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
-        tectonics: Arc<EvolvedTectonicArtifact>,
-        substrate: Arc<GeologicSubstrateArtifact>,
         relief_spec: Arc<ReliefSpecArtifact>,
-        primary_relief: Arc<PrimaryReliefArtifact>,
-        circulation: Arc<GlobalCirculationArtifact>,
-        formation: Arc<NaturalSurfaceFormationArtifact>,
+        formation: Arc<NaturalFormationBundleArtifact>,
         report: &BuildReport,
     ) -> Result<Self, SphericalFormationDisplayError> {
         surface.snapshot().validate()?;
         let authoritative = SurfaceRef::for_spherical(surface.snapshot());
-        tectonics
-            .snapshot()
+        let bundle = formation.bundle();
+        bundle.validate()?;
+        bundle
+            .tectonics()
             .compatibility()
             .validate_against(surface.snapshot())?;
-        let formation_snapshot = formation.snapshot();
+        let formation_snapshot = bundle.surface_formation();
         formation_snapshot.validate()?;
         if formation_snapshot.surface_ref() != authoritative {
             return Err(SphericalFormationDisplayError::FormationSurfaceMismatch {
@@ -398,25 +388,22 @@ impl SphericalFormationFieldDocument {
                 authoritative,
             });
         }
-        primary_relief
-            .snapshot()
+        bundle
+            .primary_relief()
             .validate_against_authoring(surface.snapshot(), relief_spec.spec())?;
-        substrate
-            .snapshot()
+        bundle
+            .substrate()
             .validate_against_surface(surface.snapshot())
             .map_err(PrimaryReliefValidationError::from)?;
 
-        let compatibility = tectonics.snapshot().compatibility();
+        let compatibility = bundle.tectonics().compatibility();
         let plate_count = u16::try_from(compatibility.plates().len())
             .map_err(|_| SphericalFormationDisplayError::PlateCountOverflow)?;
         let registry = spherical_formation_field_registry(
             plate_count,
             surface.snapshot().total_cell_area().get(),
         )?;
-        let cache = FormationDisplayCache::build(
-            surface.snapshot(),
-            formation_snapshot.formation_climate().fields(),
-        )?;
+        let cache = FormationDisplayCache::build(surface.snapshot(), bundle.climate().fields())?;
 
         let terrain = formation_snapshot.terrain_fields();
         let areas = surface.snapshot().cells();
@@ -440,12 +427,8 @@ impl SphericalFormationFieldDocument {
             land_area / total_area,
             terrain.sea_level_m(),
             relief_spec.spec().sea_level_policy,
-            primary_relief
-                .snapshot()
-                .water_inventory_ratio(total_area)?,
-            P4WaterEnergySummary::from_budget_report(
-                formation_snapshot.formation_climate().budget_report(),
-            ),
+            bundle.primary_relief().water_inventory_ratio(total_area)?,
+            P4WaterEnergySummary::from_budget_report(bundle.climate().budget_report()),
         );
         let elevation_display_radius_m =
             elevation_display_radius_m(terrain.sea_level_m(), terrain.current_elevation_m());
@@ -453,9 +436,6 @@ impl SphericalFormationFieldDocument {
         let document = Self {
             surface,
             resolved_tectonic,
-            tectonics,
-            substrate,
-            circulation,
             formation,
             registry,
             diagnostics: owned_view_diagnostics(report),
@@ -491,7 +471,11 @@ impl SphericalFormationFieldDocument {
 
     /// Returns the quality tier the published formation product was built at.
     pub fn quality_profile(&self) -> crate::world::natural::NaturalQualityProfile {
-        self.formation.snapshot().checkpoint().quality_profile()
+        self.formation
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .quality_profile()
     }
 
     /// Borrows the resolved tectonic input that authored this world.
@@ -499,28 +483,25 @@ impl SphericalFormationFieldDocument {
         self.resolved_tectonic.input()
     }
 
-    /// Borrows the initial P4 circulation checkpoint retained for provenance.
-    ///
-    /// Displayed climatologies come from the formation product's own
-    /// end-state circulation instead (single source of display truth).
-    pub fn initial_circulation(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
-        self.circulation.snapshot()
-    }
-
     /// Borrows the validated catalog used to prepare fill and annotation layers.
     /// Returns the evolved plate-compatibility snapshot (T1 conditioning input).
     pub fn evolved_compatibility(&self) -> &crate::world::natural::SphericalTectonicSnapshot {
-        self.tectonics.snapshot().compatibility()
+        self.formation.bundle().tectonics().compatibility()
     }
 
     /// Returns the geologic substrate snapshot (T1 erodibility source).
     pub fn substrate(&self) -> &crate::world::natural::GeologicSubstrateSnapshot {
-        self.substrate.snapshot()
+        self.formation.bundle().substrate()
     }
 
-    /// Returns the published formation snapshot (T1 terrain and climate source).
+    /// Returns the published formation snapshot (T1 terrain source).
     pub fn formation_snapshot(&self) -> &crate::world::natural::NaturalSurfaceFormationSnapshot {
-        self.formation.snapshot()
+        self.formation.bundle().surface_formation()
+    }
+
+    /// Returns the sibling endpoint P4 snapshot used by UI and T1.
+    pub fn formation_climate(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
+        self.formation.bundle().climate()
     }
 
     /// Sea level (m) and the sea-anchored hypsometric display radius (m) the
@@ -562,11 +543,13 @@ impl SphericalFormationFieldDocument {
 
 impl FieldDocument for SphericalFormationFieldDocument {
     fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
-        let compatibility = self.tectonics.snapshot().compatibility();
-        let terrain = self.formation.snapshot().terrain_fields();
+        let bundle = self.formation.bundle();
+        let compatibility = bundle.tectonics().compatibility();
+        let formation = bundle.surface_formation();
+        let terrain = formation.terrain_fields();
         let components = terrain.elevation_components();
-        let rates = self.formation.snapshot().process_rates();
-        let hydrology = self.formation.snapshot().hydrology();
+        let rates = formation.process_rates();
+        let hydrology = formation.hydrology();
         let payloads: Vec<(FieldId, FieldPayloadRef<'_>)> = vec![
             (
                 plate_id_field_id(),
@@ -687,11 +670,7 @@ impl FieldDocument for SphericalFormationFieldDocument {
             (
                 circulation_surface_albedo_field_id(),
                 FieldPayloadRef::ScalarF32(
-                    self.formation
-                        .snapshot()
-                        .formation_climate()
-                        .fields()
-                        .surface_albedo(),
+                    self.formation.bundle().climate().fields().surface_albedo(),
                 ),
             ),
             (
@@ -733,7 +712,11 @@ impl FieldDocument for SphericalFormationFieldDocument {
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
         formation_preferred_range(
             &self.registry,
-            self.formation.snapshot().terrain_fields().sea_level_m(),
+            self.formation
+                .bundle()
+                .surface_formation()
+                .terrain_fields()
+                .sea_level_m(),
             self.elevation_display_radius_m,
             field,
         )
@@ -816,6 +799,8 @@ pub enum SphericalFormationDisplayError {
     Tectonic(#[from] SphericalTectonicValidationError),
     #[error(transparent)]
     Formation(#[from] SurfaceFormationValidationError),
+    #[error(transparent)]
+    FormationBundle(#[from] NaturalFormationBundleValidationError),
     #[error(transparent)]
     PrimaryRelief(#[from] PrimaryReliefValidationError),
     #[error(transparent)]
