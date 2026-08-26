@@ -23,6 +23,12 @@ pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2: u16 = 2;
 pub const FORMATION_TERRAIN_FIELDS_SCHEMA_V3: u16 = 3;
 /// The fixed number of retained sediment-source provenance channels.
 pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
+/// Declared coarse-grained physical time consumed by one P5 map formation.
+///
+/// This product parameter is restored from the frozen P5 contract by the
+/// 2026-08-25 geologic-pipeline design amendment, section 0.1(9). It is not a
+/// claim that terrestrial geomorphology reaches equilibrium over this span.
+pub const SURFACE_FORMATION_HORIZON_YEARS: f64 = 100_000.0;
 /// Maximum number of coupled climate solves in one atomic P5 build.
 ///
 /// Raised 4 → 8 (spec amendment A1, 2026-08-21): observed trajectories

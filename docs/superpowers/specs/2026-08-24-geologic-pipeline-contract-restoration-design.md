@@ -253,6 +253,24 @@ commit `f1df994` 在本规格加入的以下要求：
     `resampling_interval_steps` 和实际状态决定，不冻结为新门禁。Cortial et al.
     (2019) 仍只支持 P2 程序构造机制；把可发布检查点限制为生产已有重采样边界是
     Sekai 实现身份约束，**不是文献给出的耦合 cadence，仍属工程类比与开放问题**。
+16. **P5 迁移前单次推进成本实测。** 2026-08-26 在 Windows x86_64、Release 档，
+    用 production constructors 组装 Draft/seed `42` 的 P2/P3/start-P4 输入后，现有
+    探针先复用生产 `evaluate_current_processes` 与高程域最大步长选择，再调用
+    `advance_geomorphic_window`；第一个稳定窗口即完整接受
+    `SURFACE_FORMATION_HORIZON_YEARS`。accepted/rejected window 为 `1/0`，步长选择
+    为 `521,030 µs`，单次 kernel 为 `517,289 µs`，完整 one-advance 为
+    `1,038,319 µs`，upstream setup 为 `15,167,975 µs`，两者合计
+    `16,206,294 µs`。证据写入
+    `target/natural-quality/p5/pre-migration-one-advance.json`，BLAKE3 为
+    `004e467f6fc95684e2379d5049afabd4014cdcae1c5c0dd9a7e64fb803824c11`；文件只含
+    聚合成本与 surface/profile/forcing 指纹，不含 terrain/history 数组。
+
+    因短前缀本身已经完整消费产品时域，本次结果同时是完整 one-advance 实测，
+    不需要第二次重复运行。它与 §0.1(5) 保留的旧外层 climate/PTC `208–1,075 s`
+    语料分开归因，不能互称同一 kernel 成本。该结果不新增时间阈值或误差包络，
+    只裁定 Tasks 7–9 继续采用最小顺序、全权威分辨率实现；目前没有性能证据授权
+    引入 predictor-corrector、近似线性解或多分辨率工作域。迁移后的最终生产成本
+    仍由后续既有 profile 性能门重新测量。
 
 ## 1. 用户裁定与问题归因
 

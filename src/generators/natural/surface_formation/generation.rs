@@ -1471,14 +1471,67 @@ pub enum SurfaceFormationGenerationError {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+    use std::time::{Duration, Instant};
+
     use super::{
-        apply_local_airy_response, sediment_stock_change_kg_per_year, ComponentState,
+        advance_geomorphic_window, apply_local_airy_response, initial_geomorphic_state,
+        sediment_stock_change_kg_per_year, ComponentState, SurfaceFormationInputs,
         FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     };
-    use crate::engine::BuildCancellation;
-    use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{ELEVATION_MAX_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3};
-    use crate::world::{Meters, SphericalSpaceSpec};
+    use crate::engine::{
+        derive_stage_seed, BuildArtifacts, BuildCancellation, Diagnostic, Stage, StageIdentity,
+        StageRng,
+    };
+    use crate::generators::natural::{
+        ClimateWorkDomainBuilder, EvolvedTectonicGenerator, EvolvedTectonicStage,
+        GeologicSubstrateGenerator, GeologicSubstrateStage, GlobalCirculationGenerator,
+        GlobalClimateForcingBuilder, NaturalQualityProfileArtifact, PrimaryReliefGenerator,
+        PrimaryReliefStage,
+    };
+    use crate::generators::spatial::{
+        GeodesicVoronoiBuilder, ProfileSurfaceBuilder, ProfileSurfaceBundle,
+    };
+    use crate::world::natural::{
+        ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, EvolvedTectonicSnapshot,
+        GeologicSpec, GeologicSubstrateSnapshot, GlobalCirculationSnapshot, HydroErosionSpec,
+        NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
+        ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+        EARTH_WATER_REFERENCE_RADIUS_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
+        FORMATION_AIRY_MANTLE_DENSITY_KG_M3, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        SURFACE_FORMATION_HORIZON_YEARS,
+    };
+    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
+
+    const PRE_MIGRATION_SEED: u64 = 42;
+
+    struct PreMigrationFixture {
+        bundle: ProfileSurfaceBundle,
+        evolved: EvolvedTectonicSnapshot,
+        substrate: GeologicSubstrateSnapshot,
+        relief: PrimaryReliefSnapshot,
+        domain: ClimateWorkDomainSnapshot,
+        climate: GlobalCirculationSnapshot,
+        climate_spec: ClimateSpec,
+        formation_spec: HydroErosionSpec,
+        setup_elapsed: Duration,
+    }
+
+    impl PreMigrationFixture {
+        fn inputs(&self) -> SurfaceFormationInputs<'_> {
+            SurfaceFormationInputs {
+                surface: self.bundle.authoritative_surface(),
+                quality_profile: NaturalQualityProfile::Draft,
+                tectonics: &self.evolved,
+                substrate: &self.substrate,
+                relief: &self.relief,
+                domain: &self.domain,
+                climate_spec: &self.climate_spec,
+                initial_climate: &self.climate,
+                formation_spec: &self.formation_spec,
+            }
+        }
+    }
 
     #[test]
     fn local_airy_uses_the_exact_component_state_at_an_f32_boundary() {
@@ -1552,5 +1605,332 @@ mod tests {
             sediment_stock_change_kg_per_year(&deposited_mass_kg, &removed_mass_kg, step_years,),
             1.5
         );
+    }
+
+    #[test]
+    #[ignore = "release-only pre-migration P5 one-advance cost probe"]
+    fn pre_migration_one_advance_records_bounded_cost_evidence() {
+        let evidence = pre_migration_one_advance_evidence();
+        let json = serde_json::to_vec_pretty(&evidence)
+            .expect("the bounded P5 probe evidence must serialize");
+        assert_no_json_arrays(&evidence);
+
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("natural-quality")
+            .join("p5");
+        assert!(output.ends_with("target/natural-quality/p5"));
+        std::fs::create_dir_all(&output).expect("the P5 evidence directory must be writable");
+        let path = output.join("pre-migration-one-advance.json");
+        std::fs::write(&path, &json).expect("the P5 one-advance evidence must be writable");
+
+        assert_eq!(
+            evidence["requested_duration_years"]
+                .as_f64()
+                .expect("requested duration is numeric")
+                .to_bits(),
+            SURFACE_FORMATION_HORIZON_YEARS.to_bits()
+        );
+        assert_eq!(evidence["prefix"]["accepted_window_count"], 1);
+        assert_eq!(evidence["prefix"]["typed_failure"], serde_json::Value::Null);
+        assert_eq!(evidence["full_horizon_observed"], true);
+        eprintln!(
+            "P5 pre-migration one-advance path={} bytes={} blake3={}",
+            path.display(),
+            json.len(),
+            blake3::hash(&json).to_hex()
+        );
+    }
+
+    fn pre_migration_one_advance_evidence() -> serde_json::Value {
+        let cancellation = BuildCancellation::new();
+        let fixture = pre_migration_fixture(&cancellation);
+        let inputs = fixture.inputs();
+        super::validate_inputs(inputs, &cancellation)
+            .expect("the production probe inputs must validate");
+        let mut candidate =
+            initial_geomorphic_state(inputs).expect("the production initial P5 state is valid");
+        let mut workspace = super::HillslopeWorkspace::default();
+        let selection_started = Instant::now();
+        let selection = super::evaluate_current_processes(
+            inputs,
+            &candidate,
+            inputs.initial_climate,
+            &mut workspace,
+            &cancellation,
+        );
+        let step_selection_micros = selection_started.elapsed().as_micros();
+        let (mut accepted_duration_years, selection_failure) = match selection {
+            Err(error) => (0.0, Some(format!("{error:?}"))),
+            Ok(current) => {
+                if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
+                    super::blocked_by_elevation_domain(
+                        candidate.terrain.current_elevation_m(),
+                        &current.process_rates,
+                    )
+                {
+                    (
+                        0.0,
+                        Some(format!(
+                            "{:?}",
+                            super::SurfaceFormationGenerationError::
+                                EquilibriumOutsideElevationDomain {
+                                    cell,
+                                    elevation_m,
+                                    net_rate_m_per_year,
+                                    boundary_m,
+                                }
+                        )),
+                    )
+                } else {
+                    let maximum = super::maximum_elevation_domain_step_years(
+                        candidate.terrain.current_elevation_m(),
+                        &current.process_rates,
+                    );
+                    let selected = SURFACE_FORMATION_HORIZON_YEARS.min(maximum);
+                    let failure = (!(selected.is_finite() && selected > 0.0))
+                        .then(|| "MeasurementReturnedInvalidPreselectedDuration".to_owned());
+                    (selected, failure)
+                }
+            }
+        };
+        let window_started = Instant::now();
+        let result = selection_failure.is_none().then(|| {
+            advance_geomorphic_window(
+                inputs,
+                &mut candidate,
+                inputs.initial_climate,
+                &mut accepted_duration_years,
+                &mut workspace,
+                &cancellation,
+            )
+        });
+        let kernel_micros = window_started.elapsed().as_micros();
+        let reached_elevation_boundary = result.as_ref().is_some_and(Result::is_ok)
+            && candidate
+                .terrain
+                .current_elevation_m()
+                .iter()
+                .any(|&value| value <= ELEVATION_MIN_M || value >= ELEVATION_MAX_M);
+        let invalid_duration = !accepted_duration_years.is_finite()
+            || accepted_duration_years <= 0.0
+            || accepted_duration_years > SURFACE_FORMATION_HORIZON_YEARS;
+        let typed_failure = match (selection_failure, result) {
+            (Some(error), _) => Some(error),
+            (None, Some(Err(error))) => Some(format!("{error:?}")),
+            (None, Some(Ok(_))) if reached_elevation_boundary => {
+                Some("MeasurementReachedElevationBoundary".to_owned())
+            }
+            (None, Some(Ok(_))) if invalid_duration => {
+                Some("MeasurementReturnedInvalidDuration".to_owned())
+            }
+            (None, Some(Ok(_))) => None,
+            (None, None) => Some("MeasurementSkippedProductionWindow".to_owned()),
+        };
+        let accepted = typed_failure.is_none();
+        let accepted_duration_years = if accepted {
+            accepted_duration_years
+        } else {
+            0.0
+        };
+        let accepted_window_count = u64::from(accepted);
+        let rejected_window_count = u64::from(!accepted);
+        let full_horizon_observed =
+            accepted_duration_years.to_bits() == SURFACE_FORMATION_HORIZON_YEARS.to_bits();
+        let estimated_window_count = accepted
+            .then(|| (SURFACE_FORMATION_HORIZON_YEARS / accepted_duration_years).ceil() as u64);
+        let accepted_window_micros = step_selection_micros
+            .checked_add(kernel_micros)
+            .expect("one observed P5 window duration fits in u128 microseconds");
+        let estimated_kernel_micros =
+            estimated_window_count.and_then(|count| kernel_micros.checked_mul(u128::from(count)));
+        let estimated_selection_micros = estimated_window_count
+            .and_then(|count| step_selection_micros.checked_mul(u128::from(count)));
+        let estimated_advance_micros = estimated_kernel_micros
+            .zip(estimated_selection_micros)
+            .and_then(|(kernel, selection)| kernel.checked_add(selection));
+        let incomplete_reason = if let Some(failure) = typed_failure.as_deref() {
+            Some(format!(
+                "one production window ended at typed failure {failure}"
+            ))
+        } else if full_horizon_observed {
+            None
+        } else {
+            Some("the one-window prefix did not consume the full formation horizon".to_owned())
+        };
+
+        serde_json::json!({
+            "schema_version": 1,
+            "machine_profile": format!(
+                "{}-{}-release",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ),
+            "seed": PRE_MIGRATION_SEED,
+            "quality_profile": NaturalQualityProfile::Draft,
+            "requested_duration_years": SURFACE_FORMATION_HORIZON_YEARS,
+            "upstream_setup_micros": fixture.setup_elapsed.as_micros(),
+            "identities": {
+                "surface_fingerprint": hex(&fixture.bundle.authoritative_surface().fingerprint()),
+                "profile_artifact_fingerprint": profile_artifact_fingerprint(
+                    NaturalQualityProfile::Draft,
+                ),
+                "forcing_fingerprint": hex(fixture.climate.checkpoint().forcing_fingerprint()),
+            },
+            "prefix": {
+                "accepted_duration_years": accepted_duration_years,
+                "accepted_window_count": accepted_window_count,
+                "rejected_window_count": rejected_window_count,
+                "wall_time_micros": accepted_window_micros,
+                "step_selection_micros": step_selection_micros,
+                "kernel_micros": kernel_micros,
+                "accepted_window_cost_summary": {
+                    "observed_window_count": accepted_window_count,
+                    "total_micros": accepted.then_some(accepted_window_micros),
+                    "minimum_micros": accepted.then_some(accepted_window_micros),
+                    "maximum_micros": accepted.then_some(accepted_window_micros),
+                    "mean_micros": accepted.then_some(accepted_window_micros as f64),
+                    "minimum_duration_years": accepted.then_some(accepted_duration_years),
+                    "maximum_duration_years": accepted.then_some(accepted_duration_years),
+                    "mean_duration_years": accepted.then_some(accepted_duration_years),
+                },
+                "completed_requested_duration": full_horizon_observed,
+                "incomplete_reason": incomplete_reason,
+                "typed_failure": typed_failure,
+            },
+            "full_cost_estimate": {
+                "basis": "linear projection from one production stable window; research evidence only, not an acceptance gate",
+                "estimated_accepted_window_count": estimated_window_count,
+                "estimated_step_selection_wall_time_micros": estimated_selection_micros,
+                "estimated_kernel_wall_time_micros": estimated_kernel_micros,
+                "estimated_advance_wall_time_micros": estimated_advance_micros,
+                "estimated_total_wall_time_micros": estimated_advance_micros
+                    .and_then(|value| value.checked_add(fixture.setup_elapsed.as_micros())),
+            },
+            "full_measurement_source": full_horizon_observed.then_some("prefix"),
+            "full_not_run_reason": (!full_horizon_observed).then_some(
+                "full repeated advance was not run because this probe retains only its mandatory one-window prefix"
+            ),
+            "full_horizon_observed": full_horizon_observed,
+        })
+    }
+
+    fn pre_migration_fixture(cancellation: &BuildCancellation) -> PreMigrationFixture {
+        let started = Instant::now();
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M)
+                .expect("the world reference radius is positive"),
+            cancellation,
+        )
+        .expect("the Draft production surface must build");
+        let formation = ResolvedWorldFormation::new(
+            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+            WorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Continents,
+        )
+        .expect("the frozen Continents formation preset must resolve");
+        let mut evolved_rng = test_stage_rng(&EvolvedTectonicStage);
+        let evolved = EvolvedTectonicGenerator::generate(
+            &bundle,
+            &TectonicSpec::default(),
+            &formation,
+            &mut evolved_rng,
+        )
+        .expect("the Draft production tectonics must build");
+        let mut substrate_rng = test_stage_rng(&GeologicSubstrateStage);
+        let substrate = GeologicSubstrateGenerator::generate(
+            bundle.authoritative_surface(),
+            &evolved,
+            &GeologicSpec::default(),
+            &formation,
+            &mut substrate_rng,
+        )
+        .expect("the Draft production substrate must build");
+        let mut relief_rng = test_stage_rng(&PrimaryReliefStage);
+        let mut diagnostics = Vec::<Diagnostic>::new();
+        let relief = PrimaryReliefGenerator::generate(
+            bundle.authoritative_surface(),
+            &evolved,
+            &substrate,
+            &ReliefSpec::default(),
+            &mut relief_rng,
+            &mut diagnostics,
+        )
+        .expect("the Draft production relief must build");
+        let domain = ClimateWorkDomainBuilder::build(
+            bundle.authoritative_surface(),
+            NaturalQualityProfile::Draft,
+            cancellation,
+        )
+        .expect("the Draft climate work domain must build");
+        let climate_spec = ClimateSpec::default();
+        let forcing = GlobalClimateForcingBuilder::build(
+            bundle.authoritative_surface(),
+            &relief,
+            &climate_spec,
+            &domain,
+            cancellation,
+        )
+        .expect("the start-climate forcing must build");
+        let climate = GlobalCirculationGenerator::generate(
+            bundle.authoritative_surface(),
+            &domain,
+            &forcing,
+            ClimateModelProfile::C2LayeredV1,
+            cancellation,
+        )
+        .expect("the Draft start climate must build");
+        PreMigrationFixture {
+            bundle,
+            evolved,
+            substrate,
+            relief,
+            domain,
+            climate,
+            climate_spec,
+            formation_spec: HydroErosionSpec::default(),
+            setup_elapsed: started.elapsed(),
+        }
+    }
+
+    fn test_stage_rng(stage: &impl Stage) -> StageRng {
+        StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(PRE_MIGRATION_SEED),
+            StageIdentity::new(stage.id().as_str(), stage.version(), stage.namespace()),
+        ))
+    }
+
+    fn profile_artifact_fingerprint(profile: NaturalQualityProfile) -> String {
+        let mut artifacts = BuildArtifacts::default();
+        artifacts
+            .insert(NaturalQualityProfileArtifact::new(profile))
+            .expect("the selected production profile artifact must validate");
+        hex(artifacts
+            .hash::<NaturalQualityProfileArtifact>()
+            .expect("the selected production profile artifact must hash")
+            .as_bytes())
+    }
+
+    fn hex(bytes: &[u8; 32]) -> String {
+        let mut encoded = String::with_capacity(64);
+        for byte in bytes {
+            write!(&mut encoded, "{byte:02x}").expect("writing into a String cannot fail");
+        }
+        encoded
+    }
+
+    fn assert_no_json_arrays(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Array(_) => {
+                panic!("the streaming cost probe must not retain terrain or history arrays")
+            }
+            serde_json::Value::Object(entries) => {
+                for child in entries.values() {
+                    assert_no_json_arrays(child);
+                }
+            }
+            _ => {}
+        }
     }
 }
