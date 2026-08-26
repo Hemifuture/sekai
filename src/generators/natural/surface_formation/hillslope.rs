@@ -335,7 +335,7 @@ impl NonlinearHillslopeTransport {
             (retained_removed_mass_kg - retained_deposited_mass_kg).abs() / retained_scale;
         if trace {
             eprintln!(
-                "[p5-hillslope] pseudo_step={step_years:.3} stable_step_max={maximum_step_years:.3} active_edges={} transported_mass={transported_mass_kg:.6e}",
+                "[p5-hillslope] physical_step={step_years:.3} stable_step_max={maximum_step_years:.3} active_edges={} transported_mass={transported_mass_kg:.6e}",
                 workspace.transfers.len(),
             );
         }

@@ -35,7 +35,7 @@ pub struct StreamPowerInputs<'a> {
     pub substrate_erodibility: &'a [f32],
 }
 
-/// Private output of one tectonic-plus-fluvial continuation update.
+/// Private output of one tectonic-plus-fluvial physical-time update.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamPowerStep {
     elevation_m: Vec<f64>,

@@ -58,9 +58,8 @@ struct FormationPerformance {
     generation_micros: u128,
     generation_limit_micros: u128,
     within_declared_limit: bool,
-    equilibrium_iterations: u16,
-    climate_solve_count: u16,
-    terminal_normalized_residual: f64,
+    accepted_surface_substeps: u32,
+    integrated_duration_years: f64,
     dense_state_bytes: u64,
     dense_state_limit_bytes: u64,
     baseline_rss_bytes: u64,
@@ -252,7 +251,7 @@ fn measure_generation(prepared: &PreparedFormation, limit: Duration) -> Formatio
     artifact.validate().unwrap();
 
     let peak_rss_bytes = peak.load(Ordering::Relaxed);
-    let report = artifact.snapshot().solve_report();
+    let report = artifact.snapshot().evolution_report();
     let evidence = FormationPerformance {
         quality_profile: prepared.quality_profile,
         authoritative_cells: surface.cells().len(),
@@ -261,9 +260,8 @@ fn measure_generation(prepared: &PreparedFormation, limit: Duration) -> Formatio
         generation_micros: generation.as_micros(),
         generation_limit_micros: limit.as_micros(),
         within_declared_limit: generation <= limit,
-        equilibrium_iterations: report.equilibrium_iterations(),
-        climate_solve_count: report.climate_solve_count(),
-        terminal_normalized_residual: report.terminal_residual().normalized_max(),
+        accepted_surface_substeps: report.accepted_surface_substeps(),
+        integrated_duration_years: report.integrated_duration_years(),
         dense_state_bytes: report.dense_state_bytes(),
         dense_state_limit_bytes: SURFACE_FORMATION_DENSE_STATE_BYTES_MAX,
         baseline_rss_bytes,
@@ -271,11 +269,11 @@ fn measure_generation(prepared: &PreparedFormation, limit: Duration) -> Formatio
         peak_rss_delta_bytes: peak_rss_bytes.saturating_sub(baseline_rss_bytes),
     };
     eprintln!(
-        "P5 {:?} generation={:?} limit={limit:?} within_limit={} iterations={} dense={} rss_delta={}",
+        "P5 {:?} generation={:?} limit={limit:?} within_limit={} substeps={} dense={} rss_delta={}",
         evidence.quality_profile,
         generation,
         evidence.within_declared_limit,
-        evidence.equilibrium_iterations,
+        evidence.accepted_surface_substeps,
         evidence.dense_state_bytes,
         evidence.peak_rss_delta_bytes
     );

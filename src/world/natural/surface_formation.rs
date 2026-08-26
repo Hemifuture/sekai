@@ -15,8 +15,8 @@ use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef};
 use crate::world::MAX_SPHERICAL_CELL_COUNT;
 
-/// Coupled formation product retaining one authoritative fractional water geometry.
-pub const NATURAL_SURFACE_FORMATION_SCHEMA_V3: u16 = 3;
+/// Finite-time formation product retaining one authoritative fractional water geometry.
+pub const NATURAL_SURFACE_FORMATION_SCHEMA_V4: u16 = 4;
 /// Current-state-only P5 checkpoint schema.
 pub const SURFACE_FORMATION_CHECKPOINT_SCHEMA_V2: u16 = 2;
 /// Retained terrain with nine causal elevation components and one water geometry.
@@ -29,25 +29,6 @@ pub const SEDIMENT_PROVENANCE_SOURCE_COUNT: usize = 5;
 /// 2026-08-25 geologic-pipeline design amendment, section 0.1(9). It is not a
 /// claim that terrestrial geomorphology reaches equilibrium over this span.
 pub const SURFACE_FORMATION_HORIZON_YEARS: f64 = 100_000.0;
-/// Maximum number of coupled climate solves in one atomic P5 build.
-///
-/// Raised 4 → 8 (spec amendment A1, 2026-08-21): observed trajectories
-/// contract geometrically with the slow mode in `log1p(discharge)`, and
-/// standard-tier worlds can need 5–7 iterations where draft sneaks in at
-/// 4 (measured seed 3945477593443907072: draft 0.96 at iteration 4,
-/// standard 1.39 and failing). Seeds converging within the old budget
-/// keep bit-identical products — the loop exits on the same iterate.
-pub const SURFACE_FORMATION_MAX_CLIMATE_SOLVES: u16 = 8;
-/// Private pseudo-transient continuation updates evaluated per climate solve.
-pub const SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE: u16 = 8;
-/// Maximum equilibrium updates in one atomic P5 build.
-pub const SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS: u16 =
-    SURFACE_FORMATION_MAX_CLIMATE_SOLVES * SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE;
-/// Successful-step growth factor for pseudo-transient continuation.
-///
-/// PETSc `TSPseudoTimeStepDefault` sets `dt_increment = 1.1` at commit
-/// `dcb28d8e36d8acfcd2d433a2c37cd7f20e0641c1` (reviewed 2026-08-24).
-pub(crate) const SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR: f64 = 1.1;
 /// Minimum precipitation fraction retained as effective P5 runoff.
 pub const FORMATION_RUNOFF_MIN_FRACTION: f64 = 0.15;
 /// Additional runoff fraction removed linearly by unit permeability.
@@ -127,17 +108,6 @@ pub const SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX: f64 = 1.0e-7;
 /// Maximum conservative dense-owner report admitted by the P5 schema.
 pub const SURFACE_FORMATION_DENSE_STATE_BYTES_MAX: u64 = 1_073_741_824;
 
-/// Maximum dimensionless current-flux residual admitted by the P5 solve.
-///
-/// This is a numerical root-finding tolerance, not a geomorphic rate or an
-/// Earth-data acceptance envelope. P5 retains its state and process fields as
-/// `f32`, so it adopts PETSc `TSPSEUDO`'s single-precision default relative
-/// function tolerance (`frtol = 1e-5`) from PETSc commit
-/// `dcb28d8e36d8acfcd2d433a2c37cd7f20e0641c1`, `posindep.c` (reviewed
-/// 2026-08-24). The residual itself is the current dimensionless flux backward
-/// error; no initial or intermediate iterate enters the product.
-pub const FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX: f64 = 1.0e-5;
-
 /// Converts published P4 mean daily rates into the single bounded monthly
 /// formation precipitation envelope every P5 process forcing is derived from.
 ///
@@ -179,10 +149,9 @@ pub fn expected_surface_formation_dense_state_bytes(
     cell_count: u32,
     edge_count: u32,
 ) -> Option<u64> {
-    /// Eight signed `f64` component accumulators.
-    const COMPONENT_ACCUMULATOR_BYTES_PER_CELL: u64 = 8 * 8;
-    /// Immutable primary relief plus the exact working retained elevation.
-    const WORKING_ELEVATION_BYTES_PER_CELL: u64 = 2 * 8;
+    /// Current and candidate exact states: primary, eight signed components,
+    /// and the rebuilt retained elevation.
+    const EXACT_ELEVATION_STATE_BYTES_PER_CELL: u64 = 2 * 10 * 8;
     /// Current and candidate exact rates for all eight formation processes.
     const EXACT_PROCESS_RATE_BYTES_PER_CELL: u64 = 2 * 8 * 8;
     /// Current state, cloned trial state, transfer candidate, zero transfer,
@@ -191,13 +160,15 @@ pub fn expected_surface_formation_dense_state_bytes(
     /// Current state, cloned trial state, and replacement exact water geometry:
     /// two `f64` cell fields plus one `u32` land/ocean field.
     const EXACT_WATER_BYTES_PER_CELL: u64 = 3 * (2 * 8 + 4);
-    /// Current state, cloned trial state, and replacement wire water geometry:
-    /// one `f32`, one `f64`, and one `u32` cell field.
-    const WIRE_WATER_BYTES_PER_CELL: u64 = 3 * (4 + 8 + 4);
-    /// Previous and candidate retained terrain: ten components, sediment
-    /// thickness, five provenance fractions, four `f64` ledgers, and the delta
+    /// The sole final wire water geometry: one `f32`, one `f64`, and one `u32`
+    /// cell field.
+    const WIRE_WATER_BYTES_PER_CELL: u64 = 4 + 8 + 4;
+    /// One retained final terrain plus one transient terminal sediment
+    /// diagnostic. Terrain owns ten `f32` components; each sediment field owns
+    /// thickness, five provenance fractions, four `f64` ledgers, and delta
     /// potential.
-    const RETAINED_TERRAIN_BYTES_PER_CELL: u64 = 2 * (10 * 4 + 4 + 5 * 4 + 4 * 8 + 4);
+    const SEDIMENT_FIELDS_BYTES_PER_CELL: u64 = 4 + 5 * 4 + 4 * 8 + 4;
+    const RETAINED_TERRAIN_BYTES_PER_CELL: u64 = 10 * 4 + 2 * SEDIMENT_FIELDS_BYTES_PER_CELL;
     /// Previous and candidate hydrology: monthly runoff and discharge, five
     /// dense `f32` fields, receiver, basin, Strahler order, and surface water.
     const HYDROLOGY_BYTES_PER_CELL: u64 = 2 * (2 * 12 * 4 + 5 * 4 + 8 + 8 + 4 + 4);
@@ -208,12 +179,10 @@ pub fn expected_surface_formation_dense_state_bytes(
     const SEDIMENT_ROUTER_BYTES_PER_CELL: u64 = 2 * 10 * 8 + 6 * 8 + 4;
     /// One requested paired transfer per authoritative edge.
     const HILLSLOPE_WORKSPACE_BYTES_PER_EDGE: u64 = 32;
-    /// Current state, cloned trial state, and replacement exact/wire wet-edge
-    /// fractions.
-    const WATER_BYTES_PER_EDGE: u64 = 3 * (8 + 4);
+    /// Three exact working wet-edge fractions plus the sole final wire field.
+    const WATER_BYTES_PER_EDGE: u64 = 3 * 8 + 4;
 
-    let per_cell = COMPONENT_ACCUMULATOR_BYTES_PER_CELL
-        + WORKING_ELEVATION_BYTES_PER_CELL
+    let per_cell = EXACT_ELEVATION_STATE_BYTES_PER_CELL
         + EXACT_PROCESS_RATE_BYTES_PER_CELL
         + EXACT_SEDIMENT_STOCK_BYTES_PER_CELL
         + EXACT_WATER_BYTES_PER_CELL
@@ -241,15 +210,15 @@ pub enum SurfaceFormationModelId {
     /// Priority-Flood + implicit stream power + paired nonlinear hillslope,
     /// Davy-Lague detachment-limited sediment continuity, coastal exchange,
     /// and local Airy isostasy.
-    PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
+    PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
 }
 
 /// Returns the canonical identity of every equation and frozen P5 constant.
 pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-equations.v5\0");
+    hasher.update(b"sekai.surface-formation-equations.v6\0");
     hasher.update(&[surface_formation_model_tag(
-        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
+        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
     )]);
     for value in [
         FORMATION_RUNOFF_MIN_FRACTION,
@@ -287,7 +256,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         CLIMATOLOGICAL_YEAR_SECONDS,
         MEAN_SOLAR_DAY_SECONDS,
         f64::from(ANNUAL_PRECIPITATION_MAX_MM),
-        FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX,
+        SURFACE_FORMATION_HORIZON_YEARS,
         SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
         SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX,
         WATER_VOLUME_RELATIVE_TOLERANCE,
@@ -299,14 +268,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     hasher.update(b"roering-paired-finite-volume-v1\0");
     hasher.update(b"davy-lague-analytic-five-source-sediment-continuity-v1\0");
     hasher.update(b"fluvial-transport:detachment-limited-v-eff-zero\0");
-    hasher.update(b"pseudo-transient-current-flux-equilibrium-v2\0");
-    hasher.update(&SURFACE_FORMATION_MAX_CLIMATE_SOLVES.to_le_bytes());
-    hasher.update(&SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE.to_le_bytes());
-    hasher.update(
-        &SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR
-            .to_bits()
-            .to_le_bytes(),
-    );
+    hasher.update(b"finite-time-held-tectonic-forcing-v1\0");
     hasher.update(b"sources:felsic,mafic,volcaniclastic,sedimentary,metamorphic\0");
     hasher.update(b"nine-causal-elevation-components-v4\0");
     hasher.update(&FORMATION_TERRAIN_FIELDS_SCHEMA_V4.to_le_bytes());
@@ -316,8 +278,8 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
 
 const fn surface_formation_model_tag(model: SurfaceFormationModelId) -> u8 {
     match model {
-        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3 => {
-            3
+        SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4 => {
+            4
         }
     }
 }
@@ -338,7 +300,7 @@ const fn surface_geometry_tag(kind: SurfaceGeometryKind) -> u8 {
     }
 }
 
-/// Exact upstream identities consumed by one P5 solve.
+/// Exact upstream identities consumed by one P5 formation build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurfaceFormationUpstreamFingerprints {
@@ -347,7 +309,7 @@ pub struct SurfaceFormationUpstreamFingerprints {
     primary_relief_fingerprint: [u8; 32],
     climate_work_domain_fingerprint: [u8; 32],
     climate_spec_fingerprint: [u8; 32],
-    initial_climate_checkpoint_fingerprint: [u8; 32],
+    formation_climate_checkpoint_fingerprint: [u8; 32],
     formation_spec_fingerprint: [u8; 32],
 }
 
@@ -359,7 +321,7 @@ struct SurfaceFormationUpstreamFingerprintsWire {
     primary_relief_fingerprint: [u8; 32],
     climate_work_domain_fingerprint: [u8; 32],
     climate_spec_fingerprint: [u8; 32],
-    initial_climate_checkpoint_fingerprint: [u8; 32],
+    formation_climate_checkpoint_fingerprint: [u8; 32],
     formation_spec_fingerprint: [u8; 32],
 }
 
@@ -371,7 +333,7 @@ impl SurfaceFormationUpstreamFingerprints {
         primary_relief_fingerprint: [u8; 32],
         climate_work_domain_fingerprint: [u8; 32],
         climate_spec_fingerprint: [u8; 32],
-        initial_climate_checkpoint_fingerprint: [u8; 32],
+        formation_climate_checkpoint_fingerprint: [u8; 32],
         formation_spec_fingerprint: [u8; 32],
     ) -> Result<Self, SurfaceFormationValidationError> {
         let fingerprints = Self {
@@ -380,7 +342,7 @@ impl SurfaceFormationUpstreamFingerprints {
             primary_relief_fingerprint,
             climate_work_domain_fingerprint,
             climate_spec_fingerprint,
-            initial_climate_checkpoint_fingerprint,
+            formation_climate_checkpoint_fingerprint,
             formation_spec_fingerprint,
         };
         fingerprints.validate()?;
@@ -407,8 +369,8 @@ impl SurfaceFormationUpstreamFingerprints {
             ),
             ("climate_spec_fingerprint", self.climate_spec_fingerprint),
             (
-                "initial_climate_checkpoint_fingerprint",
-                self.initial_climate_checkpoint_fingerprint,
+                "formation_climate_checkpoint_fingerprint",
+                self.formation_climate_checkpoint_fingerprint,
             ),
             (
                 "formation_spec_fingerprint",
@@ -428,7 +390,7 @@ impl SurfaceFormationUpstreamFingerprints {
         hasher.update(&self.primary_relief_fingerprint);
         hasher.update(&self.climate_work_domain_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
-        hasher.update(&self.initial_climate_checkpoint_fingerprint);
+        hasher.update(&self.formation_climate_checkpoint_fingerprint);
         hasher.update(&self.formation_spec_fingerprint);
     }
 
@@ -452,8 +414,8 @@ impl SurfaceFormationUpstreamFingerprints {
         &self.climate_spec_fingerprint
     }
 
-    pub const fn initial_climate_checkpoint_fingerprint(&self) -> &[u8; 32] {
-        &self.initial_climate_checkpoint_fingerprint
+    pub const fn formation_climate_checkpoint_fingerprint(&self) -> &[u8; 32] {
+        &self.formation_climate_checkpoint_fingerprint
     }
 
     pub const fn formation_spec_fingerprint(&self) -> &[u8; 32] {
@@ -473,7 +435,7 @@ impl<'de> Deserialize<'de> for SurfaceFormationUpstreamFingerprints {
             wire.primary_relief_fingerprint,
             wire.climate_work_domain_fingerprint,
             wire.climate_spec_fingerprint,
-            wire.initial_climate_checkpoint_fingerprint,
+            wire.formation_climate_checkpoint_fingerprint,
             wire.formation_spec_fingerprint,
         )
         .map_err(D::Error::custom)
@@ -519,7 +481,7 @@ impl SurfaceFormationCheckpoint {
             surface_ref,
             quality_profile,
             model:
-                SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3,
+                SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
             model_fingerprint: surface_formation_model_fingerprint(),
             upstream,
             state_fingerprint,
@@ -559,7 +521,7 @@ impl SurfaceFormationCheckpoint {
         }
         self.upstream.validate()?;
         if self.model
-            != SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyEquilibriumV3
+            != SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4
             || self.model_fingerprint != surface_formation_model_fingerprint()
         {
             return Err(SurfaceFormationValidationError::ModelIdentityMismatch);
@@ -1784,13 +1746,6 @@ impl FormationResiduals {
         Ok(())
     }
 
-    pub fn normalized_max(&self) -> f64 {
-        self.mean_elevation_flux_balance_ratio()
-            .max(self.rms_relief_flux_balance_ratio())
-            .max(self.sediment_stock_change_ratio)
-            / FORMATION_EQUILIBRIUM_RELATIVE_RESIDUAL_MAX
-    }
-
     /// Area-weighted local disequilibrium retained as a diagnostic.
     ///
     /// Quasi-steady landscapes can keep simultaneous local erosion and
@@ -1870,68 +1825,59 @@ impl<'de> Deserialize<'de> for FormationResiduals {
     }
 }
 
-/// Bounded work and terminal convergence evidence for the current P5 state.
+/// Finite physical-time work and current-rate evidence for one P5 state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct FormationSolveReport {
-    equilibrium_iterations: u16,
-    climate_solve_count: u16,
-    terminal_residual: FormationResiduals,
-    converged: bool,
+pub struct FormationEvolutionReport {
+    accepted_surface_substeps: u32,
+    integrated_duration_years: f64,
+    current_rates: FormationResiduals,
     dense_state_bytes: u64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FormationSolveReportWire {
-    equilibrium_iterations: u16,
-    climate_solve_count: u16,
-    terminal_residual: FormationResiduals,
-    converged: bool,
+struct FormationEvolutionReportWire {
+    accepted_surface_substeps: u32,
+    integrated_duration_years: f64,
+    current_rates: FormationResiduals,
     dense_state_bytes: u64,
 }
 
-impl FormationSolveReport {
+impl FormationEvolutionReport {
+    /// Creates validated work and current-rate evidence for a complete P5 horizon.
     pub fn new(
-        equilibrium_iterations: u16,
-        climate_solve_count: u16,
-        terminal_residual: FormationResiduals,
+        accepted_surface_substeps: u32,
+        integrated_duration_years: f64,
+        current_rates: FormationResiduals,
         dense_state_bytes: u64,
     ) -> Result<Self, SurfaceFormationValidationError> {
-        let converged = terminal_residual.normalized_max() <= 1.0;
         let report = Self {
-            equilibrium_iterations,
-            climate_solve_count,
-            terminal_residual,
-            converged,
+            accepted_surface_substeps,
+            integrated_duration_years,
+            current_rates,
             dense_state_bytes,
         };
         report.validate()?;
         Ok(report)
     }
 
+    /// Validates duration, work count, rates, and dense-memory bounds.
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.equilibrium_iterations > SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS {
+        if self.accepted_surface_substeps == 0 {
             return Err(
-                SurfaceFormationValidationError::InvalidEquilibriumIterations {
-                    found: self.equilibrium_iterations,
-                    maximum: SURFACE_FORMATION_MAX_EQUILIBRIUM_ITERATIONS,
+                SurfaceFormationValidationError::InvalidAcceptedSurfaceSubsteps {
+                    found: self.accepted_surface_substeps,
                 },
             );
         }
-        if !(1..=SURFACE_FORMATION_MAX_CLIMATE_SOLVES).contains(&self.climate_solve_count) {
-            return Err(SurfaceFormationValidationError::InvalidClimateSolveCount {
-                found: self.climate_solve_count,
-                maximum: SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
+        if self.integrated_duration_years.to_bits() != SURFACE_FORMATION_HORIZON_YEARS.to_bits() {
+            return Err(SurfaceFormationValidationError::InvalidIntegratedDuration {
+                found: self.integrated_duration_years,
+                expected: SURFACE_FORMATION_HORIZON_YEARS,
             });
         }
-        self.terminal_residual.validate()?;
-        let expected_converged = self.terminal_residual.normalized_max() <= 1.0;
-        if self.converged != expected_converged || !self.converged {
-            return Err(SurfaceFormationValidationError::FormationNotConverged {
-                normalized_residual: self.terminal_residual.normalized_max(),
-            });
-        }
+        self.current_rates.validate()?;
         if self.dense_state_bytes == 0
             || self.dense_state_bytes > SURFACE_FORMATION_DENSE_STATE_BYTES_MAX
         {
@@ -1943,48 +1889,40 @@ impl FormationSolveReport {
         Ok(())
     }
 
-    pub const fn equilibrium_iterations(&self) -> u16 {
-        self.equilibrium_iterations
+    /// Returns the number of accepted stable surface substeps.
+    pub const fn accepted_surface_substeps(&self) -> u32 {
+        self.accepted_surface_substeps
     }
 
-    pub const fn climate_solve_count(&self) -> u16 {
-        self.climate_solve_count
+    /// Returns the exact finite P5 duration integrated in years.
+    pub const fn integrated_duration_years(&self) -> f64 {
+        self.integrated_duration_years
     }
 
-    pub const fn terminal_residual(&self) -> &FormationResiduals {
-        &self.terminal_residual
+    /// Returns named endpoint process-rate diagnostics.
+    pub const fn current_rates(&self) -> &FormationResiduals {
+        &self.current_rates
     }
 
-    pub const fn converged(&self) -> bool {
-        self.converged
-    }
-
+    /// Returns the conservative dense-memory inventory in bytes.
     pub const fn dense_state_bytes(&self) -> u64 {
         self.dense_state_bytes
     }
 }
 
-impl<'de> Deserialize<'de> for FormationSolveReport {
+impl<'de> Deserialize<'de> for FormationEvolutionReport {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let wire = FormationSolveReportWire::deserialize(deserializer)?;
-        let report = Self::new(
-            wire.equilibrium_iterations,
-            wire.climate_solve_count,
-            wire.terminal_residual,
+        let wire = FormationEvolutionReportWire::deserialize(deserializer)?;
+        Self::new(
+            wire.accepted_surface_substeps,
+            wire.integrated_duration_years,
+            wire.current_rates,
             wire.dense_state_bytes,
         )
-        .map_err(D::Error::custom)?;
-        if report.converged != wire.converged {
-            return Err(D::Error::custom(
-                SurfaceFormationValidationError::SolveWorkMismatch {
-                    field: "derived_report_fields",
-                },
-            ));
-        }
-        Ok(report)
+        .map_err(D::Error::custom)
     }
 }
 
@@ -2214,7 +2152,7 @@ impl<'de> Deserialize<'de> for SedimentBudgetReport {
                 != wire.provenance_relative_errors.map(f64::to_bits)
         {
             return Err(D::Error::custom(
-                SurfaceFormationValidationError::SolveWorkMismatch {
+                SurfaceFormationValidationError::DerivedFieldMismatch {
                     field: "derived_sediment_budget_errors",
                 },
             ));
@@ -2228,10 +2166,9 @@ pub fn surface_formation_state_fingerprint(
     terrain_fields: &FormationTerrainFields,
     process_rates: &FormationProcessRates,
     hydrology: &SphericalHydrologySnapshot,
-    formation_climate: &GlobalCirculationSnapshot,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-state.v2\0");
+    hasher.update(b"sekai.surface-formation-state.v3\0");
     hasher.update(&terrain_fields.fingerprint());
     hasher.update(b"process-rates-json-v1\0");
     serde_json::to_writer(Blake3Writer(&mut hasher), process_rates)
@@ -2239,8 +2176,6 @@ pub fn surface_formation_state_fingerprint(
     hasher.update(b"hydrology-json-v2\0");
     serde_json::to_writer(Blake3Writer(&mut hasher), hydrology)
         .expect("validated hydrology always serializes to canonical JSON");
-    hasher.update(b"formation-climate-checkpoint\0");
-    hasher.update(formation_climate.checkpoint().fingerprint());
     *hasher.finalize().as_bytes()
 }
 
@@ -2255,7 +2190,7 @@ pub struct NaturalSurfaceFormationSnapshot {
     process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
     formation_climate: GlobalCirculationSnapshot,
-    solve_report: FormationSolveReport,
+    evolution_report: FormationEvolutionReport,
     sediment_budget_report: SedimentBudgetReport,
     capabilities: SurfaceFormationCapabilitySet,
 }
@@ -2270,7 +2205,7 @@ struct NaturalSurfaceFormationSnapshotWire {
     process_rates: FormationProcessRates,
     hydrology: SphericalHydrologySnapshot,
     formation_climate: GlobalCirculationSnapshot,
-    solve_report: FormationSolveReport,
+    evolution_report: FormationEvolutionReport,
     sediment_budget_report: SedimentBudgetReport,
     capabilities: SurfaceFormationCapabilitySet,
 }
@@ -2285,7 +2220,7 @@ impl NaturalSurfaceFormationSnapshot {
         process_rates: FormationProcessRates,
         hydrology: SphericalHydrologySnapshot,
         formation_climate: GlobalCirculationSnapshot,
-        solve_report: FormationSolveReport,
+        evolution_report: FormationEvolutionReport,
         sediment_budget_report: SedimentBudgetReport,
         capabilities: SurfaceFormationCapabilitySet,
     ) -> Result<Self, SurfaceFormationValidationError> {
@@ -2297,7 +2232,7 @@ impl NaturalSurfaceFormationSnapshot {
             process_rates,
             hydrology,
             formation_climate,
-            solve_report,
+            evolution_report,
             sediment_budget_report,
             capabilities,
         };
@@ -2306,11 +2241,11 @@ impl NaturalSurfaceFormationSnapshot {
     }
 
     pub fn validate(&self) -> Result<(), SurfaceFormationValidationError> {
-        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V3 {
+        if self.schema_version != NATURAL_SURFACE_FORMATION_SCHEMA_V4 {
             return Err(SurfaceFormationValidationError::UnsupportedSchema {
                 object: "natural_surface_formation_snapshot",
                 found: self.schema_version,
-                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+                supported: NATURAL_SURFACE_FORMATION_SCHEMA_V4,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2339,17 +2274,17 @@ impl NaturalSurfaceFormationSnapshot {
                 reason: error.to_string(),
             }
         })?;
-        self.solve_report.validate()?;
+        self.evolution_report.validate()?;
         self.sediment_budget_report.validate()?;
         self.capabilities.validate()?;
 
-        let residual = self.solve_report.terminal_residual();
+        let residual = self.evolution_report.current_rates();
         let expected_stock_ratio = formation_relative_flux_imbalance(
             residual.sediment_stock_change_kg_per_year().abs(),
             self.sediment_budget_report.produced_mass_kg_per_year(),
         );
         if residual.sediment_stock_change_ratio().to_bits() != expected_stock_ratio.to_bits() {
-            return Err(SurfaceFormationValidationError::SolveWorkMismatch {
+            return Err(SurfaceFormationValidationError::DerivedFieldMismatch {
                 field: "sediment_stock_change_ratio",
             });
         }
@@ -2358,6 +2293,18 @@ impl NaturalSurfaceFormationSnapshot {
             return Err(
                 SurfaceFormationValidationError::CheckpointIdentityMismatch {
                     field: "surface_ref",
+                },
+            );
+        }
+        if self
+            .checkpoint
+            .upstream()
+            .formation_climate_checkpoint_fingerprint()
+            != self.formation_climate.checkpoint().fingerprint()
+        {
+            return Err(
+                SurfaceFormationValidationError::CheckpointIdentityMismatch {
+                    field: "formation_climate_checkpoint_fingerprint",
                 },
             );
         }
@@ -2402,7 +2349,6 @@ impl NaturalSurfaceFormationSnapshot {
             &self.terrain_fields,
             &self.process_rates,
             &self.hydrology,
-            &self.formation_climate,
         );
         if self.checkpoint.state_fingerprint() != &expected_state {
             return Err(SurfaceFormationValidationError::StateFingerprintMismatch);
@@ -2488,8 +2434,8 @@ impl NaturalSurfaceFormationSnapshot {
         &self.formation_climate
     }
 
-    pub const fn solve_report(&self) -> &FormationSolveReport {
-        &self.solve_report
+    pub const fn evolution_report(&self) -> &FormationEvolutionReport {
+        &self.evolution_report
     }
 
     pub const fn sediment_budget_report(&self) -> &SedimentBudgetReport {
@@ -2515,7 +2461,7 @@ impl<'de> Deserialize<'de> for NaturalSurfaceFormationSnapshot {
             wire.process_rates,
             wire.hydrology,
             wire.formation_climate,
-            wire.solve_report,
+            wire.evolution_report,
             wire.sediment_budget_report,
             wire.capabilities,
         )
@@ -2586,22 +2532,18 @@ pub enum SurfaceFormationValidationError {
     CheckpointFingerprintMismatch,
     #[error("surface-formation model identity does not match the locked P5 equation")]
     ModelIdentityMismatch,
-    #[error("equilibrium iteration count {found} is outside 1..={maximum}")]
-    InvalidEquilibriumIterations { found: u16, maximum: u16 },
-    #[error("climate solve count {found} is outside 1..={maximum}")]
-    InvalidClimateSolveCount { found: u16, maximum: u16 },
+    #[error("accepted surface substep count must be positive, found {found}")]
+    InvalidAcceptedSurfaceSubsteps { found: u32 },
+    #[error("integrated surface duration is {found} years; expected {expected}")]
+    InvalidIntegratedDuration { found: f64, expected: f64 },
     #[error("checkpoint identity field {field} does not match authoritative input")]
     CheckpointIdentityMismatch { field: &'static str },
     #[error("capability inventory has {found} entries, expected {expected}")]
     CapabilityInventoryMismatch { found: usize, expected: usize },
     #[error("capability inventory is not canonical at index {index}")]
     NonCanonicalCapability { index: usize },
-    #[error("formation solve report is inconsistent in {field}")]
-    SolveWorkMismatch { field: &'static str },
-    #[error(
-        "formation fixed point did not converge; normalized residual is {normalized_residual}"
-    )]
-    FormationNotConverged { normalized_residual: f64 },
+    #[error("surface-formation derived field is inconsistent in {field}")]
+    DerivedFieldMismatch { field: &'static str },
     #[error("dense state report is {found} bytes, expected 1..={maximum}")]
     InvalidDenseStateBytes { found: u64, maximum: u64 },
     #[error("sediment {field} ledger residual {relative_error} exceeds {maximum}")]

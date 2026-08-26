@@ -13,8 +13,8 @@ use crate::world::natural::{
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use crate::world::CellId;
 
-const METRIC_NAMESPACE: &str = "sekai.surface-formation-v1";
-const METRIC_VERSION: u16 = 1;
+const METRIC_NAMESPACE: &str = "sekai.surface-formation-v2";
+const METRIC_VERSION: u16 = 2;
 const CANCELLATION_POLL_MASK: usize = 255;
 const CENTIMETERS_PER_METER: f64 = 100.0;
 
@@ -48,10 +48,9 @@ const HYPSOMETRY_ENVELOPE: [(&str, Option<f64>, Option<f64>); 8] = [
 ];
 
 /// Every per-world metric name in report (alphabetical) order.
-const EXPECTED_METRIC_NAMES: [&str; 22] = [
+const EXPECTED_METRIC_NAMES: [&str; 21] = [
     "component-identity-mismatch-count",
     "deposited-sediment-enrichment-ratio",
-    "equilibrium-current-flux-residual",
     "final-land-fraction-absolute-change",
     "fluvial-incision-support-enrichment-ratio",
     "land-area-share-below-100m",
@@ -76,7 +75,7 @@ const EXPECTED_METRIC_NAMES: [&str; 22] = [
 /// Returns the locked per-profile bounds in the canonical metric order; the
 /// hypsometric measurements are unbounded per world (see
 /// [`HYPSOMETRY_ENVELOPE`]).
-fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 22] {
+fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 21] {
     let strahler_min = match profile {
         NaturalQualityProfile::Draft => 3.0,
         NaturalQualityProfile::Standard | NaturalQualityProfile::High => 4.0,
@@ -84,7 +83,6 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
     [
         (None, Some(0.0)),
         (Some(1.25), None),
-        (None, Some(1.0)),
         (None, Some(0.03)),
         (Some(1.50), None),
         (None, None),
@@ -109,7 +107,7 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
 
 /// Looks one locked per-world bound pair up by metric name.
 fn locked_bounds(
-    bounds: &[(Option<f64>, Option<f64>); 22],
+    bounds: &[(Option<f64>, Option<f64>); 21],
     name: &str,
 ) -> (Option<f64>, Option<f64>) {
     let position = EXPECTED_METRIC_NAMES
@@ -197,13 +195,6 @@ fn evaluate_impl(
         metric_id(name)?,
         state.deposited_sediment_enrichment(),
         minimum(name),
-    )?;
-    let name = "equilibrium-current-flux-residual";
-    builder.record_at_most(
-        metric_id(name)?,
-        snapshot.solve_report().terminal_residual().normalized_max(),
-        u32::from(snapshot.solve_report().climate_solve_count()),
-        maximum(name),
     )?;
     let name = "final-land-fraction-absolute-change";
     builder.record_at_most(

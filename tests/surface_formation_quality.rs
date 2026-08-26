@@ -9,12 +9,12 @@ use sekai::generators::natural::{
     QualityBuildError,
 };
 use sekai::world::natural::{
-    surface_formation_state_fingerprint, FormationElevationComponents, FormationProcessRates,
-    FormationResiduals, FormationSedimentFields, FormationSolveReport, FormationTerrainFields,
+    surface_formation_state_fingerprint, FormationElevationComponents, FormationEvolutionReport,
+    FormationProcessRates, FormationResiduals, FormationSedimentFields, FormationTerrainFields,
     HydroErosionSpec, NaturalQualityProfile, NaturalSurfaceFormationSnapshot, ReliefSpec,
     SedimentBudgetReport, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
-    NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+    NATURAL_SURFACE_FORMATION_SCHEMA_V4, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::SurfaceRef;
 use sekai::world::RootSeed;
@@ -48,9 +48,7 @@ fn zero_process_rates(count: usize) -> FormationProcessRates {
     .unwrap()
 }
 
-/// Minimal non-production snapshot used only to exercise evaluator failures
-/// while the default absolute-steady-state product is correctly unavailable.
-/// It is never treated as evidence that P5 generation succeeds.
+/// Minimal non-production snapshot used only to exercise evaluator failures.
 fn synthetic_formation() -> &'static NaturalSurfaceFormationSnapshot {
     static SNAPSHOT: OnceLock<NaturalSurfaceFormationSnapshot> = OnceLock::new();
     SNAPSHOT.get_or_init(|| {
@@ -90,28 +88,34 @@ fn synthetic_formation() -> &'static NaturalSurfaceFormationSnapshot {
         .unwrap();
         let climate = fixture.initial_climate.clone();
         let state_fingerprint =
-            surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology, &climate);
+            surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology);
         let checkpoint = SurfaceFormationCheckpoint::new(
             SurfaceRef::for_spherical(surface),
             NaturalQualityProfile::Draft,
             SurfaceFormationUpstreamFingerprints::new(
-                [1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [7; 32],
+                [1; 32],
+                [2; 32],
+                [3; 32],
+                [4; 32],
+                [5; 32],
+                *climate.checkpoint().fingerprint(),
+                [7; 32],
             )
             .unwrap(),
             state_fingerprint,
         )
         .unwrap();
         NaturalSurfaceFormationSnapshot::new(
-            NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+            NATURAL_SURFACE_FORMATION_SCHEMA_V4,
             SurfaceRef::for_spherical(surface),
             checkpoint,
             terrain,
             process_rates,
             hydrology,
             climate,
-            FormationSolveReport::new(
-                8,
+            FormationEvolutionReport::new(
                 1,
+                SURFACE_FORMATION_HORIZON_YEARS,
                 FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
                 8_192,
             )

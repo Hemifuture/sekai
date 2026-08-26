@@ -191,9 +191,15 @@ impl CoastalExchange {
                 .get(land)
                 .expect("validated source field covers every cell")
                 .raw() as usize;
-            let sediment_erosion_m = retained_erosion_m.min(sediment_thickness_m);
-            let sediment_mass_kg =
-                sediment_erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+            let (sediment_erosion_m, sediment_mass_kg) =
+                if retained_erosion_m >= sediment_thickness_m {
+                    (sediment_thickness_m, sediment_stock_kg)
+                } else {
+                    (
+                        retained_erosion_m,
+                        retained_erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+                    )
+                };
             sediment_stock_removed_by_source_kg[land] =
                 split_mass_by_weights(sediment_mass_kg, inputs.sediment_mass_by_source_kg[land]);
             removed_by_source_kg[land] = sediment_stock_removed_by_source_kg[land];

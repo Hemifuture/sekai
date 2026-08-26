@@ -21,17 +21,16 @@ use crate::world::natural::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
     formation_elevation_from_components, formation_relative_flux_imbalance,
     surface_formation_state_fingerprint, ClimateSpec, ClimateWorkDomainSnapshot,
-    EvolvedTectonicSnapshot, FormationProcessRates, FormationResiduals, FormationSedimentFields,
-    FormationSolveReport, FormationTerrainFields, GeologicSubstrateSnapshot,
+    EvolvedTectonicSnapshot, FormationEvolutionReport, FormationProcessRates, FormationResiduals,
+    FormationSedimentFields, FormationTerrainFields, GeologicSubstrateSnapshot,
     GlobalCirculationSnapshot, HydroErosionSpec, NaturalQualityProfile,
     NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, SedimentBudgetReport,
     SphericalHydrologySnapshot, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError, WaterVolumeSolveError,
     ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
-    FORMATION_TERRAIN_FIELDS_SCHEMA_V4, NATURAL_SURFACE_FORMATION_SCHEMA_V3,
-    SEDIMENT_PROVENANCE_SOURCE_COUNT, SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR,
-    SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE, SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
+    NATURAL_SURFACE_FORMATION_SCHEMA_V4, SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    SURFACE_FORMATION_HORIZON_YEARS,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError};
 use crate::world::CellId;
@@ -39,7 +38,7 @@ use crate::world::CellId;
 const CANCELLATION_POLL_MASK: usize = 255;
 const FINGERPRINT_POLL_BYTES: usize = 64 * 1024;
 
-/// Complete authoritative input set of one coupled formation solve.
+/// Complete authoritative input set of one finite-time formation build.
 #[derive(Debug, Clone, Copy)]
 pub struct SurfaceFormationInputs<'a> {
     pub surface: &'a SphericalSurfaceSnapshot,
@@ -53,42 +52,18 @@ pub struct SurfaceFormationInputs<'a> {
     pub formation_spec: &'a HydroErosionSpec,
 }
 
-/// Bounded current-state climate and geomorphic equilibrium solve.
+/// Finite-time surface formation followed by one endpoint climate closure.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SurfaceFormationGenerator;
 
 impl SurfaceFormationGenerator {
-    /// Runs the locked P5 solve and publishes one atomic formation product.
+    /// Advances P5 over its declared horizon and publishes one atomic final state.
     pub fn generate(
         inputs: SurfaceFormationInputs<'_>,
         cancellation: &BuildCancellation,
     ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
-        Self::generate_with_climate_solve_limit(
-            inputs,
-            SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
-            cancellation,
-        )
-    }
-
-    /// Same solve with a reduced climate-solve budget.
-    ///
-    /// The budget can only be lowered, never raised past the locked maximum, so
-    /// a caller can only make the equilibrium solve fail: a non-converged candidate is
-    /// still never published.
-    pub fn generate_with_climate_solve_limit(
-        inputs: SurfaceFormationInputs<'_>,
-        climate_solve_limit: u16,
-        cancellation: &BuildCancellation,
-    ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
-        if climate_solve_limit == 0 || climate_solve_limit > SURFACE_FORMATION_MAX_CLIMATE_SOLVES {
-            return Err(SurfaceFormationGenerationError::InvalidIterationLimit {
-                found: climate_solve_limit,
-                maximum: SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
-            });
-        }
         let surface = inputs.surface;
         let surface_ref = validate_inputs(inputs, cancellation)?;
-        let upstream = upstream_fingerprints(inputs, cancellation)?;
         let areas = cell_areas(surface, cancellation)?;
         let total_area_m2 = areas.iter().sum::<f64>();
         let dense_state_bytes = expected_surface_formation_dense_state_bytes(
@@ -96,142 +71,132 @@ impl SurfaceFormationGenerator {
             surface.edges().len() as u32,
         )
         .ok_or(SurfaceFormationGenerationError::AllocationOverflow)?;
-
-        let mut climate = inputs.initial_climate.clone();
-        let mut state = initial_geomorphic_state(inputs)?;
-        let mut workspace = HillslopeWorkspace::default();
-        let mut climate_solve_count = 0_u16;
-        let mut equilibrium_iterations = 0_u16;
-        let mut terminal_residual = None;
-        let mut continuation_step_years = f64::INFINITY;
-
-        for _ in 0..climate_solve_limit {
-            check_cancelled(cancellation)?;
-            let mut solved = solve_geomorphic(
-                inputs,
-                &mut state,
-                &climate,
-                &areas,
-                total_area_m2,
-                &mut continuation_step_years,
-                &mut workspace,
-                cancellation,
-            )?;
-            let candidate_climate = {
-                let forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
-                    surface,
-                    &solved.terrain,
-                    inputs.climate_spec,
-                    inputs.domain,
-                    cancellation,
-                )?;
-                GlobalCirculationGenerator::generate(
-                    surface,
-                    inputs.domain,
-                    &forcing,
-                    inputs.initial_climate.profile(),
-                    cancellation,
-                )?
-            };
-            let candidate_hydrology = FormationHydrologyGenerator::generate_from_validated_exact(
-                surface,
-                state.components.current_elevation_exact_m(),
-                state.components.surface_water_geometry().land_ocean(),
-                inputs.substrate,
-                &candidate_climate,
-                inputs.formation_spec,
-                cancellation,
-            )?;
-            let current_processes = evaluate_current_processes(
-                inputs,
-                &state,
-                &candidate_climate,
-                &mut workspace,
-                cancellation,
-            )?;
-            solved.process_rates = current_processes.process_rates;
-            solved.budget = current_processes.budget;
-            solved.sediment_stock_change_kg_per_year =
-                current_processes.sediment_stock_change_kg_per_year;
-            equilibrium_iterations += solved.accepted_continuation_steps;
-            let residual = current_state_residuals(
-                &areas,
-                total_area_m2,
-                state.components.current_elevation_exact_m(),
-                &solved.process_rates,
-                solved.sediment_stock_change_kg_per_year,
-                solved.budget.produced_mass_kg_per_year(),
-                cancellation,
-            )?;
-            climate_solve_count += 1;
-            terminal_residual = Some(residual);
-            if std::env::var_os("SEKAI_P5_TRACE").is_some() {
-                eprintln!(
-                    "[p5-equilibrium] climate_solve {} pseudo_step {:.3} net_rms {:.9} m/yr gross_rms {:.9} m/yr local_imbalance {:.9} mean_rate {:.9} m/yr mean_balance {:.9} relief_rate {:.9} m/yr relief_balance {:.9} sediment_stock_change {:.6e} kg/yr sediment_stock_ratio {:.9} -> normalized_max {:.4}",
-                    climate_solve_count,
-                    continuation_step_years,
-                    residual.net_surface_rate_rms_m_per_year(),
-                    residual.gross_surface_rate_rms_m_per_year(),
-                    residual.local_surface_flux_imbalance_ratio(),
-                    residual.mean_elevation_rate_m_per_year(),
-                    residual.mean_elevation_flux_balance_ratio(),
-                    residual.rms_relief_rate_m_per_year(),
-                    residual.rms_relief_flux_balance_ratio(),
-                    residual.sediment_stock_change_kg_per_year(),
-                    residual.sediment_stock_change_ratio(),
-                    residual.normalized_max()
-                );
-                trace_current_state(
-                    inputs.surface,
-                    inputs.substrate,
-                    &areas,
-                    total_area_m2,
-                    &solved,
-                    &candidate_hydrology,
-                    &candidate_climate,
-                    inputs.tectonics,
-                    residual.net_surface_rate_rms_m_per_year(),
-                );
-            }
-            if residual.normalized_max() <= 1.0 {
-                return publish(
-                    surface,
-                    surface_ref,
-                    inputs.quality_profile,
-                    upstream,
-                    solved,
-                    candidate_hydrology,
-                    candidate_climate,
-                    equilibrium_iterations,
-                    climate_solve_count,
-                    residual,
-                    dense_state_bytes,
-                    cancellation,
-                );
-            }
-            climate = candidate_climate;
-        }
-
-        let terminal_residual =
-            terminal_residual.expect("the validated budget runs at least one climate solve");
-        Err(SurfaceFormationGenerationError::NotConverged {
-            climate_solve_count,
-            terminal_residual,
-        })
+        let mut state = initial_formation_state(inputs)?;
+        let start_process_inputs =
+            SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate);
+        let advance_report = advance_surface_processes(
+            &mut state,
+            start_process_inputs,
+            SURFACE_FORMATION_HORIZON_YEARS,
+            cancellation,
+        )?;
+        let accepted_surface_substeps = advance_report.accepted_surface_substeps();
+        let accepted_duration_years = advance_report.accepted_duration_years();
+        let final_terrain = state.project_final_terrain(
+            surface,
+            advance_report.final_sediment_fields,
+            cancellation,
+        )?;
+        let forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
+            surface,
+            &final_terrain,
+            inputs.climate_spec,
+            inputs.domain,
+            cancellation,
+        )?;
+        let endpoint_climate = GlobalCirculationGenerator::generate(
+            surface,
+            inputs.domain,
+            &forcing,
+            inputs.initial_climate.profile(),
+            cancellation,
+        )?;
+        let terminal_diagnostics = recompute_surface_diagnostics(
+            &state,
+            SurfaceProcessInputs::from_generation(inputs, &endpoint_climate),
+            cancellation,
+        )?;
+        let current_rates = current_state_residuals(
+            &areas,
+            total_area_m2,
+            state.current_elevation_exact_m(),
+            &terminal_diagnostics.process_rates,
+            terminal_diagnostics.sediment_stock_change_kg_per_year,
+            terminal_diagnostics.budget.produced_mass_kg_per_year(),
+            cancellation,
+        )?;
+        let evolution_report = FormationEvolutionReport::new(
+            accepted_surface_substeps,
+            accepted_duration_years,
+            current_rates,
+            dense_state_bytes,
+        )?;
+        let upstream = upstream_fingerprints(inputs, &endpoint_climate, cancellation)?;
+        finalize_surface_formation(
+            state,
+            final_terrain,
+            surface,
+            surface_ref,
+            inputs.quality_profile,
+            endpoint_climate,
+            upstream,
+            terminal_diagnostics,
+            evolution_report,
+            cancellation,
+        )
     }
 }
 
-/// Terrain, sediment ledger, and current flux budget of one geomorphic solve.
-struct GeomorphicSolve {
-    terrain: FormationTerrainFields,
+#[derive(Debug, Clone, Copy)]
+/// Borrowed physical inputs held fixed during one P5 advance window.
+pub(in crate::generators::natural) struct SurfaceProcessInputs<'a> {
+    pub surface: &'a SphericalSurfaceSnapshot,
+    pub tectonics: &'a EvolvedTectonicSnapshot,
+    pub substrate: &'a GeologicSubstrateSnapshot,
+    pub climate: &'a GlobalCirculationSnapshot,
+    pub formation_spec: &'a HydroErosionSpec,
+    pub water_inventory_m3: f64,
+}
+
+impl<'a> SurfaceProcessInputs<'a> {
+    fn from_generation(
+        inputs: SurfaceFormationInputs<'a>,
+        climate: &'a GlobalCirculationSnapshot,
+    ) -> Self {
+        Self {
+            surface: inputs.surface,
+            tectonics: inputs.tectonics,
+            substrate: inputs.substrate,
+            climate,
+            formation_spec: inputs.formation_spec,
+            water_inventory_m3: inputs.relief.water_inventory_m3(),
+        }
+    }
+}
+
+/// Private work report returned after a complete finite-time P5 advance.
+#[derive(Debug)]
+pub(in crate::generators::natural) struct SurfaceAdvanceReport {
+    accepted_surface_substeps: u32,
+    accepted_duration_years: f64,
+    final_sediment_fields: FormationSedimentFields,
+}
+
+impl SurfaceAdvanceReport {
+    /// Returns the number of accepted stable surface substeps.
+    pub(in crate::generators::natural) const fn accepted_surface_substeps(&self) -> u32 {
+        self.accepted_surface_substeps
+    }
+
+    /// Returns the exact physical duration consumed by this advance.
+    pub(in crate::generators::natural) const fn accepted_duration_years(&self) -> f64 {
+        self.accepted_duration_years
+    }
+}
+
+/// Endpoint hydrology, rates, and sediment budget evaluated without advancing time.
+#[derive(Debug)]
+pub(in crate::generators::natural) struct TerminalSurfaceDiagnostics {
     process_rates: ExactFormationProcessRates,
+    hydrology: SphericalHydrologySnapshot,
     budget: SedimentBudgetReport,
     sediment_stock_change_kg_per_year: f64,
-    accepted_continuation_steps: u16,
 }
 
 struct CurrentProcessEvaluation {
     process_rates: ExactFormationProcessRates,
+    hydrology: SphericalHydrologySnapshot,
+    sediment_fields: FormationSedimentFields,
     budget: SedimentBudgetReport,
     sediment_stock_change_kg_per_year: f64,
 }
@@ -424,13 +389,6 @@ impl ExactFormationProcessRates {
     }
 }
 
-/// Complete mutable state at one accepted continuation iterate.
-#[derive(Clone)]
-struct GeomorphicState {
-    components: FormationState,
-    terrain: FormationTerrainFields,
-}
-
 struct FluvialCoverRemoval {
     removed_stock_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
@@ -452,8 +410,14 @@ fn remove_fluvial_sediment_cover(
         let area_m2 = surface.cells()[index].area.get();
         let stock_mass_kg = sediment_mass_by_source_kg[index].iter().sum::<f64>();
         let stock_thickness_m = stock_mass_kg / (area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3);
-        let stock_erosion_m = erosion_m.min(stock_thickness_m);
-        let removed_stock_kg = stock_erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3;
+        let (stock_erosion_m, removed_stock_kg) = if erosion_m >= stock_thickness_m {
+            (stock_thickness_m, stock_mass_kg)
+        } else {
+            (
+                erosion_m,
+                erosion_m * area_m2 * FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+            )
+        };
         let removed_stock_by_source =
             split_mass_by_weights(removed_stock_kg, sediment_mass_by_source_kg[index]);
         let mut by_source = removed_stock_by_source;
@@ -494,270 +458,149 @@ fn sum_sediment_stock_removal(
     Ok(total)
 }
 
-/// Advances one private pseudo-transient batch without publishing its work states.
-fn solve_geomorphic(
-    inputs: SurfaceFormationInputs<'_>,
-    state: &mut GeomorphicState,
-    climate: &GlobalCirculationSnapshot,
-    areas: &[f64],
-    total_area_m2: f64,
-    continuation_step_years: &mut f64,
-    workspace: &mut HillslopeWorkspace,
+/// Advances the exact P5 state through the requested positive physical duration.
+pub(in crate::generators::natural) fn advance_surface_processes(
+    state: &mut FormationState,
+    inputs: SurfaceProcessInputs<'_>,
+    duration_years: f64,
     cancellation: &BuildCancellation,
-) -> Result<GeomorphicSolve, SurfaceFormationGenerationError> {
-    let mut current = evaluate_current_processes(inputs, state, climate, workspace, cancellation)?;
-    let mut current_rate_residual =
-        surface_rate_statistics(areas, total_area_m2, &current.process_rates).net_rms_m_per_year;
-    let mut accepted_steps = 0_u16;
-    while accepted_steps < SURFACE_FORMATION_CONTINUATION_STEPS_PER_CLIMATE_SOLVE {
+) -> Result<SurfaceAdvanceReport, SurfaceFormationGenerationError> {
+    if !duration_years.is_finite() || duration_years <= 0.0 {
+        return Err(SurfaceFormationGenerationError::InvalidSurfaceDuration {
+            found: duration_years,
+        });
+    }
+    let base_tectonic_displacement_m = state.tectonic_displacement_m().to_vec();
+    let mut remaining_years = duration_years;
+    let mut accepted_surface_substeps = 0_u32;
+    let mut final_sediment_fields = None;
+    let mut workspace = HillslopeWorkspace::default();
+    let mut current = evaluate_current_processes(state, inputs, &mut workspace, cancellation)?;
+
+    while remaining_years > 0.0 {
         check_cancelled(cancellation)?;
         if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
-            blocked_by_elevation_domain(
-                state.components.current_elevation_exact_m(),
-                &current.process_rates,
-            )
+            blocked_by_elevation_domain(state.current_elevation_exact_m(), &current.process_rates)
         {
-            return Err(
-                SurfaceFormationGenerationError::EquilibriumOutsideElevationDomain {
-                    cell,
-                    elevation_m,
-                    net_rate_m_per_year,
-                    boundary_m,
-                },
-            );
+            return Err(SurfaceFormationGenerationError::ElevationDomainExhausted {
+                cell,
+                elevation_m,
+                net_rate_m_per_year,
+                boundary_m,
+            });
         }
-        *continuation_step_years =
-            (*continuation_step_years).min(maximum_elevation_domain_step_years(
-                state.components.current_elevation_exact_m(),
-                &current.process_rates,
-            ));
-        if !continuation_step_years.is_finite() || *continuation_step_years <= 0.0 {
-            break;
-        }
-        let mut candidate = state.clone();
-        let advanced = advance_geomorphic_window(
-            inputs,
-            &mut candidate,
-            climate,
-            continuation_step_years,
-            workspace,
-            cancellation,
+        let maximum_domain_years = maximum_elevation_domain_step_years(
+            state.current_elevation_exact_m(),
+            &current.process_rates,
         );
-        match advanced {
-            Ok(_) => {}
-            Err(
-                SurfaceFormationGenerationError::ElevationOutOfRange { .. }
-                | SurfaceFormationGenerationError::StreamPower(
-                    StreamPowerGenerationError::ElevationOutOfRange { .. },
-                )
-                | SurfaceFormationGenerationError::Isostasy(
-                    IsostasyGenerationError::ElevationOutOfRange { .. },
-                ),
-            ) => {
-                *continuation_step_years *= 0.5;
-                continue;
-            }
-            Err(SurfaceFormationGenerationError::Hillslope(
-                HillslopeGenerationError::UnstableStep { maximum, .. },
-            )) => {
-                *continuation_step_years = maximum;
-                continue;
-            }
-            Err(error) => return Err(error),
+        let mut step_years = remaining_years.min(maximum_domain_years);
+        if !step_years.is_finite() || step_years <= 0.0 {
+            return Err(SurfaceFormationGenerationError::SurfaceAdvanceStalled { remaining_years });
         }
-        if candidate
-            .components
-            .current_elevation_exact_m()
-            .iter()
-            .any(|&elevation| {
-                elevation <= f64::from(ELEVATION_MIN_M) || elevation >= f64::from(ELEVATION_MAX_M)
-            })
-        {
-            *continuation_step_years *= 0.5;
-            continue;
+        let accepted_duration_before = duration_years - remaining_years;
+        let mut candidate;
+        let accepted;
+        loop {
+            candidate = state.clone();
+            let context = SurfaceStepContext {
+                inputs,
+                base_tectonic_displacement_m: &base_tectonic_displacement_m,
+                accepted_duration_before,
+            };
+            match advance_surface_window(
+                &mut candidate,
+                context,
+                &mut step_years,
+                &mut workspace,
+                cancellation,
+            ) {
+                Ok(result) => {
+                    accepted = result;
+                    break;
+                }
+                Err(
+                    SurfaceFormationGenerationError::ElevationOutOfRange { .. }
+                    | SurfaceFormationGenerationError::StreamPower(
+                        StreamPowerGenerationError::ElevationOutOfRange { .. },
+                    )
+                    | SurfaceFormationGenerationError::Isostasy(
+                        IsostasyGenerationError::ElevationOutOfRange { .. },
+                    ),
+                ) => {
+                    step_years *= 0.5;
+                }
+                Err(SurfaceFormationGenerationError::Hillslope(
+                    HillslopeGenerationError::UnstableStep { maximum, .. },
+                )) => {
+                    step_years = step_years.min(maximum);
+                }
+                Err(error) => return Err(error),
+            }
+            if !step_years.is_finite() || step_years <= 0.0 {
+                return Err(SurfaceFormationGenerationError::SurfaceAdvanceStalled {
+                    remaining_years,
+                });
+            }
         }
-        let candidate_processes =
-            evaluate_current_processes(inputs, &candidate, climate, workspace, cancellation)?;
-        let candidate_rate_residual =
-            surface_rate_statistics(areas, total_area_m2, &candidate_processes.process_rates)
-                .net_rms_m_per_year;
-        let ratio = current_rate_residual / candidate_rate_residual;
-        // PETSc TSPseudoTimeStepDefault uses successive-evolution relaxation
-        // with its successful-step increment. A valid implicit candidate is
-        // accepted even when its residual rises; the ratio contracts the next
-        // pseudo-step in that case.
-        *continuation_step_years *= SURFACE_FORMATION_CONTINUATION_GROWTH_FACTOR * ratio;
         *state = candidate;
-        current = candidate_processes;
-        current_rate_residual = candidate_rate_residual;
-        accepted_steps += 1;
+        final_sediment_fields = Some(accepted.sediment_fields);
+        accepted_surface_substeps = accepted_surface_substeps
+            .checked_add(1)
+            .ok_or(SurfaceFormationGenerationError::SurfaceAdvanceSubstepOverflow)?;
+        if step_years >= remaining_years {
+            remaining_years = 0.0;
+        } else {
+            remaining_years -= step_years;
+        }
+        if remaining_years > 0.0 {
+            current = evaluate_current_processes(state, inputs, &mut workspace, cancellation)?;
+        }
     }
 
-    Ok(GeomorphicSolve {
-        terrain: state.terrain.clone(),
-        process_rates: current.process_rates,
-        budget: current.budget,
-        sediment_stock_change_kg_per_year: current.sediment_stock_change_kg_per_year,
-        accepted_continuation_steps: accepted_steps,
+    Ok(SurfaceAdvanceReport {
+        accepted_surface_substeps,
+        accepted_duration_years: duration_years,
+        final_sediment_fields: final_sediment_fields
+            .expect("a positive completed duration accepts at least one surface substep"),
     })
 }
 
-/// Evaluates the current annual process fluxes without accepting the trial state.
+/// Recomputes endpoint diagnostics on a clone while leaving the accepted state unchanged.
+pub(in crate::generators::natural) fn recompute_surface_diagnostics(
+    state: &FormationState,
+    endpoint_inputs: SurfaceProcessInputs<'_>,
+    cancellation: &BuildCancellation,
+) -> Result<TerminalSurfaceDiagnostics, SurfaceFormationGenerationError> {
+    let mut workspace = HillslopeWorkspace::default();
+    let current = evaluate_current_processes(state, endpoint_inputs, &mut workspace, cancellation)?;
+    Ok(TerminalSurfaceDiagnostics {
+        process_rates: current.process_rates,
+        hydrology: current.hydrology,
+        budget: current.budget,
+        sediment_stock_change_kg_per_year: current.sediment_stock_change_kg_per_year,
+    })
+}
+
 fn evaluate_current_processes(
-    inputs: SurfaceFormationInputs<'_>,
-    state: &GeomorphicState,
-    climate: &GlobalCirculationSnapshot,
+    state: &FormationState,
+    inputs: SurfaceProcessInputs<'_>,
     workspace: &mut HillslopeWorkspace,
     cancellation: &BuildCancellation,
 ) -> Result<CurrentProcessEvaluation, SurfaceFormationGenerationError> {
+    let base_tectonic_displacement_m = state.tectonic_displacement_m().to_vec();
     let mut trial = state.clone();
     let mut evaluation_step_years = 1.0;
-    advance_geomorphic_window(
-        inputs,
+    advance_surface_window(
         &mut trial,
-        climate,
+        SurfaceStepContext {
+            inputs,
+            base_tectonic_displacement_m: &base_tectonic_displacement_m,
+            accepted_duration_before: 0.0,
+        },
         &mut evaluation_step_years,
         workspace,
         cancellation,
     )
-}
-
-fn trace_current_state(
-    surface: &SphericalSurfaceSnapshot,
-    substrate: &GeologicSubstrateSnapshot,
-    areas: &[f64],
-    total_area_m2: f64,
-    solved: &GeomorphicSolve,
-    hydrology: &SphericalHydrologySnapshot,
-    climate: &GlobalCirculationSnapshot,
-    tectonics: &EvolvedTectonicSnapshot,
-    net_surface_rate_rms_m_per_year: f64,
-) {
-    let rate_statistics = surface_rate_statistics(areas, total_area_m2, &solved.process_rates);
-    let mut mean_elevation_sum = 0.0_f64;
-    let mut annual_precipitation_sum = 0.0_f64;
-    let mut annual_runoff_sum = 0.0_f64;
-    let mut minimum_elevation_m = f64::INFINITY;
-    let mut maximum_elevation_m = f64::NEG_INFINITY;
-    let mut maximum_elevation_cell = 0;
-    let mut maximum_rate_cell = 0;
-    let mut maximum_rate = 0.0_f64;
-    let mut cells_at_elevation_bound = 0;
-    for (index, &area_m2) in areas.iter().enumerate() {
-        let elevation_m = f64::from(solved.terrain.current_elevation_m()[index]);
-        mean_elevation_sum += area_m2 * elevation_m;
-        minimum_elevation_m = minimum_elevation_m.min(elevation_m);
-        if elevation_m > maximum_elevation_m {
-            maximum_elevation_m = elevation_m;
-            maximum_elevation_cell = index;
-        }
-        annual_precipitation_sum += area_m2
-            * f64::from(formation_annual_precipitation_mm(
-                &climate.fields().monthly_precipitation_mm_day().values()[index],
-            ));
-        annual_runoff_sum += area_m2 * f64::from(hydrology.annual_local_runoff_mm()[index]);
-        let net_rate = net_surface_rate_at(&solved.process_rates, index);
-        if net_rate.abs() > maximum_rate.abs() {
-            maximum_rate = net_rate;
-            maximum_rate_cell = index;
-        }
-        if solved.terrain.current_elevation_m()[index] == ELEVATION_MIN_M
-            || solved.terrain.current_elevation_m()[index] == ELEVATION_MAX_M
-        {
-            cells_at_elevation_bound += 1;
-        }
-    }
-    eprintln!(
-        "[p5-state] net_surface_rate_rms={:.9} m/yr gross_surface_rate_rms={:.9} m/yr balance_ratio={:.9} mean_surface_rate={:.9} m/yr max_surface_rate={:.9} m/yr mean_elevation={:.6} m relief={:.6} m precipitation={:.6} mm/yr runoff={:.6} mm/yr sediment_yield={:.6e} kg/yr sediment_stock_change={:.6e} kg/yr",
-        net_surface_rate_rms_m_per_year,
-        rate_statistics.gross_rms_m_per_year,
-        rate_statistics.balance_ratio,
-        rate_statistics.mean_m_per_year,
-        rate_statistics.max_abs_m_per_year,
-        mean_elevation_sum / total_area_m2,
-        maximum_elevation_m - minimum_elevation_m,
-        annual_precipitation_sum / total_area_m2,
-        annual_runoff_sum / total_area_m2,
-        solved.budget.produced_mass_kg_per_year(),
-        solved.sediment_stock_change_kg_per_year,
-    );
-    let rates = &solved.process_rates;
-    eprintln!(
-        "[p5-rate-max] cell={} elevation={:.3} sea={:.3} sediment={:.3} water={:?} receiver={:?} runoff={:.6} mm/yr drainage={:.6} km2 uplift={:.9} subsidence={:.9} mm/yr net={:.9} m/yr tectonic={:.9} fluvial={:.9} hill_erosion={:.9} hill_deposition={:.9} routed_deposition={:.9} coast_erosion={:.9} coast_deposition={:.9} isostasy={:.9} bounded_cells={}",
-        maximum_rate_cell,
-        solved.terrain.current_elevation_m()[maximum_rate_cell],
-        solved.terrain.sea_level_m(),
-        solved.terrain.sediment().sediment_thickness_m()[maximum_rate_cell],
-        hydrology.surface_water().get(maximum_rate_cell),
-        hydrology.flow_receiver()[maximum_rate_cell],
-        hydrology.annual_local_runoff_mm()[maximum_rate_cell],
-        hydrology.drainage_area_km2()[maximum_rate_cell],
-        tectonics.forcing().uplift_rate_mm_per_year()[maximum_rate_cell],
-        tectonics.forcing().subsidence_rate_mm_per_year()[maximum_rate_cell],
-        maximum_rate,
-        rates.tectonic_displacement_rate_m_per_year()[maximum_rate_cell],
-        rates.fluvial_erosion_rate_m_per_year()[maximum_rate_cell],
-        rates.hillslope_erosion_rate_m_per_year()[maximum_rate_cell],
-        rates.hillslope_deposition_rate_m_per_year()[maximum_rate_cell],
-        rates.routed_sediment_deposition_rate_m_per_year()[maximum_rate_cell],
-        rates.coastal_erosion_rate_m_per_year()[maximum_rate_cell],
-        rates.coastal_deposition_rate_m_per_year()[maximum_rate_cell],
-        rates.isostatic_response_rate_m_per_year()[maximum_rate_cell],
-        cells_at_elevation_bound,
-    );
-    eprintln!(
-        "[p5-elevation-max] cell={} elevation={:.3} sea={:.3} sediment={:.3} water={:?} receiver={:?} runoff={:.6} mm/yr drainage={:.6} km2 uplift={:.9} subsidence={:.9} mm/yr net={:.9} m/yr tectonic={:.9} fluvial={:.9} hill_erosion={:.9} hill_deposition={:.9} routed_deposition={:.9} coast_erosion={:.9} coast_deposition={:.9} isostasy={:.9}",
-        maximum_elevation_cell,
-        solved.terrain.current_elevation_m()[maximum_elevation_cell],
-        solved.terrain.sea_level_m(),
-        solved.terrain.sediment().sediment_thickness_m()[maximum_elevation_cell],
-        hydrology.surface_water().get(maximum_elevation_cell),
-        hydrology.flow_receiver()[maximum_elevation_cell],
-        hydrology.annual_local_runoff_mm()[maximum_elevation_cell],
-        hydrology.drainage_area_km2()[maximum_elevation_cell],
-        tectonics.forcing().uplift_rate_mm_per_year()[maximum_elevation_cell],
-        tectonics.forcing().subsidence_rate_mm_per_year()[maximum_elevation_cell],
-        net_surface_rate_at(rates, maximum_elevation_cell),
-        rates.tectonic_displacement_rate_m_per_year()[maximum_elevation_cell],
-        rates.fluvial_erosion_rate_m_per_year()[maximum_elevation_cell],
-        rates.hillslope_erosion_rate_m_per_year()[maximum_elevation_cell],
-        rates.hillslope_deposition_rate_m_per_year()[maximum_elevation_cell],
-        rates.routed_sediment_deposition_rate_m_per_year()[maximum_elevation_cell],
-        rates.coastal_erosion_rate_m_per_year()[maximum_elevation_cell],
-        rates.coastal_deposition_rate_m_per_year()[maximum_elevation_cell],
-        rates.isostatic_response_rate_m_per_year()[maximum_elevation_cell],
-    );
-    let receiver =
-        hydrology.flow_receiver()[maximum_elevation_cell].map(|cell| cell.raw() as usize);
-    let receiver_elevation_m = receiver
-        .map(|index| solved.terrain.current_elevation_m()[index])
-        .unwrap_or(f32::NAN);
-    let receiver_drainage_elevation_m = receiver
-        .map(|index| hydrology.drainage_surface_elevation_m().values()[index])
-        .unwrap_or(f32::NAN);
-    eprintln!(
-        "[p5-elevation-max-context] cell={} area={:.6e} m2 receiver_elevation={:.6} m drainage_elevation={:.6} m receiver_drainage_elevation={:.6} m drainage_drop={:.6} m throughput={:.6e} kg/yr shelf={:.6e} kg/yr deep={:.6e} kg/yr endorheic={:.6e} kg/yr erodibility={:.6} fracture={:.6} density={:.6} kg/m3",
-        maximum_elevation_cell,
-        surface.cells()[maximum_elevation_cell].area.get(),
-        receiver_elevation_m,
-        hydrology.drainage_surface_elevation_m().values()[maximum_elevation_cell],
-        receiver_drainage_elevation_m,
-        hydrology.drainage_surface_elevation_m().values()[maximum_elevation_cell]
-            - receiver_drainage_elevation_m,
-        solved
-            .terrain
-            .sediment()
-            .sediment_throughput_kg_per_year()[maximum_elevation_cell],
-        solved.terrain.sediment().shelf_deposition_kg_per_year()[maximum_elevation_cell],
-        solved.terrain.sediment().deep_ocean_export_kg_per_year()[maximum_elevation_cell],
-        solved
-            .terrain
-            .sediment()
-            .endorheic_deposition_kg_per_year()[maximum_elevation_cell],
-        substrate.erodibility()[maximum_elevation_cell],
-        substrate.fracture_intensity()[maximum_elevation_cell],
-        substrate.crust_density_kg_m3()[maximum_elevation_cell],
-    );
 }
 
 fn net_surface_rate_at(rates: &ExactFormationProcessRates, index: usize) -> f64 {
@@ -818,9 +661,7 @@ fn blocked_by_elevation_domain(
 struct SurfaceRateStatistics {
     net_rms_m_per_year: f64,
     gross_rms_m_per_year: f64,
-    balance_ratio: f64,
     mean_m_per_year: f64,
-    max_abs_m_per_year: f64,
 }
 
 fn surface_rate_statistics(
@@ -831,7 +672,6 @@ fn surface_rate_statistics(
     let mut net_square_sum = 0.0_f64;
     let mut gross_square_sum = 0.0_f64;
     let mut net_sum = 0.0_f64;
-    let mut max_abs_m_per_year = 0.0_f64;
     for (index, &area_m2) in areas.iter().enumerate() {
         let signed = [
             rates.tectonic_displacement_rate_m_per_year()[index],
@@ -848,62 +688,63 @@ fn surface_rate_statistics(
         net_square_sum += area_m2 * net * net;
         gross_square_sum += area_m2 * gross * gross;
         net_sum += area_m2 * net;
-        max_abs_m_per_year = max_abs_m_per_year.max(net.abs());
     }
     let net_rms = (net_square_sum / total_area_m2).sqrt();
     let gross_rms_m_per_year = (gross_square_sum / total_area_m2).sqrt();
     SurfaceRateStatistics {
         net_rms_m_per_year: net_rms,
         gross_rms_m_per_year,
-        balance_ratio: formation_relative_flux_imbalance(net_rms, gross_rms_m_per_year),
         mean_m_per_year: net_sum / total_area_m2,
-        max_abs_m_per_year,
     }
 }
 
-fn initial_geomorphic_state(
+fn initial_formation_state(
     inputs: SurfaceFormationInputs<'_>,
-) -> Result<GeomorphicState, SurfaceFormationGenerationError> {
-    let components = FormationState::from_legacy_primary_wire_for_migration(inputs.relief)?;
-    let terrain = primary_relief_terrain(inputs, &components)?;
-    Ok(GeomorphicState {
-        components,
-        terrain,
-    })
+) -> Result<FormationState, SurfaceFormationGenerationError> {
+    Ok(FormationState::from_legacy_primary_wire_for_migration(
+        inputs.relief,
+    )?)
 }
 
-/// Advances one complete geomorphic window from the retained input state.
-fn advance_geomorphic_window(
-    inputs: SurfaceFormationInputs<'_>,
-    state: &mut GeomorphicState,
-    climate: &GlobalCirculationSnapshot,
+#[derive(Clone, Copy)]
+struct SurfaceStepContext<'a> {
+    inputs: SurfaceProcessInputs<'a>,
+    base_tectonic_displacement_m: &'a [f64],
+    accepted_duration_before: f64,
+}
+
+/// Advances one complete operator-split window on an unpublished exact candidate.
+fn advance_surface_window(
+    state: &mut FormationState,
+    context: SurfaceStepContext<'_>,
     step_years: &mut f64,
     workspace: &mut HillslopeWorkspace,
     cancellation: &BuildCancellation,
 ) -> Result<CurrentProcessEvaluation, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
+    let inputs = context.inputs;
     let surface = inputs.surface;
     let zero_sediment_transfer =
         vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; surface.cells().len()];
-    let annual_precipitation_mm = annual_precipitation_mm(climate, cancellation)?;
+    let annual_precipitation_mm = annual_precipitation_mm(inputs.climate, cancellation)?;
     let hydrology = FormationHydrologyGenerator::generate_from_validated_exact(
         surface,
-        state.components.current_elevation_exact_m(),
-        state.components.surface_water_geometry().land_ocean(),
+        state.current_elevation_exact_m(),
+        state.surface_water_geometry().land_ocean(),
         inputs.substrate,
-        climate,
+        inputs.climate,
         inputs.formation_spec,
         cancellation,
     )?;
     let pre_step_hillslope_inputs = HillslopeInputs {
-        elevation_m: state.components.current_elevation_exact_m(),
+        elevation_m: state.current_elevation_exact_m(),
         surface_water: hydrology.surface_water(),
         substrate_erodibility: inputs.substrate.erodibility(),
         fracture_intensity: inputs.substrate.fracture_intensity(),
         annual_precipitation_mm: &annual_precipitation_mm,
         substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
         sediment_sources: inputs.substrate.sediment_sources(),
-        sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
+        sediment_mass_by_source_kg: state.sediment_stock().as_slice(),
     };
     let maximum_hillslope_step_years =
         NonlinearHillslopeTransport::maximum_stable_step_years_from_validated_surface(
@@ -914,98 +755,122 @@ fn advance_geomorphic_window(
         )?;
     *step_years = (*step_years).min(maximum_hillslope_step_years);
 
+    let target_duration_years = context.accepted_duration_before + *step_years;
+    let uplift_rate_mm_per_year = inputs.tectonics.forcing().uplift_rate_mm_per_year();
+    let subsidence_rate_mm_per_year = inputs.tectonics.forcing().subsidence_rate_mm_per_year();
+    let mut tectonic_target_m = Vec::with_capacity(context.base_tectonic_displacement_m.len());
+    for (index, &base_displacement_m) in context.base_tectonic_displacement_m.iter().enumerate() {
+        poll_cancelled(cancellation, index)?;
+        tectonic_target_m.push(held_tectonic_displacement_target_m(
+            base_displacement_m,
+            uplift_rate_mm_per_year[index],
+            subsidence_rate_mm_per_year[index],
+            target_duration_years,
+        )?);
+    }
+    let tectonic_displacement_m = tectonic_target_m
+        .iter()
+        .zip(state.tectonic_displacement_m())
+        .map(|(&target_m, &current_m)| target_m - current_m)
+        .collect::<Vec<_>>();
+
     let stream = ImplicitStreamPowerSolver::advance_from_validated_snapshots(
         surface,
-        state.components.current_elevation_exact_m(),
+        state.current_elevation_exact_m(),
         &hydrology,
         inputs.tectonics,
         inputs.substrate,
         *step_years,
         cancellation,
     )?;
-    state
-        .components
-        .apply_tectonic_displacement_f64(stream.tectonic_displacement_m())?;
-    state
-        .components
-        .apply_fluvial_erosion_f64(stream.fluvial_erosion_m())?;
+    state.replace_tectonic_displacement_f64(&tectonic_target_m)?;
+    state.apply_fluvial_erosion_f64(stream.fluvial_erosion_m())?;
 
     let fluvial_cover = remove_fluvial_sediment_cover(
         surface,
-        state.components.sediment_stock().as_slice(),
+        state.sediment_stock().as_slice(),
         inputs.substrate,
         stream.fluvial_erosion_m(),
         cancellation,
     )?;
-    state.components.sediment_stock_mut().apply_transfer(
-        &fluvial_cover.removed_stock_by_source_kg,
-        &zero_sediment_transfer,
-    )?;
+    state
+        .sediment_stock_mut()
+        .apply_transfer(
+            &fluvial_cover.removed_stock_by_source_kg,
+            &zero_sediment_transfer,
+        )
+        .map_err(
+            |error| SurfaceFormationGenerationError::InvalidFormationState {
+                reason: format!("fluvial cover removal: {error}"),
+            },
+        )?;
 
     let hillslope = NonlinearHillslopeTransport::advance_from_validated_surface(
         surface,
         HillslopeInputs {
-            elevation_m: state.components.current_elevation_exact_m(),
+            elevation_m: state.current_elevation_exact_m(),
             surface_water: hydrology.surface_water(),
             substrate_erodibility: inputs.substrate.erodibility(),
             fracture_intensity: inputs.substrate.fracture_intensity(),
             annual_precipitation_mm: &annual_precipitation_mm,
             substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
             sediment_sources: inputs.substrate.sediment_sources(),
-            sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
+            sediment_mass_by_source_kg: state.sediment_stock().as_slice(),
         },
         *step_years,
         workspace,
         cancellation,
     )?;
+    state.apply_hillslope_erosion_f64(hillslope.hillslope_erosion_m())?;
+    state.apply_hillslope_deposition_f64(hillslope.hillslope_deposition_m())?;
     state
-        .components
-        .apply_hillslope_erosion_f64(hillslope.hillslope_erosion_m())?;
-    state
-        .components
-        .apply_hillslope_deposition_f64(hillslope.hillslope_deposition_m())?;
-    state.components.sediment_stock_mut().apply_transfer(
-        hillslope.sediment_stock_removed_by_source_kg(),
-        &zero_sediment_transfer,
-    )?;
+        .sediment_stock_mut()
+        .apply_transfer(
+            hillslope.sediment_stock_removed_by_source_kg(),
+            &zero_sediment_transfer,
+        )
+        .map_err(
+            |error| SurfaceFormationGenerationError::InvalidFormationState {
+                reason: format!("hillslope cover removal: {error}"),
+            },
+        )?;
 
     let coast_water = solve_physical_sea_level_exact(
         surface,
-        state.components.current_elevation_exact_m(),
-        inputs.relief.water_inventory_m3(),
+        state.current_elevation_exact_m(),
+        inputs.water_inventory_m3,
         cancellation,
     )?
     .into_geometry();
-    state.components.replace_surface_water_geometry(coast_water);
+    state.replace_surface_water_geometry(coast_water);
     let coast = CoastalExchange::advance_from_validated_surface(
         surface,
         CoastalInputs {
-            elevation_m: state.components.current_elevation_exact_m(),
-            ocean_area_fraction: state
-                .components
-                .surface_water_geometry()
-                .ocean_area_fraction(),
-            wet_edge_fraction: state
-                .components
-                .surface_water_geometry()
-                .wet_edge_fraction(),
+            elevation_m: state.current_elevation_exact_m(),
+            ocean_area_fraction: state.surface_water_geometry().ocean_area_fraction(),
+            wet_edge_fraction: state.surface_water_geometry().wet_edge_fraction(),
             substrate_erodibility: inputs.substrate.erodibility(),
-            sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
+            sediment_mass_by_source_kg: state.sediment_stock().as_slice(),
             substrate_density_kg_m3: inputs.substrate.crust_density_kg_m3(),
             sediment_sources: inputs.substrate.sediment_sources(),
-            near_surface_wind_m_s: climate.fields().near_surface_wind_m_s().values(),
-            surface_ocean_current_m_s: climate.fields().surface_ocean_current_m_s().values(),
+            near_surface_wind_m_s: inputs.climate.fields().near_surface_wind_m_s().values(),
+            surface_ocean_current_m_s: inputs.climate.fields().surface_ocean_current_m_s().values(),
         },
         *step_years,
         cancellation,
     )?;
+    state.apply_coastal_erosion_f64(coast.coastal_erosion_m())?;
     state
-        .components
-        .apply_coastal_erosion_f64(coast.coastal_erosion_m())?;
-    state.components.sediment_stock_mut().apply_transfer(
-        coast.sediment_stock_removed_by_source_kg(),
-        &zero_sediment_transfer,
-    )?;
+        .sediment_stock_mut()
+        .apply_transfer(
+            coast.sediment_stock_removed_by_source_kg(),
+            &zero_sediment_transfer,
+        )
+        .map_err(
+            |error| SurfaceFormationGenerationError::InvalidFormationState {
+                reason: format!("coastal cover removal: {error}"),
+            },
+        )?;
 
     let sediment_stock_removed_kg = sum_sediment_stock_removal(
         &fluvial_cover.removed_stock_by_source_kg,
@@ -1016,8 +881,8 @@ fn advance_geomorphic_window(
     let sediment = ProvenanceSedimentRouter::route_from_validated_surface(
         surface,
         SedimentInputs {
-            elevation_m: state.components.current_elevation_exact_m(),
-            sea_level_m: state.components.surface_water_geometry().sea_level_m(),
+            elevation_m: state.current_elevation_exact_m(),
+            sea_level_m: state.surface_water_geometry().sea_level_m(),
             flow_receiver: hydrology.flow_receiver(),
             mean_annual_discharge_m3_s: hydrology.mean_annual_discharge_m3_s(),
             effective_settling_velocity_m_per_year:
@@ -1028,21 +893,21 @@ fn advance_geomorphic_window(
             coastal_removed_by_source_kg: coast.removed_by_source_kg(),
             coastal_ocean_injection_by_source_kg: coast.ocean_injection_by_source_kg(),
             marine_exposure: coast.marine_exposure(),
-            retained_sediment_mass_by_source_kg: state.components.sediment_stock().as_slice(),
+            retained_sediment_mass_by_source_kg: state.sediment_stock().as_slice(),
         },
         *step_years,
         cancellation,
     )?;
+    state.apply_routed_sediment_deposition_f64(sediment.routed_sediment_deposition_m())?;
+    state.apply_coastal_deposition_f64(sediment.coastal_deposition_m())?;
     state
-        .components
-        .apply_routed_sediment_deposition_f64(sediment.routed_sediment_deposition_m())?;
-    state
-        .components
-        .apply_coastal_deposition_f64(sediment.coastal_deposition_m())?;
-    state
-        .components
         .sediment_stock_mut()
-        .apply_transfer(&zero_sediment_transfer, sediment.deposited_by_source_kg())?;
+        .apply_transfer(&zero_sediment_transfer, sediment.deposited_by_source_kg())
+        .map_err(
+            |error| SurfaceFormationGenerationError::InvalidFormationState {
+                reason: format!("routed sediment deposition: {error}"),
+            },
+        )?;
     let budget = *sediment.budget_report();
     let sediment_stock_change_kg_per_year = sediment_stock_change_kg_per_year(
         sediment.deposited_mass_kg(),
@@ -1052,7 +917,7 @@ fn advance_geomorphic_window(
 
     let isostatic_response_m = apply_local_airy_response(
         surface,
-        &mut state.components,
+        state,
         sediment.removed_mass_kg(),
         sediment.deposited_mass_kg(),
         cancellation,
@@ -1060,29 +925,16 @@ fn advance_geomorphic_window(
 
     let water = solve_physical_sea_level_exact(
         surface,
-        state.components.current_elevation_exact_m(),
-        inputs.relief.water_inventory_m3(),
+        state.current_elevation_exact_m(),
+        inputs.water_inventory_m3,
         cancellation,
     )?
     .into_geometry();
-    state.components.replace_surface_water_geometry(water);
-    let wire_components = state.components.wire_components()?;
-    let wire_water = state.components.surface_water_geometry().to_wire(
-        surface,
-        wire_components.final_elevation_m(),
-        cancellation,
-    )?;
-    state.terrain = FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
-        wire_components,
-        wire_water,
-        inputs.relief.water_inventory_m3(),
-        sediment.fields().clone(),
-    )?;
+    state.replace_surface_water_geometry(water);
     Ok(CurrentProcessEvaluation {
         process_rates: ExactFormationProcessRates::annualized(
             ProcessDisplacements {
-                tectonic_displacement_m: stream.tectonic_displacement_m(),
+                tectonic_displacement_m: &tectonic_displacement_m,
                 fluvial_erosion_m: stream.fluvial_erosion_m(),
                 hillslope_erosion_m: hillslope.hillslope_erosion_m(),
                 hillslope_deposition_m: hillslope.hillslope_deposition_m(),
@@ -1093,6 +945,8 @@ fn advance_geomorphic_window(
             },
             *step_years,
         )?,
+        hydrology,
+        sediment_fields: sediment.fields().clone(),
         budget,
         sediment_stock_change_kg_per_year,
     })
@@ -1132,33 +986,25 @@ fn annualize_exact(values: &[f64], step_years: f64) -> Vec<f64> {
     values.iter().map(|&value| value / step_years).collect()
 }
 
-fn quantize_f64(values: &[f64]) -> Vec<f32> {
-    values.iter().map(|&value| value as f32).collect()
+fn held_tectonic_displacement_target_m(
+    base_displacement_m: f64,
+    uplift_rate_mm_per_year: f32,
+    subsidence_rate_mm_per_year: f32,
+    accepted_duration_years: f64,
+) -> Result<f64, SurfaceFormationGenerationError> {
+    let target_m = base_displacement_m
+        + (f64::from(uplift_rate_mm_per_year) - f64::from(subsidence_rate_mm_per_year)) / 1_000.0
+            * accepted_duration_years;
+    if !target_m.is_finite() {
+        return Err(SurfaceFormationGenerationError::InvalidFormationState {
+            reason: "held tectonic forcing produced a non-finite displacement".to_owned(),
+        });
+    }
+    Ok(target_m)
 }
 
-/// Builds the immutable P3 starting terrain with an empty sediment ledger.
-fn primary_relief_terrain(
-    inputs: SurfaceFormationInputs<'_>,
-    state: &FormationState,
-) -> Result<FormationTerrainFields, SurfaceFormationGenerationError> {
-    let count = inputs.relief.elevation_m().len();
-    let zero_f32 = vec![0.0_f32; count];
-    let sediment = FormationSedimentFields::new(
-        zero_f32.clone(),
-        vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
-        vec![0.0; count],
-        vec![0.0; count],
-        vec![0.0; count],
-        vec![0.0; count],
-        zero_f32,
-    )?;
-    Ok(FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
-        state.wire_components()?,
-        inputs.relief.surface_water_geometry().clone(),
-        inputs.relief.water_inventory_m3(),
-        sediment,
-    )?)
+fn quantize_f64(values: &[f64]) -> Vec<f32> {
+    values.iter().map(|&value| value as f32).collect()
 }
 
 /// Expands the published mean daily rates into the bounded annual hillslope
@@ -1222,44 +1068,51 @@ fn current_state_residuals(
     )?)
 }
 
+/// Atomically validates and assembles one projected final P5 snapshot.
 #[allow(clippy::too_many_arguments)]
-fn publish(
+pub(in crate::generators::natural) fn finalize_surface_formation(
+    state: FormationState,
+    final_terrain: FormationTerrainFields,
     surface: &SphericalSurfaceSnapshot,
     surface_ref: SurfaceRef,
     quality_profile: NaturalQualityProfile,
+    endpoint_climate: GlobalCirculationSnapshot,
     upstream: SurfaceFormationUpstreamFingerprints,
-    solved: GeomorphicSolve,
-    hydrology: SphericalHydrologySnapshot,
-    climate: GlobalCirculationSnapshot,
-    equilibrium_iterations: u16,
-    climate_solve_count: u16,
-    terminal_residual: FormationResiduals,
-    dense_state_bytes: u64,
+    terminal_diagnostics: TerminalSurfaceDiagnostics,
+    evolution_report: FormationEvolutionReport,
     cancellation: &BuildCancellation,
 ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
-    let process_rates = solved.process_rates.to_wire()?;
-    let solve_report = FormationSolveReport::new(
-        equilibrium_iterations,
-        climate_solve_count,
-        terminal_residual,
-        dense_state_bytes,
-    )?;
-    let state_fingerprint =
-        surface_formation_state_fingerprint(&solved.terrain, &process_rates, &hydrology, &climate);
+    if state.current_elevation_exact_m().len() != final_terrain.current_elevation_m().len()
+        || state
+            .surface_water_geometry()
+            .total_water_volume_m3()
+            .to_bits()
+            != final_terrain.water_inventory_m3().to_bits()
+    {
+        return Err(SurfaceFormationGenerationError::InvalidFormationState {
+            reason: "final terrain does not match the accepted exact state".to_owned(),
+        });
+    }
+    let process_rates = terminal_diagnostics.process_rates.to_wire()?;
+    let state_fingerprint = surface_formation_state_fingerprint(
+        &final_terrain,
+        &process_rates,
+        &terminal_diagnostics.hydrology,
+    );
     let checkpoint =
         SurfaceFormationCheckpoint::new(surface_ref, quality_profile, upstream, state_fingerprint)?;
     check_cancelled(cancellation)?;
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V4,
         surface_ref,
         checkpoint,
-        solved.terrain,
+        final_terrain,
         process_rates,
-        hydrology,
-        climate,
-        solve_report,
-        solved.budget,
+        terminal_diagnostics.hydrology,
+        endpoint_climate,
+        evolution_report,
+        terminal_diagnostics.budget,
         SurfaceFormationCapabilitySet::p5(),
     )?;
     snapshot.validate_against(surface)?;
@@ -1361,6 +1214,7 @@ fn cell_areas(
 
 fn upstream_fingerprints(
     inputs: SurfaceFormationInputs<'_>,
+    formation_climate: &GlobalCirculationSnapshot,
     cancellation: &BuildCancellation,
 ) -> Result<SurfaceFormationUpstreamFingerprints, SurfaceFormationGenerationError> {
     Ok(SurfaceFormationUpstreamFingerprints::new(
@@ -1384,7 +1238,7 @@ fn upstream_fingerprints(
             inputs.climate_spec,
             cancellation,
         )?,
-        *inputs.initial_climate.checkpoint().fingerprint(),
+        *formation_climate.checkpoint().fingerprint(),
         input_fingerprint(
             b"sekai.p5.formation-spec.v1\0",
             inputs.formation_spec,
@@ -1471,41 +1325,15 @@ fn check_cancelled(
     }
 }
 
-/// Failures from the complete coupled formation solve.
+/// Failures from a complete finite-time surface-formation build.
 #[derive(Debug, Error)]
 pub enum SurfaceFormationGenerationError {
-    /// Cooperative cancellation interrupted the solve before publication.
-    #[error("surface formation solve cancelled")]
+    /// Cooperative cancellation interrupted the build before publication.
+    #[error("surface formation build cancelled")]
     Cancelled,
-    /// The requested climate-solve budget is outside the locked bound.
-    #[error("climate solve limit {found} is outside 1..={maximum}")]
-    InvalidIterationLimit { found: u16, maximum: u16 },
-    /// The bounded equilibrium solve did not close within its work budget.
-    ///
-    /// Carries the final residual vector (spec §6: the typed failure
-    /// carries the best report), so the panel names the failing
-    /// component instead of one opaque number.
-    #[error(
-        "formation equilibrium did not converge in {climate_solve_count} climate solves \
-         (normalized residual {:.4}: net_surface_rate_rms {:.6e} m/yr, \
-         gross_surface_rate_rms {:.6e} m/yr, local_surface_imbalance {:.6e}, \
-         mean_elevation_rate {:.6e} m/yr ({:.6e}), rms_relief_rate {:.6e} m/yr ({:.6e}), \
-         sediment_stock_change {:.6e} kg/yr, sediment_stock_ratio {:.6e})",
-        terminal_residual.normalized_max(),
-        terminal_residual.net_surface_rate_rms_m_per_year(),
-        terminal_residual.gross_surface_rate_rms_m_per_year(),
-        terminal_residual.local_surface_flux_imbalance_ratio(),
-        terminal_residual.mean_elevation_rate_m_per_year(),
-        terminal_residual.mean_elevation_flux_balance_ratio(),
-        terminal_residual.rms_relief_rate_m_per_year(),
-        terminal_residual.rms_relief_flux_balance_ratio(),
-        terminal_residual.sediment_stock_change_kg_per_year(),
-        terminal_residual.sediment_stock_change_ratio()
-    )]
-    NotConverged {
-        climate_solve_count: u16,
-        terminal_residual: FormationResiduals,
-    },
+    /// The requested finite physical duration is invalid.
+    #[error("surface formation duration must be positive and finite, found {found}")]
+    InvalidSurfaceDuration { found: f64 },
     /// An upstream product belongs to a different authoritative surface.
     #[error("{role} belongs to surface {found:?} instead of {expected:?}")]
     UpstreamSurfaceMismatch {
@@ -1519,17 +1347,23 @@ pub enum SurfaceFormationGenerationError {
     /// The retained identity left the publishable elevation range.
     #[error("cell {cell:?} reached elevation {found} outside the publishable range")]
     ElevationOutOfRange { cell: CellId, found: f64 },
-    /// A nonzero terminal flux points out of the representable elevation domain.
+    /// A nonzero current flux points out of the representable elevation domain.
     #[error(
-        "current-state equilibrium lies outside the elevation domain at {cell:?}: elevation \
+        "surface advance exhausted the elevation domain at {cell:?}: elevation \
          {elevation_m} m has net rate {net_rate_m_per_year} m/yr toward {boundary_m} m"
     )]
-    EquilibriumOutsideElevationDomain {
+    ElevationDomainExhausted {
         cell: CellId,
         elevation_m: f64,
         net_rate_m_per_year: f64,
         boundary_m: f64,
     },
+    /// Stable step selection could not make positive progress.
+    #[error("surface formation advance stalled with {remaining_years} years remaining")]
+    SurfaceAdvanceStalled { remaining_years: f64 },
+    /// The accepted substep counter overflowed before the requested duration completed.
+    #[error("surface formation accepted substep counter overflowed")]
+    SurfaceAdvanceSubstepOverflow,
     /// The conservative dense-owner inventory overflowed its counter.
     #[error("surface formation dense allocation inventory overflowed")]
     AllocationOverflow,
@@ -1598,44 +1432,29 @@ impl From<FormationStateError> for SurfaceFormationGenerationError {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-    use std::time::{Duration, Instant};
-
     use super::super::state::formation_state_for_value;
     use super::{
-        advance_geomorphic_window, apply_local_airy_response, initial_geomorphic_state,
+        apply_local_airy_response, held_tectonic_displacement_target_m,
         sediment_stock_change_kg_per_year, ExactFormationProcessRates, ProcessDisplacements,
-        SurfaceFormationInputs, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
+        FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     };
-    use crate::engine::{
-        derive_stage_seed, BuildArtifacts, BuildCancellation, Diagnostic, Stage, StageIdentity,
-        StageRng,
-    };
-    use crate::generators::natural::{
-        ClimateWorkDomainBuilder, EvolvedTectonicGenerator, EvolvedTectonicStage,
-        GeologicSubstrateGenerator, GeologicSubstrateStage, GlobalCirculationGenerator,
-        GlobalClimateForcingBuilder, NaturalQualityProfileArtifact, PrimaryReliefGenerator,
-        PrimaryReliefStage,
-    };
-    use crate::generators::spatial::{
-        GeodesicVoronoiBuilder, ProfileSurfaceBuilder, ProfileSurfaceBundle,
-    };
+    use crate::engine::BuildCancellation;
+    use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        formation_elevation_from_components, ClimateModelProfile, ClimateSpec,
-        ClimateWorkDomainSnapshot, EvolvedTectonicSnapshot, GeologicSpec,
-        GeologicSubstrateSnapshot, GlobalCirculationSnapshot, HydroErosionSpec,
-        NaturalQualityProfile, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
-        ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
-        EARTH_WATER_REFERENCE_RADIUS_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-        FORMATION_AIRY_MANTLE_DENSITY_KG_M3, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-        SURFACE_FORMATION_HORIZON_YEARS,
+        formation_elevation_from_components, ELEVATION_MAX_M, FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
     };
-    use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
-
-    const PRE_MIGRATION_SEED: u64 = 42;
+    use crate::world::{Meters, SphericalSpaceSpec};
 
     #[test]
-    fn solver_feedback_retains_process_rates_below_the_f32_wire_ulp() {
+    fn held_tectonic_rate_is_integrated_once_from_the_entry_state() {
+        let target = held_tectonic_displacement_target_m(3.0, 1.0, 0.0, 1_000.0)
+            .expect("finite held forcing should integrate");
+
+        assert_eq!(target.to_bits(), 4.0_f64.to_bits());
+    }
+
+    #[test]
+    fn exact_process_rates_retain_values_below_the_f32_wire_ulp() {
         let zero = [0.0_f64];
         let sub_wire_ulp = f64::from(f32::from_bits(1)) * 0.25;
         let tectonic = [sub_wire_ulp];
@@ -1660,41 +1479,13 @@ mod tests {
         );
     }
 
-    struct PreMigrationFixture {
-        bundle: ProfileSurfaceBundle,
-        evolved: EvolvedTectonicSnapshot,
-        substrate: GeologicSubstrateSnapshot,
-        relief: PrimaryReliefSnapshot,
-        domain: ClimateWorkDomainSnapshot,
-        climate: GlobalCirculationSnapshot,
-        climate_spec: ClimateSpec,
-        formation_spec: HydroErosionSpec,
-        setup_elapsed: Duration,
-    }
-
-    impl PreMigrationFixture {
-        fn inputs(&self) -> SurfaceFormationInputs<'_> {
-            SurfaceFormationInputs {
-                surface: self.bundle.authoritative_surface(),
-                quality_profile: NaturalQualityProfile::Draft,
-                tectonics: &self.evolved,
-                substrate: &self.substrate,
-                relief: &self.relief,
-                domain: &self.domain,
-                climate_spec: &self.climate_spec,
-                initial_climate: &self.climate,
-                formation_spec: &self.formation_spec,
-            }
-        }
-    }
-
     #[test]
     fn local_airy_preserves_exact_erosion_and_response_below_wire_ulp() {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
-            radius: Meters::new(10_000.0).unwrap(),
+            radius: Meters::new(10_000.0).expect("test radius is positive"),
             target_cell_count: 42,
         })
-        .unwrap();
+        .expect("the production spherical fixture should build");
         let count = surface.cells().len();
         let area_m2 = surface.cells()[0].area.get();
         let airy_response_m = 0.000_260_834_617_f64;
@@ -1704,7 +1495,9 @@ mod tests {
         let mut components = formation_state_for_value(f64::from(ELEVATION_MAX_M));
         let mut erosion_m = vec![0.0_f64; count];
         erosion_m[0] = eroded_thickness_m;
-        components.apply_fluvial_erosion_f64(&erosion_m).unwrap();
+        components
+            .apply_fluvial_erosion_f64(&erosion_m)
+            .expect("the exact erosion candidate should remain in range");
 
         let mut removed_mass_kg = vec![0.0_f64; count];
         removed_mass_kg[0] = FORMATION_AIRY_MANTLE_DENSITY_KG_M3 * area_m2 * airy_response_m;
@@ -1715,7 +1508,7 @@ mod tests {
             &vec![0.0; count],
             &BuildCancellation::new(),
         )
-        .unwrap();
+        .expect("the exact Airy response should remain in range");
 
         assert_eq!(response[0], airy_response_m);
         assert!(components.fluvial_erosion_m()[0] > 0.0);
@@ -1755,332 +1548,5 @@ mod tests {
             sediment_stock_change_kg_per_year(&deposited_mass_kg, &removed_mass_kg, step_years,),
             1.5
         );
-    }
-
-    #[test]
-    #[ignore = "release-only pre-migration P5 one-advance cost probe"]
-    fn pre_migration_one_advance_records_bounded_cost_evidence() {
-        let evidence = pre_migration_one_advance_evidence();
-        let json = serde_json::to_vec_pretty(&evidence)
-            .expect("the bounded P5 probe evidence must serialize");
-        assert_no_json_arrays(&evidence);
-
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("natural-quality")
-            .join("p5");
-        assert!(output.ends_with("target/natural-quality/p5"));
-        std::fs::create_dir_all(&output).expect("the P5 evidence directory must be writable");
-        let path = output.join("pre-migration-one-advance.json");
-        std::fs::write(&path, &json).expect("the P5 one-advance evidence must be writable");
-
-        assert_eq!(
-            evidence["requested_duration_years"]
-                .as_f64()
-                .expect("requested duration is numeric")
-                .to_bits(),
-            SURFACE_FORMATION_HORIZON_YEARS.to_bits()
-        );
-        assert_eq!(evidence["prefix"]["accepted_window_count"], 1);
-        assert_eq!(evidence["prefix"]["typed_failure"], serde_json::Value::Null);
-        assert_eq!(evidence["full_horizon_observed"], true);
-        eprintln!(
-            "P5 pre-migration one-advance path={} bytes={} blake3={}",
-            path.display(),
-            json.len(),
-            blake3::hash(&json).to_hex()
-        );
-    }
-
-    fn pre_migration_one_advance_evidence() -> serde_json::Value {
-        let cancellation = BuildCancellation::new();
-        let fixture = pre_migration_fixture(&cancellation);
-        let inputs = fixture.inputs();
-        super::validate_inputs(inputs, &cancellation)
-            .expect("the production probe inputs must validate");
-        let mut candidate =
-            initial_geomorphic_state(inputs).expect("the production initial P5 state is valid");
-        let mut workspace = super::HillslopeWorkspace::default();
-        let selection_started = Instant::now();
-        let selection = super::evaluate_current_processes(
-            inputs,
-            &candidate,
-            inputs.initial_climate,
-            &mut workspace,
-            &cancellation,
-        );
-        let step_selection_micros = selection_started.elapsed().as_micros();
-        let (mut accepted_duration_years, selection_failure) = match selection {
-            Err(error) => (0.0, Some(format!("{error:?}"))),
-            Ok(current) => {
-                if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
-                    super::blocked_by_elevation_domain(
-                        candidate.components.current_elevation_exact_m(),
-                        &current.process_rates,
-                    )
-                {
-                    (
-                        0.0,
-                        Some(format!(
-                            "{:?}",
-                            super::SurfaceFormationGenerationError::
-                                EquilibriumOutsideElevationDomain {
-                                    cell,
-                                    elevation_m,
-                                    net_rate_m_per_year,
-                                    boundary_m,
-                                }
-                        )),
-                    )
-                } else {
-                    let maximum = super::maximum_elevation_domain_step_years(
-                        candidate.components.current_elevation_exact_m(),
-                        &current.process_rates,
-                    );
-                    let selected = SURFACE_FORMATION_HORIZON_YEARS.min(maximum);
-                    let failure = (!(selected.is_finite() && selected > 0.0))
-                        .then(|| "MeasurementReturnedInvalidPreselectedDuration".to_owned());
-                    (selected, failure)
-                }
-            }
-        };
-        let window_started = Instant::now();
-        let result = selection_failure.is_none().then(|| {
-            advance_geomorphic_window(
-                inputs,
-                &mut candidate,
-                inputs.initial_climate,
-                &mut accepted_duration_years,
-                &mut workspace,
-                &cancellation,
-            )
-        });
-        let kernel_micros = window_started.elapsed().as_micros();
-        let reached_elevation_boundary = result.as_ref().is_some_and(Result::is_ok)
-            && candidate
-                .terrain
-                .current_elevation_m()
-                .iter()
-                .any(|&value| value <= ELEVATION_MIN_M || value >= ELEVATION_MAX_M);
-        let invalid_duration = !accepted_duration_years.is_finite()
-            || accepted_duration_years <= 0.0
-            || accepted_duration_years > SURFACE_FORMATION_HORIZON_YEARS;
-        let typed_failure = match (selection_failure, result) {
-            (Some(error), _) => Some(error),
-            (None, Some(Err(error))) => Some(format!("{error:?}")),
-            (None, Some(Ok(_))) if reached_elevation_boundary => {
-                Some("MeasurementReachedElevationBoundary".to_owned())
-            }
-            (None, Some(Ok(_))) if invalid_duration => {
-                Some("MeasurementReturnedInvalidDuration".to_owned())
-            }
-            (None, Some(Ok(_))) => None,
-            (None, None) => Some("MeasurementSkippedProductionWindow".to_owned()),
-        };
-        let accepted = typed_failure.is_none();
-        let accepted_duration_years = if accepted {
-            accepted_duration_years
-        } else {
-            0.0
-        };
-        let accepted_window_count = u64::from(accepted);
-        let rejected_window_count = u64::from(!accepted);
-        let full_horizon_observed =
-            accepted_duration_years.to_bits() == SURFACE_FORMATION_HORIZON_YEARS.to_bits();
-        let estimated_window_count = accepted
-            .then(|| (SURFACE_FORMATION_HORIZON_YEARS / accepted_duration_years).ceil() as u64);
-        let accepted_window_micros = step_selection_micros
-            .checked_add(kernel_micros)
-            .expect("one observed P5 window duration fits in u128 microseconds");
-        let estimated_kernel_micros =
-            estimated_window_count.and_then(|count| kernel_micros.checked_mul(u128::from(count)));
-        let estimated_selection_micros = estimated_window_count
-            .and_then(|count| step_selection_micros.checked_mul(u128::from(count)));
-        let estimated_advance_micros = estimated_kernel_micros
-            .zip(estimated_selection_micros)
-            .and_then(|(kernel, selection)| kernel.checked_add(selection));
-        let incomplete_reason = if let Some(failure) = typed_failure.as_deref() {
-            Some(format!(
-                "one production window ended at typed failure {failure}"
-            ))
-        } else if full_horizon_observed {
-            None
-        } else {
-            Some("the one-window prefix did not consume the full formation horizon".to_owned())
-        };
-
-        serde_json::json!({
-            "schema_version": 1,
-            "machine_profile": format!(
-                "{}-{}-release",
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            ),
-            "seed": PRE_MIGRATION_SEED,
-            "quality_profile": NaturalQualityProfile::Draft,
-            "requested_duration_years": SURFACE_FORMATION_HORIZON_YEARS,
-            "upstream_setup_micros": fixture.setup_elapsed.as_micros(),
-            "identities": {
-                "surface_fingerprint": hex(&fixture.bundle.authoritative_surface().fingerprint()),
-                "profile_artifact_fingerprint": profile_artifact_fingerprint(
-                    NaturalQualityProfile::Draft,
-                ),
-                "forcing_fingerprint": hex(fixture.climate.checkpoint().forcing_fingerprint()),
-            },
-            "prefix": {
-                "accepted_duration_years": accepted_duration_years,
-                "accepted_window_count": accepted_window_count,
-                "rejected_window_count": rejected_window_count,
-                "wall_time_micros": accepted_window_micros,
-                "step_selection_micros": step_selection_micros,
-                "kernel_micros": kernel_micros,
-                "accepted_window_cost_summary": {
-                    "observed_window_count": accepted_window_count,
-                    "total_micros": accepted.then_some(accepted_window_micros),
-                    "minimum_micros": accepted.then_some(accepted_window_micros),
-                    "maximum_micros": accepted.then_some(accepted_window_micros),
-                    "mean_micros": accepted.then_some(accepted_window_micros as f64),
-                    "minimum_duration_years": accepted.then_some(accepted_duration_years),
-                    "maximum_duration_years": accepted.then_some(accepted_duration_years),
-                    "mean_duration_years": accepted.then_some(accepted_duration_years),
-                },
-                "completed_requested_duration": full_horizon_observed,
-                "incomplete_reason": incomplete_reason,
-                "typed_failure": typed_failure,
-            },
-            "full_cost_estimate": {
-                "basis": "linear projection from one production stable window; research evidence only, not an acceptance gate",
-                "estimated_accepted_window_count": estimated_window_count,
-                "estimated_step_selection_wall_time_micros": estimated_selection_micros,
-                "estimated_kernel_wall_time_micros": estimated_kernel_micros,
-                "estimated_advance_wall_time_micros": estimated_advance_micros,
-                "estimated_total_wall_time_micros": estimated_advance_micros
-                    .and_then(|value| value.checked_add(fixture.setup_elapsed.as_micros())),
-            },
-            "full_measurement_source": full_horizon_observed.then_some("prefix"),
-            "full_not_run_reason": (!full_horizon_observed).then_some(
-                "full repeated advance was not run because this probe retains only its mandatory one-window prefix"
-            ),
-            "full_horizon_observed": full_horizon_observed,
-        })
-    }
-
-    fn pre_migration_fixture(cancellation: &BuildCancellation) -> PreMigrationFixture {
-        let started = Instant::now();
-        let bundle = ProfileSurfaceBuilder::build(
-            NaturalQualityProfile::Draft,
-            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M)
-                .expect("the world reference radius is positive"),
-            cancellation,
-        )
-        .expect("the Draft production surface must build");
-        let formation = ResolvedWorldFormation::new(
-            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-            WorldFormationPreset::Continents,
-            ResolvedWorldFormationPreset::Continents,
-        )
-        .expect("the frozen Continents formation preset must resolve");
-        let mut evolved_rng = test_stage_rng(&EvolvedTectonicStage);
-        let evolved = EvolvedTectonicGenerator::generate(
-            &bundle,
-            &TectonicSpec::default(),
-            &formation,
-            &mut evolved_rng,
-        )
-        .expect("the Draft production tectonics must build");
-        let mut substrate_rng = test_stage_rng(&GeologicSubstrateStage);
-        let substrate = GeologicSubstrateGenerator::generate(
-            bundle.authoritative_surface(),
-            &evolved,
-            &GeologicSpec::default(),
-            &formation,
-            &mut substrate_rng,
-        )
-        .expect("the Draft production substrate must build");
-        let mut relief_rng = test_stage_rng(&PrimaryReliefStage);
-        let mut diagnostics = Vec::<Diagnostic>::new();
-        let relief = PrimaryReliefGenerator::generate(
-            bundle.authoritative_surface(),
-            &evolved,
-            &substrate,
-            &ReliefSpec::default(),
-            &mut relief_rng,
-            &mut diagnostics,
-        )
-        .expect("the Draft production relief must build");
-        let domain = ClimateWorkDomainBuilder::build(
-            bundle.authoritative_surface(),
-            NaturalQualityProfile::Draft,
-            cancellation,
-        )
-        .expect("the Draft climate work domain must build");
-        let climate_spec = ClimateSpec::default();
-        let forcing = GlobalClimateForcingBuilder::build(
-            bundle.authoritative_surface(),
-            &relief,
-            &climate_spec,
-            &domain,
-            cancellation,
-        )
-        .expect("the start-climate forcing must build");
-        let climate = GlobalCirculationGenerator::generate(
-            bundle.authoritative_surface(),
-            &domain,
-            &forcing,
-            ClimateModelProfile::C2LayeredV1,
-            cancellation,
-        )
-        .expect("the Draft start climate must build");
-        PreMigrationFixture {
-            bundle,
-            evolved,
-            substrate,
-            relief,
-            domain,
-            climate,
-            climate_spec,
-            formation_spec: HydroErosionSpec::default(),
-            setup_elapsed: started.elapsed(),
-        }
-    }
-
-    fn test_stage_rng(stage: &impl Stage) -> StageRng {
-        StageRng::from_seed(derive_stage_seed(
-            RootSeed::new(PRE_MIGRATION_SEED),
-            StageIdentity::new(stage.id().as_str(), stage.version(), stage.namespace()),
-        ))
-    }
-
-    fn profile_artifact_fingerprint(profile: NaturalQualityProfile) -> String {
-        let mut artifacts = BuildArtifacts::default();
-        artifacts
-            .insert(NaturalQualityProfileArtifact::new(profile))
-            .expect("the selected production profile artifact must validate");
-        hex(artifacts
-            .hash::<NaturalQualityProfileArtifact>()
-            .expect("the selected production profile artifact must hash")
-            .as_bytes())
-    }
-
-    fn hex(bytes: &[u8; 32]) -> String {
-        let mut encoded = String::with_capacity(64);
-        for byte in bytes {
-            write!(&mut encoded, "{byte:02x}").expect("writing into a String cannot fail");
-        }
-        encoded
-    }
-
-    fn assert_no_json_arrays(value: &serde_json::Value) {
-        match value {
-            serde_json::Value::Array(_) => {
-                panic!("the streaming cost probe must not retain terrain or history arrays")
-            }
-            serde_json::Value::Object(entries) => {
-                for child in entries.values() {
-                    assert_no_json_arrays(child);
-                }
-            }
-            _ => {}
-        }
     }
 }

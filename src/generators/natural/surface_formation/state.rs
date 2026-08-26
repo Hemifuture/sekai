@@ -1,11 +1,14 @@
 use thiserror::Error;
 
 use super::super::surface_water_geometry::SurfaceWaterWorkingGeometry;
+use crate::engine::BuildCancellation;
 use crate::world::natural::{
     formation_elevation_from_components, FormationElevationComponents, FormationSedimentFields,
-    PrimaryReliefSnapshot, SurfaceFormationValidationError, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FormationTerrainFields, PrimaryReliefSnapshot, SurfaceFormationValidationError,
+    WaterVolumeSolveError, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,11 +214,45 @@ impl FormationState {
         Ok(state)
     }
 
+    #[cfg(test)]
     pub(in crate::generators::natural) fn apply_tectonic_displacement_f64(
         &mut self,
         increments_m: &[f64],
     ) -> Result<(), FormationStateError> {
         self.apply_component(ComponentKind::TectonicDisplacement, increments_m)
+    }
+
+    /// Replaces the exact tectonic component with an analytically integrated target.
+    pub(in crate::generators::natural) fn replace_tectonic_displacement_f64(
+        &mut self,
+        targets_m: &[f64],
+    ) -> Result<(), FormationStateError> {
+        let expected = self.primary_elevation_m.len();
+        if targets_m.len() != expected {
+            return Err(FormationStateError::LengthMismatch {
+                field: "tectonic_displacement_m",
+                expected,
+                found: targets_m.len(),
+            });
+        }
+        for (index, &target_m) in targets_m.iter().enumerate() {
+            if !target_m.is_finite() {
+                return Err(FormationStateError::InvalidComponent {
+                    field: "tectonic_displacement_m",
+                    cell: CellId::from_raw(index as u32),
+                    found: target_m,
+                });
+            }
+            validate_elevation(
+                index,
+                self.elevation_with(index, ComponentKind::TectonicDisplacement, target_m),
+            )?;
+        }
+        self.tectonic_displacement_m.clone_from_slice(targets_m);
+        for index in 0..expected {
+            self.current_elevation_m[index] = self.elevation_at(index);
+        }
+        Ok(())
     }
 
     pub(in crate::generators::natural) fn apply_fluvial_erosion_f64(
@@ -441,9 +478,12 @@ impl FormationState {
         &self.current_elevation_m
     }
 
-    pub(super) fn wire_components(
-        &self,
-    ) -> Result<FormationElevationComponents, FormationStateError> {
+    /// Returns the exact accumulated tectonic displacement in metres.
+    pub(in crate::generators::natural) fn tectonic_displacement_m(&self) -> &[f64] {
+        &self.tectonic_displacement_m
+    }
+
+    fn wire_components(&self) -> Result<FormationElevationComponents, FormationStateError> {
         let primary_elevation_m = quantize(&self.primary_elevation_m);
         let tectonic_displacement_m = quantize(&self.tectonic_displacement_m);
         let fluvial_erosion_m = quantize(&self.fluvial_erosion_m);
@@ -479,6 +519,28 @@ impl FormationState {
             coastal_deposition_m,
             isostatic_response_m,
             final_elevation_m,
+        )?)
+    }
+
+    /// Projects the accepted exact state into the sole final wire terrain.
+    pub(super) fn project_final_terrain(
+        &self,
+        surface: &SphericalSurfaceSnapshot,
+        sediment: FormationSedimentFields,
+        cancellation: &BuildCancellation,
+    ) -> Result<FormationTerrainFields, FormationStateError> {
+        let components = self.wire_components()?;
+        let water = self.surface_water_geometry.to_wire(
+            surface,
+            components.final_elevation_m(),
+            cancellation,
+        )?;
+        Ok(FormationTerrainFields::new(
+            FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
+            components,
+            water,
+            self.surface_water_geometry.total_water_volume_m3(),
+            sediment,
         )?)
     }
 
@@ -631,6 +693,8 @@ pub(in crate::generators::natural) enum FormationStateError {
     },
     #[error(transparent)]
     InvalidWire(#[from] SurfaceFormationValidationError),
+    #[error(transparent)]
+    WaterProjection(#[from] WaterVolumeSolveError),
     #[error("formation elevation at {cell:?} is outside the supported domain: {found}")]
     ElevationOutOfRange { cell: CellId, found: f64 },
 }

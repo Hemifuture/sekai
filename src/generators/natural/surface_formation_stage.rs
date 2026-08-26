@@ -34,7 +34,7 @@ const INVALID_ARTIFACT_CODE: &str = "surface-formation.invalid-artifact";
 const INVALID_QUALITY_CODE: &str = "surface-formation.invalid-quality";
 const CANCELLED_CODE: &str = "engine.cancelled";
 
-/// Atomic publication of the converged P5 formation state and its verdict.
+/// Atomic publication of the finite-time P5 formation state and its verdict.
 ///
 /// The portable [`NaturalSurfaceFormationSnapshot`] stays strict serde data,
 /// but this trusted product envelope is Serialize-only: a decoded snapshot can
@@ -233,7 +233,7 @@ impl Stage for SurfaceFormationStage {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn namespace(&self) -> &'static str {

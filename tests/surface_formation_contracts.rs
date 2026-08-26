@@ -8,24 +8,17 @@ use sekai::world::natural::{
     expected_global_circulation_dense_state_bytes, surface_formation_model_fingerprint,
     surface_formation_state_fingerprint, ClimateBudgetReport, ClimateCapabilitySet,
     ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId,
-    ClimateRemapReport, ClimateSolveReport, FormationElevationComponents, FormationProcessRates,
-    FormationResiduals, FormationSedimentFields, FormationSolveReport, FormationTerrainFields,
+    ClimateRemapReport, ClimateSolveReport, FormationElevationComponents, FormationEvolutionReport,
+    FormationProcessRates, FormationResiduals, FormationSedimentFields, FormationTerrainFields,
     GlobalCirculationFields, GlobalCirculationSnapshot, HydrologySnapshot, MonthlyScalarField,
     MonthlyVector3Field, NaturalQualityProfile, NaturalSurfaceFormationSnapshot,
     ProductionIntegratorId, SedimentBudgetReport, SphericalHydrologySnapshot, StrahlerOrderField,
     SurfaceFormationCapabilityAvailability, SurfaceFormationCapabilityId,
     SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceWaterField, SurfaceWaterKind,
-    FORMATION_HILLSLOPE_CRITICAL_SLOPE, FORMATION_HILLSLOPE_DENOMINATOR_MIN,
-    FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, FORMATION_MINIMUM_LAKE_DEPTH_M,
-    FORMATION_RUNOFF_MIN_FRACTION, FORMATION_RUNOFF_PERMEABILITY_RANGE,
-    FORMATION_STREAM_POWER_AREA_EXPONENT, FORMATION_STREAM_POWER_ERODIBILITY_BASE,
-    FORMATION_STREAM_POWER_ERODIBILITY_RANGE, FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
-    FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN, FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM,
-    FORMATION_STREAM_POWER_SLOPE_EXPONENT, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
-    GLOBAL_CIRCULATION_SCHEMA_V2, HYDROLOGY_SCHEMA_V1, HYDROLOGY_SCHEMA_V2,
-    NATURAL_SURFACE_FORMATION_SCHEMA_V3, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
-    SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_MAX_CLIMATE_SOLVES,
+    FORMATION_TERRAIN_FIELDS_SCHEMA_V4, GLOBAL_CIRCULATION_SCHEMA_V2, HYDROLOGY_SCHEMA_V1,
+    HYDROLOGY_SCHEMA_V2, NATURAL_SURFACE_FORMATION_SCHEMA_V4, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
+    SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT};
@@ -41,6 +34,21 @@ fn surface() -> SphericalSurfaceSnapshot {
 fn upstreams() -> SurfaceFormationUpstreamFingerprints {
     SurfaceFormationUpstreamFingerprints::new(
         [1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32], [7; 32],
+    )
+    .unwrap()
+}
+
+fn upstreams_for_climate(
+    climate: &GlobalCirculationSnapshot,
+) -> SurfaceFormationUpstreamFingerprints {
+    SurfaceFormationUpstreamFingerprints::new(
+        [1; 32],
+        [2; 32],
+        [3; 32],
+        [4; 32],
+        [5; 32],
+        *climate.checkpoint().fingerprint(),
+        [7; 32],
     )
     .unwrap()
 }
@@ -282,18 +290,21 @@ fn serialized_p5_contract_retains_current_state_without_work_history() {
     let checkpoint_wire = serde_json::to_value(checkpoint).unwrap();
     assert!(checkpoint_wire.get("outer_iterations").is_none());
 
-    let report = FormationSolveReport::new(
-        8,
+    let report = FormationEvolutionReport::new(
         1,
+        SURFACE_FORMATION_HORIZON_YEARS,
         FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
         8_192,
     )
     .unwrap();
     let report_wire = serde_json::to_value(report).unwrap();
-    assert!(report_wire.get("terminal_residual").is_some());
+    assert!(report_wire.get("current_rates").is_some());
+    assert!(report_wire.get("accepted_surface_substeps").is_some());
+    assert!(report_wire.get("integrated_duration_years").is_some());
+    assert!(report_wire.get("terminal_residual").is_none());
     assert!(report_wire.get("residuals").is_none());
     assert!(report_wire.get("geomorphic_macro_steps").is_none());
-    let residual = report_wire["terminal_residual"].as_object().unwrap();
+    let residual = report_wire["current_rates"].as_object().unwrap();
     for current_field in [
         "net_surface_rate_rms_m_per_year",
         "gross_surface_rate_rms_m_per_year",
@@ -317,19 +328,6 @@ fn serialized_p5_contract_retains_current_state_without_work_history() {
 
 #[test]
 fn model_and_checkpoint_fingerprints_cover_exact_upstream_identity() {
-    assert_eq!(FORMATION_RUNOFF_MIN_FRACTION, 0.15);
-    assert_eq!(FORMATION_RUNOFF_PERMEABILITY_RANGE, 0.70);
-    assert_eq!(FORMATION_MINIMUM_LAKE_DEPTH_M, 1.0);
-    assert_eq!(FORMATION_STREAM_POWER_AREA_EXPONENT, 0.5);
-    assert_eq!(FORMATION_STREAM_POWER_SLOPE_EXPONENT, 1.0);
-    assert_eq!(FORMATION_STREAM_POWER_ERODIBILITY_BASE, 0.25);
-    assert_eq!(FORMATION_STREAM_POWER_ERODIBILITY_RANGE, 1.50);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, 1_000.0);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN, 0.10);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX, 4.0);
-    assert_eq!(FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, 5_000.0);
-    assert_eq!(FORMATION_HILLSLOPE_DENOMINATOR_MIN, 0.10);
-    assert!((FORMATION_HILLSLOPE_CRITICAL_SLOPE - 32.0_f64.to_radians().tan()).abs() < 1.0e-15);
     let source = surface();
     let upstream = upstreams();
     let first = SurfaceFormationCheckpoint::new(
@@ -455,13 +453,17 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
 }
 
 #[test]
-fn solve_budget_and_capability_reports_are_derived_and_strict() {
+fn evolution_budget_and_capability_reports_are_strict() {
     let terminal = FormationResiduals::new(1.0e-9, 1.0e-3, 2.0e-10, -3.0e-10, 1.0, 1.0e-6).unwrap();
-    let solve = FormationSolveReport::new(16, 2, terminal, 8_192).unwrap();
-    assert_eq!(solve.equilibrium_iterations(), 16);
-    assert_eq!(solve.climate_solve_count(), 2);
-    assert!(solve.converged());
-    assert!(solve.terminal_residual().normalized_max() <= 1.0);
+    let evolution =
+        FormationEvolutionReport::new(16, SURFACE_FORMATION_HORIZON_YEARS, terminal, 8_192)
+            .unwrap();
+    assert_eq!(evolution.accepted_surface_substeps(), 16);
+    assert_eq!(
+        evolution.integrated_duration_years().to_bits(),
+        SURFACE_FORMATION_HORIZON_YEARS.to_bits()
+    );
+    assert_eq!(evolution.current_rates(), &terminal);
 
     let produced = [50.0, 20.0, 10.0, 15.0, 5.0];
     let accounted = [50.0, 20.0, 10.0, 15.0, 5.0];
@@ -499,10 +501,9 @@ fn solve_budget_and_capability_reports_are_derived_and_strict() {
     forged_budget["deep_ocean_export_kg_per_year"] = serde_json::json!(60.0);
     assert!(serde_json::from_value::<SedimentBudgetReport>(forged_budget).is_err());
 
-    let mut oversized_solve = serde_json::to_value(&solve).unwrap();
-    oversized_solve["climate_solve_count"] =
-        serde_json::json!(SURFACE_FORMATION_MAX_CLIMATE_SOLVES + 1);
-    assert!(serde_json::from_value::<FormationSolveReport>(oversized_solve).is_err());
+    let mut invalid_evolution = serde_json::to_value(&evolution).unwrap();
+    invalid_evolution["accepted_surface_substeps"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<FormationEvolutionReport>(invalid_evolution).is_err());
 }
 
 #[test]
@@ -513,25 +514,26 @@ fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
     let hydrology = ocean_hydrology(&source);
     let climate = climate(&source);
     let state_fingerprint =
-        surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology, &climate);
+        surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology);
+    let upstream = upstreams_for_climate(&climate);
     let checkpoint = SurfaceFormationCheckpoint::new(
         SurfaceRef::for_spherical(&source),
         NaturalQualityProfile::Draft,
-        upstreams(),
+        upstream.clone(),
         state_fingerprint,
     )
     .unwrap();
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V3,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V4,
         SurfaceRef::for_spherical(&source),
         checkpoint,
         terrain,
         process_rates,
         hydrology,
         climate,
-        FormationSolveReport::new(
-            8,
+        FormationEvolutionReport::new(
             1,
+            SURFACE_FORMATION_HORIZON_YEARS,
             FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
             8_192,
         )
@@ -542,7 +544,7 @@ fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
     .unwrap();
     snapshot.validate_against(&source).unwrap();
     snapshot
-        .validate_against_inputs(&source, NaturalQualityProfile::Draft, &upstreams())
+        .validate_against_inputs(&source, NaturalQualityProfile::Draft, &upstream)
         .unwrap();
 
     let bytes = serde_json::to_vec(&snapshot).unwrap();

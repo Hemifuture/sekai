@@ -1,7 +1,7 @@
 //! Coupled P5 surface-formation kernels.
 
 mod coast;
-mod generation;
+pub(super) mod generation;
 mod hillslope;
 mod hydrology;
 mod isostasy;

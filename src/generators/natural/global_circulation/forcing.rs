@@ -328,7 +328,6 @@ impl GlobalClimateForcingBuilder {
     /// Builds the exact production P4 forcing from a validated intermediate
     /// P5 terrain. This remains crate-private so the public P4 product boundary
     /// continues to require the authoritative P3 relief identity.
-    #[allow(dead_code)] // consumed by the P5 compositor added in Task 7
     pub(crate) fn build_for_formation_terrain(
         surface: &SphericalSurfaceSnapshot,
         terrain: &FormationTerrainFields,
@@ -543,7 +542,6 @@ fn validate_common_inputs(
     })
 }
 
-#[allow(dead_code)] // consumed by the P5 compositor added in Task 7
 fn validate_formation_terrain_against_surface(
     surface: &SphericalSurfaceSnapshot,
     terrain: &FormationTerrainFields,
@@ -596,7 +594,6 @@ fn relief_fingerprint_impl(
     )
 }
 
-#[allow(dead_code)] // consumed by the P5 compositor added in Task 7
 fn formation_terrain_climate_fingerprint(
     surface_ref: SurfaceRef,
     surface_water_geometry: &SurfaceWaterGeometry,

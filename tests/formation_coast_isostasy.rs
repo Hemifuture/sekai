@@ -223,6 +223,24 @@ fn sediment_cover_shields_coast_without_changing_the_forcing_exposure() {
 }
 
 #[test]
+fn complete_coastal_cover_removal_preserves_the_exact_source_inventory() {
+    let surface = surface(10_000.0, 42);
+    let (land, mut fields) = exposed_coast(&surface);
+    let stock_kg = [3.000_000_000_000_000_4e-9, 0.0, 0.0, 0.0, 0.0];
+    fields.sediment_mass_by_source_kg[land] = stock_kg;
+
+    let result = CoastalExchange::advance(
+        &surface,
+        fields.inputs(),
+        1_000.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+
+    assert_eq!(result.sediment_stock_removed_by_source_kg()[land], stock_kg);
+}
+
+#[test]
 fn subcell_coast_responds_before_the_discrete_hydrology_terminal_changes() {
     let surface = surface(10_000.0, 42);
     let (land, baseline) = exposed_coast(&surface);
