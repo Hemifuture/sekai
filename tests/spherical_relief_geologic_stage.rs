@@ -53,7 +53,7 @@ fn formation() -> ResolvedWorldFormation {
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
     let version = match stage_id {
-        "natural.spherical-tectonics" => 4,
+        "natural.spherical-tectonics" => 5,
         "natural.spherical-relief" => 3,
         "natural.spherical-mantle" | "natural.spherical-geology" => 1,
         _ => panic!("unexpected spherical stage {stage_id}"),

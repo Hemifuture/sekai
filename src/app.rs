@@ -6,15 +6,17 @@ use thiserror::Error;
 mod amplified_mesh;
 mod field_document;
 mod frame_stats;
-#[cfg_attr(not(test), allow(dead_code))]
-mod legacy_display;
-mod natural_display;
 mod natural_field_payloads;
+mod pipeline;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
 mod spherical_presentation;
 
+pub use pipeline::{
+    default_spherical_space_spec, AppRuntimeGraph, PersistedWorldOrigin, WorldPipeline,
+    PRODUCT_DEFAULT_WORLD_SEED,
+};
 pub use spherical_formation_display::{
     FormationAreaSummary, P4WaterEnergySummary, SphericalFormationDisplayError,
     SphericalFormationFieldDocument,
@@ -33,81 +35,42 @@ pub use spherical_presentation::{
     SphericalWorldFieldDocument,
 };
 
-use field_document::{prepare_control_action, prepare_new_document_display, FieldDocument};
 use frame_stats::{emit_runtime_line, FrameSampler};
-use natural_display::{LegacyPlanarNaturalFieldDocument, NaturalDisplayError};
 
-use crate::world::spatial::Topology;
 use crate::{
-    engine::{
-        ArtifactError, BuildEngine, BuildFailure, BuildReport, ExternalArtifacts, GraphError,
-        MemoryStageCache,
-    },
-    generators::{
-        natural::{
-            legacy_planar_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-            GeologicArtifact, GeologicSpecArtifact, HydroErosionArtifact, HydroErosionSpecArtifact,
-            MantleArtifact, PreliminaryClimateArtifact, ReliefArtifact,
-            ResolvedWorldFormationArtifact, RulePackSetArtifact, TectonicArtifact,
-            TectonicRuleResolutionArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
-        },
-        spatial::{PlanarSpaceArtifact, SpatialArtifact},
-    },
-    gpu::field::CellFieldRenderer,
-    resource::{
-        CanvasStateResource, FieldDisplayResource, FieldRendererResource, FieldViewerStateResource,
-        SphericalPresentationResource,
-    },
-    rules::{
-        default_rule_pack_set, AuthorConstraints, BuiltinRuleError, ConstraintAdoptionOutcome,
-        ConstraintSource, RulePackSet, TectonicRuleResolution,
-    },
+    engine::MemoryStageCache,
+    resource::SphericalPresentationResource,
     ui::{
-        canvas::canvas::Canvas,
-        field::{
-            localization::{
-                localized_field_label, EARTH_REFERENCE_LABEL, P4_ASR_LABEL,
-                P4_EVAPORATION_MINUS_PRECIPITATION_LABEL, P4_GLOBAL_DAILY_MEAN_LABEL,
-                P4_GLOBAL_MEAN_LABEL, P4_OLR_LABEL, P4_PLANETARY_ALBEDO_LABEL,
-                P4_PRECIPITATION_REFERENCE_LABEL, P4_RADIATIVE_FLUX_UNIT,
-                P4_RELATIVE_CLOSURE_ERROR_LABEL, P4_TOA_NET_LABEL, P4_WATER_ENERGY_BUDGET_LABEL,
-                P4_WATER_FLUX_UNIT,
-            },
-            show_field_controls, show_field_inspector, FieldControlAction,
+        field::localization::{
+            localized_field_label, EARTH_REFERENCE_LABEL, P4_ASR_LABEL,
+            P4_EVAPORATION_MINUS_PRECIPITATION_LABEL, P4_GLOBAL_DAILY_MEAN_LABEL,
+            P4_GLOBAL_MEAN_LABEL, P4_OLR_LABEL, P4_PLANETARY_ALBEDO_LABEL,
+            P4_PRECIPITATION_REFERENCE_LABEL, P4_RADIATIVE_FLUX_UNIT,
+            P4_RELATIVE_CLOSURE_ERROR_LABEL, P4_TOA_NET_LABEL, P4_WATER_ENERGY_BUDGET_LABEL,
+            P4_WATER_FLUX_UNIT,
         },
         spherical::{
-            apply_spherical_canvas_action, interact_spherical_canvas, legacy_compatibility_ui,
+            apply_spherical_canvas_action, interact_spherical_canvas,
             queue_spherical_canvas_callback, show_spherical_controls, show_spherical_inspector,
             SphericalCanvasAction, SphericalInspectorCache,
         },
     },
-    view::{
-        DisplayPrepareError, DisplayRevisionClock, FieldDisplayState, PreparedFieldDisplay,
-        VectorGlyphLod,
-    },
+    view::{DisplayRevisionClock, VectorGlyphLod},
     world::{
         natural::{
             circulation_annual_evaporation_mm_field_id,
             circulation_annual_precipitation_mm_field_id,
             circulation_mean_absorbed_shortwave_w_m2_field_id,
             circulation_mean_outgoing_longwave_w_m2_field_id,
-            preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, ClimateSpec,
-            GeologicSpec, GeologicSpecError, HydroErosionSpec, NaturalSpecError, ReliefSpec,
-            ResolvedWorldFormation, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity,
-            TectonicSpec, WorldFormationPreset, WorldFormationSpec, WorldFormationSpecError,
-            MAX_CONTINENTAL_CRUST_FRACTION, MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION,
-            MIN_PLATE_COUNT,
+            preliminary_prevailing_wind_m_s_field_id, surface_elevation_m_field_id, GeologicSpec,
+            ReliefSpec, ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity,
+            TectonicSpec, WorldFormationPreset, WorldFormationSpec, MAX_CONTINENTAL_CRUST_FRACTION,
+            MAX_PLATE_COUNT, MIN_CONTINENTAL_CRUST_FRACTION, MIN_PLATE_COUNT,
         },
-        BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SpecError, TechnologyBaseline,
-        WorldSpec, WORLD_SPEC_SCHEMA_V1,
+        RootSeed,
     },
 };
 
-const DEFAULT_WORLD_WIDTH_M: f64 = 20_000_000.0;
-const DEFAULT_WORLD_HEIGHT_M: f64 = 10_000_000.0;
-const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
-/// Root seed used by a newly authored product world.
-pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 const CURRENT_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀";
 const FORMATION_SLICE_STATUS_TEXT: &str =
@@ -185,34 +148,6 @@ fn formation_authoring_control_state(
             land_fraction_enabled: true,
             continental_fraction_enabled: false,
         },
-    }
-}
-
-/// Which authoritative generation chain the spherical canvas builds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum WorldPipeline {
-    /// The formation product chain (P2v5→P5); the interactive product default.
-    Formation,
-    /// The legacy spherical natural-foundation chain.
-    ///
-    /// Kept for arbitrary-resolution worlds: the formation chain is bound to
-    /// the fixed quality-profile resolutions, so the 162-cell worlds used by
-    /// unit tests can only run here.
-    LegacyFoundation,
-}
-
-impl Default for WorldPipeline {
-    fn default() -> Self {
-        // Unit tests author tiny (162-cell) worlds that only the legacy chain
-        // accepts; the interactive product always starts on the formation chain.
-        #[cfg(test)]
-        {
-            Self::LegacyFoundation
-        }
-        #[cfg(not(test))]
-        {
-            Self::Formation
-        }
     }
 }
 
@@ -616,43 +551,11 @@ fn settle_world_build_stage_cache(
     }
 }
 
-/// Persisted provenance of the currently authored world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PersistedWorldOrigin {
-    /// A pre-spherical application state that must remain on the compatibility graph.
-    LegacyPlanarV1,
-    /// A world authored by the formal spherical natural graph.
-    SphericalV1,
-}
-
-fn missing_world_origin_is_legacy() -> PersistedWorldOrigin {
-    PersistedWorldOrigin::LegacyPlanarV1
-}
-
-/// The graph family selected for runtime initialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppRuntimeGraph {
-    /// The explicitly named planar compatibility graph.
-    LegacyPlanarFoundation,
-    /// The formal spherical natural foundation graph.
-    SphericalNaturalFoundation,
-    /// The formal formation-product graph (P2v5→P5).
-    SphericalFormation,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationFailurePoint {
     None,
     #[cfg(test)]
     GpuPrepare,
-}
-
-/// Returns the spherical space specification used by a newly authored product world.
-pub fn default_spherical_space_spec() -> crate::world::SphericalSpaceSpec {
-    crate::world::SphericalSpaceSpec {
-        radius: Meters::new(6_371_000.0).expect("the Earth-like default radius is valid"),
-        target_cell_count: DEFAULT_TARGET_CELL_COUNT,
-    }
 }
 
 fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCanvasState) {
@@ -664,82 +567,15 @@ fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCa
     canvas.replace_field_state(state);
 }
 
-mod spherical_space_spec_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use crate::world::{Meters, SphericalSpaceSpec};
-
-    #[derive(Serialize, Deserialize)]
-    struct Wire {
-        radius: f64,
-        target_cell_count: u32,
-    }
-
-    pub fn serialize<S>(spec: &SphericalSpaceSpec, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        Wire {
-            radius: spec.radius.get(),
-            target_cell_count: spec.target_cell_count,
-        }
-        .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<SphericalSpaceSpec, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = Wire::deserialize(deserializer)?;
-        let spec = SphericalSpaceSpec {
-            radius: Meters::new(wire.radius).map_err(serde::de::Error::custom)?,
-            target_cell_count: wire.target_cell_count,
-        };
-        spec.validate().map_err(serde::de::Error::custom)?;
-        Ok(spec)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct RuleBuildSummary {
-    active_pack_count: usize,
-    author_constraint_count: usize,
-    satisfied_constraint_count: usize,
-    compromised_constraint_count: usize,
-}
-
-impl RuleBuildSummary {
-    fn from_resolution(resolution: &TectonicRuleResolution) -> Self {
-        let mut summary = Self {
-            active_pack_count: resolution.resolved_packs().len(),
-            ..Self::default()
-        };
-        for adoption in resolution.adoptions() {
-            if matches!(adoption.source(), ConstraintSource::Author(_)) {
-                summary.author_constraint_count += 1;
-            }
-            match adoption.outcome() {
-                ConstraintAdoptionOutcome::Satisfied => {
-                    summary.satisfied_constraint_count += 1;
-                }
-                ConstraintAdoptionOutcome::Compromised => {
-                    summary.compromised_constraint_count += 1;
-                }
-            }
-        }
-        summary
-    }
-}
-
 /// Persisted UI state plus skipped runtime resources for the current natural slice.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TemplateApp {
-    #[serde(default = "missing_world_origin_is_legacy")]
+    #[serde(default = "pipeline::missing_world_origin_is_spherical")]
     world_origin: PersistedWorldOrigin,
     #[serde(
         default = "default_spherical_space_spec",
-        with = "spherical_space_spec_serde"
+        with = "pipeline::spherical_space_spec_serde"
     )]
     spherical_space_spec: crate::world::SphericalSpaceSpec,
     #[serde(default)]
@@ -772,10 +608,6 @@ pub struct TemplateApp {
     #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
     #[serde(skip)]
-    canvas_widget: Canvas,
-    #[serde(skip)]
-    field_renderer: Option<FieldRendererResource>,
-    #[serde(skip)]
     render_state: Option<RenderState>,
     #[serde(skip)]
     spherical_presentation: SphericalPresentationResource,
@@ -788,17 +620,7 @@ pub struct TemplateApp {
     #[serde(skip)]
     spherical_inspector_cache: SphericalInspectorCache,
     #[serde(skip)]
-    field_display: FieldDisplayResource,
-    #[serde(skip)]
-    field_viewer_state: FieldViewerStateResource,
-    #[serde(skip)]
-    legacy_planar_document: Option<LegacyPlanarNaturalFieldDocument>,
-    #[serde(skip)]
     stage_cache: MemoryStageCache,
-    #[serde(skip)]
-    display_revision_clock: DisplayRevisionClock,
-    #[serde(skip)]
-    rule_build_summary: RuleBuildSummary,
     #[serde(skip, default = "frame_stats::runtime_frame_sampler")]
     frame_sampler: FrameSampler,
     #[serde(skip)]
@@ -807,9 +629,6 @@ pub struct TemplateApp {
 
 impl Default for TemplateApp {
     fn default() -> Self {
-        let canvas_state = CanvasStateResource::default();
-        let field_display = FieldDisplayResource::default();
-        let field_viewer_state = FieldViewerStateResource::default();
         Self {
             world_origin: PersistedWorldOrigin::SphericalV1,
             spherical_space_spec: default_spherical_space_spec(),
@@ -828,24 +647,13 @@ impl Default for TemplateApp {
             formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
-            canvas_widget: Canvas::new(
-                canvas_state,
-                field_display.clone(),
-                field_viewer_state.clone(),
-            ),
-            field_renderer: None,
             render_state: None,
             spherical_presentation: SphericalPresentationResource::default(),
             active_runtime_graph: None,
             active_runtime_stage_ids: Vec::new(),
             spherical_runtime_error: None,
             spherical_inspector_cache: SphericalInspectorCache::default(),
-            field_display,
-            field_viewer_state,
-            legacy_planar_document: None,
             stage_cache: MemoryStageCache::new(),
-            display_revision_clock: DisplayRevisionClock::default(),
-            rule_build_summary: RuleBuildSummary::default(),
             frame_sampler: frame_stats::runtime_frame_sampler(),
             frame_stats_persisted_canvas_state: None,
         }
@@ -863,27 +671,12 @@ impl TemplateApp {
         &self.spherical_space_spec
     }
 
-    /// Returns the sole runtime graph family selected by persisted provenance.
+    /// Returns the runtime graph family for the current pipeline.
     pub const fn runtime_graph(&self) -> AppRuntimeGraph {
-        match self.world_origin {
-            PersistedWorldOrigin::LegacyPlanarV1 => AppRuntimeGraph::LegacyPlanarFoundation,
-            PersistedWorldOrigin::SphericalV1 => AppRuntimeGraph::SphericalNaturalFoundation,
+        match self.world_pipeline {
+            WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
+            WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         }
-    }
-
-    /// Returns the compatibility notice only for an explicitly legacy world.
-    pub const fn legacy_compatibility_notice(&self) -> Option<&'static str> {
-        match self.world_origin {
-            PersistedWorldOrigin::LegacyPlanarV1 => {
-                Some("此状态来自旧平面世界；可用当前作者参数显式重新生成球面世界。")
-            }
-            PersistedWorldOrigin::SphericalV1 => None,
-        }
-    }
-
-    /// Returns whether the one-way explicit spherical regeneration action is available.
-    pub const fn offers_regenerate_as_spherical(&self) -> bool {
-        matches!(self.world_origin, PersistedWorldOrigin::LegacyPlanarV1)
     }
 
     /// Returns the graph that actually produced the current runtime publication.
@@ -910,22 +703,16 @@ impl TemplateApp {
                 None => (Self::default(), None),
                 Some(_) => match eframe::get_value(storage, eframe::APP_KEY) {
                     Some(app) => (app, None),
-                    None => {
-                        let fallback = Self {
-                            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
-                            ..Self::default()
-                        };
-                        (
-                                fallback,
-                                Some(
-                                    "persisted application state is invalid; opened in legacy compatibility mode"
-                                        .to_owned(),
-                                ),
-                            )
-                    }
+                    None => (
+                        Self::default(),
+                        Some(
+                            "persisted application state is invalid; started a new spherical world"
+                                .to_owned(),
+                        ),
+                    ),
                 },
             };
-            app.field_renderer = None;
+            app.world_origin = PersistedWorldOrigin::SphericalV1;
             app.render_state = None;
             app.spherical_presentation = SphericalPresentationResource::default();
             app.active_runtime_graph = None;
@@ -959,17 +746,8 @@ impl TemplateApp {
                 }
             ));
         }
-        match (app.world_origin, cc.wgpu_render_state.as_ref()) {
-            (PersistedWorldOrigin::LegacyPlanarV1, render_state) => {
-                if let Some(render_state) = render_state {
-                    app.field_renderer = Some(app.create_field_renderer_resource(render_state));
-                }
-                app.generate_legacy_planar_natural_world();
-            }
-            (PersistedWorldOrigin::SphericalV1, Some(render_state)) => {
-                // Unit tests need the world synchronously; the interactive
-                // product defers to a worker thread so the window paints
-                // immediately with a progress indicator.
+        match cc.wgpu_render_state.as_ref() {
+            Some(render_state) => {
                 #[cfg(test)]
                 if let Err(error) =
                     app.try_start_spherical_world(render_state, MigrationFailurePoint::None)
@@ -982,43 +760,13 @@ impl TemplateApp {
                     app.request_spherical_world_build();
                 }
             }
-            (PersistedWorldOrigin::SphericalV1, None) => {
+            None => {
                 log::error!("spherical world requires the wgpu render state");
                 app.spherical_runtime_error =
                     Some("spherical world requires the wgpu render state".to_owned());
             }
         }
         app
-    }
-
-    /// Explicitly regenerates a legacy world as spherical using the real renderer adapter.
-    pub fn try_regenerate_as_spherical(
-        &mut self,
-        render_state: &RenderState,
-    ) -> Result<(), AppRuntimeError> {
-        self.validate_legacy_spherical_regeneration()?;
-        self.try_initialize_spherical_world(render_state, MigrationFailurePoint::None)
-    }
-
-    #[cfg(test)]
-    fn try_regenerate_as_spherical_with_failure(
-        &mut self,
-        render_state: &RenderState,
-        failure: MigrationFailurePoint,
-    ) -> Result<(), AppRuntimeError> {
-        self.validate_legacy_spherical_regeneration()?;
-        self.try_initialize_spherical_world(render_state, failure)
-    }
-
-    fn validate_legacy_spherical_regeneration(&self) -> Result<(), AppRuntimeError> {
-        let publication_present = self.spherical_presentation.read_resource(Option::is_some);
-        if self.world_origin != PersistedWorldOrigin::LegacyPlanarV1 || publication_present {
-            return Err(AppRuntimeError::InvalidSphericalRegenerationState {
-                origin: self.world_origin,
-                publication_present,
-            });
-        }
-        Ok(())
     }
 
     fn try_initialize_spherical_world(
@@ -1109,17 +857,6 @@ impl TemplateApp {
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
-        self.legacy_planar_document = None;
-        self.field_renderer = None;
-        self.field_display
-            .with_resource(|display| *display = Default::default());
-        self.field_viewer_state
-            .with_resource(|state| *state = Default::default());
-        render_state
-            .renderer
-            .write()
-            .callback_resources
-            .remove::<FieldRendererResource>();
         self.active_runtime_graph = Some(match self.world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
@@ -1885,18 +1622,9 @@ impl TemplateApp {
             return;
         };
         if matches!(action, SphericalCanvasAction::RegenerateAsSpherical) {
-            let result = match self.world_origin {
-                PersistedWorldOrigin::LegacyPlanarV1 => {
-                    self.try_regenerate_as_spherical(&render_state)
-                }
-                PersistedWorldOrigin::SphericalV1 => {
-                    // Spherical rebuilds run on a worker thread so the UI
-                    // keeps rendering the current world during the solve.
-                    self.request_spherical_world_build();
-                    Ok(())
-                }
-            };
-            self.spherical_runtime_error = result.err().map(|error| error.to_string());
+            // Rebuilds run on a worker thread so the UI keeps rendering
+            // the current world during the solve.
+            self.request_spherical_world_build();
             return;
         }
 
@@ -1965,44 +1693,39 @@ impl TemplateApp {
             self.apply_spherical_action(action);
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.world_origin {
-            PersistedWorldOrigin::LegacyPlanarV1 => {
-                ui.add(&mut self.canvas_widget);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let canvas_state = &mut self.spherical_canvas_state;
+            let output = self.spherical_presentation.read_resource(|current| {
+                current
+                    .as_ref()
+                    .map(|presentation| interact_spherical_canvas(ui, presentation, canvas_state))
+            });
+            let Some(output) = output else {
+                ui.centered_and_justified(|ui| {
+                    ui.label("球面世界尚未发布");
+                });
+                return;
+            };
+            let rect = output.response().rect;
+            for action in output.into_actions() {
+                self.apply_spherical_action(action);
             }
-            PersistedWorldOrigin::SphericalV1 => {
-                let canvas_state = &mut self.spherical_canvas_state;
-                let output = self.spherical_presentation.read_resource(|current| {
-                    current.as_ref().map(|presentation| {
-                        interact_spherical_canvas(ui, presentation, canvas_state)
-                    })
+            self.schedule_amplified_detail(rect);
+            let queued = self.spherical_presentation.read_resource(|current| {
+                current.as_ref().is_some_and(|presentation| {
+                    queue_spherical_canvas_callback(
+                        ui,
+                        presentation,
+                        &self.spherical_canvas_state,
+                        rect,
+                    );
+                    true
+                })
+            });
+            if !queued {
+                ui.centered_and_justified(|ui| {
+                    ui.label("球面世界尚未发布");
                 });
-                let Some(output) = output else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("球面世界尚未发布");
-                    });
-                    return;
-                };
-                let rect = output.response().rect;
-                for action in output.into_actions() {
-                    self.apply_spherical_action(action);
-                }
-                self.schedule_amplified_detail(rect);
-                let queued = self.spherical_presentation.read_resource(|current| {
-                    current.as_ref().is_some_and(|presentation| {
-                        queue_spherical_canvas_callback(
-                            ui,
-                            presentation,
-                            &self.spherical_canvas_state,
-                            rect,
-                        );
-                        true
-                    })
-                });
-                if !queued {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("球面世界尚未发布");
-                    });
-                }
             }
         });
     }
@@ -2027,160 +1750,6 @@ impl TemplateApp {
             .or_default()
             .insert(0, "noto_sans_sc".to_owned());
         ctx.set_fonts(fonts);
-    }
-
-    fn create_field_renderer_resource(&self, render_state: &RenderState) -> FieldRendererResource {
-        let renderer = CellFieldRenderer::new(&render_state.device, render_state.target_format);
-        let resource = FieldRendererResource::new(renderer);
-        render_state
-            .renderer
-            .write()
-            .callback_resources
-            .insert::<FieldRendererResource>(resource.clone());
-        resource
-    }
-
-    fn generate_legacy_planar_natural_world(&mut self) {
-        let world = default_world_spec(RootSeed::new(self.world_seed));
-        let tectonic = self.tectonic_spec.clone();
-        if let Err(error) = self.try_replace_legacy_planar_natural_world(&world, &tectonic) {
-            log::error!("natural world build failed: {error}");
-        }
-    }
-
-    fn try_replace_legacy_planar_natural_world(
-        &mut self,
-        world: &WorldSpec,
-        tectonic: &TectonicSpec,
-    ) -> Result<(), NaturalWorldBuildError> {
-        let current_state = self.field_viewer_state.read_resource(Clone::clone);
-        let geologic = self.geologic_spec.clone();
-        let candidate = build_legacy_planar_natural_candidate(
-            world,
-            &self.formation_spec,
-            tectonic,
-            &geologic,
-            &mut self.stage_cache,
-            &current_state,
-            &self.display_revision_clock,
-        );
-        self.publish_legacy_planar_natural_candidate(candidate)
-    }
-
-    #[cfg(test)]
-    fn try_replace_legacy_planar_natural_world_with_rule_inputs(
-        &mut self,
-        world: &WorldSpec,
-        tectonic: &TectonicSpec,
-        pack_set: RulePackSet,
-        author_constraints: AuthorConstraints,
-    ) -> Result<(), NaturalWorldBuildError> {
-        let current_state = self.field_viewer_state.read_resource(Clone::clone);
-        let geologic = self.geologic_spec.clone();
-        let candidate = build_legacy_planar_natural_candidate_with_rule_inputs(
-            world,
-            &self.formation_spec,
-            tectonic,
-            &geologic,
-            pack_set,
-            author_constraints,
-            &mut self.stage_cache,
-            &current_state,
-            &self.display_revision_clock,
-        );
-        self.publish_legacy_planar_natural_candidate(candidate)
-    }
-
-    fn publish_legacy_planar_natural_candidate(
-        &mut self,
-        candidate: Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError>,
-    ) -> Result<(), NaturalWorldBuildError> {
-        let candidate = match candidate {
-            Ok(candidate) => candidate,
-            Err(error) => {
-                self.field_display.with_resource(|resource| {
-                    resource
-                        .reject_runtime("natural.build", error.to_string())
-                        .expect("the built-in natural build status code is valid");
-                });
-                return Err(error);
-            }
-        };
-
-        let LegacyPlanarNaturalWorldCandidate {
-            document,
-            state,
-            packet,
-            clock,
-            report,
-            rule_summary,
-        } = candidate;
-        let stage_ids = report.stage_ids().into_iter().map(str::to_owned).collect();
-        for stage in report.stages() {
-            log::info!(
-                "natural stage {}: {:?}{}",
-                stage.stage_id(),
-                stage.duration(),
-                if stage.cache_hit() { " (cache)" } else { "" }
-            );
-        }
-        let cells = document.spatial.snapshot().cell_count();
-        let plates = document.tectonic.snapshot().plates().len();
-        let segments = document.tectonic.snapshot().boundary_segments().len();
-
-        self.legacy_planar_document = Some(document);
-        self.field_viewer_state
-            .with_resource(|current| *current = state);
-        self.field_display
-            .with_resource(|resource| resource.replace(packet));
-        self.display_revision_clock = clock;
-        self.rule_build_summary = rule_summary;
-        self.active_runtime_graph = Some(AppRuntimeGraph::LegacyPlanarFoundation);
-        self.active_runtime_stage_ids = stage_ids;
-        log::info!(
-            "published natural slice: {cells} cells, {plates} plates, {segments} boundary segments, {} rule packs",
-            rule_summary.active_pack_count
-        );
-        Ok(())
-    }
-
-    fn apply_field_control_action(&mut self, action: FieldControlAction) {
-        let Some(document) = self.legacy_planar_document.as_ref() else {
-            return;
-        };
-        if let FieldControlAction::InspectField(field) = action {
-            let is_registered = document
-                .catalog()
-                .ok()
-                .is_some_and(|catalog| catalog.get(&field).is_some());
-            if is_registered {
-                self.field_viewer_state
-                    .with_resource(|state| state.inspect_field(field));
-            }
-            return;
-        }
-
-        let Some(current) = self
-            .field_display
-            .read_resource(|resource| resource.current_cloned())
-        else {
-            return;
-        };
-        let mut next_state = self.field_viewer_state.read_resource(Clone::clone);
-        let mut next_clock = self.display_revision_clock.clone();
-        match prepare_control_action(document, &current, &mut next_state, &mut next_clock, action) {
-            Ok(packet) => {
-                self.field_viewer_state
-                    .with_resource(|state| *state = next_state);
-                self.field_display
-                    .with_resource(|resource| resource.replace(packet));
-                self.display_revision_clock = next_clock;
-            }
-            Err(error) => {
-                self.field_display
-                    .with_resource(|resource| resource.reject_prepare(error));
-            }
-        }
     }
 }
 
@@ -2274,7 +1843,6 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        let mut field_actions = Vec::new();
         let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
@@ -2431,90 +1999,44 @@ impl eframe::App for TemplateApp {
                     }
                     let _ = self.show_pending_world_build_status(ui);
 
-                    if let Some(compatibility) = legacy_compatibility_ui(self) {
+                    self.spherical_presentation.read_resource(|current| {
+                        let Some(presentation) = current.as_ref() else {
+                            return;
+                        };
                         ui.separator();
-                        ui.label(compatibility.notice());
-                        if ui.button(compatibility.action_label()).clicked() {
-                            spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
-                        }
-                    }
-
-                    if let Some(document) = self.legacy_planar_document.as_ref() {
-                        ui.separator();
-                        ui.label(format!(
-                            "{} 个单元｜{} 个板块｜{} 条边界段",
-                            document.spatial.snapshot().cell_count(),
-                            document.tectonic.snapshot().plates().len(),
-                            document.tectonic.snapshot().boundary_segments().len()
-                        ));
-                        ui.label(formation_provenance_label(document.formation.formation()));
-                        ui.label(format!(
-                            "规则包 {}｜作者约束 {}｜满足 {}｜妥协 {}",
-                            self.rule_build_summary.active_pack_count,
-                            self.rule_build_summary.author_constraint_count,
-                            self.rule_build_summary.satisfied_constraint_count,
-                            self.rule_build_summary.compromised_constraint_count,
-                        ));
-                        let catalog = document
-                            .catalog()
-                            .expect("the stored natural display document is validated");
-                        let state = self.field_viewer_state.read_resource(Clone::clone);
-                        field_actions.extend(show_field_controls(ui, &catalog, &state));
-                        ui.separator();
-                        let diagnostics: Vec<_> = document
-                            .diagnostics()
-                            .iter()
-                            .map(|diagnostic| diagnostic.as_ref())
-                            .collect();
-                        show_field_inspector(ui, &catalog, &state, &diagnostics);
-                    } else {
-                        self.spherical_presentation.read_resource(|current| {
-                            let Some(presentation) = current.as_ref() else {
-                                return;
-                            };
-                            ui.separator();
-                            ui.label(match presentation.document().quality_profile() {
-                                Some(profile) => format!(
-                                    "{} 个球面单元｜{}｜单位球呈现",
-                                    presentation.globe().cell_count(),
-                                    quality_tier_short_label(profile),
-                                ),
-                                None => format!(
-                                    "{} 个球面单元｜单位球呈现",
-                                    presentation.globe().cell_count()
-                                ),
-                            });
-                            show_spherical_area_summary(ui, presentation.document());
-                            match show_spherical_controls(
-                                ui,
-                                presentation,
-                                &self.spherical_canvas_state,
-                            ) {
-                                Ok(actions) => spherical_actions.extend(actions),
-                                Err(error) => {
-                                    ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
-                                }
-                            }
-                            match self.spherical_inspector_cache.model(
-                                presentation,
-                                self.spherical_canvas_state.field_state(),
-                                self.spherical_canvas_state.view_mode(),
-                            ) {
-                                Ok(model) => show_spherical_inspector(ui, model),
-                                Err(error) => {
-                                    ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
-                                }
-                            }
+                        ui.label(match presentation.document().quality_profile() {
+                            Some(profile) => format!(
+                                "{} 个球面单元｜{}｜单位球呈现",
+                                presentation.globe().cell_count(),
+                                quality_tier_short_label(profile),
+                            ),
+                            None => format!(
+                                "{} 个球面单元｜单位球呈现",
+                                presentation.globe().cell_count()
+                            ),
                         });
-                    }
-
-                    if let Some(status) = self
-                        .field_display
-                        .read_resource(|display| display.error().map(ToString::to_string))
-                    {
-                        ui.separator();
-                        ui.colored_label(egui::Color32::LIGHT_RED, status);
-                    }
+                        show_spherical_area_summary(ui, presentation.document());
+                        match show_spherical_controls(
+                            ui,
+                            presentation,
+                            &self.spherical_canvas_state,
+                        ) {
+                            Ok(actions) => spherical_actions.extend(actions),
+                            Err(error) => {
+                                ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                            }
+                        }
+                        match self.spherical_inspector_cache.model(
+                            presentation,
+                            self.spherical_canvas_state.field_state(),
+                            self.spherical_canvas_state.view_mode(),
+                        ) {
+                            Ok(model) => show_spherical_inspector(ui, model),
+                            Err(error) => {
+                                ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                            }
+                        }
+                    });
                     if let Some(status) = self.spherical_runtime_error.as_deref() {
                         ui.separator();
                         ui.colored_label(egui::Color32::LIGHT_RED, status);
@@ -2541,22 +2063,12 @@ impl eframe::App for TemplateApp {
         // now, and this pass's actions and canvas then see the settled world.
         self.poll_world_build(ctx);
 
-        for action in field_actions {
-            self.apply_field_control_action(action);
-        }
         if new_seed {
             self.world_seed = rand::random();
             rebuild = true;
         }
         if rebuild {
-            match self.world_origin {
-                PersistedWorldOrigin::LegacyPlanarV1 => {
-                    self.generate_legacy_planar_natural_world();
-                }
-                PersistedWorldOrigin::SphericalV1 => {
-                    spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
-                }
-            }
+            spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
         }
 
         self.show_active_canvas_after_actions(ctx, std::mem::take(&mut spherical_actions));
@@ -2720,31 +2232,6 @@ fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
     }
 }
 
-fn resolved_formation_preset_label(preset: ResolvedWorldFormationPreset) -> &'static str {
-    match preset {
-        ResolvedWorldFormationPreset::Continents => "多大陆",
-        ResolvedWorldFormationPreset::Archipelago => "群岛",
-        ResolvedWorldFormationPreset::Supercontinent => "超级大陆",
-        ResolvedWorldFormationPreset::GreatIsland => "大岛与卫星岛",
-        ResolvedWorldFormationPreset::VolcanicIslands => "火山群岛",
-    }
-}
-
-fn formation_provenance_label(formation: &ResolvedWorldFormation) -> String {
-    if formation.requested() == WorldFormationPreset::Random {
-        format!(
-            "世界形态：{} → {}",
-            formation_preset_label(formation.requested()),
-            resolved_formation_preset_label(formation.resolved())
-        )
-    } else {
-        format!(
-            "世界形态：{}",
-            formation_preset_label(formation.requested())
-        )
-    }
-}
-
 fn apply_formation_preset_selection(
     formation: &mut WorldFormationSpec,
     tectonic: &mut TectonicSpec,
@@ -2767,163 +2254,6 @@ fn apply_formation_preset_selection(
         relief.target_land_fraction = resolved.recommended_land_fraction();
     }
 }
-
-fn default_world_spec(root_seed: RootSeed) -> WorldSpec {
-    WorldSpec {
-        schema_version: WORLD_SPEC_SCHEMA_V1,
-        root_seed,
-        space: PlanarSpaceSpec {
-            width: Meters::new(DEFAULT_WORLD_WIDTH_M)
-                .expect("the built-in world width is finite and positive"),
-            height: Meters::new(DEFAULT_WORLD_HEIGHT_M)
-                .expect("the built-in world height is finite and positive"),
-            target_cell_count: DEFAULT_TARGET_CELL_COUNT,
-            boundary: BoundaryCondition::Closed,
-        },
-        technology: TechnologyBaseline::PreIndustrialMedieval,
-    }
-}
-
-fn build_legacy_planar_natural_external_artifacts(
-    world: &WorldSpec,
-    formation: &WorldFormationSpec,
-    tectonic: &TectonicSpec,
-    geologic: &GeologicSpec,
-) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
-    build_legacy_planar_natural_external_artifacts_with_rule_inputs(
-        world,
-        formation,
-        tectonic,
-        geologic,
-        default_rule_pack_set()?,
-        AuthorConstraints::default(),
-    )
-}
-
-fn build_legacy_planar_natural_external_artifacts_with_rule_inputs(
-    world: &WorldSpec,
-    formation: &WorldFormationSpec,
-    tectonic: &TectonicSpec,
-    geologic: &GeologicSpec,
-    pack_set: RulePackSet,
-    author_constraints: AuthorConstraints,
-) -> Result<ExternalArtifacts, NaturalWorldBuildError> {
-    world.validate()?;
-    formation.validate()?;
-    tectonic.validate()?;
-    geologic.validate()?;
-    let mut external = ExternalArtifacts::new();
-    external.insert(PlanarSpaceArtifact::new(world.space.clone()))?;
-    external.insert(TectonicSpecArtifact::new(tectonic.clone()))?;
-    external.insert(GeologicSpecArtifact::new(geologic.clone()))?;
-    external.insert(ClimateSpecArtifact::new(ClimateSpec::default()))?;
-    external.insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))?;
-    external.insert(WorldFormationSpecArtifact::new(formation.clone()))?;
-    external.insert(RulePackSetArtifact::new(pack_set))?;
-    external.insert(AuthorConstraintsArtifact::new(author_constraints))?;
-    Ok(external)
-}
-
-fn build_legacy_planar_natural_candidate(
-    world: &WorldSpec,
-    formation: &WorldFormationSpec,
-    tectonic: &TectonicSpec,
-    geologic: &GeologicSpec,
-    cache: &mut MemoryStageCache,
-    current_state: &FieldDisplayState,
-    clock: &DisplayRevisionClock,
-) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
-    let external =
-        build_legacy_planar_natural_external_artifacts(world, formation, tectonic, geologic)?;
-    build_legacy_planar_natural_candidate_from_external(
-        world.root_seed,
-        external,
-        cache,
-        current_state,
-        clock,
-    )
-}
-
-#[cfg(test)]
-fn build_legacy_planar_natural_candidate_with_rule_inputs(
-    world: &WorldSpec,
-    formation: &WorldFormationSpec,
-    tectonic: &TectonicSpec,
-    geologic: &GeologicSpec,
-    pack_set: RulePackSet,
-    author_constraints: AuthorConstraints,
-    cache: &mut MemoryStageCache,
-    current_state: &FieldDisplayState,
-    clock: &DisplayRevisionClock,
-) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
-    let external = build_legacy_planar_natural_external_artifacts_with_rule_inputs(
-        world,
-        formation,
-        tectonic,
-        geologic,
-        pack_set,
-        author_constraints,
-    )?;
-    build_legacy_planar_natural_candidate_from_external(
-        world.root_seed,
-        external,
-        cache,
-        current_state,
-        clock,
-    )
-}
-
-fn build_legacy_planar_natural_candidate_from_external(
-    root_seed: RootSeed,
-    external: ExternalArtifacts,
-    cache: &mut MemoryStageCache,
-    current_state: &FieldDisplayState,
-    clock: &DisplayRevisionClock,
-) -> Result<LegacyPlanarNaturalWorldCandidate, NaturalWorldBuildError> {
-    let outcome = BuildEngine::new(legacy_planar_natural_foundation_graph()?)
-        .build(root_seed, external, cache)?;
-    let rule_resolution = outcome.artifacts.get::<TectonicRuleResolutionArtifact>()?;
-    let rule_summary = RuleBuildSummary::from_resolution(rule_resolution.resolution());
-    let spatial = outcome.artifacts.get::<SpatialArtifact>()?;
-    let formation = outcome.artifacts.get::<ResolvedWorldFormationArtifact>()?;
-    let tectonic = outcome.artifacts.get::<TectonicArtifact>()?;
-    let mantle = outcome.artifacts.get::<MantleArtifact>()?;
-    let relief = outcome.artifacts.get::<ReliefArtifact>()?;
-    let geology = outcome.artifacts.get::<GeologicArtifact>()?;
-    let climate = outcome.artifacts.get::<PreliminaryClimateArtifact>()?;
-    let hydro_erosion = outcome.artifacts.get::<HydroErosionArtifact>()?;
-    let document = LegacyPlanarNaturalFieldDocument::build(
-        spatial,
-        formation,
-        tectonic,
-        mantle,
-        relief,
-        geology,
-        climate,
-        hydro_erosion,
-        &outcome.report,
-    )?;
-    let mut next_clock = clock.clone();
-    let (state, packet) = prepare_new_document_display(&document, current_state, &mut next_clock)?;
-    Ok(LegacyPlanarNaturalWorldCandidate {
-        document,
-        state,
-        packet,
-        clock: next_clock,
-        report: outcome.report,
-        rule_summary,
-    })
-}
-
-struct LegacyPlanarNaturalWorldCandidate {
-    document: LegacyPlanarNaturalFieldDocument,
-    state: FieldDisplayState,
-    packet: Arc<PreparedFieldDisplay>,
-    clock: DisplayRevisionClock,
-    report: BuildReport,
-    rule_summary: RuleBuildSummary,
-}
-
 /// Runtime initialization or explicit spherical-regeneration failures.
 #[derive(Debug, Error)]
 pub enum AppRuntimeError {
@@ -2939,40 +2269,6 @@ pub enum AppRuntimeError {
     /// The spherical callback renderer was not registered.
     #[error("spherical callback renderer is not registered")]
     MissingSphericalRenderer,
-    /// The one-way legacy migration was requested outside its sole valid runtime state.
-    #[error(
-        "spherical regeneration requires LegacyPlanarV1 with no spherical publication (origin: {origin:?}, publication present: {publication_present})"
-    )]
-    InvalidSphericalRegenerationState {
-        /// Persisted origin observed before any build or GPU work.
-        origin: PersistedWorldOrigin,
-        /// Whether an authoritative spherical publication already exists.
-        publication_present: bool,
-    },
-}
-
-#[derive(Debug, Error)]
-enum NaturalWorldBuildError {
-    #[error(transparent)]
-    WorldSpec(#[from] SpecError),
-    #[error(transparent)]
-    TectonicSpec(#[from] NaturalSpecError),
-    #[error(transparent)]
-    WorldFormationSpec(#[from] WorldFormationSpecError),
-    #[error(transparent)]
-    GeologicSpec(#[from] GeologicSpecError),
-    #[error(transparent)]
-    BuiltinRules(#[from] BuiltinRuleError),
-    #[error(transparent)]
-    Artifact(#[from] ArtifactError),
-    #[error(transparent)]
-    Graph(#[from] GraphError),
-    #[error(transparent)]
-    Build(#[from] BuildFailure),
-    #[error(transparent)]
-    NaturalDisplay(#[from] NaturalDisplayError),
-    #[error(transparent)]
-    Display(#[from] DisplayPrepareError),
 }
 
 #[cfg(test)]
@@ -2980,35 +2276,21 @@ mod natural_app_tests {
     use std::sync::Arc;
 
     use super::{
-        apply_formation_preset_selection, build_legacy_planar_natural_external_artifacts,
-        build_spherical_presentation_candidate_for_view, configure_frame_stats_scenario,
-        default_world_spec, formation_authoring_control_state, formation_provenance_label,
+        apply_formation_preset_selection, build_spherical_presentation_candidate_for_view,
+        configure_frame_stats_scenario, formation_authoring_control_state,
         prepare_pending_world_build, settle_world_build_stage_cache, show_formation_area_summary,
-        show_spherical_area_summary, AppRuntimeError, AppRuntimeGraph, DisplayRevisionClock,
-        FormationAreaSummary, MigrationFailurePoint, NaturalWorldBuildError, P4WaterEnergySummary,
-        PersistedWorldOrigin, PublishedSphericalPresentation, SphericalPresentationCandidate,
-        SphericalWorldAreaSummary, TemplateApp, WorldBuildCompletion, WorldPipeline,
-        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, DEFAULT_TARGET_CELL_COUNT,
+        show_spherical_area_summary, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
+        P4WaterEnergySummary, PersistedWorldOrigin, PublishedSphericalPresentation,
+        SphericalPresentationCandidate, SphericalWorldAreaSummary, TemplateApp,
+        WorldBuildCompletion, WorldPipeline, CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE,
         INITIAL_PLATE_COUNT_LABEL,
     };
-    use crate::engine::{BuildCancellation, ExternalArtifacts, MemoryStageCache};
-    use crate::generators::natural::{
-        AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact,
-        HydroErosionSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact,
-        WorldFormationSpecArtifact,
-    };
-    use crate::generators::spatial::PlanarSpaceArtifact;
-    use crate::rules::{
-        default_rule_pack_set, earthlike_rule_pack, AuthorConstraint, AuthorConstraints,
-        CapabilityContribution, ConstraintStrength, CoreSchemaRange, RuleItemId, RulePack,
-        RulePackId, RulePackKind, RulePackSet, RuleTectonicConstraint, RuleVersion,
-        TectonicConstraintClause, AUTHOR_CONSTRAINTS_SCHEMA_V1,
-    };
+    use crate::engine::{BuildCancellation, MemoryStageCache};
     use crate::ui::spherical::{
         SphericalCanvasAction, SphericalCanvasState, SphericalInspectorCache,
     };
     use crate::view::{
-        FieldDisplayResourceState, OwnedViewDiagnostic, PreparedSphericalOverlay,
+        DisplayRevisionClock, OwnedViewDiagnostic, PreparedSphericalOverlay,
         SphericalProjectionKind, SphericalViewMode, VectorGlyphLod, ViewDiagnosticSeverity,
     };
     use crate::world::fields::FieldId;
@@ -3016,12 +2298,9 @@ mod natural_app_tests {
         boundary_strength_field_id, land_ocean_field_id,
         preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
         spherical_formation_field_registry, surface_elevation_m_field_id, ClimateBudgetReport,
-        ClimateSpec, GeologicSpec, HydroErosionSpec, MantleActivity, ReliefSpec,
-        ResolvedWorldFormationPreset, SeaLevelPolicy, TectonicActivity, TectonicSpec,
-        WorldFormationPreset, WorldFormationSpec,
+        ReliefSpec, SeaLevelPolicy, TectonicSpec, WorldFormationPreset, WorldFormationSpec,
     };
-    use crate::world::spatial::Topology;
-    use crate::world::{AuthorObjectId, RootSeed, TechnologyBaseline};
+    use crate::world::RootSeed;
 
     fn p4_budget_fixture() -> P4WaterEnergySummary {
         P4WaterEnergySummary::from_budget_report(
@@ -3130,59 +2409,14 @@ mod natural_app_tests {
         assert_eq!(app.spherical_canvas_state, measured);
     }
 
-    fn create_from_persisted(
-        mut persisted: TemplateApp,
-        render_state: &eframe::egui_wgpu::RenderState,
-    ) -> TemplateApp {
-        persisted.spherical_space_spec.target_cell_count = 162;
-        let mut storage = TestStorage::default();
-        eframe::set_value(&mut storage, eframe::APP_KEY, &persisted);
-        let restored: TemplateApp =
-            eframe::get_value(&storage, eframe::APP_KEY).unwrap_or_else(|| {
-                panic!(
-                "the Task 10 persisted app fixture must round-trip through eframe storage: {:?}",
-                storage.0.get(eframe::APP_KEY)
-            )
-            });
-        assert_eq!(restored.world_origin, persisted.world_origin);
-        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
-        cc.storage = Some(&storage);
-        cc.wgpu_render_state = Some(render_state.clone());
-        TemplateApp::new(&cc)
-    }
-
     #[test]
-    fn template_app_new_executes_only_the_persisted_origin_graph() {
+    fn template_app_new_executes_the_spherical_origin_graph() {
         let render_state = request_test_render_state();
-
-        let legacy = TemplateApp {
-            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
-            ..TemplateApp::default()
-        };
-        let legacy = create_from_persisted(legacy, &render_state);
-        assert_eq!(
-            legacy.active_runtime_graph(),
-            Some(AppRuntimeGraph::LegacyPlanarFoundation)
-        );
-        assert!(legacy.legacy_planar_document.is_some());
-        assert!(legacy.spherical_presentation.read_resource(Option::is_none));
-        assert!(legacy
-            .active_runtime_stage_ids()
-            .unwrap()
-            .iter()
-            .any(|stage| stage == "spatial.planar-voronoi"));
-        assert!(legacy
-            .active_runtime_stage_ids()
-            .unwrap()
-            .iter()
-            .all(|stage| !stage.starts_with("natural.spherical-")));
-
         let spherical = create_from_persisted(TemplateApp::default(), &render_state);
         assert_eq!(
             spherical.active_runtime_graph(),
             Some(AppRuntimeGraph::SphericalNaturalFoundation)
         );
-        assert!(spherical.legacy_planar_document.is_none());
         assert!(spherical
             .spherical_presentation
             .read_resource(Option::is_some));
@@ -3202,6 +2436,27 @@ mod natural_app_tests {
             .callback_resources
             .get::<crate::gpu::spherical::SphericalFieldRenderer>()
             .is_some());
+    }
+
+    fn create_from_persisted(
+        mut persisted: TemplateApp,
+        render_state: &eframe::egui_wgpu::RenderState,
+    ) -> TemplateApp {
+        persisted.spherical_space_spec.target_cell_count = 162;
+        let mut storage = TestStorage::default();
+        eframe::set_value(&mut storage, eframe::APP_KEY, &persisted);
+        let restored: TemplateApp =
+            eframe::get_value(&storage, eframe::APP_KEY).unwrap_or_else(|| {
+                panic!(
+                "the Task 10 persisted app fixture must round-trip through eframe storage: {:?}",
+                storage.0.get(eframe::APP_KEY)
+            )
+            });
+        assert_eq!(restored.world_origin, persisted.world_origin);
+        let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
+        cc.storage = Some(&storage);
+        cc.wgpu_render_state = Some(render_state.clone());
+        TemplateApp::new(&cc)
     }
 
     #[test]
@@ -3289,130 +2544,6 @@ mod natural_app_tests {
                 );
             });
         }
-    }
-
-    #[test]
-    fn corrupt_present_storage_recovers_visibly_to_legacy_without_implicit_spherical_build() {
-        let render_state = request_test_render_state();
-        let mut valid = TemplateApp::default();
-        valid.spherical_space_spec.target_cell_count = 162;
-        let mut valid_storage = TestStorage::default();
-        eframe::set_value(&mut valid_storage, eframe::APP_KEY, &valid);
-        let valid_wire = eframe::Storage::get_string(&valid_storage, eframe::APP_KEY).unwrap();
-
-        for (from, to) in [
-            ("equal_earth_zoom:1.0", "equal_earth_zoom:-1.0"),
-            ("vector_display_speed:1.0", "vector_display_speed:9.0"),
-            ("radius:6371000.0", "radius:-1.0"),
-            ("world_origin:SphericalV1", "world_origin:FutureSphericalV2"),
-        ] {
-            let corrupt = valid_wire.replacen(from, to, 1);
-            assert_ne!(corrupt, valid_wire, "fixture must corrupt `{from}`");
-            let mut storage = TestStorage::default();
-            eframe::Storage::set_string(&mut storage, eframe::APP_KEY, corrupt);
-            let mut cc = eframe::CreationContext::_new_kittest(egui::Context::default());
-            cc.storage = Some(&storage);
-            cc.wgpu_render_state = Some(render_state.clone());
-            let app = TemplateApp::new(&cc);
-            assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
-            assert_eq!(
-                app.active_runtime_graph(),
-                Some(AppRuntimeGraph::LegacyPlanarFoundation)
-            );
-            assert!(app.legacy_planar_document.is_some());
-            assert!(app.spherical_presentation.read_resource(Option::is_none));
-            assert!(app
-                .spherical_runtime_error
-                .as_deref()
-                .is_some_and(|message| message.contains("persisted")));
-        }
-    }
-
-    #[test]
-    fn explicit_legacy_regeneration_is_atomic_across_build_gpu_failure_and_success() {
-        let render_state = request_test_render_state();
-        let persisted = TemplateApp {
-            world_origin: PersistedWorldOrigin::LegacyPlanarV1,
-            ..TemplateApp::default()
-        };
-        let mut app = create_from_persisted(persisted, &render_state);
-        let spatial_before = Arc::clone(
-            &app.legacy_planar_document
-                .as_ref()
-                .expect("legacy runtime is published")
-                .spatial,
-        );
-        let packet_before = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        let runtime_stage_ids_before = app.active_runtime_stage_ids().unwrap().to_vec();
-
-        app.spherical_space_spec.target_cell_count = 1;
-        assert!(app.try_regenerate_as_spherical(&render_state).is_err());
-        assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
-        assert_eq!(
-            app.active_runtime_graph(),
-            Some(AppRuntimeGraph::LegacyPlanarFoundation)
-        );
-        assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert!(Arc::ptr_eq(
-            &spatial_before,
-            &app.legacy_planar_document.as_ref().unwrap().spatial
-        ));
-        assert!(Arc::ptr_eq(
-            &packet_before,
-            &app.field_display
-                .read_resource(FieldDisplayResourceState::current_cloned)
-                .unwrap()
-        ));
-        assert_eq!(
-            app.active_runtime_stage_ids(),
-            Some(runtime_stage_ids_before.as_slice())
-        );
-
-        app.spherical_space_spec.target_cell_count = 162;
-        assert!(app
-            .try_regenerate_as_spherical_with_failure(
-                &render_state,
-                MigrationFailurePoint::GpuPrepare,
-            )
-            .is_err());
-        assert_eq!(app.world_origin, PersistedWorldOrigin::LegacyPlanarV1);
-        assert_eq!(
-            app.active_runtime_graph(),
-            Some(AppRuntimeGraph::LegacyPlanarFoundation)
-        );
-        assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert!(Arc::ptr_eq(
-            &spatial_before,
-            &app.legacy_planar_document.as_ref().unwrap().spatial
-        ));
-        assert!(Arc::ptr_eq(
-            &packet_before,
-            &app.field_display
-                .read_resource(FieldDisplayResourceState::current_cloned)
-                .unwrap()
-        ));
-        assert_eq!(
-            app.active_runtime_stage_ids(),
-            Some(runtime_stage_ids_before.as_slice())
-        );
-
-        app.try_regenerate_as_spherical(&render_state).unwrap();
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert_eq!(
-            app.active_runtime_graph(),
-            Some(AppRuntimeGraph::SphericalNaturalFoundation)
-        );
-        assert!(app.legacy_planar_document.is_none());
-        assert!(app.field_renderer.is_none());
-        assert!(app.spherical_presentation.read_resource(Option::is_some));
-        assert!(app
-            .active_runtime_stage_ids()
-            .unwrap()
-            .iter()
-            .any(|stage| stage == "spatial.spherical-voronoi"));
     }
 
     #[test]
@@ -4662,7 +3793,6 @@ mod natural_app_tests {
 
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
         assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert!(app.legacy_planar_document.is_none());
         assert_eq!(app.active_runtime_graph(), None);
         assert!(app.spherical_runtime_error.as_deref().is_some());
 
@@ -4676,7 +3806,6 @@ mod natural_app_tests {
             Some(AppRuntimeGraph::SphericalNaturalFoundation)
         );
         assert!(app.spherical_presentation.read_resource(Option::is_some));
-        assert!(app.legacy_planar_document.is_none());
         assert!(render_state
             .renderer
             .read()
@@ -4698,7 +3827,6 @@ mod natural_app_tests {
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
         assert!(app.spherical_runtime_error.as_deref().is_some());
         assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert!(app.legacy_planar_document.is_none());
         assert!(render_state
             .renderer
             .read()
@@ -4731,10 +3859,6 @@ mod natural_app_tests {
             ),
             (
                 PersistedWorldOrigin::SphericalV1,
-                SphericalCanvasAction::RegenerateAsSpherical,
-            ),
-            (
-                PersistedWorldOrigin::LegacyPlanarV1,
                 SphericalCanvasAction::RegenerateAsSpherical,
             ),
         ] {
@@ -5382,75 +4506,6 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn public_legacy_regeneration_rejects_an_existing_spherical_publication_without_side_effects() {
-        let render_state = request_test_render_state();
-        let mut unpublished_spherical = TemplateApp::default();
-        unpublished_spherical.spherical_space_spec.target_cell_count = 1;
-        assert!(matches!(
-            unpublished_spherical.try_regenerate_as_spherical(&render_state),
-            Err(AppRuntimeError::InvalidSphericalRegenerationState {
-                origin: PersistedWorldOrigin::SphericalV1,
-                publication_present: false,
-            })
-        ));
-
-        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
-        let (publication_address, packet_before, source_before, revisions_before) =
-            app.spherical_presentation.read_resource(|current| {
-                let current = current.as_ref().unwrap();
-                (
-                    std::ptr::from_ref(current),
-                    Arc::clone(current.gpu_packet_arc()),
-                    current.source().clone(),
-                    current.revisions(),
-                )
-            });
-        let counters_before = render_state
-            .renderer
-            .read()
-            .callback_resources
-            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
-            .unwrap()
-            .upload_counters();
-        let stage_ids_before = app.active_runtime_stage_ids.clone();
-
-        assert!(matches!(
-            app.try_regenerate_as_spherical(&render_state),
-            Err(AppRuntimeError::InvalidSphericalRegenerationState {
-                origin: PersistedWorldOrigin::SphericalV1,
-                publication_present: true,
-            })
-        ));
-        app.world_origin = PersistedWorldOrigin::LegacyPlanarV1;
-        assert!(matches!(
-            app.try_regenerate_as_spherical(&render_state),
-            Err(AppRuntimeError::InvalidSphericalRegenerationState {
-                origin: PersistedWorldOrigin::LegacyPlanarV1,
-                publication_present: true,
-            })
-        ));
-        app.world_origin = PersistedWorldOrigin::SphericalV1;
-
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert_eq!(app.active_runtime_stage_ids, stage_ids_before);
-        app.spherical_presentation.read_resource(|current| {
-            let current = current.as_ref().unwrap();
-            assert_eq!(publication_address, std::ptr::from_ref(current));
-            assert!(Arc::ptr_eq(&packet_before, current.gpu_packet_arc()));
-            assert_eq!(source_before, *current.source());
-            assert_eq!(revisions_before, current.revisions());
-        });
-        let counters_after = render_state
-            .renderer
-            .read()
-            .callback_resources
-            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
-            .unwrap()
-            .upload_counters();
-        assert_eq!(counters_before, counters_after);
-    }
-
-    #[test]
     fn default_application_persists_continents_with_missing_field_compatibility() {
         let app = TemplateApp::default();
         assert_eq!(app.formation_spec.preset, WorldFormationPreset::Continents);
@@ -5719,417 +4774,6 @@ mod natural_app_tests {
         assert_eq!(formation.preset, WorldFormationPreset::Random);
         assert_eq!(tectonic.continental_crust_fraction, 0.33);
         assert_eq!(relief.target_land_fraction, 0.47);
-    }
-
-    #[test]
-    fn default_natural_specs_are_geological_and_semantic() {
-        let world = default_world_spec(RootSeed::new(42));
-        assert_eq!(world.space.width.get(), 20_000_000.0);
-        assert_eq!(world.space.height.get(), 10_000_000.0);
-        assert_eq!(world.space.target_cell_count, DEFAULT_TARGET_CELL_COUNT);
-        assert_eq!(world.technology, TechnologyBaseline::PreIndustrialMedieval);
-        assert_eq!(
-            TectonicSpec::default(),
-            TectonicSpec {
-                schema_version: 1,
-                plate_count: 12,
-                continental_crust_fraction: 0.38,
-                activity: TectonicActivity::Moderate,
-            }
-        );
-        assert_eq!(
-            GeologicSpec::default(),
-            GeologicSpec {
-                schema_version: 1,
-                hotspot_count: 4,
-                mantle_activity: MantleActivity::Moderate,
-            }
-        );
-    }
-
-    #[test]
-    fn natural_build_supplies_the_exact_external_artifact_set() {
-        let world = default_world_spec(RootSeed::new(7));
-        let formation = WorldFormationSpec {
-            preset: WorldFormationPreset::Archipelago,
-            ..WorldFormationSpec::default()
-        };
-        let external: ExternalArtifacts = build_legacy_planar_natural_external_artifacts(
-            &world,
-            &formation,
-            &TectonicSpec::default(),
-            &GeologicSpec::default(),
-        )
-        .unwrap();
-        assert_eq!(external.len(), 8);
-        assert!(external.hash::<PlanarSpaceArtifact>().is_ok());
-        assert!(external.hash::<TectonicSpecArtifact>().is_ok());
-        assert!(external.hash::<GeologicSpecArtifact>().is_ok());
-        assert!(external.hash::<ClimateSpecArtifact>().is_ok());
-        assert!(external.hash::<HydroErosionSpecArtifact>().is_ok());
-        assert!(external.hash::<WorldFormationSpecArtifact>().is_ok());
-        assert!(external.hash::<RulePackSetArtifact>().is_ok());
-        assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
-
-        let mut expected = ExternalArtifacts::new();
-        expected
-            .insert(RulePackSetArtifact::new(default_rule_pack_set().unwrap()))
-            .unwrap();
-        expected
-            .insert(AuthorConstraintsArtifact::new(AuthorConstraints::default()))
-            .unwrap();
-        expected
-            .insert(GeologicSpecArtifact::new(GeologicSpec::default()))
-            .unwrap();
-        expected
-            .insert(ClimateSpecArtifact::new(ClimateSpec::default()))
-            .unwrap();
-        expected
-            .insert(HydroErosionSpecArtifact::new(HydroErosionSpec::default()))
-            .unwrap();
-        expected
-            .insert(WorldFormationSpecArtifact::new(formation))
-            .unwrap();
-        assert_eq!(
-            external.hash::<GeologicSpecArtifact>().unwrap(),
-            expected.hash::<GeologicSpecArtifact>().unwrap()
-        );
-        assert_eq!(
-            external.hash::<ClimateSpecArtifact>().unwrap(),
-            expected.hash::<ClimateSpecArtifact>().unwrap()
-        );
-        assert_eq!(
-            external.hash::<HydroErosionSpecArtifact>().unwrap(),
-            expected.hash::<HydroErosionSpecArtifact>().unwrap()
-        );
-        assert_eq!(
-            external.hash::<WorldFormationSpecArtifact>().unwrap(),
-            expected.hash::<WorldFormationSpecArtifact>().unwrap()
-        );
-        assert_eq!(
-            external.hash::<RulePackSetArtifact>().unwrap(),
-            expected.hash::<RulePackSetArtifact>().unwrap()
-        );
-        assert_eq!(
-            external.hash::<AuthorConstraintsArtifact>().unwrap(),
-            expected.hash::<AuthorConstraintsArtifact>().unwrap()
-        );
-    }
-
-    #[test]
-    fn invalid_formation_spec_is_rejected_by_the_narrow_app_boundary() {
-        let world = default_world_spec(RootSeed::new(7));
-        let mut formation = WorldFormationSpec::default();
-        formation.schema_version += 1;
-        let result = build_legacy_planar_natural_external_artifacts(
-            &world,
-            &formation,
-            &TectonicSpec::default(),
-            &GeologicSpec::default(),
-        );
-        assert!(matches!(
-            result,
-            Err(NaturalWorldBuildError::WorldFormationSpec(_))
-        ));
-    }
-
-    #[test]
-    fn successful_candidate_extracts_all_natural_artifacts() {
-        let mut app = TemplateApp::default();
-        let mut world = default_world_spec(RootSeed::new(11));
-        world.space.target_cell_count = 128;
-        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
-            .unwrap();
-
-        let document = app
-            .legacy_planar_document
-            .as_ref()
-            .expect("successful replacement publishes a document");
-        assert_eq!(document.spatial.snapshot().cell_count(), 128);
-        assert_eq!(
-            document.formation.formation().requested(),
-            WorldFormationPreset::Continents
-        );
-        assert_eq!(document.tectonic.snapshot().cell_count(), 128);
-        assert_eq!(document.mantle.snapshot().cell_count(), 128);
-        assert_eq!(document.relief.snapshot().cell_count(), 128);
-        assert_eq!(document.geology.snapshot().cell_count(), 128);
-        assert_eq!(document.climate.snapshot().cell_count(), 128);
-        assert_eq!(document.hydro_erosion.snapshot().cell_count(), 128);
-        let packet = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        assert_eq!(packet.field().field_id(), &surface_elevation_m_field_id());
-        assert_eq!(app.rule_build_summary.active_pack_count, 1);
-        assert_eq!(app.rule_build_summary.author_constraint_count, 0);
-        assert_eq!(app.rule_build_summary.satisfied_constraint_count, 0);
-        assert_eq!(app.rule_build_summary.compromised_constraint_count, 0);
-    }
-
-    #[test]
-    fn random_request_publishes_resolved_formation_provenance() {
-        let mut app = TemplateApp::default();
-        app.formation_spec.preset = WorldFormationPreset::Random;
-        let mut world = default_world_spec(RootSeed::new(11));
-        world.space.target_cell_count = 128;
-        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
-            .unwrap();
-
-        let formation = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .formation
-            .formation();
-        assert_eq!(formation.requested(), WorldFormationPreset::Random);
-        assert!(matches!(
-            formation.resolved(),
-            ResolvedWorldFormationPreset::Continents
-                | ResolvedWorldFormationPreset::Archipelago
-                | ResolvedWorldFormationPreset::Supercontinent
-                | ResolvedWorldFormationPreset::GreatIsland
-                | ResolvedWorldFormationPreset::VolcanicIslands
-        ));
-        let provenance = formation_provenance_label(formation);
-        assert!(provenance.contains("随机（按种子）"));
-        assert!(provenance.contains('→'));
-    }
-
-    #[test]
-    fn failed_candidate_preserves_last_complete_document_and_packet() {
-        let mut app = TemplateApp::default();
-        let mut valid = default_world_spec(RootSeed::new(13));
-        valid.space.target_cell_count = 128;
-        app.try_replace_legacy_planar_natural_world(&valid, &TectonicSpec::default())
-            .unwrap();
-        let spatial_before = app.legacy_planar_document.as_ref().unwrap().spatial.clone();
-        let formation_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .formation
-            .clone();
-        let tectonic_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .tectonic
-            .clone();
-        let mantle_before = app.legacy_planar_document.as_ref().unwrap().mantle.clone();
-        let relief_before = app.legacy_planar_document.as_ref().unwrap().relief.clone();
-        let geology_before = app.legacy_planar_document.as_ref().unwrap().geology.clone();
-        let climate_before = app.legacy_planar_document.as_ref().unwrap().climate.clone();
-        let hydro_erosion_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .hydro_erosion
-            .clone();
-        let packet_before = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        let state_before = app.field_viewer_state.read_resource(Clone::clone);
-        let summary_before = app.rule_build_summary;
-        let mut expected_clock = app.display_revision_clock.clone();
-        let expected_next_revision = expected_clock.issue().unwrap();
-
-        let mut invalid = valid;
-        invalid.space.target_cell_count = 1;
-        assert!(app
-            .try_replace_legacy_planar_natural_world(&invalid, &TectonicSpec::default())
-            .is_err());
-
-        assert!(Arc::ptr_eq(
-            &spatial_before,
-            &app.legacy_planar_document.as_ref().unwrap().spatial
-        ));
-        let document_after = app.legacy_planar_document.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
-        assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
-        assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
-        assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
-        assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
-        assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
-        assert!(Arc::ptr_eq(
-            &hydro_erosion_before,
-            &document_after.hydro_erosion
-        ));
-        let packet_after = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        assert!(Arc::ptr_eq(&packet_before, &packet_after));
-        assert_eq!(
-            app.field_viewer_state.read_resource(Clone::clone),
-            state_before
-        );
-        assert_eq!(app.rule_build_summary, summary_before);
-        let mut actual_clock = app.display_revision_clock.clone();
-        assert_eq!(actual_clock.issue().unwrap(), expected_next_revision);
-    }
-
-    #[test]
-    fn active_canvas_build_executes_the_legacy_planar_graph() {
-        let mut world = default_world_spec(RootSeed::new(19));
-        world.space.target_cell_count = 128;
-        let candidate = super::build_legacy_planar_natural_candidate(
-            &world,
-            &WorldFormationSpec::default(),
-            &TectonicSpec::default(),
-            &GeologicSpec::default(),
-            &mut crate::engine::MemoryStageCache::new(),
-            &crate::view::FieldDisplayState::default(),
-            &crate::view::DisplayRevisionClock::default(),
-        )
-        .unwrap();
-
-        assert!(candidate
-            .report
-            .stage_ids()
-            .contains(&"spatial.planar-voronoi"));
-        assert!(candidate
-            .report
-            .stage_ids()
-            .iter()
-            .all(|stage_id| !stage_id.starts_with("natural.spherical-")));
-        assert_eq!(candidate.document.spatial.snapshot().cell_count(), 128);
-        assert_eq!(candidate.document.tectonic.snapshot().cell_count(), 128);
-        assert_eq!(candidate.document.mantle.snapshot().cell_count(), 128);
-        assert_eq!(candidate.document.relief.snapshot().cell_count(), 128);
-        assert_eq!(candidate.document.geology.snapshot().cell_count(), 128);
-        assert_eq!(candidate.document.climate.snapshot().cell_count(), 128);
-        assert_eq!(
-            candidate.document.hydro_erosion.snapshot().cell_count(),
-            128
-        );
-        assert_eq!(candidate.packet.mesh().cell_count(), 128);
-    }
-
-    #[test]
-    fn rule_resolution_failure_preserves_document_packet_clock_and_summary() {
-        let mut app = TemplateApp::default();
-        let mut world = default_world_spec(RootSeed::new(17));
-        world.space.target_cell_count = 128;
-        app.try_replace_legacy_planar_natural_world(&world, &TectonicSpec::default())
-            .unwrap();
-        let spatial_before = app.legacy_planar_document.as_ref().unwrap().spatial.clone();
-        let formation_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .formation
-            .clone();
-        let tectonic_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .tectonic
-            .clone();
-        let mantle_before = app.legacy_planar_document.as_ref().unwrap().mantle.clone();
-        let relief_before = app.legacy_planar_document.as_ref().unwrap().relief.clone();
-        let geology_before = app.legacy_planar_document.as_ref().unwrap().geology.clone();
-        let climate_before = app.legacy_planar_document.as_ref().unwrap().climate.clone();
-        let hydro_erosion_before = app
-            .legacy_planar_document
-            .as_ref()
-            .unwrap()
-            .hydro_erosion
-            .clone();
-        let packet_before = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        let summary_before = app.rule_build_summary;
-        let mut expected_clock = app.display_revision_clock.clone();
-        let expected_next_revision = expected_clock.issue().unwrap();
-
-        let pack_constraint = RulePack::new(
-            RulePackId::new("sekai.test.low-plates").unwrap(),
-            RuleVersion::new(1, 0, 0).unwrap(),
-            RulePackKind::Ordinary,
-            CoreSchemaRange::new(1, 1).unwrap(),
-            Vec::new(),
-            Vec::new(),
-            vec![CapabilityContribution::TectonicConstraint(
-                RuleTectonicConstraint::new(
-                    RuleItemId::new("low-range").unwrap(),
-                    ConstraintStrength::Hard,
-                    TectonicConstraintClause::plate_count(2, 4).unwrap(),
-                )
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-        let packs =
-            RulePackSet::new(vec![earthlike_rule_pack().unwrap(), pack_constraint]).unwrap();
-        let author_constraint = AuthorConstraint::new(
-            AuthorObjectId::from_raw(7),
-            ConstraintStrength::Hard,
-            TectonicConstraintClause::plate_count(20, 24).unwrap(),
-        )
-        .unwrap();
-        let authors =
-            AuthorConstraints::new(AUTHOR_CONSTRAINTS_SCHEMA_V1, vec![author_constraint]).unwrap();
-
-        assert!(app
-            .try_replace_legacy_planar_natural_world_with_rule_inputs(
-                &world,
-                &TectonicSpec::default(),
-                packs,
-                authors,
-            )
-            .is_err());
-
-        let document_after = app.legacy_planar_document.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&spatial_before, &document_after.spatial));
-        assert!(Arc::ptr_eq(&formation_before, &document_after.formation));
-        assert!(Arc::ptr_eq(&tectonic_before, &document_after.tectonic));
-        assert!(Arc::ptr_eq(&mantle_before, &document_after.mantle));
-        assert!(Arc::ptr_eq(&relief_before, &document_after.relief));
-        assert!(Arc::ptr_eq(&geology_before, &document_after.geology));
-        assert!(Arc::ptr_eq(&climate_before, &document_after.climate));
-        assert!(Arc::ptr_eq(
-            &hydro_erosion_before,
-            &document_after.hydro_erosion
-        ));
-        let packet_after = app
-            .field_display
-            .read_resource(FieldDisplayResourceState::current_cloned)
-            .unwrap();
-        assert!(Arc::ptr_eq(&packet_before, &packet_after));
-        let mut actual_clock = app.display_revision_clock.clone();
-        assert_eq!(actual_clock.issue().unwrap(), expected_next_revision);
-        assert_eq!(app.rule_build_summary, summary_before);
-    }
-
-    #[test]
-    fn selected_hydro_field_survives_a_successful_rebuild() {
-        use crate::ui::field::FieldControlAction;
-
-        let mut app = TemplateApp::default();
-        let mut first = default_world_spec(RootSeed::new(23));
-        first.space.target_cell_count = 128;
-        app.try_replace_legacy_planar_natural_world(&first, &TectonicSpec::default())
-            .unwrap();
-        let selected = surface_elevation_m_field_id();
-        app.apply_field_control_action(FieldControlAction::SelectField(selected.clone()));
-        assert_eq!(
-            app.field_viewer_state
-                .read_resource(|state| state.selected_field().cloned()),
-            Some(selected.clone())
-        );
-
-        let mut second = first;
-        second.root_seed = RootSeed::new(24);
-        app.try_replace_legacy_planar_natural_world(&second, &TectonicSpec::default())
-            .unwrap();
-        assert_eq!(
-            app.field_viewer_state
-                .read_resource(|state| state.selected_field().cloned()),
-            Some(selected)
-        );
     }
 
     #[test]

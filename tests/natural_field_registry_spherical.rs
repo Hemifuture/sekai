@@ -10,11 +10,11 @@ use sekai::world::natural::{
     hillslope_deposition_rate_m_per_year_field_id, hillslope_erosion_m_field_id,
     hillslope_erosion_rate_m_per_year_field_id, isostatic_response_m_field_id,
     isostatic_response_rate_m_per_year_field_id, mean_annual_discharge_m3_s_field_id,
-    natural_field_registry, primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
-    routed_sediment_deposition_rate_m_per_year_field_id, spherical_formation_field_registry,
-    spherical_natural_field_registry, tectonic_displacement_m_field_id,
-    tectonic_displacement_rate_m_per_year_field_id, NaturalFieldRegistryError,
-    ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
+    natural_field_registry, ocean_age_myr_field_id, primary_elevation_m_field_id,
+    routed_sediment_deposition_m_field_id, routed_sediment_deposition_rate_m_per_year_field_id,
+    spherical_formation_field_registry, spherical_natural_field_registry,
+    tectonic_displacement_m_field_id, tectonic_displacement_rate_m_per_year_field_id,
+    NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
 };
 
 fn maximum(registry: &FieldRegistry, id: FieldId) -> f32 {
@@ -84,6 +84,7 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
             "m",
             false,
         ),
+        (ocean_age_myr_field_id(), "ocean_age_myr", "Myr", false),
         (
             tectonic_displacement_rate_m_per_year_field_id(),
             "tectonic_displacement_rate_m_per_year",
@@ -133,7 +134,7 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
             true,
         ),
     ];
-    assert_eq!(registry.len(), 36);
+    assert_eq!(registry.len(), 37);
     for (field, expected_name, expected_unit, is_unbounded) in retained_and_rate_fields {
         assert_eq!(field.name(), expected_name);
         let schema = registry
@@ -161,7 +162,7 @@ fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
 
     assert_eq!(
         actual,
-        "9fa5da02e7adccd6e74c33d715bb9af679fc16072d696bb80b398af0ad0f5efa"
+        "71a318efdda1586a62c8fd1fb67a59828fe034d93ecc2afd197d5c5499b2253d"
     );
 }
 

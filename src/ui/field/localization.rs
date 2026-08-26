@@ -54,6 +54,7 @@ pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
         "crust_base_elevation_m" => "地壳基准高程",
         "crust_kind" => "地壳类型",
         "crust_thickness_km" => "地壳厚度",
+        "ocean_age_myr" => "洋壳年龄",
         "drainage_area_km2" => "汇水面积",
         "elevation_m" => "构造地形高程",
         "erosion_resistance" => "抗侵蚀性",

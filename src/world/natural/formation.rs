@@ -138,6 +138,35 @@ impl ResolvedWorldFormationPreset {
             Self::VolcanicIslands => 0.16,
         }
     }
+
+    /// Returns the opening continental-nucleus count before clamping to plate count.
+    ///
+    /// Continents uses the six geological continents of Mortimer et al. (2017).
+    /// Archipelago uses Cogley (1984) fourteen continents. Supercontinent is one
+    /// assembled mass (Wilson 1966). VolcanicIslands uses Cogley's four named
+    /// microcontinents. GreatIsland's primary nucleus is one; satellites are
+    /// [`Self::satellite_nucleus_count`].
+    pub const fn continental_nucleus_count(self) -> u16 {
+        match self {
+            Self::Continents => 6,
+            Self::Archipelago => 14,
+            Self::Supercontinent | Self::GreatIsland => 1,
+            Self::VolcanicIslands => 4,
+        }
+    }
+
+    /// Returns extra satellite nuclei grown after the primary GreatIsland mass.
+    ///
+    /// Cogley (1984) lists four named microcontinents (Rockall, Seychelles,
+    /// Agulhas, Jan Mayen). Other presets do not place satellites.
+    pub const fn satellite_nucleus_count(self) -> u16 {
+        match self {
+            Self::GreatIsland => 4,
+            Self::Continents | Self::Archipelago | Self::Supercontinent | Self::VolcanicIslands => {
+                0
+            }
+        }
+    }
 }
 
 /// The narrow mantle-facing projection of a resolved formation choice.

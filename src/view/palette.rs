@@ -334,15 +334,6 @@ pub enum DisplayPrepareError {
     /// A packet palette was empty, non-finite, or outside linear RGBA bounds.
     #[error("display palette must be non-empty finite linear RGBA")]
     InvalidPalette,
-    /// A scalar prepared packet had no active display range.
-    #[error("scalar field {field:?} has no active display range")]
-    MissingDisplayRange {
-        /// The scalar field without a range.
-        field: FieldId,
-    },
-    /// A runtime status code violated the stable lowercase syntax.
-    #[error("display runtime status code is invalid")]
-    InvalidStatusCode,
     /// No available scalar or category cell field could be prepared.
     #[error("no renderable cell field is available")]
     NoRenderableField,

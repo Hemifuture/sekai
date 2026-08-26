@@ -4,13 +4,14 @@ use thiserror::Error;
 
 use super::{
     TectonicSnapshot, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
-    CLIMATOLOGICAL_YEAR_SECONDS, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2, HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2,
-    MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT,
-    MAX_STRAHLER_ORDER, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M,
-    REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
-    TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    CLIMATOLOGICAL_YEAR_SECONDS, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2,
+    HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_CRUST_AGE_MYR, MAX_DEPOSITION_THICKNESS_M,
+    MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT, MAX_STRAHLER_ORDER, MIN_PLATE_COUNT,
+    OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
+    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, TEMPERATURE_SEASONALITY_MAX_C,
+    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::fields::{
     FieldDisplayMetadata, FieldDomain, FieldId, FieldPaletteHint, FieldRegistry,
@@ -47,6 +48,11 @@ pub fn crust_kind_field_id() -> FieldId {
 /// Returns the stable crust-thickness field ID.
 pub fn crust_thickness_field_id() -> FieldId {
     field_id("crust_thickness_km")
+}
+
+/// Returns the stable oceanic-crust-age field ID.
+pub fn ocean_age_myr_field_id() -> FieldId {
+    field_id("ocean_age_myr")
 }
 
 /// Returns the stable per-cell plate-velocity field ID.
@@ -928,6 +934,7 @@ fn formation_schemas(
     let plate_id = plate_id_field_id();
     let crust_kind = crust_kind_field_id();
     let crust_thickness = crust_thickness_field_id();
+    let ocean_age = ocean_age_myr_field_id();
     let primary_elevation = primary_elevation_m_field_id();
     let tectonic_displacement = tectonic_displacement_m_field_id();
     let fluvial_erosion_depth = fluvial_erosion_depth_m_field_id();
@@ -989,6 +996,16 @@ fn formation_schemas(
             custom_unit("kilometer", "km"),
             OCEANIC_CRUST_MIN_THICKNESS_KM,
             CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![crust_kind.clone()],
+        )?,
+        scalar_schema(
+            ocean_age,
+            FieldDomain::Cells,
+            custom_unit("million-year", "Myr"),
+            CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+            MAX_CRUST_AGE_MYR,
             FieldPaletteHint::Sequential,
             1,
             vec![crust_kind.clone()],

@@ -2,7 +2,7 @@
 
 use super::{MetricAccumulator, MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::engine::BuildCancellation;
-use crate::generators::natural::global_circulation::GlobalClimateForcing;
+use crate::generators::natural::formation::global_circulation::GlobalClimateForcing;
 use crate::world::natural::{
     FormationTerrainFields, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
     NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,

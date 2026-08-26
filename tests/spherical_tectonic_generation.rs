@@ -37,7 +37,7 @@ fn formation(preset: ResolvedWorldFormationPreset) -> ResolvedWorldFormation {
 fn stage_rng(root_seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(root_seed),
-        StageIdentity::new("natural.spherical-tectonics", 4, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 5, "sekai.core"),
     ))
 }
 
@@ -377,20 +377,20 @@ fn authoritative_surface_kinematics_reject_forged_boundary_strengths() {
 fn every_formation_preset_evolves_one_deterministic_current_state_without_fixed_topology() {
     let target_surface = morphology_surface();
     let cases = [
-        (ResolvedWorldFormationPreset::Continents, 0.38),
-        (ResolvedWorldFormationPreset::Archipelago, 0.26),
-        (ResolvedWorldFormationPreset::Supercontinent, 0.42),
-        (ResolvedWorldFormationPreset::GreatIsland, 0.28),
-        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16),
+        ResolvedWorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Archipelago,
+        ResolvedWorldFormationPreset::Supercontinent,
+        ResolvedWorldFormationPreset::GreatIsland,
+        ResolvedWorldFormationPreset::VolcanicIslands,
     ];
     let total_area = target_surface
         .cells()
         .iter()
         .map(|cell| cell.area.get())
         .sum::<f64>();
-    for (preset, initial_fraction) in cases {
+    for preset in cases {
         let spec = TectonicSpec {
-            continental_crust_fraction: initial_fraction,
+            continental_crust_fraction: preset.recommended_continental_crust_fraction(),
             ..TectonicSpec::default()
         };
         let first = generate_on(target_surface, 0xC0_FFEE, &spec, preset);
@@ -513,11 +513,11 @@ fn published_snapshot_is_the_evolved_current_crust_not_the_initial_partition() {
 
 #[test]
 fn spherical_facade_has_no_old_field_driven_final_owner_path() {
-    let facade = include_str!("../src/generators/natural/spherical_tectonics.rs")
+    let facade = include_str!("../src/generators/natural/foundation/tectonics.rs")
         .split("#[cfg(test)]")
         .next()
         .unwrap();
-    let runner = include_str!("../src/generators/natural/spherical_tectonics/runner.rs")
+    let runner = include_str!("../src/generators/natural/foundation/tectonics/runner.rs")
         .split("#[cfg(test)]")
         .next()
         .unwrap();

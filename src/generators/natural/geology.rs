@@ -78,7 +78,7 @@ pub(super) struct BoundaryInfluences {
     magmatic: Vec<f32>,
 }
 
-pub(super) fn boundary_influences(
+pub(crate) fn boundary_influences(
     topology: &NaturalTopologyIndex,
     cell_plates: &PlateIdField,
     boundaries: &[BoundaryRecord],
@@ -150,7 +150,7 @@ pub(super) struct GeneratedGeologicFields {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn synthesize_geologic_fields(
+pub(crate) fn synthesize_geologic_fields(
     topology: &NaturalTopologyIndex,
     boundary: &BoundaryInfluences,
     crust_kinds: &CrustKindField,

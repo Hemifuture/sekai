@@ -78,7 +78,7 @@ pub use fields::{
     isostatic_response_rate_m_per_year_field_id, lake_depth_m_field_id, land_ocean_field_id,
     latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
     mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
-    natural_field_registry, plate_id_field_id, plate_velocity_field_id,
+    natural_field_registry, ocean_age_myr_field_id, plate_id_field_id, plate_velocity_field_id,
     preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
     preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
     primary_elevation_m_field_id, regional_offset_field_id, relative_permeability_field_id,

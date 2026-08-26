@@ -15,7 +15,7 @@ const MIN_CLIMATE_GRID_CELLS: usize = 16;
 const MAX_CLIMATE_GRID_CELLS: usize = 4_096;
 const MIN_GRID_AXIS: usize = 4;
 const WATER_VAPOR_TRANSPORT_STEPS: usize = 48;
-pub(super) const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 =
+pub(crate) const ENVIRONMENTAL_LAPSE_RATE_C_PER_M: f32 =
     crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M as f32;
 
 /// Deterministic bounded solver for preliminary monthly climate forcing.
@@ -415,12 +415,12 @@ fn solve_grid_climate(grid: &ClimateGrid, maritime: &[f32], spec: &ClimateSpec) 
     }
 }
 
-pub(super) fn monthly_declination_degrees(month: usize, axial_tilt_degrees: f32) -> f32 {
+pub(crate) fn monthly_declination_degrees(month: usize, axial_tilt_degrees: f32) -> f32 {
     let phase = TAU * (month as f32 - 2.0) / CLIMATE_MONTH_COUNT as f32;
     axial_tilt_degrees * phase.sin()
 }
 
-pub(super) fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32 {
+pub(crate) fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: f32) -> f32 {
     let latitude = latitude_degrees.to_radians();
     let declination = declination_degrees.to_radians();
     let hour_angle_argument = -latitude.tan() * declination.tan();
@@ -437,12 +437,12 @@ pub(super) fn daily_mean_insolation(latitude_degrees: f32, declination_degrees: 
         / PI
 }
 
-pub(super) fn annual_sea_level_temperature(latitude_degrees: f32) -> f32 {
+pub(crate) fn annual_sea_level_temperature(latitude_degrees: f32) -> f32 {
     let latitude_factor = latitude_degrees.to_radians().sin().abs().powf(1.18);
     29.0 - 35.0 * latitude_factor
 }
 
-pub(super) fn circulation_wind(
+pub(crate) fn circulation_wind(
     latitude_degrees: f32,
     declination_degrees: f32,
     maritime: f32,
@@ -589,7 +589,7 @@ fn condensation_fraction(
         .clamp(0.012, 0.78)
 }
 
-pub(super) fn evaporation_warmth(temperature_c: f32) -> f32 {
+pub(crate) fn evaporation_warmth(temperature_c: f32) -> f32 {
     ((temperature_c + 12.0) / 42.0).clamp(0.0, 1.0)
 }
 

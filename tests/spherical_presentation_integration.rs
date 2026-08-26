@@ -10,7 +10,7 @@ use sekai::generators::natural::{
     AuthorConstraintsArtifact, ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
     ReliefSpecArtifact, RulePackSetArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
-use sekai::generators::spatial::{PlanarSpaceArtifact, SphericalSpaceArtifact};
+use sekai::generators::spatial::SphericalSpaceArtifact;
 use sekai::view::{
     DisplayRevisionClock, GlobeCamera, MapCamera, SelectedSurfaceEntity,
     SphericalFieldDisplayState, SphericalLayerVisibility, SphericalMeshBudgets,
@@ -26,7 +26,7 @@ use sekai::world::{CellId, EdgeId, Meters, RootSeed, SphericalSpaceSpec};
 use sekai::{
     ui::spherical::{
         apply_spherical_canvas_action, build_spherical_control_catalog,
-        build_spherical_inspector_model, interact_spherical_canvas, legacy_compatibility_ui,
+        build_spherical_inspector_model, interact_spherical_canvas,
         queue_spherical_canvas_callback, show_spherical_controls, SphericalCanvasAction,
         SphericalCanvasInvalidation, SphericalCanvasState, SphericalOverlayControlKind,
         SphericalUiError, GLYPH_DENSITY_LABELS, VECTOR_DISPLAY_SPEED_LABEL,
@@ -141,7 +141,6 @@ fn assert_exact_spherical_external_set(external: &ExternalArtifacts) {
     assert!(external.hash::<WorldFormationSpecArtifact>().is_ok());
     assert!(external.hash::<RulePackSetArtifact>().is_ok());
     assert!(external.hash::<AuthorConstraintsArtifact>().is_ok());
-    assert!(external.hash::<PlanarSpaceArtifact>().is_err());
 }
 
 #[test]
@@ -774,7 +773,7 @@ fn standalone_and_replacement_builds_reconcile_edges_to_the_final_overlay_channe
 }
 
 #[test]
-fn persisted_origin_defaults_new_apps_to_spherical_and_missing_tags_to_legacy() {
+fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     let app = TemplateApp::default();
     let mut encoded = serde_json::to_value(&app).unwrap();
 
@@ -799,16 +798,11 @@ fn persisted_origin_defaults_new_apps_to_spherical_and_missing_tags_to_legacy() 
         .unwrap()
         .remove("spherical_space_spec");
     let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
-    assert_eq!(
-        restored.world_origin(),
-        PersistedWorldOrigin::LegacyPlanarV1
-    );
+    assert_eq!(restored.world_origin(), PersistedWorldOrigin::SphericalV1);
     assert_eq!(
         restored.runtime_graph(),
-        AppRuntimeGraph::LegacyPlanarFoundation
+        AppRuntimeGraph::SphericalNaturalFoundation
     );
-    assert!(restored.legacy_compatibility_notice().is_some());
-    assert!(restored.offers_regenerate_as_spherical());
 }
 
 #[test]
@@ -2977,17 +2971,6 @@ fn publication_selection_transitions_remove_old_cell_layers_and_keep_edge_none_o
         .diagnostics()
         .iter()
         .all(|diagnostic| diagnostic.cell().is_none()));
-}
-
-#[test]
-fn legacy_compatibility_ui_exposes_only_notice_and_explicit_one_way_action() {
-    let legacy: TemplateApp =
-        serde_json::from_value(serde_json::json!({ "world_seed": 7 })).unwrap();
-    let model = legacy_compatibility_ui(&legacy).unwrap();
-    assert!(model.notice().contains("旧平面世界"));
-    assert_eq!(model.action_label(), "用当前作者参数重新生成球面世界");
-    assert!(!model.notice().contains("模式切换"));
-    assert!(legacy_compatibility_ui(&TemplateApp::default()).is_none());
 }
 
 fn map_screen_position(

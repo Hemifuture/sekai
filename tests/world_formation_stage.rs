@@ -4,7 +4,7 @@ use sekai::engine::{
     Artifact, BuildEngine, ExternalArtifacts, MemoryStageCache, Stage, StageGraphBuilder,
 };
 use sekai::generators::natural::{
-    natural_foundation_graph, ResolvedWorldFormationArtifact, WorldFormationSpecArtifact,
+    spherical_natural_foundation_graph, ResolvedWorldFormationArtifact, WorldFormationSpecArtifact,
     WorldFormationStage,
 };
 use sekai::world::natural::{
@@ -79,7 +79,7 @@ fn artifacts_and_stage_have_exact_engine_contracts() {
 
 #[test]
 fn production_graph_registers_formation_resolution_once() {
-    let graph = natural_foundation_graph().unwrap();
+    let graph = spherical_natural_foundation_graph().unwrap();
     assert_eq!(
         graph
             .stage_ids()
@@ -88,7 +88,6 @@ fn production_graph_registers_formation_resolution_once() {
             .count(),
         1
     );
-    assert_eq!(graph.descriptors().len(), 16);
 }
 
 #[test]

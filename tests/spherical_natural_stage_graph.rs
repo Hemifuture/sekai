@@ -5,22 +5,20 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact, ReliefSpecArtifact,
-    ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
-    SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
-    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
-    WorldFormationSpecArtifact,
+    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact,
+    NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedWorldFormationArtifact,
+    RulePackSetArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
+    SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
+    SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
-use sekai::generators::spatial::{
-    PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
-};
+use sekai::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, ReliefSpec, TectonicSpec, WorldFormationPreset,
-    WorldFormationSpec,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, NaturalQualityProfile, ReliefSpec, TectonicSpec,
+    WorldFormationPreset, WorldFormationSpec,
 };
 use sekai::world::spatial::SurfaceRef;
-use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
+use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 const ALL_STAGE_IDS: [&str; 17] = [
     "natural.resolve-climate-rules",
@@ -263,12 +261,9 @@ fn graph_requires_exactly_the_nine_approved_external_artifacts() {
 
     let mut extra = external(&inputs, None);
     extra
-        .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
-            width: Meters::new(1_000_000.0).unwrap(),
-            height: Meters::new(600_000.0).unwrap(),
-            target_cell_count: 128,
-            boundary: BoundaryCondition::Closed,
-        }))
+        .insert(NaturalQualityProfileArtifact::new(
+            NaturalQualityProfile::Draft,
+        ))
         .unwrap();
     let failure = BuildEngine::new(spherical_natural_foundation_graph().unwrap())
         .build(RootSeed::new(42), extra, &mut MemoryStageCache::new())

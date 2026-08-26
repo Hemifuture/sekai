@@ -165,14 +165,26 @@ fn resolved_formation_rejects_a_forged_timeline() {
 #[test]
 fn resolved_profiles_expose_literal_recommendations_and_narrow_mantle_biases() {
     let cases = [
-        (ResolvedWorldFormationPreset::Continents, 0.38, 0.20),
-        (ResolvedWorldFormationPreset::Archipelago, 0.26, 0.22),
-        (ResolvedWorldFormationPreset::Supercontinent, 0.42, 0.17),
-        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 0.23),
-        (ResolvedWorldFormationPreset::VolcanicIslands, 0.16, 0.16),
+        (ResolvedWorldFormationPreset::Continents, 0.38, 0.20, 6, 0),
+        (ResolvedWorldFormationPreset::Archipelago, 0.26, 0.22, 14, 0),
+        (
+            ResolvedWorldFormationPreset::Supercontinent,
+            0.42,
+            0.17,
+            1,
+            0,
+        ),
+        (ResolvedWorldFormationPreset::GreatIsland, 0.28, 0.23, 1, 4),
+        (
+            ResolvedWorldFormationPreset::VolcanicIslands,
+            0.16,
+            0.16,
+            4,
+            0,
+        ),
     ];
 
-    for (resolved, expected_crust_fraction, expected_land_fraction) in cases {
+    for (resolved, expected_crust_fraction, expected_land_fraction, nuclei, satellites) in cases {
         let formation = ResolvedWorldFormation::new(
             RESOLVED_WORLD_FORMATION_SCHEMA_V1,
             WorldFormationPreset::Random,
@@ -189,6 +201,8 @@ fn resolved_profiles_expose_literal_recommendations_and_narrow_mantle_biases() {
             formation.recommended_land_fraction(),
             expected_land_fraction
         );
+        assert_eq!(resolved.continental_nucleus_count(), nuclei);
+        assert_eq!(resolved.satellite_nucleus_count(), satellites);
         assert_eq!(
             formation.mantle_bias(),
             if resolved == ResolvedWorldFormationPreset::VolcanicIslands {

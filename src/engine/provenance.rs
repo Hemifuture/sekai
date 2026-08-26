@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::engine::diagnostics::is_valid_identifier;
 use crate::world::fields::FieldId;
-use crate::world::{AuthorObjectId, CellId, CultureId, PolityId, SettlementId, SpeciesId};
+use crate::world::{AuthorObjectId, CellId};
 
 const MAX_FACTORS_PER_ENTITY: usize = 16;
 
@@ -29,14 +29,6 @@ pub enum SourceRef {
 pub enum EntityRef {
     /// A spatial cell.
     Cell(CellId),
-    /// A biological species.
-    Species(SpeciesId),
-    /// A culture.
-    Culture(CultureId),
-    /// A settlement.
-    Settlement(SettlementId),
-    /// A polity.
-    Polity(PolityId),
     /// An authored object.
     AuthorObject(AuthorObjectId),
 }

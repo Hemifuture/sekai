@@ -56,19 +56,38 @@ pub fn build_primary_relief_for(
     GeologicSubstrateSnapshot,
     PrimaryReliefSnapshot,
 ) {
+    try_build_primary_relief_for(bundle, seed, preset, tectonic_spec).unwrap()
+}
+
+/// Fallible P2+P3 production path used by diagnostic probes that must record
+/// generator failures instead of aborting the corpus.
+#[allow(dead_code)]
+pub fn try_build_primary_relief_for(
+    bundle: &ProfileSurfaceBundle,
+    seed: u64,
+    preset: ResolvedWorldFormationPreset,
+    tectonic_spec: &TectonicSpec,
+) -> Result<
+    (
+        EvolvedTectonicSnapshot,
+        GeologicSubstrateSnapshot,
+        PrimaryReliefSnapshot,
+    ),
+    String,
+> {
     let formation = ResolvedWorldFormation::new(
         RESOLVED_WORLD_FORMATION_SCHEMA_V1,
         authored_preset(preset),
         preset,
     )
-    .unwrap();
+    .map_err(|error| error.to_string())?;
     let mut tectonic_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
         StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
     ));
     let evolved =
         EvolvedTectonicGenerator::generate(bundle, tectonic_spec, &formation, &mut tectonic_rng)
-            .unwrap();
+            .map_err(|error| error.to_string())?;
     let mut substrate_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
         StageIdentity::new("natural.geologic-substrate", 1, "sekai.core"),
@@ -80,7 +99,7 @@ pub fn build_primary_relief_for(
         &formation,
         &mut substrate_rng,
     )
-    .unwrap();
+    .map_err(|error| error.to_string())?;
     let mut relief_rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
         StageIdentity::new("natural.primary-relief", 1, "sekai.core"),
@@ -94,8 +113,8 @@ pub fn build_primary_relief_for(
         &mut relief_rng,
         &mut diagnostics,
     )
-    .unwrap();
-    (evolved, substrate, relief)
+    .map_err(|error| error.to_string())?;
+    Ok((evolved, substrate, relief))
 }
 
 fn authored_preset(preset: ResolvedWorldFormationPreset) -> WorldFormationPreset {

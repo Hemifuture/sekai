@@ -3416,7 +3416,7 @@ impl GlobalCirculationSnapshot {
             );
         }
         if self.checkpoint.model_fingerprint()
-            != &crate::generators::natural::global_circulation_model_fingerprint(profile)
+            != &crate::generators::natural::formation::global_circulation_model_fingerprint(profile)
         {
             return Err(
                 GlobalCirculationValidationError::CheckpointIdentityMismatch {
