@@ -960,7 +960,18 @@ git commit -m "Restore P3 as an authoritative projection" -m "Remove compatibili
 
 ### Task 4: 拆分 P2 固体年龄推进与 legacy 表面响应
 
+**2026-08-26 Task 4 RED 后显式修订：** V5 正确停止更新 compatibility elevation
+后，17-seed runner 的旧 `ocean-age-depth-spearman` 实测为
+`0.2511732637333914`。该指标相关的是 P2 壳龄与已退役兼容高程，已经失去权威
+被测对象；按规格 §0.1(14) 删除，不降低既有 `0.70` 阈值，也不恢复 P2 重复热
+沉降。年龄—深度机制只由 P3 的 `old-young-ocean-depth-separation-m` 验收；Task 3
+同一语料实测 `1543.4558 m`，继续使用既有 `>= 600 m` 门禁，不新增阈值。
+
 **Files:**
+- Modify: `docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md`
+- Modify: `docs/superpowers/plans/2026-08-25-geologic-pipeline-contract-restoration.md`
+- Modify: `src/generators/natural/quality/evolved_tectonics.rs`
+- Modify: `src/generators/natural/quality/primary_relief.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/relaxation.rs`
 - Modify: `src/generators/natural/spherical_tectonics/processes/mod.rs`
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
@@ -970,6 +981,7 @@ git commit -m "Restore P3 as an authoritative projection" -m "Remove compatibili
 - Test: `tests/evolved_tectonic_material.rs`
 - Test: `tests/evolved_tectonic_quality.rs`
 - Test: `tests/evolved_tectonic_evidence.rs`
+- Test: `tests/primary_relief_quality.rs`
 
 **Interfaces:**
 - Consumes: 当前 V4/V5 runner 与 `CrustSample`。
@@ -1077,18 +1089,25 @@ validator 构造该错误时同步使用 `f64::from(found)` 与
 `f64::from(MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR)`；只扩展诊断精度，不改变
 artifact 支持域或 wire forcing 类型。
 
+删除 P2 quality evaluator、固定语料 runner 与 P3 上游失败分类中的
+`ocean-age-depth-spearman`，并删除只服务该指标的 `append_ocean_age_depth`、
+`weighted_spearman`、`average_ranks`。最终年龄—深度证据只读取 P3 权威
+`base_elevation_m`；不保留同名空指标或 compatibility alias。
+
 - [ ] **Step 4: 运行 GREEN 与 V4/V5 回归**
 
 Run: `cargo test --lib spherical_tectonics::`
 
 Run: `cargo test --release --test evolved_tectonic_forcing --test evolved_tectonic_material --test evolved_tectonic_quality --test evolved_tectonic_evidence --test spherical_tectonic_generation`
 
+Run: `cargo test --release --test primary_relief_quality`
+
 Expected: 全部 PASS；V5 material budget 保持闭合，V4 compatibility 测试保持冻结。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/spherical_tectonics/processes/relaxation.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/forcing.rs src/world/natural/evolved_tectonics.rs tests/evolved_tectonic_forcing.rs tests/evolved_tectonic_material.rs tests/evolved_tectonic_quality.rs tests/evolved_tectonic_evidence.rs
+git add docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md docs/superpowers/plans/2026-08-25-geologic-pipeline-contract-restoration.md src/generators/natural/quality/evolved_tectonics.rs src/generators/natural/quality/primary_relief.rs src/generators/natural/spherical_tectonics/processes/relaxation.rs src/generators/natural/spherical_tectonics/processes/mod.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/forcing.rs src/world/natural/evolved_tectonics.rs tests/evolved_tectonic_forcing.rs tests/evolved_tectonic_material.rs tests/evolved_tectonic_quality.rs tests/evolved_tectonic_evidence.rs
 git commit -m "Separate solid-earth aging from legacy relief" -m "Keep surface erosion and trench fill out of the V5 authority path and remove compatibility elevation from forcing."
 ```
 

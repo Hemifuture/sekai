@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准；2026-08-26 P3 Airy 支持域闭合勘误经联合审查批准**
+状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准；2026-08-26 P3 Airy 支持域闭合及 P2 质量所有权勘误经联合审查批准**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -219,6 +219,21 @@ commit `f1df994` 在本规格加入的以下要求：
     保持 `7daf32...` 不变”的旧基线；按生产注册表序列化实测后的新身份为
     `4a6517cee46cdfab4411175172752d7a02a38eef3edc88dae61701756d1aade1`。这只是
     支持域语义变化的内容身份刷新，不改变色板、字段 id 或最终高程域。
+14. **年龄—深度质量证据归 P3 最终高程，不再读取 P2 compatibility elevation。**
+    Task 4 正确拆分固体年龄推进与 legacy 表面响应后，17-seed runner RED 实测旧
+    `ocean-age-depth-spearman` 仅为 `0.2511732637333914`。该指标把 P2 权威壳龄与
+    已退役的 `tectonic_elevation_m` compatibility 字段相关联；P2 不再拥有热沉降
+    高程后，它已没有权威被测对象。不得恢复 P2 重复热沉降，也不得降低原 `0.70`
+    阈值让错误所有权继续存在；从 P2 单世界/语料质量报告、runner 语料断言及 P3
+    上游失败分类中删除该指标。
+
+    年龄导致洋壳热沉降的机制仍由 P3 唯一实现和验收。Task 3 的同一 17-seed
+    production corpus 已在最终 P3 `base_elevation_m` 上实测
+    `old-young-ocean-depth-separation-m = 1543.4558 m`，继续使用既有
+    `>= 600 m` 质量门；本条不新增或改写阈值。机制出处仍为 Parsons & Sclater
+    (1977) 的海底热沉降关系与 Stein & Stein (1992) 的 GDH1 参数化；把该关系的
+    验收放在唯一生成它的 P3 属于领域所有权修正，不是新数值模型。旧 P2 指标删除
+    后不保留 alias、历史 schema 或无人消费的统计 helper。
 
 ## 1. 用户裁定与问题归因
 
@@ -798,6 +813,12 @@ P5 成本，再选择有出处的近似线性解、多分辨率工作域或内�
   `2026-08-17-evolved-tectonics-v5-design.md`，没有新增经验常量。f32 wire 上界的
   外向相邻可表示数只沿用 Goldberg (1991)/Higham (2002) 的浮点背景，是编码
   类比而非物理裕量；最终 `ELEVATION_MAX_M` 保持不变。
+- 洋壳年龄—热沉降只由 P3 投影和验收：Parsons & Sclater (1977), *An Analysis of
+  the Variation of Ocean Floor Bathymetry and Heat Flow with Age*, JGR 82(5),
+  DOI `10.1029/JB082i005p00803`；Stein & Stein (1992), *A model for the global
+  variation in oceanic depth and heat flow with lithospheric age*, Nature 359,
+  DOI `10.1038/359123a0`。Task 4 只删除读取已退役 P2 compatibility elevation 的
+  重复统计，不改 P3 方程或既有 `old-young-ocean-depth-separation-m` 门禁。
 - 固定次数 predictor-corrector 与高成本迭代参考的类比：Schüller, Lemarié,
   Birken & Blayo (2025), *Quantifying coupling errors in atmosphere-ocean-sea
   ice models*, DOI `10.5194/gmd-18-9167-2025`，比较非迭代与迭代耦合并指出

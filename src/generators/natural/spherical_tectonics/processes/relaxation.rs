@@ -1,8 +1,8 @@
-//! Cortial Appendix-A coarse crust relaxation.
+//! Solid-crust aging and the frozen legacy V4 surface relaxation.
 //!
-//! One indexed pass ages oceanic crust, applies the paper's density subsidence
-//! and continental linear erosion, and fills only active trenches. Transform
-//! contacts are deliberately absent from the uplift mask.
+//! V5 owns only crust/orogeny age. The density subsidence, continental erosion,
+//! and active-trench fill remain explicitly named compatibility behavior for
+//! the frozen V4 loop.
 
 use super::{bounded_elevation, constants, ProcessActions, ProcessError, ProcessStats};
 use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
@@ -12,7 +12,26 @@ use crate::generators::natural::spherical_tectonics::model::{
 use crate::world::natural::{CrustKind, SphericalOrogenyKind, MAX_CRUST_AGE_MYR};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
-pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
+pub(in crate::generators::natural::spherical_tectonics) fn advance_solid_crust_ages(
+    next: &mut TectonicState,
+    delta_myr: f32,
+) -> Result<ProcessStats, ProcessError> {
+    validate_delta_myr(delta_myr)?;
+    for sample in &mut next.samples {
+        if sample.kind == CrustKind::Oceanic {
+            sample.age_myr = (sample.age_myr + delta_myr).min(MAX_CRUST_AGE_MYR);
+        }
+        if sample.orogeny != SphericalOrogenyKind::None {
+            sample.orogeny_age_myr = (sample.orogeny_age_myr + delta_myr).min(MAX_CRUST_AGE_MYR);
+        }
+    }
+    Ok(ProcessStats {
+        relaxed_samples: next.samples.len() as u32,
+        ..ProcessStats::default()
+    })
+}
+
+pub(in crate::generators::natural::spherical_tectonics) fn relax_legacy_compatibility_elevation(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
     next: &mut TectonicState,
@@ -20,9 +39,7 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
     recipe: FormationTectonicRecipe,
     delta_myr: f32,
 ) -> Result<ProcessStats, ProcessError> {
-    if !delta_myr.is_finite() || delta_myr < 0.0 {
-        return Err(ProcessError::InvalidDeltaMyr { found: delta_myr });
-    }
+    validate_delta_myr(delta_myr)?;
     actions.validate_for(next.samples.len())?;
     let trenches = actions.trench_scratch(next.samples.len());
     for event in events {
@@ -61,7 +78,6 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
         }
         match sample.kind {
             CrustKind::Oceanic => {
-                sample.age_myr = (sample.age_myr + delta_myr).min(MAX_CRUST_AGE_MYR);
                 let depth_factor = (1.0
                     - f64::from(sample.tectonic_elevation_m)
                         / f64::from(constants::OCEANIC_TRENCH_ELEVATION_M))
@@ -83,9 +99,6 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
                 );
             }
         }
-        if sample.orogeny != SphericalOrogenyKind::None {
-            sample.orogeny_age_myr = (sample.orogeny_age_myr + delta_myr).min(MAX_CRUST_AGE_MYR);
-        }
     }
     Ok(ProcessStats {
         relaxed_samples: next.samples.len() as u32,
@@ -93,9 +106,16 @@ pub(in crate::generators::natural::spherical_tectonics) fn relax_current_crust(
     })
 }
 
+fn validate_delta_myr(delta_myr: f32) -> Result<(), ProcessError> {
+    if !delta_myr.is_finite() || delta_myr < 0.0 {
+        return Err(ProcessError::InvalidDeltaMyr { found: delta_myr });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::relax_current_crust;
+    use super::{advance_solid_crust_ages, relax_legacy_compatibility_elevation};
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
         ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
@@ -110,7 +130,7 @@ mod tests {
     use crate::world::{CellId, Meters, SphericalSpaceSpec};
 
     #[test]
-    fn one_indexed_pass_ages_ocean_damps_relief_erodes_continent_and_fills_trench() {
+    fn solid_aging_is_elevation_neutral_and_legacy_relief_keeps_v4_behavior() {
         assert_eq!(constants::OCEANIC_ELEVATION_DAMPING_MM_PER_YEAR, 0.04);
         assert_eq!(constants::CONTINENTAL_EROSION_MM_PER_YEAR, 0.03);
         assert_eq!(constants::TRENCH_SEDIMENT_MM_PER_YEAR, 0.3);
@@ -164,12 +184,26 @@ mod tests {
                 2_000.0,
             ),
         ];
-        let mut state = TectonicState::new(
-            samples,
-            vec![ActivePlate::new(owner, CellId::from_raw(0), rotation)],
-            1,
-        )
-        .unwrap();
+        let plates = vec![ActivePlate::new(owner, CellId::from_raw(0), rotation)];
+        let mut aging_only = TectonicState::new(samples.clone(), plates.clone(), 1).unwrap();
+        let mut state = TectonicState::new(samples, plates, 1).unwrap();
+        let elevation_before = aging_only
+            .samples
+            .iter()
+            .map(|sample| sample.tectonic_elevation_m.to_bits())
+            .collect::<Vec<_>>();
+        let aging_stats = advance_solid_crust_ages(&mut aging_only, 2.0).unwrap();
+        assert_eq!(aging_only.samples[0].age_myr, 22.0);
+        assert_eq!(aging_only.samples[1].age_myr, 82.0);
+        assert_eq!(
+            aging_only
+                .samples
+                .iter()
+                .map(|sample| sample.tectonic_elevation_m.to_bits())
+                .collect::<Vec<_>>(),
+            elevation_before
+        );
+        assert_eq!(aging_stats.relaxed_samples, 4);
         let subduction = ContactEvent {
             cell: CellId::from_raw(1),
             edge: None,
@@ -198,7 +232,8 @@ mod tests {
             .iter()
             .map(|sample| sample.material.bits())
             .collect::<Vec<_>>();
-        let stats = relax_current_crust(
+        let aging_stats = advance_solid_crust_ages(&mut state, 2.0).unwrap();
+        let legacy_stats = relax_legacy_compatibility_elevation(
             &surface,
             &[subduction, transform],
             &mut state,
@@ -218,7 +253,8 @@ mod tests {
         assert!(state.samples[2].tectonic_elevation_m < 5_000.0);
         assert!(state.samples[3].tectonic_elevation_m < 2_000.0);
         assert_eq!(state.samples[3].orogeny, SphericalOrogenyKind::None);
-        assert_eq!(stats.relaxed_samples, 4);
+        assert_eq!(aging_stats.relaxed_samples, 4);
+        assert_eq!(legacy_stats.relaxed_samples, 4);
         assert_eq!(
             state
                 .samples

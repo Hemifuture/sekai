@@ -546,8 +546,8 @@ impl SphericalTectonicForcingState {
                     return Err(EvolvedTectonicValidationError::ForcingRateOutOfRange {
                         field,
                         cell,
-                        found,
-                        max: MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
+                        found: f64::from(found),
+                        max: f64::from(MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR),
                     });
                 }
             }
@@ -1651,8 +1651,8 @@ pub enum EvolvedTectonicValidationError {
     ForcingRateOutOfRange {
         field: &'static str,
         cell: CellId,
-        found: f32,
-        max: f32,
+        found: f64,
+        max: f64,
     },
     /// A boundary distance is non-finite, negative, or exceeds the antipode.
     #[error("boundary distance at {cell:?} is {found} m; maximum is {max:?}")]

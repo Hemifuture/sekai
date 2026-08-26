@@ -11,7 +11,8 @@ use super::model::{FormationTectonicRecipe, TectonicState};
 use super::processes::{constants, event_distance_m};
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
-    EvolvedTectonicValidationError, SphericalTectonicForcingState, NO_OROGENY_AGE_SENTINEL_MYR,
+    EvolvedTectonicValidationError, SphericalTectonicForcingState,
+    MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR, NO_OROGENY_AGE_SENTINEL_MYR,
 };
 use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, EdgeId};
@@ -123,7 +124,6 @@ fn evaluate_contact_forcing(
                     .copied()
                     .find(|lineage| *lineage != descending)
                     .ok_or(ForcingError::MissingOverridingSide)?;
-                let descending_relief_weight = descending_relief_weight(state, event, descending)?;
                 let speed = super::processes::event_speed(event);
                 for (sample_index, sample) in state.samples.iter().enumerate() {
                     if sample.owner != descending && sample.owner != overriding {
@@ -149,17 +149,21 @@ fn evaluate_contact_forcing(
                     if sample.owner == descending
                         && sample.material.oceanic_reference_area_m2() > 0.0
                     {
-                        let rate = (-f64::from(trench_step_m) * metres_per_step_to_mm_per_year)
-                            .clamp(0.0, 500.0) as f32;
+                        let rate = checked_forcing_rate(
+                            sample.anchor,
+                            "subsidence_rate_mm_per_year",
+                            -f64::from(trench_step_m) * metres_per_step_to_mm_per_year,
+                        )?;
                         if rate > 0.0 {
                             subsidence[cell] = subsidence[cell].max(rate);
                             event_age_myr[cell] = 0.0;
                         }
                     } else if sample.owner == overriding {
-                        let rate = (f64::from(uplift_step_m)
-                            * descending_relief_weight
-                            * metres_per_step_to_mm_per_year)
-                            .clamp(0.0, 500.0) as f32;
+                        let rate = checked_forcing_rate(
+                            sample.anchor,
+                            "uplift_rate_mm_per_year",
+                            f64::from(uplift_step_m) * metres_per_step_to_mm_per_year,
+                        )?;
                         if rate > 0.0 {
                             uplift[cell] = uplift[cell].max(rate);
                             event_age_myr[cell] = 0.0;
@@ -183,15 +187,18 @@ fn evaluate_contact_forcing(
                         continue;
                     }
                     let cell = sample.anchor.raw() as usize;
-                    shortening[cell] =
-                        shortening[cell].max((normal_speed * taper).clamp(0.0, 500.0) as f32);
-                    uplift[cell] = uplift[cell].max(
-                        (constants::BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR
-                            * speed_weight
-                            * gain
-                            * taper)
-                            .clamp(0.0, 500.0) as f32,
-                    );
+                    let shortening_rate = checked_forcing_rate(
+                        sample.anchor,
+                        "shortening_rate_mm_per_year",
+                        normal_speed * taper,
+                    )?;
+                    shortening[cell] = shortening[cell].max(shortening_rate);
+                    let uplift_rate = checked_forcing_rate(
+                        sample.anchor,
+                        "uplift_rate_mm_per_year",
+                        constants::BASE_SUBDUCTION_UPLIFT_MM_PER_YEAR * speed_weight * gain * taper,
+                    )?;
+                    uplift[cell] = uplift[cell].max(uplift_rate);
                     event_age_myr[cell] = 0.0;
                 }
             }
@@ -278,25 +285,22 @@ fn event_lineages(event: &ContactEvent) -> Result<[super::model::LineageId; 2], 
     Ok([first, second])
 }
 
-fn descending_relief_weight(
-    state: &TectonicState,
-    event: &ContactEvent,
-    descending: super::model::LineageId,
-) -> Result<f64, ForcingError> {
-    let sample = event
-        .sample_indices
-        .iter()
-        .flatten()
-        .filter_map(|index| state.samples.get(*index as usize))
-        .find(|sample| sample.owner == descending)
-        .ok_or(ForcingError::MissingDescendingSide)?;
-    let normalized = ((f64::from(sample.tectonic_elevation_m)
-        - f64::from(constants::OCEANIC_TRENCH_ELEVATION_M))
-        / f64::from(
-            constants::HIGHEST_CONTINENTAL_ELEVATION_M - constants::OCEANIC_TRENCH_ELEVATION_M,
-        ))
-    .clamp(0.0, 1.0);
-    Ok(normalized * normalized)
+fn checked_forcing_rate(
+    cell: CellId,
+    field: &'static str,
+    exact: f64,
+) -> Result<f32, ForcingError> {
+    let maximum = f64::from(MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR);
+    if !exact.is_finite() || !(0.0..=maximum).contains(&exact) {
+        return Err(EvolvedTectonicValidationError::ForcingRateOutOfRange {
+            field,
+            cell,
+            found: exact,
+            max: maximum,
+        }
+        .into());
+    }
+    Ok(exact as f32)
 }
 
 fn forcing_profile_distance(distance_m: f64, direct: bool) -> f64 {
@@ -346,8 +350,6 @@ pub(super) enum ForcingError {
     UnknownCell { cell: CellId },
     #[error("active contact is missing its two lineages")]
     MissingLineages,
-    #[error("subduction contact is missing its descending side")]
-    MissingDescendingSide,
     #[error("subduction contact is missing its overriding side")]
     MissingOverridingSide,
     #[error("forcing geometry failed: {0}")]
@@ -356,15 +358,17 @@ pub(super) enum ForcingError {
 
 #[cfg(test)]
 mod tests {
-    use super::evaluate_contact_forcing;
+    use super::{checked_forcing_rate, evaluate_contact_forcing, ForcingError};
     use crate::generators::natural::spherical_tectonics::contacts::{ContactEvent, ContactKind};
     use crate::generators::natural::spherical_tectonics::model::{
         ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn, TectonicState,
     };
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        CrustKind, ResolvedFormationTimeline, ResolvedWorldFormationPreset, SphericalOrogenyKind,
-        SphericalPlateRotation, CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
+        CrustKind, EvolvedTectonicValidationError, ResolvedFormationTimeline,
+        ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
+        CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
+        NO_OROGENY_AGE_SENTINEL_MYR,
     };
     use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, UnitVector3};
     use crate::world::{CellId, Meters, SphericalSpaceSpec};
@@ -458,6 +462,73 @@ mod tests {
 
     fn value(field: &[f32], cell: CellId) -> f32 {
         field[cell.raw() as usize]
+    }
+
+    #[test]
+    fn authoritative_forcing_is_independent_of_legacy_elevation() {
+        let surface = fixture();
+        let state = state_for_edge(
+            &surface,
+            CrustKind::Oceanic,
+            90.0,
+            CrustKind::Continental,
+            0.0,
+        );
+        let mut changed = state_for_edge(
+            &surface,
+            CrustKind::Oceanic,
+            90.0,
+            CrustKind::Continental,
+            0.0,
+        );
+        for (index, sample) in changed.samples.iter_mut().enumerate() {
+            sample.tectonic_elevation_m = -9_000.0 + index as f32;
+        }
+        let event = event(
+            &surface,
+            ContactKind::OceanicSubduction {
+                descending: LineageId::from_raw(0),
+            },
+            -80.0,
+        );
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+
+        assert_eq!(
+            evaluate_contact_forcing(
+                &surface,
+                &state,
+                recipe,
+                std::slice::from_ref(&event),
+                step_duration_myr()
+            )
+            .unwrap(),
+            evaluate_contact_forcing(
+                &surface,
+                &changed,
+                recipe,
+                std::slice::from_ref(&event),
+                step_duration_myr(),
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn forcing_support_domain_rejects_instead_of_clamping() {
+        let cell = CellId::from_raw(7);
+        let error = checked_forcing_rate(cell, "uplift_rate_mm_per_year", 500.25).unwrap_err();
+        assert!(matches!(
+            error,
+            ForcingError::Invalid(EvolvedTectonicValidationError::ForcingRateOutOfRange {
+                field: "uplift_rate_mm_per_year",
+                cell: found_cell,
+                found,
+                max,
+            }) if found_cell == cell
+                && found.to_bits() == 500.25_f64.to_bits()
+                && max.to_bits()
+                    == f64::from(MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR).to_bits()
+        ));
     }
 
     #[test]

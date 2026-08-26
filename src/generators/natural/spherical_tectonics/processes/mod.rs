@@ -844,7 +844,7 @@ mod subduction;
 pub(in crate::generators::natural::spherical_tectonics) use subduction::subduction_profile;
 
 pub(super) use collision::{apply_collision, apply_collision_v5};
-pub(super) use relaxation::relax_current_crust;
+pub(super) use relaxation::{advance_solid_crust_ages, relax_legacy_compatibility_elevation};
 pub(super) use rifting::{maybe_rift_plates, mechanically_fragment_oversized_plates_v5};
 pub(super) use spreading::{
     apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,

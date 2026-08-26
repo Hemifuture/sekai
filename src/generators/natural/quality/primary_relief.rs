@@ -25,10 +25,9 @@ const EXPECTED_METRIC_NAMES: [&str; 13] = [
     "water-inventory-ratio",
     "water-volume-relative-error",
 ];
-const P2_CORPUS_SCOPED_NAMES: [&str; 6] = [
+const P2_CORPUS_SCOPED_NAMES: [&str; 5] = [
     "collision-causality-fraction",
     "continental-area-fraction",
-    "ocean-age-depth-spearman",
     "regular-triple-junction-angle-fraction",
     "subduction-causality-fraction",
     "transform-to-convergent-uplift-ratio",

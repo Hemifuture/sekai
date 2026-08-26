@@ -79,7 +79,6 @@ fn quality_report_is_surface_bound_versioned_and_covers_every_p2_gate() {
             "lineage-closure-error",
             "maximum-plate-area-fraction",
             "non-finite-value-count",
-            "ocean-age-depth-spearman",
             "regular-triple-junction-angle-fraction",
             "remap-category-ambiguity-fraction",
             "subduction-causality-fraction",
@@ -109,7 +108,6 @@ fn quality_report_is_surface_bound_versioned_and_covers_every_p2_gate() {
         vec![
             "collision-causality-fraction",
             "continental-area-fraction",
-            "ocean-age-depth-spearman",
             "regular-triple-junction-angle-fraction",
             "subduction-causality-fraction",
             "transform-to-convergent-uplift-ratio",

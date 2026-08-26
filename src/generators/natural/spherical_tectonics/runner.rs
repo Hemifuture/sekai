@@ -16,10 +16,10 @@ use super::model::{
     EvolutionLineageLedger, EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
 };
 use super::processes::{
-    apply_collision, apply_collision_v5, apply_divergent_extension, apply_divergent_extension_v5,
-    apply_subduction, apply_subduction_v5, commit_process_actions, commit_process_actions_v5,
-    fill_spreading_gaps, fill_spreading_gaps_v5, maybe_rift_plates,
-    mechanically_fragment_oversized_plates_v5, relax_current_crust, ProcessError,
+    advance_solid_crust_ages, apply_collision, apply_collision_v5, apply_divergent_extension,
+    apply_divergent_extension_v5, apply_subduction, apply_subduction_v5, commit_process_actions,
+    commit_process_actions_v5, fill_spreading_gaps, fill_spreading_gaps_v5, maybe_rift_plates,
+    mechanically_fragment_oversized_plates_v5, relax_legacy_compatibility_elevation, ProcessError,
 };
 use super::resample::{
     canonicalize_final_plates, resample_current_state, resample_current_state_v5,
@@ -88,7 +88,15 @@ pub(super) fn evolve_current_state(
             recipe,
             streams,
         )?;
-        relax_current_crust(surface, events, next, actions, recipe, process_delta_myr)?;
+        advance_solid_crust_ages(next, process_delta_myr)?;
+        relax_legacy_compatibility_elevation(
+            surface,
+            events,
+            next,
+            actions,
+            recipe,
+            process_delta_myr,
+        )?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
             &current.plates,
@@ -174,7 +182,7 @@ pub(super) fn evolve_control_state_v5(
             recipe,
             streams,
         )?;
-        relax_current_crust(surface, events, next, actions, recipe, process_delta_myr)?;
+        advance_solid_crust_ages(next, process_delta_myr)?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
             &current.plates,
@@ -657,7 +665,6 @@ mod tests {
         let mut collision_passed = 0_usize;
         let mut transform_uplift = Vec::new();
         let mut convergent_uplift = Vec::new();
-        let mut ocean_age_depth_area = Vec::new();
         let formation = resolved_formation(ResolvedWorldFormationPreset::Continents);
         for seed in [
             42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
@@ -784,15 +791,6 @@ mod tests {
                     ContactKind::Gap | ContactKind::Divergence => {}
                 }
             }
-            for (cell, sample) in surface.cells().iter().zip(&evolved.current.samples) {
-                if sample.kind == crate::world::natural::CrustKind::Oceanic {
-                    ocean_age_depth_area.push((
-                        f64::from(sample.age_myr),
-                        -f64::from(sample.tectonic_elevation_m),
-                        cell.area.get(),
-                    ));
-                }
-            }
             triple_angles.extend(macro_triple_angles(&surface, &evolved.current));
             eprintln!(
                 "evolved seed={seed} retention={retention:.6} max_plate={maximum_share:.6} plates={} fragmentations={}",
@@ -820,16 +818,14 @@ mod tests {
         let collision_fraction = collision_passed as f64 / collision_total as f64;
         let transform_median = median(&mut transform_uplift);
         let convergent_median = median(&mut convergent_uplift);
-        let age_depth_correlation = weighted_spearman(&ocean_age_depth_area);
         eprintln!(
-            "forcing subduction={subduction_passed}/{subduction_total} ({subduction_fraction:.6}) collision={collision_passed}/{collision_total} ({collision_fraction:.6}) transform_uplift_median={transform_median:.6} convergent_uplift_median={convergent_median:.6} age_depth_spearman={age_depth_correlation:.6}"
+            "forcing subduction={subduction_passed}/{subduction_total} ({subduction_fraction:.6}) collision={collision_passed}/{collision_total} ({collision_fraction:.6}) transform_uplift_median={transform_median:.6} convergent_uplift_median={convergent_median:.6}"
         );
         assert!(regular_fraction <= 0.35, "{regular_fraction}");
         assert!(subduction_total > 0);
         assert!(collision_total > 0);
         assert!(subduction_fraction >= 0.80, "{subduction_fraction}");
         assert!(collision_fraction >= 0.80, "{collision_fraction}");
-        assert!(age_depth_correlation >= 0.70, "{age_depth_correlation}");
         assert!(
             transform_median <= convergent_median * 0.5,
             "transform={transform_median} convergent={convergent_median}"
@@ -845,60 +841,5 @@ mod tests {
         } else {
             f64::from(values[middle])
         }
-    }
-
-    fn weighted_spearman(values: &[(f64, f64, f64)]) -> f64 {
-        assert!(values.len() >= 2);
-        let first = average_ranks(values, |value| value.0);
-        let second = average_ranks(values, |value| value.1);
-        let weight_sum = values.iter().map(|value| value.2).sum::<f64>();
-        let first_mean = first
-            .iter()
-            .zip(values)
-            .map(|(rank, value)| rank * value.2)
-            .sum::<f64>()
-            / weight_sum;
-        let second_mean = second
-            .iter()
-            .zip(values)
-            .map(|(rank, value)| rank * value.2)
-            .sum::<f64>()
-            / weight_sum;
-        let mut covariance = 0.0;
-        let mut first_variance = 0.0;
-        let mut second_variance = 0.0;
-        for index in 0..values.len() {
-            let first_delta = first[index] - first_mean;
-            let second_delta = second[index] - second_mean;
-            let weight = values[index].2;
-            covariance += weight * first_delta * second_delta;
-            first_variance += weight * first_delta * first_delta;
-            second_variance += weight * second_delta * second_delta;
-        }
-        covariance / (first_variance * second_variance).sqrt()
-    }
-
-    fn average_ranks(
-        values: &[(f64, f64, f64)],
-        key: impl Fn(&(f64, f64, f64)) -> f64,
-    ) -> Vec<f64> {
-        let mut order = (0..values.len()).collect::<Vec<_>>();
-        order.sort_by(|&first, &second| key(&values[first]).total_cmp(&key(&values[second])));
-        let mut ranks = vec![0.0; values.len()];
-        let mut start = 0;
-        while start < order.len() {
-            let mut end = start + 1;
-            while end < order.len()
-                && key(&values[order[end]]).to_bits() == key(&values[order[start]]).to_bits()
-            {
-                end += 1;
-            }
-            let average = (start + end - 1) as f64 * 0.5;
-            for &index in &order[start..end] {
-                ranks[index] = average;
-            }
-            start = end;
-        }
-        ranks
     }
 }
