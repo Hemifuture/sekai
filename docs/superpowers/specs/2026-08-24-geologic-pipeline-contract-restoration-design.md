@@ -1,7 +1,7 @@
 # 地质管线架构契约恢复与当前态因果生成设计
 
 日期：2026-08-24  
-状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准；2026-08-26 P3 Airy 支持域闭合及 P2 质量所有权勘误经联合审查批准**
+状态：**用户已批准；2026-08-25 最终态/生成效率与联合审查勘误已批准；2026-08-26 P3 Airy 支持域、P2 质量所有权及离线观察边界勘误经联合审查批准**
 
 上位规格：`2026-08-17-complete-natural-world-pipeline-design.md`  
 修订对象：
@@ -234,6 +234,25 @@ commit `f1df994` 在本规格加入的以下要求：
     (1977) 的海底热沉降关系与 Stein & Stein (1992) 的 GDH1 参数化；把该关系的
     验收放在唯一生成它的 P3 属于领域所有权修正，不是新数值模型。旧 P2 指标删除
     后不保留 alias、历史 schema 或无人消费的统计 helper。
+15. **离线耦合观察只发生在生产已有的合法 P2 重采样边界。** P2 的移动样本在
+    两次 `resample_current_state_v5` 之间允许 anchor overlap/gap；该状态是合法私有
+    求解状态，但不满足 `dense_control_samples` 的逐控制格唯一覆盖条件，不能伪装
+    成 `EvolvedTectonicSnapshot`，也不能交给只接受合法
+    `AuthoritativeTectonicView` 的 P3。Task 5/10 因而显式以生产本来就执行的
+    conservative resample 加 mechanical fragmentation 完成点作为 test-only
+    observer 边界；observer 记录累计 accepted step 数并即时借用该点投影出的
+    snapshot，最终强制 resample 保证最后一个观察点恰好对应完整 timeline 终点。
+
+    本条显式替代 §0(5) 与本规格其他位置“每个 P2 宏步都生成离线 P3/P4/P5
+    snapshot”的字面要求。不得为凑 `128` 个窗口临时复制 workspace 后逐步额外
+    resample，因为那会把 P2 的重采样 cadence 一并改变，无法只测耦合顺序；也不得
+    新造 overlap/gap 容忍投影。离线参考按相邻真实重采样边界之间的 accepted-step
+    跨度分配 P5 horizon，各窗口时长之和仍严格等于
+    `SURFACE_FORMATION_HORIZON_YEARS`。这只是复用生产离散化的观察边界，不新增
+    算法、常量、误差阈值或产品 schema；具体窗口数由现有
+    `resampling_interval_steps` 和实际状态决定，不冻结为新门禁。Cortial et al.
+    (2019) 仍只支持 P2 程序构造机制；把可发布检查点限制为生产已有重采样边界是
+    Sekai 实现身份约束，**不是文献给出的耦合 cadence，仍属工程类比与开放问题**。
 
 ## 1. 用户裁定与问题归因
 

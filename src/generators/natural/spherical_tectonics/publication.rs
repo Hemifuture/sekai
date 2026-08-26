@@ -6,7 +6,15 @@ use std::collections::{BTreeMap, BinaryHeap};
 use thiserror::Error;
 
 use super::boundaries::classify_and_aggregate_boundaries;
-use super::model::{CrustSample, LineageId};
+#[cfg(test)]
+use super::forcing::evaluate_present_day_forcing;
+#[cfg(test)]
+use super::model::FormationTectonicRecipe;
+use super::model::{
+    CrustSample, EvolutionLineageLedger, EvolutionMaterialLedger, LineageId, TectonicState,
+};
+#[cfg(test)]
+use super::runner::evolve_control_state_v5_with_resample_observer;
 use super::runner::{evolve_control_state_v5, RunnerError};
 use crate::engine::{BuildCancellationError, StageRng};
 use crate::generators::natural::random::LabeledSubstreams;
@@ -39,7 +47,6 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
     rng.check_cancelled()?;
     let control = bundle.tectonic_control_surface();
     let authority = bundle.authoritative_surface();
-    let map = bundle.control_to_authoritative_map();
     let control_view = SphericalNaturalSurface::from_validated(control)?;
     let authority_view = SphericalNaturalSurface::from_validated(authority)?;
     let control_topology = NaturalTopologyIndex::from_surface(&control_view);
@@ -47,7 +54,91 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
     let streams = LabeledSubstreams::capture(rng);
     streams.check_cancelled()?;
     let evolved = evolve_control_state_v5(control, &control_topology, spec, formation, &streams)?;
-    let dense = dense_control_samples(control, &evolved.current.samples)?;
+    publish_evolved_control_state(
+        bundle,
+        &authority_topology,
+        &streams,
+        &evolved.current,
+        &evolved.forcing,
+        &evolved.material_ledger,
+        &evolved.lineage_ledger,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::generators::natural) fn generate_evolved_spherical_with_test_resample_observer(
+    bundle: &ProfileSurfaceBundle,
+    spec: &TectonicSpec,
+    formation: &ResolvedWorldFormation,
+    rng: &mut StageRng,
+    mut on_resampled: impl FnMut(u16, &EvolvedTectonicSnapshot) -> Result<(), EvolvedPublicationError>,
+) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError> {
+    rng.check_cancelled()?;
+    let control = bundle.tectonic_control_surface();
+    let authority = bundle.authoritative_surface();
+    let control_view = SphericalNaturalSurface::from_validated(control)?;
+    let authority_view = SphericalNaturalSurface::from_validated(authority)?;
+    let control_topology = NaturalTopologyIndex::from_surface(&control_view);
+    let authority_topology = NaturalTopologyIndex::from_surface(&authority_view);
+    let streams = LabeledSubstreams::capture(rng);
+    let recipe = FormationTectonicRecipe::for_preset(formation.resolved());
+    let delta_myr = formation.timeline().step_duration_myr();
+    streams.check_cancelled()?;
+    let evolved = evolve_control_state_v5_with_resample_observer(
+        control,
+        &control_topology,
+        spec,
+        formation,
+        &streams,
+        |accepted_steps, current, material_ledger, lineage_ledger| {
+            let forcing = evaluate_present_day_forcing(
+                control,
+                &control_topology,
+                current,
+                recipe,
+                delta_myr,
+            )?;
+            let snapshot = publish_evolved_control_state(
+                bundle,
+                &authority_topology,
+                &streams,
+                current,
+                &forcing,
+                material_ledger,
+                lineage_ledger,
+            )
+            .map_err(|error| RunnerError::TestObserver {
+                message: error.to_string(),
+            })?;
+            on_resampled(accepted_steps, &snapshot).map_err(|error| RunnerError::TestObserver {
+                message: error.to_string(),
+            })
+        },
+    )?;
+    publish_evolved_control_state(
+        bundle,
+        &authority_topology,
+        &streams,
+        &evolved.current,
+        &evolved.forcing,
+        &evolved.material_ledger,
+        &evolved.lineage_ledger,
+    )
+}
+
+fn publish_evolved_control_state(
+    bundle: &ProfileSurfaceBundle,
+    authority_topology: &NaturalTopologyIndex,
+    streams: &LabeledSubstreams,
+    current: &TectonicState,
+    forcing_state: &SphericalTectonicForcingState,
+    material_ledger: &EvolutionMaterialLedger,
+    lineage_ledger: &EvolutionLineageLedger,
+) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError> {
+    let control = bundle.tectonic_control_surface();
+    let authority = bundle.authoritative_surface();
+    let map = bundle.control_to_authoritative_map();
+    let dense = dense_control_samples(control, &current.samples)?;
 
     let continental_area = remap_extensive_f64(
         map,
@@ -102,15 +193,14 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
         .iter()
         .map(|owner| u32::from(*owner))
         .collect::<Vec<_>>();
-    let live_lineages = evolved
-        .current
+    let live_lineages = current
         .plates
         .iter()
         .map(|plate| plate.lineage.raw())
         .collect::<Vec<_>>();
     let repaired = repair_connected_owners(
         map,
-        &authority_topology,
+        authority_topology,
         &dense,
         &provisional_owners,
         &live_lineages,
@@ -121,11 +211,12 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
     let mut plates = Vec::with_capacity(live_lineages.len());
     for (index, &raw_lineage) in live_lineages.iter().enumerate() {
         let lineage = LineageId::from_raw(raw_lineage);
-        let source_plate = evolved.current.plate(lineage).ok_or(
-            EvolvedPublicationError::MissingLineageRotation {
-                lineage: raw_lineage,
-            },
-        )?;
+        let source_plate =
+            current
+                .plate(lineage)
+                .ok_or(EvolvedPublicationError::MissingLineageRotation {
+                    lineage: raw_lineage,
+                })?;
         let plate = PlateId::from_raw(index as u32);
         let marker = *repaired.markers.get(&raw_lineage).ok_or(
             EvolvedPublicationError::MissingLineageMarker {
@@ -236,7 +327,7 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
 
     let (boundaries, boundary_segments) = classify_and_aggregate_boundaries(
         authority,
-        &authority_topology,
+        authority_topology,
         &plates,
         &cell_plates,
         &crust,
@@ -253,15 +344,14 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
     compatibility.validate_against(authority)?;
     streams.check_cancelled()?;
 
-    let mut uplift = remap_intensive_f32(map, evolved.forcing.uplift_rate_mm_per_year())?;
-    let mut subsidence = remap_intensive_f32(map, evolved.forcing.subsidence_rate_mm_per_year())?;
-    let mut shortening = remap_intensive_f32(map, evolved.forcing.shortening_rate_mm_per_year())?;
-    let boundary_distance = remap_intensive_f32(map, evolved.forcing.boundary_distance_m())?;
+    let mut uplift = remap_intensive_f32(map, forcing_state.uplift_rate_mm_per_year())?;
+    let mut subsidence = remap_intensive_f32(map, forcing_state.subsidence_rate_mm_per_year())?;
+    let mut shortening = remap_intensive_f32(map, forcing_state.shortening_rate_mm_per_year())?;
+    let boundary_distance = remap_intensive_f32(map, forcing_state.boundary_distance_m())?;
     let mut event_age = remap_masked_intensive(
         map,
-        evolved.forcing.event_age_myr(),
-        &evolved
-            .forcing
+        forcing_state.event_age_myr(),
+        &forcing_state
             .event_age_myr()
             .iter()
             .map(|age| *age >= 0.0)
@@ -284,10 +374,10 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
         event_age,
     )?;
 
-    let final_control = evolved.current.material_totals()?;
+    let final_control = current.material_totals()?;
     let material_budget = SphericalTectonicMaterialBudget::new(
-        evolved.material_ledger.initial_control(),
-        evolved.material_ledger.processes()?,
+        material_ledger.initial_control(),
+        material_ledger.processes()?,
         final_control,
         material.totals(),
         authority
@@ -300,7 +390,7 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
             .max(crust_categories.ambiguous_target_area_fraction())
             .max(orogeny_categories.ambiguous_target_area_fraction()),
     )?;
-    let lineage_budget = evolved.lineage_ledger.budget(&evolved.current)?;
+    let lineage_budget = lineage_ledger.budget(current)?;
     let snapshot = EvolvedTectonicSnapshot::new(
         EVOLVED_TECTONIC_SNAPSHOT_SCHEMA_V1,
         bundle.resolution_plan().clone(),
@@ -630,5 +720,88 @@ impl From<super::model::MaterialColumnError> for EvolvedPublicationError {
 impl From<super::model::LineageLedgerError> for EvolvedPublicationError {
     fn from(error: super::model::LineageLedgerError) -> Self {
         Self::Lineage(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+
+    use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
+    use crate::generators::natural::spherical_tectonics::{
+        generate_evolved_spherical, generate_evolved_spherical_with_test_resample_observer,
+    };
+    use crate::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
+    use crate::world::natural::{
+        NaturalQualityProfile, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
+        WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    };
+    use crate::world::{Meters, RootSeed};
+
+    #[test]
+    fn test_only_resample_observer_preserves_the_monolithic_p2_product() {
+        let bundle = bundle();
+        let formation = formation();
+        let mut monolithic_rng = rng(42);
+        let monolithic = generate_evolved_spherical(
+            bundle,
+            &TectonicSpec::default(),
+            &formation,
+            &mut monolithic_rng,
+        )
+        .unwrap();
+
+        let mut observed_boundaries = 0_u16;
+        let mut final_accepted_step = 0_u16;
+        let mut observed_rng = rng(42);
+        let observed = generate_evolved_spherical_with_test_resample_observer(
+            bundle,
+            &TectonicSpec::default(),
+            &formation,
+            &mut observed_rng,
+            |accepted_steps, _snapshot| {
+                assert!(accepted_steps > final_accepted_step);
+                observed_boundaries += 1;
+                final_accepted_step = accepted_steps;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_vec(&observed).unwrap(),
+            serde_json::to_vec(&monolithic).unwrap(),
+        );
+        assert!(observed_boundaries > 0);
+        assert!(observed_boundaries < formation.timeline().step_count());
+        assert_eq!(final_accepted_step, formation.timeline().step_count());
+    }
+
+    fn bundle() -> &'static ProfileSurfaceBundle {
+        static BUNDLE: OnceLock<ProfileSurfaceBundle> = OnceLock::new();
+        BUNDLE.get_or_init(|| {
+            ProfileSurfaceBuilder::build(
+                NaturalQualityProfile::Draft,
+                Meters::new(6_371_000.0).unwrap(),
+                &BuildCancellation::new(),
+            )
+            .unwrap()
+        })
+    }
+
+    fn formation() -> ResolvedWorldFormation {
+        ResolvedWorldFormation::new(
+            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+            WorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Continents,
+        )
+        .unwrap()
+    }
+
+    fn rng(seed: u64) -> StageRng {
+        StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(seed),
+            StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+        ))
     }
 }

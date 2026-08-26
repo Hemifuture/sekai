@@ -124,6 +124,29 @@ pub(super) fn evolve_control_state_v5(
     formation: &ResolvedWorldFormation,
     streams: &LabeledSubstreams,
 ) -> Result<EvolvedControlState, RunnerError> {
+    evolve_control_state_v5_with_resample_observer(
+        surface,
+        topology,
+        spec,
+        formation,
+        streams,
+        |_, _, _, _| Ok(()),
+    )
+}
+
+pub(super) fn evolve_control_state_v5_with_resample_observer(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    spec: &TectonicSpec,
+    formation: &ResolvedWorldFormation,
+    streams: &LabeledSubstreams,
+    mut on_resampled: impl FnMut(
+        u16,
+        &TectonicState,
+        &EvolutionMaterialLedger,
+        &EvolutionLineageLedger,
+    ) -> Result<(), RunnerError>,
+) -> Result<EvolvedControlState, RunnerError> {
     streams.check_cancelled()?;
     let recipe = FormationTectonicRecipe::for_preset(formation.resolved());
     let timeline = formation.timeline();
@@ -203,6 +226,12 @@ pub(super) fn evolve_control_state_v5(
                 streams,
                 &mut lineage_ledger,
             )?;
+            on_resampled(
+                step + 1,
+                &workspace.current,
+                &material_ledger,
+                &lineage_ledger,
+            )?;
         }
         streams.check_cancelled()?;
     }
@@ -216,6 +245,12 @@ pub(super) fn evolve_control_state_v5(
             recipe,
             streams,
             &mut lineage_ledger,
+        )?;
+        on_resampled(
+            timeline.step_count(),
+            &workspace.current,
+            &material_ledger,
+            &lineage_ledger,
         )?;
     }
     trace_continental_inventory("final", timeline.step_count(), &workspace.current);
@@ -334,6 +369,9 @@ pub(super) enum RunnerError {
     RiftStepDurationOverflow { step_duration_kyr: u32 },
     #[error("tectonic evolution was cancelled")]
     Cancelled(#[from] BuildCancellationError),
+    #[cfg(test)]
+    #[error("test-only resample observer failed: {message}")]
+    TestObserver { message: String },
 }
 
 #[cfg(test)]

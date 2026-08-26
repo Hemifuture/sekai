@@ -1115,29 +1115,42 @@ git commit -m "Separate solid-earth aging from legacy relief" -m "Keep surface e
 
 ### Task 5: 保持 P2 单次生产入口并提供 test-only 参考观察点
 
+**2026-08-26 联合审查后显式修订：** P2 仅在生产既有的
+`resample_current_state_v5` 边界恢复逐控制格唯一覆盖；其间移动样本允许合法的
+anchor overlap/gap，不能发布为 P2 snapshot 或交给 P3。Task 5 observer 因而只在
+真实 resample 加 mechanical fragmentation 完成后触发，并报告累计 accepted step
+数；最终强制 resample 保证最后一个观察点对应 timeline 终点。Task 10 按相邻观察
+点的 step 跨度分配 P5 horizon，不再要求 128 个伪发布窗口。该修订见规格
+§0.1(15)，不增加额外 resample、第二套投影或新 cadence。
+按根 `AGENTS.md` 的最小充分测试纪律，本任务只用代表性 Draft/seed `42` 比较一次
+one-shot 与 observer 路径；随机多样性已有既存 P2 语料覆盖，不在这个确定性接口
+测试中重复三 seed 全时域求解。
+
 **Files:**
+- Modify: `docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md`
+- Modify: `docs/superpowers/plans/2026-08-25-geologic-pipeline-contract-restoration.md`
 - Modify: `src/generators/natural/spherical_tectonics.rs`
 - Modify: `src/generators/natural/spherical_tectonics/runner.rs`
 - Modify: `src/generators/natural/spherical_tectonics/publication.rs`
-- Test: `src/generators/natural/spherical_tectonics/runner.rs`
+- Test: `src/generators/natural/spherical_tectonics/publication.rs`
 
 **Interfaces:**
 - Consumes: `ProfileSurfaceBundle`、`ResolvedWorldFormation::timeline()`、P2 process kernels 与 conservative remap。
-- Produces: 生产仍只通过既有 one-shot P2 入口返回最终 `EvolvedTectonicSnapshot`；另有一个 `#[cfg(test)]`、crate-private 的 accepted-step observer 只供 Task 10 高成本耦合顺序探针使用，不返回历史集合。
+- Produces: 生产仍只通过既有 one-shot P2 入口返回最终 `EvolvedTectonicSnapshot`；另有一个 `#[cfg(test)]`、crate-private 的 resample-boundary observer 只供 Task 10 高成本耦合顺序探针使用，逐次报告累计 accepted step 与借用型合法 snapshot，不返回历史集合。
 
 - [ ] **Step 1: 写 one-shot/observer 最终产品等价 RED**
 
 ```rust
 #[test]
-fn test_only_step_observer_preserves_the_monolithic_p2_product() {
-    for seed in [3_u64, 7, 42] {
-        let fixture = evolved_fixture_for_seed(seed);
-        let monolithic = generate_evolved(&fixture);
-        let (observed_final, accepted_steps) =
-            generate_evolved_with_test_step_observer(&fixture);
-        assert_eq!(observed_final, monolithic, "seed {seed}");
-        assert_eq!(accepted_steps, fixture.formation.timeline().step_count());
-    }
+fn test_only_resample_observer_preserves_the_monolithic_p2_product() {
+    let fixture = evolved_fixture_for_seed(42);
+    let monolithic = generate_evolved(&fixture);
+    let (observed_final, observed_boundaries, final_accepted_step) =
+        generate_evolved_with_test_resample_observer(&fixture);
+    assert_eq!(observed_final, monolithic);
+    assert!(observed_boundaries > 0);
+    assert!(observed_boundaries < fixture.formation.timeline().step_count());
+    assert_eq!(final_accepted_step, fixture.formation.timeline().step_count());
 }
 ```
 
@@ -1146,18 +1159,21 @@ test 访问观察入口而放宽 production library 可见性。
 
 - [ ] **Step 2: 运行 RED**
 
-Run: `cargo test --release --lib test_only_step_observer_`
+Run: `cargo test --release --lib test_only_resample_observer_`
 
 Expected: 编译失败，指出 test-only observer 不存在。
 
 - [ ] **Step 3: 在既有 P2 循环增加零成本生产观察边界**
 
 把现有 runner 的循环体提取为 private
-`evolve_control_state_v5_with_observer(..., on_accepted_step)`；生产入口传 no-op
-closure，`#[cfg(test)]` helper 才把每个已通过 P2 自身预算/发布校验的 snapshot
-借给 Task 10 reference closure。observer 不取得 workspace/ledger 可变引用，只在
-accepted snapshot 的借用期内即时消费，不保存 snapshot/history 集合，不改变随机
-流，也不进入 serde/artifact/UI。
+`evolve_control_state_v5_with_resample_observer(..., on_resampled)`；生产入口传 no-op
+closure。仅在既有 in-loop resample 与最终强制 resample 各自完成 mechanical
+fragmentation 后，以一基累计 accepted step 调用 observer。`#[cfg(test)]`
+publication helper 从该逐格稠密状态复用同一个 production publication 路径，才把
+合法 `EvolvedTectonicSnapshot` 借给 Task 10 reference closure。observer 不取得
+workspace/ledger 可变引用，只在 snapshot 借用期内即时消费，不保存
+snapshot/history 集合，不改变随机流，也不进入 serde/artifact/UI。不得在 observer
+路径增加一次 resample；连续观察点的 step 差由 Task 10 用于分配 P5 时长。
 
 禁止创建 `EvolvedTectonicStepper`、`TectonicStepCandidate`、通用回调 trait，禁止
 仅为候选事务给 workspace、ledger 或 `LabeledSubstreams` 增加 `Clone`。生产仍
@@ -1168,13 +1184,13 @@ accepted snapshot 的借用期内即时消费，不保存 snapshot/history 集�
 
 Run: `cargo test --release --test spherical_tectonic_generation --test spherical_tectonic_causality --test evolved_tectonic_material --test evolved_tectonic_publication`
 
-Expected: 全部 PASS；三 seed 的 observer/no-op 最终产品逐位等价，observer 次数
-等于 timeline step count，生产 API/序列化面没有新增历史状态。
+Expected: 全部 PASS；代表性 seed 的 observer/no-op 最终产品逐位等价，observer 累计
+step 严格递增且最后等于 timeline step count，生产 API/序列化面没有新增历史状态。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs
+git add docs/superpowers/specs/2026-08-24-geologic-pipeline-contract-restoration-design.md docs/superpowers/plans/2026-08-25-geologic-pipeline-contract-restoration.md src/generators/natural/spherical_tectonics.rs src/generators/natural/spherical_tectonics/runner.rs src/generators/natural/spherical_tectonics/publication.rs
 git commit -m "Expose a test-only tectonic reference observer" -m "Keep production P2 one-shot while allowing one offline coupling probe to inspect accepted steps without publishing history."
 ```
 
@@ -2135,10 +2151,11 @@ P4、终点闭合和拒绝原子性成立。
 `Standard`/seed `42`、相同 resolved inputs 和标签子流，分别运行：
 
 - 生产路径：完整 P2 → 最终 P3 → start P4 → 一次完整 P5 → endpoint P4；
-- 高成本耦合顺序对照：每个 P2 宏步生成对应 P3 组成变化，把
-  `SURFACE_FORMATION_HORIZON_YEARS / timeline.step_count()` 的 P5 时长分配给
-  该窗口，并执行 start P4 → half P5 → midpoint P4 → half P5 → endpoint P4。
-  所有窗口的 P5 时长之和必须与生产路径相同；不得让 P5 跟随 P2 累计成
+- 高成本耦合顺序对照：在生产实际发生 conservative resample 与 mechanical
+  fragmentation 后的每个合法 P2 观察边界生成对应 P3 组成变化；按该边界与上一
+  边界之间的 accepted-step 数占 `timeline.step_count()` 的比例分配 P5 时长，并
+  执行 start P4 → half P5 → midpoint P4 → half P5 → endpoint P4。所有窗口的 P5
+  时长之和必须与生产路径相同；不得额外 resample，也不得让 P5 跟随 P2 累计成
   `256 Myr`。
 
 参考路径的构造账本与生产路径采用相同所有权：P3 primary replacement 只把该
@@ -2150,8 +2167,9 @@ accepted solid state 的物质/厚度/年龄/造山/具名 P3 投影更新到
 P2/P5 物理时域仍不同，该限制只消除实现中的双计数/表示混淆，不把对照升级为
 预测性轨迹参考。
 
-高成本对照 observer 在每个 accepted P2 snapshot 的借用期内立即完成该窗口的 P3/P4/P5
-消费，不克隆或保留 snapshot/history 集合。参考 helper 和 trace 全部保持
+高成本对照 observer 在每个真实 resample-boundary P2 snapshot 的借用期内立即完成
+该窗口的 P3/P4/P5 消费，不克隆或保留 snapshot/history 集合；累计 accepted step
+必须严格递增且终点等于 timeline step count。参考 helper 和 trace 全部保持
 test-private，不进入 library API、serde、artifact 或 cache。两条路径只输出最终
 九项 exact elevation components、
 `SurfaceWaterGeometry`、五来源 sediment mass、water reservoirs、climate fields、

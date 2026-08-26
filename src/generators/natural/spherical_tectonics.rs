@@ -34,6 +34,8 @@ use model::CrustSample;
 use runner::{canonicalize_evolved_state, evolve_current_state, run_tectonic_evolution};
 
 pub(super) use publication::generate_evolved_spherical;
+#[cfg(test)]
+pub(in crate::generators::natural) use publication::generate_evolved_spherical_with_test_resample_observer;
 
 impl TectonicGenerator {
     /// Generates a surface-bound current snapshot on a validated closed spherical world.
