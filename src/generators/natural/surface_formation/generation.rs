@@ -14,8 +14,8 @@ use super::{
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::global_circulation::{
-    GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
-    GlobalClimateForcingError,
+    GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcing,
+    GlobalClimateForcingBuilder, GlobalClimateForcingError,
 };
 use crate::world::natural::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
@@ -56,22 +56,54 @@ pub struct SurfaceFormationInputs<'a> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SurfaceFormationGenerator;
 
+/// Final P5 snapshot plus the exact endpoint P4 forcing used to close it.
+#[derive(Debug)]
+pub(in crate::generators::natural) struct SurfaceFormationClosureOutput {
+    surface: NaturalSurfaceFormationSnapshot,
+    final_climate_forcing: GlobalClimateForcing,
+}
+
+impl SurfaceFormationClosureOutput {
+    /// Moves the closed P5 snapshot and its endpoint forcing to the outer coordinator.
+    pub(in crate::generators::natural) fn into_parts(
+        self,
+    ) -> (NaturalSurfaceFormationSnapshot, GlobalClimateForcing) {
+        (self.surface, self.final_climate_forcing)
+    }
+}
+
 impl SurfaceFormationGenerator {
     /// Advances P5 over its declared horizon and publishes one atomic final state.
     pub fn generate(
         inputs: SurfaceFormationInputs<'_>,
         cancellation: &BuildCancellation,
     ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
-        let surface = inputs.surface;
         let surface_ref = validate_inputs(inputs, cancellation)?;
-        let areas = cell_areas(surface, cancellation)?;
-        let total_area_m2 = areas.iter().sum::<f64>();
-        let dense_state_bytes = expected_surface_formation_dense_state_bytes(
-            surface.cells().len() as u32,
-            surface.edges().len() as u32,
-        )
-        .ok_or(SurfaceFormationGenerationError::AllocationOverflow)?;
-        let mut state = initial_formation_state(inputs)?;
+        let state = initial_formation_state(inputs)?;
+        let (surface, _) =
+            Self::generate_from_validated_state(inputs, state, surface_ref, cancellation)?
+                .into_parts();
+        Ok(surface)
+    }
+
+    /// Closes one exact P3-derived state through finite-time P5 and endpoint P4.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::generators::natural) fn generate_from_exact_state(
+        inputs: SurfaceFormationInputs<'_>,
+        state: FormationState,
+        cancellation: &BuildCancellation,
+    ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
+        let surface_ref = validate_inputs(inputs, cancellation)?;
+        Self::generate_from_validated_state(inputs, state, surface_ref, cancellation)
+    }
+
+    fn generate_from_validated_state(
+        inputs: SurfaceFormationInputs<'_>,
+        mut state: FormationState,
+        surface_ref: SurfaceRef,
+        cancellation: &BuildCancellation,
+    ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
+        let surface = inputs.surface;
         let start_process_inputs =
             SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate);
         let advance_report = advance_surface_processes(
@@ -80,13 +112,9 @@ impl SurfaceFormationGenerator {
             SURFACE_FORMATION_HORIZON_YEARS,
             cancellation,
         )?;
-        let accepted_surface_substeps = advance_report.accepted_surface_substeps();
-        let accepted_duration_years = advance_report.accepted_duration_years();
-        let final_terrain = state.project_final_terrain(
-            surface,
-            advance_report.final_sediment_fields,
-            cancellation,
-        )?;
+        let (advance_summary, final_sediment_fields) = advance_report.into_parts();
+        let final_terrain =
+            state.project_final_terrain(surface, final_sediment_fields, cancellation)?;
         let forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
             surface,
             &final_terrain,
@@ -106,23 +134,15 @@ impl SurfaceFormationGenerator {
             SurfaceProcessInputs::from_generation(inputs, &endpoint_climate),
             cancellation,
         )?;
-        let current_rates = current_state_residuals(
-            &areas,
-            total_area_m2,
-            state.current_elevation_exact_m(),
-            &terminal_diagnostics.process_rates,
-            terminal_diagnostics.sediment_stock_change_kg_per_year,
-            terminal_diagnostics.budget.produced_mass_kg_per_year(),
+        let evolution_report = build_evolution_report(
+            surface,
+            &state,
+            advance_summary,
+            &terminal_diagnostics,
             cancellation,
         )?;
-        let evolution_report = FormationEvolutionReport::new(
-            accepted_surface_substeps,
-            accepted_duration_years,
-            current_rates,
-            dense_state_bytes,
-        )?;
         let upstream = upstream_fingerprints(inputs, &endpoint_climate, cancellation)?;
-        finalize_surface_formation(
+        let surface = finalize_surface_formation(
             state,
             final_terrain,
             surface,
@@ -133,7 +153,11 @@ impl SurfaceFormationGenerator {
             terminal_diagnostics,
             evolution_report,
             cancellation,
-        )
+        )?;
+        Ok(SurfaceFormationClosureOutput {
+            surface,
+            final_climate_forcing: forcing,
+        })
     }
 }
 
@@ -167,20 +191,56 @@ impl<'a> SurfaceProcessInputs<'a> {
 /// Private work report returned after a complete finite-time P5 advance.
 #[derive(Debug)]
 pub(in crate::generators::natural) struct SurfaceAdvanceReport {
-    accepted_surface_substeps: u32,
-    accepted_duration_years: f64,
+    summary: SurfaceAdvanceSummary,
     final_sediment_fields: FormationSedimentFields,
 }
 
 impl SurfaceAdvanceReport {
+    /// Moves the accepted work summary and matching final sediment projection data.
+    pub(in crate::generators::natural) fn into_parts(
+        self,
+    ) -> (SurfaceAdvanceSummary, FormationSedimentFields) {
+        (self.summary, self.final_sediment_fields)
+    }
+}
+
+/// Copyable accepted-work identity retained while the final sediment fields move.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::generators::natural) struct SurfaceAdvanceSummary {
+    accepted_surface_substeps: u32,
+    accepted_duration_years: f64,
+}
+
+impl SurfaceAdvanceSummary {
     /// Returns the number of accepted stable surface substeps.
-    pub(in crate::generators::natural) const fn accepted_surface_substeps(&self) -> u32 {
+    pub(in crate::generators::natural) const fn accepted_surface_substeps(self) -> u32 {
         self.accepted_surface_substeps
     }
 
     /// Returns the exact physical duration consumed by this advance.
-    pub(in crate::generators::natural) const fn accepted_duration_years(&self) -> f64 {
+    pub(in crate::generators::natural) const fn accepted_duration_years(self) -> f64 {
         self.accepted_duration_years
+    }
+
+    #[cfg(test)]
+    pub(in crate::generators::natural) fn combined(
+        self,
+        other: Self,
+        accepted_duration_years: f64,
+    ) -> Result<Self, SurfaceFormationGenerationError> {
+        let accepted_surface_substeps = self
+            .accepted_surface_substeps
+            .checked_add(other.accepted_surface_substeps)
+            .ok_or(SurfaceFormationGenerationError::SurfaceAdvanceSubstepOverflow)?;
+        if !accepted_duration_years.is_finite() || accepted_duration_years <= 0.0 {
+            return Err(SurfaceFormationGenerationError::InvalidSurfaceDuration {
+                found: accepted_duration_years,
+            });
+        }
+        Ok(Self {
+            accepted_surface_substeps,
+            accepted_duration_years,
+        })
     }
 }
 
@@ -558,8 +618,10 @@ pub(in crate::generators::natural) fn advance_surface_processes(
     }
 
     Ok(SurfaceAdvanceReport {
-        accepted_surface_substeps,
-        accepted_duration_years: duration_years,
+        summary: SurfaceAdvanceSummary {
+            accepted_surface_substeps,
+            accepted_duration_years: duration_years,
+        },
         final_sediment_fields: final_sediment_fields
             .expect("a positive completed duration accepts at least one surface substep"),
     })
@@ -579,6 +641,38 @@ pub(in crate::generators::natural) fn recompute_surface_diagnostics(
         budget: current.budget,
         sediment_stock_change_kg_per_year: current.sediment_stock_change_kg_per_year,
     })
+}
+
+/// Builds the published finite-time work report from endpoint diagnostics.
+pub(in crate::generators::natural) fn build_evolution_report(
+    surface: &SphericalSurfaceSnapshot,
+    state: &FormationState,
+    advance: SurfaceAdvanceSummary,
+    terminal_diagnostics: &TerminalSurfaceDiagnostics,
+    cancellation: &BuildCancellation,
+) -> Result<FormationEvolutionReport, SurfaceFormationGenerationError> {
+    let areas = cell_areas(surface, cancellation)?;
+    let total_area_m2 = areas.iter().sum::<f64>();
+    let current_rates = current_state_residuals(
+        &areas,
+        total_area_m2,
+        state.current_elevation_exact_m(),
+        &terminal_diagnostics.process_rates,
+        terminal_diagnostics.sediment_stock_change_kg_per_year,
+        terminal_diagnostics.budget.produced_mass_kg_per_year(),
+        cancellation,
+    )?;
+    let dense_state_bytes = expected_surface_formation_dense_state_bytes(
+        surface.cells().len() as u32,
+        surface.edges().len() as u32,
+    )
+    .ok_or(SurfaceFormationGenerationError::AllocationOverflow)?;
+    Ok(FormationEvolutionReport::new(
+        advance.accepted_surface_substeps(),
+        advance.accepted_duration_years(),
+        current_rates,
+        dense_state_bytes,
+    )?)
 }
 
 fn evaluate_current_processes(
@@ -1212,7 +1306,8 @@ fn cell_areas(
     Ok(areas)
 }
 
-fn upstream_fingerprints(
+/// Hashes the exact P2/P3/P4/P5 inputs retained by the final checkpoint.
+pub(in crate::generators::natural) fn upstream_fingerprints(
     inputs: SurfaceFormationInputs<'_>,
     formation_climate: &GlobalCirculationSnapshot,
     cancellation: &BuildCancellation,

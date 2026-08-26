@@ -2,7 +2,10 @@
 
 use thiserror::Error;
 
-use super::spherical_tectonics::generate_evolved_spherical;
+use super::random::LabeledSubstreams;
+use super::spherical_tectonics::{
+    generate_evolved_spherical, generate_evolved_spherical_from_streams,
+};
 use crate::engine::StageRng;
 use crate::generators::spatial::ProfileSurfaceBundle;
 use crate::world::natural::{
@@ -24,40 +27,10 @@ impl EvolvedTectonicGenerator {
         formation: &ResolvedWorldFormation,
         rng: &mut StageRng,
     ) -> Result<EvolvedTectonicSnapshot, EvolvedTectonicGenerationError> {
+        validate_inputs(bundle, spec, formation)?;
         if rng.is_cancelled() {
             return Err(EvolvedTectonicGenerationError::Cancelled);
         }
-        spec.validate()?;
-        formation.validate()?;
-        bundle
-            .resolution_plan()
-            .validate()
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        bundle
-            .authoritative_surface()
-            .validate()
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        bundle
-            .tectonic_control_surface()
-            .validate()
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        bundle
-            .control_to_authoritative_map()
-            .validate()
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        let control_ref = SurfaceRef::try_for_spherical(bundle.tectonic_control_surface())
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        let authoritative_ref = SurfaceRef::try_for_spherical(bundle.authoritative_surface())
-            .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-        if bundle.control_to_authoritative_map().source_ref() != control_ref
-            || bundle.control_to_authoritative_map().target_ref() != authoritative_ref
-        {
-            return Err(EvolvedTectonicGenerationError::InvalidBundle(
-                "the conservative map is not bound to the supplied control and authoritative surfaces"
-                    .to_owned(),
-            ));
-        }
-
         match generate_evolved_spherical(bundle, spec, formation, rng) {
             Ok(snapshot) => Ok(snapshot),
             Err(_) if rng.is_cancelled() => Err(EvolvedTectonicGenerationError::Cancelled),
@@ -66,6 +39,67 @@ impl EvolvedTectonicGenerator {
             )),
         }
     }
+
+    /// Generates P2 from a coordinator-owned labeled random root.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::generators::natural) fn generate_from_streams(
+        bundle: &ProfileSurfaceBundle,
+        spec: &TectonicSpec,
+        formation: &ResolvedWorldFormation,
+        streams: &LabeledSubstreams,
+    ) -> Result<EvolvedTectonicSnapshot, EvolvedTectonicGenerationError> {
+        validate_inputs(bundle, spec, formation)?;
+        streams
+            .check_cancelled()
+            .map_err(|_| EvolvedTectonicGenerationError::Cancelled)?;
+        match generate_evolved_spherical_from_streams(bundle, spec, formation, streams) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(_) if streams.check_cancelled().is_err() => {
+                Err(EvolvedTectonicGenerationError::Cancelled)
+            }
+            Err(error) => Err(EvolvedTectonicGenerationError::Generation(
+                error.to_string(),
+            )),
+        }
+    }
+}
+
+fn validate_inputs(
+    bundle: &ProfileSurfaceBundle,
+    spec: &TectonicSpec,
+    formation: &ResolvedWorldFormation,
+) -> Result<(), EvolvedTectonicGenerationError> {
+    spec.validate()?;
+    formation.validate()?;
+    bundle
+        .resolution_plan()
+        .validate()
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    bundle
+        .authoritative_surface()
+        .validate()
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    bundle
+        .tectonic_control_surface()
+        .validate()
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    bundle
+        .control_to_authoritative_map()
+        .validate()
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    let control_ref = SurfaceRef::try_for_spherical(bundle.tectonic_control_surface())
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    let authoritative_ref = SurfaceRef::try_for_spherical(bundle.authoritative_surface())
+        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
+    if bundle.control_to_authoritative_map().source_ref() != control_ref
+        || bundle.control_to_authoritative_map().target_ref() != authoritative_ref
+    {
+        return Err(EvolvedTectonicGenerationError::InvalidBundle(
+            "the conservative map is not bound to the supplied control and authoritative surfaces"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Failures returned before a complete V5 artifact can escape publication.

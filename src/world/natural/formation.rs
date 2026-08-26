@@ -30,6 +30,19 @@ impl ResolvedFormationTimeline {
         }
     }
 
+    /// Returns a production-step prefix for bounded unit tests.
+    #[cfg(test)]
+    pub(crate) fn test_prefix(step_count: u16) -> Self {
+        assert!(
+            (1..=SEKAI_REFERENCE_FORMATION_STEP_COUNT).contains(&step_count),
+            "a test prefix must contain at least one production formation step"
+        );
+        Self {
+            step_count,
+            step_duration_kyr: CORTIAL_FORMATION_STEP_DURATION_KYR,
+        }
+    }
+
     /// Returns the finite number of formation steps.
     pub const fn step_count(self) -> u16 {
         self.step_count
@@ -52,6 +65,12 @@ impl ResolvedFormationTimeline {
 
     /// Rejects timelines outside the currently supported product identity.
     pub fn validate(self) -> Result<(), WorldFormationSpecError> {
+        #[cfg(test)]
+        if self.step_duration_kyr == CORTIAL_FORMATION_STEP_DURATION_KYR
+            && (1..=SEKAI_REFERENCE_FORMATION_STEP_COUNT).contains(&self.step_count)
+        {
+            return Ok(());
+        }
         if self != Self::sekai_reference() {
             return Err(WorldFormationSpecError::UnsupportedTimeline {
                 step_count: self.step_count,
@@ -206,6 +225,16 @@ impl ResolvedWorldFormation {
         };
         formation.validate()?;
         Ok(formation)
+    }
+
+    /// Replaces the production timeline with a bounded prefix in unit tests.
+    #[cfg(test)]
+    pub(crate) fn with_test_timeline(mut self, timeline: ResolvedFormationTimeline) -> Self {
+        timeline
+            .validate()
+            .expect("the test-only timeline constructor returns a valid prefix");
+        self.timeline = timeline;
+        self
     }
 
     /// Validates the serialized resolved-selection schema.

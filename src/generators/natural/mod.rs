@@ -1,5 +1,7 @@
 //! Deterministic generation of the current natural world slice.
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod causal_formation;
 mod climate;
 mod climate_rule_input;
 mod climate_stage;

@@ -45,19 +45,28 @@ pub(in crate::generators::natural) fn generate_evolved_spherical(
     rng: &mut StageRng,
 ) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError> {
     rng.check_cancelled()?;
+    let streams = LabeledSubstreams::capture(rng);
+    generate_evolved_spherical_from_streams(bundle, spec, formation, &streams)
+}
+
+pub(in crate::generators::natural) fn generate_evolved_spherical_from_streams(
+    bundle: &ProfileSurfaceBundle,
+    spec: &TectonicSpec,
+    formation: &ResolvedWorldFormation,
+    streams: &LabeledSubstreams,
+) -> Result<EvolvedTectonicSnapshot, EvolvedPublicationError> {
     let control = bundle.tectonic_control_surface();
     let authority = bundle.authoritative_surface();
     let control_view = SphericalNaturalSurface::from_validated(control)?;
     let authority_view = SphericalNaturalSurface::from_validated(authority)?;
     let control_topology = NaturalTopologyIndex::from_surface(&control_view);
     let authority_topology = NaturalTopologyIndex::from_surface(&authority_view);
-    let streams = LabeledSubstreams::capture(rng);
     streams.check_cancelled()?;
-    let evolved = evolve_control_state_v5(control, &control_topology, spec, formation, &streams)?;
+    let evolved = evolve_control_state_v5(control, &control_topology, spec, formation, streams)?;
     publish_evolved_control_state(
         bundle,
         &authority_topology,
-        &streams,
+        streams,
         &evolved.current,
         &evolved.forcing,
         &evolved.material_ledger,

@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use super::super::primary_relief::PrimaryReliefWorkingState;
 use super::super::surface_water_geometry::SurfaceWaterWorkingGeometry;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
@@ -184,6 +185,31 @@ pub(in crate::generators::natural) struct FormationState {
 }
 
 impl FormationState {
+    /// Initializes exact P5 state directly from the validated P3 working state.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::generators::natural) fn from_primary_working(
+        primary: &PrimaryReliefWorkingState,
+    ) -> Result<Self, FormationStateError> {
+        let primary_elevation_m = primary.elevation_exact_m().to_vec();
+        let count = primary_elevation_m.len();
+        let mut state = Self {
+            primary_elevation_m,
+            tectonic_displacement_m: vec![0.0; count],
+            fluvial_erosion_m: vec![0.0; count],
+            hillslope_erosion_m: vec![0.0; count],
+            hillslope_deposition_m: vec![0.0; count],
+            routed_sediment_deposition_m: vec![0.0; count],
+            coastal_erosion_m: vec![0.0; count],
+            coastal_deposition_m: vec![0.0; count],
+            isostatic_response_m: vec![0.0; count],
+            current_elevation_m: vec![0.0; count],
+            sediment_stock: SedimentStockState::empty(count),
+            surface_water_geometry: primary.surface_water_geometry().clone(),
+        };
+        state.rebuild_and_validate()?;
+        Ok(state)
+    }
+
     pub(super) fn from_legacy_primary_wire_for_migration(
         primary: &PrimaryReliefSnapshot,
     ) -> Result<Self, FormationStateError> {
@@ -408,7 +434,7 @@ impl FormationState {
     }
 
     #[cfg(test)]
-    pub(super) fn replace_primary_for_offline_reference(
+    pub(in crate::generators::natural) fn replace_primary_for_offline_reference(
         &mut self,
         old_primary_elevation_m: &[f64],
         new_primary_elevation_m: &[f64],
@@ -523,7 +549,7 @@ impl FormationState {
     }
 
     /// Projects the accepted exact state into the sole final wire terrain.
-    pub(super) fn project_final_terrain(
+    pub(in crate::generators::natural) fn project_final_terrain(
         &self,
         surface: &SphericalSurfaceSnapshot,
         sediment: FormationSedimentFields,
@@ -556,7 +582,7 @@ impl FormationState {
         &mut self.sediment_stock
     }
 
-    pub(super) fn replace_surface_water_geometry(
+    pub(in crate::generators::natural) fn replace_surface_water_geometry(
         &mut self,
         surface_water_geometry: SurfaceWaterWorkingGeometry,
     ) {
