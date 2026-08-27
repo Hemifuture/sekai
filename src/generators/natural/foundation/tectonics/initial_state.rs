@@ -106,7 +106,9 @@ pub(super) fn build_initial_state_v5(
     validate_initial_partition(topology, &seeds, &owners)?;
     let plates = initial_plates(surface, spec.activity, &seeds, streams)?;
     let samples = initial_crust_samples(surface, topology, spec, preset, streams, &owners, &seeds);
-    TectonicState::new(samples, plates, spec.plate_count.into()).map_err(Into::into)
+    let mut state = TectonicState::new(samples, plates, spec.plate_count.into())?;
+    mark_dominant_continental_lineages(&mut state, surface, topology);
+    Ok(state)
 }
 
 fn irregular_blue_noise_seeds(
@@ -507,6 +509,63 @@ fn continental_from_plate_nuclei(
     let primary_first = preset.satellite_nucleus_count() > 0;
     let order = continental_cell_order(&owner, &dist, primary_first);
     area_prefix_mask(surface, &order, target_fraction)
+}
+
+fn mark_dominant_continental_lineages(
+    state: &mut TectonicState,
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+) {
+    let cell_count = surface.cells().len();
+    let mut continental = vec![false; cell_count];
+    let mut owner_at = vec![None; cell_count];
+    for sample in &state.samples {
+        let index = sample.anchor.raw() as usize;
+        if index >= cell_count {
+            continue;
+        }
+        owner_at[index] = Some(sample.owner);
+        if sample.kind == CrustKind::Continental {
+            continental[index] = true;
+        }
+    }
+    let mut seen = vec![false; cell_count];
+    let mut best_area = 0.0;
+    let mut best_cells = Vec::new();
+    for start in 0..cell_count {
+        if !continental[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut cells = vec![start];
+        let mut area = 0.0;
+        while let Some(cell) = stack.pop() {
+            area += surface.cells()[cell].area.get();
+            for arc in &topology.arcs()[cell] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if neighbor >= cell_count || !continental[neighbor] || seen[neighbor] {
+                    continue;
+                }
+                seen[neighbor] = true;
+                stack.push(neighbor);
+                cells.push(neighbor);
+            }
+        }
+        let replace = area > best_area
+            || (area == best_area
+                && cells.first().copied().unwrap_or(usize::MAX)
+                    < best_cells.first().copied().unwrap_or(usize::MAX));
+        if replace {
+            best_area = area;
+            best_cells = cells;
+        }
+    }
+    for cell in best_cells {
+        if let Some(lineage) = owner_at[cell] {
+            state.initiation.mark_dominant(lineage);
+        }
+    }
 }
 
 fn select_continental_nuclei(
@@ -1241,6 +1300,32 @@ mod tests {
                 );
             }
             assert!(masks.windows(2).any(|pair| pair[0] != pair[1]));
+        }
+    }
+
+    #[test]
+    fn v5_opening_marks_dominant_lineages_on_the_largest_continental_component() {
+        let (surface, topology) = fixture(642);
+        for preset in [
+            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Supercontinent,
+            ResolvedWorldFormationPreset::GreatIsland,
+        ] {
+            let state = build_initial_state_v5(
+                &surface,
+                &topology,
+                &TectonicSpec::default(),
+                preset,
+                &streams(42),
+            )
+            .unwrap();
+            assert!(
+                state.samples.iter().any(|sample| {
+                    sample.kind == CrustKind::Continental
+                        && state.initiation.is_dominant(sample.owner)
+                }),
+                "{preset:?} opening did not tag the largest continental mass"
+            );
         }
     }
 

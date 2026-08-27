@@ -68,8 +68,8 @@ EOF
 - `FormationTectonicRecipe` / 裂谷过程：Continents、Archipelago 完成洋化；
   Supercontinent 与 GreatIsland 主块保持陆内减薄
 
-- [ ] 开局 G1 核数测试仍过
-- [ ] 提交
+- [x] 开局 G1 核数测试仍过
+- [x] 提交
 
 ---
 

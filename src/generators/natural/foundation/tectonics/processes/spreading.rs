@@ -11,11 +11,12 @@ use super::{
 use crate::generators::natural::foundation::crust_physics::continental_isostatic_elevation_m;
 use crate::generators::natural::foundation::tectonics::contacts::{ContactEvent, ContactKind};
 use crate::generators::natural::foundation::tectonics::model::{
-    CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, MaterialColumn, TectonicState,
+    CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId, MaterialColumn,
+    TectonicState,
 };
 use crate::world::natural::{
-    CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
-    NO_OROGENY_AGE_SENTINEL_MYR,
+    CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MIN_THICKNESS_KM, NO_OROGENY_AGE_SENTINEL_MYR,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
@@ -183,7 +184,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     current: &TectonicState,
     next: &mut TectonicState,
     actions: &mut ProcessActions,
-    _recipe: FormationTectonicRecipe,
+    recipe: FormationTectonicRecipe,
 ) -> Result<ProcessStats, ProcessError> {
     actions.validate_for(next.samples.len())?;
     let (divergence_by_cell, current_sample_by_cell, spawned) =
@@ -209,20 +210,38 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
             return Err(ProcessError::UnknownLineage { lineage: owner });
         }
         let lineation = event_lineation(surface, divergence.unwrap_or(gap), cell.centroid)?;
-        spawned.push(CrustSample {
-            position: cell.centroid,
-            anchor: cell.id,
-            owner,
-            kind: CrustKind::Oceanic,
-            thickness_km: 7.0,
-            age_myr: 0.0,
-            tectonic_elevation_m: constants::OCEANIC_RIDGE_ELEVATION_M,
-            lineation,
-            orogeny: SphericalOrogenyKind::None,
-            orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
-            material: MaterialColumn::pure(CrustKind::Oceanic, cell.area.get(), 7.0)
-                .expect("spreading creates bounded oceanic material"),
-        });
+        let keep_continental = divergence
+            .and_then(|event| match event.lineages {
+                [Some(first), Some(second)] => Some((first, second)),
+                _ => None,
+            })
+            .is_some_and(|(first, second)| {
+                recipe
+                    .oceanization
+                    .forbids_breakup_ocean(&next.initiation, first, second)
+            });
+        let sample = if keep_continental {
+            match donate_continental_fill(next, divergence, owner, cell.centroid, cell.area.get())?
+            {
+                Some(material) => continental_rift_fill_sample(
+                    cell.centroid,
+                    gap.cell,
+                    owner,
+                    lineation,
+                    material,
+                ),
+                None => oceanic_spreading_sample(
+                    cell.centroid,
+                    gap.cell,
+                    owner,
+                    lineation,
+                    cell.area.get(),
+                )?,
+            }
+        } else {
+            oceanic_spreading_sample(cell.centroid, gap.cell, owner, lineation, cell.area.get())?
+        };
+        spawned.push(sample);
         stats.spawned_samples += 1;
     }
     Ok(stats)
@@ -240,7 +259,9 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     let first_spawn = actions.spawned_samples().len();
     let stats = fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
     for sample in &actions.spawned_samples()[first_spawn..] {
-        ledger.record_oceanic_spreading(sample.material.oceanic_amount()?);
+        if sample.kind == CrustKind::Oceanic {
+            ledger.record_oceanic_spreading(sample.material.oceanic_amount()?);
+        }
     }
     Ok(stats)
 }
@@ -359,6 +380,115 @@ fn closest_owner<'a>(
                 .then_with(|| second_index.cmp(first_index))
         })
         .map(|(_, sample)| sample.owner)
+}
+
+fn oceanic_spreading_sample(
+    position: crate::world::spatial::UnitVector3,
+    anchor: crate::world::CellId,
+    owner: LineageId,
+    lineation: [f32; 2],
+    area_m2: f64,
+) -> Result<CrustSample, ProcessError> {
+    Ok(CrustSample {
+        position,
+        anchor,
+        owner,
+        kind: CrustKind::Oceanic,
+        thickness_km: 7.0,
+        age_myr: 0.0,
+        tectonic_elevation_m: constants::OCEANIC_RIDGE_ELEVATION_M,
+        lineation,
+        orogeny: SphericalOrogenyKind::None,
+        orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+        material: MaterialColumn::pure(CrustKind::Oceanic, area_m2, 7.0)?,
+    })
+}
+
+fn continental_rift_fill_sample(
+    position: crate::world::spatial::UnitVector3,
+    anchor: crate::world::CellId,
+    owner: LineageId,
+    lineation: [f32; 2],
+    material: MaterialColumn,
+) -> CrustSample {
+    let thickness_km = material
+        .continental_thickness_km()
+        .expect("donated rift fill is continental");
+    CrustSample {
+        position,
+        anchor,
+        owner,
+        kind: CrustKind::Continental,
+        thickness_km,
+        age_myr: CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+        tectonic_elevation_m: bounded_elevation(continental_isostatic_elevation_m(thickness_km)),
+        lineation,
+        orogeny: SphericalOrogenyKind::None,
+        orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
+        material,
+    }
+}
+
+fn donate_continental_fill(
+    next: &mut TectonicState,
+    divergence: Option<&ContactEvent>,
+    owner: LineageId,
+    target: crate::world::spatial::UnitVector3,
+    requested_area_m2: f64,
+) -> Result<Option<MaterialColumn>, ProcessError> {
+    let mut donors = Vec::new();
+    match divergence.map(|event| event.lineages) {
+        Some([Some(first), Some(second)]) => {
+            donors.push(first);
+            if second != first {
+                donors.push(second);
+            }
+        }
+        Some([Some(first), None] | [None, Some(first)]) => donors.push(first),
+        _ => donors.push(owner),
+    }
+    let mut candidates: Vec<usize> = next
+        .samples
+        .iter()
+        .enumerate()
+        .filter(|(_, sample)| {
+            donors.contains(&sample.owner) && sample.material.continental_reference_area_m2() > 1.0
+        })
+        .map(|(index, _)| index)
+        .collect();
+    candidates.sort_by(|&first, &second| {
+        next.samples[second]
+            .position
+            .dot(target)
+            .total_cmp(&next.samples[first].position.dot(target))
+            .then_with(|| first.cmp(&second))
+    });
+    let mut remaining_need = requested_area_m2;
+    let mut donated: Option<MaterialColumn> = None;
+    for index in candidates {
+        if remaining_need <= 0.0 {
+            break;
+        }
+        let (left, taken) = next.samples[index]
+            .material
+            .extract_continental_area(remaining_need)?;
+        next.samples[index].material = left;
+        next.samples[index].synchronize_compatibility_from_material();
+        let Some(taken) = taken else {
+            continue;
+        };
+        remaining_need -= taken.continental_reference_area_m2();
+        donated = Some(match donated {
+            None => taken,
+            Some(existing) => MaterialColumn::new(
+                existing.continental_reference_area_m2() + taken.continental_reference_area_m2(),
+                existing.continental_volume_m3() + taken.continental_volume_m3(),
+                0.0,
+                0.0,
+            )?,
+        });
+    }
+    Ok(donated)
 }
 
 #[cfg(test)]
@@ -734,5 +864,101 @@ mod tests {
             created.material.oceanic_amount().unwrap()
         );
         ledger.control_budget(&next).unwrap();
+    }
+
+    #[test]
+    fn suppressed_breakup_fills_with_continent_while_complete_phase_spreads_ocean() {
+        let (surface, topology) = fixture();
+        let current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            ResolvedWorldFormationPreset::Continents,
+            &streams(),
+        )
+        .unwrap();
+        let first = current
+            .samples
+            .iter()
+            .position(|sample| sample.kind == CrustKind::Continental)
+            .expect("opening continents include continental crust");
+        let first_owner = current.samples[first].owner;
+        let second = current
+            .samples
+            .iter()
+            .position(|sample| sample.kind == CrustKind::Continental && sample.owner != first_owner)
+            .expect("Continents opening grows crust on more than one plate");
+        let second_owner = current.samples[second].owner;
+        let gap_cell = CellId::from_raw(3);
+        let edge = surface
+            .edges()
+            .iter()
+            .find(|edge| edge.cells.contains(&gap_cell))
+            .expect("every cell has a boundary edge");
+        let divergence = ContactEvent {
+            cell: gap_cell,
+            edge: Some(edge.id),
+            sample_indices: [Some(first as u32), Some(second as u32)],
+            lineages: [Some(first_owner), Some(second_owner)],
+            kind: ContactKind::Divergence,
+            signed_normal_speed_mm_per_year: 20.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let gap = ContactEvent {
+            cell: gap_cell,
+            edge: None,
+            sample_indices: [None, None],
+            lineages: [None, None],
+            kind: ContactKind::Gap,
+            signed_normal_speed_mm_per_year: 0.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let events = [divergence, gap];
+
+        let mut next = copy_state(&current);
+        next.initiation.record_rift_pair(first_owner, second_owner);
+        next.initiation.mark_dominant(first_owner);
+        next.initiation.mark_dominant(second_owner);
+        let before = next.material_totals().unwrap();
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+        fill_spreading_gaps(
+            &surface,
+            &events,
+            &current,
+            &mut next,
+            &mut actions,
+            FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Supercontinent),
+        )
+        .unwrap();
+        let created = *actions.spawned_samples().last().unwrap();
+        commit_process_actions(&mut next, &mut actions).unwrap();
+        assert_eq!(created.kind, CrustKind::Continental);
+        assert_eq!(
+            next.material_totals().unwrap().continental().volume_m3(),
+            before.continental().volume_m3()
+        );
+
+        let mut oceanized = copy_state(&current);
+        oceanized
+            .initiation
+            .record_rift_pair(first_owner, second_owner);
+        let mut ocean_actions = ProcessActions::with_sample_capacity(oceanized.samples.len());
+        ocean_actions.begin_step(oceanized.samples.len());
+        fill_spreading_gaps(
+            &surface,
+            &events,
+            &current,
+            &mut oceanized,
+            &mut ocean_actions,
+            FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+        )
+        .unwrap();
+        assert_eq!(
+            ocean_actions.spawned_samples().last().unwrap().kind,
+            CrustKind::Oceanic
+        );
     }
 }

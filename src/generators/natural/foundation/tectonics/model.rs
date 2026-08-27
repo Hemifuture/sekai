@@ -1,8 +1,8 @@
 //! Shared transient-model constants for evolved spherical tectonics.
 //!
-//! Recipe presets select only a coherent-noise spectrum and bounded integer
-//! process multipliers. Opening nucleus counts live on
-//! `ResolvedWorldFormationPreset`; recipes do not branch the process model.
+//! Recipe presets select a coherent-noise spectrum, bounded integer process
+//! multipliers, and which continental rifts may complete to ocean. Opening
+//! nucleus counts live on `ResolvedWorldFormationPreset`.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -174,6 +174,41 @@ impl MaterialColumn {
 
     pub(super) fn oceanic_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
         material_amount(self.oceanic_reference_area_m2, self.oceanic_volume_m3)
+    }
+
+    /// Moves continental area at the donor's current thickness into a new
+    /// column. Volume is bit-conserved. A pure-continental donor keeps a 1 m²
+    /// residual so the moving sample stays non-empty; a mixed donor keeps
+    /// continental majority so the donor cell does not flip to ocean.
+    pub(super) fn extract_continental_area(
+        self,
+        requested_area_m2: f64,
+    ) -> Result<(Self, Option<Self>), MaterialColumnError> {
+        if !requested_area_m2.is_finite() || requested_area_m2 <= 0.0 {
+            return Ok((self, None));
+        }
+        let available = self.continental_reference_area_m2;
+        if available <= 0.0 {
+            return Ok((self, None));
+        }
+        let max_take = if self.oceanic_reference_area_m2 == 0.0 {
+            (available - 1.0).max(0.0)
+        } else {
+            (available - self.oceanic_reference_area_m2).max(0.0)
+        };
+        let take_area = requested_area_m2.min(max_take);
+        if take_area <= 0.0 {
+            return Ok((self, None));
+        }
+        let take_volume = self.continental_volume_m3 * (take_area / available);
+        let remaining = Self::new(
+            available - take_area,
+            self.continental_volume_m3 - take_volume,
+            self.oceanic_reference_area_m2,
+            self.oceanic_volume_m3,
+        )?;
+        let taken = Self::new(take_area, take_volume, 0.0, 0.0)?;
+        Ok((remaining, Some(taken)))
     }
 
     /// Removes the complete oceanic component, returning `None` when that
@@ -392,10 +427,13 @@ impl LineagePair {
 ///
 /// Not published: G1d forbids a new release schema. Trenches persist once
 /// started; continental rift siblings mark this-cycle Atlantic-type oceans.
+/// Dominant lineages are the plates of the largest opening continental
+/// component (GreatIsland primary mass / Supercontinent body).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct SubductionInitiation {
     established_trenches: BTreeSet<LineagePair>,
     continental_rift_pairs: BTreeSet<LineagePair>,
+    dominant_continental_lineages: BTreeSet<LineageId>,
 }
 
 impl SubductionInitiation {
@@ -423,15 +461,42 @@ impl SubductionInitiation {
         }
     }
 
+    pub(super) fn mark_dominant(&mut self, lineage: LineageId) {
+        self.dominant_continental_lineages.insert(lineage);
+    }
+
+    pub(super) fn is_dominant(&self, lineage: LineageId) -> bool {
+        self.dominant_continental_lineages.contains(&lineage)
+    }
+
+    pub(super) fn both_dominant(&self, first: LineageId, second: LineageId) -> bool {
+        self.is_dominant(first) && self.is_dominant(second)
+    }
+
+    pub(super) fn involves_dominant(&self, first: LineageId, second: LineageId) -> bool {
+        self.is_dominant(first) || self.is_dominant(second)
+    }
+
     pub(super) fn replace_lineage(&mut self, parent: LineageId, children: &[LineageId]) {
-        remap_pairs(&mut self.established_trenches, parent, children);
-        remap_pairs(&mut self.continental_rift_pairs, parent, children);
+        self.remap_inherited_lineage(parent, children);
         for (index, &first) in children.iter().enumerate() {
             for &second in &children[index + 1..] {
                 self.continental_rift_pairs
                     .insert(LineagePair::new(first, second));
             }
         }
+    }
+
+    pub(super) fn remap_inherited_lineage(&mut self, parent: LineageId, children: &[LineageId]) {
+        remap_pairs(&mut self.established_trenches, parent, children);
+        remap_pairs(&mut self.continental_rift_pairs, parent, children);
+        remap_lineage_set(&mut self.dominant_continental_lineages, parent, children);
+    }
+}
+
+fn remap_lineage_set(set: &mut BTreeSet<LineageId>, parent: LineageId, children: &[LineageId]) {
+    if set.remove(&parent) {
+        set.extend(children.iter().copied());
     }
 }
 
@@ -829,6 +894,44 @@ pub(super) enum TectonicModelError {
     NextLineageNotAdvanced { next: u32, maximum: u32 },
 }
 
+/// Which continental rifts may become persistent ocean (G1d §3.1).
+///
+/// This is the Wilson *release phase*, not a new engine: Cortial rift →
+/// spreading fill still runs; only the fill product is gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::generators::natural) enum OceanizationPolicy {
+    /// Continents / Archipelago: Atlantic-type rifts complete to ocean.
+    Complete,
+    /// Supercontinent stable phase (Nance & Murphy 2013) and VolcanicIslands:
+    /// no continent-scale new ocean. Intra-continental rifts stay McKenzie
+    /// thinning (McKenzie 1978).
+    SuppressContinentalBreakup,
+    /// GreatIsland: the dominant mass does not oceanize; satellites may.
+    ExceptDominant,
+}
+
+impl OceanizationPolicy {
+    pub(super) fn forbids_breakup_ocean(
+        self,
+        initiation: &SubductionInitiation,
+        first: LineageId,
+        second: LineageId,
+    ) -> bool {
+        match self {
+            Self::Complete => false,
+            Self::SuppressContinentalBreakup => {
+                initiation.is_this_cycle_rift_pair(first, second)
+                    || initiation.both_dominant(first, second)
+            }
+            Self::ExceptDominant => {
+                initiation.both_dominant(first, second)
+                    || (initiation.is_this_cycle_rift_pair(first, second)
+                        && initiation.involves_dominant(first, second))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::generators::natural) struct FormationTectonicRecipe {
     pub(in crate::generators::natural) initial_crust_profile: FractalProfile,
@@ -836,6 +939,7 @@ pub(in crate::generators::natural) struct FormationTectonicRecipe {
     pub(in crate::generators::natural) rift_rate_permille: u16,
     pub(in crate::generators::natural) subduction_gain_permille: u16,
     pub(in crate::generators::natural) island_arc_gain_permille: u16,
+    pub(in crate::generators::natural) oceanization: OceanizationPolicy,
 }
 
 impl FormationTectonicRecipe {
@@ -847,11 +951,23 @@ impl FormationTectonicRecipe {
         };
 
         match preset {
-            Continents => Self::new(4, 1.8, 0.75, 1_000, 1_000, 1_000),
-            Archipelago => Self::new(5, 3.4, 0.40, 1_250, 950, 1_150),
-            Supercontinent => Self::new(3, 1.1, 1.15, 700, 1_050, 850),
-            GreatIsland => Self::new(4, 1.5, 0.90, 850, 1_000, 950),
-            VolcanicIslands => Self::new(5, 4.2, 0.32, 1_100, 1_200, 1_500),
+            Continents => Self::new(4, 1.8, 0.75, 1_000, 1_000, 1_000)
+                .with_oceanization(OceanizationPolicy::Complete),
+            Archipelago => Self::new(5, 3.4, 0.40, 1_250, 950, 1_150)
+                .with_oceanization(OceanizationPolicy::Complete),
+            Supercontinent => Self::new(3, 1.1, 1.15, 700, 1_050, 850)
+                .with_oceanization(OceanizationPolicy::SuppressContinentalBreakup),
+            GreatIsland => Self::new(4, 1.5, 0.90, 850, 1_000, 950)
+                .with_oceanization(OceanizationPolicy::ExceptDominant),
+            VolcanicIslands => Self::new(5, 4.2, 0.32, 1_100, 1_200, 1_500)
+                .with_oceanization(OceanizationPolicy::SuppressContinentalBreakup),
+        }
+    }
+
+    const fn with_oceanization(self, oceanization: OceanizationPolicy) -> Self {
+        Self {
+            oceanization,
+            ..self
         }
     }
 
@@ -874,6 +990,7 @@ impl FormationTectonicRecipe {
             rift_rate_permille,
             subduction_gain_permille,
             island_arc_gain_permille,
+            oceanization: OceanizationPolicy::Complete,
         }
     }
 }
@@ -881,10 +998,11 @@ impl FormationTectonicRecipe {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActivePlate, CrustSample, EvolutionMaterialLedger, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId,
+        MaterialColumn, OceanizationPolicy, SubductionInitiation, TectonicState,
     };
     use crate::world::natural::{
-        CrustKind, SphericalOrogenyKind, SphericalPlateRotation,
+        CrustKind, ResolvedWorldFormationPreset, SphericalOrogenyKind, SphericalPlateRotation,
         CONTINENTAL_CRUST_AGE_SENTINEL_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
     };
     use crate::world::spatial::UnitVector3;
@@ -996,5 +1114,76 @@ mod tests {
         for (actual, expected) in copied.samples.iter().zip(&state.samples) {
             assert_eq!(actual.material.bits(), expected.material.bits());
         }
+    }
+
+    #[test]
+    fn extract_continental_area_conserves_volume_and_keeps_donor_continental() {
+        let column = MaterialColumn::pure(CrustKind::Continental, 100.0, 40.0).unwrap();
+        let volume = column.continental_volume_m3();
+        let (remaining, taken) = column.extract_continental_area(30.0).unwrap();
+        let taken = taken.expect("pure continent can donate");
+        assert_eq!(
+            remaining.continental_volume_m3() + taken.continental_volume_m3(),
+            volume
+        );
+        assert!((taken.continental_reference_area_m2() - 30.0).abs() <= 1.0e-12);
+        assert_eq!(remaining.compatibility_kind(), CrustKind::Continental);
+        assert_eq!(taken.compatibility_kind(), CrustKind::Continental);
+
+        let mixed = MaterialColumn::new(5.0, 150_000.0, 3.0, 21_000.0).unwrap();
+        let (remaining_mixed, taken_mixed) = mixed.extract_continental_area(10.0).unwrap();
+        let taken_mixed = taken_mixed.expect("continental majority can donate");
+        assert!(taken_mixed.continental_reference_area_m2() <= 2.0);
+        assert_eq!(remaining_mixed.compatibility_kind(), CrustKind::Continental);
+        assert!(column.extract_continental_area(0.0).unwrap().1.is_none());
+    }
+
+    #[test]
+    fn oceanization_policy_matches_wilson_release_phase() {
+        use OceanizationPolicy::{Complete, ExceptDominant, SuppressContinentalBreakup};
+        use ResolvedWorldFormationPreset::{
+            Archipelago, Continents, GreatIsland, Supercontinent, VolcanicIslands,
+        };
+
+        assert_eq!(
+            FormationTectonicRecipe::for_preset(Continents).oceanization,
+            Complete
+        );
+        assert_eq!(
+            FormationTectonicRecipe::for_preset(Archipelago).oceanization,
+            Complete
+        );
+        assert_eq!(
+            FormationTectonicRecipe::for_preset(Supercontinent).oceanization,
+            SuppressContinentalBreakup
+        );
+        assert_eq!(
+            FormationTectonicRecipe::for_preset(GreatIsland).oceanization,
+            ExceptDominant
+        );
+        assert_eq!(
+            FormationTectonicRecipe::for_preset(VolcanicIslands).oceanization,
+            SuppressContinentalBreakup
+        );
+
+        let mut initiation = SubductionInitiation::default();
+        let main = LineageId::from_raw(1);
+        let main_child = LineageId::from_raw(2);
+        let satellite_a = LineageId::from_raw(3);
+        let satellite_b = LineageId::from_raw(4);
+        initiation.mark_dominant(main);
+        initiation.mark_dominant(main_child);
+        initiation.record_rift_pair(main, main_child);
+        initiation.record_rift_pair(satellite_a, satellite_b);
+
+        assert!(!Complete.forbids_breakup_ocean(&initiation, main, main_child));
+        assert!(SuppressContinentalBreakup.forbids_breakup_ocean(&initiation, main, main_child));
+        assert!(SuppressContinentalBreakup.forbids_breakup_ocean(
+            &initiation,
+            satellite_a,
+            satellite_b
+        ));
+        assert!(ExceptDominant.forbids_breakup_ocean(&initiation, main, main_child));
+        assert!(!ExceptDominant.forbids_breakup_ocean(&initiation, satellite_a, satellite_b));
     }
 }

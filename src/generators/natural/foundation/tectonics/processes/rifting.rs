@@ -340,6 +340,9 @@ pub(in crate::generators::natural::foundation::tectonics) fn mechanically_fragme
                 .push(ActivePlate::new(lineage, representative, rotation));
         }
         state.plates.sort_by_key(|plate| plate.lineage);
+        state
+            .initiation
+            .remap_inherited_lineage(parent.lineage, &lineages);
         if state.material_totals()? != material_before {
             return Err(ProcessError::FragmentationChangedMaterial);
         }
