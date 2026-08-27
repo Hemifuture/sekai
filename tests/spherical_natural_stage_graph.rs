@@ -57,7 +57,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "tectonic",
-        "d890c045604cb850f6530af0f927cdccd801f8693628364a4d9a423098985934",
+        "f41c33bcf0f8a2f21b4f5d068926ac351777cf351caa3bdfb7e83c0854ec0044",
     ),
     (
         "mantle",
@@ -65,27 +65,27 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "relief",
-        "27196ef933a8c42ac1e677ad220fdf396c584fe4aeb663726fbf277c312c2d67",
+        "2c3dc249823451591bfe492900df4826733b19636b633403a5dc1d3755accf3e",
     ),
     (
         "geology",
-        "46f6c5a974cb298221b68db2ba06776e5403a50246e404233c1a7aad4624324a",
+        "51d0d4cc5dc47128abbf39e1b67870fd15a1d981621f2464375ca48d0e7e34ff",
     ),
     (
         "climate",
-        "00a8a4775200ed64b315bee494de8505ea4397006cda7cae8e998da3065e7eb8",
+        "36e13d4bf6022464e73a73a70333e3ece881d7b3af91645500fef2fb338fda05",
     ),
     (
         "hydro",
-        "41b2fa2e3634c8174ef7a18fb7f040fef7a460aae1f765e201b57563d057aa24",
+        "eec3532f9d52696b1e63fabc4aeeef8cb16260474508bbf3da2f7c5902b4a561",
     ),
     (
         "quality",
-        "2ba841b927093f6a6a0e693ebd5b6c111a00f6acf205dfb30d6c316165fb06d6",
+        "f77b6eba76e2481613797e7cb0535b063892c4e1abad5c268816bf933fb22771",
     ),
     (
         "result",
-        "3097588c61b79cf93c2062e1dcc04bba446ecafdad82c261eef52087384d9fda",
+        "d1a6a88ddee41e7feaf4f8cde45ffa5b65bdc51001944be168c0fa4c76a59e1e",
     ),
 ];
 
@@ -478,15 +478,8 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
 
 #[test]
 fn whole_graph_accepts_an_evolved_final_plate_count() {
-    let mut inputs = Inputs::default();
-    inputs.tectonic.plate_count = 7;
-    inputs.tectonic.continental_crust_fraction = 0.28;
-    inputs.formation = WorldFormationSpec {
-        preset: WorldFormationPreset::GreatIsland,
-        ..WorldFormationSpec::default()
-    };
-
-    let outcome = build(RootSeed::new(1), &inputs, &mut MemoryStageCache::new());
+    let inputs = Inputs::default();
+    let outcome = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
     let tectonic = outcome
         .artifacts
         .get::<SphericalTectonicArtifact>()

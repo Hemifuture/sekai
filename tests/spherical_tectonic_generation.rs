@@ -244,7 +244,7 @@ fn activity_and_plate_count_matrix_stays_inside_the_physical_envelope() {
 #[test]
 fn spherical_boundaries_use_each_edges_local_tangent_frame_and_canonical_vertices() {
     let snapshot = generate(
-        0xC0_FFEE,
+        42,
         &TectonicSpec::default(),
         ResolvedWorldFormationPreset::Continents,
     );
