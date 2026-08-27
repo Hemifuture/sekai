@@ -108,7 +108,6 @@ pub(super) fn build_initial_state_v5(
     let samples = initial_crust_samples(surface, topology, spec, preset, streams, &owners, &seeds);
     let mut state = TectonicState::new(samples, plates, spec.plate_count.into())?;
     mark_dominant_continental_lineages(&mut state, surface, topology);
-    mark_opening_phase_lineages(&mut state, preset);
     Ok(state)
 }
 
@@ -565,17 +564,6 @@ fn mark_dominant_continental_lineages(
     for cell in best_cells {
         if let Some(lineage) = owner_at[cell] {
             state.initiation.mark_dominant(lineage);
-        }
-    }
-}
-
-fn mark_opening_phase_lineages(state: &mut TectonicState, preset: ResolvedWorldFormationPreset) {
-    if preset != ResolvedWorldFormationPreset::Archipelago {
-        return;
-    }
-    for sample in &state.samples {
-        if sample.kind == CrustKind::Continental {
-            state.initiation.mark_opening_phase(sample.owner);
         }
     }
 }
@@ -1339,70 +1327,6 @@ mod tests {
                 "{preset:?} opening did not tag the largest continental mass"
             );
         }
-    }
-
-    #[test]
-    fn archipelago_opening_tags_continental_plates_as_opening_phase() {
-        let (surface, topology) = fixture(642);
-        let archipelago = build_initial_state_v5(
-            &surface,
-            &topology,
-            &TectonicSpec {
-                plate_count: 22,
-                continental_crust_fraction: ResolvedWorldFormationPreset::Archipelago
-                    .recommended_continental_crust_fraction(),
-                ..TectonicSpec::default()
-            },
-            ResolvedWorldFormationPreset::Archipelago,
-            &streams(42),
-        )
-        .unwrap();
-        let continents = build_initial_state_v5(
-            &surface,
-            &topology,
-            &TectonicSpec::default(),
-            ResolvedWorldFormationPreset::Continents,
-            &streams(42),
-        )
-        .unwrap();
-
-        let mut tagged = 0_usize;
-        let mut untagged_oceanic = 0_usize;
-        for plate in &archipelago.plates {
-            let carries_continent = archipelago.samples.iter().any(|sample| {
-                sample.owner == plate.lineage && sample.kind == CrustKind::Continental
-            });
-            if carries_continent {
-                tagged += 1;
-                assert!(
-                    archipelago.initiation.is_opening_phase(plate.lineage),
-                    "Archipelago continental plate {:?} must be opening-phase",
-                    plate.lineage
-                );
-            } else {
-                untagged_oceanic += 1;
-                assert!(
-                    !archipelago.initiation.is_opening_phase(plate.lineage),
-                    "purely oceanic plate {:?} must not be opening-phase",
-                    plate.lineage
-                );
-            }
-        }
-        assert!(
-            tagged >= 2,
-            "Archipelago opening needs several continental plates, tagged={tagged}"
-        );
-        assert!(
-            untagged_oceanic >= 1,
-            "22-plate Archipelago should leave oceanic plates untagged, untagged={untagged_oceanic}"
-        );
-        assert!(
-            continents
-                .samples
-                .iter()
-                .all(|sample| !continents.initiation.is_opening_phase(sample.owner)),
-            "Continents opening must not tag Atlantic-phase seaways"
-        );
     }
 
     #[test]

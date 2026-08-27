@@ -427,16 +427,13 @@ impl LineagePair {
 ///
 /// Not published: G1d forbids a new release schema. Trenches persist once
 /// started; continental rift siblings mark this-cycle Atlantic-type oceans.
-/// Opening-phase lineages are Archipelago plates that already carry continental
-/// crust at t=0 (Wilson opening snapshot); their seaways must not close by new
-/// subduction within 256 Myr. Dominant lineages are the plates of the largest
-/// opening continental component (GreatIsland primary mass / Supercontinent body).
+/// Dominant lineages are the plates of the largest opening continental
+/// component (GreatIsland primary mass / Supercontinent body).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct SubductionInitiation {
     established_trenches: BTreeSet<LineagePair>,
     continental_rift_pairs: BTreeSet<LineagePair>,
     dominant_continental_lineages: BTreeSet<LineageId>,
-    opening_phase_lineages: BTreeSet<LineageId>,
 }
 
 impl SubductionInitiation {
@@ -480,18 +477,6 @@ impl SubductionInitiation {
         self.is_dominant(first) || self.is_dominant(second)
     }
 
-    pub(super) fn mark_opening_phase(&mut self, lineage: LineageId) {
-        self.opening_phase_lineages.insert(lineage);
-    }
-
-    pub(super) fn is_opening_phase(&self, lineage: LineageId) -> bool {
-        self.opening_phase_lineages.contains(&lineage)
-    }
-
-    pub(super) fn involves_opening_phase(&self, first: LineageId, second: LineageId) -> bool {
-        self.is_opening_phase(first) || self.is_opening_phase(second)
-    }
-
     pub(super) fn replace_lineage(&mut self, parent: LineageId, children: &[LineageId]) {
         self.remap_inherited_lineage(parent, children);
         for (index, &first) in children.iter().enumerate() {
@@ -506,7 +491,6 @@ impl SubductionInitiation {
         remap_pairs(&mut self.established_trenches, parent, children);
         remap_pairs(&mut self.continental_rift_pairs, parent, children);
         remap_lineage_set(&mut self.dominant_continental_lineages, parent, children);
-        remap_lineage_set(&mut self.opening_phase_lineages, parent, children);
     }
 }
 
@@ -1201,19 +1185,5 @@ mod tests {
         ));
         assert!(ExceptDominant.forbids_breakup_ocean(&initiation, main, main_child));
         assert!(!ExceptDominant.forbids_breakup_ocean(&initiation, satellite_a, satellite_b));
-    }
-
-    #[test]
-    fn opening_phase_survives_lineage_split() {
-        let mut initiation = SubductionInitiation::default();
-        let parent = LineageId::from_raw(7);
-        let children = [LineageId::from_raw(8), LineageId::from_raw(9)];
-        initiation.mark_opening_phase(parent);
-        initiation.replace_lineage(parent, &children);
-        assert!(!initiation.is_opening_phase(parent));
-        assert!(initiation.is_opening_phase(children[0]));
-        assert!(initiation.is_opening_phase(children[1]));
-        assert!(initiation.involves_opening_phase(children[0], LineageId::from_raw(1)));
-        assert!(!initiation.involves_opening_phase(LineageId::from_raw(1), LineageId::from_raw(2)));
     }
 }
