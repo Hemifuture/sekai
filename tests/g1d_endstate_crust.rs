@@ -1,0 +1,218 @@
+//! G1d published-state continental-crust connectivity (spec 2026-08-27).
+//!
+//! Contract: formation-chain crust kind, not default elevation and not the
+//! private opening mask. Uses the production V5 evolved generator.
+
+use std::collections::VecDeque;
+use std::sync::OnceLock;
+
+use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
+use sekai::generators::natural::EvolvedTectonicGenerator;
+use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
+use sekai::world::natural::{
+    CrustKind, EvolvedTectonicSnapshot, NaturalQualityProfile, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    EARTH_WATER_REFERENCE_RADIUS_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+};
+use sekai::world::spatial::SphericalSurfaceSnapshot;
+use sekai::world::{Meters, RootSeed};
+
+const DAILY_SEEDS: [u64; 2] = [42, 3];
+const DAILY_PLATE_COUNTS: [u16; 2] = [12, 22];
+
+#[derive(Debug, Clone, Copy)]
+struct CrustConnectivity {
+    count: usize,
+    max_share: f64,
+    second_share: f64,
+}
+
+fn bundle() -> &'static ProfileSurfaceBundle {
+    static BUNDLE: OnceLock<ProfileSurfaceBundle> = OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap()
+    })
+}
+
+fn authored_preset(preset: ResolvedWorldFormationPreset) -> WorldFormationPreset {
+    match preset {
+        ResolvedWorldFormationPreset::Continents => WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Archipelago => WorldFormationPreset::Archipelago,
+        ResolvedWorldFormationPreset::Supercontinent => WorldFormationPreset::Supercontinent,
+        ResolvedWorldFormationPreset::GreatIsland => WorldFormationPreset::GreatIsland,
+        ResolvedWorldFormationPreset::VolcanicIslands => WorldFormationPreset::VolcanicIslands,
+    }
+}
+
+fn generate(
+    seed: u64,
+    preset: ResolvedWorldFormationPreset,
+    spec: &TectonicSpec,
+) -> EvolvedTectonicSnapshot {
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        authored_preset(preset),
+        preset,
+    )
+    .unwrap();
+    let mut rng = StageRng::from_seed(derive_stage_seed(
+        RootSeed::new(seed),
+        StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+    ));
+    EvolvedTectonicGenerator::generate(bundle(), spec, &formation, &mut rng).unwrap_or_else(
+        |error| {
+            panic!(
+                "{preset:?} seed={seed} plates={} failed: {error}",
+                spec.plate_count
+            )
+        },
+    )
+}
+
+fn continental_connectivity(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+) -> CrustConnectivity {
+    let compatibility = snapshot.compatibility();
+    let mut visited = vec![false; surface.cells().len()];
+    let mut areas = Vec::new();
+    for cell in surface.cells() {
+        let start = cell.id.raw() as usize;
+        if visited[start] || compatibility.crust_kind(cell.id) != Some(CrustKind::Continental) {
+            continue;
+        }
+        visited[start] = true;
+        let mut queue = VecDeque::from([cell.id]);
+        let mut area = 0.0;
+        while let Some(current) = queue.pop_front() {
+            area += surface
+                .cell(current)
+                .expect("published cells are contiguous")
+                .area
+                .get();
+            for &edge in surface
+                .cell_edges(current)
+                .expect("published cells have edges")
+            {
+                let neighbor = surface
+                    .opposite_cell(current, edge)
+                    .expect("every edge has an opposite cell");
+                let index = neighbor.raw() as usize;
+                if !visited[index]
+                    && compatibility.crust_kind(neighbor) == Some(CrustKind::Continental)
+                {
+                    visited[index] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        areas.push(area);
+    }
+    areas.sort_by(|first, second| second.total_cmp(first));
+    let total: f64 = areas.iter().sum();
+    let share = |index: usize| {
+        if total > 0.0 {
+            areas.get(index).copied().unwrap_or(0.0) / total
+        } else {
+            0.0
+        }
+    };
+    CrustConnectivity {
+        count: areas.len(),
+        max_share: share(0),
+        second_share: share(1),
+    }
+}
+
+fn preset_spec(preset: ResolvedWorldFormationPreset, plate_count: u16) -> TectonicSpec {
+    TectonicSpec {
+        plate_count,
+        continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+        ..TectonicSpec::default()
+    }
+}
+
+#[test]
+fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus() {
+    let surface = bundle().authoritative_surface();
+    for seed in DAILY_SEEDS {
+        for plate_count in DAILY_PLATE_COUNTS {
+            let continents = continental_connectivity(
+                surface,
+                &generate(
+                    seed,
+                    ResolvedWorldFormationPreset::Continents,
+                    &preset_spec(ResolvedWorldFormationPreset::Continents, plate_count),
+                ),
+            );
+            let supercontinent = continental_connectivity(
+                surface,
+                &generate(
+                    seed,
+                    ResolvedWorldFormationPreset::Supercontinent,
+                    &preset_spec(ResolvedWorldFormationPreset::Supercontinent, plate_count),
+                ),
+            );
+            println!(
+                "G1d seed={seed} plates={plate_count} Continents count={} max={:.3} second={:.3} Supercontinent count={} max={:.3} second={:.3}",
+                continents.count,
+                continents.max_share,
+                continents.second_share,
+                supercontinent.count,
+                supercontinent.max_share,
+                supercontinent.second_share
+            );
+            assert_eq!(
+                supercontinent.count, 1,
+                "seed={seed} plates={plate_count}: Supercontinent must be one continental mass, count={}",
+                supercontinent.count
+            );
+            assert!(
+                (supercontinent.max_share - 1.0).abs() <= 1.0e-9,
+                "seed={seed} plates={plate_count}: Supercontinent max_share={:.3}",
+                supercontinent.max_share
+            );
+            assert!(
+                continents.max_share < supercontinent.max_share,
+                "seed={seed} plates={plate_count}: Continents max_share={:.3} must stay below Supercontinent {:.3}",
+                continents.max_share,
+                supercontinent.max_share
+            );
+            assert!(
+                continents.count > supercontinent.count,
+                "seed={seed} plates={plate_count}: Continents count={} must stay above Supercontinent {}",
+                continents.count,
+                supercontinent.count
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_g1d_g0_corpus_crust_connectivity() {
+    let surface = bundle().authoritative_surface();
+    let spec = TectonicSpec::default();
+    for preset in [
+        ResolvedWorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Supercontinent,
+        ResolvedWorldFormationPreset::Archipelago,
+    ] {
+        for seed in DAILY_SEEDS {
+            let snapshot = generate(seed, preset, &spec);
+            let connectivity = continental_connectivity(surface, &snapshot);
+            println!(
+                "G1d-G0 {preset:?} seed={seed} plates={} count={} max={:.3} second={:.3}",
+                spec.plate_count,
+                connectivity.count,
+                connectivity.max_share,
+                connectivity.second_share
+            );
+        }
+    }
+}

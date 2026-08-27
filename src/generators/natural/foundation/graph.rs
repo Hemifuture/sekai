@@ -99,7 +99,7 @@ impl Stage for SphericalTectonicStage {
     }
 
     fn version(&self) -> u32 {
-        5
+        6
     }
 
     fn namespace(&self) -> &'static str {
