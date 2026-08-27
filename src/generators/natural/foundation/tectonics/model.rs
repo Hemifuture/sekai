@@ -433,6 +433,11 @@ pub(super) struct SubductionInitiation {
     established_trenches: BTreeSet<LineagePair>,
     continental_rift_pairs: BTreeSet<LineagePair>,
     dominant_continental_lineages: BTreeSet<LineageId>,
+    /// Pairs whose convergence is currently resisted (collision or locked).
+    /// A resisted boundary stops moving, which would otherwise drop it below
+    /// the activity threshold, lose its dashpot and let it re-accelerate in
+    /// a two-step cycle; the memory keeps it welded until it diverges.
+    resisted_pairs: BTreeSet<LineagePair>,
 }
 
 impl SubductionInitiation {
@@ -451,6 +456,21 @@ impl SubductionInitiation {
             self.established_trenches
                 .insert(LineagePair::new(first, second));
         }
+    }
+
+    pub(super) fn record_resisted(&mut self, first: LineageId, second: LineageId) {
+        if first != second {
+            self.resisted_pairs.insert(LineagePair::new(first, second));
+        }
+    }
+
+    pub(super) fn release_resisted(&mut self, first: LineageId, second: LineageId) {
+        self.resisted_pairs.remove(&LineagePair::new(first, second));
+    }
+
+    pub(super) fn is_resisted(&self, first: LineageId, second: LineageId) -> bool {
+        self.resisted_pairs
+            .contains(&LineagePair::new(first, second))
     }
 
     pub(super) fn record_rift_pair(&mut self, first: LineageId, second: LineageId) {
@@ -489,6 +509,7 @@ impl SubductionInitiation {
     pub(super) fn remap_inherited_lineage(&mut self, parent: LineageId, children: &[LineageId]) {
         remap_pairs(&mut self.established_trenches, parent, children);
         remap_pairs(&mut self.continental_rift_pairs, parent, children);
+        remap_pairs(&mut self.resisted_pairs, parent, children);
         remap_lineage_set(&mut self.dominant_continental_lineages, parent, children);
     }
 }

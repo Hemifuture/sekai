@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use super::contacts::{build_contacts, ContactError, ContactEvent, ContactKind};
+use super::contacts::{build_contacts, ContactError, ContactEvent, ContactKind, CoverageScratch};
 use super::forcing::{evaluate_present_day_forcing, ForcingError};
 use super::initial_state::{build_initial_state, build_initial_state_v5, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
@@ -176,9 +176,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
         streams.check_cancelled()?;
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, delta_myr)?;
-        build_contacts(surface, topology, next, coverage, events)?;
-        remember_established_trenches(next, events);
-        update_rotations_from_boundary_torques(surface, next, events)?;
+        solve_quasi_static_rotations(surface, topology, next, coverage, events)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)?;
         let collision = apply_collision_v5(
@@ -334,24 +332,52 @@ fn apply_boundary_torques_to_current(
     topology: &NaturalTopologyIndex,
     workspace: &mut TectonicWorkspace,
 ) -> Result<(), RunnerError> {
-    build_contacts(
+    solve_quasi_static_rotations(
         surface,
         topology,
-        &workspace.current,
+        &mut workspace.current,
         &mut workspace.coverage,
         &mut workspace.events,
-    )?;
-    remember_established_trenches(&mut workspace.current, &workspace.events);
-    update_rotations_from_boundary_torques(surface, &mut workspace.current, &workspace.events)?;
+    )
+}
+
+/// Boundary classification depends on the velocities the torque balance
+/// produces from that classification, so the quasi-static solve is a fixed
+/// point: classify, solve, reclassify, solve, and classify once more so the
+/// events the processes consume match the rotations the step advances with.
+/// Two solves close the loop for the stiff dashpots (G1e §3.3); a third
+/// changed nothing measurable on the draft corpus.
+const QUASI_STATIC_SWEEPS: usize = 2;
+
+fn solve_quasi_static_rotations(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    state: &mut TectonicState,
+    coverage: &mut CoverageScratch,
+    events: &mut Vec<ContactEvent>,
+) -> Result<(), RunnerError> {
+    for _ in 0..QUASI_STATIC_SWEEPS {
+        build_contacts(surface, topology, state, coverage, events)?;
+        remember_established_trenches(state, events);
+        update_rotations_from_boundary_torques(surface, state, events)?;
+    }
+    build_contacts(surface, topology, state, coverage, events)?;
+    remember_established_trenches(state, events);
     Ok(())
 }
 
 fn remember_established_trenches(state: &mut TectonicState, events: &[ContactEvent]) {
     for event in events {
-        if let ContactKind::OceanicSubduction { .. } = event.kind {
-            if let [Some(first), Some(second)] = event.lineages {
-                state.initiation.record_trench(first, second);
+        let [Some(first), Some(second)] = event.lineages else {
+            continue;
+        };
+        match event.kind {
+            ContactKind::OceanicSubduction { .. } => state.initiation.record_trench(first, second),
+            ContactKind::ContinentalCollision | ContactKind::LockedConvergence => {
+                state.initiation.record_resisted(first, second);
             }
+            ContactKind::Divergence => state.initiation.release_resisted(first, second),
+            ContactKind::Gap | ContactKind::Transform => {}
         }
     }
 }
@@ -1190,11 +1216,15 @@ mod tests {
                                 counts[0] += 1;
                             }
                             ContactKind::LockedConvergence => {
-                                locked_residual.push(-event.signed_normal_speed_mm_per_year);
+                                if event.edge.is_some() {
+                                    locked_residual.push(-event.signed_normal_speed_mm_per_year);
+                                }
                                 counts[1] += 1;
                             }
                             ContactKind::ContinentalCollision => {
-                                collision_residual.push(-event.signed_normal_speed_mm_per_year);
+                                if event.edge.is_some() {
+                                    collision_residual.push(-event.signed_normal_speed_mm_per_year);
+                                }
                                 counts[2] += 1;
                             }
                             ContactKind::Divergence => counts[3] += 1,

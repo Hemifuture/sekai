@@ -323,7 +323,25 @@ pub(super) fn classify_pair(
     let normal_speed = signed_normal_speed_mm_per_year.abs();
     let speed = normal_speed.hypot(tangent_speed_mm_per_year);
     if speed < MINIMUM_ACTIVE_RELATIVE_SPEED_MM_PER_YEAR {
-        return None;
+        // A welded boundary is inactive because it is resisted. A suture
+        // stays welded until it diverges; a locked oceanic contact is
+        // re-judged by buoyancy, so the lithosphere that has aged past the
+        // Cloos threshold while held there starts to subduct.
+        if !initiation.is_resisted(first.owner, second.owner)
+            || signed_normal_speed_mm_per_year > 0.0
+        {
+            return None;
+        }
+        return Some(match [first.kind, second.kind] {
+            [CrustKind::Continental, CrustKind::Continental] => ContactKind::ContinentalCollision,
+            [CrustKind::Oceanic, CrustKind::Continental] => {
+                ocean_continent_convergence(first, second, initiation)
+            }
+            [CrustKind::Continental, CrustKind::Oceanic] => {
+                ocean_continent_convergence(second, first, initiation)
+            }
+            [CrustKind::Oceanic, CrustKind::Oceanic] => intra_ocean_convergence(first, second),
+        });
     }
     if normal_speed < speed * STRONG_NORMAL_FRACTION {
         return Some(ContactKind::Transform);

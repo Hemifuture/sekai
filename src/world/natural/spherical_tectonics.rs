@@ -75,14 +75,14 @@ pub const PLATE_CONTINENT_BASAL_DRAG_PER_M2: f64 = 4.0e-6;
 /// convergent boundary. Spec §3.2: collision resistance opposes convergence so
 /// Continents cannot suture by inertia when no trench is present. Pin after
 /// production measurement (G1d task 4).
-pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 20.0;
+pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 60.0;
 /// Ranking placeholder: dashpot per metre of interplate convergent boundary
 /// whose descending candidate is still positively buoyant (Cloos 1993, younger
 /// than [`CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR`]). Such a boundary can
 /// neither consume nor thicken, so the convergence must be resisted in the
 /// torque balance instead of being absorbed by resampling (G1e §3.3). Pinned
 /// from the residual convergence measured by G1e task 4.
-pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 200.0;
+pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 2000.0;
 
 const PRAD_TO_RAD: f64 = 1.0e-12;
 const METERS_TO_MILLIMETERS: f64 = 1_000.0;
