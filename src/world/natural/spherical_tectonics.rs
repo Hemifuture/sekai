@@ -39,15 +39,29 @@ pub const MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR: u64 = 120_000_000_000;
 /// complete passive margins stay closed because of continental lithosphere
 /// strength (McKenzie 1977; Stern 2004), not because of this number.
 pub const CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR: f32 = 10.0;
+/// No plate may hold more than this share of the sphere. Inherited V5
+/// publication bound (evolved-tectonics-v5 design): Earth's largest plate,
+/// the Pacific, holds about a fifth of the surface (Bird 2003), and a
+/// single-plate Pangea with its shelves stayed below half. The opening
+/// supercontinent plate of dispersal-phase morphologies and terrane transfer
+/// both respect it.
+pub const MAXIMUM_PLATE_AREA_FRACTION: f64 = 0.45;
 /// Ranking placeholder: slab-pull force per metre of trench. Conrad &
 /// Lithgow-Bertelloni (2002) make slab pull the leading driving term (about
 /// half of net driving force). The absolute unit is not Earth-SI; G1d task 4
 /// must re-pin it from production-operator speeds. Sign is toward subduction.
-pub const PLATE_SLAB_PULL_FORCE_PER_M: f64 = 1.0;
+pub const PLATE_SLAB_PULL_FORCE_PER_M: f64 = 0.75;
+/// Ranking placeholder: slab-suction force per metre of trench acting on the
+/// overriding plate, directed toward the trench. Conrad & Lithgow-Bertelloni
+/// (2004, JGR 109, B10407) find slab suction comparable to direct slab pull in
+/// the Cenozoic torque budget and the main driver of plates without slabs; it
+/// is also what pulls a supercontinent apart toward its subduction girdle
+/// (Gurnis 1988). Re-pinned by G1e task 4 from production-operator speeds.
+pub const PLATE_SLAB_SUCTION_FORCE_PER_M: f64 = 0.5;
 /// Ranking placeholder: ridge-push force per metre of spreading ridge. Conrad
 /// & Lithgow-Bertelloni (2002) give ridge push about 5–10% of slab pull; 0.08
 /// is the mid-range ratio, not a morphological fit. Sign is away from the ridge.
-pub const PLATE_RIDGE_PUSH_FORCE_PER_M: f64 = 0.08;
+pub const PLATE_RIDGE_PUSH_FORCE_PER_M: f64 = 0.06;
 /// Ranking placeholder: oceanic basal-drag density in force per square metre
 /// per (metre/year). Forsyth & Uyeda (1975) put linear drag on the left-hand
 /// side of the torque balance. Absolute scale is unpinned until G1d task 4.
@@ -68,7 +82,7 @@ pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 20.0;
 /// neither consume nor thicken, so the convergence must be resisted in the
 /// torque balance instead of being absorbed by resampling (G1e §3.3). Pinned
 /// from the residual convergence measured by G1e task 4.
-pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 20.0;
+pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 200.0;
 
 const PRAD_TO_RAD: f64 = 1.0e-12;
 const METERS_TO_MILLIMETERS: f64 = 1_000.0;

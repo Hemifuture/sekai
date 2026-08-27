@@ -33,8 +33,8 @@ use crate::generators::natural::topology::{
 use crate::world::natural::{
     CrustKind, NaturalSpecError, ResolvedWorldFormationPreset, SphericalOrogenyKind,
     SphericalPlateRotation, SphericalTectonicValidationError, TectonicActivity, TectonicSpec,
-    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CRUST1_PLATFORM_THICKNESS_QUANTILES_KM, MAX_CRUST_AGE_MYR,
-    NO_OROGENY_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, CRUST1_PLATFORM_THICKNESS_QUANTILES_KM,
+    MAXIMUM_PLATE_AREA_FRACTION, MAX_CRUST_AGE_MYR, NO_OROGENY_AGE_SENTINEL_MYR,
 };
 use crate::world::spatial::{project_tangent, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::CellId;
@@ -75,7 +75,10 @@ pub(super) fn build_initial_state(
     let owners = assign_nearest_centers(surface, &centers);
     validate_initial_partition(topology, &seeds, &owners)?;
     let plates = initial_plates(surface, spec.activity, &seeds, streams)?;
-    let samples = initial_crust_samples(surface, topology, spec, preset, streams, &owners, &seeds);
+    let cap_center = dispersal_cap_center(surface, preset, streams);
+    let samples = initial_crust_samples(
+        surface, topology, spec, preset, streams, &owners, &seeds, cap_center,
+    );
     TectonicState::new(samples, plates, spec.plate_count.into()).map_err(Into::into)
 }
 
@@ -106,11 +109,86 @@ pub(super) fn build_initial_state_v5(
     let seeds = irregular_blue_noise_seeds(topology, plate_count, domain_rng.next_u64(), streams);
     let owners = assign_anisotropic_domains(surface, topology, &seeds, recipe, streams)?;
     validate_initial_partition(topology, &seeds, &owners)?;
-    let plates = initial_plates(surface, spec.activity, &seeds, streams)?;
-    let samples = initial_crust_samples(surface, topology, spec, preset, streams, &owners, &seeds);
+    let mut owners = owners;
+    let mut plates = initial_plates(surface, spec.activity, &seeds, streams)?;
+    let cap_center = dispersal_cap_center(surface, preset, streams);
+    if let Some(center) = cap_center {
+        merge_supercontinent_plates(surface, center, &seeds, &mut owners, &mut plates);
+    }
+    let samples = initial_crust_samples(
+        surface, topology, spec, preset, streams, &owners, &seeds, cap_center,
+    );
     let mut state = TectonicState::new(samples, plates, spec.plate_count.into())?;
     mark_dominant_continental_lineages(&mut state, surface, topology);
     Ok(state)
+}
+
+/// Stable center of the assembled supercontinent for dispersal-phase
+/// morphologies (G1e §3.5); `None` for morphologies opening from dispersed
+/// nuclei.
+fn dispersal_cap_center(
+    surface: &SphericalSurfaceSnapshot,
+    preset: ResolvedWorldFormationPreset,
+    streams: &LabeledSubstreams,
+) -> Option<UnitVector3> {
+    if !preset.opens_in_dispersal_phase() {
+        return None;
+    }
+    let cells = surface.cells();
+    let center_index = (streams.counter_u64(INITIAL_CRUST_V3_LABEL, &[1]) as usize) % cells.len();
+    Some(cells[center_index].centroid)
+}
+
+/// Pangea was one plate: the hemisphere it occupied carried no interior plate
+/// boundary that could subduct, and it broke up by rifting from inside
+/// (Wilson 1966; Cortial et al. 2019 start their supercontinent the same
+/// way). Plates whose seeds fall inside the cap are merged, nearest to the
+/// center first, while the merged plate stays within
+/// `MAXIMUM_PLATE_AREA_FRACTION`; the rest of the cap keeps its own plates.
+fn merge_supercontinent_plates(
+    surface: &SphericalSurfaceSnapshot,
+    center: UnitVector3,
+    seeds: &[CellId],
+    owners: &mut [LineageId],
+    plates: &mut Vec<ActivePlate>,
+) {
+    let cells = surface.cells();
+    let mut plate_area = vec![0.0_f64; plates.len()];
+    for (cell, owner) in cells.iter().zip(owners.iter()) {
+        plate_area[owner.raw() as usize] += cell.area.get();
+    }
+    let mut cap = seeds
+        .iter()
+        .enumerate()
+        .map(|(index, &seed)| (cells[seed.raw() as usize].centroid.dot(center), index))
+        .filter(|&(dot, _)| dot >= 0.0)
+        .collect::<Vec<_>>();
+    cap.sort_by(|first, second| second.0.total_cmp(&first.0).then(first.1.cmp(&second.1)));
+    let budget = surface.total_cell_area().get() * MAXIMUM_PLATE_AREA_FRACTION;
+    let mut merged = Vec::new();
+    let mut merged_area = 0.0;
+    for &(_, index) in &cap {
+        if merged_area + plate_area[index] > budget {
+            continue;
+        }
+        merged_area += plate_area[index];
+        merged.push(index);
+    }
+    let Some(&survivor) = merged.iter().min() else {
+        return;
+    };
+    let survivor = LineageId::from_raw(survivor as u32);
+    let absorbed = merged
+        .iter()
+        .map(|&index| LineageId::from_raw(index as u32))
+        .filter(|&lineage| lineage != survivor)
+        .collect::<Vec<_>>();
+    for owner in owners.iter_mut() {
+        if absorbed.contains(owner) {
+            *owner = survivor;
+        }
+    }
+    plates.retain(|plate| !absorbed.contains(&plate.lineage));
 }
 
 fn irregular_blue_noise_seeds(
@@ -431,6 +509,7 @@ fn initial_crust_samples(
     streams: &LabeledSubstreams,
     owners: &[LineageId],
     plate_reps: &[CellId],
+    cap_center: Option<UnitVector3>,
 ) -> Vec<CrustSample> {
     let recipe = FormationTectonicRecipe::for_preset(preset);
     let mut rng = streams.stream(INITIAL_CRUST_V3_LABEL);
@@ -443,6 +522,7 @@ fn initial_crust_samples(
         preset,
         streams,
         spec.continental_crust_fraction,
+        cap_center,
     );
     let thickness_signals = surface
         .cells()
@@ -505,8 +585,9 @@ fn continental_from_plate_nuclei(
     preset: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
     target_fraction: f32,
+    cap_center: Option<UnitVector3>,
 ) -> Vec<bool> {
-    let nuclei = select_continental_nuclei(surface, plate_reps, preset, streams);
+    let nuclei = select_continental_nuclei(surface, plate_reps, preset, streams, cap_center);
     let (owner, dist) = hop_nearest_nuclei(topology, &nuclei);
     let primary_first = preset.satellite_nucleus_count() > 0;
     let order = continental_cell_order(&owner, &dist, primary_first);
@@ -575,11 +656,12 @@ fn select_continental_nuclei(
     plate_reps: &[CellId],
     preset: ResolvedWorldFormationPreset,
     streams: &LabeledSubstreams,
+    cap_center: Option<UnitVector3>,
 ) -> Vec<CellId> {
     let plate_count = plate_reps.len();
     debug_assert!(plate_count >= 1);
-    if preset.opens_in_dispersal_phase() {
-        return hemispheric_cap_nuclei(surface, preset, streams);
+    if let Some(center) = cap_center {
+        return hemispheric_cap_nuclei(surface, center, preset);
     }
     let first = (streams.counter_u64(INITIAL_CRUST_V3_LABEL, &[0]) as usize) % plate_count;
     let total = if preset.satellite_nucleus_count() > 0 {
@@ -597,12 +679,10 @@ fn select_continental_nuclei(
 /// and provide the subduction sink the dispersal is driven by.
 fn hemispheric_cap_nuclei(
     surface: &SphericalSurfaceSnapshot,
+    center: UnitVector3,
     preset: ResolvedWorldFormationPreset,
-    streams: &LabeledSubstreams,
 ) -> Vec<CellId> {
     let cells = surface.cells();
-    let center_index = (streams.counter_u64(INITIAL_CRUST_V3_LABEL, &[1]) as usize) % cells.len();
-    let center = cells[center_index].centroid;
     let cap = cells
         .iter()
         .filter(|cell| cell.centroid.dot(center) >= 0.0)
@@ -610,7 +690,15 @@ fn hemispheric_cap_nuclei(
         .collect::<Vec<_>>();
     let first = cap
         .iter()
-        .position(|&cell| cell == cells[center_index].id)
+        .enumerate()
+        .max_by(|(_, &first), (_, &second)| {
+            cells[first.raw() as usize]
+                .centroid
+                .dot(center)
+                .total_cmp(&cells[second.raw() as usize].centroid.dot(center))
+                .then(second.cmp(&first))
+        })
+        .map(|(position, _)| position)
         .expect("the cap center lies inside its own hemisphere");
     let total = usize::from(preset.continental_nucleus_count()).clamp(1, cap.len());
     farthest_plate_representatives(surface, &cap, first, total)
@@ -1460,6 +1548,24 @@ mod tests {
                 assert!(
                     oceanic_plates >= 1,
                     "{preset:?} seed {seed}: the opposite hemisphere must leave purely oceanic plates"
+                );
+                assert!(
+                    state.plates.len() < usize::from(spec.plate_count),
+                    "{preset:?} seed {seed}: the cap must open as one merged supercontinent plate"
+                );
+                let sphere = surface.total_cell_area().get();
+                let mut plate_area = std::collections::BTreeMap::new();
+                for sample in &state.samples {
+                    *plate_area.entry(sample.owner).or_insert(0.0) +=
+                        surface.cells()[sample.anchor.raw() as usize].area.get();
+                }
+                let largest = plate_area.values().copied().fold(0.0, f64::max);
+                assert!(
+                    largest
+                        <= sphere * crate::world::natural::MAXIMUM_PLATE_AREA_FRACTION
+                            + 1.0e-6 * sphere,
+                    "{preset:?} seed {seed}: merged plate share {:.3} exceeds the cap",
+                    largest / sphere
                 );
             }
         }

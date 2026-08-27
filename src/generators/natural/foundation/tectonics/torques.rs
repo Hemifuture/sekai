@@ -17,6 +17,7 @@ use crate::world::natural::{
     SphericalPlateRotation, SphericalTectonicValidationError, PLATE_COLLISION_RESISTANCE_PER_M,
     PLATE_CONTINENT_BASAL_DRAG_PER_M2, PLATE_LOCKED_MARGIN_RESISTANCE_PER_M,
     PLATE_OCEAN_BASAL_DRAG_PER_M2, PLATE_RIDGE_PUSH_FORCE_PER_M, PLATE_SLAB_PULL_FORCE_PER_M,
+    PLATE_SLAB_SUCTION_FORCE_PER_M,
 };
 use crate::world::spatial::{cross, dot, scale, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{EdgeId, Meters};
@@ -116,10 +117,12 @@ fn accumulate_boundary_forces(
         let length = edge.length.get();
         match event.kind {
             ContactKind::OceanicSubduction { descending } => {
-                let (index, direction) = if descending == first {
-                    (first_index, outward)
+                // Pull acts on the descending plate toward the trench; suction
+                // acts on the overriding plate, also toward the trench.
+                let (index, direction, overriding, toward_trench) = if descending == first {
+                    (first_index, outward, second_index, inward)
                 } else if descending == second {
-                    (second_index, inward)
+                    (second_index, inward, first_index, outward)
                 } else {
                     return Err(TorqueError::UnknownLineage {
                         lineage: descending,
@@ -129,6 +132,11 @@ fn accumulate_boundary_forces(
                     &mut systems[index].active_torque,
                     radial,
                     scale(direction, PLATE_SLAB_PULL_FORCE_PER_M * length),
+                );
+                add_force(
+                    &mut systems[overriding].active_torque,
+                    radial,
+                    scale(toward_trench, PLATE_SLAB_SUCTION_FORCE_PER_M * length),
                 );
             }
             ContactKind::Divergence => {
@@ -437,6 +445,23 @@ mod tests {
         assert!(
             dot(velocity, toward_overriding) > 0.0,
             "descending velocity {velocity:?} should point along {toward_overriding:?}"
+        );
+    }
+
+    #[test]
+    fn slab_suction_pulls_the_overriding_plate_toward_the_trench() {
+        let surface = fixture_surface();
+        let (mut state, toward_overriding) = trench_state(&surface, CrustKind::Oceanic);
+        update_rotations_from_boundary_torques(&surface, &mut state, &[trench_event(&surface)])
+            .unwrap();
+        let overriding = state.plate(LineageId::from_raw(1)).unwrap();
+        let velocity = overriding
+            .rotation
+            .velocity_mm_per_year(surface.radius(), surface.edges()[0].midpoint)
+            .unwrap();
+        assert!(
+            dot(velocity, toward_overriding) < 0.0,
+            "overriding velocity {velocity:?} should point back toward the trench"
         );
     }
 

@@ -14,10 +14,9 @@ use crate::generators::natural::foundation::tectonics::contacts::{ContactEvent, 
 use crate::generators::natural::foundation::tectonics::model::{
     EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
 };
-use crate::world::natural::{CrustKind, SphericalOrogenyKind};
+use crate::world::natural::{CrustKind, SphericalOrogenyKind, MAXIMUM_PLATE_AREA_FRACTION};
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
-const MAXIMUM_PUBLISHED_PLATE_AREA_FRACTION: f64 = 0.45;
 // Homogeneous pure-shear shortening expressed over one coarse orogenic belt,
 // the inverse of the rift-zone extension (England & McKenzie 1982 thin-sheet
 // thickening; Cortial et al. 2019 convergent thickening). The belt width is the
@@ -171,8 +170,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn apply_collision_v5(
     }
     actions.validate_for(next.samples.len())?;
     let average_plate_area = surface.total_cell_area().get() / next.plates.len() as f64;
-    let maximum_plate_area =
-        surface.total_cell_area().get() * MAXIMUM_PUBLISHED_PLATE_AREA_FRACTION;
+    let maximum_plate_area = surface.total_cell_area().get() * MAXIMUM_PLATE_AREA_FRACTION;
     let gain = f64::from(recipe.subduction_gain_permille) / 1_000.0;
     let mut stats = ProcessStats::default();
     for event in events {
