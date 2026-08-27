@@ -19,7 +19,8 @@ use super::processes::{
     advance_solid_crust_ages, apply_collision, apply_collision_v5, apply_divergent_extension,
     apply_divergent_extension_v5, apply_subduction, apply_subduction_v5, commit_process_actions,
     commit_process_actions_v5, fill_spreading_gaps, fill_spreading_gaps_v5, maybe_rift_plates,
-    mechanically_fragment_oversized_plates_v5, relax_legacy_compatibility_elevation, ProcessError,
+    mechanically_fragment_oversized_plates_v5, rebin_interior_gaps_v5,
+    relax_legacy_compatibility_elevation, ProcessError,
 };
 use super::resample::{
     canonicalize_final_plates, resample_current_state, resample_current_state_v5,
@@ -191,6 +192,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             &mut material_ledger,
             process_delta_myr,
         )?;
+        rebin_interior_gaps_v5(surface, topology, events, current, next, coverage, actions)?;
         fill_spreading_gaps_v5(
             surface,
             events,
@@ -1104,18 +1106,35 @@ mod tests {
                             )
                         }
                     };
+                    let sphere = surface.total_cell_area().get();
+                    let processes = evolved.material_ledger.processes().unwrap();
+                    let initial_ocean = evolved
+                        .material_ledger
+                        .initial_control()
+                        .oceanic()
+                        .reference_area_m2();
+                    let final_ocean = state
+                        .material_totals()
+                        .unwrap()
+                        .oceanic()
+                        .reference_area_m2();
+                    let spreading = processes.oceanic_spreading_created().reference_area_m2();
+                    let subducted = processes.oceanic_subducted().reference_area_m2();
                     let slab = stat(&mut slab_speeds);
                     let free = stat(&mut free_speeds);
                     let locked = stat(&mut locked_residual);
                     let collision = stat(&mut collision_residual);
                     println!(
-                        "G1e {preset:?} seed={seed} plates={plate_count} final_plates={} events[subd/locked/coll/div/tf/gap]={counts:?} slab_speed(min/med/max)={:.1}/{:.1}/{:.1} free_speed={:.1}/{:.1}/{:.1} locked_residual={:.1}/{:.1}/{:.1} collision_residual={:.1}/{:.1}/{:.1} overlap_moved/cont_area={:.4} crust_n={crust_components} crust_max={crust_max_share:.3}",
+                        "G1e {preset:?} seed={seed} plates={plate_count} final_plates={} events[subd/locked/coll/div/tf/gap]={counts:?} slab_speed(min/med/max)={:.1}/{:.1}/{:.1} free_speed={:.1}/{:.1}/{:.1} locked_residual={:.1}/{:.1}/{:.1} collision_residual={:.1}/{:.1}/{:.1} overlap_moved/cont_area={:.4} ocean[spread/subd/absorbed]/sphere={:.3}/{:.3}/{:.3} crust_n={crust_components} crust_max={crust_max_share:.3}",
                         state.plates.len(),
                         slab.0, slab.1, slab.2,
                         free.0, free.1, free.2,
                         locked.0, locked.1, locked.2,
                         collision.0, collision.1, collision.2,
                         evolved.material_ledger.resample_overlap_moved_area_m2() / continental_area,
+                        spreading / sphere,
+                        subducted / sphere,
+                        (spreading - subducted - (final_ocean - initial_ocean)) / sphere,
                     );
                 }
             }

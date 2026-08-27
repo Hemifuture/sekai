@@ -392,6 +392,15 @@ impl ProcessActions {
         self.dispositions.is_empty() && self.spawned.is_empty()
     }
 
+    /// True while no process has removed, transferred, or staged this sample.
+    pub(super) fn is_untouched(&self, sample: usize) -> bool {
+        self.dispositions.get(sample) == Some(&SampleDisposition::Keep)
+            && self
+                .pending_oceanic_subduction
+                .get(sample)
+                .is_some_and(Option::is_none)
+    }
+
     pub(super) fn lineage_has_pending_changes(
         &self,
         samples: &[CrustSample],
@@ -541,6 +550,7 @@ pub(super) struct ProcessStats {
     pub(super) transferred_samples: u32,
     pub(super) terrane_transfer_events: u32,
     pub(super) spawned_samples: u32,
+    pub(super) rebinned_samples: u32,
     pub(super) rift_events: u32,
     pub(super) spawned_lineages: u32,
     pub(super) relaxed_samples: u32,
@@ -848,6 +858,6 @@ pub(super) use relaxation::{advance_solid_crust_ages, relax_legacy_compatibility
 pub(super) use rifting::{maybe_rift_plates, mechanically_fragment_oversized_plates_v5};
 pub(super) use spreading::{
     apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
-    fill_spreading_gaps_v5,
+    fill_spreading_gaps_v5, rebin_interior_gaps_v5,
 };
 pub(super) use subduction::{apply_subduction, apply_subduction_v5};

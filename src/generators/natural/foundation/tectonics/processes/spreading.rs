@@ -9,16 +9,22 @@ use super::{
     bounded_elevation, constants, event_lineation, ProcessActions, ProcessError, ProcessStats,
 };
 use crate::generators::natural::foundation::crust_physics::continental_isostatic_elevation_m;
-use crate::generators::natural::foundation::tectonics::contacts::{ContactEvent, ContactKind};
+use std::collections::VecDeque;
+
+use crate::generators::natural::foundation::tectonics::contacts::{
+    ContactEvent, ContactKind, CoverageScratch,
+};
 use crate::generators::natural::foundation::tectonics::model::{
     CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId, MaterialColumn,
     TectonicState,
 };
+use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
     CONTINENTAL_CRUST_MIN_THICKNESS_KM, NO_OROGENY_AGE_SENTINEL_MYR,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
+use crate::world::CellId;
 
 // McKenzie-style homogeneous pure-shear extension expressed over one coarse
 // rift zone. The bounded per-step beta prevents a single resolved step from
@@ -244,6 +250,109 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
         spawned.push(sample);
         stats.spawned_samples += 1;
     }
+    Ok(stats)
+}
+
+/// Farthest a sampling hole looks for its own plate's duplicate sample. One
+/// step moves samples by a fraction of a cell and a resample interval by at
+/// most `TARGET_ANGULAR_DISPLACEMENT_RAD`, so holes and doubles of the same
+/// rigid plate sit within a few cells of each other.
+const REBIN_SEARCH_HOPS: u32 = 3;
+
+/// Semi-Lagrangian rebinning of sampling holes (G1e §3.4).
+///
+/// A rigid plate keeps its sample count, so a hole that is not adjacent to a
+/// divergent boundary is a discretization artifact paired with a same-owner
+/// double covering nearby. Moving one duplicate into the hole is conservative;
+/// spawning crust there would be spreading with no ridge, and the duplicate
+/// would later be absorbed by resampling as consumption with no trench. Holes
+/// that are rebinned are dropped from `events` so the ridge fill skips them.
+pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps_v5(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    events: &mut Vec<ContactEvent>,
+    current: &TectonicState,
+    next: &mut TectonicState,
+    coverage: &CoverageScratch,
+    actions: &mut ProcessActions,
+) -> Result<ProcessStats, ProcessError> {
+    actions.validate_for(next.samples.len())?;
+    let cell_count = surface.cells().len();
+    let mut free = (0..next.samples.len())
+        .map(|sample| actions.is_untouched(sample))
+        .collect::<Vec<_>>();
+    let (divergence_by_cell, current_sample_by_cell, _) = actions.spreading_scratch(cell_count);
+    index_incident_divergence(surface, events, divergence_by_cell)?;
+    index_current_samples(surface, current, current_sample_by_cell)?;
+    let mut spare = vec![0_u32; cell_count];
+    for (cell, slot) in spare.iter_mut().enumerate() {
+        let covering = coverage.sample_indices(CellId::from_raw(cell as u32));
+        if covering.len() >= 2
+            && covering.iter().all(|&raw| {
+                next.samples[raw as usize].owner == next.samples[covering[0] as usize].owner
+            })
+        {
+            *slot = covering.len() as u32 - 1;
+        }
+    }
+    let mut rebinned = vec![false; cell_count];
+    let mut visited = vec![u32::MAX; cell_count];
+    let mut queue = VecDeque::new();
+    let mut stats = ProcessStats::default();
+    for (stamp, gap) in events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind == ContactKind::Gap)
+    {
+        let cell_index = gap.cell.raw() as usize;
+        if divergence_by_cell[cell_index].is_some() {
+            continue;
+        }
+        let Some(owner) = current_sample_by_cell[cell_index]
+            .map(|sample| current.samples[sample].owner)
+            .or_else(|| closest_state_owner(current, surface.cells()[cell_index].centroid))
+        else {
+            continue;
+        };
+        let stamp = stamp as u32;
+        queue.clear();
+        queue.push_back((cell_index, 0_u32));
+        visited[cell_index] = stamp;
+        let mut duplicate = None;
+        while let Some((cell, depth)) = queue.pop_front() {
+            if spare[cell] > 0 {
+                let candidate = coverage
+                    .sample_indices(CellId::from_raw(cell as u32))
+                    .iter()
+                    .map(|&raw| raw as usize)
+                    .filter(|&sample| next.samples[sample].owner == owner && free[sample])
+                    .max();
+                if let Some(sample) = candidate {
+                    spare[cell] -= 1;
+                    free[sample] = false;
+                    duplicate = Some(sample);
+                    break;
+                }
+            }
+            if depth >= REBIN_SEARCH_HOPS {
+                continue;
+            }
+            for arc in &topology.arcs()[cell] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if visited[neighbor] != stamp {
+                    visited[neighbor] = stamp;
+                    queue.push_back((neighbor, depth + 1));
+                }
+            }
+        }
+        if let Some(sample) = duplicate {
+            next.samples[sample].position = surface.cells()[cell_index].centroid;
+            next.samples[sample].anchor = gap.cell;
+            rebinned[cell_index] = true;
+            stats.rebinned_samples += 1;
+        }
+    }
+    events.retain(|event| event.kind != ContactKind::Gap || !rebinned[event.cell.raw() as usize]);
     Ok(stats)
 }
 
@@ -495,10 +604,12 @@ fn donate_continental_fill(
 mod tests {
     use super::{
         apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
-        fill_spreading_gaps_v5,
+        fill_spreading_gaps_v5, rebin_interior_gaps_v5,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
-    use crate::generators::natural::foundation::tectonics::contacts::{ContactEvent, ContactKind};
+    use crate::generators::natural::foundation::tectonics::contacts::{
+        ContactEvent, ContactKind, CoverageScratch,
+    };
     use crate::generators::natural::foundation::tectonics::initial_state::build_initial_state;
     use crate::generators::natural::foundation::tectonics::model::{
         EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
@@ -668,6 +779,73 @@ mod tests {
         commit_process_actions(&mut next, &mut actions).unwrap();
 
         assert_eq!(next.samples.last().unwrap().owner, expected);
+    }
+
+    #[test]
+    fn interior_hole_is_rebinned_from_its_own_duplicate_not_spawned() {
+        let (surface, topology) = fixture();
+        let current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            ResolvedWorldFormationPreset::Continents,
+            &streams(),
+        )
+        .unwrap();
+        let mut next = copy_state(&current);
+        let hole = CellId::from_raw(3);
+        let neighbor = topology.arcs()[3]
+            .iter()
+            .map(|arc| arc.neighbor)
+            .find(|cell| next.samples[cell.raw() as usize].owner == next.samples[3].owner)
+            .expect("a same-plate neighbor exists");
+        next.samples[3].position = surface.cell(neighbor).unwrap().centroid;
+        next.samples[3].anchor = neighbor;
+        let mut coverage = CoverageScratch::with_cell_capacity(surface.cells().len());
+        coverage
+            .rebuild(surface.cells().len(), &next.samples)
+            .unwrap();
+        assert_eq!(coverage.count(hole), 0);
+        assert_eq!(coverage.count(neighbor), 2);
+        let mut events = vec![ContactEvent {
+            cell: hole,
+            edge: None,
+            sample_indices: [None, None],
+            lineages: [None, None],
+            kind: ContactKind::Gap,
+            signed_normal_speed_mm_per_year: 0.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        }];
+        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+        actions.begin_step(next.samples.len());
+
+        let stats = rebin_interior_gaps_v5(
+            &surface,
+            &topology,
+            &mut events,
+            &current,
+            &mut next,
+            &coverage,
+            &mut actions,
+        )
+        .unwrap();
+
+        assert_eq!(stats.rebinned_samples, 1);
+        assert!(
+            events.is_empty(),
+            "a rebinned hole is no longer a spreading gap"
+        );
+        let anchored_at = |cell: CellId| {
+            next.samples
+                .iter()
+                .filter(|sample| sample.anchor == cell)
+                .count()
+        };
+        assert_eq!(anchored_at(hole), 1);
+        assert_eq!(anchored_at(neighbor), 1);
+        assert_eq!(next.samples.len(), current.samples.len());
+        assert!(actions.spawned_samples().is_empty());
     }
 
     #[test]
