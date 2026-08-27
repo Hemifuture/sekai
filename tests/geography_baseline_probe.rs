@@ -181,6 +181,129 @@ fn probe_g0_geography_baseline() {
     );
 }
 
+/// G1e §5 evidence: wet regions not connected to the main ocean after P3,
+/// their crust composition, and land connectivity, per preset on the draft
+/// corpus at the recommended continental fraction. Run explicitly:
+/// `cargo test --release --test geography_baseline_probe probe_g1e_inland_water -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn probe_g1e_inland_water() {
+    let cancellation = BuildCancellation::new();
+    let bundle = ProfileSurfaceBuilder::build(
+        NaturalQualityProfile::Draft,
+        Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+        &cancellation,
+    )
+    .unwrap();
+    let surface = bundle.authoritative_surface();
+    let adj = adjacency(surface);
+    let areas: Vec<f64> = surface.cells().iter().map(|cell| cell.area.get()).collect();
+    let total: f64 = areas.iter().sum();
+    for preset in [
+        ResolvedWorldFormationPreset::Archipelago,
+        ResolvedWorldFormationPreset::Continents,
+    ] {
+        for seed in [PRIMARY_SEED, CONTRAST_SEED] {
+            for plate_count in [12_u16, 22] {
+                let spec = TectonicSpec {
+                    plate_count,
+                    continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                    ..TectonicSpec::default()
+                };
+                let (_, substrate, relief) =
+                    match try_build_primary_relief_for(&bundle, seed, preset, &spec) {
+                        Ok(built) => built,
+                        Err(error) => {
+                            println!(
+                            "G1e-water {preset:?} seed={seed} plates={plate_count} FAILED {error}"
+                        );
+                            continue;
+                        }
+                    };
+                let n = surface.cells().len();
+                let kinds: Vec<CrustKind> = (0..n)
+                    .map(|index| substrate.crust_kind(index).expect("every cell has crust"))
+                    .collect();
+                let wet: Vec<bool> = (0..n)
+                    .map(|index| {
+                        relief.land_ocean().get(index).expect("land/ocean") == LandOceanKind::Ocean
+                    })
+                    .collect();
+                let land: Vec<bool> = wet.iter().map(|value| !value).collect();
+                let wet_components = flood_components(&adj, &wet, &areas);
+                let land_stats = component_stats(n, &adj, &land, &areas);
+                let land_area: f64 = land
+                    .iter()
+                    .zip(&areas)
+                    .filter(|(is_land, _)| **is_land)
+                    .map(|(_, area)| area)
+                    .sum();
+                let mut inland = 0.0;
+                let mut inland_continental = 0.0;
+                let mut inland_count = 0_usize;
+                for component in wet_components.iter().skip(1) {
+                    inland_count += 1;
+                    for &cell in component {
+                        inland += areas[cell];
+                        if kinds[cell] == CrustKind::Continental {
+                            inland_continental += areas[cell];
+                        }
+                    }
+                }
+                let continental_area: f64 = kinds
+                    .iter()
+                    .zip(&areas)
+                    .filter(|(kind, _)| **kind == CrustKind::Continental)
+                    .map(|(_, area)| area)
+                    .sum();
+                let submerged: f64 = (0..n)
+                    .filter(|&index| kinds[index] == CrustKind::Continental && wet[index])
+                    .map(|index| areas[index])
+                    .sum();
+                println!(
+                    "G1e-water {preset:?} seed={seed} plates={plate_count} land_frac={:.3} land_n={} land_max={:.3} inland_n={inland_count} inland_area_share={:.4} inland_continental_share={:.3} continental_submerged={:.3}",
+                    land_area / total,
+                    land_stats.count,
+                    land_stats.max_area_share,
+                    inland / total,
+                    if inland > 0.0 { inland_continental / inland } else { 0.0 },
+                    submerged / continental_area,
+                );
+            }
+        }
+    }
+}
+
+/// Connected components of `mask`, largest area first.
+fn flood_components(adj: &[Vec<usize>], mask: &[bool], areas: &[f64]) -> Vec<Vec<usize>> {
+    let mut seen = vec![false; mask.len()];
+    let mut components = Vec::new();
+    for start in 0..mask.len() {
+        if !mask[start] || seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut queue = VecDeque::from([start]);
+        let mut members = vec![start];
+        while let Some(cell) = queue.pop_front() {
+            for &neighbor in &adj[cell] {
+                if mask[neighbor] && !seen[neighbor] {
+                    seen[neighbor] = true;
+                    queue.push_back(neighbor);
+                    members.push(neighbor);
+                }
+            }
+        }
+        components.push(members);
+    }
+    components.sort_by(|first, second| {
+        let a: f64 = first.iter().map(|&cell| areas[cell]).sum();
+        let b: f64 = second.iter().map(|&cell| areas[cell]).sum();
+        b.total_cmp(&a)
+    });
+    components
+}
+
 fn output_dir() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")

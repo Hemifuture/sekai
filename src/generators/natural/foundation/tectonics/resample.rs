@@ -252,6 +252,30 @@ fn conservative_material_resample_v5(
         };
         kinds.push(kind);
     }
+    // One control cell is the resolution floor: a continental cell with no
+    // continental neighbor, or an oceanic cell with no oceanic neighbor, is
+    // sub-cell coastline jitter frozen by the remap, not a resolved island or
+    // basin. Its kind follows its neighborhood; its parcel travels to the
+    // nearest cell of its own kind below and the group rebalance closes the
+    // cell's area.
+    let mut flipped = Vec::new();
+    for cell in 0..cell_count {
+        let kind = kinds[cell];
+        let isolated = topology.arcs()[cell]
+            .iter()
+            .all(|arc| kinds[arc.neighbor.raw() as usize] != kind);
+        let others_remain = kinds
+            .iter()
+            .enumerate()
+            .any(|(other, &other_kind)| other != cell && other_kind == kind);
+        if isolated && others_remain {
+            kinds[cell] = match kind {
+                CrustKind::Continental => CrustKind::Oceanic,
+                CrustKind::Oceanic => CrustKind::Continental,
+            };
+            flipped.push(cell);
+        }
+    }
     let nearest_continental = nearest_cell_of_kind(topology, &kinds, CrustKind::Continental);
     let nearest_oceanic = nearest_cell_of_kind(topology, &kinds, CrustKind::Oceanic);
 
@@ -295,6 +319,36 @@ fn conservative_material_resample_v5(
             };
             oceanic[target].0 += oceanic_area;
             oceanic[target].1 += material.oceanic_volume_m3();
+        }
+    }
+
+    // A flipped cell has no parcel of its new kind: it borrows its cell's
+    // worth from its neighbors' parcels of that kind, in proportion to what
+    // they hold and at their thickness, so nothing is created.
+    for &cell in &flipped {
+        let kind = kinds[cell];
+        let neighbors = topology.arcs()[cell]
+            .iter()
+            .map(|arc| arc.neighbor.raw() as usize)
+            .collect::<Vec<_>>();
+        let pool = |store: &[(f64, f64)]| neighbors.iter().map(|&n| store[n].0).sum::<f64>();
+        let need = surface.cells()[cell].area.get();
+        let store = match kind {
+            CrustKind::Continental => &mut continental,
+            CrustKind::Oceanic => &mut oceanic,
+        };
+        let available = pool(store);
+        if available <= 0.0 {
+            continue;
+        }
+        let fraction = (need / available).min(0.5);
+        for &n in &neighbors {
+            let (area, volume) = store[n];
+            let taken_area = area * fraction;
+            let taken_volume = volume * fraction;
+            store[n] = (area - taken_area, volume - taken_volume);
+            store[cell].0 += taken_area;
+            store[cell].1 += taken_volume;
         }
     }
 
@@ -411,18 +465,31 @@ fn rebalance_columns_to_cells(
                 // least material instead of thinning the whole group.
                 let over_budget =
                     total_cells - total_area > ledger.remaining_rift_extension_area_m2();
-                let below_floor = cells
-                    .iter()
-                    .zip(&thickness)
-                    .enumerate()
-                    .filter(|(_, (_, &t))| t * scale < minimum_m)
-                    .min_by(|(_, (_, a)), (_, (_, b))| a.total_cmp(b))
-                    .map(|(position, _)| position);
-                let least_material = parcel_area
-                    .iter()
-                    .enumerate()
-                    .min_by(|(_, a), (_, b)| a.total_cmp(b))
-                    .map(|(position, _)| position);
+                // Rupture happens at a margin: prefer cells that already touch
+                // ocean so an interior cell is never turned into a lake.
+                let at_margin = |position: usize| {
+                    topology.arcs()[cells[position]]
+                        .iter()
+                        .any(|arc| kinds[arc.neighbor.raw() as usize] == CrustKind::Oceanic)
+                };
+                let pick = |candidates: Vec<usize>| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .filter(|&position| at_margin(position))
+                        .min_by(|&a, &b| parcel_area[a].total_cmp(&parcel_area[b]))
+                        .or_else(|| {
+                            candidates
+                                .into_iter()
+                                .min_by(|&a, &b| parcel_area[a].total_cmp(&parcel_area[b]))
+                        })
+                };
+                let below_floor = pick(
+                    (0..cells.len())
+                        .filter(|&position| thickness[position] * scale < minimum_m)
+                        .collect(),
+                );
+                let least_material = pick((0..cells.len()).collect());
                 let Some(position) =
                     below_floor.or(if over_budget { least_material } else { None })
                 else {
@@ -1940,13 +2007,20 @@ mod tests {
     fn v4_occupied_anchors_lose_overlap_but_v5_closes_all_extensive_material() {
         let (surface, topology) = fixture(42);
         let owner = LineageId::from_raw(0);
+        let second = surface
+            .opposite_cell(
+                CellId::from_raw(0),
+                surface.cell_edges(CellId::from_raw(0)).unwrap()[0],
+            )
+            .unwrap()
+            .raw() as usize;
         let mut source_samples = surface
             .cells()
             .iter()
             .enumerate()
             .map(|(index, cell)| {
                 let mut value = sample(cell.id, cell.centroid, owner, index as u32 + 1);
-                let kind = if index < 2 {
+                let kind = if index == 0 || index == second {
                     CrustKind::Continental
                 } else {
                     CrustKind::Oceanic
@@ -1967,7 +2041,7 @@ mod tests {
                 value
             })
             .collect::<Vec<_>>();
-        let mut extra = source_samples[1];
+        let mut extra = source_samples[second];
         extra.anchor = source_samples[0].anchor;
         extra.position = source_samples[0].position;
         source_samples.push(extra);
@@ -2008,9 +2082,9 @@ mod tests {
         .unwrap();
         let remapped_state = TectonicState::new(remapped.clone(), vec![plate], 1).unwrap();
         let totals = remapped_state.material_totals().unwrap();
-        assert_eq!(
-            totals.continental().volume_m3(),
-            expected.continental().volume_m3(),
+        assert!(
+            (totals.continental().volume_m3() - expected.continental().volume_m3()).abs()
+                <= 1.0e-12 * expected.continental().volume_m3(),
             "continental volume is conserved"
         );
         for (index, value) in remapped.iter().enumerate() {
@@ -2081,8 +2155,11 @@ mod tests {
             .collect::<Vec<_>>();
         // A 50 km craton column anchored at cell 0 and a 25 km rifted column
         // that converged onto the same cell: two parcels, one cell.
+        let thin_cell = surface
+            .opposite_cell(thick_cell, surface.cell_edges(thick_cell).unwrap()[0])
+            .unwrap();
         let thick_area = surface.cells()[0].area.get();
-        let thin_area = surface.cells()[1].area.get();
+        let thin_area = surface.cells()[thin_cell.raw() as usize].area.get();
         source_samples[0].kind = CrustKind::Continental;
         source_samples[0].thickness_km = 50.0;
         source_samples[0].age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
@@ -2091,10 +2168,10 @@ mod tests {
         let mut thin = source_samples[0];
         thin.thickness_km = 25.0;
         thin.material = MaterialColumn::pure(CrustKind::Continental, thin_area, 25.0).unwrap();
-        thin.anchor = surface.cells()[1].id;
-        thin.position = surface.cells()[1].centroid;
-        source_samples[1] = thin;
-        let mut extra = source_samples[1];
+        thin.anchor = thin_cell;
+        thin.position = surface.cells()[thin_cell.raw() as usize].centroid;
+        source_samples[thin_cell.raw() as usize] = thin;
+        let mut extra = thin;
         extra.anchor = thick_cell;
         extra.position = surface.cells()[0].centroid;
         source_samples.push(extra);
