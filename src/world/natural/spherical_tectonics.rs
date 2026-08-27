@@ -33,6 +33,29 @@ pub const MAX_CRUST_AGE_MYR: f32 = 512.0;
 pub const MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR: f64 = 120.0;
 /// The largest representable angular rate, sized for 120 mm/year on a one-meter sphere.
 pub const MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR: u64 = 120_000_000_000;
+/// Ranking placeholder: slab-pull force per metre of trench. Conrad &
+/// Lithgow-Bertelloni (2002) make slab pull the leading driving term (about
+/// half of net driving force). The absolute unit is not Earth-SI; G1d task 4
+/// must re-pin it from production-operator speeds. Sign is toward subduction.
+pub const PLATE_SLAB_PULL_FORCE_PER_M: f64 = 1.0;
+/// Ranking placeholder: ridge-push force per metre of spreading ridge. Conrad
+/// & Lithgow-Bertelloni (2002) give ridge push about 5–10% of slab pull; 0.08
+/// is the mid-range ratio, not a morphological fit. Sign is away from the ridge.
+pub const PLATE_RIDGE_PUSH_FORCE_PER_M: f64 = 0.08;
+/// Ranking placeholder: oceanic basal-drag density in force per square metre
+/// per (metre/year). Forsyth & Uyeda (1975) put linear drag on the left-hand
+/// side of the torque balance. Absolute scale is unpinned until G1d task 4.
+pub const PLATE_OCEAN_BASAL_DRAG_PER_M2: f64 = 1.0e-6;
+/// Ranking placeholder: continental basal-drag density. Forsyth & Uyeda (1975)
+/// find plates with continental lithosphere significantly slower; this is
+/// stronger than [`PLATE_OCEAN_BASAL_DRAG_PER_M2`] by ranking, not a fitted
+/// Earth-table copy.
+pub const PLATE_CONTINENT_BASAL_DRAG_PER_M2: f64 = 4.0e-6;
+/// Ranking placeholder: collision dashpot per metre of continent–continent
+/// convergent boundary. Spec §3.2: collision resistance opposes convergence so
+/// Continents cannot suture by inertia when no trench is present. Pin after
+/// production measurement (G1d task 4).
+pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 20.0;
 
 const PRAD_TO_RAD: f64 = 1.0e-12;
 const METERS_TO_MILLIMETERS: f64 = 1_000.0;
@@ -124,6 +147,61 @@ impl SphericalPlateRotation {
             });
         }
         Ok(())
+    }
+
+    /// Builds a rotation from an angular-velocity vector in radians per year.
+    ///
+    /// The pole follows \(\boldsymbol{\omega}\). Magnitude is clamped so local speed
+    /// stays inside [`MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SphericalTectonicValidationError::InvalidRadius`] when `radius`
+    /// is not finite and positive. Returns
+    /// [`SphericalTectonicValidationError::AngularRateOutOfRange`] when `omega`
+    /// is zero or non-finite.
+    pub fn from_angular_velocity_rad_per_year(
+        omega: [f64; 3],
+        radius: Meters,
+    ) -> Result<Self, SphericalTectonicValidationError> {
+        validate_radius(radius)?;
+        if omega.iter().any(|component| !component.is_finite()) {
+            return Err(SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            });
+        }
+        let magnitude = (omega[0] * omega[0] + omega[1] * omega[1] + omega[2] * omega[2]).sqrt();
+        if magnitude == 0.0 {
+            return Err(SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            });
+        }
+        let pole = UnitVector3::new(
+            omega[0] / magnitude,
+            omega[1] / magnitude,
+            omega[2] / magnitude,
+        )
+        .map_err(
+            |_| SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            },
+        )?;
+        let max_rate =
+            MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR / (radius.get() * METERS_TO_MILLIMETERS);
+        let rate = magnitude.min(max_rate);
+        let prad = (rate / PRAD_TO_RAD)
+            .round()
+            .clamp(1.0, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR as f64)
+            as u64;
+        let rotation = Self::new(pole, prad)?;
+        rotation.validate_for_radius(radius)?;
+        Ok(rotation)
     }
 
     /// Derives the local tangent velocity from the shared Euler rotation.
@@ -1507,7 +1585,10 @@ pub enum SphericalTectonicValidationError {
 mod tests {
     use super::{
         deserialize_boundary_segments_with_limit, deserialize_spherical_boundaries_with_limit,
+        SphericalPlateRotation,
     };
+    use crate::world::spatial::UnitVector3;
+    use crate::world::Meters;
 
     #[test]
     fn edge_records_are_rejected_before_a_bounded_sequence_can_grow() {
@@ -1534,5 +1615,19 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("at most 2 are allowed"), "{error}");
+    }
+
+    #[test]
+    fn angular_velocity_vector_round_trips_inside_the_speed_envelope() {
+        let radius = Meters::new(6_371_000.0).unwrap();
+        let omega = [0.0, 0.0, 1.0e-8];
+        let rotation =
+            SphericalPlateRotation::from_angular_velocity_rad_per_year(omega, radius).unwrap();
+        let recovered = rotation.angular_velocity_vector_rad_per_year();
+        assert!((recovered[2] - 1.0e-8).abs() < 1.0e-14);
+        assert!(recovered[0].abs() < 1.0e-20);
+        assert!(recovered[1].abs() < 1.0e-20);
+        let pole = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+        assert_eq!(rotation.pole(), pole);
     }
 }

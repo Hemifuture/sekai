@@ -26,6 +26,7 @@ mod processes;
 mod publication;
 mod resample;
 mod runner;
+mod torques;
 mod workspace;
 
 use boundaries::classify_and_aggregate_boundaries;

@@ -246,7 +246,9 @@ pub use spherical_tectonics::{
     SphericalPlateRotation, SphericalTectonicSnapshot, SphericalTectonicValidationError,
     CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_CRUST_AGE_MYR,
     MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR, MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
-    NO_OROGENY_AGE_SENTINEL_MYR, TECTONIC_SNAPSHOT_SCHEMA_V3,
+    NO_OROGENY_AGE_SENTINEL_MYR, PLATE_COLLISION_RESISTANCE_PER_M,
+    PLATE_CONTINENT_BASAL_DRAG_PER_M2, PLATE_OCEAN_BASAL_DRAG_PER_M2, PLATE_RIDGE_PUSH_FORCE_PER_M,
+    PLATE_SLAB_PULL_FORCE_PER_M, TECTONIC_SNAPSHOT_SCHEMA_V3,
 };
 pub use surface_formation::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,

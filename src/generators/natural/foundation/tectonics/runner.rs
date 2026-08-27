@@ -25,6 +25,7 @@ use super::resample::{
     canonicalize_final_plates, resample_current_state, resample_current_state_v5,
     resampling_interval_steps, CanonicalTectonicState, ResampleError,
 };
+use super::torques::{update_rotations_from_boundary_torques, TorqueError};
 use super::workspace::TectonicWorkspace;
 use crate::engine::BuildCancellationError;
 use crate::generators::natural::random::LabeledSubstreams;
@@ -159,12 +160,14 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
+    apply_boundary_torques_to_current(surface, topology, &mut workspace)?;
 
     for step in 0..timeline.step_count() {
         streams.check_cancelled()?;
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, delta_myr)?;
         build_contacts(surface, topology, next, coverage, events)?;
+        update_rotations_from_boundary_torques(surface, next, events)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)?;
         let collision = apply_collision_v5(
@@ -253,6 +256,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             &lineage_ledger,
         )?;
     }
+    apply_boundary_torques_to_current(surface, topology, &mut workspace)?;
     trace_continental_inventory("final", timeline.step_count(), &workspace.current);
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
@@ -276,6 +280,22 @@ pub(super) fn canonicalize_evolved_state(
 
 fn resample_due(workspace: &TectonicWorkspace) -> bool {
     workspace.steps_since_resample() >= resampling_interval_steps(&workspace.current)
+}
+
+fn apply_boundary_torques_to_current(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    workspace: &mut TectonicWorkspace,
+) -> Result<(), RunnerError> {
+    build_contacts(
+        surface,
+        topology,
+        &workspace.current,
+        &mut workspace.coverage,
+        &mut workspace.events,
+    )?;
+    update_rotations_from_boundary_torques(surface, &mut workspace.current, &workspace.events)?;
+    Ok(())
 }
 
 fn rift_step_duration_myr(timeline: ResolvedFormationTimeline) -> Result<u16, RunnerError> {
@@ -363,6 +383,8 @@ pub(super) enum RunnerError {
     Lineage(#[from] super::model::LineageLedgerError),
     #[error("present-day tectonic forcing failed: {0}")]
     Forcing(#[from] ForcingError),
+    #[error("boundary torque solve failed: {0}")]
+    Torques(#[from] TorqueError),
     #[error("rift step duration {step_duration_kyr} kyr is not an integer number of Myr")]
     NonIntegralRiftStepDuration { step_duration_kyr: u32 },
     #[error("rift step duration {step_duration_kyr} kyr exceeds its integer-Myr process domain")]
