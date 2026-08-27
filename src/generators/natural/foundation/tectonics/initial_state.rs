@@ -44,6 +44,12 @@ const OCEANIC_THICKNESS_BASE_KM: f64 = 5.0;
 const OCEANIC_THICKNESS_SPAN_KM: f64 = 5.0;
 const INITIAL_OCEANIC_AGE_MIN_MYR: f64 = 8.0;
 const INITIAL_OCEANIC_AGE_SPAN_MYR: f64 = 172.0;
+/// Share of the opening ocean-age signal carried by angular distance from the
+/// supercontinent center for dispersal-phase morphologies; the remainder is
+/// coherent texture. Measured by the G1e probe as the smallest weight at which
+/// the exterior plate is the descending side on the large majority of the
+/// opening girdle.
+const PANTHALASSA_AGE_GRADIENT_WEIGHT: f64 = 0.7;
 const MINIMUM_ANISOTROPIC_EDGE_FACTOR: f64 = 0.70;
 const MAXIMUM_ANISOTROPIC_EDGE_FACTOR: f64 = 1.30;
 
@@ -538,8 +544,21 @@ fn initial_crust_samples(
         .enumerate()
         .map(|(index, cell)| {
             let thickness_signal = normalized_signal(thickness_signals[index]);
-            let age_signal =
+            let age_texture =
                 normalized_signal(age_noise.fbm(cell.centroid, recipe.initial_crust_profile));
+            let age_signal = match cap_center {
+                Some(center) => {
+                    // Panthalassa prior: the exterior ocean is old and descends
+                    // under the supercontinent's margins in a subduction girdle
+                    // (Collins 2003; Seton et al. 2012), while the seas inside
+                    // the cap are young. The angular distance from the cap
+                    // center orders the ages; the texture only modulates them.
+                    let exterior = (1.0 - cell.centroid.dot(center)) * 0.5;
+                    PANTHALASSA_AGE_GRADIENT_WEIGHT * exterior
+                        + (1.0 - PANTHALASSA_AGE_GRADIENT_WEIGHT) * age_texture
+                }
+                None => age_texture,
+            };
             let (kind, thickness_km, age_myr, tectonic_elevation_m) = if continental[index] {
                 let thickness_km = platform_thickness_km[index];
                 (

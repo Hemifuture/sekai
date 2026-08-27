@@ -167,11 +167,6 @@ impl MaterialColumn {
         )
     }
 
-    pub(super) fn oceanic_thickness_km(self) -> Option<f32> {
-        (self.oceanic_reference_area_m2 > 0.0)
-            .then_some((self.oceanic_volume_m3 / self.oceanic_reference_area_m2 / 1_000.0) as f32)
-    }
-
     pub(super) fn oceanic_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
         material_amount(self.oceanic_reference_area_m2, self.oceanic_volume_m3)
     }
@@ -422,6 +417,10 @@ impl LineagePair {
         }
     }
 }
+
+/// Thickness of oceanic crust created at a ridge or by rupture, in km:
+/// the global mean of normal oceanic crust (White et al. 1992, JGR 97).
+pub(super) const NEW_OCEANIC_CRUST_THICKNESS_KM: f32 = 7.0;
 
 /// Private solver tags for Stern (2004) subduction initiation.
 ///
@@ -725,6 +724,9 @@ impl EvolutionMaterialLedger {
         self.oceanic_spreading_created.add(amount);
     }
 
+    /// Oceanic area created (positive) or consumed (negative) when resampled
+    /// oceanic columns are brought back to their cells' areas, with the
+    /// volume that rides along at the group's mean thickness.
     pub(super) fn record_coverage_change(
         &mut self,
         area_delta_m2: f64,

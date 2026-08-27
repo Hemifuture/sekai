@@ -20,7 +20,7 @@ use super::processes::{
     apply_divergent_extension_v5, apply_subduction, apply_subduction_v5, commit_process_actions,
     commit_process_actions_v5, fill_spreading_gaps, fill_spreading_gaps_v5, maybe_rift_plates,
     mechanically_fragment_oversized_plates_v5, rebin_interior_gaps_v5,
-    relax_legacy_compatibility_elevation, ProcessError,
+    relax_legacy_compatibility_elevation, ProcessError, RiftFill,
 };
 use super::resample::{
     canonicalize_final_plates, resample_current_state, resample_current_state_v5,
@@ -80,7 +80,15 @@ pub(super) fn evolve_current_state(
         apply_subduction(surface, events, current, next, actions, recipe, delta_myr)?;
         apply_collision(surface, events, current, next, actions, recipe)?;
         apply_divergent_extension(surface, events, next, actions, process_delta_myr)?;
-        fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
+        fill_spreading_gaps(
+            surface,
+            events,
+            current,
+            next,
+            actions,
+            recipe,
+            RiftFill::LegacyImmediateOcean,
+        )?;
         maybe_rift_plates(
             step,
             rift_delta_myr,
@@ -192,8 +200,9 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             &mut material_ledger,
             process_delta_myr,
         )?;
-        rebin_interior_gaps_v5(surface, topology, events, current, next, coverage, actions)?;
-        fill_spreading_gaps_v5(
+        let rebin =
+            rebin_interior_gaps_v5(surface, topology, events, current, next, coverage, actions)?;
+        let fill = fill_spreading_gaps_v5(
             surface,
             events,
             current,
@@ -202,6 +211,12 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             recipe,
             &mut material_ledger,
         )?;
+        if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+            eprintln!(
+                "[v5-trace] step {step}: rebinned={} split={} spawned={}",
+                rebin.rebinned_samples, rebin.split_fills, fill.spawned_samples
+            );
+        }
         maybe_rift_plates(
             step,
             rift_delta_myr,
@@ -221,9 +236,37 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
         )?;
         commit_process_actions_v5(next, actions, &mut material_ledger)?;
         workspace.swap_current_next();
+        if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+            let totals = workspace.current.material_totals()?;
+            let processes = material_ledger.processes()?;
+            eprintln!(
+                "[v5-trace] step {step} committed: cont_vol_ratio={:.6} cont_area_ratio={:.6}",
+                totals.continental().volume_m3()
+                    / (material_ledger.initial_control().continental().volume_m3()
+                        - processes.continental_consumed().volume_m3()),
+                totals.continental().reference_area_m2()
+                    / (material_ledger
+                        .initial_control()
+                        .continental()
+                        .reference_area_m2()
+                        + processes.rift_extension_continental_area_gain_m2()
+                        - processes.collision_shortening_continental_area_loss_m2()
+                        - processes.continental_consumed().reference_area_m2()),
+            );
+        }
         if resample_due(&workspace) {
             resample_current_state_v5(surface, topology, &mut workspace, &mut material_ledger)?;
             trace_continental_inventory("resampled", step, &workspace.current);
+            if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+                let totals = workspace.current.material_totals()?;
+                let processes = material_ledger.processes()?;
+                eprintln!(
+                    "[v5-trace] step {step} resampled: cont_vol_ratio={:.6}",
+                    totals.continental().volume_m3()
+                        / (material_ledger.initial_control().continental().volume_m3()
+                            - processes.continental_consumed().volume_m3()),
+                );
+            }
             mechanically_fragment_oversized_plates_v5(
                 step,
                 surface,
@@ -416,7 +459,10 @@ mod tests {
     use std::collections::{BTreeSet, VecDeque};
     use std::f64::consts::PI;
 
-    use super::{evolve_control_state_v5, run_tectonic_evolution};
+    use super::{
+        evolve_control_state_v5, evolve_control_state_v5_with_resample_observer,
+        run_tectonic_evolution,
+    };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::foundation::tectonics::contacts::{
         build_contacts, ContactKind, CoverageScratch,
@@ -1039,9 +1085,95 @@ mod tests {
                     ));
                     let streams = LabeledSubstreams::capture(&mut rng);
                     let formation = resolved_formation(preset);
-                    let evolved =
-                        evolve_control_state_v5(surface, &topology, &spec, &formation, &streams)
+                    let opening = {
+                        let initial =
+                            build_initial_state_v5(surface, &topology, &spec, preset, &streams)
+                                .unwrap();
+                        let mut workspace =
+                            super::super::workspace::TectonicWorkspace::from_initial(initial);
+                        super::apply_boundary_torques_to_current(
+                            surface,
+                            &topology,
+                            &mut workspace,
+                        )
+                        .unwrap();
+                        let largest = workspace
+                            .current
+                            .plates
+                            .iter()
+                            .map(|plate| {
+                                (
+                                    workspace
+                                        .current
+                                        .samples
+                                        .iter()
+                                        .filter(|sample| sample.owner == plate.lineage)
+                                        .count(),
+                                    plate.lineage,
+                                )
+                            })
+                            .max()
+                            .map(|(_, lineage)| lineage)
                             .unwrap();
+                        let mut girdle = 0_usize;
+                        let mut outer_descends = 0_usize;
+                        for event in &workspace.events {
+                            if let ContactKind::OceanicSubduction { descending } = event.kind {
+                                if event.lineages.contains(&Some(largest)) {
+                                    girdle += 1;
+                                    outer_descends += usize::from(descending != largest);
+                                }
+                            }
+                        }
+                        (workspace.current.plates.len(), girdle, outer_descends)
+                    };
+                    let mut trajectory = Vec::new();
+                    let evolved = evolve_control_state_v5_with_resample_observer(
+                        surface,
+                        &topology,
+                        &spec,
+                        &formation,
+                        &streams,
+                        |step, state, ledger, _| {
+                            let (components, max_share) =
+                                continental_component_shares(surface, &topology, state);
+                            let initial = ledger.initial_control();
+                            let processes = ledger.processes().unwrap();
+                            let found = state.material_totals().unwrap();
+                            let cont_area = found.continental().reference_area_m2()
+                                / (initial.continental().reference_area_m2()
+                                    + processes.rift_extension_continental_area_gain_m2()
+                                    - processes.collision_shortening_continental_area_loss_m2()
+                                    - processes.continental_consumed().reference_area_m2());
+                            let cont_vol = found.continental().volume_m3()
+                                / (initial.continental().volume_m3()
+                                    - processes.continental_consumed().volume_m3());
+                            let oce_area = found.oceanic().reference_area_m2()
+                                / (initial.oceanic().reference_area_m2()
+                                    + processes.oceanic_spreading_created().reference_area_m2()
+                                    + processes.oceanic_coverage_created().reference_area_m2()
+                                    - processes.oceanic_subducted().reference_area_m2()
+                                    - processes.oceanic_coverage_consumed().reference_area_m2());
+                            let oce_vol = found.oceanic().volume_m3()
+                                / (initial.oceanic().volume_m3()
+                                    + processes.oceanic_spreading_created().volume_m3()
+                                    + processes.oceanic_coverage_created().volume_m3()
+                                    - processes.oceanic_subducted().volume_m3()
+                                    - processes.oceanic_coverage_consumed().volume_m3());
+                            let entry = format!(
+                                "{step}:{}p/{components}c/{max_share:.2}[{cont_area:.3}/{cont_vol:.3}/{oce_area:.3}/{oce_vol:.3}]",
+                                state.plates.len()
+                            );
+                            println!("G1e-closure {preset:?} seed={seed} plates={plate_count} {entry}");
+                            trajectory.push(entry);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    println!(
+                        "G1e-traj {preset:?} seed={seed} plates={plate_count} {}",
+                        trajectory.join(" ")
+                    );
                     let state = &evolved.current;
                     let mut coverage = CoverageScratch::with_cell_capacity(surface.cells().len());
                     let mut events = Vec::new();
@@ -1125,7 +1257,8 @@ mod tests {
                     let locked = stat(&mut locked_residual);
                     let collision = stat(&mut collision_residual);
                     println!(
-                        "G1e {preset:?} seed={seed} plates={plate_count} final_plates={} events[subd/locked/coll/div/tf/gap]={counts:?} slab_speed(min/med/max)={:.1}/{:.1}/{:.1} free_speed={:.1}/{:.1}/{:.1} locked_residual={:.1}/{:.1}/{:.1} collision_residual={:.1}/{:.1}/{:.1} overlap_moved/cont_area={:.4} ocean[spread/subd/absorbed]/sphere={:.3}/{:.3}/{:.3} crust_n={crust_components} crust_max={crust_max_share:.3}",
+                        "G1e {preset:?} seed={seed} plates={plate_count} opening[plates/girdle/outer_descends]={:?} final_plates={} events[subd/locked/coll/div/tf/gap]={counts:?} slab_speed(min/med/max)={:.1}/{:.1}/{:.1} free_speed={:.1}/{:.1}/{:.1} locked_residual={:.1}/{:.1}/{:.1} collision_residual={:.1}/{:.1}/{:.1} overlap_moved/cont_area={:.4} ocean[spread/subd/absorbed]/sphere={:.3}/{:.3}/{:.3} crust_n={crust_components} crust_max={crust_max_share:.3}",
+                        opening,
                         state.plates.len(),
                         slab.0, slab.1, slab.2,
                         free.0, free.1, free.2,
@@ -1139,6 +1272,283 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Dumps the control-surface crust mask at every resample as an
+    /// equirectangular PNG under `target/natural-quality/g1e/` (research only).
+    #[test]
+    #[ignore]
+    fn probe_g1e_render_crust_trajectory() {
+        use crate::engine::BuildCancellation;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{
+            CrustKind, NaturalQualityProfile, EARTH_WATER_REFERENCE_RADIUS_M,
+        };
+
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let surface = bundle.tectonic_control_surface();
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("natural-quality")
+            .join("g1e");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (width, height) = (360_u32, 180_u32);
+        let mut raster = vec![0_usize; (width * height) as usize];
+        for y in 0..height {
+            let lat = std::f64::consts::PI * (0.5 - (f64::from(y) + 0.5) / f64::from(height));
+            for x in 0..width {
+                let lon =
+                    2.0 * std::f64::consts::PI * ((f64::from(x) + 0.5) / f64::from(width) - 0.5);
+                let direction = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+                let mut best = (f64::NEG_INFINITY, 0_usize);
+                for (index, cell) in surface.cells().iter().enumerate() {
+                    let score = dot(cell.centroid.components(), direction);
+                    if score > best.0 {
+                        best = (score, index);
+                    }
+                }
+                raster[(y * width + x) as usize] = best.1;
+            }
+        }
+        let render = |name: &str, state: &TectonicState| {
+            let mut kind = vec![CrustKind::Oceanic; surface.cells().len()];
+            let mut owner = vec![0_u32; surface.cells().len()];
+            for sample in &state.samples {
+                kind[sample.anchor.raw() as usize] = sample.kind;
+                owner[sample.anchor.raw() as usize] = sample.owner.raw();
+            }
+            let mut img = image::RgbImage::new(width, height);
+            for (pixel, &cell) in raster.iter().enumerate() {
+                let hue = (owner[cell] * 47 % 255) as u8;
+                let rgb = match kind[cell] {
+                    CrustKind::Continental => [200, 60 + hue / 3, 40],
+                    CrustKind::Oceanic => [30, 60, 120 + hue / 2],
+                };
+                img.put_pixel(
+                    (pixel as u32) % width,
+                    (pixel as u32) / width,
+                    image::Rgb(rgb),
+                );
+            }
+            img.save(dir.join(format!("{name}.png"))).unwrap();
+        };
+        for (preset, seed, plate_count) in [
+            (ResolvedWorldFormationPreset::Continents, 42_u64, 12_u16),
+            (ResolvedWorldFormationPreset::Archipelago, 42, 12),
+        ] {
+            let spec = TectonicSpec {
+                plate_count,
+                continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                ..TectonicSpec::default()
+            };
+            let mut rng = StageRng::from_seed(derive_stage_seed(
+                RootSeed::new(seed),
+                StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+            ));
+            let streams = LabeledSubstreams::capture(&mut rng);
+            let formation = resolved_formation(preset);
+            let initial =
+                build_initial_state_v5(surface, &topology, &spec, preset, &streams).unwrap();
+            render(&format!("{preset:?}-{seed}-{plate_count}-000"), &initial);
+            evolve_control_state_v5_with_resample_observer(
+                surface,
+                &topology,
+                &spec,
+                &formation,
+                &streams,
+                |step, state, _, _| {
+                    render(&format!("{preset:?}-{seed}-{plate_count}-{step:03}"), state);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        println!("wrote {}", dir.display());
+    }
+
+    /// Diagnostic: every plate shares one rotation, so nothing but the
+    /// advection and remap machinery acts. The crust mask must stay a rigid
+    /// copy of the opening mask (constant component count).
+    #[test]
+    #[ignore]
+    fn probe_g1e_rigid_rotation_keeps_mask() {
+        use super::super::model::EvolutionMaterialLedger;
+        use super::super::processes::{
+            advance_solid_crust_ages, apply_collision_v5, apply_divergent_extension_v5,
+            apply_subduction_v5, commit_process_actions_v5, fill_spreading_gaps_v5,
+            rebin_interior_gaps_v5,
+        };
+        use super::super::resample::resample_current_state_v5;
+        use super::super::workspace::TectonicWorkspace;
+        use crate::engine::BuildCancellation;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{
+            NaturalQualityProfile, SphericalPlateRotation, EARTH_WATER_REFERENCE_RADIUS_M,
+        };
+        use crate::world::spatial::UnitVector3;
+
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let surface = bundle.tectonic_control_surface();
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let preset = ResolvedWorldFormationPreset::Continents;
+        let spec = TectonicSpec {
+            continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+            ..TectonicSpec::default()
+        };
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(42),
+            StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let recipe = super::FormationTectonicRecipe::for_preset(preset);
+        let mut initial =
+            build_initial_state_v5(surface, &topology, &spec, preset, &streams).unwrap();
+        let shared = SphericalPlateRotation::new(
+            UnitVector3::new(0.3, 0.4, 0.866).unwrap(),
+            (60.0e-3_f64 * 1.0e12 / surface.radius().get()) as u64,
+        )
+        .unwrap();
+        for plate in &mut initial.plates {
+            plate.rotation = shared;
+        }
+        let (opening_components, opening_max) =
+            continental_component_shares(surface, &topology, &initial);
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&initial).unwrap();
+        let mut workspace = TectonicWorkspace::from_initial(initial);
+        let delta_myr = 2.0_f64;
+        let mut log = Vec::new();
+        for step in 0..128_u16 {
+            let (current, next, coverage, events, actions) = workspace.step_parts();
+            super::advance_samples(surface, &topology, current, next, delta_myr).unwrap();
+            build_contacts(surface, &topology, next, coverage, events).unwrap();
+            actions.begin_step(next.samples.len());
+            apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)
+                .unwrap();
+            apply_collision_v5(
+                surface,
+                events,
+                current,
+                next,
+                actions,
+                recipe,
+                &mut ledger,
+                2.0,
+            )
+            .unwrap();
+            apply_divergent_extension_v5(surface, events, next, actions, &mut ledger, 2.0).unwrap();
+            let gaps = events
+                .iter()
+                .filter(|event| event.kind == ContactKind::Gap)
+                .count();
+            let rebin = rebin_interior_gaps_v5(
+                surface, &topology, events, current, next, coverage, actions,
+            )
+            .unwrap();
+            let fill = fill_spreading_gaps_v5(
+                surface,
+                events,
+                current,
+                next,
+                actions,
+                recipe,
+                &mut ledger,
+            )
+            .unwrap();
+            if std::env::var_os("G1E_RIGID_NO_RESAMPLE").is_some() && step < 6 {
+                println!(
+                    "G1e-rigid step {} gaps={gaps} rebinned={} split={} spawned={} events={}",
+                    step + 1,
+                    rebin.rebinned_samples,
+                    rebin.split_fills,
+                    fill.spawned_samples,
+                    events.len()
+                );
+            }
+            advance_solid_crust_ages(next, 2.0).unwrap();
+            commit_process_actions_v5(next, actions, &mut ledger).unwrap();
+            workspace.swap_current_next();
+            let skip_resample = std::env::var_os("G1E_RIGID_NO_RESAMPLE").is_some();
+            if skip_resample && step < 6 {
+                use crate::world::natural::CrustKind;
+                let state = &workspace.current;
+                let mut anchored = vec![0_u8; surface.cells().len()];
+                let mut kinds = vec![[0_u8; 2]; surface.cells().len()];
+                for sample in &state.samples {
+                    let cell = sample.anchor.raw() as usize;
+                    anchored[cell] += 1;
+                    kinds[cell][usize::from(sample.kind == CrustKind::Continental)] += 1;
+                }
+                let holes = anchored.iter().filter(|&&n| n == 0).count();
+                let doubles = anchored.iter().filter(|&&n| n >= 2).count();
+                let mixed = kinds.iter().filter(|k| k[0] > 0 && k[1] > 0).count();
+                let continental_cells = kinds.iter().filter(|k| k[1] > 0).count();
+                let (components, max_share) =
+                    continental_component_shares(surface, &topology, state);
+                println!(
+                    "G1e-rigid step {}: samples={} holes={holes} doubles={doubles} mixed={mixed} cont_cells={continental_cells} components={components} max={max_share:.2}",
+                    step + 1,
+                    state.samples.len()
+                );
+            }
+            if super::resample_due(&workspace) {
+                if !skip_resample {
+                    resample_current_state_v5(surface, &topology, &mut workspace, &mut ledger)
+                        .unwrap();
+                }
+                let (components, max_share) =
+                    continental_component_shares(surface, &topology, &workspace.current);
+                log.push(format!("{}:{components}c/{max_share:.2}", step + 1));
+                if !skip_resample {
+                    let initial = ledger.initial_control();
+                    let processes = ledger.processes().unwrap();
+                    let found = workspace.current.material_totals().unwrap();
+                    let expected_cont_area = initial.continental().reference_area_m2()
+                        + processes.rift_extension_continental_area_gain_m2()
+                        - processes.collision_shortening_continental_area_loss_m2()
+                        - processes.continental_consumed().reference_area_m2();
+                    let expected_cont_volume = initial.continental().volume_m3()
+                        - processes.continental_consumed().volume_m3();
+                    let expected_oce_area = initial.oceanic().reference_area_m2()
+                        + processes.oceanic_spreading_created().reference_area_m2()
+                        + processes.oceanic_coverage_created().reference_area_m2()
+                        - processes.oceanic_subducted().reference_area_m2()
+                        - processes.oceanic_coverage_consumed().reference_area_m2();
+                    let expected_oce_volume = initial.oceanic().volume_m3()
+                        + processes.oceanic_spreading_created().volume_m3()
+                        + processes.oceanic_coverage_created().volume_m3()
+                        - processes.oceanic_subducted().volume_m3()
+                        - processes.oceanic_coverage_consumed().volume_m3();
+                    println!(
+                        "G1e-rigid closure step {}: cont_area {:.4} cont_vol {:.4} oce_area {:.4} oce_vol {:.4}",
+                        step + 1,
+                        found.continental().reference_area_m2() / expected_cont_area,
+                        found.continental().volume_m3() / expected_cont_volume,
+                        found.oceanic().reference_area_m2() / expected_oce_area,
+                        found.oceanic().volume_m3() / expected_oce_volume,
+                    );
+                }
+                if skip_resample && step > 40 {
+                    break;
+                }
+            }
+        }
+        println!(
+            "G1e-rigid opening={opening_components}c/{opening_max:.2} {}",
+            log.join(" ")
+        );
     }
 
     fn continental_component_shares(

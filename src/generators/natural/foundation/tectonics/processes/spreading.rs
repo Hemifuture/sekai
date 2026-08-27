@@ -14,9 +14,10 @@ use std::collections::VecDeque;
 use crate::generators::natural::foundation::tectonics::contacts::{
     ContactEvent, ContactKind, CoverageScratch,
 };
+use crate::generators::natural::foundation::tectonics::kinematics::rigid_velocity;
 use crate::generators::natural::foundation::tectonics::model::{
     CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId, MaterialColumn,
-    TectonicState,
+    TectonicState, NEW_OCEANIC_CRUST_THICKNESS_KM,
 };
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
@@ -184,6 +185,23 @@ pub(in crate::generators::natural::foundation::tectonics) fn apply_divergent_ext
     })
 }
 
+/// What a spreading hole is filled with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::generators::natural::foundation::tectonics) enum RiftFill {
+    /// Frozen V4 path: every spreading hole is zero-age ocean unless the
+    /// oceanization policy forbids breakup for the diverging pair.
+    LegacyImmediateOcean,
+    /// V5 (G1e §3.4): a hole between continental margins is filled with the
+    /// area those margins gained by pure-shear stretching this step
+    /// (McKenzie 1978; `apply_divergent_extension_v5` widened them), as long
+    /// as they are still thicker than the supported floor. Ocean appears only
+    /// when the margins have no stretched area to give: they sit at the floor,
+    /// or divergence outpaces stretching, which is rupture (Brune et al.
+    /// 2014). Transient divergence inside a continent therefore never plants
+    /// ocean, and a rift must keep diverging to break up (Cortial et al. 2019).
+    BreakupAfterThinning,
+}
+
 pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps(
     surface: &SphericalSurfaceSnapshot,
     events: &[ContactEvent],
@@ -191,6 +209,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     next: &mut TectonicState,
     actions: &mut ProcessActions,
     recipe: FormationTectonicRecipe,
+    rift_fill: RiftFill,
 ) -> Result<ProcessStats, ProcessError> {
     actions.validate_for(next.samples.len())?;
     let (divergence_by_cell, current_sample_by_cell, spawned) =
@@ -216,7 +235,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
             return Err(ProcessError::UnknownLineage { lineage: owner });
         }
         let lineation = event_lineation(surface, divergence.unwrap_or(gap), cell.centroid)?;
-        let keep_continental = divergence
+        let forbidden = divergence
             .and_then(|event| match event.lineages {
                 [Some(first), Some(second)] => Some((first, second)),
                 _ => None,
@@ -226,26 +245,24 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
                     .oceanization
                     .forbids_breakup_ocean(&next.initiation, first, second)
             });
-        let sample = if keep_continental {
-            match donate_continental_fill(next, divergence, owner, cell.centroid, cell.area.get())?
-            {
-                Some(material) => continental_rift_fill_sample(
-                    cell.centroid,
-                    gap.cell,
-                    owner,
-                    lineation,
-                    material,
-                ),
-                None => oceanic_spreading_sample(
-                    cell.centroid,
-                    gap.cell,
-                    owner,
-                    lineation,
-                    cell.area.get(),
-                )?,
-            }
+        let ocean = |next: &mut TectonicState| {
+            let _ = next;
+            oceanic_spreading_sample(cell.centroid, gap.cell, owner, lineation, cell.area.get())
+        };
+        let donated = if forbidden {
+            let mut donors = Vec::new();
+            legacy_donors(divergence, owner, &mut donors);
+            donate_continental_fill(next, &donors, cell.centroid, cell.area.get())?
+        } else if rift_fill == RiftFill::BreakupAfterThinning {
+            stretched_margin_donation(surface, next, current_sample_by_cell, gap.cell)?
         } else {
-            oceanic_spreading_sample(cell.centroid, gap.cell, owner, lineation, cell.area.get())?
+            None
+        };
+        let sample = match donated {
+            Some(material) => {
+                continental_rift_fill_sample(cell.centroid, gap.cell, owner, lineation, material)
+            }
+            None => ocean(next)?,
         };
         spawned.push(sample);
         stats.spawned_samples += 1;
@@ -253,20 +270,20 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     Ok(stats)
 }
 
-/// Farthest a sampling hole looks for its own plate's duplicate sample. One
-/// step moves samples by a fraction of a cell and a resample interval by at
-/// most `TARGET_ANGULAR_DISPLACEMENT_RAD`, so holes and doubles of the same
-/// rigid plate sit within a few cells of each other.
-const REBIN_SEARCH_HOPS: u32 = 3;
-
 /// Semi-Lagrangian rebinning of sampling holes (G1e §3.4).
 ///
-/// A rigid plate keeps its sample count, so a hole that is not adjacent to a
-/// divergent boundary is a discretization artifact paired with a same-owner
-/// double covering nearby. Moving one duplicate into the hole is conservative;
-/// spawning crust there would be spreading with no ridge, and the duplicate
-/// would later be absorbed by resampling as consumption with no trench. Holes
-/// that are rebinned are dropped from `events` so the ridge fill skips them.
+/// A rigid plate keeps its sample count, so a hole that no neighboring plate
+/// is moving away from is a discretization artifact: the sample that left it
+/// landed in a cell that already had one, or displaced that cell's sample
+/// onward in a chain that ends at such a double. The hole is filled with the
+/// nearest free sample of the same plate and crust kind; if that sample was
+/// alone in its cell, the chain continues from there until a double gives one
+/// up. Nothing is created, so the mask is advected rigidly and no ocean lands
+/// inside a continent. A hole a neighboring plate is diverging from is real
+/// spreading and is left to the ridge fill. Filled holes are dropped from
+/// `events`. When a plate has no free sample of the kind left (its double was
+/// consumed this step), the nearest column of that kind is split in two, area
+/// and volume halved, thickness kept.
 pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps_v5(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
@@ -281,79 +298,209 @@ pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps
     let mut free = (0..next.samples.len())
         .map(|sample| actions.is_untouched(sample))
         .collect::<Vec<_>>();
-    let (divergence_by_cell, current_sample_by_cell, _) = actions.spreading_scratch(cell_count);
-    index_incident_divergence(surface, events, divergence_by_cell)?;
+    let survives = (0..next.samples.len())
+        .map(|sample| !actions.will_be_removed(sample))
+        .collect::<Vec<_>>();
+    let mut anchored = (0..cell_count)
+        .map(|cell| {
+            coverage
+                .sample_indices(CellId::from_raw(cell as u32))
+                .iter()
+                .map(|&raw| raw as usize)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let (_, current_sample_by_cell, _) = actions.spreading_scratch(cell_count);
     index_current_samples(surface, current, current_sample_by_cell)?;
-    let mut spare = vec![0_u32; cell_count];
-    for (cell, slot) in spare.iter_mut().enumerate() {
-        let covering = coverage.sample_indices(CellId::from_raw(cell as u32));
-        if covering.len() >= 2
-            && covering.iter().all(|&raw| {
-                next.samples[raw as usize].owner == next.samples[covering[0] as usize].owner
-            })
-        {
-            *slot = covering.len() as u32 - 1;
-        }
-    }
-    let mut rebinned = vec![false; cell_count];
-    let mut visited = vec![u32::MAX; cell_count];
-    let mut queue = VecDeque::new();
-    let mut stats = ProcessStats::default();
-    for (stamp, gap) in events
-        .iter()
-        .enumerate()
-        .filter(|(_, event)| event.kind == ContactKind::Gap)
-    {
+    let mut worklist = VecDeque::new();
+    for gap in events.iter().filter(|event| event.kind == ContactKind::Gap) {
         let cell_index = gap.cell.raw() as usize;
-        if divergence_by_cell[cell_index].is_some() {
-            continue;
-        }
-        let Some(owner) = current_sample_by_cell[cell_index]
-            .map(|sample| current.samples[sample].owner)
-            .or_else(|| closest_state_owner(current, surface.cells()[cell_index].centroid))
-        else {
+        let Some(occupant) = current_sample_by_cell[cell_index] else {
             continue;
         };
-        let stamp = stamp as u32;
-        queue.clear();
-        queue.push_back((cell_index, 0_u32));
-        visited[cell_index] = stamp;
-        let mut duplicate = None;
-        while let Some((cell, depth)) = queue.pop_front() {
-            if spare[cell] > 0 {
-                let candidate = coverage
-                    .sample_indices(CellId::from_raw(cell as u32))
+        let owner = current.samples[occupant].owner;
+        let kind = current.samples[occupant].kind;
+        if hole_is_spreading(surface, topology, next, coverage, cell_index, owner)? {
+            continue;
+        }
+        worklist.push_back((cell_index, owner, kind));
+    }
+
+    let mut rebinned = vec![false; cell_count];
+    let mut split_fills = Vec::new();
+    let mut stats = ProcessStats::default();
+    let mut search = HoleSearch::new(cell_count);
+    while let Some((hole, owner, kind)) = worklist.pop_front() {
+        let matches = |sample: usize, next: &TectonicState| {
+            next.samples[sample].owner == owner && next.samples[sample].kind == kind
+        };
+        // Take a free sample only from a cell that keeps another surviving
+        // sample, so no cell is left to the commit empty.
+        let found = search.nearest(topology, &anchored, hole, |cell, sample| {
+            matches(sample, next)
+                && free[sample]
+                && anchored[cell]
                     .iter()
-                    .map(|&raw| raw as usize)
-                    .filter(|&sample| next.samples[sample].owner == owner && free[sample])
-                    .max();
-                if let Some(sample) = candidate {
-                    spare[cell] -= 1;
-                    free[sample] = false;
-                    duplicate = Some(sample);
-                    break;
+                    .any(|&other| other != sample && survives[other])
+        });
+        match found {
+            Some((from_cell, sample)) => {
+                free[sample] = false;
+                anchored[from_cell].retain(|&other| other != sample);
+                anchored[hole].push(sample);
+                next.samples[sample].position = surface.cells()[hole].centroid;
+                next.samples[sample].anchor = CellId::from_raw(hole as u32);
+                rebinned[hole] = true;
+                stats.rebinned_samples += 1;
+                if !anchored[from_cell].iter().any(|&other| survives[other]) {
+                    worklist.push_back((from_cell, owner, kind));
                 }
             }
-            if depth >= REBIN_SEARCH_HOPS {
-                continue;
-            }
-            for arc in &topology.arcs()[cell] {
-                let neighbor = arc.neighbor.raw() as usize;
-                if visited[neighbor] != stamp {
-                    visited[neighbor] = stamp;
-                    queue.push_back((neighbor, depth + 1));
-                }
+            None => {
+                // No free sample of this kind is left on the plate (its
+                // double was consumed this step): split the nearest column
+                // of the kind, falling back to the plate's nearest column of
+                // any kind so the hole never reaches the resample unfilled.
+                let donor = search
+                    .nearest(topology, &anchored, hole, |_, sample| {
+                        matches(sample, next) && survives[sample]
+                    })
+                    .or_else(|| {
+                        search.nearest(topology, &anchored, hole, |_, sample| {
+                            next.samples[sample].owner == owner && survives[sample]
+                        })
+                    })
+                    .or_else(|| {
+                        search.nearest(topology, &anchored, hole, |_, sample| survives[sample])
+                    });
+                let Some((_, donor)) = donor else {
+                    continue;
+                };
+                let material = next.samples[donor].material;
+                let half = MaterialColumn::new(
+                    material.continental_reference_area_m2() * 0.5,
+                    material.continental_volume_m3() * 0.5,
+                    material.oceanic_reference_area_m2() * 0.5,
+                    material.oceanic_volume_m3() * 0.5,
+                )?;
+                next.samples[donor].material = half;
+                let mut fill = next.samples[donor];
+                fill.position = surface.cells()[hole].centroid;
+                fill.anchor = CellId::from_raw(hole as u32);
+                split_fills.push(fill);
+                rebinned[hole] = true;
+                stats.split_fills += 1;
             }
         }
-        if let Some(sample) = duplicate {
-            next.samples[sample].position = surface.cells()[cell_index].centroid;
-            next.samples[sample].anchor = gap.cell;
-            rebinned[cell_index] = true;
-            stats.rebinned_samples += 1;
-        }
+    }
+    for fill in split_fills {
+        actions.push_spawned(fill);
     }
     events.retain(|event| event.kind != ContactKind::Gap || !rebinned[event.cell.raw() as usize]);
     Ok(stats)
+}
+
+/// Reusable breadth-first search over cells for the nearest anchored sample
+/// satisfying a predicate.
+struct HoleSearch {
+    visited: Vec<u32>,
+    stamp: u32,
+    queue: VecDeque<usize>,
+}
+
+impl HoleSearch {
+    fn new(cell_count: usize) -> Self {
+        Self {
+            visited: vec![u32::MAX; cell_count],
+            stamp: 0,
+            queue: VecDeque::new(),
+        }
+    }
+
+    fn nearest(
+        &mut self,
+        topology: &NaturalTopologyIndex,
+        anchored: &[Vec<usize>],
+        start: usize,
+        mut accept: impl FnMut(usize, usize) -> bool,
+    ) -> Option<(usize, usize)> {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == u32::MAX {
+            self.visited.fill(u32::MAX - 1);
+            self.stamp = 0;
+        }
+        self.queue.clear();
+        self.queue.push_back(start);
+        self.visited[start] = self.stamp;
+        while let Some(cell) = self.queue.pop_front() {
+            if let Some(&sample) = anchored[cell]
+                .iter()
+                .filter(|&&sample| accept(cell, sample))
+                .max()
+            {
+                return Some((cell, sample));
+            }
+            for arc in &topology.arcs()[cell] {
+                let neighbor = arc.neighbor.raw() as usize;
+                if self.visited[neighbor] != self.stamp {
+                    self.visited[neighbor] = self.stamp;
+                    self.queue.push_back(neighbor);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// A hole is spreading when a plate other than its previous occupant covers a
+/// neighboring cell and moves away from the hole relative to the occupant.
+fn hole_is_spreading(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    next: &TectonicState,
+    coverage: &CoverageScratch,
+    cell_index: usize,
+    occupant: LineageId,
+) -> Result<bool, ProcessError> {
+    let Some(occupant_plate) = next.plate(occupant) else {
+        return Ok(false);
+    };
+    let radius = surface.radius();
+    let center = surface.cells()[cell_index].centroid;
+    let occupant_velocity = rigid_velocity(occupant_plate.rotation, radius, center)?;
+    for arc in &topology.arcs()[cell_index] {
+        let neighbor = arc.neighbor;
+        let outward = {
+            let target = surface.cells()[neighbor.raw() as usize]
+                .centroid
+                .components();
+            let origin = center.components();
+            [
+                target[0] - origin[0],
+                target[1] - origin[1],
+                target[2] - origin[2],
+            ]
+        };
+        for &raw in coverage.sample_indices(neighbor) {
+            let other = next.samples[raw as usize].owner;
+            if other == occupant {
+                continue;
+            }
+            let Some(other_plate) = next.plate(other) else {
+                continue;
+            };
+            let other_velocity = rigid_velocity(other_plate.rotation, radius, center)?;
+            let relative = [
+                other_velocity[0] - occupant_velocity[0],
+                other_velocity[1] - occupant_velocity[1],
+                other_velocity[2] - occupant_velocity[2],
+            ];
+            if super::dot(relative, outward) > 0.0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps_v5(
@@ -366,7 +513,15 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     ledger: &mut EvolutionMaterialLedger,
 ) -> Result<ProcessStats, ProcessError> {
     let first_spawn = actions.spawned_samples().len();
-    let stats = fill_spreading_gaps(surface, events, current, next, actions, recipe)?;
+    let stats = fill_spreading_gaps(
+        surface,
+        events,
+        current,
+        next,
+        actions,
+        recipe,
+        RiftFill::BreakupAfterThinning,
+    )?;
     for sample in &actions.spawned_samples()[first_spawn..] {
         if sample.kind == CrustKind::Oceanic {
             ledger.record_oceanic_spreading(sample.material.oceanic_amount()?);
@@ -503,13 +658,17 @@ fn oceanic_spreading_sample(
         anchor,
         owner,
         kind: CrustKind::Oceanic,
-        thickness_km: 7.0,
+        thickness_km: NEW_OCEANIC_CRUST_THICKNESS_KM,
         age_myr: 0.0,
         tectonic_elevation_m: constants::OCEANIC_RIDGE_ELEVATION_M,
         lineation,
         orogeny: SphericalOrogenyKind::None,
         orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
-        material: MaterialColumn::pure(CrustKind::Oceanic, area_m2, 7.0)?,
+        material: MaterialColumn::pure(
+            CrustKind::Oceanic,
+            area_m2,
+            NEW_OCEANIC_CRUST_THICKNESS_KM,
+        )?,
     })
 }
 
@@ -538,14 +697,8 @@ fn continental_rift_fill_sample(
     }
 }
 
-fn donate_continental_fill(
-    next: &mut TectonicState,
-    divergence: Option<&ContactEvent>,
-    owner: LineageId,
-    target: crate::world::spatial::UnitVector3,
-    requested_area_m2: f64,
-) -> Result<Option<MaterialColumn>, ProcessError> {
-    let mut donors = Vec::new();
+/// V4 donors: the diverging pair when known, otherwise the hole's owner.
+fn legacy_donors(divergence: Option<&ContactEvent>, owner: LineageId, donors: &mut Vec<LineageId>) {
     match divergence.map(|event| event.lineages) {
         Some([Some(first), Some(second)]) => {
             donors.push(first);
@@ -556,6 +709,73 @@ fn donate_continental_fill(
         Some([Some(first), None] | [None, Some(first)]) => donors.push(first),
         _ => donors.push(owner),
     }
+}
+
+/// Area the neighboring continental margins gained by stretching beyond
+/// their own cells, taken from them for the hole while they stay thicker
+/// than [`CONTINENTAL_CRUST_MIN_THICKNESS_KM`]. `None` when nothing stretched
+/// is available: the divergence has outrun ductile stretching and the rift
+/// ruptures into ocean.
+fn stretched_margin_donation(
+    surface: &SphericalSurfaceSnapshot,
+    next: &mut TectonicState,
+    current_sample_by_cell: &[Option<usize>],
+    cell: CellId,
+) -> Result<Option<MaterialColumn>, ProcessError> {
+    let Some(edges) = surface.cell_edges(cell) else {
+        return Ok(None);
+    };
+    let need = surface.cells()[cell.raw() as usize].area.get();
+    let floor = f64::from(CONTINENTAL_CRUST_MIN_THICKNESS_KM) * (1.0 + 1.0e-3);
+    let mut remaining = need;
+    let mut donated: Option<MaterialColumn> = None;
+    for &edge in edges {
+        if remaining <= 0.0 {
+            break;
+        }
+        let Some(neighbor) = surface.opposite_cell(cell, edge) else {
+            continue;
+        };
+        let Some(index) = current_sample_by_cell[neighbor.raw() as usize] else {
+            continue;
+        };
+        let material = next.samples[index].material;
+        let thick = material
+            .continental_thickness_km()
+            .is_some_and(|thickness| f64::from(thickness) > floor);
+        let anchor_area = surface.cells()[next.samples[index].anchor.raw() as usize]
+            .area
+            .get();
+        let excess = material.continental_reference_area_m2() - anchor_area;
+        if !thick || excess <= 0.0 {
+            continue;
+        }
+        let (left, taken) = material.extract_continental_area(remaining.min(excess))?;
+        let Some(taken) = taken else {
+            continue;
+        };
+        next.samples[index].material = left;
+        next.samples[index].synchronize_compatibility_from_material();
+        remaining -= taken.continental_reference_area_m2();
+        donated = Some(match donated {
+            None => taken,
+            Some(existing) => MaterialColumn::new(
+                existing.continental_reference_area_m2() + taken.continental_reference_area_m2(),
+                existing.continental_volume_m3() + taken.continental_volume_m3(),
+                0.0,
+                0.0,
+            )?,
+        });
+    }
+    Ok(donated)
+}
+
+fn donate_continental_fill(
+    next: &mut TectonicState,
+    donors: &[LineageId],
+    target: crate::world::spatial::UnitVector3,
+    requested_area_m2: f64,
+) -> Result<Option<MaterialColumn>, ProcessError> {
     let mut candidates: Vec<usize> = next
         .samples
         .iter()
@@ -604,7 +824,7 @@ fn donate_continental_fill(
 mod tests {
     use super::{
         apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
-        fill_spreading_gaps_v5, rebin_interior_gaps_v5,
+        fill_spreading_gaps_v5, rebin_interior_gaps_v5, RiftFill,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
     use crate::generators::natural::foundation::tectonics::contacts::{
@@ -612,7 +832,7 @@ mod tests {
     };
     use crate::generators::natural::foundation::tectonics::initial_state::build_initial_state;
     use crate::generators::natural::foundation::tectonics::model::{
-        EvolutionMaterialLedger, FormationTectonicRecipe, TectonicState,
+        EvolutionMaterialLedger, FormationTectonicRecipe, MaterialColumn, TectonicState,
     };
     use crate::generators::natural::foundation::tectonics::processes::{
         commit_process_actions, commit_process_actions_v5, constants, ProcessActions,
@@ -692,6 +912,7 @@ mod tests {
             &mut next,
             &mut actions,
             recipe,
+            RiftFill::LegacyImmediateOcean,
         )
         .unwrap();
         let first_index_storage = actions.spreading_index_storage();
@@ -703,6 +924,7 @@ mod tests {
             &mut next,
             &mut actions,
             recipe,
+            RiftFill::LegacyImmediateOcean,
         )
         .unwrap();
         assert_eq!(
@@ -775,10 +997,81 @@ mod tests {
         let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
         actions.begin_step(next.samples.len());
 
-        fill_spreading_gaps(&surface, &[gap], &current, &mut next, &mut actions, recipe).unwrap();
+        fill_spreading_gaps(
+            &surface,
+            &[gap],
+            &current,
+            &mut next,
+            &mut actions,
+            recipe,
+            RiftFill::LegacyImmediateOcean,
+        )
+        .unwrap();
         commit_process_actions(&mut next, &mut actions).unwrap();
 
         assert_eq!(next.samples.last().unwrap().owner, expected);
+    }
+
+    #[test]
+    fn v5_rift_fills_from_stretched_margins_and_ruptures_without_them() {
+        let (surface, topology) = fixture();
+        let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
+        let mut current = build_initial_state(
+            &surface,
+            &topology,
+            &TectonicSpec::default(),
+            ResolvedWorldFormationPreset::Continents,
+            &streams(),
+        )
+        .unwrap();
+        let gap_cell = CellId::from_raw(3);
+        let owner = current.samples[3].owner;
+        let mut ring = Vec::new();
+        for &edge in surface.cell_edges(gap_cell).unwrap() {
+            ring.push(surface.opposite_cell(gap_cell, edge).unwrap().raw() as usize);
+        }
+        let set_ring = |current: &mut TectonicState, stretch: f64| {
+            for &index in &ring {
+                let area = surface.cells()[index].area.get() * stretch;
+                current.samples[index].owner = owner;
+                current.samples[index].kind = CrustKind::Continental;
+                current.samples[index].thickness_km = 38.0;
+                current.samples[index].material =
+                    MaterialColumn::pure(CrustKind::Continental, area, 38.0).unwrap();
+            }
+        };
+        let gap = ContactEvent {
+            cell: gap_cell,
+            edge: None,
+            sample_indices: [None, None],
+            lineages: [None, None],
+            kind: ContactKind::Gap,
+            signed_normal_speed_mm_per_year: 0.0,
+            tangent_speed_mm_per_year: 0.0,
+            overlap_depth: 0,
+        };
+        let run = |current: &TectonicState| {
+            let mut next = copy_state(current);
+            let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
+            actions.begin_step(next.samples.len());
+            fill_spreading_gaps(
+                &surface,
+                std::slice::from_ref(&gap),
+                current,
+                &mut next,
+                &mut actions,
+                recipe,
+                RiftFill::BreakupAfterThinning,
+            )
+            .unwrap();
+            actions.spawned_samples()[0].kind
+        };
+        // Margins stretched beyond their cells donate that excess: continental.
+        set_ring(&mut current, 1.5);
+        assert_eq!(run(&current), CrustKind::Continental);
+        // Margins with nothing stretched to give: the rift ruptures into ocean.
+        set_ring(&mut current, 1.0);
+        assert_eq!(run(&current), CrustKind::Oceanic);
     }
 
     #[test]
@@ -793,6 +1086,12 @@ mod tests {
         )
         .unwrap();
         let mut next = copy_state(&current);
+        // One rigid rotation for every plate: no boundary diverges, so the
+        // hole can only be a sampling artifact.
+        let shared = next.plates[0].rotation;
+        for plate in &mut next.plates {
+            plate.rotation = shared;
+        }
         let hole = CellId::from_raw(3);
         let neighbor = topology.arcs()[3]
             .iter()
@@ -1109,6 +1408,7 @@ mod tests {
             &mut next,
             &mut actions,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Supercontinent),
+            RiftFill::LegacyImmediateOcean,
         )
         .unwrap();
         let created = *actions.spawned_samples().last().unwrap();
@@ -1132,6 +1432,7 @@ mod tests {
             &mut oceanized,
             &mut ocean_actions,
             FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents),
+            RiftFill::LegacyImmediateOcean,
         )
         .unwrap();
         assert_eq!(

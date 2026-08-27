@@ -401,6 +401,16 @@ impl ProcessActions {
                 .is_some_and(Option::is_none)
     }
 
+    /// True when the commit will drop this sample: marked for removal, or its
+    /// staged subduction leaves nothing behind.
+    pub(super) fn will_be_removed(&self, sample: usize) -> bool {
+        self.dispositions.get(sample) == Some(&SampleDisposition::Remove)
+            || self
+                .pending_oceanic_subduction
+                .get(sample)
+                .is_some_and(|pending| pending.is_some_and(|pending| pending.replacement.is_none()))
+    }
+
     pub(super) fn lineage_has_pending_changes(
         &self,
         samples: &[CrustSample],
@@ -550,6 +560,10 @@ pub(super) struct ProcessStats {
     pub(super) transferred_samples: u32,
     pub(super) terrane_transfer_events: u32,
     pub(super) spawned_samples: u32,
+    /// Interior sampling holes with no free duplicate on their plate, filled
+    /// by splitting the nearest same-plate column in two (area and volume
+    /// halved, thickness kept).
+    pub(super) split_fills: u32,
     pub(super) rebinned_samples: u32,
     pub(super) rift_events: u32,
     pub(super) spawned_lineages: u32,
@@ -743,6 +757,10 @@ pub(super) enum ProcessError {
     MissingDescendingSide { descending: LineageId },
     #[error("process current state has {current} samples but next has {next}")]
     StateCardinalityMismatch { current: usize, next: usize },
+    #[error("kinematics failed inside a process: {0}")]
+    Kinematics(
+        #[from] crate::generators::natural::foundation::tectonics::kinematics::KinematicsError,
+    ),
     #[error("cell {cell:?} is outside the authoritative surface")]
     UnknownCell { cell: CellId },
     #[error("edge {edge:?} is outside the authoritative surface")]
@@ -858,6 +876,6 @@ pub(super) use relaxation::{advance_solid_crust_ages, relax_legacy_compatibility
 pub(super) use rifting::{maybe_rift_plates, mechanically_fragment_oversized_plates_v5};
 pub(super) use spreading::{
     apply_divergent_extension, apply_divergent_extension_v5, fill_spreading_gaps,
-    fill_spreading_gaps_v5, rebin_interior_gaps_v5,
+    fill_spreading_gaps_v5, rebin_interior_gaps_v5, RiftFill,
 };
 pub(super) use subduction::{apply_subduction, apply_subduction_v5};
