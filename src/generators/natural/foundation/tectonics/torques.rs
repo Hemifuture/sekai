@@ -15,8 +15,8 @@ use super::kinematics::{rigid_velocity, KinematicsError};
 use super::model::{LineageId, TectonicState};
 use crate::world::natural::{
     SphericalPlateRotation, SphericalTectonicValidationError, PLATE_COLLISION_RESISTANCE_PER_M,
-    PLATE_CONTINENT_BASAL_DRAG_PER_M2, PLATE_OCEAN_BASAL_DRAG_PER_M2, PLATE_RIDGE_PUSH_FORCE_PER_M,
-    PLATE_SLAB_PULL_FORCE_PER_M,
+    PLATE_CONTINENT_BASAL_DRAG_PER_M2, PLATE_LOCKED_MARGIN_RESISTANCE_PER_M,
+    PLATE_OCEAN_BASAL_DRAG_PER_M2, PLATE_RIDGE_PUSH_FORCE_PER_M, PLATE_SLAB_PULL_FORCE_PER_M,
 };
 use crate::world::spatial::{cross, dot, scale, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{EdgeId, Meters};
@@ -144,7 +144,12 @@ fn accumulate_boundary_forces(
                     scale(outward, push),
                 );
             }
-            ContactKind::ContinentalCollision => {
+            ContactKind::ContinentalCollision | ContactKind::LockedConvergence => {
+                let resistance_per_m = if event.kind == ContactKind::ContinentalCollision {
+                    PLATE_COLLISION_RESISTANCE_PER_M
+                } else {
+                    PLATE_LOCKED_MARGIN_RESISTANCE_PER_M
+                };
                 let lagged = LaggedCollision {
                     other: state.plates[second_index].rotation,
                     radial_m: radial,
@@ -152,7 +157,12 @@ fn accumulate_boundary_forces(
                     length_m: length,
                     midpoint: edge.midpoint,
                 };
-                add_collision_resistance(&mut systems[first_index], lagged, radius)?;
+                add_collision_resistance(
+                    &mut systems[first_index],
+                    lagged,
+                    resistance_per_m,
+                    radius,
+                )?;
                 let lagged = LaggedCollision {
                     other: state.plates[first_index].rotation,
                     radial_m: radial,
@@ -160,7 +170,12 @@ fn accumulate_boundary_forces(
                     length_m: length,
                     midpoint: edge.midpoint,
                 };
-                add_collision_resistance(&mut systems[second_index], lagged, radius)?;
+                add_collision_resistance(
+                    &mut systems[second_index],
+                    lagged,
+                    resistance_per_m,
+                    radius,
+                )?;
             }
             ContactKind::Gap | ContactKind::Transform => {}
         }
@@ -179,11 +194,12 @@ struct LaggedCollision {
 fn add_collision_resistance(
     system: &mut PlateForceSystem,
     lagged: LaggedCollision,
+    resistance_per_m: f64,
     radius: Meters,
 ) -> Result<(), TorqueError> {
     let other_mm = rigid_velocity(lagged.other, radius, lagged.midpoint)?;
     let other_v = scale(other_mm, 1.0 / MM_PER_M);
-    let kappa = PLATE_COLLISION_RESISTANCE_PER_M * lagged.length_m;
+    let kappa = resistance_per_m * lagged.length_m;
     let u = cross(lagged.radial_m, lagged.toward_other);
     add_outer(&mut system.drag, kappa, u);
     let known = scale(u, kappa * dot(other_v, lagged.toward_other));
@@ -455,6 +471,65 @@ mod tests {
         assert!(
             continental_rate < oceanic_rate,
             "continental {continental_rate} should be slower than oceanic {oceanic_rate}"
+        );
+    }
+
+    #[test]
+    fn locked_convergence_resists_the_plate_pushed_into_it() {
+        let surface = fixture_surface();
+        let edge = &surface.edges()[0];
+        let other_cell = edge.cells[1];
+        let locked_edge = surface
+            .edges()
+            .iter()
+            .find(|candidate| candidate.id != edge.id && candidate.cells.contains(&other_cell))
+            .unwrap();
+        let (first, second) = if locked_edge.cells[0] == other_cell {
+            (LineageId::from_raw(1), LineageId::from_raw(0))
+        } else {
+            (LineageId::from_raw(0), LineageId::from_raw(1))
+        };
+        let locked = ContactEvent {
+            cell: locked_edge.cells[0],
+            edge: Some(locked_edge.id),
+            sample_indices: [
+                Some(locked_edge.cells[0].raw()),
+                Some(locked_edge.cells[1].raw()),
+            ],
+            lineages: [Some(first), Some(second)],
+            kind: ContactKind::LockedConvergence,
+            signed_normal_speed_mm_per_year: -30.0,
+            tangent_speed_mm_per_year: 1.0,
+            overlap_depth: 0,
+        };
+        let normal_speed = |state: &TectonicState| {
+            let plate = state.plate(LineageId::from_raw(0)).unwrap();
+            let velocity = plate
+                .rotation
+                .velocity_mm_per_year(surface.radius(), locked_edge.midpoint)
+                .unwrap();
+            dot(velocity, locked_edge.normal_from_first.components()).abs()
+        };
+        let (mut free, _) = trench_state(&surface, CrustKind::Oceanic);
+        let (mut resisted, _) = trench_state(&surface, CrustKind::Oceanic);
+        let stationary =
+            SphericalPlateRotation::new(UnitVector3::new(0.0, 0.0, 1.0).unwrap(), 1).unwrap();
+        for state in [&mut free, &mut resisted] {
+            state.plates[1].rotation = stationary;
+        }
+        update_rotations_from_boundary_torques(&surface, &mut free, &[trench_event(&surface)])
+            .unwrap();
+        update_rotations_from_boundary_torques(
+            &surface,
+            &mut resisted,
+            &[trench_event(&surface), locked],
+        )
+        .unwrap();
+        let free_speed = normal_speed(&free);
+        let resisted_speed = normal_speed(&resisted);
+        assert!(
+            free_speed > 0.0 && resisted_speed < free_speed,
+            "locked boundary must reduce normal speed: free={free_speed} resisted={resisted_speed}"
         );
     }
 }

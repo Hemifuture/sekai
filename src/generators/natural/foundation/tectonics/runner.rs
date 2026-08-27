@@ -854,7 +854,8 @@ mod tests {
                     ContactKind::Transform => {
                         transform_uplift.extend([uplift[first_cell], uplift[second_cell]]);
                     }
-                    ContactKind::Gap | ContactKind::Divergence => {}
+                    ContactKind::Gap | ContactKind::Divergence | ContactKind::LockedConvergence => {
+                    }
                 }
             }
             triple_angles.extend(macro_triple_angles(&surface, &evolved.current));
@@ -995,6 +996,169 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// G1e §5 evidence probe: plate speeds, residual convergence on resisted
+    /// boundaries, resample overlap displacement, and crust connectivity on
+    /// the draft control surface.
+    #[test]
+    #[ignore]
+    fn probe_g1e_convergence_closure() {
+        use crate::engine::BuildCancellation;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{
+            CrustKind, NaturalQualityProfile, EARTH_WATER_REFERENCE_RADIUS_M,
+        };
+
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let surface = bundle.tectonic_control_surface();
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        for preset in [
+            ResolvedWorldFormationPreset::Archipelago,
+            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Supercontinent,
+        ] {
+            for seed in [42_u64, 3] {
+                for plate_count in [12_u16, 22] {
+                    let spec = TectonicSpec {
+                        plate_count,
+                        continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                        ..TectonicSpec::default()
+                    };
+                    let mut rng = StageRng::from_seed(derive_stage_seed(
+                        RootSeed::new(seed),
+                        StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+                    ));
+                    let streams = LabeledSubstreams::capture(&mut rng);
+                    let formation = resolved_formation(preset);
+                    let evolved =
+                        evolve_control_state_v5(surface, &topology, &spec, &formation, &streams)
+                            .unwrap();
+                    let state = &evolved.current;
+                    let mut coverage = CoverageScratch::with_cell_capacity(surface.cells().len());
+                    let mut events = Vec::new();
+                    build_contacts(surface, &topology, state, &mut coverage, &mut events).unwrap();
+
+                    let mut descending = BTreeSet::new();
+                    let mut locked_residual = Vec::new();
+                    let mut collision_residual = Vec::new();
+                    let mut counts = [0_usize; 6];
+                    for event in &events {
+                        match event.kind {
+                            ContactKind::OceanicSubduction { descending: plate } => {
+                                descending.insert(plate);
+                                counts[0] += 1;
+                            }
+                            ContactKind::LockedConvergence => {
+                                locked_residual.push(-event.signed_normal_speed_mm_per_year);
+                                counts[1] += 1;
+                            }
+                            ContactKind::ContinentalCollision => {
+                                collision_residual.push(-event.signed_normal_speed_mm_per_year);
+                                counts[2] += 1;
+                            }
+                            ContactKind::Divergence => counts[3] += 1,
+                            ContactKind::Transform => counts[4] += 1,
+                            ContactKind::Gap => counts[5] += 1,
+                        }
+                    }
+                    let mut slab_speeds = Vec::new();
+                    let mut free_speeds = Vec::new();
+                    for plate in &state.plates {
+                        let centroid =
+                            surface.cells()[plate.representative.raw() as usize].centroid;
+                        let velocity = plate
+                            .rotation
+                            .velocity_mm_per_year(surface.radius(), centroid)
+                            .unwrap();
+                        let speed = dot(velocity, velocity).sqrt() as f32;
+                        if descending.contains(&plate.lineage) {
+                            slab_speeds.push(speed);
+                        } else {
+                            free_speeds.push(speed);
+                        }
+                    }
+                    let continental_area = state
+                        .samples
+                        .iter()
+                        .filter(|sample| sample.kind == CrustKind::Continental)
+                        .map(|sample| surface.cells()[sample.anchor.raw() as usize].area.get())
+                        .sum::<f64>();
+                    let (crust_components, crust_max_share) =
+                        continental_component_shares(surface, &topology, state);
+                    let stat = |values: &mut Vec<f32>| {
+                        if values.is_empty() {
+                            (f32::NAN, f32::NAN, f32::NAN)
+                        } else {
+                            values.sort_by(f32::total_cmp);
+                            (
+                                values[0],
+                                values[values.len() / 2],
+                                values[values.len() - 1],
+                            )
+                        }
+                    };
+                    let slab = stat(&mut slab_speeds);
+                    let free = stat(&mut free_speeds);
+                    let locked = stat(&mut locked_residual);
+                    let collision = stat(&mut collision_residual);
+                    println!(
+                        "G1e {preset:?} seed={seed} plates={plate_count} final_plates={} events[subd/locked/coll/div/tf/gap]={counts:?} slab_speed(min/med/max)={:.1}/{:.1}/{:.1} free_speed={:.1}/{:.1}/{:.1} locked_residual={:.1}/{:.1}/{:.1} collision_residual={:.1}/{:.1}/{:.1} overlap_moved/cont_area={:.4} crust_n={crust_components} crust_max={crust_max_share:.3}",
+                        state.plates.len(),
+                        slab.0, slab.1, slab.2,
+                        free.0, free.1, free.2,
+                        locked.0, locked.1, locked.2,
+                        collision.0, collision.1, collision.2,
+                        evolved.material_ledger.resample_overlap_moved_area_m2() / continental_area,
+                    );
+                }
+            }
+        }
+    }
+
+    fn continental_component_shares(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        topology: &NaturalTopologyIndex,
+        state: &TectonicState,
+    ) -> (usize, f64) {
+        use crate::world::natural::CrustKind;
+        let cell_count = surface.cells().len();
+        let mut continental = vec![false; cell_count];
+        for sample in &state.samples {
+            if sample.kind == CrustKind::Continental {
+                continental[sample.anchor.raw() as usize] = true;
+            }
+        }
+        let mut seen = vec![false; cell_count];
+        let mut areas = Vec::new();
+        for start in 0..cell_count {
+            if !continental[start] || seen[start] {
+                continue;
+            }
+            seen[start] = true;
+            let mut stack = vec![start];
+            let mut area = 0.0;
+            while let Some(cell) = stack.pop() {
+                area += surface.cells()[cell].area.get();
+                for arc in &topology.arcs()[cell] {
+                    let neighbor = arc.neighbor.raw() as usize;
+                    if continental[neighbor] && !seen[neighbor] {
+                        seen[neighbor] = true;
+                        stack.push(neighbor);
+                    }
+                }
+            }
+            areas.push(area);
+        }
+        let total: f64 = areas.iter().sum();
+        let max = areas.iter().copied().fold(0.0, f64::max);
+        (areas.len(), if total > 0.0 { max / total } else { 0.0 })
     }
 
     fn median(values: &mut [f32]) -> f64 {

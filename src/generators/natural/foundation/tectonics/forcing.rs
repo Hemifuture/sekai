@@ -110,12 +110,12 @@ fn evaluate_contact_forcing(
                 ContactKind::OceanicSubduction { .. } | ContactKind::ContinentalCollision => {
                     direct_convergence[sample.anchor.raw() as usize] = true;
                 }
-                ContactKind::Gap | ContactKind::Divergence => {}
+                ContactKind::Gap | ContactKind::Divergence | ContactKind::LockedConvergence => {}
             }
         }
 
         match event.kind {
-            ContactKind::Gap | ContactKind::Transform => {}
+            ContactKind::Gap | ContactKind::Transform | ContactKind::LockedConvergence => {}
             ContactKind::OceanicSubduction { descending } => {
                 let overriding = event
                     .lineages

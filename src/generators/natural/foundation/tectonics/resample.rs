@@ -329,7 +329,7 @@ fn conservative_material_resample_v5(
                 .unwrap_or(7.0)
         })
         .collect::<Vec<_>>();
-    let continental_volumes = deposit_continental_volumes(
+    let (continental_volumes, overlap_moved_area) = deposit_continental_volumes(
         surface,
         topology,
         &source.samples,
@@ -337,6 +337,7 @@ fn conservative_material_resample_v5(
         remapped,
         &continental_areas,
     )?;
+    ledger.record_resample_overlap_moved_area(overlap_moved_area);
     let oceanic_volumes = bounded_volume_water_fill(
         CrustKind::Oceanic,
         &oceanic_areas,
@@ -454,7 +455,7 @@ fn deposit_continental_volumes(
     coverage: &super::contacts::CoverageScratch,
     remapped: &[CrustSample],
     allocated_areas: &[f64],
-) -> Result<Vec<f64>, ResampleError> {
+) -> Result<(Vec<f64>, f64), ResampleError> {
     let cell_count = allocated_areas.len();
     let mut filled_area = vec![0.0_f64; cell_count];
     let mut volumes = vec![0.0_f64; cell_count];
@@ -547,7 +548,7 @@ fn deposit_continental_volumes(
             moved_area / allocated.max(f64::MIN_POSITIVE),
         );
     }
-    Ok(volumes)
+    Ok((volumes, moved_area))
 }
 
 fn same_material(first: MaterialColumn, second: MaterialColumn) -> bool {

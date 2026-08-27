@@ -653,6 +653,7 @@ pub(super) struct EvolutionMaterialLedger {
     oceanic_spreading_created: MaterialAccumulator,
     oceanic_coverage_created: MaterialAccumulator,
     oceanic_coverage_consumed: MaterialAccumulator,
+    resample_overlap_moved_area: CompensatedSum,
 }
 
 impl EvolutionMaterialLedger {
@@ -674,7 +675,20 @@ impl EvolutionMaterialLedger {
             oceanic_spreading_created: MaterialAccumulator::default(),
             oceanic_coverage_created: MaterialAccumulator::default(),
             oceanic_coverage_consumed: MaterialAccumulator::default(),
+            resample_overlap_moved_area: CompensatedSum::default(),
         })
+    }
+
+    /// Continental parcel area displaced by resample overlap resolution (G1e
+    /// §3.4): converging columns that no trench consumed. Private diagnostic,
+    /// not part of the published budget.
+    pub(super) fn record_resample_overlap_moved_area(&mut self, area_m2: f64) {
+        debug_assert!(area_m2.is_finite() && area_m2 >= 0.0);
+        self.resample_overlap_moved_area.add(area_m2);
+    }
+
+    pub(super) fn resample_overlap_moved_area_m2(self) -> f64 {
+        self.resample_overlap_moved_area.total()
     }
 
     pub(super) const fn initial_control(self) -> CrustMaterialTotals {
