@@ -155,6 +155,19 @@ impl ResolvedWorldFormationPreset {
         }
     }
 
+    /// Returns whether this morphology is published in the dispersal half of a
+    /// Wilson cycle (Wilson 1966), so its opening state must be the assembled
+    /// supercontinent it disperses from: continental nuclei clustered on one
+    /// hemisphere with an oceanic hemisphere opposite (Wegener 1915; Seton et
+    /// al. 2012 Pangea/Panthalassa). Assembled or single-mass morphologies open
+    /// from dispersed nuclei on plate representatives instead.
+    pub const fn opens_in_dispersal_phase(self) -> bool {
+        match self {
+            Self::Continents | Self::Archipelago => true,
+            Self::Supercontinent | Self::GreatIsland | Self::VolcanicIslands => false,
+        }
+    }
+
     /// Returns extra satellite nuclei grown after the primary GreatIsland mass.
     ///
     /// Cogley (1984) lists four named microcontinents (Rockall, Seychelles,

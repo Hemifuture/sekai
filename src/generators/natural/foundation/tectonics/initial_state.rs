@@ -1,8 +1,10 @@
 //! PlaTec-style coherent initial lithosphere on the authoritative sphere.
 //!
 //! Stable farthest-point seeds define the plate partition. Continental crust
-//! is a connected domain grown from nuclei on plate representatives; thickness
-//! and ocean age remain independent coherent fields.
+//! is a connected domain grown from nuclei: on plate representatives for
+//! assembled morphologies, inside one hemispheric cap for morphologies that
+//! publish the dispersal half of a Wilson cycle. Thickness and ocean age remain
+//! independent coherent fields.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -576,6 +578,9 @@ fn select_continental_nuclei(
 ) -> Vec<CellId> {
     let plate_count = plate_reps.len();
     debug_assert!(plate_count >= 1);
+    if preset.opens_in_dispersal_phase() {
+        return hemispheric_cap_nuclei(surface, preset, streams);
+    }
     let first = (streams.counter_u64(INITIAL_CRUST_V3_LABEL, &[0]) as usize) % plate_count;
     let total = if preset.satellite_nucleus_count() > 0 {
         1 + usize::from(preset.satellite_nucleus_count()).min(plate_count - 1)
@@ -583,6 +588,32 @@ fn select_continental_nuclei(
         usize::from(preset.continental_nucleus_count()).clamp(1, plate_count)
     };
     farthest_plate_representatives(surface, plate_reps, first, total)
+}
+
+/// Assembled-supercontinent opening for dispersal-phase morphologies (G1e
+/// §3.5): a stable cap center, the hemisphere around it as the candidate
+/// domain, and farthest-point nuclei inside it. Nuclei may share a plate, as
+/// Cogley's (1984) continents do; plates outside the cap stay purely oceanic
+/// and provide the subduction sink the dispersal is driven by.
+fn hemispheric_cap_nuclei(
+    surface: &SphericalSurfaceSnapshot,
+    preset: ResolvedWorldFormationPreset,
+    streams: &LabeledSubstreams,
+) -> Vec<CellId> {
+    let cells = surface.cells();
+    let center_index = (streams.counter_u64(INITIAL_CRUST_V3_LABEL, &[1]) as usize) % cells.len();
+    let center = cells[center_index].centroid;
+    let cap = cells
+        .iter()
+        .filter(|cell| cell.centroid.dot(center) >= 0.0)
+        .map(|cell| cell.id)
+        .collect::<Vec<_>>();
+    let first = cap
+        .iter()
+        .position(|&cell| cell == cells[center_index].id)
+        .expect("the cap center lies inside its own hemisphere");
+    let total = usize::from(preset.continental_nucleus_count()).clamp(1, cap.len());
+    farthest_plate_representatives(surface, &cap, first, total)
 }
 
 fn farthest_plate_representatives(
@@ -1384,13 +1415,64 @@ mod tests {
     }
 
     #[test]
+    fn dispersal_presets_open_as_one_hemispheric_cluster_with_oceanic_plates() {
+        let (surface, topology) = fixture(642);
+        for preset in [
+            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Archipelago,
+        ] {
+            for seed in [42_u64, 3] {
+                let spec = TectonicSpec {
+                    continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                    ..TectonicSpec::default()
+                };
+                let state =
+                    build_initial_state_v5(&surface, &topology, &spec, preset, &streams(seed))
+                        .unwrap();
+                let mut mean = [0.0_f64; 3];
+                let mut area = 0.0;
+                for sample in &state.samples {
+                    if sample.kind != CrustKind::Continental {
+                        continue;
+                    }
+                    let cell_area = surface.cells()[sample.anchor.raw() as usize].area.get();
+                    let centroid = sample.position.components();
+                    for (axis, component) in mean.iter_mut().zip(centroid) {
+                        *axis += component * cell_area;
+                    }
+                    area += cell_area;
+                }
+                let clustering = super::norm(mean) / area;
+                assert!(
+                    clustering >= 0.25,
+                    "{preset:?} seed {seed}: continental crust must cluster on one hemisphere, \
+                     mean resultant {clustering:.3}"
+                );
+                let oceanic_plates = state
+                    .plates
+                    .iter()
+                    .filter(|plate| {
+                        state.samples.iter().all(|sample| {
+                            sample.owner != plate.lineage || sample.kind == CrustKind::Oceanic
+                        })
+                    })
+                    .count();
+                assert!(
+                    oceanic_plates >= 1,
+                    "{preset:?} seed {seed}: the opposite hemisphere must leave purely oceanic plates"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn changing_plate_count_changes_opening_crust_kinds() {
         let (surface, topology) = fixture(642);
         let twelve = build_initial_state_v5(
             &surface,
             &topology,
             &TectonicSpec::default(),
-            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::GreatIsland,
             &streams(42),
         )
         .unwrap();
@@ -1401,7 +1483,7 @@ mod tests {
                 plate_count: 17,
                 ..TectonicSpec::default()
             },
-            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::GreatIsland,
             &streams(42),
         )
         .unwrap();
