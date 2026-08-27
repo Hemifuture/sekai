@@ -189,6 +189,30 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
                 continents.count,
                 supercontinent.count
             );
+            let archipelago = continental_connectivity(
+                surface,
+                &generate(
+                    seed,
+                    ResolvedWorldFormationPreset::Archipelago,
+                    &preset_spec(ResolvedWorldFormationPreset::Archipelago, plate_count),
+                ),
+            );
+            println!(
+                "G1d seed={seed} plates={plate_count} Archipelago count={} max={:.3} second={:.3}",
+                archipelago.count, archipelago.max_share, archipelago.second_share
+            );
+            assert!(
+                archipelago.count > continents.count,
+                "seed={seed} plates={plate_count}: Archipelago count={} must stay above Continents {}",
+                archipelago.count,
+                continents.count
+            );
+            assert!(
+                archipelago.max_share < continents.max_share,
+                "seed={seed} plates={plate_count}: Archipelago max_share={:.3} must stay below Continents {:.3}",
+                archipelago.max_share,
+                continents.max_share
+            );
         }
     }
 }
@@ -278,10 +302,11 @@ fn mesh_anatomy(
         let second_kind = compatibility.crust_kind(second);
         let first_largest = in_largest[first.raw() as usize];
         let second_largest = in_largest[second.raw() as usize];
-        if first_largest && second_largest {
-            if compatibility.plate_for_cell(first) != compatibility.plate_for_cell(second) {
-                internal_plate_crossing_edges += 1;
-            }
+        if first_largest
+            && second_largest
+            && compatibility.plate_for_cell(first) != compatibility.plate_for_cell(second)
+        {
+            internal_plate_crossing_edges += 1;
         }
         if (first_largest || second_largest) && first_kind != second_kind {
             continent_ocean_edges += 1;

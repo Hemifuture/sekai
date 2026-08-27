@@ -1,6 +1,6 @@
 # G1d 构造驱动力与终态陆壳形态 实现计划
 
-> **给代理：** 规格是 `docs/superpowers/specs/2026-08-27-tectonic-driving-forces-design.md`。已冻结（2026-08-27）。
+> **给代理：** 规格是 `docs/superpowers/specs/2026-08-27-tectonic-driving-forces-design.md`。已冻结（2026-08-27）；R3 张开相水道保护已确认。
 
 **目标：** 形成链发布态上五种预设可辨。Continents 为被洋盆隔开的若干陆壳块；Supercontinent 一块主导。角速度由边界力矩解出；俯冲启动按 Stern 自发/诱导。
 
@@ -82,10 +82,27 @@ EOF
 
 - [x] Continents 发布态用户确认可辨（2026-08-27）
 - [ ] Supercontinent 一块主导（窄集成通过；用户未单独点名）
-- [ ] Archipelago 终态仍是多岛（开局碎、发布态并成带洞大陆）
+- [ ] Archipelago 终态仍是多岛（窄集成 7–10 块；待用户 UI 确认）
 - [ ] 五种预设地壳种类图可辨（用户 UI 验收）
 - [ ] 完整调试回归（任务收尾）
 - [x] 提交
+
+---
+
+### 任务 5：Archipelago 张开相水道保护（R3）
+
+**文件：**
+- `model.rs`：`SubductionInitiation` 增加开局张开相板集合（私有，不进发布 schema）
+- `initial_state.rs`：仅 Archipelago 给开局携带陆壳的板打标签
+- `contacts.rs`：张开相板参与的洋内汇聚 / 诱导洋–陆 ≠ 新俯冲；已有海沟仍消耗
+
+- [x] 纯函数：张开相 + 老–幼洋内汇聚 ≠ 俯冲；未打标签则仍俯冲
+- [x] 开局：Archipelago 打标签；Continents 不打
+- [x] 窄集成：同一语料 Archipelago 块数 > Continents，且不是一块主导
+- [x] 抬 `natural.spherical-tectonics` 与 `natural.causal-formation` version
+- [x] 提交
+
+禁止重涂开局掩膜、禁止为凑块数改填色。系数与包络先测后钉。
 
 ---
 

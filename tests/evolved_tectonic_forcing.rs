@@ -46,7 +46,7 @@ fn frozen_v4_snapshot_does_not_pretend_to_publish_present_day_forcing() {
     .unwrap();
     let mut rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(42),
-        StageIdentity::new("natural.spherical-tectonics", 6, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 7, "sekai.core"),
     ));
     let legacy = TectonicGenerator::generate_spherical(
         &surface,

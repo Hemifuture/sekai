@@ -74,7 +74,7 @@ fn external(
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
     let version = match stage_id {
-        "natural.spherical-tectonics" => 6,
+        "natural.spherical-tectonics" => 7,
         "natural.spherical-mantle" => 1,
         _ => panic!("unexpected spherical stage {stage_id}"),
     };
@@ -102,7 +102,7 @@ fn stages_publish_exact_identities_and_surface_bound_dependencies() {
         SphericalMantleStage.id().as_str(),
         "natural.spherical-mantle"
     );
-    assert_eq!(SphericalTectonicStage.version(), 6);
+    assert_eq!(SphericalTectonicStage.version(), 7);
     assert_eq!(SphericalMantleStage.version(), 1);
     assert_eq!(SphericalTectonicStage.namespace(), "sekai.core");
     assert_eq!(SphericalMantleStage.namespace(), "sekai.core");

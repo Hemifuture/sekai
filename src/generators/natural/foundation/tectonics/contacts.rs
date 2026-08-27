@@ -432,7 +432,7 @@ pub(super) fn classify_pair(
         [CrustKind::Continental, CrustKind::Oceanic] => {
             ocean_continent_convergence(second, first, view)
         }
-        [CrustKind::Oceanic, CrustKind::Oceanic] => intra_ocean_convergence(first, second),
+        [CrustKind::Oceanic, CrustKind::Oceanic] => intra_ocean_convergence(first, second, view),
     }
 }
 
@@ -449,7 +449,13 @@ fn ocean_continent_convergence(
     }
     // Complete passive margins do not fail spontaneously (McKenzie 1977;
     // Stern 2004). Induced SI needs a far-field collision source and must
-    // not close this-cycle rift oceans between the rifted continents.
+    // not close this-cycle rift oceans or Archipelago opening-phase seaways.
+    if view
+        .initiation
+        .involves_opening_phase(ocean.owner, continent.owner)
+    {
+        return None;
+    }
     let induced = view.colliding.contains(&continent.owner)
         && !view
             .initiation
@@ -457,7 +463,17 @@ fn ocean_continent_convergence(
     induced.then_some(subduction)
 }
 
-fn intra_ocean_convergence(first: &CrustSample, second: &CrustSample) -> Option<ContactKind> {
+fn intra_ocean_convergence(
+    first: &CrustSample,
+    second: &CrustSample,
+    view: InitiationView<'_>,
+) -> Option<ContactKind> {
+    if view
+        .initiation
+        .involves_opening_phase(first.owner, second.owner)
+    {
+        return None;
+    }
     let descending = older_oceanic_side(first, second);
     let descending_age = if descending == first.owner {
         first.age_myr
@@ -760,6 +776,85 @@ mod tests {
             Some(ContactKind::OceanicSubduction {
                 descending: LineageId::from_raw(9)
             })
+        );
+    }
+
+    #[test]
+    fn opening_phase_seaway_does_not_initiate_intra_ocean_subduction() {
+        let young = sample(LineageId::from_raw(4), CrustKind::Oceanic, 20.0);
+        let old = sample(LineageId::from_raw(9), CrustKind::Oceanic, 140.0);
+        let mut initiation = SubductionInitiation::default();
+        initiation.mark_opening_phase(young.owner);
+        let colliding = BTreeSet::new();
+        assert_eq!(
+            classify_pair(
+                &young,
+                &old,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &initiation,
+                    colliding: &colliding,
+                },
+            ),
+            None
+        );
+        initiation.record_trench(old.owner, LineageId::from_raw(1));
+        let continent = sample(LineageId::from_raw(1), CrustKind::Continental, 0.0);
+        let colliding = BTreeSet::from([continent.owner]);
+        assert_eq!(
+            classify_pair(
+                &old,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &initiation,
+                    colliding: &colliding,
+                },
+            ),
+            Some(ContactKind::OceanicSubduction {
+                descending: old.owner
+            })
+        );
+        initiation.mark_opening_phase(old.owner);
+        assert_eq!(
+            classify_pair(
+                &old,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &initiation,
+                    colliding: &colliding,
+                },
+            ),
+            Some(ContactKind::OceanicSubduction {
+                descending: old.owner
+            }),
+            "established trenches keep consuming"
+        );
+    }
+
+    #[test]
+    fn opening_phase_blocks_induced_ocean_continent_subduction() {
+        let ocean = sample(LineageId::from_raw(4), CrustKind::Oceanic, 20.0);
+        let continent = sample(LineageId::from_raw(9), CrustKind::Continental, 0.0);
+        let mut initiation = SubductionInitiation::default();
+        initiation.mark_opening_phase(continent.owner);
+        let colliding = BTreeSet::from([continent.owner]);
+        assert_eq!(
+            classify_pair(
+                &ocean,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &initiation,
+                    colliding: &colliding,
+                },
+            ),
+            None
         );
     }
 

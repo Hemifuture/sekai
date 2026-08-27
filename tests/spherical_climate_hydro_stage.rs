@@ -26,7 +26,7 @@ struct Upstream {
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
     let version = match stage_id {
-        "natural.spherical-tectonics" => 6,
+        "natural.spherical-tectonics" => 7,
         "natural.spherical-relief" => 2,
         _ => 1,
     };
