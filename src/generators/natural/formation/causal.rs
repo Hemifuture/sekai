@@ -289,7 +289,7 @@ mod tests {
         let surface_spec = HydroErosionSpec::default();
         let mut rng = StageRng::from_seed(derive_stage_seed(
             RootSeed::new(42),
-            StageIdentity::new("natural.causal-formation", 4, "sekai.core"),
+            StageIdentity::new("natural.causal-formation", 5, "sekai.core"),
         ));
 
         let output = CausalNaturalFormationGenerator::generate_working(
@@ -389,7 +389,7 @@ mod tests {
         };
         let stage_seed = derive_stage_seed(
             RootSeed::new(OFFLINE_REFERENCE_SEED),
-            StageIdentity::new("natural.causal-formation", 4, "sekai.core"),
+            StageIdentity::new("natural.causal-formation", 5, "sekai.core"),
         );
 
         let production_started = Instant::now();

@@ -68,7 +68,7 @@ fn current_crust_material_is_coherent_without_cell_checkerboarding() {
             surface,
             &TectonicSpec::default(),
             &formation,
-            &mut rng(seed, "natural.spherical-tectonics", 7),
+            &mut rng(seed, "natural.spherical-tectonics", 8),
         )
         .unwrap();
         let total_edge_length = surface
@@ -198,7 +198,7 @@ fn final_current_state_preserves_tectonic_cause_and_side_across_seeds() {
             surface,
             &TectonicSpec::default(),
             &formation,
-            &mut rng(seed, "natural.spherical-tectonics", 7),
+            &mut rng(seed, "natural.spherical-tectonics", 8),
         )
         .unwrap();
         let mantle = MantleGenerator::generate_spherical(

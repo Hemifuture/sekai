@@ -37,7 +37,7 @@ fn formation(preset: ResolvedWorldFormationPreset) -> ResolvedWorldFormation {
 fn stage_rng(root_seed: u64) -> StageRng {
     StageRng::from_seed(derive_stage_seed(
         RootSeed::new(root_seed),
-        StageIdentity::new("natural.spherical-tectonics", 7, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 8, "sekai.core"),
     ))
 }
 

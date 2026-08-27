@@ -53,8 +53,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "0ac5f857259ae2284f8d25b58c4f39ce8508af89265fb25e7e68c7f2a209ac24",
-        expected_geology_hash: "a25af52b879f0ab9991afd3123e4653730e7f904f0b19a3679ef6253aafbdb3f",
+        expected_relief_hash: "6d596d846915ef7a57a01a7e80a0cdd5541e3b19a544192470a9facaff027201",
+        expected_geology_hash: "1c6a0012df3fe388772c737024c20c95ff6a49ff863486a914f8994216264594",
     },
     MatrixCase {
         name: "earth-continents",
@@ -67,8 +67,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "3cdc3cb4c591cb76c738ce09ce9cc7cd542b9b43cfd81d2694cbfaf27d86d1bb",
-        expected_geology_hash: "f360d3953bb14cc785bf032f5cb4c8c58db72c3918c643258b183f032ecf57e2",
+        expected_relief_hash: "77312515da4d079174d590b2a92321c5f6bc5e530c4eb66f554bbae022fd775e",
+        expected_geology_hash: "7f989b571d4e3b936b514055c1859159258d6c165a9a68415c6d29062b9f0120",
     },
     MatrixCase {
         name: "maximum-radius-volcanic",

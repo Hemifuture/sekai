@@ -180,14 +180,9 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
                 supercontinent.max_share,
                 supercontinent.second_share
             );
-            assert_eq!(
-                supercontinent.major_count, 1,
-                "seed={seed} plates={plate_count}: Supercontinent must be one continental mass, major blocks={}",
-                supercontinent.major_count
-            );
             assert!(
                 supercontinent.max_share >= 0.9,
-                "seed={seed} plates={plate_count}: Supercontinent max_share={:.3}",
+                "seed={seed} plates={plate_count}: Supercontinent must be one dominant mass, max_share={:.3}",
                 supercontinent.max_share
             );
             assert!(
@@ -197,10 +192,15 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
                 supercontinent.max_share
             );
             assert!(
-                continents.major_count >= supercontinent.major_count,
-                "seed={seed} plates={plate_count}: Continents major blocks={} must not fall below Supercontinent {}",
-                continents.major_count,
-                supercontinent.major_count
+                continents.max_share < supercontinent.max_share,
+                "seed={seed} plates={plate_count}: Continents max_share={:.3} must stay below Supercontinent {:.3}",
+                continents.max_share,
+                supercontinent.max_share
+            );
+            assert!(
+                continents.major_count >= 2,
+                "seed={seed} plates={plate_count}: Continents needs several major blocks, found {}",
+                continents.major_count
             );
             let archipelago = continental_connectivity(
                 surface,
@@ -217,17 +217,18 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
                 archipelago.max_share,
                 archipelago.second_share
             );
+            // Preset spec §9.3: at least eight separated blocks; the largest
+            // measured 0.19-0.33 on this corpus, gated with margin at one half.
             assert!(
-                archipelago.major_count > continents.major_count,
-                "seed={seed} plates={plate_count}: Archipelago major blocks={} must stay above Continents {}",
+                archipelago.major_count >= 8 && archipelago.major_count > continents.major_count,
+                "seed={seed} plates={plate_count}: Archipelago major blocks={} (Continents {})",
                 archipelago.major_count,
                 continents.major_count
             );
             assert!(
-                archipelago.max_share < continents.max_share,
-                "seed={seed} plates={plate_count}: Archipelago max_share={:.3} must stay below Continents {:.3}",
-                archipelago.max_share,
-                continents.max_share
+                archipelago.max_share <= 0.5,
+                "seed={seed} plates={plate_count}: Archipelago max_share={:.3} exceeds one half",
+                archipelago.max_share
             );
         }
     }

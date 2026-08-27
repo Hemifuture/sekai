@@ -261,7 +261,7 @@ impl Stage for CausalNaturalFormationStage {
     }
 
     fn version(&self) -> u32 {
-        4
+        5
     }
 
     fn namespace(&self) -> &'static str {

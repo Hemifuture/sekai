@@ -155,16 +155,22 @@ impl ResolvedWorldFormationPreset {
         }
     }
 
-    /// Returns whether this morphology is published in the dispersal half of a
-    /// Wilson cycle (Wilson 1966), so its opening state must be the assembled
-    /// supercontinent it disperses from: continental nuclei clustered on one
-    /// hemisphere with an oceanic hemisphere opposite (Wegener 1915; Seton et
-    /// al. 2012 Pangea/Panthalassa). Assembled or single-mass morphologies open
-    /// from dispersed nuclei on plate representatives instead.
+    /// Returns whether this morphology is published mid-way through the
+    /// dispersal half of a Wilson cycle (Wilson 1966), so its opening state
+    /// must be the assembled supercontinent it disperses from: continental
+    /// nuclei clustered on one hemisphere with an oceanic hemisphere opposite
+    /// (Wegener 1915; Seton et al. 2012 Pangea/Panthalassa). Archipelago is
+    /// the late snapshot in which the fragments have already spread around the
+    /// globe, as Cogley's (1984) fourteen continents do today, so it opens
+    /// from dispersed nuclei on plate representatives like the assembled and
+    /// single-mass morphologies.
     pub const fn opens_in_dispersal_phase(self) -> bool {
         match self {
-            Self::Continents | Self::Archipelago => true,
-            Self::Supercontinent | Self::GreatIsland | Self::VolcanicIslands => false,
+            Self::Continents => true,
+            Self::Archipelago
+            | Self::Supercontinent
+            | Self::GreatIsland
+            | Self::VolcanicIslands => false,
         }
     }
 

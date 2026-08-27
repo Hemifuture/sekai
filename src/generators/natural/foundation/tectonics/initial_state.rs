@@ -1524,10 +1524,7 @@ mod tests {
     #[test]
     fn dispersal_presets_open_as_one_hemispheric_cluster_with_oceanic_plates() {
         let (surface, topology) = fixture(642);
-        for preset in [
-            ResolvedWorldFormationPreset::Continents,
-            ResolvedWorldFormationPreset::Archipelago,
-        ] {
+        for preset in [ResolvedWorldFormationPreset::Continents] {
             for seed in [42_u64, 3] {
                 let spec = TectonicSpec {
                     continental_crust_fraction: preset.recommended_continental_crust_fraction(),
