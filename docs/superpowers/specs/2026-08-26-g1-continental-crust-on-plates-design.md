@@ -280,3 +280,7 @@ Cortial et al. 2019 仍只支持 P2 运动学与 2 Myr 步，不支持「整板�
   欧拉极生成」限于开局抽活动性量级；演化步改由边界力矩解 \(\omega\)。
   §6.2「碰撞可缝上、终态块数不当门禁」对 Continents / Supercontinent 废止，
   改由 G1d §1.1：主要陆块缝合后不再叫多大陆；超大陆须一块主导。
+- R4（2026-08-28）：G1e `2026-08-27-g1e-convergence-closure-design.md` 修订
+  §5.1：Continents 改为半球帽拼合开局（帽内最远点选核、帽内板合成一块超大陆
+  板），Archipelago 与其余预设仍在板块代表上选核。G1d §5「开局 Continents
+  = 6 块」废止，改为「开局 6 核」。

@@ -46,42 +46,47 @@ pub const CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR: f32 = 10.0;
 /// supercontinent plate of dispersal-phase morphologies and terrane transfer
 /// both respect it.
 pub const MAXIMUM_PLATE_AREA_FRACTION: f64 = 0.45;
-/// Ranking placeholder: slab-pull force per metre of trench. Conrad &
+/// Slab-pull force per metre of trench, toward subduction. Conrad &
 /// Lithgow-Bertelloni (2002) make slab pull the leading driving term (about
-/// half of net driving force). The absolute unit is not Earth-SI; G1d task 4
-/// must re-pin it from production-operator speeds. Sign is toward subduction.
+/// half of net driving force). The unit is the solver's force scale against
+/// [`PLATE_OCEAN_BASAL_DRAG_PER_M2`]; G1e §9 R1 measured plates that descend
+/// somewhere at 16–74 mm/yr median (max 66–120) on the draft corpus, inside
+/// the MORVEL range (DeMets et al. 2010) with the fastest few at the cap.
 pub const PLATE_SLAB_PULL_FORCE_PER_M: f64 = 0.75;
 /// Ranking placeholder: slab-suction force per metre of trench acting on the
 /// overriding plate, directed toward the trench. Conrad & Lithgow-Bertelloni
 /// (2004, JGR 109, B10407) find slab suction comparable to direct slab pull in
 /// the Cenozoic torque budget and the main driver of plates without slabs; it
 /// is also what pulls a supercontinent apart toward its subduction girdle
-/// (Gurnis 1988). Re-pinned by G1e task 4 from production-operator speeds.
+/// (Gurnis 1988). Two thirds of [`PLATE_SLAB_PULL_FORCE_PER_M`] keeps the
+/// pull the larger term; G1e §9 R1 measured overriding plates at 4–84 mm/yr.
 pub const PLATE_SLAB_SUCTION_FORCE_PER_M: f64 = 0.5;
-/// Ranking placeholder: ridge-push force per metre of spreading ridge. Conrad
-/// & Lithgow-Bertelloni (2002) give ridge push about 5–10% of slab pull; 0.08
-/// is the mid-range ratio, not a morphological fit. Sign is away from the ridge.
+/// Ridge-push force per metre of spreading ridge, away from the ridge. Conrad
+/// & Lithgow-Bertelloni (2002) give ridge push about 5–10% of slab pull; 8% of
+/// [`PLATE_SLAB_PULL_FORCE_PER_M`].
 pub const PLATE_RIDGE_PUSH_FORCE_PER_M: f64 = 0.06;
-/// Ranking placeholder: oceanic basal-drag density in force per square metre
-/// per (metre/year). Forsyth & Uyeda (1975) put linear drag on the left-hand
-/// side of the torque balance. Absolute scale is unpinned until G1d task 4.
+/// Oceanic basal-drag density in force per square metre per (metre/year).
+/// Forsyth & Uyeda (1975) put linear drag on the left-hand side of the torque
+/// balance. Together with [`PLATE_SLAB_PULL_FORCE_PER_M`] it sets the speed
+/// scale measured in G1e §9 R1.
 pub const PLATE_OCEAN_BASAL_DRAG_PER_M2: f64 = 1.0e-6;
-/// Ranking placeholder: continental basal-drag density. Forsyth & Uyeda (1975)
-/// find plates with continental lithosphere significantly slower; this is
-/// stronger than [`PLATE_OCEAN_BASAL_DRAG_PER_M2`] by ranking, not a fitted
-/// Earth-table copy.
+/// Continental basal-drag density. Forsyth & Uyeda (1975) find plates with
+/// continental lithosphere significantly slower; four times
+/// [`PLATE_OCEAN_BASAL_DRAG_PER_M2`] by ranking, not a fitted Earth-table copy.
 pub const PLATE_CONTINENT_BASAL_DRAG_PER_M2: f64 = 4.0e-6;
-/// Ranking placeholder: collision dashpot per metre of continent–continent
-/// convergent boundary. Spec §3.2: collision resistance opposes convergence so
-/// Continents cannot suture by inertia when no trench is present. Pin after
-/// production measurement (G1d task 4).
+/// Collision dashpot per metre of continent–continent convergent boundary in
+/// the coupled torque balance (G1e §3.3). Collision slows convergence without
+/// stopping it (India–Eurasia fell from about 150 to 40–50 mm/yr: Molnar &
+/// Stock 2009; Copley et al. 2010); G1e §9 R1 measured residual convergence
+/// at sutures of 1–25 mm/yr median on the draft corpus.
 pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 60.0;
-/// Ranking placeholder: dashpot per metre of interplate convergent boundary
-/// whose descending candidate is still positively buoyant (Cloos 1993, younger
-/// than [`CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR`]). Such a boundary can
-/// neither consume nor thicken, so the convergence must be resisted in the
-/// torque balance instead of being absorbed by resampling (G1e §3.3). Pinned
-/// from the residual convergence measured by G1e task 4.
+/// Dashpot per metre of interplate convergent boundary whose descending
+/// candidate is still positively buoyant (Cloos 1993, younger than
+/// [`CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR`]). Such a boundary can neither
+/// consume nor thicken, so the convergence must be resisted in the torque
+/// balance instead of being absorbed by resampling (G1e §3.3). Pinned as the
+/// smallest decade at which the coupled solve holds locked edges below the
+/// activity threshold: G1e §9 R1 measured 0–15 mm/yr median residual.
 pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 2000.0;
 
 const PRAD_TO_RAD: f64 = 1.0e-12;

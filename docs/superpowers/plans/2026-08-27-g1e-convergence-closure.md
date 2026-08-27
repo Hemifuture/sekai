@@ -14,55 +14,57 @@ model / resample）与 `src/world/natural/spherical_tectonics.rs` 常量。
 ### 任务 0：规格与计划
 
 - [x] 写规格与计划
-- [ ] 提交
+- [x] 提交
 
 ### 任务 1：删除张开相标签
 
 **文件：** `model.rs`、`initial_state.rs`、`contacts.rs`、`tests/g1d_endstate_crust.rs`
 
-- [ ] 删 `opening_phase_lineages` 及全部访问器、`mark_opening_phase_lineages`、
+- [x] 删 `opening_phase_lineages` 及全部访问器、`mark_opening_phase_lineages`、
       四个相关测试
-- [ ] `cargo test` 目标模块；fmt；clippy
-- [ ] 提交
+- [x] `cargo test` 目标模块；fmt；clippy
+- [x] 提交
 
 ### 任务 2：板间汇聚闭合分类 + 锁定阻力 + 搬运入账
 
 **文件：** `contacts.rs`、`torques.rs`、`forcing.rs`、`resample.rs`、`model.rs`
 （ledger）、`src/world/natural/spherical_tectonics.rs`
 
-- [ ] `ContactKind::LockedConvergence`；`classify_pair` 按 §3.2；删
+- [x] `ContactKind::LockedConvergence`；`classify_pair` 按 §3.2；删
       `colliding_continents` / `InitiationView.colliding`
-- [ ] torques：锁定阻尼；常量占位注明待任务 4 钉值
-- [ ] forcing / runner 穷举匹配更新；锁定不产生强迫
-- [ ] ledger 记录重采样搬运面积
-- [ ] 纯函数测试；提交
+- [x] torques：锁定阻尼（后改为全板耦合求解，规格 R1.3）
+- [x] forcing / runner 穷举匹配更新；锁定不产生强迫
+- [x] ledger 记录重采样搬运面积；重采样改为赢家掩膜 + 按板重平衡（R1.1）
+- [x] 纯函数测试；提交
 
 ### 任务 3：半球帽开局
 
 **文件：** `initial_state.rs`
 
-- [ ] Continents / Archipelago：帽中心 + 帽内最远点选核，允许同板多核
-- [ ] 开局测试：核在帽内、帽外板全洋、Archipelago 有同板双核、面积/嵌套不变
-- [ ] 提交
+- [x] Continents：帽中心 + 帽内最远点选核，帽内板合成一块超大陆板
+- [x] Archipelago 改回板块代表分散开局（规格 R1.4）
+- [x] 开局测试：核在帽内、帽外板全洋、面积/嵌套不变
+- [x] 提交
 
 ### 任务 4：探针实测与钉系数
 
 **文件：** `tests/g1d_endstate_crust.rs`（ignored 探针）、常量
 
-- [ ] 板速分布、锁定/碰撞残余汇聚、搬运份额、内湖数
-- [ ] 钉 `PLATE_LOCKED_MARGIN_RESISTANCE_PER_M`、复核其余 `PLATE_*`
-- [ ] 提交
+- [x] 板速分布、锁定/碰撞残余汇聚、搬运份额、内湖数（`probe_g1e_*`）
+- [x] 钉 `PLATE_LOCKED_MARGIN_RESISTANCE_PER_M`、复核其余 `PLATE_*`（规格 R1.5）
+- [x] 提交
 
 ### 任务 5：终态窄集成与身份
 
-- [ ] 抬 `natural.spherical-tectonics` 与 `natural.causal-formation` version
-- [ ] 窄集成按规格 §5；冻结哈希/身份矩阵更新
-- [ ] 提交
+- [x] 抬 `natural.spherical-tectonics` 7→8 与 `natural.causal-formation` 4→5
+- [x] 窄集成按规格 §5（主要块计数）；冻结哈希/身份矩阵更新
+- [x] 提交
 
 ### 任务 6：回归与 UI 验证步骤
 
-- [ ] fmt / clippy / wasm check；受影响套件 Release；完整调试回归
-- [ ] 规格 §6 步骤交用户
+- [x] fmt / clippy / wasm check；受影响套件 Release
+- [ ] 完整调试回归（收尾）
+- [ ] 规格 §6 步骤交用户（UI 验收待用户）
 
 ---
 
