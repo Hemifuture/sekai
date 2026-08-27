@@ -898,6 +898,105 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore]
+    fn probe_archipelago_opening_control_connectivity() {
+        use crate::engine::BuildCancellation;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{
+            CrustKind, NaturalQualityProfile, EARTH_WATER_REFERENCE_RADIUS_M,
+        };
+
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let surface = bundle.tectonic_control_surface();
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        for preset in [
+            ResolvedWorldFormationPreset::Archipelago,
+            ResolvedWorldFormationPreset::Continents,
+        ] {
+            for seed in [42_u64, 3] {
+                for plate_count in [12_u16, 22] {
+                    let spec = TectonicSpec {
+                        plate_count,
+                        continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                        ..TectonicSpec::default()
+                    };
+                    let mut rng = StageRng::from_seed(derive_stage_seed(
+                        RootSeed::new(seed),
+                        StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+                    ));
+                    let streams = LabeledSubstreams::capture(&mut rng);
+                    let state = build_initial_state_v5(surface, &topology, &spec, preset, &streams)
+                        .unwrap();
+                    let mut continental = vec![false; surface.cells().len()];
+                    let mut owner_at = vec![None; surface.cells().len()];
+                    for sample in &state.samples {
+                        let index = sample.anchor.raw() as usize;
+                        owner_at[index] = Some(sample.owner);
+                        continental[index] = sample.kind == CrustKind::Continental;
+                    }
+                    let mut seen = vec![false; surface.cells().len()];
+                    let mut areas = Vec::new();
+                    let mut largest_plates = 0_usize;
+                    let mut best_area = 0.0;
+                    for start in 0..surface.cells().len() {
+                        if !continental[start] || seen[start] {
+                            continue;
+                        }
+                        let mut stack = vec![start];
+                        seen[start] = true;
+                        let mut area = 0.0;
+                        let mut plates = BTreeSet::new();
+                        while let Some(cell) = stack.pop() {
+                            area += surface.cells()[cell].area.get();
+                            if let Some(owner) = owner_at[cell] {
+                                plates.insert(owner);
+                            }
+                            for arc in &topology.arcs()[cell] {
+                                let neighbor = arc.neighbor.raw() as usize;
+                                if neighbor >= surface.cells().len()
+                                    || !continental[neighbor]
+                                    || seen[neighbor]
+                                {
+                                    continue;
+                                }
+                                seen[neighbor] = true;
+                                stack.push(neighbor);
+                            }
+                        }
+                        if area > best_area {
+                            best_area = area;
+                            largest_plates = plates.len();
+                        }
+                        areas.push(area);
+                    }
+                    areas.sort_by(|first, second| second.total_cmp(first));
+                    let total: f64 = areas.iter().sum();
+                    let share = |index: usize| {
+                        if total > 0.0 {
+                            areas.get(index).copied().unwrap_or(0.0) / total
+                        } else {
+                            0.0
+                        }
+                    };
+                    println!(
+                        "G1d-open {preset:?} seed={seed} plates={plate_count} crust_n={} max={:.3} second={:.3} largest_plates={}",
+                        areas.len(),
+                        share(0),
+                        share(1),
+                        largest_plates
+                    );
+                }
+            }
+        }
+    }
+
     fn median(values: &mut [f32]) -> f64 {
         assert!(!values.is_empty());
         values.sort_by(f32::total_cmp);

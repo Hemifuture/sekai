@@ -80,8 +80,10 @@ EOF
 - 窄集成：草稿、种子 42 与 3、Continents vs Supercontinent、12 与 22 板
 - 高成本探针 `#[ignore]` + Release，复用 G0 语料
 
-- [ ] Continents 主要块不缝成一块主导；Supercontinent 一块主导
-- [ ] 形成链地壳种类图可辨（用户 UI 验收）
+- [x] Continents 发布态用户确认可辨（2026-08-27）
+- [ ] Supercontinent 一块主导（窄集成通过；用户未单独点名）
+- [ ] Archipelago 终态仍是多岛（开局碎、发布态并成带洞大陆）
+- [ ] 五种预设地壳种类图可辨（用户 UI 验收）
 - [ ] 完整调试回归（任务收尾）
 - [x] 提交
 

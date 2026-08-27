@@ -193,6 +193,144 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
     }
 }
 
+struct MeshAnatomy {
+    connectivity: CrustConnectivity,
+    largest_plates: usize,
+    ocean_components: usize,
+    enclosed_ocean_components: usize,
+    enclosed_ocean_area_share: f64,
+    internal_plate_crossing_edges: usize,
+    continent_ocean_edges: usize,
+}
+
+fn flood_kind(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+    want: CrustKind,
+) -> Vec<(f64, Vec<sekai::world::CellId>)> {
+    let compatibility = snapshot.compatibility();
+    let mut visited = vec![false; surface.cells().len()];
+    let mut components = Vec::new();
+    for cell in surface.cells() {
+        let start = cell.id;
+        let index = start.raw() as usize;
+        if visited[index] || compatibility.crust_kind(start) != Some(want) {
+            continue;
+        }
+        visited[index] = true;
+        let mut queue = VecDeque::from([start]);
+        let mut members = vec![start];
+        let mut area = 0.0;
+        while let Some(current) = queue.pop_front() {
+            area += surface
+                .cell(current)
+                .expect("published cells are contiguous")
+                .area
+                .get();
+            for &edge in surface
+                .cell_edges(current)
+                .expect("published cells have edges")
+            {
+                let neighbor = surface
+                    .opposite_cell(current, edge)
+                    .expect("every edge has an opposite cell");
+                let neighbor_index = neighbor.raw() as usize;
+                if !visited[neighbor_index] && compatibility.crust_kind(neighbor) == Some(want) {
+                    visited[neighbor_index] = true;
+                    queue.push_back(neighbor);
+                    members.push(neighbor);
+                }
+            }
+        }
+        components.push((area, members));
+    }
+    components.sort_by(|first, second| second.0.total_cmp(&first.0));
+    components
+}
+
+fn mesh_anatomy(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+) -> MeshAnatomy {
+    let compatibility = snapshot.compatibility();
+    let continents = flood_kind(surface, snapshot, CrustKind::Continental);
+    let oceans = flood_kind(surface, snapshot, CrustKind::Oceanic);
+    let connectivity = continental_connectivity(surface, snapshot);
+    let largest = continents
+        .first()
+        .map(|(_, cells)| cells.as_slice())
+        .unwrap_or(&[]);
+    let mut in_largest = vec![false; surface.cells().len()];
+    let mut plates = std::collections::BTreeSet::new();
+    for &cell in largest {
+        in_largest[cell.raw() as usize] = true;
+        if let Some(plate) = compatibility.plate_for_cell(cell) {
+            plates.insert(plate);
+        }
+    }
+    let enclosed_ocean_area: f64 = oceans.iter().skip(1).map(|(area, _)| *area).sum();
+    let ocean_area: f64 = oceans.iter().map(|(area, _)| *area).sum();
+    let mut internal_plate_crossing_edges = 0_usize;
+    let mut continent_ocean_edges = 0_usize;
+    for edge in surface.edges() {
+        let [first, second] = edge.cells;
+        let first_kind = compatibility.crust_kind(first);
+        let second_kind = compatibility.crust_kind(second);
+        let first_largest = in_largest[first.raw() as usize];
+        let second_largest = in_largest[second.raw() as usize];
+        if first_largest && second_largest {
+            if compatibility.plate_for_cell(first) != compatibility.plate_for_cell(second) {
+                internal_plate_crossing_edges += 1;
+            }
+        }
+        if (first_largest || second_largest) && first_kind != second_kind {
+            continent_ocean_edges += 1;
+        }
+    }
+    MeshAnatomy {
+        connectivity,
+        largest_plates: plates.len(),
+        ocean_components: oceans.len(),
+        enclosed_ocean_components: oceans.len().saturating_sub(1),
+        enclosed_ocean_area_share: if ocean_area > 0.0 {
+            enclosed_ocean_area / ocean_area
+        } else {
+            0.0
+        },
+        internal_plate_crossing_edges,
+        continent_ocean_edges,
+    }
+}
+
+#[test]
+#[ignore]
+fn probe_archipelago_endstate_mesh_anatomy() {
+    let surface = bundle().authoritative_surface();
+    for preset in [
+        ResolvedWorldFormationPreset::Archipelago,
+        ResolvedWorldFormationPreset::Continents,
+    ] {
+        for seed in DAILY_SEEDS {
+            for plate_count in DAILY_PLATE_COUNTS {
+                let snapshot = generate(seed, preset, &preset_spec(preset, plate_count));
+                let anatomy = mesh_anatomy(surface, &snapshot);
+                println!(
+                    "G1d-mesh {preset:?} seed={seed} plates={plate_count} crust_n={} max={:.3} second={:.3} largest_plates={} ocean_n={} enclosed_ocean_n={} enclosed_ocean_share={:.4} plate_cross_e={} crust_ocean_e={}",
+                    anatomy.connectivity.count,
+                    anatomy.connectivity.max_share,
+                    anatomy.connectivity.second_share,
+                    anatomy.largest_plates,
+                    anatomy.ocean_components,
+                    anatomy.enclosed_ocean_components,
+                    anatomy.enclosed_ocean_area_share,
+                    anatomy.internal_plate_crossing_edges,
+                    anatomy.continent_ocean_edges
+                );
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn probe_g1d_g0_corpus_crust_connectivity() {
