@@ -9,12 +9,14 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::BTreeSet;
+
 use thiserror::Error;
 
 use super::kinematics::{rigid_velocity, KinematicsError};
-use super::model::{CrustSample, LineageId, TectonicState};
+use super::model::{CrustSample, LineageId, SubductionInitiation, TectonicState};
 use crate::generators::natural::topology::NaturalTopologyIndex;
-use crate::world::natural::CrustKind;
+use crate::world::natural::{CrustKind, CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR};
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, EdgeId, Meters};
 
@@ -171,6 +173,12 @@ pub(super) fn build_contacts(
     coverage.rebuild(surface.cells().len(), &moved.samples)?;
     events.clear();
 
+    let colliding = colliding_continents(surface, moved, coverage)?;
+    let view = InitiationView {
+        initiation: &moved.initiation,
+        colliding: &colliding,
+    };
+
     for cell in surface.cells() {
         let count = coverage.count(cell.id);
         if count == 0 {
@@ -187,7 +195,7 @@ pub(super) fn build_contacts(
             continue;
         }
         if count > 1 {
-            append_overlap_contacts(surface, moved, coverage, cell.id, events)?;
+            append_overlap_contacts(surface, moved, coverage, view, cell.id, events)?;
         }
     }
 
@@ -219,7 +227,8 @@ pub(super) fn build_contacts(
                 let tangent_speed = (speed * speed - signed_normal_speed * signed_normal_speed)
                     .max(0.0)
                     .sqrt();
-                if let Some(kind) = classify_pair(first, second, signed_normal_speed, tangent_speed)
+                if let Some(kind) =
+                    classify_pair(first, second, signed_normal_speed, tangent_speed, view)
                 {
                     events.push(ContactEvent {
                         cell: edge.cells[0],
@@ -248,6 +257,7 @@ fn append_overlap_contacts(
     surface: &SphericalSurfaceSnapshot,
     moved: &TectonicState,
     coverage: &CoverageScratch,
+    view: InitiationView<'_>,
     cell: CellId,
     events: &mut Vec<ContactEvent>,
 ) -> Result<(), ContactError> {
@@ -265,7 +275,7 @@ fn append_overlap_contacts(
             let second = &moved.samples[second_index as usize];
             let relative = relative_velocity(moved, first, second, surface.radius(), radial)?;
             let speed = norm(relative);
-            if let Some(kind) = classify_pair(first, second, -speed, 0.0) {
+            if let Some(kind) = classify_pair(first, second, -speed, 0.0, view) {
                 events.push(ContactEvent {
                     cell,
                     edge: None,
@@ -299,11 +309,105 @@ fn unique_owner_representatives(
     }
 }
 
+fn colliding_continents(
+    surface: &SphericalSurfaceSnapshot,
+    moved: &TectonicState,
+    coverage: &CoverageScratch,
+) -> Result<BTreeSet<LineageId>, ContactError> {
+    let mut colliding = BTreeSet::new();
+    let mut first_representatives = Vec::with_capacity(moved.plates.len());
+    let mut second_representatives = Vec::with_capacity(moved.plates.len());
+    for edge in surface.edges() {
+        unique_owner_representatives(
+            coverage.sample_indices(edge.cells[0]),
+            moved,
+            &mut first_representatives,
+        );
+        unique_owner_representatives(
+            coverage.sample_indices(edge.cells[1]),
+            moved,
+            &mut second_representatives,
+        );
+        for &first_index in &first_representatives {
+            for &second_index in &second_representatives {
+                let first = &moved.samples[first_index as usize];
+                let second = &moved.samples[second_index as usize];
+                let relative =
+                    relative_velocity(moved, first, second, surface.radius(), edge.midpoint)?;
+                let signed = dot(relative, edge.normal_from_first.components());
+                let speed = norm(relative);
+                let tangent = (speed * speed - signed * signed).max(0.0).sqrt();
+                mark_continent_collision(first, second, signed, tangent, &mut colliding);
+            }
+        }
+    }
+    let mut representatives = Vec::with_capacity(moved.plates.len());
+    for cell in surface.cells() {
+        if coverage.count(cell.id) <= 1 {
+            continue;
+        }
+        unique_owner_representatives(
+            coverage.sample_indices(cell.id),
+            moved,
+            &mut representatives,
+        );
+        let radial = surface
+            .cell(cell.id)
+            .ok_or(ContactError::UnknownCell { cell: cell.id })?
+            .centroid;
+        for first_position in 0..representatives.len() {
+            for second_position in first_position + 1..representatives.len() {
+                let first = &moved.samples[representatives[first_position] as usize];
+                let second = &moved.samples[representatives[second_position] as usize];
+                let speed = norm(relative_velocity(
+                    moved,
+                    first,
+                    second,
+                    surface.radius(),
+                    radial,
+                )?);
+                mark_continent_collision(first, second, -speed, 0.0, &mut colliding);
+            }
+        }
+    }
+    Ok(colliding)
+}
+
+fn mark_continent_collision(
+    first: &CrustSample,
+    second: &CrustSample,
+    signed_normal: f64,
+    tangent: f64,
+    colliding: &mut BTreeSet<LineageId>,
+) {
+    if first.owner == second.owner
+        || first.kind != CrustKind::Continental
+        || second.kind != CrustKind::Continental
+    {
+        return;
+    }
+    let speed = signed_normal.abs().hypot(tangent);
+    if speed >= MINIMUM_ACTIVE_RELATIVE_SPEED_MM_PER_YEAR
+        && signed_normal.abs() >= speed * STRONG_NORMAL_FRACTION
+        && signed_normal < 0.0
+    {
+        colliding.insert(first.owner);
+        colliding.insert(second.owner);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct InitiationView<'a> {
+    initiation: &'a SubductionInitiation,
+    colliding: &'a BTreeSet<LineageId>,
+}
+
 pub(super) fn classify_pair(
     first: &CrustSample,
     second: &CrustSample,
     signed_normal_speed_mm_per_year: f64,
     tangent_speed_mm_per_year: f64,
+    view: InitiationView<'_>,
 ) -> Option<ContactKind> {
     if first.owner == second.owner {
         return None;
@@ -322,16 +426,46 @@ pub(super) fn classify_pair(
 
     match [first.kind, second.kind] {
         [CrustKind::Continental, CrustKind::Continental] => Some(ContactKind::ContinentalCollision),
-        [CrustKind::Oceanic, CrustKind::Continental] => Some(ContactKind::OceanicSubduction {
-            descending: first.owner,
-        }),
-        [CrustKind::Continental, CrustKind::Oceanic] => Some(ContactKind::OceanicSubduction {
-            descending: second.owner,
-        }),
-        [CrustKind::Oceanic, CrustKind::Oceanic] => Some(ContactKind::OceanicSubduction {
-            descending: older_oceanic_side(first, second),
-        }),
+        [CrustKind::Oceanic, CrustKind::Continental] => {
+            ocean_continent_convergence(first, second, view)
+        }
+        [CrustKind::Continental, CrustKind::Oceanic] => {
+            ocean_continent_convergence(second, first, view)
+        }
+        [CrustKind::Oceanic, CrustKind::Oceanic] => intra_ocean_convergence(first, second),
     }
+}
+
+fn ocean_continent_convergence(
+    ocean: &CrustSample,
+    continent: &CrustSample,
+    view: InitiationView<'_>,
+) -> Option<ContactKind> {
+    let subduction = ContactKind::OceanicSubduction {
+        descending: ocean.owner,
+    };
+    if view.initiation.has_trench(ocean.owner, continent.owner) {
+        return Some(subduction);
+    }
+    // Complete passive margins do not fail spontaneously (McKenzie 1977;
+    // Stern 2004). Induced SI needs a far-field collision source and must
+    // not close this-cycle rift oceans between the rifted continents.
+    let induced = view.colliding.contains(&continent.owner)
+        && !view
+            .initiation
+            .is_this_cycle_rift_pair(ocean.owner, continent.owner);
+    induced.then_some(subduction)
+}
+
+fn intra_ocean_convergence(first: &CrustSample, second: &CrustSample) -> Option<ContactKind> {
+    let descending = older_oceanic_side(first, second);
+    let descending_age = if descending == first.owner {
+        first.age_myr
+    } else {
+        second.age_myr
+    };
+    (descending_age >= CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR)
+        .then_some(ContactKind::OceanicSubduction { descending })
 }
 
 fn older_oceanic_side(first: &CrustSample, second: &CrustSample) -> LineageId {
@@ -420,9 +554,11 @@ pub(super) enum ContactError {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_contacts, classify_pair, ContactKind, CoverageScratch};
+    use std::collections::BTreeSet;
+
+    use super::{build_contacts, classify_pair, ContactKind, CoverageScratch, InitiationView};
     use crate::generators::natural::foundation::tectonics::model::{
-        ActivePlate, CrustSample, LineageId, MaterialColumn, TectonicState,
+        ActivePlate, CrustSample, LineageId, MaterialColumn, SubductionInitiation, TectonicState,
     };
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -540,6 +676,26 @@ mod tests {
         Transform,
     }
 
+    fn classify(
+        first: &CrustSample,
+        second: &CrustSample,
+        signed_normal: f64,
+        tangent: f64,
+    ) -> Option<ContactKind> {
+        let initiation = SubductionInitiation::default();
+        let colliding = BTreeSet::new();
+        classify_pair(
+            first,
+            second,
+            signed_normal,
+            tangent,
+            InitiationView {
+                initiation: &initiation,
+                colliding: &colliding,
+            },
+        )
+    }
+
     #[test]
     fn material_and_motion_classification_selects_the_physical_side() {
         let first = LineageId::from_raw(4);
@@ -550,27 +706,99 @@ mod tests {
         let other_continent = sample(first, CrustKind::Continental, 0.0);
 
         assert_eq!(
-            classify_pair(&young_ocean, &continent, -48.0, 2.0),
-            Some(ContactKind::OceanicSubduction { descending: first })
-        );
-        assert_eq!(
-            classify_pair(&young_ocean, &old_ocean, -48.0, 2.0),
+            classify(&young_ocean, &old_ocean, -48.0, 2.0),
             Some(ContactKind::OceanicSubduction { descending: second })
         );
         assert_eq!(
-            classify_pair(&other_continent, &continent, -48.0, 2.0),
+            classify(&other_continent, &continent, -48.0, 2.0),
             Some(ContactKind::ContinentalCollision)
         );
         assert_eq!(
-            classify_pair(&young_ocean, &old_ocean, 48.0, 2.0),
+            classify(&young_ocean, &old_ocean, 48.0, 2.0),
             Some(ContactKind::Divergence)
         );
         assert_eq!(
-            classify_pair(&young_ocean, &old_ocean, 2.0, 48.0),
+            classify(&young_ocean, &old_ocean, 2.0, 48.0),
             Some(ContactKind::Transform)
         );
         let same_owner = sample(first, CrustKind::Continental, 0.0);
-        assert_eq!(classify_pair(&young_ocean, &same_owner, -48.0, 2.0), None);
+        assert_eq!(classify(&young_ocean, &same_owner, -48.0, 2.0), None);
+    }
+
+    #[test]
+    fn passive_margin_with_ridge_push_does_not_initiate_subduction() {
+        let ocean = sample(LineageId::from_raw(4), CrustKind::Oceanic, 20.0);
+        let continent = sample(LineageId::from_raw(9), CrustKind::Continental, 0.0);
+        assert_eq!(classify(&ocean, &continent, -12.0, 1.0), None);
+        assert_eq!(classify(&ocean, &continent, -48.0, 2.0), None);
+        let mut trenched = SubductionInitiation::default();
+        trenched.record_trench(ocean.owner, continent.owner);
+        let colliding = BTreeSet::new();
+        assert_eq!(
+            classify_pair(
+                &ocean,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &trenched,
+                    colliding: &colliding,
+                },
+            ),
+            Some(ContactKind::OceanicSubduction {
+                descending: ocean.owner
+            })
+        );
+    }
+
+    #[test]
+    fn intra_ocean_old_young_convergence_subducts_the_older_side() {
+        let young = sample(LineageId::from_raw(4), CrustKind::Oceanic, 20.0);
+        let old = sample(LineageId::from_raw(9), CrustKind::Oceanic, 140.0);
+        assert_eq!(
+            classify(&young, &old, -48.0, 2.0),
+            Some(ContactKind::OceanicSubduction {
+                descending: LineageId::from_raw(9)
+            })
+        );
+    }
+
+    #[test]
+    fn collision_adjacent_passive_margin_can_induce_subduction() {
+        let ocean = sample(LineageId::from_raw(4), CrustKind::Oceanic, 20.0);
+        let continent = sample(LineageId::from_raw(9), CrustKind::Continental, 0.0);
+        let initiation = SubductionInitiation::default();
+        let colliding = BTreeSet::from([continent.owner]);
+        assert_eq!(
+            classify_pair(
+                &ocean,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &initiation,
+                    colliding: &colliding,
+                },
+            ),
+            Some(ContactKind::OceanicSubduction {
+                descending: ocean.owner
+            })
+        );
+        let mut rifted = SubductionInitiation::default();
+        rifted.record_rift_pair(ocean.owner, continent.owner);
+        assert_eq!(
+            classify_pair(
+                &ocean,
+                &continent,
+                -48.0,
+                2.0,
+                InitiationView {
+                    initiation: &rifted,
+                    colliding: &colliding,
+                },
+            ),
+            None
+        );
     }
 
     #[test]
@@ -619,23 +847,51 @@ mod tests {
     #[test]
     fn real_edge_frames_drive_signed_events_and_order_is_stable() {
         let (surface, topology) = fixture();
-        for (motion, expected_kind, expects_negative) in [
+        for (
+            motion,
+            first_kind,
+            first_age,
+            second_kind,
+            second_age,
+            expected_kind,
+            expects_negative,
+        ) in [
             (
                 Motion::Converging,
+                CrustKind::Oceanic,
+                80.0,
+                CrustKind::Oceanic,
+                20.0,
                 ContactKind::OceanicSubduction {
                     descending: LineageId::from_raw(0),
                 },
                 true,
             ),
-            (Motion::Diverging, ContactKind::Divergence, false),
-            (Motion::Transform, ContactKind::Transform, false),
-        ] {
-            let (state, target_edge) = two_lineage_state(
-                &surface,
+            (
+                Motion::Diverging,
                 CrustKind::Oceanic,
                 80.0,
                 CrustKind::Continental,
                 0.0,
+                ContactKind::Divergence,
+                false,
+            ),
+            (
+                Motion::Transform,
+                CrustKind::Oceanic,
+                80.0,
+                CrustKind::Continental,
+                0.0,
+                ContactKind::Transform,
+                false,
+            ),
+        ] {
+            let (state, target_edge) = two_lineage_state(
+                &surface,
+                first_kind,
+                first_age,
+                second_kind,
+                second_age,
                 motion,
             );
             let mut coverage = CoverageScratch::default();
@@ -684,20 +940,12 @@ mod tests {
         build_contacts(&surface, &topology, &state, &mut coverage, &mut events).unwrap();
 
         assert_eq!(coverage.count(destination), 2);
-        let overlap = events
-            .iter()
-            .find(|event| {
-                event.cell == destination && event.edge.is_none() && event.kind != ContactKind::Gap
-            })
-            .unwrap();
-        assert_eq!(
-            overlap.kind,
-            ContactKind::OceanicSubduction {
-                descending: LineageId::from_raw(0)
-            }
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.kind, ContactKind::OceanicSubduction { .. })),
+            "passive ocean-continent overlap must not become a trench"
         );
-        assert_eq!(overlap.overlap_depth, 1);
-        assert_eq!(overlap.sample_indices.iter().flatten().count(), 2);
         assert!(events
             .iter()
             .any(|event| { event.cell == edge.cells[1] && event.kind == ContactKind::Gap }));

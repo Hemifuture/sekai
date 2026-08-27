@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use super::contacts::{build_contacts, ContactError};
+use super::contacts::{build_contacts, ContactError, ContactEvent, ContactKind};
 use super::forcing::{evaluate_present_day_forcing, ForcingError};
 use super::initial_state::{build_initial_state, build_initial_state_v5, InitialStateError};
 use super::kinematics::{advance_samples, KinematicsError};
@@ -74,6 +74,7 @@ pub(super) fn evolve_current_state(
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, delta_myr)?;
         build_contacts(surface, topology, next, coverage, events)?;
+        remember_established_trenches(next, events);
         actions.begin_step(next.samples.len());
         apply_subduction(surface, events, current, next, actions, recipe, delta_myr)?;
         apply_collision(surface, events, current, next, actions, recipe)?;
@@ -167,6 +168,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, delta_myr)?;
         build_contacts(surface, topology, next, coverage, events)?;
+        remember_established_trenches(next, events);
         update_rotations_from_boundary_torques(surface, next, events)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)?;
@@ -294,8 +296,19 @@ fn apply_boundary_torques_to_current(
         &mut workspace.coverage,
         &mut workspace.events,
     )?;
+    remember_established_trenches(&mut workspace.current, &workspace.events);
     update_rotations_from_boundary_torques(surface, &mut workspace.current, &workspace.events)?;
     Ok(())
+}
+
+fn remember_established_trenches(state: &mut TectonicState, events: &[ContactEvent]) {
+    for event in events {
+        if let ContactKind::OceanicSubduction { .. } = event.kind {
+            if let [Some(first), Some(second)] = event.lineages {
+                state.initiation.record_trench(first, second);
+            }
+        }
+    }
 }
 
 fn rift_step_duration_myr(timeline: ResolvedFormationTimeline) -> Result<u16, RunnerError> {

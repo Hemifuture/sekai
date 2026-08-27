@@ -244,7 +244,7 @@ pub(crate) use spherical_tectonics::classify_spherical_boundary_kinematics;
 pub use spherical_tectonics::{
     SphericalBoundarySegment, SphericalCrustState, SphericalOrogenyKind, SphericalPlate,
     SphericalPlateRotation, SphericalTectonicSnapshot, SphericalTectonicValidationError,
-    CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_CRUST_AGE_MYR,
+    CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR, CONTINENTAL_CRUST_AGE_SENTINEL_MYR, MAX_CRUST_AGE_MYR,
     MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR, MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR,
     NO_OROGENY_AGE_SENTINEL_MYR, PLATE_COLLISION_RESISTANCE_PER_M,
     PLATE_CONTINENT_BASAL_DRAG_PER_M2, PLATE_OCEAN_BASAL_DRAG_PER_M2, PLATE_RIDGE_PUSH_FORCE_PER_M,

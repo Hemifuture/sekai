@@ -547,6 +547,7 @@ fn split_plate(
             .push(ActivePlate::new(lineage, seed.anchor, rotation));
     }
     next.plates.sort_by_key(|plate| plate.lineage);
+    next.initiation.replace_lineage(parent.lineage, &lineages);
     Ok(true)
 }
 

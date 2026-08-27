@@ -33,6 +33,12 @@ pub const MAX_CRUST_AGE_MYR: f32 = 512.0;
 pub const MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR: f64 = 120.0;
 /// The largest representable angular rate, sized for 120 mm/year on a one-meter sphere.
 pub const MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR: u64 = 120_000_000_000;
+/// Cloos (1993): oceanic lithosphere becomes negatively buoyant relative to the
+/// asthenosphere after about 10 Myr. G1d uses this only as the necessary
+/// (not sufficient) age for intra-ocean spontaneous subduction initiation;
+/// complete passive margins stay closed because of continental lithosphere
+/// strength (McKenzie 1977; Stern 2004), not because of this number.
+pub const CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR: f32 = 10.0;
 /// Ranking placeholder: slab-pull force per metre of trench. Conrad &
 /// Lithgow-Bertelloni (2002) make slab pull the leading driving term (about
 /// half of net driving force). The absolute unit is not Earth-SI; G1d task 4

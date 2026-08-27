@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::BTreeSet;
+
 use crate::generators::natural::fractal::FractalProfile;
 use crate::world::natural::{
     CrustKind, CrustMaterialTotals, ResolvedWorldFormationPreset, SphericalOrogenyKind,
@@ -354,11 +356,108 @@ impl ActivePlate {
     }
 }
 
+/// Canonical unordered pair of live lineages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct LineagePair {
+    first: LineageId,
+    second: LineageId,
+}
+
+impl LineagePair {
+    pub(super) fn new(first: LineageId, second: LineageId) -> Self {
+        if first <= second {
+            Self { first, second }
+        } else {
+            Self {
+                first: second,
+                second: first,
+            }
+        }
+    }
+
+    fn contains(self, lineage: LineageId) -> bool {
+        self.first == lineage || self.second == lineage
+    }
+
+    fn other(self, lineage: LineageId) -> LineageId {
+        if self.first == lineage {
+            self.second
+        } else {
+            self.first
+        }
+    }
+}
+
+/// Private solver tags for Stern (2004) subduction initiation.
+///
+/// Not published: G1d forbids a new release schema. Trenches persist once
+/// started; continental rift siblings mark this-cycle Atlantic-type oceans.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct SubductionInitiation {
+    established_trenches: BTreeSet<LineagePair>,
+    continental_rift_pairs: BTreeSet<LineagePair>,
+}
+
+impl SubductionInitiation {
+    pub(super) fn has_trench(&self, first: LineageId, second: LineageId) -> bool {
+        self.established_trenches
+            .contains(&LineagePair::new(first, second))
+    }
+
+    pub(super) fn is_this_cycle_rift_pair(&self, first: LineageId, second: LineageId) -> bool {
+        self.continental_rift_pairs
+            .contains(&LineagePair::new(first, second))
+    }
+
+    pub(super) fn record_trench(&mut self, first: LineageId, second: LineageId) {
+        if first != second {
+            self.established_trenches
+                .insert(LineagePair::new(first, second));
+        }
+    }
+
+    pub(super) fn record_rift_pair(&mut self, first: LineageId, second: LineageId) {
+        if first != second {
+            self.continental_rift_pairs
+                .insert(LineagePair::new(first, second));
+        }
+    }
+
+    pub(super) fn replace_lineage(&mut self, parent: LineageId, children: &[LineageId]) {
+        remap_pairs(&mut self.established_trenches, parent, children);
+        remap_pairs(&mut self.continental_rift_pairs, parent, children);
+        for (index, &first) in children.iter().enumerate() {
+            for &second in &children[index + 1..] {
+                self.continental_rift_pairs
+                    .insert(LineagePair::new(first, second));
+            }
+        }
+    }
+}
+
+fn remap_pairs(pairs: &mut BTreeSet<LineagePair>, parent: LineageId, children: &[LineageId]) {
+    let inherited = pairs
+        .iter()
+        .copied()
+        .filter(|pair| pair.contains(parent))
+        .collect::<Vec<_>>();
+    for pair in inherited {
+        pairs.remove(&pair);
+        let other = pair.other(parent);
+        for &child in children {
+            if child != other {
+                pairs.insert(LineagePair::new(child, other));
+            }
+        }
+    }
+}
+
 /// The only logical state at one evolution step.
 #[derive(Debug)]
 pub(super) struct TectonicState {
     pub(super) samples: Vec<CrustSample>,
     pub(super) plates: Vec<ActivePlate>,
+    pub(super) initiation: SubductionInitiation,
     next_lineage_raw: u32,
 }
 
@@ -407,6 +506,7 @@ impl TectonicState {
         Ok(Self {
             samples,
             plates,
+            initiation: SubductionInitiation::default(),
             next_lineage_raw,
         })
     }
@@ -419,6 +519,7 @@ impl TectonicState {
         Self {
             samples: Vec::with_capacity(sample_capacity),
             plates: Vec::with_capacity(plate_capacity),
+            initiation: SubductionInitiation::default(),
             next_lineage_raw,
         }
     }
@@ -448,6 +549,7 @@ impl TectonicState {
         self.plates.clear();
         self.plates.extend_from_slice(&current.plates);
         self.next_lineage_raw = current.next_lineage_raw;
+        self.initiation = current.initiation.clone();
     }
 
     pub(super) fn allocate_lineage(&mut self) -> Option<LineageId> {
