@@ -62,8 +62,9 @@ model / resample）与 `src/world/natural/spherical_tectonics.rs` 常量。
 
 ### 任务 6：回归与 UI 验证步骤
 
-- [x] fmt / clippy / wasm check；受影响套件 Release
-- [ ] 完整调试回归（收尾）
+- [x] fmt / clippy / wasm check；Release 全量 142 套件通过（仅
+      `persisted_origin_defaults_new_apps_and_missing_tags_to_spherical` 为
+      7323cba 起的既有失败）；调试档全量按 2026-08-28 用户指令不再硬性要求
 - [ ] 规格 §6 步骤交用户（UI 验收待用户）
 
 ---

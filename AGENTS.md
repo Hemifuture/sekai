@@ -106,8 +106,11 @@
   也不得为便于测试新增生产抽象、公共 API、schema 或算法分支。
 - 测试复用生产侧事实源、构造器和校验器，不复制科学公式。若测试耗时显著增加，
   先定位重复求解并缩窄 fixture/调用次数；不能用扩大超时掩盖不合理范围。
-- 本节约束测试设计与迭代期命令，不取消工作流程中明确要求的最终完整回归、
-  性能门禁和用户 UI 验收。
+- 本节约束测试设计与迭代期命令，不取消用户 UI 验收。测试范围由代理按改动
+  的影响面自行决定并说明理由（用户指令，2026-08-28）：不再硬性要求任务收尾
+  跑完整调试回归或固定的性能门禁；改动只碰一个模块就跑该模块与直接消费者
+  的套件，碰到共享基础设施（求解器、重采样、schema、身份）再扩到 Release
+  全量；调试档全量只在有具体理由（例如怀疑 debug 断言或溢出检查）时跑。
 
 ## 验收纪律：算法必须与 UI 同步交付（用户指令，2026-08-19）
 
@@ -420,9 +423,9 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 - 门禁（提交前）：`cargo fmt --all -- --check`；
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`；
   `cargo check --target wasm32-unknown-unknown --all-features --lib`；
-  受影响测试即时跑，任务收尾跑完整调试回归。
-- P5 全链集成套件在调试档极慢（全量约 40 分钟）：迭代期用 `--release`
-  跑目标套件，最终门禁再跑完整调试回归。
+  测试范围按上文“测试范围纪律”由代理自行决定并在交付说明里写明跑了什么。
+- P5 全链集成套件在调试档极慢（全量约 40 分钟）：用 `--release` 跑目标
+  套件；应用占着 `target/release/sekai.exe` 时用 `CARGO_TARGET_DIR=target/probe`。
 - 提交信息：一行祈使句主题 + 说明动机的正文。
 
 ---
@@ -481,5 +484,6 @@ Acceptance: algorithm work is delivered only when it reaches the UI and the
 user personally verifies it; agent self-checks are necessary but never
 sufficient. Workflow: task-per-commit
 plans in docs/superpowers/plans, frozen specs with explicit amendments,
-fmt/clippy/wasm gates, release-mode iteration for the slow P5 suites with
-a full debug regression at the end.
+fmt/clippy/wasm gates, and a test scope the agent chooses by blast radius and
+states in the hand-off (no mandatory full debug regression or fixed
+performance gate; user instruction 2026-08-28).
