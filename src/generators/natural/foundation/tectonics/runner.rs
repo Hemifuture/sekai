@@ -345,8 +345,10 @@ fn apply_boundary_torques_to_current(
 /// produces from that classification, so the quasi-static solve is a fixed
 /// point: classify, solve, reclassify, solve, and classify once more so the
 /// events the processes consume match the rotations the step advances with.
-/// Two solves close the loop for the stiff dashpots (G1e §3.3); a third
-/// changed nothing measurable on the draft corpus.
+/// Measured on the draft corpus: the second sweep costs about 10% of P2 time
+/// and leaves locked and collision residuals unchanged; the 256 Myr end state
+/// is chaotic enough that dropping it reshuffles which blocks suture, so the
+/// count the gate corpus was pinned with is kept.
 const QUASI_STATIC_SWEEPS: usize = 2;
 
 fn solve_quasi_static_rotations(
