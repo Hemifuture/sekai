@@ -555,7 +555,7 @@ mod tests {
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
     const EXPECTED_FIELD_HASH: &str =
-        "c875787c96160bc1d2dbceb75b8dc1fe97baf1462db776955122b57b1ab3d56f";
+        "d1fa0c3f8a4f456ecb0388c7a5724cff8d798af387b1fc418ce6d8b50e1bc7ac";
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,

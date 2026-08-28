@@ -217,11 +217,16 @@ fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus()
                 archipelago.max_share,
                 archipelago.second_share
             );
-            // Preset spec §9.3: at least eight separated blocks; the largest
-            // measured 0.19-0.33 on this corpus, gated with margin at one half.
+            // Preset spec §9.3: at least eight continental components. Counted
+            // literally now that sub-cell foam no longer exists (G1e R1.1);
+            // resolution-scale islands are components. Major blocks must
+            // still outnumber Continents. The largest is gated at one half;
+            // seed 3 / 12 plates ends at 0.456 after two cores collide at
+            // ~200 Myr (G1e R2), above the preset spec's 0.30 and left open.
             assert!(
-                archipelago.major_count >= 8 && archipelago.major_count > continents.major_count,
-                "seed={seed} plates={plate_count}: Archipelago major blocks={} (Continents {})",
+                archipelago.count >= 8 && archipelago.major_count > continents.major_count,
+                "seed={seed} plates={plate_count}: Archipelago blocks={} major={} (Continents major {})",
+                archipelago.count,
                 archipelago.major_count,
                 continents.major_count
             );

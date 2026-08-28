@@ -392,25 +392,6 @@ impl ProcessActions {
         self.dispositions.is_empty() && self.spawned.is_empty()
     }
 
-    /// True while no process has removed, transferred, or staged this sample.
-    pub(super) fn is_untouched(&self, sample: usize) -> bool {
-        self.dispositions.get(sample) == Some(&SampleDisposition::Keep)
-            && self
-                .pending_oceanic_subduction
-                .get(sample)
-                .is_some_and(Option::is_none)
-    }
-
-    /// True when the commit will drop this sample: marked for removal, or its
-    /// staged subduction leaves nothing behind.
-    pub(super) fn will_be_removed(&self, sample: usize) -> bool {
-        self.dispositions.get(sample) == Some(&SampleDisposition::Remove)
-            || self
-                .pending_oceanic_subduction
-                .get(sample)
-                .is_some_and(|pending| pending.is_some_and(|pending| pending.replacement.is_none()))
-    }
-
     pub(super) fn lineage_has_pending_changes(
         &self,
         samples: &[CrustSample],

@@ -244,13 +244,18 @@ fn conservative_material_resample_v5(
     // could bridge a seaway or open a hole nothing moved into (G1e §3.4). A
     // cell nobody covers keeps the kind the per-cell resample resolved.
     let mut kinds = Vec::with_capacity(cell_count);
+    let mut winner_thickness = Vec::with_capacity(cell_count);
     for (cell, fallback) in surface.cells().iter().zip(remapped.iter()) {
-        let kind = if coverage.sample_indices(cell.id).is_empty() {
-            fallback.kind
+        let winner = if coverage.sample_indices(cell.id).is_empty() {
+            *fallback
         } else {
-            source.samples[coverage_winner(&source.samples, coverage, cell.id, cell.centroid)?].kind
+            source.samples[coverage_winner(&source.samples, coverage, cell.id, cell.centroid)?]
         };
-        kinds.push(kind);
+        kinds.push(winner.kind);
+        winner_thickness.push(match winner.kind {
+            CrustKind::Continental => winner.material.continental_thickness_km(),
+            CrustKind::Oceanic => winner.material.oceanic_thickness_km(),
+        });
     }
     // One control cell is the resolution floor: a continental cell with no
     // continental neighbor, or an oceanic cell with no oceanic neighbor, is
@@ -370,7 +375,14 @@ fn conservative_material_resample_v5(
         }
     }
     ledger.record_resample_overlap_moved_area(moved_area);
-    rebalance_columns_to_cells(surface, topology, remapped, &mut kinds, ledger)?;
+    rebalance_columns_to_cells(
+        surface,
+        topology,
+        remapped,
+        &mut kinds,
+        &winner_thickness,
+        ledger,
+    )?;
     Ok(())
 }
 
@@ -388,6 +400,7 @@ fn rebalance_columns_to_cells(
     topology: &NaturalTopologyIndex,
     remapped: &mut [CrustSample],
     kinds: &mut [CrustKind],
+    winner_thickness: &[Option<f32>],
     ledger: &mut EvolutionMaterialLedger,
 ) -> Result<(), ResampleError> {
     let mut groups: BTreeMap<(u32, bool), Vec<usize>> = BTreeMap::new();
@@ -433,7 +446,14 @@ fn rebalance_columns_to_cells(
             total_area += area;
             total_volume += volume;
             total_cells += surface.cells()[index].area.get();
-            thickness.push(if area > 0.0 { volume / area } else { 0.0 });
+            // Thickness is intensive and advects with the nearest sample; the
+            // parcels that happen to stack in a cell contribute their volume
+            // to the group, not a doubled column here.
+            thickness.push(match winner_thickness[index] {
+                Some(km) if km > 0.0 => f64::from(km) * 1_000.0,
+                _ if area > 0.0 => volume / area,
+                _ => 0.0,
+            });
             parcel_area.push(area);
         }
         if total_area <= 0.0 || total_volume <= 0.0 {

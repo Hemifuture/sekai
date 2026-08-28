@@ -202,6 +202,7 @@ fn probe_g1e_inland_water() {
     for preset in [
         ResolvedWorldFormationPreset::Archipelago,
         ResolvedWorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Supercontinent,
     ] {
         for seed in [PRIMARY_SEED, CONTRAST_SEED] {
             for plate_count in [12_u16, 22] {
@@ -260,6 +261,60 @@ fn probe_g1e_inland_water() {
                     .filter(|&index| kinds[index] == CrustKind::Continental && wet[index])
                     .map(|index| areas[index])
                     .sum();
+                if std::env::var_os("G1E_RENDER").is_some() && plate_count == 12 {
+                    let dir = output_dir().parent().unwrap().join("g1e");
+                    std::fs::create_dir_all(&dir).unwrap();
+                    let (w, h) = (360_u32, 180_u32);
+                    let mut raster = vec![0_usize; (w * h) as usize];
+                    for y in 0..h {
+                        let lat =
+                            std::f64::consts::PI * (0.5 - (f64::from(y) + 0.5) / f64::from(h));
+                        for x in 0..w {
+                            let lon = 2.0
+                                * std::f64::consts::PI
+                                * ((f64::from(x) + 0.5) / f64::from(w) - 0.5);
+                            let d = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+                            let mut best = (f64::NEG_INFINITY, 0_usize);
+                            for (i, cell) in surface.cells().iter().enumerate() {
+                                let c = cell.centroid.components();
+                                let score = c[0] * d[0] + c[1] * d[1] + c[2] * d[2];
+                                if score > best.0 {
+                                    best = (score, i);
+                                }
+                            }
+                            raster[(y * w + x) as usize] = best.1;
+                        }
+                    }
+                    let thickness = substrate.crust_thickness_km();
+                    let elevation = relief.elevation_m();
+                    let sea = relief.sea_level_m();
+                    let mut img = image::RgbImage::new(w, h);
+                    for (pixel, &cell) in raster.iter().enumerate() {
+                        let rgb = if wet[cell] {
+                            let depth = ((sea - elevation[cell]) / 5000.0).clamp(0.0, 1.0);
+                            if kinds[cell] == CrustKind::Continental {
+                                [90, 140, (220.0 - 60.0 * depth) as u8]
+                            } else {
+                                [20, 40, (170.0 - 100.0 * depth) as u8]
+                            }
+                        } else {
+                            let t = ((thickness[cell] - 20.0) / 40.0).clamp(0.0, 1.0);
+                            [(120.0 + 100.0 * t) as u8, (100.0 + 60.0 * t) as u8, 60]
+                        };
+                        img.put_pixel((pixel as u32) % w, (pixel as u32) / w, image::Rgb(rgb));
+                    }
+                    img.save(dir.join(format!("p3-{preset:?}-{seed}.png")))
+                        .unwrap();
+                    let mut hist = [0_usize; 8];
+                    for i in 0..n {
+                        if kinds[i] == CrustKind::Continental {
+                            hist[(((thickness[i] - 20.0) / 5.0).clamp(0.0, 7.0)) as usize] += 1;
+                        }
+                    }
+                    println!(
+                        "G1e-thick {preset:?} seed={seed} sea={sea:.0} cont_thickness_hist(20..60 by 5km)={hist:?}"
+                    );
+                }
                 println!(
                     "G1e-water {preset:?} seed={seed} plates={plate_count} land_frac={:.3} land_n={} land_max={:.3} inland_n={inland_count} inland_area_share={:.4} inland_continental_share={:.3} continental_submerged={:.3}",
                     land_area / total,

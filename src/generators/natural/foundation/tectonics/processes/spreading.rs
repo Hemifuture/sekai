@@ -22,7 +22,8 @@ use crate::generators::natural::foundation::tectonics::model::{
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, NO_OROGENY_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+    NO_OROGENY_AGE_SENTINEL_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
@@ -270,20 +271,20 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
     Ok(stats)
 }
 
+/// Material carried by a hole marker: enough to be a valid column, too
+/// little to move any mass.
+const MARKER_SAMPLE_AREA_M2: f64 = 1.0;
+
 /// Semi-Lagrangian rebinning of sampling holes (G1e §3.4).
 ///
 /// A rigid plate keeps its sample count, so a hole that no neighboring plate
 /// is moving away from is a discretization artifact: the sample that left it
-/// landed in a cell that already had one, or displaced that cell's sample
-/// onward in a chain that ends at such a double. The hole is filled with the
-/// nearest free sample of the same plate and crust kind; if that sample was
-/// alone in its cell, the chain continues from there until a double gives one
-/// up. Nothing is created, so the mask is advected rigidly and no ocean lands
-/// inside a continent. A hole a neighboring plate is diverging from is real
-/// spreading and is left to the ridge fill. Filled holes are dropped from
-/// `events`. When a plate has no free sample of the kind left (its double was
-/// consumed this step), the nearest column of that kind is split in two, area
-/// and volume halved, thickness kept.
+/// landed in a cell that already had one. The hole gets a marker sample that
+/// carries the departing column's intensive state and one square metre of
+/// material, so the mask and the thickness field advect with the plate, the
+/// plate's parcels stay untouched, and the resample closes area and volume per
+/// plate. A hole a neighboring plate is diverging from is real spreading and
+/// is left to the ridge fill. Filled holes are dropped from `events`.
 pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps_v5(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
@@ -295,21 +296,6 @@ pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps
 ) -> Result<ProcessStats, ProcessError> {
     actions.validate_for(next.samples.len())?;
     let cell_count = surface.cells().len();
-    let mut free = (0..next.samples.len())
-        .map(|sample| actions.is_untouched(sample))
-        .collect::<Vec<_>>();
-    let survives = (0..next.samples.len())
-        .map(|sample| !actions.will_be_removed(sample))
-        .collect::<Vec<_>>();
-    let mut anchored = (0..cell_count)
-        .map(|cell| {
-            coverage
-                .sample_indices(CellId::from_raw(cell as u32))
-                .iter()
-                .map(|&raw| raw as usize)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
     let (_, current_sample_by_cell, _) = actions.spreading_scratch(cell_count);
     index_current_samples(surface, current, current_sample_by_cell)?;
     let mut worklist = VecDeque::new();
@@ -319,137 +305,43 @@ pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps
             continue;
         };
         let owner = current.samples[occupant].owner;
-        let kind = current.samples[occupant].kind;
         if hole_is_spreading(surface, topology, next, coverage, cell_index, owner)? {
             continue;
         }
-        worklist.push_back((cell_index, owner, kind));
+        worklist.push_back((cell_index, occupant));
     }
 
     let mut rebinned = vec![false; cell_count];
-    let mut split_fills = Vec::new();
     let mut stats = ProcessStats::default();
-    let mut search = HoleSearch::new(cell_count);
-    while let Some((hole, owner, kind)) = worklist.pop_front() {
-        let matches = |sample: usize, next: &TectonicState| {
-            next.samples[sample].owner == owner && next.samples[sample].kind == kind
-        };
-        // Take a free sample only from a cell that keeps another surviving
-        // sample, so no cell is left to the commit empty.
-        let found = search.nearest(topology, &anchored, hole, |cell, sample| {
-            matches(sample, next)
-                && free[sample]
-                && anchored[cell]
-                    .iter()
-                    .any(|&other| other != sample && survives[other])
-        });
-        match found {
-            Some((from_cell, sample)) => {
-                free[sample] = false;
-                anchored[from_cell].retain(|&other| other != sample);
-                anchored[hole].push(sample);
-                next.samples[sample].position = surface.cells()[hole].centroid;
-                next.samples[sample].anchor = CellId::from_raw(hole as u32);
-                rebinned[hole] = true;
-                stats.rebinned_samples += 1;
-                if !anchored[from_cell].iter().any(|&other| survives[other]) {
-                    worklist.push_back((from_cell, owner, kind));
-                }
-            }
-            None => {
-                // No free sample of this kind is left on the plate (its
-                // double was consumed this step): split the nearest column
-                // of the kind, falling back to the plate's nearest column of
-                // any kind so the hole never reaches the resample unfilled.
-                let donor = search
-                    .nearest(topology, &anchored, hole, |_, sample| {
-                        matches(sample, next) && survives[sample]
-                    })
-                    .or_else(|| {
-                        search.nearest(topology, &anchored, hole, |_, sample| {
-                            next.samples[sample].owner == owner && survives[sample]
-                        })
-                    })
-                    .or_else(|| {
-                        search.nearest(topology, &anchored, hole, |_, sample| survives[sample])
-                    });
-                let Some((_, donor)) = donor else {
-                    continue;
-                };
-                let material = next.samples[donor].material;
-                let half = MaterialColumn::new(
-                    material.continental_reference_area_m2() * 0.5,
-                    material.continental_volume_m3() * 0.5,
-                    material.oceanic_reference_area_m2() * 0.5,
-                    material.oceanic_volume_m3() * 0.5,
-                )?;
-                next.samples[donor].material = half;
-                let mut fill = next.samples[donor];
-                fill.position = surface.cells()[hole].centroid;
-                fill.anchor = CellId::from_raw(hole as u32);
-                split_fills.push(fill);
-                rebinned[hole] = true;
-                stats.split_fills += 1;
-            }
-        }
-    }
-    for fill in split_fills {
-        actions.push_spawned(fill);
+    for (hole, occupant) in worklist {
+        // The hole keeps the state of the column that just left it: thickness,
+        // age, elevation and orogeny are intensive and advect with the plate.
+        // The marker carries no material of its own (one square metre); the
+        // plate's parcels stay where they landed and the resample spreads the
+        // group's volume over its cells, so nothing is created or shuffled.
+        let mut marker = current.samples[occupant];
+        marker.position = surface.cells()[hole].centroid;
+        marker.anchor = CellId::from_raw(hole as u32);
+        marker.material = MaterialColumn::pure(
+            marker.kind,
+            MARKER_SAMPLE_AREA_M2,
+            marker.thickness_km.clamp(
+                match marker.kind {
+                    CrustKind::Continental => CONTINENTAL_CRUST_MIN_THICKNESS_KM,
+                    CrustKind::Oceanic => OCEANIC_CRUST_MIN_THICKNESS_KM,
+                },
+                match marker.kind {
+                    CrustKind::Continental => CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+                    CrustKind::Oceanic => OCEANIC_CRUST_MAX_THICKNESS_KM,
+                },
+            ),
+        )?;
+        actions.push_spawned(marker);
+        rebinned[hole] = true;
+        stats.rebinned_samples += 1;
     }
     events.retain(|event| event.kind != ContactKind::Gap || !rebinned[event.cell.raw() as usize]);
     Ok(stats)
-}
-
-/// Reusable breadth-first search over cells for the nearest anchored sample
-/// satisfying a predicate.
-struct HoleSearch {
-    visited: Vec<u32>,
-    stamp: u32,
-    queue: VecDeque<usize>,
-}
-
-impl HoleSearch {
-    fn new(cell_count: usize) -> Self {
-        Self {
-            visited: vec![u32::MAX; cell_count],
-            stamp: 0,
-            queue: VecDeque::new(),
-        }
-    }
-
-    fn nearest(
-        &mut self,
-        topology: &NaturalTopologyIndex,
-        anchored: &[Vec<usize>],
-        start: usize,
-        mut accept: impl FnMut(usize, usize) -> bool,
-    ) -> Option<(usize, usize)> {
-        self.stamp = self.stamp.wrapping_add(1);
-        if self.stamp == u32::MAX {
-            self.visited.fill(u32::MAX - 1);
-            self.stamp = 0;
-        }
-        self.queue.clear();
-        self.queue.push_back(start);
-        self.visited[start] = self.stamp;
-        while let Some(cell) = self.queue.pop_front() {
-            if let Some(&sample) = anchored[cell]
-                .iter()
-                .filter(|&&sample| accept(cell, sample))
-                .max()
-            {
-                return Some((cell, sample));
-            }
-            for arc in &topology.arcs()[cell] {
-                let neighbor = arc.neighbor.raw() as usize;
-                if self.visited[neighbor] != self.stamp {
-                    self.visited[neighbor] = self.stamp;
-                    self.queue.push_back(neighbor);
-                }
-            }
-        }
-        None
-    }
 }
 
 /// A hole is spreading when a plate other than its previous occupant covers a
@@ -1135,16 +1027,16 @@ mod tests {
             events.is_empty(),
             "a rebinned hole is no longer a spreading gap"
         );
-        let anchored_at = |cell: CellId| {
-            next.samples
-                .iter()
-                .filter(|sample| sample.anchor == cell)
-                .count()
-        };
-        assert_eq!(anchored_at(hole), 1);
-        assert_eq!(anchored_at(neighbor), 1);
-        assert_eq!(next.samples.len(), current.samples.len());
-        assert!(actions.spawned_samples().is_empty());
+        let marker = &actions.spawned_samples()[0];
+        assert_eq!(marker.anchor, hole);
+        assert_eq!(marker.kind, current.samples[3].kind);
+        assert_eq!(marker.thickness_km, current.samples[3].thickness_km);
+        assert!(marker.material.continental_reference_area_m2() <= 1.0);
+        assert_eq!(
+            next.samples[3].anchor, neighbor,
+            "the double is not snapped back"
+        );
+        assert_eq!(next.samples[3].material, current.samples[3].material);
     }
 
     #[test]

@@ -57,7 +57,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "tectonic",
-        "4a6dfbe311a8b7cce14eb351084d6ec4364e781f551997fa8c2d72aff4757710",
+        "06ec9a95a3e861ce03971d0426575b6139156f515622e54f4f76cc61b7c35a68",
     ),
     (
         "mantle",
@@ -65,27 +65,27 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "relief",
-        "50c177b894fa876983f1ceb87f90254763cd02bd6bb9547b941170dc85348e3f",
+        "5cbaf2e222257c77fa157df81f6d7fe415dce344d5fe2979232e6737426bd1fc",
     ),
     (
         "geology",
-        "c5ef5a1966eedbc8c5169d5fb2622a6a912bc4c15469b50209920df8536f145c",
+        "0174f20292208ee5f38ec1a3977f140ae86793e08930c1ce7f2b30fcb195fb71",
     ),
     (
         "climate",
-        "c3d893fc4bb3f9d1d4d0d7f359ce9ec31b2072d5e061453c2ee8d62187060ac1",
+        "8f9e0507183d559e87d16595f9709d7b6d34d221b7b0259a02d9618f0f09ec31",
     ),
     (
         "hydro",
-        "646239e6133cb9d32e4c3aeb8d77a9876376e5fb3bd7b020c300b2b1f67aad89",
+        "b1513337fc0be091b82e7483e24ffc80275d9ef717c22594f1792b94a10fb6a0",
     ),
     (
         "quality",
-        "e5b6306f199ad40e3563e51f25876594d46d8ce7cdc69a089badcd6c2a3a0c22",
+        "66684802988168bd9a282f6531cd949d1615ea1282c61a1f35462b0404e4877f",
     ),
     (
         "result",
-        "c22d577e12b38e806767f5a9aba102c85db2939ae98d0b045f66c9469be277ef",
+        "b0442d82c42ebc07d769b2f0cf9aa65e07596f68a84199968c10e446cb1c0f0a",
     ),
 ];
 

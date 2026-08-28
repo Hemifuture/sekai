@@ -167,6 +167,11 @@ impl MaterialColumn {
         )
     }
 
+    pub(super) fn oceanic_thickness_km(self) -> Option<f32> {
+        (self.oceanic_reference_area_m2 > 0.0)
+            .then_some((self.oceanic_volume_m3 / self.oceanic_reference_area_m2 / 1_000.0) as f32)
+    }
+
     pub(super) fn oceanic_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
         material_amount(self.oceanic_reference_area_m2, self.oceanic_volume_m3)
     }

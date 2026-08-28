@@ -1156,6 +1156,11 @@ mod tests {
                         (workspace.current.plates.len(), girdle, outer_descends)
                     };
                     let mut trajectory = Vec::new();
+                    let opening_roughness = continental_thickness_roughness(
+                        surface,
+                        &build_initial_state_v5(surface, &topology, &spec, preset, &streams)
+                            .unwrap(),
+                    );
                     let evolved = evolve_control_state_v5_with_resample_observer(
                         surface,
                         &topology,
@@ -1201,6 +1206,10 @@ mod tests {
                     println!(
                         "G1e-traj {preset:?} seed={seed} plates={plate_count} {}",
                         trajectory.join(" ")
+                    );
+                    println!(
+                        "G1e-rough {preset:?} seed={seed} plates={plate_count} opening={opening_roughness:.2} final={:.2} km",
+                        continental_thickness_roughness(surface, &evolved.current)
                     );
                     let state = &evolved.current;
                     let mut coverage = CoverageScratch::with_cell_capacity(surface.cells().len());
@@ -1513,6 +1522,13 @@ mod tests {
             commit_process_actions_v5(next, actions, &mut ledger).unwrap();
             workspace.swap_current_next();
             let skip_resample = std::env::var_os("G1E_RIGID_NO_RESAMPLE").is_some();
+            if skip_resample && step % 10 == 9 {
+                log.push(format!(
+                    "pre{}:r{:.2}",
+                    step + 1,
+                    continental_thickness_roughness(surface, &workspace.current)
+                ));
+            }
             if skip_resample && step < 6 {
                 use crate::world::natural::CrustKind;
                 let state = &workspace.current;
@@ -1542,7 +1558,11 @@ mod tests {
                 }
                 let (components, max_share) =
                     continental_component_shares(surface, &topology, &workspace.current);
-                log.push(format!("{}:{components}c/{max_share:.2}", step + 1));
+                log.push(format!(
+                    "{}:{components}c/{max_share:.2}/r{:.2}",
+                    step + 1,
+                    continental_thickness_roughness(surface, &workspace.current)
+                ));
                 if !skip_resample {
                     let initial = ledger.initial_control();
                     let processes = ledger.processes().unwrap();
@@ -1581,6 +1601,39 @@ mod tests {
             "G1e-rigid opening={opening_components}c/{opening_max:.2} {}",
             log.join(" ")
         );
+        println!(
+            "G1e-rigid roughness final={:.2} km",
+            continental_thickness_roughness(surface, &workspace.current)
+        );
+    }
+
+    /// Mean |thickness difference| across continental-continental edges, km.
+    fn continental_thickness_roughness(
+        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
+        state: &TectonicState,
+    ) -> f64 {
+        use crate::world::natural::CrustKind;
+        let mut thickness = vec![None; surface.cells().len()];
+        for sample in &state.samples {
+            if sample.kind == CrustKind::Continental {
+                thickness[sample.anchor.raw() as usize] =
+                    sample.material.continental_thickness_km();
+            }
+        }
+        let mut sum = 0.0;
+        let mut count = 0_usize;
+        for edge in surface.edges() {
+            let [a, b] = edge.cells;
+            if let (Some(x), Some(y)) = (thickness[a.raw() as usize], thickness[b.raw() as usize]) {
+                sum += f64::from((x - y).abs());
+                count += 1;
+            }
+        }
+        if count == 0 {
+            0.0
+        } else {
+            sum / count as f64
+        }
     }
 
     fn continental_component_shares(

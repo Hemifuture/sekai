@@ -248,7 +248,7 @@ fn emit_morphology_probe_child() {
     .unwrap();
     let mut rng = StageRng::from_seed(derive_stage_seed(
         ROOT_SEED,
-        StageIdentity::new("natural.spherical-tectonics", 8, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 9, "sekai.core"),
     ));
     let baseline = process_working_set_bytes()
         .expect("morphology memory probe requires Windows or Linux process metrics");

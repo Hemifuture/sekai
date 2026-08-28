@@ -94,7 +94,7 @@ fn generate_with_continental_fraction(
     };
     let mut rng = StageRng::from_seed(derive_stage_seed(
         RootSeed::new(seed),
-        StageIdentity::new("natural.spherical-tectonics", 8, "sekai.core"),
+        StageIdentity::new("natural.spherical-tectonics", 9, "sekai.core"),
     ));
     TectonicGenerator::generate_spherical(surface, &spec, &formation, &mut rng).unwrap_or_else(
         |error| {
