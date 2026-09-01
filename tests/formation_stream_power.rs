@@ -456,7 +456,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         elevation_m: vec![1_000.0; count],
         receiver: vec![None; count],
         water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
-        discharge_m3_s: vec![discharge_of_reference_runoff_m3_s(1.0e6) as f32; count],
+        discharge_m3_s: vec![discharge_of_reference_runoff_m3_s(1.0e6); count],
         uplift_rate_mm_year: vec![0.0; count],
         subsidence_rate_mm_year: vec![0.0; count],
         erodibility: vec![0.5; count],
