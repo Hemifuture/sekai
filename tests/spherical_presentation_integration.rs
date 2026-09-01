@@ -778,10 +778,9 @@ fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     let mut encoded = serde_json::to_value(&app).unwrap();
 
     assert_eq!(app.world_origin(), PersistedWorldOrigin::SphericalV1);
-    assert_eq!(
-        app.runtime_graph(),
-        AppRuntimeGraph::SphericalNaturalFoundation
-    );
+    // The formation product chain is the interactive default since 7323cba
+    // (G1: crust follows the plates and the formation chain closes).
+    assert_eq!(app.runtime_graph(), AppRuntimeGraph::SphericalFormation);
     assert_eq!(encoded["world_origin"], "SphericalV1");
     assert_eq!(encoded["spherical_space_spec"]["radius"], 6_371_000.0);
     assert_eq!(encoded["spherical_space_spec"]["target_cell_count"], 20_000);
@@ -801,7 +800,7 @@ fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     assert_eq!(restored.world_origin(), PersistedWorldOrigin::SphericalV1);
     assert_eq!(
         restored.runtime_graph(),
-        AppRuntimeGraph::SphericalNaturalFoundation
+        AppRuntimeGraph::SphericalFormation
     );
 }
 
