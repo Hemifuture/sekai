@@ -62,19 +62,21 @@
       标量下梯度扩散。
       验证：`global_circulation_*` 套件 + `layered_circulation_physics`。
 
-- [x] Task 5 —— 水面几何扇形面积缓存与海平面 Newton 求解
-      `normalized_fan_areas` 只依赖曲面几何却随每次海平面求解重算；
-      `solve_level_interval` 二分到 f64 ULP（约 57 次 O(6N) 迭代），而 wire
-      路径最终量化到 f32 只需约 24 次。改为按曲面缓存扇形面积，并用
-      `dV/dz = 湿面积(z)` 做 Newton 收缩后再以同一 ULP 二分收尾（保持逐位身份）。
-      验证：`surface_water_geometry` + `water_volume_sea_level` + `primary_relief_*`。
+- [x] Task 5 —— 海平面求解改安全化 Newton（扇形面积缓存按实测取消）
+      Newton 已落地，解逐位不变（denudation 探针九项分量与改前完全一致）。
+      **实测修正审计估计**：Draft 档 `primary_relief_generation` 只从
+      `1.262 s` 降到 `1.246 s`（约 1%），全链单 seed `81.35 s → 80.78 s`。
+      海平面二分不是该阶段的主导开销（主导的是 conditioned regional detail 的
+      FBM 与 sparse Gabor 噪声），因此扇形面积缓存所需的 workspace 穿线不做——
+      它要改动多个调用点，换来的是不到 1% 的一部分。
 
-- [x] Task 6 —— `NaturalTopologyIndex` 改 CSR 并按曲面共享
-      索引是曲面的纯函数，却在 `primary_relief.rs` 与
-      `surface_formation/hydrology.rs` 每次调用重建；邻接用
-      `Vec<Vec<NeighborArc>>`，High 档每次重建 20 万次小堆分配。改扁平 CSR
-      并在 P5 window 之间复用。
-      验证：`spherical_*` 拓扑消费者套件 + P5 套件。
+- [x] Task 6 —— **按实测关闭，不实施**
+      审计说索引反复重建且用 `Vec<Vec<_>>`，属实；但量级估计错了。
+      `from_surface` 是一次 O(E) 扫描加每格一次小排序：Draft 档 60,750 边约
+      3–5 ms，一次构建重建约 4 次，合计约 20 ms，占单 seed 全链 `40 s` 的
+      **0.05%**；High 档比例相同。改 CSR 要重写一个被广泛消费的类型，换 0.05%
+      不成立。按 AGENTS.md「只在有真实消费者与实测收益时才加优化机制」关闭。
+      若将来 P5 的图遍历成为主导项，此项可重开。
 
 - [x] Task 7 —— P5 侵蚀量级先测后钉
       新增 `tests/formation_denudation.rs`（ignored / Release）用九项高程组成
@@ -97,12 +99,22 @@
       `mean_annual_discharge_m3_s`。
       验证：`formation_stream_power` + P5 质量套件。
 
-- [x] Task 10 —— 生成热点并行化
-      `rayon` 是声明依赖且 AGENTS.md 要求用于 CPU 密集并行，但全仓只有
-      `view/spherical_mesh.rs` 使用；生成管线全单线程。按固定分块 +
-      顺序合并的既有模式（`spherical_mesh.rs`）并行化逐格热循环，保持归约
-      顺序与串行一致。
-      验证：确定性断言（同 seed 逐位一致）+ 性能探针。
+- [ ] Task 10 —— **测完后停下，需用户裁定架构取舍**
+      实测分解（Draft，单 seed 全链约 `40 s`）：P1–P3 约 `2.9 s`
+      （`p3/performance.json`），P4 约 `17 s`（17 seed 气候证据 `349 s / 17`
+      减去上游），其余约 `20 s` 是 P5 加终点 P4。
+      结论与审计不同：
+      - P5 的主导项是**天然串行**的图算法（Priority-Flood、按拓扑序的隐式
+        河流、沉积路由），并行化无从下手；
+      - P4 才是最大单项，但它的内层循环只有 `3456`（Draft）到 `13824`（High）
+        个气候格元，成本来自**调用次数**而不是单次规模，rayon 的每次调用开销
+        与之同量级；
+      - 更要紧的是 `rayon` 在 `Cargo.toml` 里是 `cfg(not(wasm32))` 的依赖，
+        在生成管线里用它就要给科学 kernel 加平台条件分支，破坏「生成管线与
+        平台无关」这条现有不变式。
+      因此不擅自实施。是否接受"原生并行 / wasm 串行"的双路径，属于产品与架构
+      取舍，交用户裁定；若接受，最小可行范围是 P4 tendency 里逐格不相交的
+      热力学循环（`apply_moisture` 等），按固定分块保证与串行逐位一致。
 
 - [x] Task 11 —— 工程卫生
       `.gitignore` 末尾缺换行使 `docs/**/*.pdf` 与 `screenshots/*.ppm` 粘成
