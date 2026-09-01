@@ -42,12 +42,14 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    env:
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-      - run: cargo test --all-targets --all-features
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - run: cargo test --all-targets --all-features --no-fail-fast
 
   field_display_gpu:
     name: Field display GPU reference

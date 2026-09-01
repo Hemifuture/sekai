@@ -554,8 +554,15 @@ mod tests {
     use crate::world::{CellId, Meters, RootSeed, SphericalSpaceSpec};
 
     const ROOT_SEED: RootSeed = RootSeed::new(42);
-    const EXPECTED_FIELD_HASH: &str =
-        "d1fa0c3f8a4f456ecb0388c7a5724cff8d798af387b1fc418ce6d8b50e1bc7ac";
+    // The field bytes are deterministic per platform, but transcendental
+    // rounding differs between the Windows and Linux math libraries, so the
+    // freeze is keyed by target OS (the same policy as the GPU goldens keyed
+    // to the audited adapter). The Linux value is the CI runner's.
+    const EXPECTED_FIELD_HASH: &str = if cfg!(target_os = "windows") {
+        "d1fa0c3f8a4f456ecb0388c7a5724cff8d798af387b1fc418ce6d8b50e1bc7ac"
+    } else {
+        "631f9801e5972a836f476224d5d9c1605f9eed85160613f5aceec7a5cf6b59fb"
+    };
 
     struct CountingSphericalLayerDocument<'a> {
         inner: &'a SphericalNaturalFieldDocument,
