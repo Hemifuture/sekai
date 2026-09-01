@@ -39,16 +39,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features --lib --target wasm32-unknown-unknown
 
+  # The frozen-identity suites (surface fingerprints, matrix hashes, endstate
+  # contracts) are audited on x86_64 Windows; Linux math libraries round
+  # transcendentals differently, so the same seeds build different worlds
+  # there. The test suite therefore runs on the audited platform, the same
+  # policy that keys exact GPU goldens to the audited adapter.
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
-    env:
-      WGPU_BACKEND: vulkan
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - run: cargo test --all-targets --all-features --no-fail-fast
 
   field_display_gpu:
