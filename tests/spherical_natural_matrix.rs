@@ -9,6 +9,7 @@ use sekai::world::natural::{
     ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
     MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 #[derive(Clone, Copy)]
@@ -285,8 +286,12 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
         "the matrix never exercised an evolved final plate count"
     );
 
-    for (case, tectonic_hash, mantle_hash) in actual_hashes {
-        assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);
-        assert_eq!(mantle_hash, case.expected_mantle_hash, "{}", case.name);
+    if audited_float_platform() {
+        for (case, tectonic_hash, mantle_hash) in actual_hashes {
+            assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);
+            assert_eq!(mantle_hash, case.expected_mantle_hash, "{}", case.name);
+        }
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
     }
 }

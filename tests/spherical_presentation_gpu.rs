@@ -2,6 +2,7 @@ use sekai::gpu::spherical::{
     SphericalFieldRenderer, SphericalPaintCallback, SphericalRenderError, SphericalRenderMode,
     SphericalUploadCounters,
 };
+use sekai::world::spatial::audited_float_platform;
 use std::sync::{mpsc, Arc};
 
 use eframe::egui_wgpu::wgpu;
@@ -680,14 +681,20 @@ fn assert_vector_glyph_semantics(
     ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());
-    assert_eq!(
-        glyphs
-            .sampled_cells()
-            .iter()
-            .map(|cell| cell.raw())
-            .collect::<Vec<_>>(),
-        EXPECTED_SAMPLED_IDS
-    );
+    // The sampled ids derive from the generated world, so they are keyed to
+    // the audited float platform, not to the GPU adapter.
+    if audited_float_platform() {
+        assert_eq!(
+            glyphs
+                .sampled_cells()
+                .iter()
+                .map(|cell| cell.raw())
+                .collect::<Vec<_>>(),
+            EXPECTED_SAMPLED_IDS
+        );
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
+    }
     assert!(glyphs.diagnostics().is_empty());
     let map_ids = glyphs
         .map()

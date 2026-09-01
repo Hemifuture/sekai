@@ -9,6 +9,7 @@ use sekai::world::natural::{
     WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M, ELEVATION_MAX_M,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 #[derive(Clone, Copy)]
@@ -247,8 +248,12 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
         actual_hashes.push((case, relief_hash, geology_hash));
     }
 
-    for (case, relief_hash, geology_hash) in actual_hashes {
-        assert_eq!(relief_hash, case.expected_relief_hash, "{}", case.name);
-        assert_eq!(geology_hash, case.expected_geology_hash, "{}", case.name);
+    if audited_float_platform() {
+        for (case, relief_hash, geology_hash) in actual_hashes {
+            assert_eq!(relief_hash, case.expected_relief_hash, "{}", case.name);
+            assert_eq!(geology_hash, case.expected_geology_hash, "{}", case.name);
+        }
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
     }
 }

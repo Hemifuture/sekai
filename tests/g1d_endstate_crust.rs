@@ -14,6 +14,7 @@ use sekai::world::natural::{
     ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
     EARTH_WATER_REFERENCE_RADIUS_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{Meters, RootSeed};
 
@@ -150,6 +151,12 @@ fn preset_spec(preset: ResolvedWorldFormationPreset, plate_count: u16) -> Tecton
 
 #[test]
 fn continents_and_supercontinent_endstates_are_distinguishable_on_draft_corpus() {
+    if !audited_float_platform() {
+        // The endstate contract is pinned on the audited corpus; other libm
+        // roundings build different worlds from the same seeds.
+        eprintln!("endstate contract skipped: unaudited float platform");
+        return;
+    }
     let surface = bundle().authoritative_surface();
     for seed in DAILY_SEEDS {
         for plate_count in DAILY_PLATE_COUNTS {

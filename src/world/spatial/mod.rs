@@ -1,5 +1,6 @@
 //! Immutable planar and spherical cells, edges, topology queries, and validation.
 
+mod audited_platform;
 mod natural_surface;
 mod remap;
 mod snapshot;
@@ -10,6 +11,9 @@ mod surface_ref;
 mod topology;
 mod validation;
 
+pub use audited_platform::{
+    audited_float_platform, float_platform_canary, AUDITED_FLOAT_PLATFORM_CANARY,
+};
 pub use natural_surface::{
     NaturalSurface, NaturalSurfaceError, PlanarNaturalSurface, SphericalNaturalSurface,
     SphericalSurfaceCellFrame, SphericalSurfaceEdgeFrame, SurfaceCellMetrics, SurfaceEdgeMetrics,

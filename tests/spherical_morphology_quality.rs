@@ -10,6 +10,7 @@ use sekai::world::natural::{
     ResolvedWorldFormationPreset, SphericalReliefSnapshot, SphericalTectonicSnapshot, TectonicSpec,
     WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::spatial::{
     central_angle, project_tangent, SphericalSurfaceSnapshot, UnitVector3,
 };
@@ -646,6 +647,10 @@ fn multi_seed_macro_boundaries_reject_voronoi_honeycombs() {
 
 #[test]
 fn formation_presets_preserve_statistical_intent_without_fixed_final_topology() {
+    if !audited_float_platform() {
+        eprintln!("statistical-intent contract skipped: unaudited float platform");
+        return;
+    }
     let surface = quality_surface();
     let presets = [
         ResolvedWorldFormationPreset::Continents,

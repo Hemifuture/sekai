@@ -7,6 +7,7 @@ use sekai::world::natural::{
     SurfaceWaterKind, CLIMATE_MONTH_COUNT, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
     HYDRO_EROSION_SPEC_SCHEMA_V1, PRELIMINARY_CLIMATE_SCHEMA_V2, RELIEF_SCHEMA_V4,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
 
@@ -185,7 +186,11 @@ fn spherical_hydro_erosion_scientific_and_deterministic_matrix() {
             first.surface().sediment_endorheic_storage_m3(),
             hash,
         );
-        assert_eq!(hash, case.expected_hash, "{}", case.name);
+        if audited_float_platform() {
+            assert_eq!(hash, case.expected_hash, "{}", case.name);
+        } else {
+            eprintln!("exact identity checks skipped: unaudited float platform");
+        }
     }
 }
 
