@@ -66,7 +66,7 @@ cargo test --all-targets --all-features
 cargo test --release --test natural_display_golden
 ```
 
-CI 还会执行 20,000 单元 release 性能预算、WASM/Trunk 构建、GPU 离屏参考测试和多平台 release 构建。Golden 变化必须经过人工视觉审阅，不能只机械更新图片。
+CI 执行 fmt、workspace clippy、wasm32 检查、全套件测试、WASM/Trunk 构建、GPU 离屏参考测试和多平台 release 构建。性能预算与大语料证据是 `#[ignore]` 的 Release 探针，离线运行，不在 CI 里。Golden 变化必须经过人工视觉审阅，不能只机械更新图片。
 
 ## 文档
 

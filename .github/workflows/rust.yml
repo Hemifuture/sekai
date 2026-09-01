@@ -89,7 +89,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   trunk:
     name: trunk
