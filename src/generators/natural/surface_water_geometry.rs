@@ -318,7 +318,23 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
         sea_level_m: f64,
         cancellation: &BuildCancellation,
     ) -> Result<f64, WaterVolumeSolveError> {
+        Ok(self.volume_and_wet_area(sea_level_m, cancellation)?.0)
+    }
+
+    /// Returns the water volume at one level together with the wet area, which
+    /// is exactly `dV/dz` there.
+    ///
+    /// Both come out of the same sweep because the fan integrator already
+    /// returns each triangle's wet fraction, so the derivative the solver needs
+    /// for a Newton step costs nothing beyond the volume it was computing
+    /// anyway.
+    fn volume_and_wet_area(
+        &self,
+        sea_level_m: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<(f64, f64), WaterVolumeSolveError> {
         let mut total = CompensatedSum::default();
+        let mut wet_area = CompensatedSum::default();
         let mut fan = 0_usize;
         for (index, cell) in self.surface.cells().iter().enumerate() {
             poll_cancelled(index, cancellation)?;
@@ -332,13 +348,14 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
                     sea_level_m - self.vertex_elevation_m[first],
                     sea_level_m - self.vertex_elevation_m[second],
                 ];
-                let (_, integrated_depth_m) = integrate_positive_linear_triangle(depths);
+                let (wet_fraction, integrated_depth_m) = integrate_positive_linear_triangle(depths);
                 total.add(self.fan_area_m2[fan] * integrated_depth_m);
+                wet_area.add(self.fan_area_m2[fan] * wet_fraction);
                 fan += 1;
             }
         }
         check_cancelled(cancellation)?;
-        Ok(total.total())
+        Ok((total.total(), wet_area.total()))
     }
 
     fn build_working(
@@ -648,21 +665,44 @@ fn solve_level_interval(
         return Err(WaterVolumeSolveError::NonFiniteSolution { found: upper });
     }
 
+    // Safeguarded Newton. `V(z)` is monotone with `dV/dz` equal to the wet
+    // area, so a Newton step converges quadratically where plain bisection
+    // needs one evaluation per bit; the bracket is still only ever narrowed by
+    // an evaluated sign, and a bisection step is forced whenever the Newton
+    // candidate leaves the bracket or fails to halve it, so the loop still ends
+    // on the same one-ULP bracket the pure bisection produced.
+    let mut newton_candidate: Option<f64> = None;
     loop {
         check_cancelled(cancellation)?;
         let midpoint = lower + 0.5 * (upper - lower);
         if midpoint == lower || midpoint == upper {
             break;
         }
-        let volume = reconstruction.total_volume_m3(midpoint, cancellation)?;
+        let width_before = upper - lower;
+        let probe = match newton_candidate.take() {
+            Some(candidate) if candidate > lower && candidate < upper => candidate,
+            _ => midpoint,
+        };
+        let (volume, wet_area_m2) = reconstruction.volume_and_wet_area(probe, cancellation)?;
         if volume < water_inventory_m3 {
-            lower = midpoint;
+            lower = probe;
         } else if volume > water_inventory_m3 {
-            upper = midpoint;
+            upper = probe;
         } else {
-            lower = midpoint;
-            upper = midpoint;
+            lower = probe;
+            upper = probe;
             break;
+        }
+        // A Newton probe can keep landing on the same side and creep the near
+        // edge in without ever moving the far one, so a step that failed to
+        // halve the bracket disqualifies the next one. The interval therefore
+        // still halves at least every second evaluation and the loop is as
+        // bounded as plain bisection.
+        if upper - lower <= 0.5 * width_before && wet_area_m2 > 0.0 {
+            let candidate = probe + (water_inventory_m3 - volume) / wet_area_m2;
+            if candidate.is_finite() {
+                newton_candidate = Some(candidate);
+            }
         }
     }
     Ok((lower, upper))
