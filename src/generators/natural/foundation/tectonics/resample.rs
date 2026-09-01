@@ -72,6 +72,10 @@ pub(super) enum ResampleError {
     MissingFinalAnchor { cell: CellId },
     #[error("final component references missing lineage {lineage:?}")]
     UnknownLineage { lineage: LineageId },
+    #[error(
+        "rebalance could not place {volume_m3} m3 of {kind:?} volume anywhere within thickness bounds"
+    )]
+    UnplacedRebalanceResidual { kind: CrustKind, volume_m3: f64 },
     #[error("final active plate count {found} is outside {min}..={max}")]
     FinalPlateCountOutOfRange {
         found: usize,
@@ -522,7 +526,9 @@ fn rebalance_columns_to_cells(
                     // ruptures into ocean.
                     let index = cells[0];
                     let mut remaining = total_volume;
-                    for receiver in continental_cells_by_distance(topology, kinds, index) {
+                    for receiver in
+                        cells_of_kind_by_distance(topology, kinds, CrustKind::Continental, index)
+                    {
                         let host = remapped[receiver].material;
                         let capacity = host.continental_reference_area_m2() * maximum_m
                             - host.continental_volume_m3();
@@ -629,41 +635,65 @@ fn rebalance_columns_to_cells(
             }
         }
         // Volume the bounds could not place inside the group moves to the
-        // nearest continental cells outside it that still have room, so the
-        // group's volume closes exactly.
+        // nearest cells of the same kind outside it that still have room, so
+        // the group's volume closes exactly; a leftover no cell can hold is a
+        // hard error, never a silent loss (G1e R3: oceanic groups whose cells
+        // all clamp used to drop their residual here).
         let placed: f64 = cells
             .iter()
             .zip(&thickness)
             .map(|(&index, &t)| surface.cells()[index].area.get() * t)
             .sum();
         let mut residual = total_volume - placed;
-        if kind == CrustKind::Continental && residual.abs() > 1.0e-9 * total_volume {
-            for receiver in continental_cells_by_distance(topology, kinds, cells[0]) {
+        if residual.abs() > 1.0e-9 * total_volume {
+            for receiver in cells_of_kind_by_distance(topology, kinds, kind, cells[0]) {
                 if cells.contains(&receiver) {
                     continue;
                 }
                 let host = remapped[receiver].material;
-                let host_area = host.continental_reference_area_m2();
+                let (host_area, host_volume) = match kind {
+                    CrustKind::Continental => (
+                        host.continental_reference_area_m2(),
+                        host.continental_volume_m3(),
+                    ),
+                    CrustKind::Oceanic => {
+                        (host.oceanic_reference_area_m2(), host.oceanic_volume_m3())
+                    }
+                };
                 let room = if residual > 0.0 {
-                    host_area * maximum_m - host.continental_volume_m3()
+                    host_area * maximum_m - host_volume
                 } else {
-                    host.continental_volume_m3() - host_area * minimum_m
+                    host_volume - host_area * minimum_m
                 };
                 if room <= 0.0 {
                     continue;
                 }
                 let moved = residual.abs().min(room) * residual.signum();
-                remapped[receiver].material = MaterialColumn::new(
-                    host_area,
-                    host.continental_volume_m3() + moved,
-                    host.oceanic_reference_area_m2(),
-                    host.oceanic_volume_m3(),
-                )?;
+                remapped[receiver].material = match kind {
+                    CrustKind::Continental => MaterialColumn::new(
+                        host_area,
+                        host_volume + moved,
+                        host.oceanic_reference_area_m2(),
+                        host.oceanic_volume_m3(),
+                    )?,
+                    CrustKind::Oceanic => MaterialColumn::new(
+                        host.continental_reference_area_m2(),
+                        host.continental_volume_m3(),
+                        host_area,
+                        host_volume + moved,
+                    )?,
+                };
                 remapped[receiver].synchronize_compatibility_from_material();
                 residual -= moved;
                 if residual.abs() <= 1.0e-9 * total_volume {
                     break;
                 }
+            }
+            if residual.abs() > 1.0e-9 * total_volume {
+                return Err(ResampleError::UnplacedRebalanceResidual {
+                    kind,
+                    volume_m3: residual,
+                });
             }
         }
         for (&index, &t) in cells.iter().zip(&thickness) {
@@ -678,10 +708,11 @@ fn rebalance_columns_to_cells(
     Ok(())
 }
 
-/// Continental cells other than `start` in breadth-first order from it.
-fn continental_cells_by_distance(
+/// Cells of `kind` other than `start` in breadth-first order from it.
+fn cells_of_kind_by_distance(
     topology: &NaturalTopologyIndex,
     kinds: &[CrustKind],
+    kind: CrustKind,
     start: usize,
 ) -> Vec<usize> {
     let mut visited = vec![false; kinds.len()];
@@ -689,7 +720,7 @@ fn continental_cells_by_distance(
     let mut order = Vec::new();
     visited[start] = true;
     while let Some(cell) = queue.pop_front() {
-        if cell != start && kinds[cell] == CrustKind::Continental {
+        if cell != start && kinds[cell] == kind {
             order.push(cell);
         }
         for arc in &topology.arcs()[cell] {
@@ -1779,7 +1810,8 @@ fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
 mod tests {
     use super::{
         canonicalize_final_plates, conservative_material_remap, conservative_material_resample_v5,
-        occupied_material_area, resample_current_state, resampling_interval_steps, ResampleError,
+        occupied_material_area, rebalance_columns_to_cells, resample_current_state,
+        resampling_interval_steps, ResampleError,
     };
     use crate::generators::natural::foundation::tectonics::contacts::CoverageScratch;
     use crate::generators::natural::foundation::tectonics::model::{
@@ -2680,6 +2712,124 @@ mod tests {
         assert!(matches!(
             canonicalize_final_plates(&surface, state),
             Err(ResampleError::FinalPlateCountOutOfRange { found, min: 2, max: 64 }) if found > 64
+        ));
+    }
+
+    /// G1e R3: when the clamping loop fixes every cell (some at the maximum,
+    /// some at the minimum), the stranded residual must move to same-kind
+    /// cells outside the group instead of being dropped (oceanic groups used
+    /// to leak it — the seed 8 / seed 1 closure failures).
+    #[test]
+    fn oceanic_rebalance_residual_moves_to_receivers_instead_of_leaking() {
+        let (surface, topology) = fixture(42);
+        let cell_count = surface.cells().len();
+        assert!(cell_count >= 4);
+        let plate_a = LineageId::from_raw(0);
+        let plate_b = LineageId::from_raw(1);
+        let build = |owners: &dyn Fn(usize) -> LineageId| {
+            let mut winner = Vec::with_capacity(cell_count);
+            let remapped = surface
+                .cells()
+                .iter()
+                .enumerate()
+                .map(|(index, cell)| {
+                    let mut value = sample(cell.id, cell.centroid, owners(index), 1);
+                    value.kind = CrustKind::Oceanic;
+                    let area = cell.area.get();
+                    // Group cells carry a feasible 10 km mean, but the winner
+                    // hints (advected thickness) push one cell above the
+                    // 15 km bound and the next below the 3 km bound, so the
+                    // scale loop fixes both and strands part of the volume.
+                    let (thickness, hint) = if owners(index) == plate_a {
+                        (10.0, if index % 2 == 0 { 29.0 } else { 2.0 })
+                    } else {
+                        (9.0, 9.0)
+                    };
+                    value.thickness_km = thickness;
+                    value.age_myr = 40.0;
+                    value.material =
+                        MaterialColumn::pure(CrustKind::Oceanic, area, thickness).unwrap();
+                    winner.push(Some(hint));
+                    value
+                })
+                .collect::<Vec<_>>();
+            (remapped, winner)
+        };
+        let volume = |samples: &[CrustSample]| {
+            samples
+                .iter()
+                .map(|value| value.material.oceanic_volume_m3())
+                .sum::<f64>()
+        };
+
+        // Plate A on two cells, everyone else has room: the residual must land
+        // on the other plate's cells and the total must close exactly.
+        let owners = |index: usize| if index < 2 { plate_a } else { plate_b };
+        let (mut remapped, winner) = build(&owners);
+        let kinds = vec![CrustKind::Oceanic; cell_count];
+        let before = volume(&remapped);
+        let receivers_before = volume(&remapped[2..]);
+        let plates = vec![
+            ActivePlate::new(plate_a, CellId::from_raw(0), rotation(0, 10_000)),
+            ActivePlate::new(plate_b, CellId::from_raw(2), rotation(1, 10_000)),
+        ];
+        let state = TectonicState::new(remapped.clone(), plates.clone(), 2).unwrap();
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&state).unwrap();
+        let mut kinds_first = kinds.clone();
+        rebalance_columns_to_cells(
+            &surface,
+            &topology,
+            &mut remapped,
+            &mut kinds_first,
+            &winner,
+            &mut ledger,
+        )
+        .unwrap();
+        let after = volume(&remapped);
+        assert!(
+            (after - before).abs() <= 1.0e-9 * before,
+            "oceanic volume is conserved: before {before} after {after}"
+        );
+        assert!(
+            volume(&remapped[2..]) > receivers_before,
+            "the stranded residual reaches cells outside the group"
+        );
+        for value in &remapped {
+            let area = value.material.oceanic_reference_area_m2();
+            let thickness = value.material.oceanic_volume_m3() / area / 1_000.0;
+            assert!((3.0..=15.0).contains(&thickness), "thickness {thickness}");
+        }
+
+        // Every cell in one group: nothing can absorb the residual, which
+        // must surface as an error, never as silent loss.
+        let owners = |_: usize| plate_a;
+        let (mut remapped, winner) = build(&owners);
+        let state = TectonicState::new(
+            remapped.clone(),
+            vec![ActivePlate::new(
+                plate_a,
+                CellId::from_raw(0),
+                rotation(0, 10_000),
+            )],
+            1,
+        )
+        .unwrap();
+        let mut ledger = EvolutionMaterialLedger::capture_initial(&state).unwrap();
+        let mut kinds_second = kinds;
+        let result = rebalance_columns_to_cells(
+            &surface,
+            &topology,
+            &mut remapped,
+            &mut kinds_second,
+            &winner,
+            &mut ledger,
+        );
+        assert!(matches!(
+            result,
+            Err(ResampleError::UnplacedRebalanceResidual {
+                kind: CrustKind::Oceanic,
+                ..
+            })
         ));
     }
 }

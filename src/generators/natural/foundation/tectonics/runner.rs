@@ -1607,6 +1607,97 @@ mod tests {
         );
     }
 
+    /// G1e R3 regression: every corpus must close its material budget; seeds
+    /// 8 (Continents) and 1 (Supercontinent) used to drop clamped oceanic
+    /// rebalance residual (relative error 3.8e-4 / 9.1e-4).
+    #[test]
+    #[ignore]
+    fn probe_g1e_closure_sweep() {
+        use crate::engine::BuildCancellation;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{NaturalQualityProfile, EARTH_WATER_REFERENCE_RADIUS_M};
+
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        let surface = bundle.tectonic_control_surface();
+        let view = SphericalNaturalSurface::from_validated(surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let presets = [
+            ResolvedWorldFormationPreset::Archipelago,
+            ResolvedWorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Supercontinent,
+        ];
+        for (preset, seed) in presets
+            .into_iter()
+            .flat_map(|preset| (1..=16_u64).map(move |seed| (preset, seed)))
+        {
+            let spec = TectonicSpec {
+                plate_count: 12,
+                continental_crust_fraction: preset.recommended_continental_crust_fraction(),
+                ..TectonicSpec::default()
+            };
+            let mut rng = StageRng::from_seed(derive_stage_seed(
+                RootSeed::new(seed),
+                StageIdentity::new("natural.evolved-tectonics", 5, "sekai.core"),
+            ));
+            let streams = LabeledSubstreams::capture(&mut rng);
+            let formation = resolved_formation(preset);
+            let result = evolve_control_state_v5_with_resample_observer(
+                surface,
+                &topology,
+                &spec,
+                &formation,
+                &streams,
+                |step, state, ledger, _| {
+                    let initial = ledger.initial_control();
+                    let processes = ledger.processes().unwrap();
+                    let found = state.material_totals().unwrap();
+                    let cont_area = found.continental().reference_area_m2()
+                        / (initial.continental().reference_area_m2()
+                            + processes.rift_extension_continental_area_gain_m2()
+                            - processes.collision_shortening_continental_area_loss_m2()
+                            - processes.continental_consumed().reference_area_m2());
+                    let cont_vol = found.continental().volume_m3()
+                        / (initial.continental().volume_m3()
+                            - processes.continental_consumed().volume_m3());
+                    let oce_area = found.oceanic().reference_area_m2()
+                        / (initial.oceanic().reference_area_m2()
+                            + processes.oceanic_spreading_created().reference_area_m2()
+                            + processes.oceanic_coverage_created().reference_area_m2()
+                            - processes.oceanic_subducted().reference_area_m2()
+                            - processes.oceanic_coverage_consumed().reference_area_m2());
+                    let oce_vol = found.oceanic().volume_m3()
+                        / (initial.oceanic().volume_m3()
+                            + processes.oceanic_spreading_created().volume_m3()
+                            + processes.oceanic_coverage_created().volume_m3()
+                            - processes.oceanic_subducted().volume_m3()
+                            - processes.oceanic_coverage_consumed().volume_m3());
+                    for (name, ratio) in [
+                        ("cont_area", cont_area),
+                        ("cont_vol", cont_vol),
+                        ("oce_area", oce_area),
+                        ("oce_vol", oce_vol),
+                    ] {
+                        assert!(
+                            (ratio - 1.0).abs() <= 1.0e-4,
+                            "{preset:?} seed={seed} step={step} {name} ratio {ratio}"
+                        );
+                    }
+                    Ok(())
+                },
+            );
+            println!(
+                "G1e-sweep {preset:?} seed={seed} outcome={:?}",
+                result.as_ref().err()
+            );
+            result.unwrap();
+        }
+    }
+
     /// Mean |thickness difference| across continental-continental edges, km.
     fn continental_thickness_roughness(
         surface: &crate::world::spatial::SphericalSurfaceSnapshot,
