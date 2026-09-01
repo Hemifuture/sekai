@@ -528,29 +528,38 @@ pub(in crate::generators::natural) fn advance_surface_processes(
     let mut accepted_surface_substeps = 0_u32;
     let mut final_sediment_fields = None;
     let mut workspace = HillslopeWorkspace::default();
-    let mut current = evaluate_current_processes(state, inputs, &mut workspace, cancellation)?;
+    // Annualized rates of the previously accepted window, used as the domain
+    // predictor for the next one. Before the first window there is no such
+    // measurement; rather than pay for a full trial solve that has never bound
+    // the step in any production corpus, the first attempt is optimistic and
+    // the exact predictor is computed only if that attempt is actually
+    // rejected (`probed` below).
+    let mut predictor: Option<ExactFormationProcessRates> = None;
 
     while remaining_years > 0.0 {
         check_cancelled(cancellation)?;
-        if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
-            blocked_by_elevation_domain(state.current_elevation_exact_m(), &current.process_rates)
-        {
-            return Err(SurfaceFormationGenerationError::ElevationDomainExhausted {
-                cell,
-                elevation_m,
-                net_rate_m_per_year,
-                boundary_m,
-            });
+        let mut step_years = remaining_years;
+        if let Some(rates) = predictor.as_ref() {
+            if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
+                blocked_by_elevation_domain(state.current_elevation_exact_m(), rates)
+            {
+                return Err(SurfaceFormationGenerationError::ElevationDomainExhausted {
+                    cell,
+                    elevation_m,
+                    net_rate_m_per_year,
+                    boundary_m,
+                });
+            }
+            step_years = step_years.min(maximum_elevation_domain_step_years(
+                state.current_elevation_exact_m(),
+                rates,
+            ));
         }
-        let maximum_domain_years = maximum_elevation_domain_step_years(
-            state.current_elevation_exact_m(),
-            &current.process_rates,
-        );
-        let mut step_years = remaining_years.min(maximum_domain_years);
         if !step_years.is_finite() || step_years <= 0.0 {
             return Err(SurfaceFormationGenerationError::SurfaceAdvanceStalled { remaining_years });
         }
         let accepted_duration_before = duration_years - remaining_years;
+        let mut probed = predictor.is_some();
         let mut candidate;
         let accepted;
         loop {
@@ -580,7 +589,41 @@ pub(in crate::generators::natural) fn advance_surface_processes(
                         IsostasyGenerationError::ElevationOutOfRange { .. },
                     ),
                 ) => {
-                    step_years *= 0.5;
+                    // Halving alone would need about a thousand full solves to
+                    // walk down from the horizon, so the first rejection buys
+                    // the exact domain limit once; later ones already have a
+                    // measured predictor and only need to bisect.
+                    step_years = if probed {
+                        step_years * 0.5
+                    } else {
+                        probed = true;
+                        let trial = evaluate_current_processes(
+                            state,
+                            inputs,
+                            &mut workspace,
+                            cancellation,
+                        )?;
+                        if let Some((cell, elevation_m, net_rate_m_per_year, boundary_m)) =
+                            blocked_by_elevation_domain(
+                                state.current_elevation_exact_m(),
+                                &trial.process_rates,
+                            )
+                        {
+                            return Err(
+                                SurfaceFormationGenerationError::ElevationDomainExhausted {
+                                    cell,
+                                    elevation_m,
+                                    net_rate_m_per_year,
+                                    boundary_m,
+                                },
+                            );
+                        }
+                        maximum_elevation_domain_step_years(
+                            state.current_elevation_exact_m(),
+                            &trial.process_rates,
+                        )
+                        .min(step_years * 0.5)
+                    };
                 }
                 Err(SurfaceFormationGenerationError::Hillslope(
                     HillslopeGenerationError::UnstableStep { maximum, .. },
@@ -597,6 +640,7 @@ pub(in crate::generators::natural) fn advance_surface_processes(
         }
         *state = candidate;
         final_sediment_fields = Some(accepted.sediment_fields);
+        predictor = Some(accepted.process_rates);
         accepted_surface_substeps = accepted_surface_substeps
             .checked_add(1)
             .ok_or(SurfaceFormationGenerationError::SurfaceAdvanceSubstepOverflow)?;
@@ -604,9 +648,6 @@ pub(in crate::generators::natural) fn advance_surface_processes(
             remaining_years = 0.0;
         } else {
             remaining_years -= step_years;
-        }
-        if remaining_years > 0.0 {
-            current = evaluate_current_processes(state, inputs, &mut workspace, cancellation)?;
         }
     }
 
