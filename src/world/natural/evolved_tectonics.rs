@@ -35,7 +35,16 @@ pub const MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR: f64 = 1.0e-4;
 pub const MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR: f32 = 500.0;
 
 const MAX_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
-const MATERIAL_THICKNESS_TOLERANCE_KM: f64 = 1.0e-6;
+/// Slack the published V5 material contract allows around the frozen crust
+/// thickness bounds.
+///
+/// A column carries `(reference_area_m2, volume_m3)` rather than a thickness,
+/// so the thickness a consumer derives is a quotient of two accumulated `f64`
+/// ledgers and lands within rounding of the bound the solver enforced. Every
+/// downstream domain that re-derives thickness from the published pair has to
+/// use the same slack, otherwise the layers disagree about which worlds are
+/// admissible (P3's exact Airy image is the precedent).
+pub const MATERIAL_THICKNESS_TOLERANCE_KM: f64 = 1.0e-6;
 const COMPATIBILITY_THICKNESS_TOLERANCE_KM: f64 = 1.0e-3;
 const CELL_AREA_RELATIVE_TOLERANCE: f64 = 1.0e-6;
 

@@ -11,9 +11,9 @@ use super::{
     SphericalMantleValidationError, SurfaceWaterGeometry, SurfaceWaterGeometryValidationError,
     TectonicValidationError, COMPONENT_IDENTITY_TOLERANCE_M, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
     CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_CRUST_AGE_MYR,
-    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM, VOLCANIC_OFFSET_MAX_M,
-    VOLCANIC_OFFSET_MIN_M,
+    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, MATERIAL_THICKNESS_TOLERANCE_KM,
+    MAX_CRUST_AGE_MYR, OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -50,8 +50,15 @@ pub(crate) const fn continental_airy_elevation_exact_m(
             * 1_000.0
 }
 /// Exact upper image of the frozen P3 continental Airy input domain.
+///
+/// The thickness argument is the ceiling the **published** V5 contract admits,
+/// not the nominal one: a consumer re-derives thickness as
+/// `volume_m3 / reference_area_m2`, so V5 accepts and publishes columns up to
+/// [`MATERIAL_THICKNESS_TOLERANCE_KM`] above the nominal cap. Taking the image
+/// at the nominal cap instead made P3 reject saturated-thickness columns that
+/// P2 had legitimately published, at a cost of 0.15 mm of envelope.
 pub(crate) const CRUST_BASE_ELEVATION_MAX_EXACT_M: f64 = continental_airy_elevation_exact_m(
-    CONTINENTAL_CRUST_MAX_THICKNESS_KM as f64,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM as f64 + MATERIAL_THICKNESS_TOLERANCE_KM,
     CONTINENTAL_CRUST_DENSITY_KG_M3 as f64,
 );
 /// Outward-rounded `f32` wire envelope for the exact P3 crust-base domain.

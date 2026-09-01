@@ -58,7 +58,8 @@ pub use evolved_tectonics::{
     SphericalTectonicLineageBudget, SphericalTectonicMaterialBudget,
     SphericalTectonicMaterialProcesses, TectonicMaterialAmount,
     EVOLVED_TECTONIC_SNAPSHOT_SCHEMA_V1, MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR,
-    MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR, MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
+    MATERIAL_THICKNESS_TOLERANCE_KM, MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR,
+    MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
 };
 pub use fields::{
     annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,

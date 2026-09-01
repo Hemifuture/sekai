@@ -188,8 +188,18 @@ impl PrimaryReliefGenerator {
                 continental_airy_elevation_exact_m(continental_thickness, density);
             let oceanic_base =
                 oceanic_isostatic_elevation_exact_m(ocean_age, oceanic_thickness, density);
-            let base =
-                (continental_base * continental_area + oceanic_base * oceanic_area) / total_area;
+            // A column made of one material must reproduce that material's own
+            // Airy solution bit for bit. Routing it through the mixed-column
+            // weighting instead computes `(x * a + 0) / a`, whose two roundings
+            // can land one ULP outside the analytic image of the Airy input
+            // domain and reject an otherwise valid saturated-thickness cell.
+            let base = if oceanic_area == 0.0 {
+                continental_base
+            } else if continental_area == 0.0 {
+                oceanic_base
+            } else {
+                (continental_base * continental_area + oceanic_base * oceanic_area) / total_area
+            };
             validate_component_value(
                 "isostatic_base_m",
                 index,
