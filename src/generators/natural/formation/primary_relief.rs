@@ -607,8 +607,8 @@ mod tests {
         EvolvedTectonicSnapshot, GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile,
         ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
         WorldFormationPreset, CONTINENTAL_CRUST_DENSITY_KG_M3, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-        CRUST_BASE_ELEVATION_MAX_M, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-        WATER_VOLUME_RELATIVE_TOLERANCE,
+        CRUST_BASE_ELEVATION_MAX_M, MATERIAL_THICKNESS_TOLERANCE_KM,
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1, WATER_VOLUME_RELATIVE_TOLERANCE,
     };
     use crate::world::{Meters, RootSeed};
 
@@ -715,17 +715,26 @@ mod tests {
 
     #[test]
     fn crust_base_domain_covers_the_frozen_airy_input_domain() {
-        let exact = super::continental_airy_elevation_exact_m(
+        // The domain the check has to cover is the one V5 actually publishes,
+        // which admits a thickness up to `MATERIAL_THICKNESS_TOLERANCE_KM`
+        // above the nominal cap because consumers re-derive it as a quotient of
+        // two accumulated ledgers.
+        let nominal = super::continental_airy_elevation_exact_m(
             f64::from(CONTINENTAL_CRUST_MAX_THICKNESS_KM),
             f64::from(CONTINENTAL_CRUST_DENSITY_KG_M3),
         );
+        let published = super::continental_airy_elevation_exact_m(
+            f64::from(CONTINENTAL_CRUST_MAX_THICKNESS_KM) + MATERIAL_THICKNESS_TOLERANCE_KM,
+            f64::from(CONTINENTAL_CRUST_DENSITY_KG_M3),
+        );
         assert_eq!(
-            exact.to_bits(),
+            published.to_bits(),
             super::CRUST_BASE_ELEVATION_MAX_EXACT_M.to_bits()
         );
-        assert!(f64::from(CRUST_BASE_ELEVATION_MAX_M) >= exact);
+        assert!(published > nominal && published - nominal < 1.0e-3);
+        assert!(f64::from(CRUST_BASE_ELEVATION_MAX_M) >= published);
         let previous = f32::from_bits(CRUST_BASE_ELEVATION_MAX_M.to_bits() - 1);
-        assert!(f64::from(previous) < exact);
+        assert!(f64::from(previous) < published);
     }
 
     #[test]

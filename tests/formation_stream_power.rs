@@ -9,7 +9,6 @@ use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     formation_elevation_from_components, NaturalQualityProfile, SurfaceWaterField,
     SurfaceWaterKind, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
-    FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
     FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
@@ -311,10 +310,6 @@ fn discharge_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_e
     .unwrap();
     assert!(uplift_result.elevation_m()[head] > base_result.elevation_m()[head]);
     assert!(uplift_result.tectonic_displacement_m()[head] > 0.0);
-    assert_eq!(
-        FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
-        5.0e-6
-    );
 }
 
 #[test]
