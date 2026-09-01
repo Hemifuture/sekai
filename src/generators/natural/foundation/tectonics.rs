@@ -260,7 +260,7 @@ mod tests {
 
         assert!(supercontinent.base_scale_rad > archipelago.base_scale_rad);
         assert!(great_island.rift_rate_permille < continents.rift_rate_permille);
-        assert!(volcanic.island_arc_gain_permille > continents.island_arc_gain_permille);
+        assert!(volcanic.subduction_gain_permille > continents.subduction_gain_permille);
         for recipe in [
             supercontinent,
             archipelago,
@@ -272,7 +272,6 @@ mod tests {
             assert!(recipe.base_scale_rad.is_finite() && recipe.base_scale_rad > 0.0);
             assert!((500..=1_500).contains(&recipe.rift_rate_permille));
             assert!((500..=1_500).contains(&recipe.subduction_gain_permille));
-            assert!((500..=1_500).contains(&recipe.island_arc_gain_permille));
         }
     }
 

@@ -6,8 +6,6 @@
 //! over the authoritative spherical Delaunay adjacency; it changes only lookup
 //! cost, not the nearest-site definition or the unit-sphere geometry.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use thiserror::Error;
 
 use super::model::{LineageId, TectonicState};

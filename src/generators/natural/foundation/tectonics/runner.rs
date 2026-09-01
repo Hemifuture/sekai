@@ -4,8 +4,6 @@
 //! process actions once, and discards the overwritten state. No history or
 //! alternate final-owner path exists here.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use thiserror::Error;
 
 use super::contacts::{build_contacts, ContactError, ContactEvent, ContactKind, CoverageScratch};

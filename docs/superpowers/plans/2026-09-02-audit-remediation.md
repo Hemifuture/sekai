@@ -20,17 +20,26 @@
       只在进入循环前保留一次探针。不改任何被求解的方程。
       验证：`surface_formation_*` 套件 + `causal_formation_generation`。
 
-- [x] Task 2 —— 删除 V4 构造孪生路径与模块级死代码抑制
-      `publication.rs` 只调用 V5；`run_tectonic_evolution` /
-      `evolve_current_state` / `build_initial_state` / `apply_subduction` /
-      `apply_collision` / `apply_divergent_extension` / `fill_spreading_gaps` /
-      `commit_process_actions` / `resample_current_state` /
-      `reconstruct_connected_plate_domains` /
-      `relax_legacy_compatibility_elevation` 共 8 对孪生的非 `_v5` 一半没有
-      生产消费者。同时摘掉让这批死代码不可见的 13 个模块级
-      `#![cfg_attr(not(test), allow(dead_code))]` 与
-      `geodesic_voronoi.rs` 的无条件 `#![allow(dead_code)]`。
-      验证：`cargo check --all-features` 无警告 + tectonics 全套件。
+- [x] Task 2 —— 摘掉模块级死代码抑制并删除编译器证实的死代码
+      **审计更正（2026-09-02）**：初稿判断"V4 构造孪生路径无生产消费者"是
+      **错的**。`foundation/tectonics.rs:79/102` 调用 `evolve_current_state`
+      与 `run_tectonic_evolution`，它们是 `TectonicGenerator::generate_spherical`
+      也就是 `WorldPipeline::LegacyFoundation` 的实现。审计当时的 grep 被
+      `head -20` 截断而漏掉了该文件。V4 不删。LegacyFoundation 未接 UI、
+      文档说明它为任意分辨率（如 162 格测试世界）保留，是否退役属于产品裁定，
+      不在本里程碑范围。
+
+      实际执行：摘掉 14 个模块级
+      `#![cfg_attr(not(test), allow(dead_code))]` 与 `geodesic_voronoi.rs`
+      的无条件 `#![allow(dead_code)]`，让编译器直接指认生产死代码，然后
+      按指认结果删除：整文件死亡的 `morphology/area.rs`（1271 行）与
+      `morphology/field.rs`；`morphology/metric.rs` 只剩 Dijkstra 真正需要的
+      `PositiveEdgeMetric`；`assign_arrivals` 无界包装、`sample_coordinate`、
+      8 个失去生产者的 RNG 子流标签、以及没有任何读者的配方字段
+      `island_arc_gain_permille`。仅测试需要的助手改用 `#[cfg(test)]` 精确
+      标注，而不是整模块放行。
+      验证：`cargo check --all-features --all-targets` 零警告 + `--lib` 461 项
+      单元测试 + tectonics 集成套件。
 
 - [x] Task 3 —— 启用河道淤积（`V_eff = G · 局地径流`）
       `FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR = 0`

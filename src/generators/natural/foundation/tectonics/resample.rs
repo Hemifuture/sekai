@@ -1,7 +1,5 @@
 //! Deterministic moving-crust resampling and final plate canonicalization.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 

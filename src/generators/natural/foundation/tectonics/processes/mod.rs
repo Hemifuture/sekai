@@ -5,8 +5,6 @@
 //! against stable sample indices and perform one compaction only after every
 //! process has inspected the immutable contact list. No history is retained.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use thiserror::Error;
 
 use super::contacts::ContactEvent;
@@ -228,6 +226,7 @@ impl ProcessActions {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_dense_process_scratch(&mut self, cell_count: usize) {
         reset_u8_scratch(&mut self.terrane_represented, cell_count);
         reset_u8_scratch(&mut self.terrane_reached, cell_count);
@@ -388,6 +387,7 @@ impl ProcessActions {
         &self.spawned
     }
 
+    #[cfg(test)]
     pub(super) fn is_clear(&self) -> bool {
         self.dispositions.is_empty() && self.spawned.is_empty()
     }

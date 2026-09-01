@@ -6,8 +6,6 @@
 //! publish the dispersal half of a Wilson cycle. Thickness and ocean age remain
 //! independent coherent fields.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 

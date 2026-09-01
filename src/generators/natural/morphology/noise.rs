@@ -6,8 +6,6 @@
 //! envelope and cosine carrier in the local tangent plane. This module owns
 //! both implementations so tectonics and relief cannot drift apart.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::array;
 use std::f64::consts::{PI, TAU};
 
@@ -140,10 +138,6 @@ impl SphericalNoise3d {
             ridge * ridge
         })
         .clamp(0.0, 1.0)
-    }
-
-    pub(super) fn sample_coordinate(&self, point: [f64; 3]) -> f64 {
-        self.octaves[0].get(point)
     }
 
     fn fractal_sum(

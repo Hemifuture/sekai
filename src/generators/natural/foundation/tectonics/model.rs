@@ -4,8 +4,6 @@
 //! multipliers, and which continental rifts may complete to ocean. Opening
 //! nucleus counts live on `ResolvedWorldFormationPreset`.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::BTreeSet;
 
 use crate::generators::natural::fractal::FractalProfile;
@@ -154,6 +152,7 @@ impl MaterialColumn {
         (volume / area / 1_000.0) as f32
     }
 
+    #[cfg(test)]
     pub(super) fn continental_amount(self) -> Result<TectonicMaterialAmount, MaterialColumnError> {
         material_amount(
             self.continental_reference_area_m2,
@@ -478,6 +477,7 @@ impl SubductionInitiation {
             .contains(&LineagePair::new(first, second))
     }
 
+    #[cfg(test)]
     pub(super) fn record_rift_pair(&mut self, first: LineageId, second: LineageId) {
         if first != second {
             self.continental_rift_pairs
@@ -614,6 +614,7 @@ impl TectonicState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn initial_owners(&self) -> Vec<LineageId> {
         self.samples.iter().map(|sample| sample.owner).collect()
     }
@@ -712,6 +713,7 @@ impl EvolutionMaterialLedger {
         self.resample_overlap_moved_area.add(area_m2);
     }
 
+    #[cfg(test)]
     pub(super) fn resample_overlap_moved_area_m2(self) -> f64 {
         self.resample_overlap_moved_area.total()
     }
@@ -980,7 +982,6 @@ pub(in crate::generators::natural) struct FormationTectonicRecipe {
     pub(in crate::generators::natural) base_scale_rad: f64,
     pub(in crate::generators::natural) rift_rate_permille: u16,
     pub(in crate::generators::natural) subduction_gain_permille: u16,
-    pub(in crate::generators::natural) island_arc_gain_permille: u16,
     pub(in crate::generators::natural) oceanization: OceanizationPolicy,
 }
 
@@ -993,15 +994,16 @@ impl FormationTectonicRecipe {
         };
 
         match preset {
-            Continents => Self::new(4, 1.8, 0.75, 1_000, 1_000, 1_000)
+            Continents => Self::new(4, 1.8, 0.75, 1_000, 1_000)
                 .with_oceanization(OceanizationPolicy::Complete),
-            Archipelago => Self::new(5, 3.4, 0.40, 1_250, 950, 1_150)
-                .with_oceanization(OceanizationPolicy::Complete),
-            Supercontinent => Self::new(3, 1.1, 1.15, 700, 1_050, 850)
+            Archipelago => {
+                Self::new(5, 3.4, 0.40, 1_250, 950).with_oceanization(OceanizationPolicy::Complete)
+            }
+            Supercontinent => Self::new(3, 1.1, 1.15, 700, 1_050)
                 .with_oceanization(OceanizationPolicy::SuppressContinentalBreakup),
-            GreatIsland => Self::new(4, 1.5, 0.90, 850, 1_000, 950)
+            GreatIsland => Self::new(4, 1.5, 0.90, 850, 1_000)
                 .with_oceanization(OceanizationPolicy::ExceptDominant),
-            VolcanicIslands => Self::new(5, 4.2, 0.32, 1_100, 1_200, 1_500)
+            VolcanicIslands => Self::new(5, 4.2, 0.32, 1_100, 1_200)
                 .with_oceanization(OceanizationPolicy::SuppressContinentalBreakup),
         }
     }
@@ -1019,7 +1021,6 @@ impl FormationTectonicRecipe {
         base_scale_rad: f64,
         rift_rate_permille: u16,
         subduction_gain_permille: u16,
-        island_arc_gain_permille: u16,
     ) -> Self {
         Self {
             initial_crust_profile: FractalProfile {
@@ -1031,7 +1032,6 @@ impl FormationTectonicRecipe {
             base_scale_rad,
             rift_rate_permille,
             subduction_gain_permille,
-            island_arc_gain_permille,
             oceanization: OceanizationPolicy::Complete,
         }
     }

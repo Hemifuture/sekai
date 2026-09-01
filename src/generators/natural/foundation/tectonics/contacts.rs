@@ -7,8 +7,6 @@
 //! adaptation keeps the low-resolution control mesh fixed and uses its exact
 //! tangent frames. This module never changes crust material, ownership or height.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use thiserror::Error;
 
 use super::kinematics::{rigid_velocity, KinematicsError};

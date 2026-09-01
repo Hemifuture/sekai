@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -17,37 +15,20 @@ pub(super) const RELIEF_ISLAND_ARC_LABEL: &str = "relief-island-arc-v1";
 pub(super) const HOTSPOT_SEEDS_LABEL: &str = "hotspot-seeds-v1";
 pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
 pub(super) const BEDROCK_PROVINCE_LABEL: &str = "bedrock-province-v1";
-pub(super) const PLATE_TARGET_AREA_LABEL: &str = "plate-target-area-v2";
-pub(super) const PLATE_SEED_PLACEMENT_LABEL: &str = "plate-seed-placement-v2";
-pub(super) const PLATE_RESISTANCE_FIELD_LABEL: &str = "plate-resistance-field-v2";
-pub(super) const PLATE_FABRIC_FIELD_LABEL: &str = "plate-fabric-field-v2";
-pub(super) const CRUST_ANCHOR_LAYOUT_LABEL: &str = "crust-anchor-layout-v2";
-pub(super) const CRUST_AFFINITY_FIELD_LABEL: &str = "crust-affinity-field-v2";
-pub(super) const CRUST_THICKNESS_FIELD_LABEL: &str = "crust-thickness-field-v2";
 pub(super) const INITIAL_PLATES_V3_LABEL: &str = "initial-plates-v3";
 pub(super) const INITIAL_CRUST_V3_LABEL: &str = "initial-crust-v3";
 pub(super) const PLATE_MOTION_V3_LABEL: &str = "plate-motion-v3";
 pub(super) const RIFT_EVENTS_V3_LABEL: &str = "rift-events-v3";
-pub(super) const PROCESS_VARIATION_V3_LABEL: &str = "process-variation-v3";
 pub(super) const OROGENIC_DETAIL_V3_LABEL: &str = "orogenic-detail-v3";
 pub(super) const OCEANIC_DETAIL_V3_LABEL: &str = "oceanic-detail-v3";
 pub(super) const INITIAL_DOMAINS_V5_LABEL: &str = "initial-domains-v5";
 pub(super) const MECHANICAL_FRAGMENTATION_V5_LABEL: &str = "mechanical-fragmentation-v5";
-pub(super) const SPHERICAL_MORPHOLOGY_LABELS: [&str; 7] = [
-    PLATE_TARGET_AREA_LABEL,
-    PLATE_SEED_PLACEMENT_LABEL,
-    PLATE_RESISTANCE_FIELD_LABEL,
-    PLATE_FABRIC_FIELD_LABEL,
-    CRUST_ANCHOR_LAYOUT_LABEL,
-    CRUST_AFFINITY_FIELD_LABEL,
-    CRUST_THICKNESS_FIELD_LABEL,
-];
-pub(super) const SPHERICAL_TECTONIC_V3_LABELS: [&str; 7] = [
+#[cfg(test)]
+pub(super) const SPHERICAL_TECTONIC_V3_LABELS: [&str; 6] = [
     INITIAL_PLATES_V3_LABEL,
     INITIAL_CRUST_V3_LABEL,
     PLATE_MOTION_V3_LABEL,
     RIFT_EVENTS_V3_LABEL,
-    PROCESS_VARIATION_V3_LABEL,
     OROGENIC_DETAIL_V3_LABEL,
     OCEANIC_DETAIL_V3_LABEL,
 ];
@@ -114,10 +95,9 @@ mod tests {
     use super::{
         LabeledSubstreams, BEDROCK_PROVINCE_LABEL, CRUST_SEEDS_LABEL, HOTSPOT_SEEDS_LABEL,
         HOTSPOT_STRENGTH_LABEL, INITIAL_CRUST_V3_LABEL, INITIAL_PLATES_V3_LABEL,
-        OCEANIC_DETAIL_V3_LABEL, OROGENIC_DETAIL_V3_LABEL, PLATE_MOTION_LABEL,
-        PLATE_MOTION_V3_LABEL, PLATE_SEEDS_LABEL, PROCESS_VARIATION_V3_LABEL,
-        RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL, RELIEF_REGIONAL_LABEL,
-        RELIEF_TECTONIC_DETAIL_LABEL, RIFT_EVENTS_V3_LABEL, SPHERICAL_MORPHOLOGY_LABELS,
+        OCEANIC_DETAIL_V3_LABEL, OROGENIC_DETAIL_V3_LABEL, PLATE_MOTION_V3_LABEL,
+        PLATE_SEEDS_LABEL, RELIEF_HOTSPOT_MORPHOLOGY_LABEL, RELIEF_ISLAND_ARC_LABEL,
+        RELIEF_REGIONAL_LABEL, RELIEF_TECTONIC_DETAIL_LABEL, RIFT_EVENTS_V3_LABEL,
         SPHERICAL_TECTONIC_V3_LABELS,
     };
     use crate::engine::{derive_stage_seed, StageIdentity, StageRng};
@@ -280,28 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn spherical_morphology_substreams_are_pairwise_orthogonal() {
-        let streams = LabeledSubstreams::capture(&mut stage_rng());
-        let expected = {
-            let mut motion = streams.stream(PLATE_MOTION_LABEL);
-            (0..8).map(|_| motion.next_u64()).collect::<Vec<_>>()
-        };
-
-        for label in SPHERICAL_MORPHOLOGY_LABELS {
-            let mut morphology = streams.stream(label);
-            for _ in 0..100 {
-                morphology.next_u64();
-            }
-        }
-
-        let mut motion = streams.stream(PLATE_MOTION_LABEL);
-        assert_eq!(
-            expected,
-            (0..8).map(|_| motion.next_u64()).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn evolved_tectonic_substreams_are_pairwise_orthogonal() {
         let streams = LabeledSubstreams::capture(&mut stage_rng());
         let expected = SPHERICAL_TECTONIC_V3_LABELS.map(|label| {
@@ -331,7 +289,6 @@ mod tests {
                 INITIAL_CRUST_V3_LABEL,
                 PLATE_MOTION_V3_LABEL,
                 RIFT_EVENTS_V3_LABEL,
-                PROCESS_VARIATION_V3_LABEL,
                 OROGENIC_DETAIL_V3_LABEL,
                 OCEANIC_DETAIL_V3_LABEL,
             ]
@@ -357,7 +314,7 @@ mod tests {
         );
         assert_ne!(
             value,
-            streams.counter_u64(PROCESS_VARIATION_V3_LABEL, &[17, 3, 9])
+            streams.counter_u64(OROGENIC_DETAIL_V3_LABEL, &[17, 3, 9])
         );
         let mut after = streams.stream(PLATE_MOTION_V3_LABEL);
         assert_eq!(before, (0..8).map(|_| after.next_u64()).collect::<Vec<_>>());
