@@ -7,9 +7,10 @@ use thiserror::Error;
 
 use super::{
     classify_boundary_kinematics, BoundaryClassification, BoundaryKind, BoundaryKinematics,
-    BoundaryRecord, CrustKind, CrustKindField, PlateIdField, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
-    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    BoundaryRecord, CrustKind, CrustKindField, PlateIdField, TectonicActivity,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, MAX_PLATE_COUNT, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -74,6 +75,31 @@ pub const PLATE_OCEAN_BASAL_DRAG_PER_M2: f64 = 1.0e-6;
 /// continental lithosphere significantly slower; four times
 /// [`PLATE_OCEAN_BASAL_DRAG_PER_M2`] by ranking, not a fitted Earth-table copy.
 pub const PLATE_CONTINENT_BASAL_DRAG_PER_M2: f64 = 4.0e-6;
+
+/// Returns the asthenosphere mobility an authored activity level selects.
+///
+/// Plate speed is set by the balance between the boundary driving forces and
+/// the resisting basal drag (Forsyth & Uyeda 1975), and the first-order control
+/// on that drag is asthenosphere viscosity (Becker 2006, *GJI* 167, 943-957,
+/// DOI `10.1111/j.1365-246X.2006.03172.x`; Hoeink, Lenardic & Richards 2012,
+/// *GJI* 191, 30-41, DOI `10.1111/j.1365-246X.2012.05617.x`). The quasi-static
+/// balance is `M(drag) * omega = tau`, so dividing the drag densities by this
+/// factor scales the solved angular velocities by it directly, with no second
+/// mechanical path and no change to any force term.
+///
+/// `Moderate` is the Earth anchor: it is the calibration whose published
+/// subducting-plate speeds G1e section 9 R1 measured at a `9-74 mm/yr` median
+/// inside the MORVEL `10-100 mm/yr` band (DeMets, Gordon & Argus 2010). The
+/// other two levels halve and double it, well inside the order-of-magnitude
+/// spread the same asthenosphere-viscosity estimates carry. A world may sit
+/// off Earth's parameter values; the mechanism does not change with the level.
+pub const fn asthenosphere_mobility(activity: TectonicActivity) -> f64 {
+    match activity {
+        TectonicActivity::Quiet => 0.5,
+        TectonicActivity::Moderate => 1.0,
+        TectonicActivity::Active => 2.0,
+    }
+}
 /// Collision dashpot per metre of continent–continent convergent boundary in
 /// the coupled torque balance (G1e §3.3). Collision slows convergence without
 /// stopping it (India–Eurasia fell from about 150 to 40–50 mm/yr: Molnar &

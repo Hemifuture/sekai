@@ -79,10 +79,12 @@ pub(super) fn update_rotations_from_boundary_torques(
     surface: &SphericalSurfaceSnapshot,
     state: &mut TectonicState,
     events: &[ContactEvent],
+    asthenosphere_mobility: f64,
 ) -> Result<(), TorqueError> {
+    debug_assert!(asthenosphere_mobility.is_finite() && asthenosphere_mobility > 0.0);
     let radius = surface.radius();
     let mut system = PlateForceSystem::new(state.plates.len());
-    accumulate_basal_drag(state, radius, &mut system);
+    accumulate_basal_drag(state, radius, asthenosphere_mobility, &mut system);
     regularize_spin_about_sample_normals(&mut system);
     accumulate_boundary_forces(surface, state, events, radius, &mut system)?;
     let solved = solve_dense(
@@ -106,7 +108,15 @@ pub(super) fn update_rotations_from_boundary_torques(
     Ok(())
 }
 
-fn accumulate_basal_drag(state: &TectonicState, radius: Meters, system: &mut PlateForceSystem) {
+/// A more mobile asthenosphere resists the same driving torque less, so the
+/// authored activity level enters the balance by dividing the drag densities
+/// rather than by touching any force term.
+fn accumulate_basal_drag(
+    state: &TectonicState,
+    radius: Meters,
+    asthenosphere_mobility: f64,
+    system: &mut PlateForceSystem,
+) {
     let radius_sq = radius.get() * radius.get();
     for sample in &state.samples {
         let Some(index) = plate_index(state, sample.owner) else {
@@ -133,7 +143,12 @@ fn accumulate_basal_drag(state: &TectonicState, radius: Meters, system: &mut Pla
                     *slot = identity - n[i] * n[j];
                 }
             }
-            system.add_block(index, index, coefficient * radius_sq * area, block);
+            system.add_block(
+                index,
+                index,
+                coefficient / asthenosphere_mobility * radius_sq * area,
+                block,
+            );
         }
     }
 }
@@ -501,7 +516,7 @@ mod tests {
         let surface = fixture_surface();
         let (mut state, toward_overriding) = trench_state(&surface, CrustKind::Oceanic);
         let event = trench_event(&surface);
-        update_rotations_from_boundary_torques(&surface, &mut state, &[event]).unwrap();
+        update_rotations_from_boundary_torques(&surface, &mut state, &[event], 1.0).unwrap();
         let descending = state.plate(LineageId::from_raw(0)).unwrap();
         let midpoint = surface.edges()[0].midpoint;
         let velocity = descending
@@ -518,8 +533,13 @@ mod tests {
     fn slab_suction_pulls_the_overriding_plate_toward_the_trench() {
         let surface = fixture_surface();
         let (mut state, toward_overriding) = trench_state(&surface, CrustKind::Oceanic);
-        update_rotations_from_boundary_torques(&surface, &mut state, &[trench_event(&surface)])
-            .unwrap();
+        update_rotations_from_boundary_torques(
+            &surface,
+            &mut state,
+            &[trench_event(&surface)],
+            1.0,
+        )
+        .unwrap();
         let overriding = state.plate(LineageId::from_raw(1)).unwrap();
         let velocity = overriding
             .rotation
@@ -541,12 +561,14 @@ mod tests {
             &surface,
             &mut oceanic,
             std::slice::from_ref(&event),
+            1.0,
         )
         .unwrap();
         update_rotations_from_boundary_torques(
             &surface,
             &mut continental,
             std::slice::from_ref(&event),
+            1.0,
         )
         .unwrap();
         let oceanic_rate = oceanic
@@ -608,12 +630,13 @@ mod tests {
         for state in [&mut free, &mut resisted] {
             state.plates[1].rotation = stationary;
         }
-        update_rotations_from_boundary_torques(&surface, &mut free, &[trench_event(&surface)])
+        update_rotations_from_boundary_torques(&surface, &mut free, &[trench_event(&surface)], 1.0)
             .unwrap();
         update_rotations_from_boundary_torques(
             &surface,
             &mut resisted,
             &[trench_event(&surface), locked],
+            1.0,
         )
         .unwrap();
         let free_speed = normal_speed(&free);

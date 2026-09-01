@@ -30,8 +30,8 @@ use crate::engine::BuildCancellationError;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
-    ResolvedFormationTimeline, ResolvedWorldFormation, SphericalTectonicForcingState, TectonicSpec,
-    MIN_PLATE_COUNT,
+    asthenosphere_mobility, ResolvedFormationTimeline, ResolvedWorldFormation,
+    SphericalTectonicForcingState, TectonicSpec, MIN_PLATE_COUNT,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
@@ -168,13 +168,14 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
-    apply_boundary_torques_to_current(surface, topology, &mut workspace)?;
+    let mobility = asthenosphere_mobility(spec.activity);
+    apply_boundary_torques_to_current(surface, topology, &mut workspace, mobility)?;
 
     for step in 0..timeline.step_count() {
         streams.check_cancelled()?;
         let (current, next, coverage, events, actions) = workspace.step_parts();
         advance_samples(surface, topology, current, next, delta_myr)?;
-        solve_quasi_static_rotations(surface, topology, next, coverage, events)?;
+        solve_quasi_static_rotations(surface, topology, next, coverage, events, mobility)?;
         actions.begin_step(next.samples.len());
         apply_subduction_v5(surface, events, current, next, actions, recipe, delta_myr)?;
         let collision = apply_collision_v5(
@@ -299,7 +300,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             &lineage_ledger,
         )?;
     }
-    apply_boundary_torques_to_current(surface, topology, &mut workspace)?;
+    apply_boundary_torques_to_current(surface, topology, &mut workspace, mobility)?;
     trace_continental_inventory("final", timeline.step_count(), &workspace.current);
     material_ledger.control_budget(&workspace.current)?;
     lineage_ledger.budget(&workspace.current)?;
@@ -329,6 +330,7 @@ fn apply_boundary_torques_to_current(
     surface: &SphericalSurfaceSnapshot,
     topology: &NaturalTopologyIndex,
     workspace: &mut TectonicWorkspace,
+    asthenosphere_mobility: f64,
 ) -> Result<(), RunnerError> {
     solve_quasi_static_rotations(
         surface,
@@ -336,6 +338,7 @@ fn apply_boundary_torques_to_current(
         &mut workspace.current,
         &mut workspace.coverage,
         &mut workspace.events,
+        asthenosphere_mobility,
     )
 }
 
@@ -355,11 +358,12 @@ fn solve_quasi_static_rotations(
     state: &mut TectonicState,
     coverage: &mut CoverageScratch,
     events: &mut Vec<ContactEvent>,
+    asthenosphere_mobility: f64,
 ) -> Result<(), RunnerError> {
     for _ in 0..QUASI_STATIC_SWEEPS {
         build_contacts(surface, topology, state, coverage, events)?;
         remember_established_trenches(state, events);
-        update_rotations_from_boundary_torques(surface, state, events)?;
+        update_rotations_from_boundary_torques(surface, state, events, asthenosphere_mobility)?;
     }
     build_contacts(surface, topology, state, coverage, events)?;
     remember_established_trenches(state, events);
@@ -721,6 +725,58 @@ mod tests {
         .expect("the minimum supported plate configuration must remain publishable");
 
         assert!((2..=64).contains(&final_state.plates.len()));
+    }
+
+    /// The authored activity level must reach the published plate motion.
+    ///
+    /// It used to select only the initial random rotations, which
+    /// `apply_boundary_torques_to_current` overwrote before the first macro
+    /// step, so the knob changed nothing a reader could see. Asserting on the
+    /// end state is the only check that would have caught that.
+    #[test]
+    fn authored_activity_scales_the_published_plate_speeds() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 162,
+        })
+        .unwrap();
+        let view = SphericalNaturalSurface::from_validated(&surface).unwrap();
+        let topology = NaturalTopologyIndex::from_surface(&view);
+        let formation = resolved_formation(ResolvedWorldFormationPreset::Continents);
+        let mean_speed = |activity| {
+            let mut rng = StageRng::from_seed(derive_stage_seed(
+                RootSeed::new(0x_AC71_0117),
+                StageIdentity::new("runner-activity-test", 1, "sekai.test"),
+            ));
+            let streams = LabeledSubstreams::capture(&mut rng);
+            let spec = TectonicSpec {
+                plate_count: 8,
+                activity,
+                ..TectonicSpec::default()
+            };
+            let evolved =
+                evolve_control_state_v5(&surface, &topology, &spec, &formation, &streams).unwrap();
+            let rates = evolved
+                .current
+                .plates
+                .iter()
+                .map(|plate| plate.rotation.angular_rate_rad_per_year())
+                .collect::<Vec<_>>();
+            rates.iter().sum::<f64>() / rates.len() as f64
+        };
+
+        let quiet = mean_speed(TectonicActivity::Quiet);
+        let moderate = mean_speed(TectonicActivity::Moderate);
+        let active = mean_speed(TectonicActivity::Active);
+
+        assert!(
+            quiet < moderate && moderate < active,
+            "activity must order the published plate speeds:              quiet={quiet:e} moderate={moderate:e} active={active:e}"
+        );
+        assert!(
+            active > quiet * 2.0,
+            "the three levels must be distinguishable, not a rounding apart:              quiet={quiet:e} active={active:e}"
+        );
     }
 
     #[test]
@@ -1121,6 +1177,7 @@ mod tests {
                             surface,
                             &topology,
                             &mut workspace,
+                            1.0,
                         )
                         .unwrap();
                         let largest = workspace
