@@ -41,6 +41,10 @@
       验证：`cargo check --all-features --all-targets` 零警告 + `--lib` 461 项
       单元测试 + tectonics 集成套件。
 
+- [x] Task 3 / 7 / 9 —— P5 物质账本与侵蚀量级（合并为一次提交）
+      三项在物理上不可分割：打开淤积会暴露被过大侵蚀掩盖的量级错误，而量级标定
+      必须在侵蚀律改用真实流量之后做一次，否则要标定两遍。详见设计 §2/§4/§6。
+
 - [x] Task 3 —— 启用河道淤积（`V_eff = G · 局地径流`）
       `FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR = 0`
       使 `davy_lague_deposition_fraction` 对每个有受体的格元返回 0，陆上没有
@@ -72,13 +76,14 @@
       并在 P5 window 之间复用。
       验证：`spherical_*` 拓扑消费者套件 + P5 套件。
 
-- [x] Task 7 —— P5 常量出处与重标定（先测后钉）
-      `world/natural/surface_formation.rs` 的 P5 常量全部没有作者-年份或
-      数据集。先用生产算子在 Task 3/4 之后的地形上实测，再据实测与文献钉值；
-      至少覆盖 `FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR`（当前 5000，
-      文献坡面值 3e-3 量级）与 `FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR`
-      （当前 2e-5 m/yr，100 kyr 累计 2 m，实际等于关闭）。无直接出处者按
-      AGENTS.md 记为开放问题交用户裁定。
+- [x] Task 7 —— P5 侵蚀量级先测后钉
+      新增 `tests/formation_denudation.rs`（ignored / Release）用九项高程组成
+      测量陆地剥蚀率并对观测设门。实测把
+      `FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR` 从 `5.0e-6`
+      钉到 `5.0e-7`（`672/747 → 49/52 m/Myr`，全球 `10Be` 中位数 `54`）。
+      实测同时**否定**了审计对 `FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR`
+      的量级怀疑：该项只贡献 `13 m/Myr`，本轮不动。
+      `FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR` 的几何语义未定，留作开放问题。
 
 - [x] Task 8 —— 裁决「构造活动」旋钮
       `apply_boundary_torques_to_current` 在第一步之前无条件覆盖

@@ -8,8 +8,9 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     formation_elevation_from_components, NaturalQualityProfile, SurfaceWaterField,
-    SurfaceWaterKind, ELEVATION_MAX_M, FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
-    FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
+    SurfaceWaterKind, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
+    FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
+    FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -56,12 +57,19 @@ fn simple_path(surface: &SphericalSurfaceSnapshot, length: usize) -> Vec<CellId>
     path
 }
 
+/// Converts a catchment area into the discharge it yields under the frozen
+/// reference runoff, so a fixture states catchment size and the law still reads
+/// the routed water.
+fn discharge_of_reference_runoff_m3_s(area_m2: f64) -> f32 {
+    (area_m2 * FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM / 1_000.0 / CLIMATOLOGICAL_YEAR_SECONDS)
+        as f32
+}
+
 struct Fields {
     elevation_m: Vec<f64>,
     receiver: Vec<Option<CellId>>,
     water: SurfaceWaterField,
-    drainage_area_km2: Vec<f32>,
-    annual_runoff_mm: Vec<f32>,
+    discharge_m3_s: Vec<f32>,
     uplift_rate_mm_year: Vec<f32>,
     subsidence_rate_mm_year: Vec<f32>,
     erodibility: Vec<f32>,
@@ -73,8 +81,7 @@ impl Fields {
             elevation_m: &self.elevation_m,
             flow_receiver: &self.receiver,
             surface_water: &self.water,
-            drainage_area_km2: &self.drainage_area_km2,
-            annual_local_runoff_mm: &self.annual_runoff_mm,
+            mean_annual_discharge_m3_s: &self.discharge_m3_s,
             uplift_rate_mm_per_year: &self.uplift_rate_mm_year,
             subsidence_rate_mm_per_year: &self.subsidence_rate_mm_year,
             substrate_erodibility: &self.erodibility,
@@ -88,13 +95,11 @@ fn chain_fields(surface: &SphericalSurfaceSnapshot) -> (Vec<CellId>, Fields) {
     let mut elevation_m = vec![0.0; count];
     let mut receiver = vec![None; count];
     let mut water_kind = vec![SurfaceWaterKind::DryLand; count];
-    let mut drainage_area_km2 = vec![1.0; count];
-    let mut annual_runoff_mm = vec![0.0; count];
+    let mut discharge_m3_s = vec![0.0; count];
     for (position, &cell) in path.iter().enumerate() {
         let index = cell.raw() as usize;
         elevation_m[index] = f64::from((3 - position) as u32) * 1_000.0;
-        drainage_area_km2[index] = (position + 1) as f32 * 4_000_000.0;
-        annual_runoff_mm[index] = 1_000.0;
+        discharge_m3_s[index] = discharge_of_reference_runoff_m3_s((position + 1) as f64 * 4.0e12);
         if let Some(&downstream) = path.get(position + 1) {
             receiver[index] = Some(downstream);
         } else {
@@ -107,8 +112,7 @@ fn chain_fields(surface: &SphericalSurfaceSnapshot) -> (Vec<CellId>, Fields) {
             elevation_m,
             receiver,
             water: SurfaceWaterField::from_kinds(water_kind),
-            drainage_area_km2,
-            annual_runoff_mm,
+            discharge_m3_s,
             uplift_rate_mm_year: vec![0.0; count],
             subsidence_rate_mm_year: vec![0.0; count],
             erodibility: vec![0.5; count],
@@ -219,13 +223,13 @@ fn spherical_chain_is_deterministic_monotone_base_safe_and_component_exact() {
 }
 
 #[test]
-fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exact() {
+fn discharge_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exact() {
     let surface = surface(42);
     let (path, base) = chain_fields(&surface);
     let head = path[0].raw() as usize;
 
     let mut zero = chain_fields(&surface).1;
-    zero.annual_runoff_mm.fill(0.0);
+    zero.discharge_m3_s.fill(0.0);
     let zero_result = ImplicitStreamPowerSolver::advance(
         &surface,
         zero.inputs(),
@@ -268,7 +272,7 @@ fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exac
     assert_eq!(subthreshold_result.fluvial_erosion_m()[head], 0.0);
 
     let mut wet = chain_fields(&surface).1;
-    wet.annual_runoff_mm[head] = 4_000.0;
+    wet.discharge_m3_s[head] *= 4.0;
     let wet_result = ImplicitStreamPowerSolver::advance(
         &surface,
         wet.inputs(),
@@ -452,8 +456,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         elevation_m: vec![1_000.0; count],
         receiver: vec![None; count],
         water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
-        drainage_area_km2: vec![1.0; count],
-        annual_runoff_mm: vec![1_000.0; count],
+        discharge_m3_s: vec![discharge_of_reference_runoff_m3_s(1.0e6) as f32; count],
         uplift_rate_mm_year: vec![0.0; count],
         subsidence_rate_mm_year: vec![0.0; count],
         erodibility: vec![0.5; count],

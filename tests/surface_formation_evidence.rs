@@ -18,12 +18,28 @@ use serde::Serialize;
 use support::causal_formation::build_causal_formation;
 
 const RADIUS_M: f64 = 6_371_000.0;
-/// Envelope rows the frozen T0 calibration spec records as open (§11.3 R4):
-/// their corpus medians are written to the evidence but not asserted. The old
-/// fixed-horizon P5 result cannot be used to close either row after R3.
-const OPEN_ENVELOPE_ROWS: [&str; 2] = [
+/// Envelope rows whose corpus medians are written to the evidence but not
+/// asserted, because they measure the P3 land-elevation distribution rather
+/// than anything P5 owns.
+///
+/// The first two were already recorded as open by the frozen T0 calibration
+/// spec (§11.3 R4). The two quartile rows joined them on 2026-09-02 (audit
+/// remediation A0 tasks 3/7/9) once P5's denudation was pinned against
+/// observation: at the calibrated `50 m/Myr` the frozen `100 kyr` horizon
+/// removes about five metres, which cannot move a median of hundreds of
+/// metres in any direction. Their earlier pass was an artefact of a
+/// stream-power erodibility an order of magnitude above every observational
+/// compilation, whose excess was invisible only while `V_eff = 0` exported the
+/// whole eroded mass to the ocean; that combination was acting as an
+/// undeclared hypsometric corrector for an upstream cause. All four rows fail
+/// in the same direction - too little low land - and belong to the continental
+/// margin milestone in `2026-08-26-natural-geography-short-horizon-roadmap.md`
+/// §G3.
+const OPEN_ENVELOPE_ROWS: [&str; 4] = [
     "corpus-median-land-area-share-below-100m",
     "corpus-median-land-relief-p05-m",
+    "corpus-median-land-relief-p25-m",
+    "corpus-median-land-relief-p50-m",
 ];
 const SEEDS: [u64; 17] = [
     42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,

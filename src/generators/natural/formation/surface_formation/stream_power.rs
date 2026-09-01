@@ -7,19 +7,23 @@ use crate::engine::BuildCancellation;
 use crate::world::natural::{
     formation_elevation_from_components, EvolvedTectonicSnapshot, EvolvedTectonicValidationError,
     GeologicSubstrateSnapshot, GeologicSubstrateValidationError, SphericalHydrologySnapshot,
-    SphericalHydrologyValidationError, SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M,
-    ELEVATION_MIN_M, FORMATION_STREAM_POWER_AREA_EXPONENT, FORMATION_STREAM_POWER_ERODIBILITY_BASE,
+    SphericalHydrologyValidationError, SurfaceWaterField, SurfaceWaterKind,
+    CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FORMATION_STREAM_POWER_AREA_EXPONENT, FORMATION_STREAM_POWER_ERODIBILITY_BASE,
     FORMATION_STREAM_POWER_ERODIBILITY_RANGE,
     FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
-    FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX, FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN,
     FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
     MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
 
-const SQUARE_METERS_PER_SQUARE_KILOMETER: f64 = 1_000_000.0;
 const MILLIMETERS_PER_METER: f64 = 1_000.0;
+/// Reference runoff of [`FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM`] as an SI
+/// rate, so a routed discharge divides straight into an effective area.
+const STREAM_POWER_REFERENCE_RUNOFF_M_PER_S: f64 = FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM
+    / MILLIMETERS_PER_METER
+    / CLIMATOLOGICAL_YEAR_SECONDS;
 const CANCELLATION_POLL_MASK: usize = 255;
 
 /// Borrowed dense fields consumed by the standalone implicit stream-power kernel.
@@ -28,8 +32,10 @@ pub struct StreamPowerInputs<'a> {
     pub elevation_m: &'a [f64],
     pub flow_receiver: &'a [Option<CellId>],
     pub surface_water: &'a SurfaceWaterField,
-    pub drainage_area_km2: &'a [f32],
-    pub annual_local_runoff_mm: &'a [f32],
+    /// Routed mean annual discharge. The law consumes this rather than the
+    /// drainage area so a reach crossing a dry belt keeps the water its wet
+    /// headwaters actually deliver.
+    pub mean_annual_discharge_m3_s: &'a [f32],
     pub uplift_rate_mm_per_year: &'a [f32],
     pub subsidence_rate_mm_per_year: &'a [f32],
     pub substrate_erodibility: &'a [f32],
@@ -128,28 +134,20 @@ impl ImplicitStreamPowerSolver {
             let receiver_height = elevation_m[receiver_index];
             let forced_height = elevation_m[index];
             let length_m = receiver_length_m(surface, cell, receiver)?;
-            let annual_runoff_mm = f64::from(inputs.annual_local_runoff_mm[index]);
-            let drainage_area_m2 =
-                f64::from(inputs.drainage_area_km2[index]) * SQUARE_METERS_PER_SQUARE_KILOMETER;
-            if annual_runoff_mm == 0.0 || drainage_area_m2 == 0.0 {
+            let effective_area_m2 = f64::from(inputs.mean_annual_discharge_m3_s[index])
+                / STREAM_POWER_REFERENCE_RUNOFF_M_PER_S;
+            if effective_area_m2 == 0.0 {
                 continue;
             }
-            let runoff_factor = (annual_runoff_mm / FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM)
-                .clamp(
-                    FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN,
-                    FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
-                )
-                .sqrt();
             let erodibility_per_year = FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR
                 * (FORMATION_STREAM_POWER_ERODIBILITY_BASE
                     + FORMATION_STREAM_POWER_ERODIBILITY_RANGE
-                        * f64::from(inputs.substrate_erodibility[index]))
-                * runoff_factor;
+                        * f64::from(inputs.substrate_erodibility[index]));
             let candidate = implicit_stream_power_n1_height(
                 forced_height,
                 receiver_height,
                 length_m,
-                drainage_area_m2,
+                effective_area_m2,
                 erodibility_per_year,
                 step_years,
             )?;
@@ -249,8 +247,7 @@ impl ImplicitStreamPowerSolver {
                 elevation_m: initial_elevation_m,
                 flow_receiver: hydrology.flow_receiver(),
                 surface_water: hydrology.surface_water(),
-                drainage_area_km2: hydrology.drainage_area_km2(),
-                annual_local_runoff_mm: hydrology.annual_local_runoff_mm(),
+                mean_annual_discharge_m3_s: hydrology.mean_annual_discharge_m3_s(),
                 uplift_rate_mm_per_year: tectonics.forcing().uplift_rate_mm_per_year(),
                 subsidence_rate_mm_per_year: tectonics.forcing().subsidence_rate_mm_per_year(),
                 substrate_erodibility: substrate.erodibility(),
@@ -338,10 +335,9 @@ fn validate_inputs(
         ("elevation_m", inputs.elevation_m.len()),
         ("flow_receiver", inputs.flow_receiver.len()),
         ("surface_water", inputs.surface_water.len()),
-        ("drainage_area_km2", inputs.drainage_area_km2.len()),
         (
-            "annual_local_runoff_mm",
-            inputs.annual_local_runoff_mm.len(),
+            "mean_annual_discharge_m3_s",
+            inputs.mean_annual_discharge_m3_s.len(),
         ),
         (
             "uplift_rate_mm_per_year",
@@ -374,20 +370,13 @@ fn validate_inputs(
                 found: elevation,
             });
         }
-        for (field, value) in [
-            ("drainage_area_km2", inputs.drainage_area_km2[index]),
-            (
-                "annual_local_runoff_mm",
-                inputs.annual_local_runoff_mm[index],
-            ),
-        ] {
-            if !value.is_finite() || value < 0.0 {
-                return Err(StreamPowerGenerationError::InvalidCellValue {
-                    field,
-                    cell,
-                    found: f64::from(value),
-                });
-            }
+        let discharge = inputs.mean_annual_discharge_m3_s[index];
+        if !discharge.is_finite() || discharge < 0.0 {
+            return Err(StreamPowerGenerationError::InvalidCellValue {
+                field: "mean_annual_discharge_m3_s",
+                cell,
+                found: f64::from(discharge),
+            });
         }
         for (field, value, maximum) in [
             (

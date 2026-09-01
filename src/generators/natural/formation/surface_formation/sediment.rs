@@ -8,8 +8,8 @@ use crate::world::natural::{
     FormationSedimentFields, LandOceanKind, SedimentBudgetReport, SurfaceFormationValidationError,
     CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_AIRY_MANTLE_DENSITY_KG_M3, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
-    FORMATION_SHELF_BREAK_DEPTH_M, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
-    SEDIMENT_PROVENANCE_SOURCE_COUNT,
+    FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT, FORMATION_SHELF_BREAK_DEPTH_M,
+    SEDIMENT_BUDGET_RELATIVE_ERROR_MAX, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
 use crate::world::CellId;
@@ -17,6 +17,7 @@ use crate::world::CellId;
 use super::state::{FormationStateError, SedimentStockState};
 
 const CANCELLATION_POLL_MASK: usize = 255;
+const MILLIMETERS_PER_METER: f64 = 1_000.0;
 
 pub(super) fn split_mass_by_weights(
     mass_kg: f64,
@@ -55,8 +56,11 @@ pub struct SedimentInputs<'a> {
     pub sea_level_m: f64,
     pub flow_receiver: &'a [Option<CellId>],
     pub mean_annual_discharge_m3_s: &'a [f32],
-    /// Davy-Lague effective settling velocity `d* v_s`, in meters per year.
-    pub effective_settling_velocity_m_per_year: f64,
+    /// Per-cell Davy-Lague effective settling velocity `d* v_s`, in meters per
+    /// year. Build it with
+    /// [`davy_lague_effective_settling_velocity_m_per_year`] so the runoff
+    /// scaling stays in one place.
+    pub effective_settling_velocity_m_per_year: &'a [f64],
     pub fluvial_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub hillslope_removed_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
     pub hillslope_deposited_by_source_kg: &'a [[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]],
@@ -263,7 +267,7 @@ impl ProvenanceSedimentRouter {
             let receiver_index = receiver.raw() as usize;
             let deposit_fraction = davy_lague_deposition_fraction(
                 f64::from(inputs.mean_annual_discharge_m3_s[index]) * CLIMATOLOGICAL_YEAR_SECONDS,
-                inputs.effective_settling_velocity_m_per_year,
+                inputs.effective_settling_velocity_m_per_year[index],
                 surface.cells()[index].area.get(),
             )?;
             let deposit = packets[index].take_fraction(deposit_fraction);
@@ -360,6 +364,18 @@ impl ProvenanceSedimentRouter {
             deposited_by_source_kg,
         })
     }
+}
+
+/// Returns the Davy-Lague effective settling velocity of one cell.
+///
+/// Yuan et al. (2019) express `V_eff` as the dimensionless
+/// [`FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT`] times the runoff rate, which
+/// makes the deposited share of a cell a pure catchment-area ratio and the
+/// along-reach total independent of the grid the reach is sampled on. Keeping
+/// that mapping here means the coefficient has exactly one consumer.
+pub fn davy_lague_effective_settling_velocity_m_per_year(annual_local_runoff_mm: f32) -> f64 {
+    FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT * f64::from(annual_local_runoff_mm.max(0.0))
+        / MILLIMETERS_PER_METER
 }
 
 /// Analytic Davy-Lague deposition fraction for one finite-volume cell.
@@ -496,6 +512,10 @@ fn validate_inputs(
             inputs.mean_annual_discharge_m3_s.len(),
         ),
         (
+            "effective_settling_velocity_m_per_year",
+            inputs.effective_settling_velocity_m_per_year.len(),
+        ),
+        (
             "fluvial_removed_by_source_kg",
             inputs.fluvial_removed_by_source_kg.len(),
         ),
@@ -529,13 +549,6 @@ fn validate_inputs(
             });
         }
     }
-    if !inputs.effective_settling_velocity_m_per_year.is_finite()
-        || inputs.effective_settling_velocity_m_per_year < 0.0
-    {
-        return Err(SedimentGenerationError::InvalidEffectiveSettlingVelocity {
-            found: inputs.effective_settling_velocity_m_per_year,
-        });
-    }
     for index in 0..count {
         poll_cancelled(cancellation, index)?;
         let cell = CellId::from_raw(index as u32);
@@ -563,6 +576,14 @@ fn validate_inputs(
                 field: "mean_annual_discharge_m3_s",
                 cell,
                 found: f64::from(discharge),
+            });
+        }
+        let settling_velocity = inputs.effective_settling_velocity_m_per_year[index];
+        if !settling_velocity.is_finite() || settling_velocity < 0.0 {
+            return Err(SedimentGenerationError::InvalidCellValue {
+                field: "effective_settling_velocity_m_per_year",
+                cell,
+                found: settling_velocity,
             });
         }
         let mut retained_stock_kg = 0.0_f64;
@@ -736,8 +757,6 @@ pub enum SedimentGenerationError {
     InvalidSeaLevel { found: f64 },
     #[error("sediment step duration must be finite and positive, got {found}")]
     InvalidStepYears { found: f64 },
-    #[error("effective settling velocity must be finite and nonnegative, got {found}")]
-    InvalidEffectiveSettlingVelocity { found: f64 },
     #[error("sediment receiver {receiver:?} is not adjacent to {cell:?}")]
     ReceiverNotAdjacent { cell: CellId, receiver: CellId },
     #[error("sediment receiver graph contains a cycle")]

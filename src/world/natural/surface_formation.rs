@@ -42,17 +42,43 @@ pub const FORMATION_STREAM_POWER_SLOPE_EXPONENT: f64 = 1.0;
 /// Minimum active channel slope in the locked stream-power law.
 pub const FORMATION_STREAM_POWER_SLOPE_THRESHOLD: f64 = 1.0e-5;
 /// Reference annual erodibility in the locked stream-power law.
-pub const FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR: f64 = 5.0e-6;
+///
+/// `K` in `E = K * A_eff^m * (S - S_c)` with `A_eff` in square metres and
+/// `m = 0.5`, so its unit is `1/yr`. Direct laboratory or field values for `K`
+/// are not transferable between exponent pairs, catchment scales and lithology
+/// suites, so it is pinned against the one quantity the model shares with
+/// observation: the area-weighted land denudation rate. Cosmogenic `10Be`
+/// compilations give a global basin median of `54 m/Myr` (Portenga & Bierman
+/// 2011, *GSA Today* 21(8), 4-10, DOI `10.1130/G111A.1`; Willenbring, Codilean
+/// & McElroy 2013, *Geology* 41(3), 343-346, DOI `10.1130/G33918.1`), which the
+/// global suspended flux to the ocean independently supports (Milliman &
+/// Farnsworth 2011). `tests/formation_denudation.rs` measures the published
+/// budget with production operators and gates it on that band.
+///
+/// Measured on Draft seeds 42 and 3 (2026-09-02, audit remediation A0 task 7):
+/// the predecessor `5.0e-6` produced `672` and `747 m/Myr`, an order of
+/// magnitude above every observational compilation, and its excess only stayed
+/// invisible while `V_eff = 0` dumped the whole eroded mass into the ocean.
+/// Sweeping `3.0e-7 -> 24/26`, `7.0e-7 -> 74/78` and this value `-> 49/52`
+/// selects it as the closest match to the observed median. The result also sits
+/// inside the `1e-7..1e-5` span Stock & Montgomery (1999), *JGR* 104,
+/// 4983-4993, DOI `10.1029/98JB02139`, report for comparable exponent pairs,
+/// where the predecessor sat at the very top.
+pub const FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR: f64 = 5.0e-7;
 /// Baseline multiplier retained even for resistant substrate.
 pub const FORMATION_STREAM_POWER_ERODIBILITY_BASE: f64 = 0.25;
 /// Additional multiplier contributed by unit substrate erodibility.
 pub const FORMATION_STREAM_POWER_ERODIBILITY_RANGE: f64 = 1.50;
-/// Annual effective-runoff reference used by the erodibility response.
+/// Reference annual runoff that converts a discharge into an effective
+/// drainage area for the stream-power law.
+///
+/// `A^m` is only a legitimate stand-in for `Q^m` where runoff is spatially
+/// uniform (Whipple & Tucker 1999, *JGR* 104, 17661-17674, DOI
+/// `10.1029/1999JB900120`), which a solved non-uniform climate is not. P5
+/// therefore uses the integrated discharge it already routes and expresses it
+/// as `A_eff = Q / P_ref`, which keeps `K`'s unit and reduces exactly to the
+/// drainage area in a world whose runoff is `P_ref` everywhere.
 pub const FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM: f64 = 1_000.0;
-/// Lower positive-runoff factor admitted by the stream-power response.
-pub const FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN: f64 = 0.10;
-/// Upper positive-runoff factor admitted by the stream-power response.
-pub const FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX: f64 = 4.0;
 /// Base nonlinear hillslope diffusivity.
 pub const FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR: f64 = 5_000.0;
 /// Tangent of the fixed 32-degree critical hillslope angle.
@@ -79,14 +105,26 @@ pub const FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX: f64 = 4.0;
 pub const FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3: f64 = 1_800.0;
 /// T1 valley-relief presentation reference; P5 sediment routing does not use it.
 pub const FORMATION_FLOODPLAIN_ACCOMMODATION_M: f64 = 50.0;
-/// Effective settling velocity for the production detachment-limited end member.
+/// Dimensionless Davy-Lague sediment deposition coefficient `G = V_eff / P`.
 ///
-/// Davy & Lague (2009), equations (7)-(9), define deposition through
-/// `V_eff = d* v_s` and show that `V_eff = 0` is the infinite transport-length,
-/// detachment-limited limit. P5 deliberately selects that exact end member
-/// until grain size, Rouse number, and channel hydraulic geometry exist; it
-/// does not substitute an uncalibrated nonzero example value.
-pub(crate) const FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR: f64 = 0.0;
+/// Davy & Lague (2009), *JGR-ES* 114, F03007, DOI `10.1029/2008JF001146`,
+/// equations (7)-(9), write fluvial deposition as `V_eff * Q_s / Q`. Yuan et
+/// al. (2019), *JGR-ES* 124, 1346-1365, DOI `10.1029/2018JF004867`, remove the
+/// dimensional ambiguity of `V_eff` by expressing it as this ratio against the
+/// runoff rate `P`, which makes the per-cell deposited share a pure area ratio
+/// `G*A_cell / (A_upstream + G*A_cell)` and the along-reach total
+/// `G*ln(A_out/A_in)`, that is, independent of the grid the reach is sampled
+/// on. Guerit et al. (2019), *Geology* 47(9), 853-856, DOI
+/// `10.1130/G46356.1`, invert experimental and natural landscapes for
+/// `G = 0.4..1.2`; this adopts the center of that range.
+///
+/// The predecessor of this constant pinned `V_eff = 0`, the infinite
+/// transport-length end member, which made every cell with a downstream
+/// receiver deposit exactly nothing and sent all eroded mass straight to the
+/// ocean. That left the corpus with no valley fill, no floodplains and no
+/// deltas, and is what failed the `corpus-median-land-area-share-below-100m`
+/// and `corpus-median-land-relief-p05-m` hypsometric envelopes.
+pub const FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT: f64 = 1.0;
 /// Fixed coarse shelf-break depth limiting marine accommodation.
 pub const FORMATION_SHELF_BREAK_DEPTH_M: f64 = 200.0;
 /// Normal-wind scale in the bounded coastal exposure proxy.
@@ -208,15 +246,15 @@ const PROVENANCE_SUM_TOLERANCE: f64 = 1.0e-6;
 #[serde(rename_all = "kebab-case")]
 pub enum SurfaceFormationModelId {
     /// Priority-Flood + implicit stream power + paired nonlinear hillslope,
-    /// Davy-Lague detachment-limited sediment continuity, coastal exchange,
-    /// and local Airy isostasy.
+    /// Davy-Lague sediment continuity with runoff-scaled deposition, coastal
+    /// exchange, and local Airy isostasy.
     PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
 }
 
 /// Returns the canonical identity of every equation and frozen P5 constant.
 pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.surface-formation-equations.v6\0");
+    hasher.update(b"sekai.surface-formation-equations.v7\0");
     hasher.update(&[surface_formation_model_tag(
         SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
     )]);
@@ -231,8 +269,6 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_STREAM_POWER_ERODIBILITY_BASE,
         FORMATION_STREAM_POWER_ERODIBILITY_RANGE,
         FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM,
-        FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN,
-        FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
         FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR,
         FORMATION_HILLSLOPE_CRITICAL_SLOPE,
         FORMATION_HILLSLOPE_DENOMINATOR_MIN,
@@ -245,7 +281,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
         FORMATION_HILLSLOPE_PRECIPITATION_REFERENCE_MM,
         FORMATION_HILLSLOPE_PRECIPITATION_FACTOR_MAX,
         FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
-        FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
+        FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT,
         FORMATION_SHELF_BREAK_DEPTH_M,
         FORMATION_COASTAL_WIND_REFERENCE_M_S,
         FORMATION_COASTAL_CURRENT_REFERENCE_M_S,
@@ -267,7 +303,7 @@ pub fn surface_formation_model_fingerprint() -> [u8; 32] {
     hasher.update(b"braun-willett-n1-backward-euler-v1\0");
     hasher.update(b"roering-paired-finite-volume-v1\0");
     hasher.update(b"davy-lague-analytic-five-source-sediment-continuity-v1\0");
-    hasher.update(b"fluvial-transport:detachment-limited-v-eff-zero\0");
+    hasher.update(b"fluvial-transport:davy-lague-runoff-scaled-v-eff\0");
     hasher.update(b"finite-time-held-tectonic-forcing-v1\0");
     hasher.update(b"sources:felsic,mafic,volcaniclastic,sedimentary,metamorphic\0");
     hasher.update(b"nine-causal-elevation-components-v4\0");

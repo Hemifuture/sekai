@@ -55,7 +55,7 @@ struct Fields {
     elevation_m: Vec<f64>,
     receiver: Vec<Option<CellId>>,
     discharge_m3_s: Vec<f32>,
-    effective_settling_velocity_m_per_year: f64,
+    effective_settling_velocity_m_per_year: Vec<f64>,
     fluvial_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     hillslope_removed_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
     hillslope_deposited_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
@@ -74,7 +74,7 @@ impl Fields {
             sea_level_m: 0.0,
             flow_receiver: &self.receiver,
             mean_annual_discharge_m3_s: &self.discharge_m3_s,
-            effective_settling_velocity_m_per_year: self.effective_settling_velocity_m_per_year,
+            effective_settling_velocity_m_per_year: &self.effective_settling_velocity_m_per_year,
             fluvial_removed_by_source_kg: &self.fluvial_removed_by_source_kg,
             hillslope_removed_by_source_kg: &self.hillslope_removed_by_source_kg,
             hillslope_deposited_by_source_kg: &self.hillslope_deposited_by_source_kg,
@@ -103,7 +103,7 @@ fn zero_fields(surface: &SphericalSurfaceSnapshot) -> Fields {
         elevation_m: vec![100.0; count],
         receiver: vec![None; count],
         discharge_m3_s: vec![0.0; count],
-        effective_settling_velocity_m_per_year: 0.0,
+        effective_settling_velocity_m_per_year: vec![0.0; count],
         fluvial_removed_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
         hillslope_removed_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
         hillslope_deposited_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
@@ -200,8 +200,8 @@ fn davy_lague_recurrence_closes_analytically_and_discharge_controls_deposition()
     let surface = surface(10_000.0, 42);
     let (path, mut low) = routed_chain(&surface, 1.0);
     let (_, mut high) = routed_chain(&surface, 1_000_000.0);
-    low.effective_settling_velocity_m_per_year = 1.0;
-    high.effective_settling_velocity_m_per_year = 1.0;
+    low.effective_settling_velocity_m_per_year.fill(1.0);
+    high.effective_settling_velocity_m_per_year.fill(1.0);
     let low_result =
         ProvenanceSedimentRouter::route(&surface, low.inputs(), 1.0, &BuildCancellation::new())
             .unwrap();
@@ -222,7 +222,9 @@ fn davy_lague_recurrence_closes_analytically_and_discharge_controls_deposition()
     assert!(high_result.budget_report().global_relative_error() <= 1.0e-8);
 
     let (_, mut half_per_cell) = routed_chain(&surface, 0.0);
-    half_per_cell.effective_settling_velocity_m_per_year = 1.0;
+    half_per_cell
+        .effective_settling_velocity_m_per_year
+        .fill(1.0);
     half_per_cell.marine_exposure[path[3].raw() as usize] = 1.0;
     for &cell in &path[..3] {
         let index = cell.raw() as usize;
@@ -260,7 +262,7 @@ fn davy_lague_recurrence_closes_analytically_and_discharge_controls_deposition()
 fn detachment_limited_zero_settling_routes_all_fluvial_mass_to_the_terminal() {
     let surface = surface(10_000.0, 42);
     let (path, mut fields) = routed_chain(&surface, 10.0);
-    fields.effective_settling_velocity_m_per_year = 0.0;
+    fields.effective_settling_velocity_m_per_year.fill(0.0);
     fields.marine_exposure[path[3].raw() as usize] = 1.0;
     let source_mass = fields.fluvial_removed_by_source_kg[path[0].raw() as usize][0];
     let result =

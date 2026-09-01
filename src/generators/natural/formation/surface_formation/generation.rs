@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use serde::Serialize;
 use thiserror::Error;
 
-use super::sediment::split_mass_by_weights;
+use super::sediment::{davy_lague_effective_settling_velocity_m_per_year, split_mass_by_weights};
 use super::{
     CoastGenerationError, CoastalExchange, CoastalInputs, FormationHydrologyGenerationError,
     FormationHydrologyGenerator, FormationState, FormationStateError, HillslopeGenerationError,
@@ -28,7 +28,6 @@ use crate::world::natural::{
     SphericalHydrologySnapshot, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError, WaterVolumeSolveError,
     ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
-    FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
     NATURAL_SURFACE_FORMATION_SCHEMA_V5, SEDIMENT_PROVENANCE_SOURCE_COUNT,
     SURFACE_FORMATION_HORIZON_YEARS,
 };
@@ -998,6 +997,14 @@ fn advance_surface_window(
         coast.sediment_stock_removed_by_source_kg(),
         cancellation,
     )?;
+    // Davy-Lague deposition scales with the local runoff rate, so the per-cell
+    // settling velocity comes from the same hydrology this window already
+    // solved rather than from a second, independently drifting field.
+    let effective_settling_velocity_m_per_year = hydrology
+        .annual_local_runoff_mm()
+        .iter()
+        .map(|runoff_mm| davy_lague_effective_settling_velocity_m_per_year(*runoff_mm))
+        .collect::<Vec<_>>();
     let sediment = ProvenanceSedimentRouter::route_from_validated_surface(
         surface,
         SedimentInputs {
@@ -1005,8 +1012,7 @@ fn advance_surface_window(
             sea_level_m: state.surface_water_geometry().sea_level_m(),
             flow_receiver: hydrology.flow_receiver(),
             mean_annual_discharge_m3_s: hydrology.mean_annual_discharge_m3_s(),
-            effective_settling_velocity_m_per_year:
-                FORMATION_DETACHMENT_LIMITED_EFFECTIVE_SETTLING_VELOCITY_M_PER_YEAR,
+            effective_settling_velocity_m_per_year: &effective_settling_velocity_m_per_year,
             fluvial_removed_by_source_kg: &fluvial_cover.removed_by_source_kg,
             hillslope_removed_by_source_kg: hillslope.removed_by_source_kg(),
             hillslope_deposited_by_source_kg: hillslope.deposited_by_source_kg(),
