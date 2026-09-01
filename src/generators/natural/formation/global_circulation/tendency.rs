@@ -38,6 +38,18 @@ const BATHYMETRIC_BOTTOM_DRAG_REFERENCE_DEPTH_M: f64 = 1_000.0;
 // grid-scale velocity fronts. The finite-volume conductance below makes these
 // resolution-independent physical diffusivities rather than per-cell filters.
 const ATMOSPHERE_HORIZONTAL_EDDY_VISCOSITY_M2_S: f64 = 1_000_000.0;
+// Transient baroclinic eddies carry most of the extratropical poleward
+// moisture flux and none of them fit on a 24-48 cell cubed face, so the
+// resolved mean flow has to be completed by a down-gradient closure. Held
+// (1999), Tellus A 51, 59-70, DOI 10.3402/tellusa.v51i1.12305, puts the
+// tropospheric macroturbulent tracer diffusivity at O(1e6 m^2/s); moist energy
+// balance models reproduce the observed meridional latent transport with a
+// spatially uniform diffusivity of that magnitude (North 1975, JAS 32,
+// 2033-2043; Flannery 1984, JAS 41, 414-421; Siler, Roe & Armour 2018,
+// J. Climate 31, 7481-7493, DOI 10.1175/JCLI-D-18-0081.1). The finite-volume
+// conductance below makes it a resolution-independent physical diffusivity,
+// exactly as for the momentum viscosity above.
+const ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S: f64 = 1_000_000.0;
 const OCEAN_HORIZONTAL_EDDY_VISCOSITY_M2_S: f64 = 1_000.0;
 // Effective hypsometric pressure couplings for the fixed 6 km / 4 km layers.
 // The upper amplitude stays below the layer-depth validity bound; the lower
@@ -70,7 +82,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v7\0");
+    hasher.update(b"sekai.global-circulation-equations.v8\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -81,6 +93,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         BATHYMETRIC_BOTTOM_DRAG_TIMESCALE_S,
         BATHYMETRIC_BOTTOM_DRAG_REFERENCE_DEPTH_M,
         ATMOSPHERE_HORIZONTAL_EDDY_VISCOSITY_M2_S,
+        ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S,
         OCEAN_HORIZONTAL_EDDY_VISCOSITY_M2_S,
         C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         C2_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
@@ -1360,6 +1373,18 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 *target += ((f64::from(*transported) - f64::from(*original))
                     / transport_step_seconds) as f32;
             }
+            // Poleward moisture transport in the real extratropics is carried
+            // by transient baroclinic eddies, which a 24-48 cell cubed face
+            // cannot resolve; advecting only the mean flow leaves the high
+            // latitudes with no vapour and therefore no condensation at all.
+            accumulate_horizontal_scalar_diffusion(
+                self.grid,
+                transported_humidity.values(),
+                &workspace.open_edges,
+                ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S,
+                &mut tendency.specific_humidity_tendency_s_inv,
+                cancellation,
+            )?;
             if let (Some(upper_humidity), Some(upper_tendency)) = (
                 state.upper_specific_humidity(),
                 &mut tendency.upper_specific_humidity_tendency_s_inv,
@@ -2859,6 +2884,58 @@ fn horizontal_velocity_diffusion(
             grid.cells()[cell].center_unit(),
         )
         .map(|component| component as f32);
+    }
+    check_cancelled(cancellation)
+}
+
+/// Adds the conservative two-point-flux horizontal diffusion of one scalar
+/// field to an existing tendency.
+///
+/// This is the scalar twin of [`horizontal_velocity_diffusion`]: the same
+/// finite-volume conductance `D * perm * L_edge / d_centers`, so the same
+/// resolution independence, and no parallel transport because a scalar has no
+/// direction to carry. Every edge moves one amount out of one cell and into
+/// the other, so the area-weighted global integral is unchanged and the term
+/// is a transport, never a source.
+///
+/// # Arguments
+///
+/// * `values` - the diffused field, one sample per grid cell
+/// * `edge_permeability` - per-edge open fraction, `0.0` for a closed edge
+/// * `diffusivity_m2_s` - the eddy diffusivity, finite and non-negative
+/// * `target_tendency_s_inv` - accumulated into, never cleared
+fn accumulate_horizontal_scalar_diffusion(
+    grid: &CubedSphereGrid,
+    values: &[f32],
+    edge_permeability: &[f32],
+    diffusivity_m2_s: f64,
+    target_tendency_s_inv: &mut [f32],
+    cancellation: &BuildCancellation,
+) -> Result<(), LayeredTendencyError> {
+    debug_assert_eq!(values.len(), grid.cell_count());
+    debug_assert_eq!(edge_permeability.len(), grid.edges().len());
+    debug_assert_eq!(target_tendency_s_inv.len(), grid.cell_count());
+    debug_assert!(diffusivity_m2_s.is_finite() && diffusivity_m2_s >= 0.0);
+    if diffusivity_m2_s == 0.0 {
+        return Ok(());
+    }
+
+    for (edge_index, edge) in grid.edges().iter().enumerate() {
+        if edge_index % 256 == 0 {
+            check_cancelled(cancellation)?;
+        }
+        let permeability = f64::from(edge_permeability[edge_index]);
+        if permeability == 0.0 {
+            continue;
+        }
+        let [first, second] = *edge.cells();
+        let first = first as usize;
+        let second = second as usize;
+        let conductance_m2_s =
+            diffusivity_m2_s * permeability * edge.length_m() / edge.center_distance_m();
+        let amount_rate = conductance_m2_s * (f64::from(values[second]) - f64::from(values[first]));
+        target_tendency_s_inv[first] += (amount_rate / grid.cells()[first].area_m2()) as f32;
+        target_tendency_s_inv[second] -= (amount_rate / grid.cells()[second].area_m2()) as f32;
     }
     check_cancelled(cancellation)
 }
