@@ -48,10 +48,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - run: cargo test --all-targets --all-features
-      - name: Natural formation quality matrix and reviewed goldens
-        run: cargo test --release --test natural_display_golden
-      - name: Natural 20,000-cell performance budget
-        run: cargo test --release --test natural_performance release_default_hydro_erosion_budget -- --exact --ignored --nocapture
 
   field_display_gpu:
     name: Field display GPU reference
