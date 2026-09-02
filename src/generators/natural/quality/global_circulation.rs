@@ -1357,7 +1357,7 @@ mod tests {
 
     #[test]
     fn metric_inventory_is_complete_and_alphabetical() {
-        assert_eq!(EXPECTED_METRIC_NAMES.len(), 25);
+        assert_eq!(EXPECTED_METRIC_NAMES.len(), 26);
         assert!(
             EXPECTED_METRIC_NAMES
                 .windows(2)

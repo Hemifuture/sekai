@@ -6,12 +6,15 @@
 
 ## 任务队列
 
-- [ ] Task 0 —— 度量 `near-surface-wind-non-zonal-variance-fraction`
+- [x] Task 0 —— 度量 `near-surface-wind-non-zonal-variance-fraction`
+      基线（Draft seed 42）：**0.0139**；陆 / 海偏离均方根 0.93 / 0.92 m/s。
       年平均近地面风偏离 5° 纬带面积加权平均的方差占比；只记录不设门。新增
       `tests/wind_asymmetry_probe.rs`（ignored / Release）打印 Draft seed 42 的该
       度量与纬带剖面，作为每个任务的前后对照。
 
-- [ ] Task 1 —— 低层大气连续方程带地形
+- [x] Task 1 —— 低层大气连续方程带地形
+      实测（seed 42）：0.0139 → **0.0338**，陆 / 海偏离均方根 0.93 / 0.92 →
+      2.10 / 1.10 m/s；纬带剖面不变（信风 −12.0，西风 +5.8），求解稳定。
       `z_b = land_fraction · max(elevation − sea_level, 0)`，钳制 `H_ref − z_b ≥ H_ref/6`；
       快、慢两条连续路径的施主厚度改为 `H_ref − z_b + η`。方程指纹 v9 → v10。
       验证：Task 0 探针前后；P4 套件。

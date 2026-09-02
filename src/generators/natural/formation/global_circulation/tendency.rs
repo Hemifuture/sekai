@@ -56,6 +56,12 @@ const OCEAN_HORIZONTAL_EDDY_VISCOSITY_M2_S: f64 = 1_000.0;
 // amplitude is derived so the first baroclinic mode has zero column-integrated
 // internal pressure force.
 const LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 6_000.0;
+// The lower layer carries the terrain as a floor under its fixed top (shallow
+// water over topography, Vallis 2017 §3.1). The floor is capped so the layer
+// never thins below one sixth of its reference depth: Earth's highest plateau
+// leaves about 1 km under a 6 km layer, and this bound is a numerical
+// safeguard, not a physical parameter.
+const LOWER_ATMOSPHERE_MIN_THICKNESS_M: f64 = LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M / 6.0;
 const UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 4_000.0;
 const C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 30.0;
 const UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 25.0;
@@ -82,7 +88,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v9\0");
+    hasher.update(b"sekai.global-circulation-equations.v10\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -99,6 +105,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         C2_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+        LOWER_ATMOSPHERE_MIN_THICKNESS_M,
         UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
         ATMOSPHERE_COLUMN_DEPTH_M,
         BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY,
@@ -896,6 +903,9 @@ impl LayeredTendencyWorkspace {
 pub struct LayeredTendencySystem<'grid> {
     grid: &'grid CubedSphereGrid,
     terrain_gradient_m_per_m: Option<&'grid [[f32; 3]]>,
+    /// Land surface height under the lower atmosphere, per work cell; `None`
+    /// integrates over a flat floor (test and comparison harnesses).
+    terrain_floor_m: Option<&'grid [f32]>,
     forcing_prevalidated: bool,
 }
 
@@ -933,21 +943,49 @@ impl<'grid> LayeredTendencySystem<'grid> {
         Self {
             grid,
             terrain_gradient_m_per_m: None,
+            terrain_floor_m: None,
             forcing_prevalidated: false,
         }
     }
 
     /// Reuses the immutable terrain derivative already owned by the validated
     /// global-climate forcing artifact.
-    pub(crate) const fn with_terrain_gradient(
+    pub(crate) const fn with_terrain(
         grid: &'grid CubedSphereGrid,
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
+        terrain_floor_m: &'grid [f32],
     ) -> Self {
         Self {
             grid,
             terrain_gradient_m_per_m: Some(terrain_gradient_m_per_m),
+            terrain_floor_m: Some(terrain_floor_m),
             forcing_prevalidated: true,
         }
+    }
+
+    /// Only the lower atmosphere sits on the terrain; every other layer rests
+    /// on the layer below it.
+    fn layer_terrain_floor(&self, role: ClimateLayerRole) -> Option<&'grid [f32]> {
+        match role {
+            ClimateLayerRole::LowerAtmosphere => self.terrain_floor_m,
+            _ => None,
+        }
+    }
+
+    /// Terrain floor under the lower atmosphere for one work grid: land
+    /// fraction times land height above sea level, capped so the layer keeps
+    /// at least `LOWER_ATMOSPHERE_MIN_THICKNESS_M`.
+    pub(crate) fn lower_atmosphere_terrain_floor_m(
+        relative_elevation_m: &[f32],
+        land_fraction: &[f32],
+    ) -> Vec<f32> {
+        let cap =
+            (LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M - LOWER_ATMOSPHERE_MIN_THICKNESS_M) as f32;
+        relative_elevation_m
+            .iter()
+            .zip(land_fraction)
+            .map(|(&elevation, &land)| (elevation.max(0.0) * land).min(cap))
+            .collect()
     }
 
     pub fn evaluate(
@@ -1216,10 +1254,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
             )?;
             let reference_thickness =
                 f64::from(state.reference_thickness_m(*role).expect("active role"));
+            let terrain_floor = self.layer_terrain_floor(*role);
             if mode.uses_explicit_dynamics() {
                 conservative_layer_thickness_tendency(
                     self.grid,
                     reference_thickness,
+                    terrain_floor,
                     height,
                     velocity,
                     permeability,
@@ -1232,10 +1272,14 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     permeability,
                     cancellation,
                 )?;
-                for (target, divergence) in
-                    workspace.thickness_tendency_m_s.iter_mut().zip(divergence)
+                for (cell, (target, divergence)) in workspace
+                    .thickness_tendency_m_s
+                    .iter_mut()
+                    .zip(divergence)
+                    .enumerate()
                 {
-                    *target = -reference_thickness * f64::from(divergence);
+                    let floor_m = terrain_floor.map_or(0.0, |floor| f64::from(floor[cell]));
+                    *target = -(reference_thickness - floor_m) * f64::from(divergence);
                 }
             }
             let mut external_amount_rate_m3_s = 0.0_f64;
@@ -1698,6 +1742,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 velocity,
                 permeability,
                 reference_thickness,
+                self.layer_terrain_floor(*role),
                 &mut workspace.vector_scratch,
                 &mut workspace.thickness_tendency_m_s,
                 &mut workspace.transport,
@@ -2785,6 +2830,7 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
 fn conservative_layer_thickness_tendency(
     grid: &CubedSphereGrid,
     reference_thickness_m: f64,
+    terrain_floor_m: Option<&[f32]>,
     height_anomaly_m: &[f32],
     velocity_m_s: &[[f32; 3]],
     edge_permeability: &[f32],
@@ -2816,8 +2862,9 @@ fn conservative_layer_thickness_tendency(
         } else {
             second
         };
+        let floor_m = terrain_floor_m.map_or(0.0, |floor| f64::from(floor[donor]));
         let donor_thickness_m =
-            (reference_thickness_m + f64::from(height_anomaly_m[donor])).max(0.0);
+            (reference_thickness_m - floor_m + f64::from(height_anomaly_m[donor])).max(0.0);
         let amount_rate_m3_s =
             normal_velocity_m_s * edge.length_m() * f64::from(*permeability) * donor_thickness_m;
         target_m_s[first] -= amount_rate_m3_s / grid.cells()[first].area_m2();
@@ -3315,6 +3362,7 @@ mod tests {
         conservative_layer_thickness_tendency(
             &grid,
             6_000.0,
+            None,
             &height,
             &velocity,
             &permeability,
@@ -3332,6 +3380,7 @@ mod tests {
                 &velocity,
                 &permeability,
                 6_000.0,
+                None,
                 &mut fused_gradient,
                 &mut fused_thickness,
                 &mut workspace.transport,
@@ -3451,7 +3500,8 @@ mod tests {
         let terrain_gradient = CirculationOperators::new(&grid)
             .gradient(forcing.elevation_m())
             .unwrap();
-        let supplied = LayeredTendencySystem::with_terrain_gradient(&grid, &terrain_gradient)
+        let flat_floor = vec![0.0_f32; grid.cell_count()];
+        let supplied = LayeredTendencySystem::with_terrain(&grid, &terrain_gradient, &flat_floor)
             .evaluate_thermodynamic_moisture_with_workspace_for_step(
                 &state,
                 &forcing,

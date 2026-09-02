@@ -41,14 +41,15 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         })
     }
 
-    pub(crate) fn new_with_terrain_gradient(
+    pub(crate) fn new_with_terrain(
         grid: &'grid CubedSphereGrid,
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
+        terrain_floor_m: &'grid [f32],
         maximum_fast_step_seconds: f64,
     ) -> Result<Self, ClimateIntegratorError> {
         let mut integrator = Self::new(grid, maximum_fast_step_seconds)?;
         integrator.tendency_system =
-            LayeredTendencySystem::with_terrain_gradient(grid, terrain_gradient_m_per_m);
+            LayeredTendencySystem::with_terrain(grid, terrain_gradient_m_per_m, terrain_floor_m);
         Ok(integrator)
     }
 

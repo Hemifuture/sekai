@@ -148,12 +148,17 @@ impl GlobalCirculationGenerator {
             })?;
         let maximum_formation_cycles = domain.profile().global_circulation_formation_cycles_max();
         let fast_step_seconds = stable_fast_step_seconds(&grid);
-        let integrator = SplitExplicitRk3Integrator::new_with_terrain_gradient(
+        let planet = forcing.planet_forcing();
+        let terrain_floor_m = LayeredTendencySystem::lower_atmosphere_terrain_floor_m(
+            forcing.relative_elevation_m(),
+            planet.land_fraction(),
+        );
+        let integrator = SplitExplicitRk3Integrator::new_with_terrain(
             &grid,
             forcing.terrain_gradient_m_per_m(),
+            &terrain_floor_m,
             fast_step_seconds,
         )?;
-        let planet = forcing.planet_forcing();
         let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(
             &grid,
             &layout,

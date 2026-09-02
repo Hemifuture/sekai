@@ -196,6 +196,7 @@ impl<'grid> CirculationOperators<'grid> {
         velocity_m_s: &[[f32; 3]],
         edge_permeability: &[f32],
         reference_thickness_m: f64,
+        terrain_floor_m: Option<&[f32]>,
         gradient_output: &mut [[f32; 3]],
         thickness_tendency_m_s: &mut [f64],
         workspace: &mut SecondOrderTransportWorkspace,
@@ -205,6 +206,7 @@ impl<'grid> CirculationOperators<'grid> {
         debug_assert_eq!(velocity_m_s.len(), self.grid.cell_count());
         debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
         debug_assert!(reference_thickness_m.is_finite() && reference_thickness_m > 0.0);
+        debug_assert!(terrain_floor_m.is_none_or(|floor| floor.len() == self.grid.cell_count()));
         debug_assert_eq!(gradient_output.len(), self.grid.cell_count());
         debug_assert_eq!(thickness_tendency_m_s.len(), self.grid.cell_count());
         debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
@@ -247,8 +249,12 @@ impl<'grid> CirculationOperators<'grid> {
                 } else {
                     second
                 };
+                // Shallow water over topography: the pressure gradient above
+                // reads the layer top, the transported thickness is the layer
+                // top minus the terrain floor (Vallis 2017, §3.1).
+                let floor_m = terrain_floor_m.map_or(0.0, |floor| f64::from(floor[donor]));
                 let donor_thickness_m =
-                    (reference_thickness_m + f64::from(height_anomaly_m[donor])).max(0.0);
+                    (reference_thickness_m - floor_m + f64::from(height_anomaly_m[donor])).max(0.0);
                 let amount_rate_m3_s =
                     normal_velocity_m_s * edge_length_m * permeability * donor_thickness_m;
                 thickness_tendency_m_s[first] -=
@@ -2186,6 +2192,7 @@ mod tests {
                 &velocity,
                 &permeability,
                 6_000.0,
+                None,
                 &mut gradient,
                 &mut thickness,
                 &mut workspace,
