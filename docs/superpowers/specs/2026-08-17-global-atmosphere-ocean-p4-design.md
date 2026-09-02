@@ -178,6 +178,20 @@ lifting and the orographic quality metrics use the over-flow wind (the C2 upper
 layer) because the terrain-aware lower layer flows around ridges. Forcing
 fingerprint v4, equation-model fingerprint v11.
 
+Revision 2026-09-03 (milestone A4, `2026-09-03-p4-water-heat-correction-design.md`):
+the monthly equilibrium targets are no longer the instantaneous monthly gray
+equilibrium (which has no heat inertia and diverges in polar night). Each cell
+solves the linear energy-balance equation `C dT/dt = ASR(t) - [ASR_ann +
+B (T - T_eq,ann)]` (Budyko 1969; North & Coakley 1979) exactly per month and
+publishes the month means of its periodic solution: the mixed-layer target with
+`C = C_ml`, the lower-air target with `C = C_air + (1 - land) C_ml`. The
+12-month mean of every target equals the annual gray target `T_eq,ann`
+(with the orographic lapse), so the annual-mean initial state is that target
+(clamped once per role), and the TOA gray longwave is linearized about the
+annual state, `OLR = ASR_ann + B_ann (T_s - T_eq,ann)`, so seasonal storage
+appears as a seasonal TOA imbalance instead of being forced to zero every
+month. Forcing fingerprint v5, equation-model fingerprint v12.
+
 Lower-atmosphere temperature and humidity, both atmospheric momentum fields,
 mixed-layer/thermocline temperature, and ocean momentum use paired exchange
 terms. Every pair is accumulated once with equal and opposite extensive

@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT,
-    CLIMATOLOGICAL_YEAR_SECONDS, MEAN_SOLAR_DAY_SECONDS,
+    CLIMATOLOGICAL_YEAR_SECONDS, MEAN_SOLAR_DAY_SECONDS, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -377,14 +377,97 @@ pub fn linearized_outgoing_longwave_w_m2(
     equilibrium_surface_temperature_c: f64,
     resolved_surface_temperature_c: f64,
 ) -> f64 {
-    let equilibrium_emission_temperature_k =
-        (equilibrium_surface_temperature_c + 273.15 - EARTH_GRAY_GREENHOUSE_OFFSET_K).max(1.0);
-    let longwave_slope_w_m2_k =
-        4.0 * STEFAN_BOLTZMANN_CONSTANT_W_M2_K4 * equilibrium_emission_temperature_k.powi(3);
     (absorbed_shortwave_w_m2
-        + longwave_slope_w_m2_k
+        + gray_longwave_slope_w_m2_k(equilibrium_surface_temperature_c)
             * (resolved_surface_temperature_c - equilibrium_surface_temperature_c))
         .max(0.0)
+}
+
+/// Gray longwave slope `B = 4 sigma T_e^3` at the emission temperature of one
+/// surface target (the `B` of the Budyko 1969 / North 1975 `A + B T` law).
+pub fn gray_longwave_slope_w_m2_k(equilibrium_surface_temperature_c: f64) -> f64 {
+    let emission_temperature_k =
+        (equilibrium_surface_temperature_c + 273.15 - EARTH_GRAY_GREENHOUSE_OFFSET_K).max(1.0);
+    4.0 * STEFAN_BOLTZMANN_CONSTANT_W_M2_K4 * emission_temperature_k.powi(3)
+}
+
+/// Storage-consistent seasonal equilibrium of one radiatively forced column
+/// (milestone A4, `2026-09-03-p4-water-heat-correction-design.md` §3.1).
+///
+/// Solves the linear energy-balance equation `C dT/dt = ASR(t) - [ASR_ann +
+/// B (T - T_ann)]` (Budyko 1969; North & Coakley 1979) with piecewise-constant
+/// monthly absorbed shortwave, exactly per month, and returns the month means
+/// of its unique periodic solution. The 12-month mean of the result equals
+/// `annual_equilibrium_temperature_c` identically; the single-harmonic limit is
+/// the North & Coakley amplitude `dF / sqrt(B^2 + (omega C)^2)` and lag
+/// `atan(omega C / B)`. Polar night stays finite: the instantaneous floor is
+/// `T_ann - ASR_ann / B`, further damped by storage.
+pub fn seasonal_storage_equilibrium_temperature_c(
+    monthly_absorbed_shortwave_w_m2: &[f64; CLIMATE_MONTH_COUNT],
+    annual_equilibrium_temperature_c: f64,
+    longwave_slope_w_m2_k: f64,
+    heat_capacity_j_m2_k: f64,
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    let annual_absorbed_shortwave =
+        monthly_absorbed_shortwave_w_m2.iter().sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
+    let mut instantaneous = [0.0_f64; CLIMATE_MONTH_COUNT];
+    for (target, absorbed) in instantaneous
+        .iter_mut()
+        .zip(monthly_absorbed_shortwave_w_m2)
+    {
+        *target = annual_equilibrium_temperature_c
+            + (absorbed - annual_absorbed_shortwave) / longwave_slope_w_m2_k;
+    }
+    // Exact exponential integration of one month with constant forcing:
+    // T_{m+1} = T_eq,m + (T_m - T_eq,m) r, r = exp(-B dt / C).
+    let decay = longwave_slope_w_m2_k * SECONDS_PER_CLIMATOLOGICAL_MONTH / heat_capacity_j_m2_k;
+    let retained = (-decay).exp();
+    // Periodic fixed point of the 12-month affine map.
+    let mut weighted = 0.0_f64;
+    let mut weight = 1.0 - retained;
+    for target in instantaneous.iter().rev() {
+        weighted += weight * target;
+        weight *= retained;
+    }
+    let cycle_retained = retained.powi(CLIMATE_MONTH_COUNT as i32);
+    let mut start = if cycle_retained < 1.0 {
+        weighted / (1.0 - cycle_retained)
+    } else {
+        annual_equilibrium_temperature_c
+    };
+    // Month mean of the exponential approach: T_eq + (T_m - T_eq) (1 - r) / (B dt / C).
+    let mean_factor = if decay > 0.0 {
+        (1.0 - retained) / decay
+    } else {
+        1.0
+    };
+    let mut months = [0.0_f64; CLIMATE_MONTH_COUNT];
+    for (month, target) in months.iter_mut().zip(instantaneous) {
+        *month = target + (start - target) * mean_factor;
+        start = target + (start - target) * retained;
+    }
+    months
+}
+
+/// Heat capacity per unit area of the seasonal storage columns that the
+/// forcing targets integrate: the lower atmosphere and the ocean mixed layer
+/// of the production profile (`ClimateModelProfile::C2LayeredV1`), in
+/// `J m-2 K-1`. The forcing is profile-independent, so the production layout
+/// is the single source of these capacities.
+pub fn p4_seasonal_storage_heat_capacities_j_m2_k() -> (f64, f64) {
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+    let capacity = |role: ClimateLayerRole| {
+        let layer = layout
+            .layers()
+            .iter()
+            .find(|layer| layer.role() == role)
+            .expect("production layout declares the storage roles");
+        layer.density_kg_m3() * layer.reference_thickness_m() * layer.heat_capacity_j_kg_k()
+    };
+    (
+        capacity(ClimateLayerRole::LowerAtmosphere),
+        capacity(ClimateLayerRole::OceanMixedLayer),
+    )
 }
 
 /// Bolton (1980) saturation specific humidity at the fixed P4 lower-layer

@@ -14,13 +14,17 @@
       大气初值 −38 °C、45–55° 冷池 −17 K、降水在 40–50° 倾倒、极区无降水、
       高纬 TOA +13 ~ +28、季节振幅 ≤ 2 K。
 
-- [ ] Task 1 —— 储热一致的季节目标、年平均初值、年平均 OLR 线性化
-      `forcing.rs`：每格 ASR_ann、T_eq,ann（面 / 气，含直减）、B_ann；逐月目标改为
-      线性 EBM 周期解（混合层 C_ml；大气 C_air + (1 − land) C_ml）；指纹 v5。
-      `state.rs`：年平均初值取 T_eq,ann。`tendency.rs`：`apply_external_radiation`
-      围绕年平均线性化；方程指纹 v12。测试：周期解对单谐波振幅 / 滞后的闭式、
-      极夜有限、初值 = 年均目标、OLR 在 T = T_eq,ann 处等于 ASR_ann。
-      证据：seed 42 纬带表前后对照。
+- [x] Task 1 —— 储热一致的季节目标、年平均初值、年平均 OLR 线性化
+      world 层新增 `seasonal_storage_equilibrium_temperature_c`（线性 EBM 12 月周期解
+      的闭式，月均恒等于年目标）、`gray_longwave_slope_w_m2_k`、
+      `p4_seasonal_storage_heat_capacities_j_m2_k`（生产剖面 C2 布局：大气 7.38 × 10⁶、
+      混合层 4.09 × 10⁸ J/m²/K）。`forcing.rs` 逐月目标改为周期解（混合层 C_ml；大气
+      C_air + (1 − land) C_ml），指纹 v5；`state.rs` 年平均初值先平均再钳制；
+      `tendency.rs` 辐射步围绕年平均 `A + B T` 线性化，方程指纹 v12。
+      测试：闭式（常强迫、单谐波振幅 / 滞后、极夜有限、均值恒等）与夹具（陆地目标
+      摆幅 > 20 K、海面 < 6 K、均值 = 年目标）。
+      seed 42：北极 SST +10 → −1.9 °C，45–90° N TOA +13 → 0，47.5° N 冷池 −17 → −6 K，
+      全球 TOA +7.0 → −3.8；南极暴露平流 – 辐射瞬变（设计 §3.5）。
 
 - [ ] Task 2 —— 海冰面先验
       `forcing.rs`：`ice` 诊断（无冰 T_eq,ann,surface < −2 °C）、

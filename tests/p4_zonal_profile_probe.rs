@@ -8,8 +8,9 @@
 mod support;
 
 use sekai::world::natural::{
-    gray_equilibrium_surface_temperature_c, saturation_specific_humidity_kg_kg,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
+    p4_seasonal_storage_heat_capacities_j_m2_k, saturation_specific_humidity_kg_kg,
+    seasonal_storage_equilibrium_temperature_c, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
 };
 use support::causal_formation::causal_formation_fixture;
 
@@ -67,8 +68,10 @@ fn p4_zonal_profile() {
         .sea_level_m();
 
     // columns: area, T, T_eq, q, qsat, P, E, orographic P, ASR, OLR, Tjul-Tjan, land area,
-    // SST, SST jul-jan, reconstructed initial mixed-layer target, reconstructed initial air target
+    // SST, SST jul-jan, air-target Jul-Jan (storage-consistent seasonal target, A4 §3.1),
+    // SST-target Jul-Jan
     let mut sums = vec![[0.0_f64; 16]; BANDS];
+    let (air_storage, mixed_storage) = p4_seasonal_storage_heat_capacities_j_m2_k();
     let annual = |months: &[f32; 12]| months.iter().map(|v| f64::from(*v)).sum::<f64>() / 12.0;
     for (index, cell) in fixture.surface.cells().iter().enumerate() {
         let latitude = cell.centroid.components()[2].asin().to_degrees();
@@ -107,23 +110,32 @@ fn p4_zonal_profile() {
         let sst = &fields.monthly_sea_surface_temperature_c().values()[index];
         row[12] += area * annual(sst);
         row[13] += area * f64::from(sst[6] - sst[0]);
-        // Reconstruct the forcing's monthly instantaneous equilibrium targets and
-        // the state initialisation (state.rs role_reference_temperature_c).
+        // Reconstruct the forcing's storage-consistent seasonal targets (A4 §3.1)
+        // from the published monthly absorbed shortwave.
         let monthly_asr = &fields.monthly_absorbed_shortwave_w_m2().values()[index];
-        let mut mixed_init = 0.0;
-        let mut air_init = 0.0;
-        for asr_month in monthly_asr {
-            let instantaneous = (gray_equilibrium_surface_temperature_c(f64::from(*asr_month))
-                - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
-                .clamp(-90.0, 65.0);
-            mixed_init += instantaneous.clamp(-2.0, 40.0) / 12.0;
-            air_init += instantaneous / 12.0;
+        let mut asr_months = [0.0_f64; 12];
+        for (target, value) in asr_months.iter_mut().zip(monthly_asr) {
+            *target = f64::from(*value);
         }
-        row[14] += area * mixed_init;
-        row[15] += area * air_init;
+        let land_fraction = if land[index] == 1 { 1.0 } else { 0.0 };
+        let slope = gray_longwave_slope_w_m2_k(equilibrium);
+        let air_target = seasonal_storage_equilibrium_temperature_c(
+            &asr_months,
+            equilibrium,
+            slope,
+            air_storage + (1.0 - land_fraction) * mixed_storage,
+        );
+        let sea_target = seasonal_storage_equilibrium_temperature_c(
+            &asr_months,
+            equilibrium,
+            slope,
+            mixed_storage,
+        );
+        row[14] += area * (air_target[6] - air_target[0]);
+        row[15] += area * (sea_target[6] - sea_target[0]);
     }
     eprintln!(
-        "[zonal]   lat  land%   T_air   T_eq  dT     q g/kg  RH%    P     E    P-E  oroP   ASR    OLR   TOA  Tjul-Tjan   SST  SSTjul-jan  ML0   air0 | Earth T   Earth P"
+        "[zonal]   lat  land%   T_air   T_eq  dT     q g/kg  RH%    P     E    P-E  oroP   ASR    OLR   TOA  Tjul-Tjan   SST  SSTjul-jan Tt7-1 St7-1 | Earth T   Earth P"
     );
     let mut global = [0.0_f64; 16];
     for (band, row) in sums.iter().enumerate() {

@@ -95,7 +95,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v11\0");
+    hasher.update(b"sekai.global-circulation-equations.v12\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -1555,11 +1555,21 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         .expect("mixed layer is active")[cell],
                 ),
             ];
+            // Milestone A4 (§3.3): the gray longwave is linearized about the
+            // annual-mean state (`A + B T`), so seasonal storage shows up as a
+            // seasonal TOA imbalance instead of being forced to zero every
+            // month. The monthly targets are storage-consistent (§3.1), so
+            // their 12-month means are the annual targets.
+            let annual_mean = |months: &[f32; CLIMATE_MONTH_COUNT]| {
+                months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64
+            };
+            let annual_absorbed_shortwave =
+                annual_mean(&forcing.monthly_absorbed_shortwave_w_m2()[cell]);
             let equilibrium_temperatures = [
-                f64::from(forcing.equilibrium_air_temperature_c()[cell][month]),
-                f64::from(
-                    forcing.equilibrium_surface_temperature_c()[cell][month]
-                        .clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C),
+                annual_mean(&forcing.equilibrium_air_temperature_c()[cell]),
+                annual_mean(&forcing.equilibrium_surface_temperature_c()[cell]).clamp(
+                    f64::from(LIQUID_MIXED_LAYER_MIN_C),
+                    f64::from(OCEAN_EQUILIBRIUM_MAX_C),
                 ),
             ];
             let resolved_surface_temperature = weights
@@ -1573,7 +1583,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .map(|(weight, value)| weight * value)
                 .sum::<f64>();
             let outgoing_longwave = linearized_outgoing_longwave_w_m2(
-                absorbed_shortwave,
+                annual_absorbed_shortwave,
                 equilibrium_surface_temperature,
                 resolved_surface_temperature,
             );

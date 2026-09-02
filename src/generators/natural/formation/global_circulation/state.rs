@@ -512,15 +512,16 @@ fn forcing_initial_temperature(
     month: Option<usize>,
     role: ClimateLayerRole,
 ) -> f32 {
+    // Annual-mean initialisation averages the targets first and applies the
+    // role clamp/offset once (milestone A4 §3.2): averaging clamped months
+    // biased polar mixed layers warm by up to 30 K.
     month.map_or_else(
         || {
-            (air_months
-                .iter()
-                .zip(surface_months)
-                .map(|(air, surface)| role_reference_temperature_c(role, *air, *surface))
-                .map(f64::from)
-                .sum::<f64>()
-                / CLIMATE_MONTH_COUNT as f64) as f32
+            let mean = |months: &[f32; CLIMATE_MONTH_COUNT]| {
+                (months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64)
+                    as f32
+            };
+            role_reference_temperature_c(role, mean(air_months), mean(surface_months))
         },
         |month| role_reference_temperature_c(role, air_months[month], surface_months[month]),
     )

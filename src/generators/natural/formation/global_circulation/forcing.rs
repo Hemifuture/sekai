@@ -8,13 +8,14 @@ use crate::generators::natural::surface_water_geometry::build_surface_water_geom
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
     absorbed_shortwave_w_m2, formation_runoff_fraction, gray_equilibrium_surface_temperature_c,
-    saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot,
-    ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, PlanetForcing,
-    PrimaryReliefSnapshot, PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
-    P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
-    P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
-    REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+    gray_longwave_slope_w_m2_k, p4_seasonal_storage_heat_capacities_j_m2_k,
+    saturation_specific_humidity_kg_kg, seasonal_storage_equilibrium_temperature_c, ClimateSpec,
+    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
+    FormationTerrainFields, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
+    SurfaceWaterGeometry, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
+    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -263,7 +264,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v4\0");
+        hasher.update(b"sekai.global-climate-forcing.v5\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -510,6 +511,8 @@ impl GlobalClimateForcingBuilder {
         let mut surface_albedo = Vec::with_capacity(grid.cell_count());
         let mut surface_moisture_availability = Vec::with_capacity(grid.cell_count());
         let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(grid.cell_count());
+        let (air_storage_j_m2_k, mixed_layer_storage_j_m2_k) =
+            p4_seasonal_storage_heat_capacities_j_m2_k();
         for (index, cell) in grid.cells().iter().enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -533,6 +536,7 @@ impl GlobalClimateForcingBuilder {
             let mut air_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut humidity = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut absorbed_shortwave_months = [0.0_f32; CLIMATE_MONTH_COUNT];
+            let mut absorbed_shortwave_exact = [0.0_f64; CLIMATE_MONTH_COUNT];
             for month in 0..CLIMATE_MONTH_COUNT {
                 let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
                     / CLIMATE_MONTH_COUNT as f64;
@@ -543,11 +547,36 @@ impl GlobalClimateForcingBuilder {
                     f64::from(surface_albedo[index]),
                 );
                 absorbed_shortwave_months[month] = absorbed_shortwave as f32;
-                let radiative = gray_equilibrium_surface_temperature_c(absorbed_shortwave)
-                    + temperature_offset_c;
-                let surface_c = (radiative - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
+                absorbed_shortwave_exact[month] = f64::from(absorbed_shortwave_months[month]);
+            }
+            // Milestone A4 (§3.1): the monthly targets are the storage-consistent
+            // seasonal equilibrium around the annual-mean gray target, not the
+            // instantaneous monthly radiative equilibrium (which has no heat
+            // inertia and diverges in polar night).
+            let annual_absorbed_shortwave =
+                absorbed_shortwave_exact.iter().sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
+            let annual_surface_c =
+                (gray_equilibrium_surface_temperature_c(annual_absorbed_shortwave)
+                    + temperature_offset_c
+                    - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
                     .clamp(-90.0, 65.0);
-                let air_c = surface_c.clamp(-100.0, 65.0);
+            let longwave_slope = gray_longwave_slope_w_m2_k(annual_surface_c);
+            let surface_months = seasonal_storage_equilibrium_temperature_c(
+                &absorbed_shortwave_exact,
+                annual_surface_c,
+                longwave_slope,
+                mixed_layer_storage_j_m2_k,
+            );
+            // The air column stores its own heat plus that of the water below it.
+            let air_months = seasonal_storage_equilibrium_temperature_c(
+                &absorbed_shortwave_exact,
+                annual_surface_c,
+                longwave_slope,
+                air_storage_j_m2_k + (1.0 - land) * mixed_layer_storage_j_m2_k,
+            );
+            for month in 0..CLIMATE_MONTH_COUNT {
+                let surface_c = surface_months[month].clamp(-90.0, 65.0);
+                let air_c = air_months[month].clamp(-100.0, 65.0);
                 surface_temperature[month] = surface_c as f32;
                 air_temperature[month] = air_c as f32;
                 let saturation =
