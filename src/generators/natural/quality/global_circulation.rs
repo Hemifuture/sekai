@@ -247,12 +247,18 @@ fn evaluate_global_circulation_quality_impl(
 
     let fields = snapshot.fields();
     let lower = fields.near_surface_wind_m_s().values();
-    let _upper = fields.upper_wind_m_s().ok_or_else(|| {
-        invalid_input(
-            "global_circulation",
-            "C2 upper wind is unavailable".to_owned(),
-        )
-    })?;
+    // The over-flow wind: orographic lifting and its rain shadow are defined
+    // relative to the air that crosses the ridge, which with a terrain-aware
+    // lower layer is the upper layer (design 2026-09-02 A3 §4).
+    let upper = fields
+        .upper_wind_m_s()
+        .ok_or_else(|| {
+            invalid_input(
+                "global_circulation",
+                "C2 upper wind is unavailable".to_owned(),
+            )
+        })?
+        .values();
     let shear = fields.vertical_wind_shear_m_s().ok_or_else(|| {
         invalid_input(
             "global_circulation",
@@ -404,7 +410,7 @@ fn evaluate_global_circulation_quality_impl(
     let (gyre_fraction, gyre_samples) =
         basin_gyre_circulation(surface, terrain, current, cancellation)?;
     let orographic =
-        orographic_neighbor_response(surface, terrain, lower, precipitation, cancellation)?;
+        orographic_neighbor_response(surface, terrain, upper, precipitation, cancellation)?;
     let (orographic_fraction, orographic_samples) = orographic_precipitation_fraction(
         surface,
         precipitation,
@@ -414,7 +420,7 @@ fn evaluate_global_circulation_quality_impl(
     let orographic_uplift = orographic_uplift_enrichment(
         surface,
         terrain,
-        lower,
+        upper,
         orographic_precipitation,
         cancellation,
     )?;

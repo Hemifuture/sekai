@@ -1983,6 +1983,13 @@ impl<'grid> LayeredTendencySystem<'grid> {
         let lower_velocity = state
             .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
             .expect("lower atmosphere is active");
+        // Orographic lifting is done by the air that crosses the ridge. With
+        // the lower layer now flowing around terrain (A2), the over-flow above
+        // the dividing streamline (Sheppard 1956; Hunt & Snyder 1980) is the
+        // upper layer in C2; C1 has no upper layer and keeps the lower wind.
+        let lifting_velocity = state
+            .velocity_m_s(ClimateLayerRole::UpperAtmosphere)
+            .unwrap_or(lower_velocity);
         let lower_temperature = state
             .temperature_c(ClimateLayerRole::LowerAtmosphere)
             .expect("lower atmosphere is active");
@@ -2000,6 +2007,11 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .map(|component| f64::from(*component).powi(2))
                 .sum::<f64>()
                 .sqrt();
+            let lifting_speed = lifting_velocity[cell]
+                .iter()
+                .map(|component| f64::from(*component).powi(2))
+                .sum::<f64>()
+                .sqrt();
             let surface_temperature_c = f64::from(surface_temperature[cell]);
             let neutral_surface_air_humidity = neutral_surface_air_specific_humidity_kg_kg(
                 surface_temperature_c,
@@ -2012,7 +2024,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 wind_speed,
                 f64::from(forcing.surface_moisture_availability()[cell]),
             );
-            let upslope_velocity = lower_velocity[cell]
+            let upslope_velocity = lifting_velocity[cell]
                 .iter()
                 .zip(terrain_gradient[cell])
                 .map(|(velocity, gradient)| f64::from(*velocity) * f64::from(gradient))
@@ -2024,7 +2036,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 transported,
                 f64::from(lower_temperature[cell]),
                 upslope_velocity,
-                wind_speed,
+                lifting_speed,
                 self.grid.cells()[cell].area_m2(),
             ) * land_fraction;
             // Land returns the non-runoff share of its own precipitation to

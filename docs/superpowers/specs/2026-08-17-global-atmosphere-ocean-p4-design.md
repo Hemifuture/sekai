@@ -169,6 +169,15 @@ grassland-to-open-sea bulk drag ratio (Garratt 1992 §4.1). Both terms are
 per-cell constants of the bound forcing and enter the equation-model
 fingerprint (v10).
 
+Revision 2026-09-02 (milestone A3, `2026-09-02-p4-land-evapotranspiration-design.md`):
+land evaporates back the non-runoff share of its own precipitation,
+`E_land = land_fraction * (1 - runoff_fraction(kappa)) * P` with the P5 runoff
+partition (steady bucket balance, Manabe 1969), applied as one Picard pass in
+the moisture step; its latent heat is taken from the lower atmosphere. Orographic
+lifting and the orographic quality metrics use the over-flow wind (the C2 upper
+layer) because the terrain-aware lower layer flows around ridges. Forcing
+fingerprint v4, equation-model fingerprint v11.
+
 Lower-atmosphere temperature and humidity, both atmospheric momentum fields,
 mixed-layer/thermocline temperature, and ocean momentum use paired exchange
 terms. Every pair is accumulated once with equal and opposite extensive
