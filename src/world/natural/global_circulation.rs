@@ -81,11 +81,16 @@ pub const GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
 /// gravity-wave and Coriolis terms, and `-2.51` on the real axis, which
 /// bounds the donor-cell thickness flux at a Courant number of `1.25`. The
 /// solver-comparison design (`2026-08-03`) froze `CFL ≤ 0.45` for the same
-/// discretisation. Measured on Draft seed 42 (2026-09-02, milestone A1): the
-/// published fields at `0.5` differ from the earlier `0.2` by at most
-/// `0.37 %` (surface ocean current) with identical formation-cycle counts and
-/// final residuals, while the fast-substep count drops from `749` to `323`.
-pub const GLOBAL_CIRCULATION_FAST_CFL_TARGET: f64 = 0.5;
+/// discretisation; split-explicit practice runs the fast modes at Courant
+/// numbers up to about one (Skamarock et al. 2008, §3). `0.8` keeps a `1.56×`
+/// margin to the donor-cell bound and `2.2×` to the wave bound. Measured on
+/// Draft seed 42 (2026-09-02, milestone A1): the published fields differ from
+/// the earlier `0.2` by at most `1.2 %` (surface ocean current, `0.4 %` sea
+/// surface height, `< 0.1 %` for the atmosphere) with identical
+/// formation-cycle counts and final residuals, while the fast-substep count
+/// drops from `749` to `215`; a 32-seed Draft/Standard sweep converged
+/// without a single failure.
+pub const GLOBAL_CIRCULATION_FAST_CFL_TARGET: f64 = 0.8;
 /// Fewest fast substeps one macro step can legitimately report.
 ///
 /// The Coriolis term alone bounds the fast step at
