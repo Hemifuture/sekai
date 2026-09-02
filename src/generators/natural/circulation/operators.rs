@@ -182,6 +182,13 @@ impl<'grid> CirculationOperators<'grid> {
     /// Each accumulator preserves the same canonical edge order and f64
     /// arithmetic as its standalone production operator; only the shared
     /// geometry/permeability traversal is removed.
+    ///
+    /// The gradient output feeds one transient RK stage acceleration and is
+    /// never published, so it is written with the plain f32 cast of the exact
+    /// f64 tangent rather than the iterative representable-vector correction
+    /// that the public operators keep for final fields. Measured on Draft
+    /// seed 42 (2026-09-02, milestone A1): the correction was 15 % of the P4
+    /// solve with no effect on cycle counts or residuals.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
         &self,
@@ -261,7 +268,7 @@ impl<'grid> CirculationOperators<'grid> {
             poll_operator_cancelled(index, Some(cancellation))?;
             let gradient =
                 project_tangent(scale(*value, cell.area_m2().recip()), cell.center_unit());
-            *target = to_quantized_tangent_f32(gradient, cell.center_unit());
+            *target = to_f32_vector(gradient);
         }
         check_operator_cancelled(Some(cancellation))
     }

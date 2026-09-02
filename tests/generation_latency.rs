@@ -5,15 +5,16 @@
 //! and bundle validation. The budgets are the user's targets from milestone
 //! A1 (`docs/superpowers/specs/2026-09-02-generation-latency-design.md`).
 
-mod support;
-
 use std::time::Instant;
 
-use sekai::engine::BuildCancellation;
+use sekai::app::build_spherical_formation_external_artifacts;
+use sekai::engine::{BuildCancellation, BuildEngine, MemoryStageCache};
+use sekai::generators::natural::{causal_natural_formation_graph, NaturalFormationBundleArtifact};
 use sekai::generators::spatial::ProfileSurfaceBuilder;
-use sekai::world::natural::NaturalQualityProfile;
-use sekai::world::Meters;
-use support::causal_formation::build_causal_formation;
+use sekai::world::natural::{
+    GeologicSpec, NaturalQualityProfile, ReliefSpec, TectonicSpec, WorldFormationSpec,
+};
+use sekai::world::{Meters, RootSeed};
 
 const SEED: u64 = 42;
 
@@ -29,9 +30,33 @@ fn measure(profile: NaturalQualityProfile, budget_seconds: f64) {
     .clone();
     let surface_seconds = started.elapsed().as_secs_f64();
     let graph_started = Instant::now();
-    let artifact = build_causal_formation(&surface, profile, SEED);
+    let root_seed = RootSeed::new(SEED);
+    let external = build_spherical_formation_external_artifacts(
+        root_seed,
+        profile,
+        &surface,
+        &WorldFormationSpec::default(),
+        &TectonicSpec::default(),
+        &ReliefSpec::default(),
+        &GeologicSpec::default(),
+    )
+    .unwrap();
+    let outcome = BuildEngine::new(causal_natural_formation_graph().unwrap())
+        .build(root_seed, external, &mut MemoryStageCache::new())
+        .unwrap();
     let graph_seconds = graph_started.elapsed().as_secs_f64();
     let total_seconds = started.elapsed().as_secs_f64();
+    for stage in outcome.report.stages() {
+        eprintln!(
+            "[latency {profile:?}]    stage {:<40} {:>8.2} s",
+            stage.stage_id(),
+            stage.duration().as_secs_f64()
+        );
+    }
+    let artifact = outcome
+        .artifacts
+        .get::<NaturalFormationBundleArtifact>()
+        .unwrap();
     let climate = artifact.bundle().climate().solve_report();
     eprintln!(
         "[latency {profile:?}] surface {surface_seconds:.2} s, graph {graph_seconds:.2} s, total {total_seconds:.2} s (endpoint P4 {} cycles, {} fast substeps)",

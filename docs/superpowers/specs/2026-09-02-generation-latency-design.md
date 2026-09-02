@@ -122,7 +122,22 @@ Draft seed 42（CFL 0.5，无上限）：
 
 `[profile.release] opt-level = 2` 的注释是「fast and small wasm」。Rust 不做
 fast-math 重结合，`opt-level`、LTO 与 `codegen-units` 不改变浮点语义，冻结身份
-不受影响。实测后决定（计划 Task 3）。
+不受影响。实测 `opt-level = 3 + lto = "fat" + codegen-units = 1`：产品级全链
+Draft 19.2 → 22.3 s、Standard 53.4 → 59.5 s，两档都慢约 15 %（更激进的内联
+对这组以内存访问为主的边循环没有收益）。**保持现状**。
+
+## 5b. 瞬态梯度输出的投影（Task 4）
+
+快张量每次求值对每层每格的压力梯度输出调用 `to_quantized_tangent_f32`：在普通
+投影之后再做 2 轮 × 3 分量 × 4 候选的「可表示切向量」搜索，使 f32 结果与径向
+的点积最小。该修正的用途是让**发布**的向量场在 f32 下严格切向；而这里的输出只
+喂一个瞬态 RK 阶段的加速度，随后乘以 dt 累加，再由 `project_tangent_cell_validated`
+（已经是普通投影）投回切平面。设计原文已区分「瞬态 RK 阶段用普通投影，最终 /
+公开算子路径保留严格修正」。故瞬态路径改为精确 f64 切向量的直接 f32 转换；
+公开的 `gradient()`、`coriolis`、`tangentize` 路径不动。
+
+实测 Draft seed 42：P4 起点 8.1 → 7.1 s，全链 16.6 → 15.0 s；起点与终点场与改
+前最大差 0.07 %（降水、海流），循环数与残差到 4 位小数不变。
 
 ## 6. 开放问题
 
