@@ -911,3 +911,182 @@ mod tests {
             .fold(0.0, f64::max)
     }
 }
+
+#[cfg(test)]
+mod timing_probe {
+    use std::time::Instant;
+
+    use super::{
+        EvolvedTectonicGenerator, FormationState, GeologicSubstrateGenerator,
+        GlobalCirculationGenerator, GlobalClimateForcingBuilder, LabeledSubstreams,
+        PrimaryReliefGenerator, SurfaceFormationGenerator, SurfaceFormationInputs,
+    };
+    use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
+    use crate::generators::natural::ClimateWorkDomainBuilder;
+    use crate::generators::spatial::ProfileSurfaceBuilder;
+    use crate::world::natural::{
+        ClimateModelProfile, ClimateSpec, GeologicSpec, GlobalCirculationSnapshot,
+        HydroErosionSpec, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormation,
+        ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    };
+    use crate::world::{Meters, RootSeed};
+
+    fn report(profile: NaturalQualityProfile, stage: &str, started: Instant) {
+        eprintln!(
+            "[probe {profile:?}] {stage:<18} {:>8.3} s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+
+    fn solve_summary(climate: &GlobalCirculationSnapshot) -> String {
+        let solve = climate.solve_report();
+        format!(
+            "cycles={} steps={} fast_substeps={} final_residual={:.4}",
+            solve.formation_cycles(),
+            solve.continuation_steps(),
+            solve.fast_substeps(),
+            solve.final_residual()
+        )
+    }
+
+    /// Wall-clock breakdown of the production causal chain for one profile.
+    ///
+    /// `SEKAI_PROBE_PROFILE=draft|standard|high` selects the profile;
+    /// `SEKAI_PROBE_TAG=<tag>` additionally writes both climate snapshots as
+    /// JSON under `SEKAI_PROBE_DIR` (default `target/probe-dumps`) so two
+    /// numerical variants can be compared field by field.
+    #[test]
+    #[ignore = "release-only wall-clock stage breakdown"]
+    fn stage_timing_probe() {
+        let profile = match std::env::var("SEKAI_PROBE_PROFILE").as_deref() {
+            Ok("standard") => NaturalQualityProfile::Standard,
+            Ok("high") => NaturalQualityProfile::High,
+            _ => NaturalQualityProfile::Draft,
+        };
+        let cancellation = BuildCancellation::new();
+        let total = Instant::now();
+        let started = Instant::now();
+        let bundle =
+            ProfileSurfaceBuilder::build(profile, Meters::new(6_371_000.0).unwrap(), &cancellation)
+                .unwrap();
+        report(profile, "P1 bundle", started);
+        let started = Instant::now();
+        let domain =
+            ClimateWorkDomainBuilder::build(bundle.authoritative_surface(), profile, &cancellation)
+                .unwrap();
+        report(profile, "climate domain", started);
+        let formation = ResolvedWorldFormation::new(
+            RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+            WorldFormationPreset::Continents,
+            ResolvedWorldFormationPreset::Continents,
+        )
+        .unwrap();
+        let tectonic_spec = TectonicSpec::default();
+        let geologic_spec = GeologicSpec::default();
+        let relief_spec = ReliefSpec::default();
+        let climate_spec = ClimateSpec::default();
+        let surface_spec = HydroErosionSpec::default();
+        let mut rng = StageRng::from_seed(derive_stage_seed(
+            RootSeed::new(42),
+            StageIdentity::new("natural.causal-formation", 5, "sekai.core"),
+        ));
+        let streams = LabeledSubstreams::capture(&mut rng);
+        let surface = bundle.authoritative_surface();
+
+        let started = Instant::now();
+        let evolved = EvolvedTectonicGenerator::generate_from_streams(
+            &bundle,
+            &tectonic_spec,
+            &formation,
+            &streams,
+        )
+        .unwrap();
+        report(profile, "P2 tectonics", started);
+        let started = Instant::now();
+        let substrate = GeologicSubstrateGenerator::generate_from_streams(
+            surface,
+            &evolved,
+            &geologic_spec,
+            &formation,
+            &streams,
+        )
+        .unwrap();
+        report(profile, "P3 substrate", started);
+        let started = Instant::now();
+        let (primary_working, primary_relief) =
+            PrimaryReliefGenerator::generate_working_from_streams(
+                surface,
+                &evolved,
+                &substrate,
+                &relief_spec,
+                &streams,
+                &cancellation,
+            )
+            .unwrap();
+        let formation_state = FormationState::from_primary_working(&primary_working).unwrap();
+        report(profile, "P3 relief", started);
+        let started = Instant::now();
+        let start_forcing = GlobalClimateForcingBuilder::build(
+            surface,
+            &primary_relief,
+            &climate_spec,
+            &domain,
+            &cancellation,
+        )
+        .unwrap();
+        report(profile, "P4 start forcing", started);
+        let started = Instant::now();
+        let (start_climate, start_state) = GlobalCirculationGenerator::generate_continuing(
+            surface,
+            &domain,
+            &start_forcing,
+            ClimateModelProfile::C2LayeredV1,
+            None,
+            &cancellation,
+        )
+        .unwrap();
+        report(profile, "P4 start solve", started);
+        eprintln!("[probe {profile:?}]    {}", solve_summary(&start_climate));
+
+        let started = Instant::now();
+        let closure = SurfaceFormationGenerator::generate_from_exact_state(
+            SurfaceFormationInputs {
+                surface,
+                quality_profile: profile,
+                tectonics: &evolved,
+                substrate: &substrate,
+                relief: &primary_relief,
+                domain: &domain,
+                climate_spec: &climate_spec,
+                initial_climate: &start_climate,
+                formation_spec: &surface_spec,
+            },
+            formation_state,
+            &start_state,
+            &cancellation,
+        )
+        .unwrap();
+        let (surface_out, final_climate, _forcing) = closure.into_parts();
+        report(profile, "P5 + endpoint P4", started);
+        eprintln!(
+            "[probe {profile:?}]    P5 substeps={} endpoint {}",
+            surface_out.evolution_report().accepted_surface_substeps(),
+            solve_summary(&final_climate)
+        );
+        report(profile, "TOTAL", total);
+
+        if let Ok(tag) = std::env::var("SEKAI_PROBE_TAG") {
+            let dir = std::path::PathBuf::from(
+                std::env::var("SEKAI_PROBE_DIR").unwrap_or_else(|_| "target/probe-dumps".into()),
+            );
+            std::fs::create_dir_all(&dir).unwrap();
+            for (name, climate) in [("start", &start_climate), ("end", &final_climate)] {
+                let file =
+                    std::fs::File::create(dir.join(format!("{tag}-{profile:?}-{name}.json")))
+                        .unwrap();
+                serde_json::to_writer(std::io::BufWriter::new(file), climate).unwrap();
+            }
+        }
+    }
+}

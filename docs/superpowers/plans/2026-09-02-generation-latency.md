@@ -38,7 +38,9 @@
       仅当 Task 1–3 后仍需要时做：每次快求值分配整套张量、RK 阶段合成对常量标量
       场重算并逐格线性查找层。实测两次求解合计 2.3 s / 44 s，收益有限。
 
-- [ ] Task 5 —— 证据刷新与回归
+- [ ] Task 5 —— 产品级时延门与证据刷新
+      新增 `tests/generation_latency.rs`（ignored / Release）：走生产 stage graph
+      （含质量评估与束校验）计时，Draft ≤ 20 s、Standard ≤ 60 s 直接作断言。
       重跑 `p4/performance.json`、`p5/performance.json`、17 seed 气候证据、全量
       Release 回归；更新 README 的性能预算陈述。
 
