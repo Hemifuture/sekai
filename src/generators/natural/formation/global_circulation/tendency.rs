@@ -3297,6 +3297,20 @@ mod tests {
         let expected_gradient = operators
             .gradient_with_permeability_cancellable(&height, &permeability, &cancellation)
             .unwrap();
+        // The fused stage gradient skips the public representable-vector
+        // correction: it must equal the exact f64 tangent cast to f32.
+        let expected_stage_gradient = operators
+            .gradient_f64_with_permeability(
+                &height
+                    .iter()
+                    .map(|value| f64::from(*value))
+                    .collect::<Vec<_>>(),
+                &permeability,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|gradient| gradient.map(|component| component as f32))
+            .collect::<Vec<_>>();
         let mut expected_thickness = vec![0.0; grid.cell_count()];
         conservative_layer_thickness_tendency(
             &grid,
@@ -3325,7 +3339,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(fused_gradient, expected_gradient);
+        assert_eq!(fused_gradient, expected_stage_gradient);
         assert_eq!(fused_thickness, expected_thickness);
 
         let allocation_signature = workspace.transport.allocation_signature();

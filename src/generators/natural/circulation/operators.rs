@@ -2157,9 +2157,20 @@ mod tests {
                 ]
             })
             .collect::<Vec<_>>();
+        // The fused stage gradient is the exact f64 tangent cast to f32; the
+        // representable-vector correction belongs to the public operator only.
         let expected_gradient = operators
-            .gradient_with_permeability_cancellable(&scalar, &permeability, &cancellation)
-            .unwrap();
+            .gradient_f64_with_permeability(
+                &scalar
+                    .iter()
+                    .map(|value| f64::from(*value))
+                    .collect::<Vec<_>>(),
+                &permeability,
+            )
+            .unwrap()
+            .into_iter()
+            .map(to_f32_vector)
+            .collect::<Vec<_>>();
         let expected_coriolis = operators
             .coriolis_cancellable(&velocity, 7.292_115_9e-5, &cancellation)
             .unwrap();
