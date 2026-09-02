@@ -64,6 +64,48 @@ pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
 /// integrator comparison recorded in
 /// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
 pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
+/// Earth's sidereal rotation rate (IERS Conventions 2010, Table 1.1).
+pub const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
+/// Reference gravity-wave phase speed that sizes the fast substep.
+///
+/// Retained from the P4 integrator selection
+/// (`2026-08-17-global-circulation-integrator-selection.md`); it bounds the
+/// first-baroclinic-mode speed of the layered model and is added to the
+/// measured maximum flow speed when the integrator plans its substeps.
+pub const GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
+/// Courant target of the split-explicit fast substeps.
+///
+/// The fast subsystem is advanced by the classical third-order Runge–Kutta
+/// method, whose absolute-stability region reaches `±√3` on the imaginary
+/// axis (Wicker & Skamarock 2002, Table 1), which bounds the centred
+/// gravity-wave and Coriolis terms, and `-2.51` on the real axis, which
+/// bounds the donor-cell thickness flux at a Courant number of `1.25`. The
+/// solver-comparison design (`2026-08-03`) froze `CFL ≤ 0.45` for the same
+/// discretisation. Measured on Draft seed 42 (2026-09-02, milestone A1): the
+/// published fields at `0.5` differ from the earlier `0.2` by at most
+/// `0.37 %` (surface ocean current) with identical formation-cycle counts and
+/// final residuals, while the fast-substep count drops from `749` to `323`.
+pub const GLOBAL_CIRCULATION_FAST_CFL_TARGET: f64 = 0.5;
+/// Fewest fast substeps one macro step can legitimately report.
+///
+/// The Coriolis term alone bounds the fast step at
+/// `FAST_CFL_TARGET / (2 Ω)`, independent of grid resolution and flow speed,
+/// so every macro step needs at least the ceiling of the ratio below. The
+/// snapshot contract checks the recorded work against this derived floor.
+pub const GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP: u64 = ceil_ratio_u64(
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS * 2.0 * EARTH_ROTATION_RATE_RAD_S,
+    GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+);
+
+const fn ceil_ratio_u64(numerator: f64, denominator: f64) -> u64 {
+    let ratio = numerator / denominator;
+    let floor = ratio as u64;
+    if floor as f64 == ratio {
+        floor
+    } else {
+        floor + 1
+    }
+}
 /// U.S. Standard Atmosphere 1976 tropospheric environmental lapse rate.
 ///
 /// P4 applies this only to the overlap-weighted emergent-land elevation in
@@ -3449,7 +3491,7 @@ impl GlobalCirculationSnapshot {
         let minimum_fast_substeps = self
             .solve_report
             .continuation_steps()
-            .checked_mul(6)
+            .checked_mul(GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP)
             .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
                 field: "fast_substeps",
             })?;

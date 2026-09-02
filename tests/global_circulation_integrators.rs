@@ -10,9 +10,9 @@ use sekai::generators::natural::{
 };
 use sekai::world::natural::{
     large_scale_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateLayerLayout,
-    ClimateLayerRole, ClimateModelProfile, PlanetForcing, P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
-    P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    ClimateLayerRole, ClimateModelProfile, PlanetForcing, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+    P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
+    P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 fn uniform_forcing(grid: &CubedSphereGrid, temperature_c: f32) -> PlanetForcing {
@@ -636,7 +636,7 @@ fn split_explicit_subcycles_against_the_actual_characteristic_speed() {
         )
         .unwrap();
     assert!(
-        result.diagnostics().maximum_cfl() <= 0.20 + 1.0e-12,
+        result.diagnostics().maximum_cfl() <= GLOBAL_CIRCULATION_FAST_CFL_TARGET + 1.0e-12,
         "dynamic split CFL was {}",
         result.diagnostics().maximum_cfl()
     );

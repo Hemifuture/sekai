@@ -9,10 +9,9 @@ use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
 use crate::world::natural::{
     ClimateCapabilitySet, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
 };
 
-const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
-const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 pub(super) const FORMATION_TEMPERATURE_SCALE_K: f64 = 30.0;
 pub(super) const FORMATION_ATMOSPHERE_SPEED_SCALE_M_S: f64 = 20.0;
 pub(super) const FORMATION_OCEAN_SPEED_SCALE_M_S: f64 = 2.0;
@@ -1040,8 +1039,8 @@ pub(crate) fn estimate_cfl(
             maximum_speed = maximum_speed.max(speed);
         }
     }
-    let advective =
-        dt_seconds * (REFERENCE_WAVE_SPEED_M_S + maximum_speed) / grid.minimum_center_distance_m();
+    let advective = dt_seconds * (GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S + maximum_speed)
+        / grid.minimum_center_distance_m();
     let rotational = dt_seconds * 2.0 * EARTH_ROTATION_RATE_RAD_S;
     check_integrator_cancelled(Some(cancellation))?;
     Ok(advective.max(rotational))

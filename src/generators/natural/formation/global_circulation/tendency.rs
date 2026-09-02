@@ -16,11 +16,11 @@ use crate::world::natural::{
     lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
     neutral_surface_air_specific_humidity_kg_kg, p4_thermodynamic_constants_fingerprint,
     ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
-    CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, STANDARD_GRAVITY_M_S2,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    CLIMATE_MONTH_COUNT, EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
+    STANDARD_GRAVITY_M_S2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
-const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 const SEAWATER_THERMAL_EXPANSION_K_INV: f64 = 2.0e-4;
 const MIXED_LAYER_REFERENCE_THICKNESS_M: f64 = 100.0;
 const MIXED_LAYER_STERIC_ACCELERATION_M2_S2_K: f64 = 0.5
@@ -82,7 +82,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v8\0");
+    hasher.update(b"sekai.global-circulation-equations.v9\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -112,9 +112,8 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         f64::from(DEEP_OCEAN_EQUILIBRIUM_OFFSET_C),
         f64::from(UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION),
         GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
-        super::generation::MAXIMUM_FAST_STEP_SECONDS,
-        super::generation::FAST_CFL_TARGET,
-        super::generation::REFERENCE_WAVE_SPEED_M_S,
+        GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+        GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
         super::generation::FORMATION_RESIDUAL_TARGET,
         super::rk3::FORMATION_TEMPERATURE_SCALE_K,
         super::rk3::FORMATION_ATMOSPHERE_SPEED_SCALE_M_S,
@@ -2657,7 +2656,7 @@ fn diagnose_axisymmetric_circulation(
         (STANDARD_GRAVITY_M_S2 * ATMOSPHERE_COLUMN_DEPTH_M * equator_to_pole_contrast_k
             / reference_temperature_k)
             .sqrt()
-            .min(super::generation::REFERENCE_WAVE_SPEED_M_S);
+            .min(GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S);
     Ok(AxisymmetricCirculationDiagnostic {
         equator_to_pole_contrast_k,
         eddy_velocity_scale_m_s,

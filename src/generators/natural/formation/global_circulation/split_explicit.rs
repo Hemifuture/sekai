@@ -10,9 +10,10 @@ use super::{
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
-use crate::world::natural::{ClimateCapabilitySet, ClimateModelProfile, PlanetForcing};
+use crate::world::natural::{
+    ClimateCapabilitySet, ClimateModelProfile, PlanetForcing, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+};
 
-const FAST_CFL_TARGET: f64 = 0.20;
 const MAXIMUM_SLOW_STEP_SECONDS: f64 = 7_200.0;
 
 /// Slow/fast additive RK3 with one frozen slow tendency per macro step.
@@ -421,8 +422,8 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             self.maximum_fast_step_seconds,
             cancellation,
         )?;
-        let cfl_limited_step = if configured_cfl > FAST_CFL_TARGET {
-            self.maximum_fast_step_seconds * FAST_CFL_TARGET / configured_cfl
+        let cfl_limited_step = if configured_cfl > GLOBAL_CIRCULATION_FAST_CFL_TARGET {
+            self.maximum_fast_step_seconds * GLOBAL_CIRCULATION_FAST_CFL_TARGET / configured_cfl
         } else {
             self.maximum_fast_step_seconds
         };

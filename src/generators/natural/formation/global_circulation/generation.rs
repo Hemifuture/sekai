@@ -21,16 +21,13 @@ use crate::world::natural::{
     ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, GlobalCirculationFields,
     GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
     MonthlyVector3Field, CLIMATE_MONTH_COUNT, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
-    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_SCHEMA_V2,
-    GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2, GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
+    GLOBAL_CIRCULATION_SCHEMA_V2, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
-pub(super) const MAXIMUM_FAST_STEP_SECONDS: f64 = 1_200.0;
-pub(super) const FAST_CFL_TARGET: f64 = 0.20;
-pub(super) const REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
-pub(super) const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 pub(super) const FORMATION_RESIDUAL_TARGET: f64 = 0.24;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -342,12 +339,14 @@ impl GlobalCirculationGenerator {
     }
 }
 
+/// Resting-state fast step from the wave and Coriolis Courant limits; the
+/// integrator tightens it further from the measured flow speed of each
+/// macro step.
 fn stable_fast_step_seconds(grid: &CubedSphereGrid) -> f64 {
-    let wave_limit = FAST_CFL_TARGET * grid.minimum_center_distance_m() / REFERENCE_WAVE_SPEED_M_S;
-    let rotation_limit = FAST_CFL_TARGET / (2.0 * EARTH_ROTATION_RATE_RAD_S);
-    MAXIMUM_FAST_STEP_SECONDS
-        .min(wave_limit)
-        .min(rotation_limit)
+    let wave_limit = GLOBAL_CIRCULATION_FAST_CFL_TARGET * grid.minimum_center_distance_m()
+        / GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S;
+    let rotation_limit = GLOBAL_CIRCULATION_FAST_CFL_TARGET / (2.0 * EARTH_ROTATION_RATE_RAD_S);
+    wave_limit.min(rotation_limit)
 }
 
 fn relative_state_residual(
