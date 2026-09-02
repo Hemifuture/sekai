@@ -26,16 +26,20 @@
       seed 42：北极 SST +10 → −1.9 °C，45–90° N TOA +13 → 0，47.5° N 冷池 −17 → −6 K，
       全球 TOA +7.0 → −3.8；南极暴露平流 – 辐射瞬变（设计 §3.5）。
 
-- [ ] Task 2 —— 海冰面先验
-      `forcing.rs`：`ice` 诊断（无冰 T_eq,ann,surface < −2 °C）、
-      `P4_SEA_ICE_SURFACE_ALBEDO`、辐射权重 / 蒸发可用度 `(1 − land)(1 − ice)`、
-      气–海交换 `water_scale` 乘 1/13；指纹再升。度量清单不变。
-      证据：seed 42 极区 RH / 降水 / TOA；17 seed 硬门。
+- [~] Task 2 / 2b —— 海冰面先验、扩散 EBM 年平均态（**实验分支，不进 main**）
+      分支 `a4-task2-sea-ice-experiment`（ba5ebdf）：`sea_ice_fraction`、
+      `P4_SEA_ICE_SURFACE_ALBEDO`、气–混合层交换 × 0.076、共轭梯度扩散 EBM、
+      `annual_initial_temperature_c` 初值，含测试。实测（设计 §4.1–4.2）：海冰单独
+      → 45–60° N 冷带 −28 K、夹具 TOA −12.7 破门；扩散 EBM → 无冰、热带 18 °C、
+      降水 1.92。结论（设计 §4.3）：灰体辐射先验无纬度结构、已隐含地球的输送，
+      显式输送重复计数；须先做"P4 辐射先验"再回到海冰与时间结构，交用户裁定。
 
-- [ ] Task 3 —— 语料证据、时延门、时间结构裁定备忘
-      17 seed（P / TOA / 雨影 / 增湿 / 非纬向 / 季节相位）、32 seed 冷启动、全量
-      Release 回归、Draft / Standard 时延；设计 §6 补 Task 1–2 之后的纬带表，
-      作为选项 A / B / C 的裁定输入。
+- [x] Task 3 —— 语料证据、时延门、裁定备忘
+      Task 1 态（设计 §5.1）：17 seed P 2.66 / E 2.77 / TOA −5.0，雨影 5/17、增湿
+      6/17，季节相位 17/17（Task 1 的直接后果，见 §5.1）；32 seed 冷启动 Draft 32/32、
+      Standard 32/32；全量 Release 回归 151 结果全绿；时延 Draft 20.1 s、Standard
+      64.7 s（应用关闭后测，与 A3 持平）。裁定顺序（设计 §6）：辐射先验 → 时间
+      结构 A → 海冰 / 含输送初值。
 
 ## 用户验证步骤
 
