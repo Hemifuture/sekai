@@ -102,37 +102,6 @@ impl GlobalCirculationGenerator {
         )
     }
 
-    /// Solves the periodic climate and also returns the work-grid state at the
-    /// end of its last formation cycle.
-    ///
-    /// With `initial_state`, the continuation starts from that earlier
-    /// solution instead of the resting annual-mean forcing state. The
-    /// converged periodic state is a property of the forcing alone; the
-    /// initial state only changes how many cycles the same closures need,
-    /// which is the standard restart practice of climate spin-up. Callers
-    /// use it when the forcing changed little between two solves, such as the
-    /// P5 endpoint after `100 kyr` of surface change.
-    pub(crate) fn generate_continuing(
-        surface: &SphericalSurfaceSnapshot,
-        domain: &ClimateWorkDomainSnapshot,
-        forcing: &GlobalClimateForcing,
-        profile: ClimateModelProfile,
-        initial_state: Option<&LayeredClimateState>,
-        cancellation: &BuildCancellation,
-    ) -> Result<(GlobalCirculationSnapshot, LayeredClimateState), GlobalCirculationGenerationError>
-    {
-        domain.validate_against_cancellable(surface, &|| cancellation.is_cancelled())?;
-        Self::generate_impl(
-            surface,
-            domain,
-            forcing,
-            profile,
-            initial_state,
-            cancellation,
-            |_| {},
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn generate_from_validated_with_phase_observer<F>(
         surface: &SphericalSurfaceSnapshot,
@@ -140,33 +109,8 @@ impl GlobalCirculationGenerator {
         forcing: &GlobalClimateForcing,
         profile: ClimateModelProfile,
         cancellation: &BuildCancellation,
-        observer: F,
-    ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError>
-    where
-        F: FnMut(GlobalCirculationPhase),
-    {
-        Self::generate_impl(
-            surface,
-            domain,
-            forcing,
-            profile,
-            None,
-            cancellation,
-            observer,
-        )
-        .map(|(snapshot, _)| snapshot)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn generate_impl<F>(
-        surface: &SphericalSurfaceSnapshot,
-        domain: &ClimateWorkDomainSnapshot,
-        forcing: &GlobalClimateForcing,
-        profile: ClimateModelProfile,
-        initial_state: Option<&LayeredClimateState>,
-        cancellation: &BuildCancellation,
         mut observer: F,
-    ) -> Result<(GlobalCirculationSnapshot, LayeredClimateState), GlobalCirculationGenerationError>
+    ) -> Result<GlobalCirculationSnapshot, GlobalCirculationGenerationError>
     where
         F: FnMut(GlobalCirculationPhase),
     {
@@ -210,31 +154,13 @@ impl GlobalCirculationGenerator {
             fast_step_seconds,
         )?;
         let planet = forcing.planet_forcing();
-        let mut state = match initial_state {
-            Some(initial) => {
-                if initial.profile() != profile {
-                    return Err(
-                        GlobalCirculationGenerationError::InitialStateProfileMismatch {
-                            found: initial.profile(),
-                            expected: profile,
-                        },
-                    );
-                }
-                initial
-                    .validate_against_cancellable(&grid, cancellation)
-                    .map_err(map_state_error)?;
-                initial
-                    .clone_cancellable(cancellation)
-                    .map_err(map_state_error)?
-            }
-            None => LayeredClimateState::from_annual_mean_forcing_cancellable(
-                &grid,
-                &layout,
-                planet,
-                cancellation,
-            )
-            .map_err(map_state_error)?,
-        };
+        let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(
+            &grid,
+            &layout,
+            planet,
+            cancellation,
+        )
+        .map_err(map_state_error)?;
         check_cancelled(cancellation)?;
         let mut previous_cycle = state
             .clone_cancellable(cancellation)
@@ -409,7 +335,7 @@ impl GlobalCirculationGenerator {
             &cancelled,
         )?;
         snapshot.validate_against_cancellable(surface, &cancelled)?;
-        Ok((snapshot, state))
+        Ok(snapshot)
     }
 }
 
@@ -2028,11 +1954,6 @@ pub enum GlobalCirculationGenerationError {
     InvalidFinalCycleBudget,
     #[error("annual formation residual increased from {initial} to {final_value}")]
     FormationResidualIncreased { initial: f64, final_value: f64 },
-    #[error("initial climate state profile {found:?} does not match the requested {expected:?}")]
-    InitialStateProfileMismatch {
-        found: ClimateModelProfile,
-        expected: ClimateModelProfile,
-    },
     #[error(
         "global circulation did not converge after {cycles} formation cycles: residual {residual} exceeds {target}"
     )]

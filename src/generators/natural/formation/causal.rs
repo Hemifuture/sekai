@@ -146,12 +146,11 @@ impl CausalNaturalFormationGenerator {
             inputs.climate_domain,
             cancellation,
         )?;
-        let (start_climate, start_climate_state) = GlobalCirculationGenerator::generate_continuing(
+        let start_climate = GlobalCirculationGenerator::generate(
             surface,
             inputs.climate_domain,
             &start_forcing,
             ClimateModelProfile::C2LayeredV1,
-            None,
             cancellation,
         )?;
         let closure = SurfaceFormationGenerator::generate_from_exact_state(
@@ -167,7 +166,6 @@ impl CausalNaturalFormationGenerator {
                 formation_spec: inputs.surface_spec,
             },
             formation_state,
-            &start_climate_state,
             cancellation,
         )?;
         let (surface, final_climate, final_climate_forcing) = closure.into_parts();
@@ -1037,12 +1035,11 @@ mod timing_probe {
         .unwrap();
         report(profile, "P4 start forcing", started);
         let started = Instant::now();
-        let (start_climate, start_state) = GlobalCirculationGenerator::generate_continuing(
+        let start_climate = GlobalCirculationGenerator::generate(
             surface,
             &domain,
             &start_forcing,
             ClimateModelProfile::C2LayeredV1,
-            None,
             &cancellation,
         )
         .unwrap();
@@ -1063,7 +1060,6 @@ mod timing_probe {
                 formation_spec: &surface_spec,
             },
             formation_state,
-            &start_state,
             &cancellation,
         )
         .unwrap();

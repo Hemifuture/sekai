@@ -14,7 +14,7 @@ use super::{
 use crate::engine::BuildCancellation;
 use crate::generators::natural::formation::global_circulation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcing,
-    GlobalClimateForcingBuilder, GlobalClimateForcingError, LayeredClimateState,
+    GlobalClimateForcingBuilder, GlobalClimateForcingError,
 };
 use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
 use crate::world::natural::{
@@ -78,31 +78,18 @@ impl SurfaceFormationClosureOutput {
 
 impl SurfaceFormationGenerator {
     /// Closes one exact P3-derived state through finite-time P5 and endpoint P4.
-    ///
-    /// `initial_climate_state` is the work-grid state that closed
-    /// `inputs.initial_climate`; the endpoint P4 continues from it because the
-    /// terrain, and therefore the forcing, changes only slightly over the P5
-    /// horizon.
     pub(in crate::generators::natural) fn generate_from_exact_state(
         inputs: SurfaceFormationInputs<'_>,
         state: FormationState,
-        initial_climate_state: &LayeredClimateState,
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
         let surface_ref = validate_inputs(inputs, cancellation)?;
-        Self::generate_from_validated_state(
-            inputs,
-            state,
-            initial_climate_state,
-            surface_ref,
-            cancellation,
-        )
+        Self::generate_from_validated_state(inputs, state, surface_ref, cancellation)
     }
 
     fn generate_from_validated_state(
         inputs: SurfaceFormationInputs<'_>,
         mut state: FormationState,
-        initial_climate_state: &LayeredClimateState,
         surface_ref: SurfaceRef,
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
@@ -125,12 +112,11 @@ impl SurfaceFormationGenerator {
             inputs.domain,
             cancellation,
         )?;
-        let (endpoint_climate, _) = GlobalCirculationGenerator::generate_continuing(
+        let endpoint_climate = GlobalCirculationGenerator::generate(
             surface,
             inputs.domain,
             &forcing,
             inputs.initial_climate.profile(),
-            Some(initial_climate_state),
             cancellation,
         )?;
         let terminal_diagnostics = recompute_surface_diagnostics(
