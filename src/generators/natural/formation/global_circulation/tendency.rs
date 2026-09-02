@@ -32,6 +32,13 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 // drag. The term belongs to the shared momentum equation so every candidate
 // integrator sees identical physics; it is never applied as a post-step mask.
 const COASTAL_FORM_DRAG_TIMESCALE_S: f64 = SECONDS_PER_DAY;
+// The lower-atmosphere Rayleigh rate r = C_D |U| / H_bl scales with the bulk
+// surface drag coefficient: about 1.2e-3 over the open sea against 3e-3
+// (grassland) to 1e-2 (forest) over land (Garratt 1992, The Atmospheric
+// Boundary Layer, §4.1; Stull 1988, §7). The land value is pinned at the
+// conservative grassland ratio; the one-day sea rate is the existing constant
+// in `role_constants`, and partial cells interpolate by land fraction.
+const LAND_SEA_SURFACE_DRAG_RATIO: f64 = 3.0;
 const BATHYMETRIC_BOTTOM_DRAG_TIMESCALE_S: f64 = 90.0 * SECONDS_PER_DAY;
 const BATHYMETRIC_BOTTOM_DRAG_REFERENCE_DEPTH_M: f64 = 1_000.0;
 // Horizontal sub-grid mixing closes unresolved baroclinic eddies and prevents
@@ -106,6 +113,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
         LOWER_ATMOSPHERE_MIN_THICKNESS_M,
+        LAND_SEA_SURFACE_DRAG_RATIO,
         UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
         ATMOSPHERE_COLUMN_DEPTH_M,
         BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY,
@@ -1307,6 +1315,14 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     } else {
                         0.0
                     };
+                    let surface_drag_s_inv = if *role == ClimateLayerRole::LowerAtmosphere {
+                        drag_s_inv
+                            * (1.0
+                                + (LAND_SEA_SURFACE_DRAG_RATIO - 1.0)
+                                    * f64::from(forcing.land_fraction()[cell]))
+                    } else {
+                        drag_s_inv
+                    };
                     let bathymetric_bottom_drag_s_inv =
                         if *role == ClimateLayerRole::OceanThermocline {
                             let water_fraction = 1.0 - f64::from(forcing.land_fraction()[cell]);
@@ -1323,7 +1339,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         acceleration[component] = -reduced_gravity
                             * f64::from(height_gradient[cell][component])
                             + f64::from(coriolis[cell][component])
-                            - (drag_s_inv + coastal_drag_s_inv + bathymetric_bottom_drag_s_inv)
+                            - (surface_drag_s_inv
+                                + coastal_drag_s_inv
+                                + bathymetric_bottom_drag_s_inv)
                                 * f64::from(velocity[cell][component])
                             + thermal_gradient_acceleration
                                 * f64::from(thermal_gradient[cell][component])

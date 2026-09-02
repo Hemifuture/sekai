@@ -158,6 +158,17 @@ d u_l / dt = -g'_l grad(eta_l)
              + sum exchange_momentum(l, k)
 ```
 
+Revision 2026-09-02 (milestone A2, `2026-09-02-p4-zonal-asymmetry-design.md`):
+the lower atmosphere is shallow water over topography (Vallis 2017 §3.1). Its
+pressure gradient still reads the layer top `eta`, but the transported
+thickness is `H_ref - z_b + eta` with the terrain floor
+`z_b = land_fraction * max(elevation - sea_level, 0)`, capped so the layer
+keeps at least `H_ref / 6`. Its Rayleigh rate is
+`r_lower = r_sea * (1 + (rho - 1) * land_fraction)` with `rho = 3`, the
+grassland-to-open-sea bulk drag ratio (Garratt 1992 §4.1). Both terms are
+per-cell constants of the bound forcing and enter the equation-model
+fingerprint (v10).
+
 Lower-atmosphere temperature and humidity, both atmospheric momentum fields,
 mixed-layer/thermocline temperature, and ocean momentum use paired exchange
 terms. Every pair is accumulated once with equal and opposite extensive
