@@ -92,7 +92,7 @@ macro_rules! declare_expected_metrics {
 // This declaration is the sole P4 metric-bound registry. Its order is part of
 // the canonical report identity, while every caller resolves bounds by name.
 declare_expected_metrics! {
-    25;
+    26;
     "absorbed-shortwave-global-mean-w-m2" => (None, None, false),
     "cubed-face-seam-speed-ratio" => (None, Some(4.0), false),
     "evaporation-global-mean-mm-day" => (None, None, false),
@@ -104,6 +104,7 @@ declare_expected_metrics! {
     "low-latitude-easterly-fraction" => (Some(0.35), None, false),
     "midlatitude-westerly-fraction" => (Some(0.55), None, false),
     "mixed-layer-warmer-than-thermocline-fraction" => (Some(0.70), None, false),
+    "near-surface-wind-non-zonal-variance-fraction" => (None, None, false),
     "ocean-current-land-leakage-max-m-s" => (None, Some(0.0), false),
     "ocean-gyre-circulation-fraction" => (Some(0.20), None, false),
     "orographic-precipitation-response" => (Some(0.01), None, false),
@@ -304,6 +305,7 @@ fn evaluate_global_circulation_quality_impl(
     let mut seasonal_phase_correct = 0_u32;
     let mut low_latitude_precipitation = MetricAccumulator::new();
     let mut high_latitude_precipitation = MetricAccumulator::new();
+    let mut annual_wind = NonZonalWindAccumulator::new();
     let mut precipitation_seasonal_phase = MetricAccumulator::new();
     let seasonal_forcing_amplitude_c = forcing
         .planet_forcing()
@@ -325,6 +327,16 @@ fn evaluate_global_circulation_quality_impl(
         let area_m2 = cell.area.get();
         let (east, _) = canonical_east_north_basis(cell.centroid);
         let land = terrain.land_ocean().raw_values()[cell_index] == LandOceanKind::Land.raw();
+        {
+            let (east, north) = canonical_east_north_basis(cell.centroid);
+            let mut annual = [0.0_f64; 3];
+            for month in &lower[cell_index] {
+                for (component, value) in annual.iter_mut().zip(month) {
+                    *component += f64::from(*value) / 12.0;
+                }
+            }
+            annual_wind.push(latitude, area_m2, dot(annual, east), dot(annual, north));
+        }
         for month in 0..12 {
             let zonal = dot(lower[cell_index][month].map(f64::from), east);
             if (LOW_LATITUDE_WIND_MIN_ABS_DEGREES..=TROPICAL_MAX_ABS_LATITUDE_DEGREES)
@@ -474,6 +486,15 @@ fn evaluate_global_circulation_quality_impl(
         &mut builder,
         "mixed-layer-warmer-than-thermocline-fraction",
         available(fraction(mixed_warm, mixed_warm_total), mixed_warm_total),
+    )?;
+    record_expected_metric(
+        &mut builder,
+        "near-surface-wind-non-zonal-variance-fraction",
+        available(
+            annual_wind.non_zonal_variance_fraction(),
+            u32::try_from(surface.cells().len())
+                .map_err(|_| QualityBuildError::SampleCountOverflow)?,
+        ),
     )?;
     record_expected_metric(
         &mut builder,
@@ -1399,7 +1420,8 @@ mod tests {
             };
             let sample_count = match name {
                 "cubed-face-seam-speed-ratio" => surface_ref.edge_count(),
-                "ocean-current-land-leakage-max-m-s" => surface_ref.cell_count(),
+                "near-surface-wind-non-zonal-variance-fraction"
+                | "ocean-current-land-leakage-max-m-s" => surface_ref.cell_count(),
                 "positive-thermocline-depth-fraction" | "vertical-shear-rms-m-s" => {
                     maximum_monthly_samples
                 }
@@ -1727,7 +1749,8 @@ pub(crate) fn validate_global_circulation_quality_report(
             | "precipitation-global-mean-mm-day"
             | "toa-net-radiation-global-mean-w-m2" => Some(1),
             "cubed-face-seam-speed-ratio" => Some(expected_surface.edge_count()),
-            "ocean-current-land-leakage-max-m-s" => Some(expected_surface.cell_count()),
+            "near-surface-wind-non-zonal-variance-fraction"
+            | "ocean-current-land-leakage-max-m-s" => Some(expected_surface.cell_count()),
             "positive-thermocline-depth-fraction" | "vertical-shear-rms-m-s" => {
                 Some(maximum_monthly_samples)
             }
@@ -1742,4 +1765,55 @@ pub(crate) fn validate_global_circulation_quality_report(
         }
     }
     Ok(())
+}
+/// Area-weighted decomposition of the annual-mean near-surface wind into
+/// 5° zonal-band means and deviations: the share of wind variance that is
+/// not axisymmetric (design 2026-09-02 §3).
+struct NonZonalWindAccumulator {
+    samples: Vec<(usize, f64, f64, f64)>,
+}
+
+impl NonZonalWindAccumulator {
+    const BAND_DEGREES: f64 = 5.0;
+    const BAND_COUNT: usize = 36;
+
+    fn new() -> Self {
+        Self {
+            samples: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, latitude_degrees: f64, area_m2: f64, zonal: f64, meridional: f64) {
+        let band = (((latitude_degrees + 90.0) / Self::BAND_DEGREES).floor() as usize)
+            .min(Self::BAND_COUNT - 1);
+        self.samples.push((band, area_m2, zonal, meridional));
+    }
+
+    fn non_zonal_variance_fraction(&self) -> f64 {
+        let mut band_area = [0.0_f64; Self::BAND_COUNT];
+        let mut band_zonal = [0.0_f64; Self::BAND_COUNT];
+        let mut band_meridional = [0.0_f64; Self::BAND_COUNT];
+        for &(band, area, zonal, meridional) in &self.samples {
+            band_area[band] += area;
+            band_zonal[band] += area * zonal;
+            band_meridional[band] += area * meridional;
+        }
+        let mut total = 0.0_f64;
+        let mut deviation = 0.0_f64;
+        for &(band, area, zonal, meridional) in &self.samples {
+            if band_area[band] <= 0.0 {
+                continue;
+            }
+            let mean_zonal = band_zonal[band] / band_area[band];
+            let mean_meridional = band_meridional[band] / band_area[band];
+            total += area * (zonal * zonal + meridional * meridional);
+            deviation +=
+                area * ((zonal - mean_zonal).powi(2) + (meridional - mean_meridional).powi(2));
+        }
+        if total > 0.0 {
+            deviation / total
+        } else {
+            0.0
+        }
+    }
 }

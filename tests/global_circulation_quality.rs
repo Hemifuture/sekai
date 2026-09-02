@@ -33,6 +33,7 @@ fn generated_c2_publishes_finite_diagnostics_and_passes_physical_closures() {
         "low-latitude-easterly-fraction",
         "midlatitude-westerly-fraction",
         "vertical-shear-rms-m-s",
+        "near-surface-wind-non-zonal-variance-fraction",
         "ocean-current-land-leakage-max-m-s",
         "ocean-gyre-circulation-fraction",
         "mixed-layer-warmer-than-thermocline-fraction",
