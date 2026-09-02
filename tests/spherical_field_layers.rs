@@ -129,49 +129,91 @@ fn vector_display_speed_rejects_non_finite_and_out_of_range_values() {
 }
 
 #[test]
-fn glyph_lod_keys_keep_the_exact_nested_sampling_denominators() {
-    assert_eq!(GlyphLodKey::Low.denominator(), 16);
-    assert_eq!(GlyphLodKey::Medium.denominator(), 8);
-    assert_eq!(GlyphLodKey::High.denominator(), 4);
+fn glyph_lod_denominators_meet_the_spacing_target_and_nest_by_density() {
+    // Draft and Standard authoritative cell counts at zoom 1.
+    for cell_count in [20_252_usize, 79_212] {
+        let cells_across = (2.0 * cell_count as f64).sqrt();
+        let cell_pixels = GlyphLodKey::REFERENCE_CANVAS_WIDTH_PIXELS / cells_across;
+        let mut previous = u64::MAX;
+        for lod in [
+            VectorGlyphLod::Low,
+            VectorGlyphLod::Medium,
+            VectorGlyphLod::High,
+        ] {
+            let denominator = GlyphLodKey::for_zoom(lod, 1.0).denominator_for(cell_count);
+            assert!(
+                denominator.is_power_of_two(),
+                "{lod:?} denominator {denominator}"
+            );
+            let spacing = cell_pixels * (denominator as f64).sqrt();
+            assert!(
+                spacing >= GlyphLodKey::target_spacing_pixels(lod),
+                "{lod:?} at {cell_count} cells spaces glyphs {spacing} px"
+            );
+            assert!(
+                spacing < 2.0 * GlyphLodKey::target_spacing_pixels(lod),
+                "{lod:?} at {cell_count} cells overshoots the target: {spacing} px"
+            );
+            assert!(
+                denominator <= previous,
+                "denser settings must not sample fewer cells"
+            );
+            previous = denominator;
+        }
+    }
 
     for score in 0_u64..256 {
-        let low = GlyphLodKey::Low.includes_score(score);
-        let medium = GlyphLodKey::Medium.includes_score(score);
-        let high = GlyphLodKey::High.includes_score(score);
+        let low = GlyphLodKey::includes_score(256, score);
+        let medium = GlyphLodKey::includes_score(64, score);
+        let high = GlyphLodKey::includes_score(32, score);
         assert!(!low || medium, "low score {score} must remain in medium");
         assert!(!medium || high, "medium score {score} must remain in high");
     }
 }
 
 #[test]
-fn zoom_lod_changes_only_at_predefined_discrete_thresholds() {
+fn zoom_lod_changes_only_at_power_of_two_bands_and_only_adds_glyphs() {
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0),
-        GlyphLodKey::Low
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0).zoom_band(),
+        0
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.99),
-        GlyphLodKey::Low
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.99).zoom_band(),
+        0
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0),
-        GlyphLodKey::Medium
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0).zoom_band(),
+        1
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0),
-        GlyphLodKey::High
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0).zoom_band(),
+        2
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.99),
-        GlyphLodKey::Medium
+        GlyphLodKey::for_zoom(VectorGlyphLod::High, 0.5).zoom_band(),
+        -1
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 2.0),
-        GlyphLodKey::High
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.5),
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.0)
     );
+    assert_ne!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.0),
+        GlyphLodKey::for_zoom(VectorGlyphLod::High, 1.0)
+    );
+
+    let cell_count = 20_252;
+    let mut previous = u64::MAX;
+    for band_zoom in [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0] {
+        let denominator =
+            GlyphLodKey::for_zoom(VectorGlyphLod::Medium, band_zoom).denominator_for(cell_count);
+        assert!(denominator <= previous, "zoom {band_zoom} removed glyphs");
+        assert!(denominator >= 1);
+        previous = denominator;
+    }
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::High, 0.5),
-        GlyphLodKey::High
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 4096.0).denominator_for(cell_count),
+        1
     );
 }
 

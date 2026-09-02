@@ -4460,7 +4460,7 @@ mod natural_app_tests {
             assert_eq!(current.state().vector_view_zoom(), 3.0);
             assert_eq!(
                 current.layers().glyph_lod_key(),
-                crate::view::GlyphLodKey::Medium
+                crate::view::GlyphLodKey::for_zoom(current.state().vector_lod(), 3.0)
             );
             assert!(Arc::ptr_eq(
                 current.gpu_packet().layers_arc(),
@@ -4483,7 +4483,7 @@ mod natural_app_tests {
             assert_eq!(current.state().vector_view_zoom(), 3.0);
             assert_eq!(
                 current.layers().glyph_lod_key(),
-                crate::view::GlyphLodKey::Medium
+                crate::view::GlyphLodKey::for_zoom(current.state().vector_lod(), 3.0)
             );
             assert!(Arc::ptr_eq(
                 current.gpu_packet().layers_arc(),

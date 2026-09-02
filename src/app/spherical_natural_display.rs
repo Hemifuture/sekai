@@ -1280,7 +1280,10 @@ mod tests {
         )
         .unwrap();
         assert!(!Arc::ptr_eq(&low, &medium));
-        assert_eq!(medium.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_eq!(
+            medium.glyph_lod_key(),
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0)
+        );
         assert_only_vector_glyph_revision_changed(&low, &medium);
         assert_eq!(document.catalog_calls(), 1);
         assert_eq!(
@@ -1350,7 +1353,10 @@ mod tests {
         )
         .unwrap();
         assert!(!Arc::ptr_eq(&repeated, &high));
-        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
+        assert_eq!(
+            high.glyph_lod_key(),
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0)
+        );
         assert_only_vector_glyph_revision_changed(&repeated, &high);
         assert_eq!(document.catalog_calls(), 1);
         assert_eq!(
@@ -1434,7 +1440,10 @@ mod tests {
         assert!(!Arc::ptr_eq(&first_layers, &replaced));
         assert_eq!(replaced.source(), &second.presentation_source());
         assert_eq!(second.catalog_calls(), 1);
-        assert_eq!(replaced.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_eq!(
+            replaced.glyph_lod_key(),
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.5)
+        );
     }
 
     #[test]

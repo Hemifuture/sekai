@@ -87,55 +87,100 @@ pub enum VectorGlyphLod {
     High,
 }
 
-/// A discrete, cacheable vector-glyph density selected from stable zoom thresholds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GlyphLodKey {
-    /// One source-keyed cell in sixteen, plus the selected cell.
-    Low,
-    /// One source-keyed cell in eight, plus the selected cell.
-    #[default]
-    Medium,
-    /// One source-keyed cell in four, plus the selected cell.
-    High,
+/// A discrete, cacheable vector-glyph density: the author's minimum density
+/// plus the view zoom quantized to power-of-two bands.
+///
+/// The sampling denominator is resolved against the surface cell count when
+/// glyphs are built, so the on-screen glyph spacing tracks the density target
+/// whatever the quality profile; a fixed one-in-eight rule put ten thousand
+/// glyphs on a Standard map and read as noise (user report, 2026-09-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphLodKey {
+    lod: VectorGlyphLod,
+    zoom_band: i8,
 }
 
 impl GlyphLodKey {
-    /// Returns the exact stable sampling denominator for this density.
-    pub const fn denominator(self) -> u64 {
-        match self {
-            Self::Low => 16,
-            Self::Medium => 8,
-            Self::High => 4,
-        }
-    }
+    /// Canvas width the spacing targets are stated for; desktop windows
+    /// deviate from it by at most about a factor of two, far inside the
+    /// power-of-two denominator steps.
+    pub const REFERENCE_CANVAS_WIDTH_PIXELS: f64 = 1280.0;
+    const MIN_ZOOM_BAND: i8 = -4;
+    const MAX_ZOOM_BAND: i8 = 24;
 
-    /// Tests one already-computed stable score without introducing runtime randomness.
-    pub const fn includes_score(self, score: u64) -> bool {
-        score % self.denominator() == 0
-    }
-
-    /// Resolves explicit density plus zoom through the fixed `2x` and `4x` thresholds.
+    /// Target on-screen distance between glyphs for one density setting.
     ///
-    /// Zoom can only add glyphs. It never replaces an already-visible stable identity.
-    pub fn for_zoom(base: VectorGlyphLod, zoom: f64) -> Self {
-        let zoom = if zoom.is_finite() { zoom.max(0.0) } else { 0.0 };
-        match base {
-            VectorGlyphLod::High => Self::High,
-            VectorGlyphLod::Medium if zoom >= 2.0 => Self::High,
-            VectorGlyphLod::Medium => Self::Medium,
-            VectorGlyphLod::Low if zoom >= 4.0 => Self::High,
-            VectorGlyphLod::Low if zoom >= 2.0 => Self::Medium,
-            VectorGlyphLod::Low => Self::Low,
+    /// The chevron head is at most 10 px and the dashed shaft up to one cell
+    /// spacing, so 20 px is the tightest spacing at which neighbouring
+    /// glyphs stay separable; the sparser settings step by about 1.5×.
+    pub const fn target_spacing_pixels(lod: VectorGlyphLod) -> f64 {
+        match lod {
+            VectorGlyphLod::Low => 48.0,
+            VectorGlyphLod::Medium => 32.0,
+            VectorGlyphLod::High => 20.0,
         }
+    }
+
+    /// Resolves the density setting plus zoom into a stable band key.
+    ///
+    /// Zoom can only add glyphs: each band halves the denominator, and a
+    /// power-of-two denominator keeps every coarser set a subset of the finer.
+    pub fn for_zoom(base: VectorGlyphLod, zoom: f64) -> Self {
+        let zoom = if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+        let band = zoom.log2().floor();
+        let zoom_band = band.clamp(
+            f64::from(Self::MIN_ZOOM_BAND),
+            f64::from(Self::MAX_ZOOM_BAND),
+        ) as i8;
+        Self {
+            lod: base,
+            zoom_band,
+        }
+    }
+
+    /// Returns the author's minimum density.
+    pub const fn lod(self) -> VectorGlyphLod {
+        self.lod
+    }
+
+    /// Returns the power-of-two zoom band (`floor(log2(zoom))`).
+    pub const fn zoom_band(self) -> i8 {
+        self.zoom_band
+    }
+
+    /// Returns the power-of-two sampling denominator for a surface of
+    /// `cell_count` cells: the smallest that meets the spacing target at the
+    /// lowest zoom of this band on the reference canvas.
+    pub fn denominator_for(self, cell_count: usize) -> u64 {
+        let zoom = 2.0_f64.powi(i32::from(self.zoom_band));
+        // An equirectangular map is twice as wide as high, so the cells across
+        // its width number about sqrt(2 N); the globe disc is treated alike.
+        let cells_across = (2.0 * cell_count.max(1) as f64).sqrt();
+        let cell_pixels = Self::REFERENCE_CANVAS_WIDTH_PIXELS * zoom / cells_across;
+        // Glyph spacing is cell spacing times sqrt(denominator).
+        let needed = (Self::target_spacing_pixels(self.lod) / cell_pixels).powi(2);
+        let mut denominator = 1_u64;
+        while (denominator as f64) < needed && denominator < (1_u64 << 40) {
+            denominator *= 2;
+        }
+        denominator
+    }
+
+    /// Tests one already-computed stable score against a resolved denominator.
+    pub const fn includes_score(denominator: u64, score: u64) -> bool {
+        score % denominator == 0
     }
 }
 
 impl From<VectorGlyphLod> for GlyphLodKey {
     fn from(value: VectorGlyphLod) -> Self {
-        match value {
-            VectorGlyphLod::Low => Self::Low,
-            VectorGlyphLod::Medium => Self::Medium,
-            VectorGlyphLod::High => Self::High,
+        Self {
+            lod: value,
+            zoom_band: 0,
         }
     }
 }
@@ -486,7 +531,8 @@ impl PreparedVectorGlyphs {
         }
         let map_area = (map.bounds().max_x() - map.bounds().min_x())
             * (map.bounds().max_y() - map.bounds().min_y());
-        let density_scale = lod_key.denominator() as f64 / cell_count as f64;
+        let denominator = lod_key.denominator_for(cell_count);
+        let density_scale = denominator as f64 / cell_count as f64;
         let map_spacing = (map_area * density_scale).sqrt() as f32;
         let globe_spacing = (std::f64::consts::TAU * 2.0 * density_scale).sqrt() as f32;
         let mut sampled_cells = Vec::new();
@@ -502,7 +548,7 @@ impl PreparedVectorGlyphs {
         {
             let cell = CellId::from_raw(index as u32);
             if selected_cell != Some(cell)
-                && !lod_key.includes_score(vector_glyph_score(source, cell))
+                && !GlyphLodKey::includes_score(denominator, vector_glyph_score(source, cell))
             {
                 continue;
             }
@@ -616,7 +662,8 @@ pub(crate) fn prepare_map_vector_glyphs(
     let cell_count = map.cell_count();
     let map_area = (map.bounds().max_x() - map.bounds().min_x())
         * (map.bounds().max_y() - map.bounds().min_y());
-    let map_spacing = (map_area * lod_key.denominator() as f64 / cell_count as f64).sqrt() as f32;
+    let denominator = lod_key.denominator_for(cell_count);
+    let map_spacing = (map_area * denominator as f64 / cell_count as f64).sqrt() as f32;
     let mut glyphs = Vec::new();
     let mut diagnostics = Vec::new();
     for (index, (&components, &magnitude)) in field
@@ -626,7 +673,8 @@ pub(crate) fn prepare_map_vector_glyphs(
         .enumerate()
     {
         let cell = CellId::from_raw(index as u32);
-        if !vector_cell_is_sampled(source, cell, selected_cell, lod_key) || components == [0.0, 0.0]
+        if !vector_cell_is_sampled(source, cell, selected_cell, denominator)
+            || components == [0.0, 0.0]
         {
             continue;
         }
@@ -660,9 +708,9 @@ pub(crate) fn prepare_globe_vector_glyphs(
 ) -> Result<Vec<GlobeVectorGlyph>, FieldLayerError> {
     validate_globe_vector_inputs(source, globe, field, selected_cell)?;
     let cell_count = globe.cell_count();
-    let globe_spacing = (std::f64::consts::TAU * 2.0 * lod_key.denominator() as f64
-        / cell_count as f64)
-        .sqrt() as f32;
+    let denominator = lod_key.denominator_for(cell_count);
+    let globe_spacing =
+        (std::f64::consts::TAU * 2.0 * denominator as f64 / cell_count as f64).sqrt() as f32;
     let mut glyphs = Vec::new();
     for (index, (&components, &magnitude)) in field
         .components()
@@ -671,7 +719,8 @@ pub(crate) fn prepare_globe_vector_glyphs(
         .enumerate()
     {
         let cell = CellId::from_raw(index as u32);
-        if !vector_cell_is_sampled(source, cell, selected_cell, lod_key) || components == [0.0, 0.0]
+        if !vector_cell_is_sampled(source, cell, selected_cell, denominator)
+            || components == [0.0, 0.0]
         {
             continue;
         }
@@ -742,9 +791,10 @@ fn vector_cell_is_sampled(
     source: &SphericalPresentationSource,
     cell: CellId,
     selected_cell: Option<CellId>,
-    lod_key: GlyphLodKey,
+    denominator: u64,
 ) -> bool {
-    selected_cell == Some(cell) || lod_key.includes_score(vector_glyph_score(source, cell))
+    selected_cell == Some(cell)
+        || GlyphLodKey::includes_score(denominator, vector_glyph_score(source, cell))
 }
 
 struct PreparedVectorGlyphPair {
@@ -2104,7 +2154,10 @@ mod vector_glyph_tests {
     use std::f64::consts::FRAC_PI_4;
     use std::sync::Arc;
 
-    use super::{GlyphLodKey, PreparedVectorField, PreparedVectorGlyphs, ResolvedDisplayRange};
+    use super::{
+        GlyphLodKey, PreparedVectorField, PreparedVectorGlyphs, ResolvedDisplayRange,
+        VectorGlyphLod,
+    };
     use crate::engine::BuildResultHash;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{
@@ -2248,10 +2301,12 @@ mod vector_glyph_tests {
     fn source_keyed_lod_sets_are_deterministic_nested_unique_and_include_selection() {
         for seed in [3, 17] {
             for selected in [CellId::from_raw(0), CellId::from_raw(19)] {
-                let low = glyph_fixture(seed, selected, GlyphLodKey::Low);
-                let repeated = glyph_fixture(seed, selected, GlyphLodKey::Low);
-                let medium = glyph_fixture(seed, selected, GlyphLodKey::Medium);
-                let high = glyph_fixture(seed, selected, GlyphLodKey::High);
+                let low = glyph_fixture(seed, selected, GlyphLodKey::from(VectorGlyphLod::Low));
+                let repeated =
+                    glyph_fixture(seed, selected, GlyphLodKey::from(VectorGlyphLod::Low));
+                let medium =
+                    glyph_fixture(seed, selected, GlyphLodKey::from(VectorGlyphLod::Medium));
+                let high = glyph_fixture(seed, selected, GlyphLodKey::from(VectorGlyphLod::High));
 
                 assert_eq!(glyph_bytes(&low), glyph_bytes(&repeated));
                 assert!(low.sampled_cells().contains(&selected));
@@ -2279,7 +2334,11 @@ mod vector_glyph_tests {
 
     #[test]
     fn globe_direction_uses_canonical_components_and_zero_has_no_direction_glyph() {
-        let glyphs = glyph_fixture(23, CellId::from_raw(0), GlyphLodKey::High);
+        let glyphs = glyph_fixture(
+            23,
+            CellId::from_raw(0),
+            GlyphLodKey::from(VectorGlyphLod::High),
+        );
         assert!(glyphs.sampled_cells().contains(&CellId::from_raw(0)));
         assert!(glyphs
             .globe()
@@ -2347,7 +2406,11 @@ mod vector_glyph_tests {
 
     #[test]
     fn vector_glyph_preparation_does_not_mutate_unit_globe_geometry() {
-        let glyphs = glyph_fixture(31, CellId::from_raw(4), GlyphLodKey::High);
+        let glyphs = glyph_fixture(
+            31,
+            CellId::from_raw(4),
+            GlyphLodKey::from(VectorGlyphLod::High),
+        );
         for glyph in glyphs.globe() {
             let radius = glyph
                 .radial()
@@ -2525,7 +2588,7 @@ mod vector_glyph_tests {
             paused.revisions().vector_glyphs,
             low.revisions().vector_glyphs
         );
-        assert_eq!(low.glyph_lod_key(), GlyphLodKey::Low);
+        assert_eq!(low.glyph_lod_key().lod(), VectorGlyphLod::Low);
         assert_eq!(paused.revisions().overlay, low.revisions().overlay);
 
         state.set_vector_view_zoom(1.99).unwrap();
@@ -2543,7 +2606,10 @@ mod vector_glyph_tests {
         )
         .unwrap();
         assert_eq!(low.revisions(), low_in_band.revisions());
-        assert_eq!(low_in_band.glyph_lod_key(), GlyphLodKey::Low);
+        assert_eq!(
+            low_in_band.glyph_lod_key(),
+            GlyphLodKey::from(VectorGlyphLod::Low)
+        );
 
         state.set_vector_view_zoom(2.0).unwrap();
         let medium = super::update_spherical_field_layers(
@@ -2563,7 +2629,10 @@ mod vector_glyph_tests {
             low_in_band.revisions().vector_glyphs,
             medium.revisions().vector_glyphs
         );
-        assert_eq!(medium.glyph_lod_key(), GlyphLodKey::Medium);
+        assert_eq!(
+            medium.glyph_lod_key(),
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0)
+        );
         assert_eq!(low_in_band.revisions().overlay, medium.revisions().overlay);
 
         state.set_vector_view_zoom(2.5).unwrap();
@@ -2600,7 +2669,10 @@ mod vector_glyph_tests {
             medium_in_band.revisions().vector_glyphs,
             high.revisions().vector_glyphs
         );
-        assert_eq!(high.glyph_lod_key(), GlyphLodKey::High);
+        assert_eq!(
+            high.glyph_lod_key(),
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0)
+        );
         assert_eq!(medium_in_band.revisions().overlay, high.revisions().overlay);
 
         let repeated_high = super::update_spherical_field_layers(

@@ -100,10 +100,20 @@ fn release_20k_presentation_derivatives_fit_time_memory_and_static_upload_budget
         vector.field_id(),
         &preliminary_prevailing_wind_m_s_field_id()
     );
-    assert_eq!(layers.glyph_lod_key(), GlyphLodKey::Medium);
+    assert_eq!(
+        layers.glyph_lod_key(),
+        GlyphLodKey::from(VectorGlyphLod::Medium)
+    );
     let (glyph_time, glyphs) = timed(|| {
-        PreparedVectorGlyphs::build(&source, &map, &globe, vector, None, GlyphLodKey::Medium)
-            .unwrap()
+        PreparedVectorGlyphs::build(
+            &source,
+            &map,
+            &globe,
+            vector,
+            None,
+            GlyphLodKey::from(VectorGlyphLod::Medium),
+        )
+        .unwrap()
     });
 
     let components = [

@@ -36,9 +36,14 @@ struct AmplifiedOutput {
 struct OverlayOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    // Fraction along the shaft in [0, 1]; negative marks the solid chevron
+    // head so the dash pattern leaves it alone.
     @location(1) along_arrow: f32,
     @location(2) @interpolate(flat) kind: u32,
     @location(3) @interpolate(linear) local_ndc: vec2<f32>,
+    // Projected shaft length in pixels, so dashes keep a fixed pixel
+    // period whatever the zoom.
+    @location(4) @interpolate(flat) shaft_pixels: f32,
 }
 
 @group(0) @binding(0)
@@ -168,6 +173,7 @@ fn clipped_overlay(color: vec4<f32>, kind: u32) -> OverlayOutput {
     output.along_arrow = 0.0;
     output.kind = kind;
     output.local_ndc = vec2<f32>(0.0);
+    output.shaft_pixels = 0.0;
     return output;
 }
 
@@ -184,6 +190,18 @@ fn quad_side(vertex: u32) -> f32 {
     }
     return 1.0;
 }
+
+// Vector glyphs are a dashed shaft (vertices 0..6) plus an open chevron head
+// drawn as two thin strokes (vertices 6..18). The head scales with the
+// projected shaft so a zoomed-out field reads as short dashed arrows rather
+// than a screen of fixed-size solid triangles; edges and rivers (kind 0)
+// only use the shaft quad.
+const VECTOR_HEAD_FRACTION: f32 = 0.35;
+const VECTOR_HEAD_MIN_PIXELS: f32 = 3.0;
+const VECTOR_HEAD_MAX_PIXELS: f32 = 10.0;
+const VECTOR_HEAD_HALF_ANGLE_TAN: f32 = 0.7;
+const VECTOR_DASH_PERIOD_PIXELS: f32 = 8.0;
+const VECTOR_DASH_FILL: f32 = 0.625;
 
 fn expanded_overlay_vertex(
     start: vec4<f32>,
@@ -217,19 +235,28 @@ fn expanded_overlay_vertex(
         output.position = vec4<f32>(ndc * clip.w, clip.z, clip.w);
         output.along_arrow = along;
         output.local_ndc = ndc;
+        output.shaft_pixels = pixel_length;
         return output;
     }
-    let head_back = direction_pixels * (width * 7.0) * 2.0 / frame.viewport_pixels;
-    let head_side = perpendicular_pixels * (width * 3.0) * 2.0 / frame.viewport_pixels;
-    var ndc = end_ndc;
-    if vertex == 7u {
-        ndc = end_ndc - head_back - head_side;
-    } else if vertex == 8u {
-        ndc = end_ndc - head_back + head_side;
+    let head_pixels = clamp(
+        pixel_length * VECTOR_HEAD_FRACTION,
+        VECTOR_HEAD_MIN_PIXELS,
+        VECTOR_HEAD_MAX_PIXELS,
+    );
+    var arm_sign = -1.0;
+    if vertex >= 12u {
+        arm_sign = 1.0;
     }
+    let local = (vertex - 6u) % 6u;
+    let arm_pixels = normalize(-direction_pixels + perpendicular_pixels * (arm_sign * VECTOR_HEAD_HALF_ANGLE_TAN));
+    let arm_perpendicular_pixels = vec2<f32>(-arm_pixels.y, arm_pixels.x);
+    let arm_end_ndc = end_ndc + arm_pixels * head_pixels * 2.0 / frame.viewport_pixels;
+    let arm_perpendicular_ndc = arm_perpendicular_pixels * width / frame.viewport_pixels;
+    let ndc = mix(end_ndc, arm_end_ndc, quad_along(local)) + arm_perpendicular_ndc * quad_side(local);
     output.position = vec4<f32>(ndc * end.w, end.z, end.w);
-    output.along_arrow = 1.0;
+    output.along_arrow = -1.0;
     output.local_ndc = ndc;
+    output.shaft_pixels = pixel_length;
     return output;
 }
 
@@ -395,10 +422,15 @@ fn fs_overlay(input: OverlayOutput) -> @location(0) vec4<f32> {
             discard;
         }
     }
-    if input.kind == 0u {
+    if input.kind == 0u || input.along_arrow < 0.0 {
         return input.color;
     }
-    let moving = fract(input.along_arrow - frame.vector_phase);
-    let highlight = 1.0 - smoothstep(0.0, 0.22, moving);
-    return vec4<f32>(mix(input.color.rgb, vec3<f32>(1.0), highlight * 0.7), input.color.a);
+    // Dashes drift along the shaft with the animation phase so the flow
+    // direction reads without any brightness pulse.
+    let along_pixels = input.along_arrow * input.shaft_pixels;
+    let cycle = fract((along_pixels - frame.vector_phase * VECTOR_DASH_PERIOD_PIXELS) / VECTOR_DASH_PERIOD_PIXELS);
+    if cycle > VECTOR_DASH_FILL {
+        discard;
+    }
+    return input.color;
 }

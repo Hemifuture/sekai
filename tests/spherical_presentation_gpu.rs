@@ -2,7 +2,6 @@ use sekai::gpu::spherical::{
     SphericalFieldRenderer, SphericalPaintCallback, SphericalRenderError, SphericalRenderMode,
     SphericalUploadCounters,
 };
-use sekai::world::spatial::audited_float_platform;
 use std::sync::{mpsc, Arc};
 
 use eframe::egui_wgpu::wgpu;
@@ -417,22 +416,22 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_vector_paused",
             &map_vector_paused,
-            "29fd87a2dc90573878cce1a153ab1e063503522fab089b7cc17d8262c2ba5834",
+            "f3a9af0477bd2f7995808e4ffd11a14245c7a7ad3929bef3c73dc599618d45d0",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "099bfd49a66b7cfa61f68b4062629aa8690f5e97e22fcdf260f036cec91fd76d",
+            "e25c9034ca3fa88559156679f6f616bb4c12a3921c16eaf17800920636203102",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "29f949974196078a46469406821018e1314f80752a3f6cda2b8b845daa4b9dab",
+            "20d57af575155feb51d79eb5b1985a487c7317070a6bbd33d9be101373c6e6f3",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "df8662becfd41718d20da22bf859de5fab0580ebbd63cb5edfe9f0670bd78ce5",
+            "f7506dfe49c31b9703335f977654155022bb7b0bf240073023e1cbe5ee1114ae",
         ),
         (
             "map_seam_fragments",
@@ -676,25 +675,21 @@ fn assert_vector_glyph_semantics(
     candidate: &SphericalPresentationCandidate,
     glyphs: &PreparedVectorGlyphs,
 ) {
-    const EXPECTED_SAMPLED_IDS: &[u32] = &[
-        0, 6, 18, 21, 28, 33, 52, 54, 71, 76, 100, 114, 119, 120, 127, 142, 149,
-    ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());
-    // The sampled ids derive from the generated world, so they are keyed to
-    // the audited float platform, not to the GPU adapter.
-    if audited_float_platform() {
-        assert_eq!(
-            glyphs
-                .sampled_cells()
-                .iter()
-                .map(|cell| cell.raw())
-                .collect::<Vec<_>>(),
-            EXPECTED_SAMPLED_IDS
-        );
-    } else {
-        eprintln!("exact identity checks skipped: unaudited float platform");
-    }
+    // A 162-cell test world puts about 71 px between cells on the reference
+    // canvas, above every density target, so the medium key samples every
+    // cell: the sampled ids are the full ascending cell range.
+    let cell_count = candidate.map().cell_count();
+    assert_eq!(glyphs.lod_key().denominator_for(cell_count), 1);
+    assert_eq!(
+        glyphs
+            .sampled_cells()
+            .iter()
+            .map(|cell| cell.raw())
+            .collect::<Vec<_>>(),
+        (0..cell_count as u32).collect::<Vec<_>>()
+    );
     assert!(glyphs.diagnostics().is_empty());
     let map_ids = glyphs
         .map()

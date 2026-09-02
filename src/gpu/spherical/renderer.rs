@@ -16,6 +16,9 @@ use crate::view::{
 };
 
 const MIN_BUFFER_BYTES: u64 = 16;
+/// Vertices the overlay shader expands per instance: the shaft quad plus the
+/// two chevron strokes of a vector glyph (edges stop after the quad).
+const OVERLAY_VERTICES_PER_INSTANCE: u32 = 18;
 const MAX_PALETTE_ENTRIES: usize = 65_536;
 
 #[cfg(test)]
@@ -1860,7 +1863,10 @@ impl SphericalFieldRenderer {
                     pass.set_pipeline(&self.map_overlay_pipeline);
                     pass.set_bind_group(0, &self.map_bind_group, &[]);
                     pass.set_vertex_buffer(0, self.map_overlay_buffer.slice(..));
-                    pass.draw(0..9, 0..self.map_overlay_instance_count);
+                    pass.draw(
+                        0..OVERLAY_VERTICES_PER_INSTANCE,
+                        0..self.map_overlay_instance_count,
+                    );
                 }
             }
             SphericalRenderMode::Globe => {
@@ -1900,7 +1906,10 @@ impl SphericalFieldRenderer {
                     pass.set_pipeline(&self.globe_overlay_pipeline);
                     pass.set_bind_group(0, &self.globe_bind_group, &[]);
                     pass.set_vertex_buffer(0, self.globe_overlay_buffer.slice(..));
-                    pass.draw(0..9, 0..self.globe_overlay_instance_count);
+                    pass.draw(
+                        0..OVERLAY_VERTICES_PER_INSTANCE,
+                        0..self.globe_overlay_instance_count,
+                    );
                 }
             }
         }
