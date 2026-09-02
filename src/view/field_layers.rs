@@ -12,12 +12,12 @@ use super::{
     built_in_palette, DiagnosticScope, DisplayPrepareError, DisplayRangeMode, DisplayRevision,
     DisplayRevisionClock, FieldCatalog, FieldView, GlobeCamera, LinearRgba, MapCamera,
     OwnedViewDiagnostic, PaletteId, PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind,
-    PreparedGlobeMesh, PreparedProjectedMap, ResolvedDisplayRange, SphericalPresentationSource,
-    SphericalProjection, SphericalProjectionError, SphericalProjectionKind, SphericalViewMode,
-    ViewDiagnosticSeverity,
+    PreparedGlobeMesh, PreparedProjectedMap, ProjectionPoint, ResolvedDisplayRange,
+    SphericalPresentationSource, SphericalProjection, SphericalProjectionError,
+    SphericalProjectionKind, SphericalViewMode, ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldPaletteHint, FieldValueType};
-use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
+use crate::world::spatial::{canonical_east_north_basis, UnitVector3};
 use crate::world::{CellId, EdgeId};
 
 #[cfg(test)]
@@ -108,23 +108,35 @@ impl GlyphLodKey {
     const MIN_ZOOM_BAND: i8 = -4;
     const MAX_ZOOM_BAND: i8 = 24;
 
-    /// Target on-screen distance between glyphs for one density setting.
+    /// Reference canvas height; the unit globe spans it at orthographic
+    /// scale 1.
+    pub const REFERENCE_CANVAS_HEIGHT_PIXELS: f64 = 720.0;
+
+    /// Lattice spacing exponent of one density setting: glyph anchors sit
+    /// `2^level` reference pixels apart at unit zoom, so every sparser setting
+    /// is a sub-lattice of the denser one.
     ///
-    /// The chevron head is at most 10 px and the dashed shaft up to one cell
-    /// spacing, so 20 px is the tightest spacing at which neighbouring
-    /// glyphs stay separable; the sparser settings step by about 1.5×.
-    pub const fn target_spacing_pixels(lod: VectorGlyphLod) -> f64 {
+    /// The chevron head is at most 10 px and the dashed shaft up to one
+    /// lattice spacing, so 16 px is the tightest spacing at which neighbouring
+    /// glyphs stay separable; the sparser settings double it.
+    pub const fn spacing_level(lod: VectorGlyphLod) -> i8 {
         match lod {
-            VectorGlyphLod::Low => 48.0,
-            VectorGlyphLod::Medium => 32.0,
-            VectorGlyphLod::High => 20.0,
+            VectorGlyphLod::Low => 6,
+            VectorGlyphLod::Medium => 5,
+            VectorGlyphLod::High => 4,
         }
+    }
+
+    /// Target on-screen distance between glyphs for one density setting.
+    pub fn target_spacing_pixels(lod: VectorGlyphLod) -> f64 {
+        2.0_f64.powi(i32::from(Self::spacing_level(lod)))
     }
 
     /// Resolves the density setting plus zoom into a stable band key.
     ///
-    /// Zoom can only add glyphs: each band halves the denominator, and a
-    /// power-of-two denominator keeps every coarser set a subset of the finer.
+    /// Zoom can only add glyphs: each band halves the lattice spacing, and a
+    /// power-of-two lattice keeps every coarser anchor set a subset of the
+    /// finer one.
     pub fn for_zoom(base: VectorGlyphLod, zoom: f64) -> Self {
         let zoom = if zoom.is_finite() && zoom > 0.0 {
             zoom
@@ -152,27 +164,10 @@ impl GlyphLodKey {
         self.zoom_band
     }
 
-    /// Returns the power-of-two sampling denominator for a surface of
-    /// `cell_count` cells: the smallest that meets the spacing target at the
-    /// lowest zoom of this band on the reference canvas.
-    pub fn denominator_for(self, cell_count: usize) -> u64 {
-        let zoom = 2.0_f64.powi(i32::from(self.zoom_band));
-        // An equirectangular map is twice as wide as high, so the cells across
-        // its width number about sqrt(2 N); the globe disc is treated alike.
-        let cells_across = (2.0 * cell_count.max(1) as f64).sqrt();
-        let cell_pixels = Self::REFERENCE_CANVAS_WIDTH_PIXELS * zoom / cells_across;
-        // Glyph spacing is cell spacing times sqrt(denominator).
-        let needed = (Self::target_spacing_pixels(self.lod) / cell_pixels).powi(2);
-        let mut denominator = 1_u64;
-        while (denominator as f64) < needed && denominator < (1_u64 << 40) {
-            denominator *= 2;
-        }
-        denominator
-    }
-
-    /// Tests one already-computed stable score against a resolved denominator.
-    pub const fn includes_score(denominator: u64, score: u64) -> bool {
-        score % denominator == 0
+    /// Lattice spacing measured in reference pixels of the unzoomed view: on
+    /// screen it is the density target at this band's lowest zoom.
+    pub fn lattice_reference_pixels(self) -> f64 {
+        2.0_f64.powi(i32::from(Self::spacing_level(self.lod)) - i32::from(self.zoom_band))
     }
 }
 
@@ -425,6 +420,12 @@ impl MapVectorGlyph {
         self.length
     }
 
+    /// Returns the lattice spacing this glyph was placed on (map units or
+    /// globe radians); shafts never exceed it.
+    pub const fn lattice_spacing(self) -> f32 {
+        self.cell_spacing
+    }
+
     /// Returns display length as a fraction of the active LOD cell spacing.
     pub fn length_fraction(self) -> f32 {
         self.length / self.cell_spacing
@@ -480,6 +481,12 @@ impl GlobeVectorGlyph {
         self.length
     }
 
+    /// Returns the lattice spacing this glyph was placed on (map units or
+    /// globe radians); shafts never exceed it.
+    pub const fn lattice_spacing(self) -> f32 {
+        self.cell_spacing
+    }
+
     /// Returns display length as a fraction of the active LOD cell spacing.
     pub fn length_fraction(self) -> f32 {
         self.length / self.cell_spacing
@@ -529,56 +536,80 @@ impl PreparedVectorGlyphs {
                 return Err(FieldLayerError::SelectedVectorCellOutOfRange { cell, cell_count });
             }
         }
-        let map_area = (map.bounds().max_x() - map.bounds().min_x())
-            * (map.bounds().max_y() - map.bounds().min_y());
-        let denominator = lod_key.denominator_for(cell_count);
-        let density_scale = denominator as f64 / cell_count as f64;
-        let map_spacing = (map_area * density_scale).sqrt() as f32;
-        let globe_spacing = (std::f64::consts::TAU * 2.0 * density_scale).sqrt() as f32;
+        let lattice = GlyphLattice::new(map, globe, lod_key);
+        let locator = LatticeCellLocator::new(globe.cell_centroids());
         let mut sampled_cells = Vec::new();
         let mut map_glyphs = Vec::new();
         let mut globe_glyphs = Vec::new();
         let mut diagnostics = Vec::new();
 
-        for (index, (&components, &magnitude)) in field
-            .components()
-            .iter()
-            .zip(field.magnitudes())
-            .enumerate()
-        {
-            let cell = CellId::from_raw(index as u32);
-            if selected_cell != Some(cell)
-                && !GlyphLodKey::includes_score(denominator, vector_glyph_score(source, cell))
-            {
-                continue;
-            }
+        for (origin, radial) in lattice.map_anchors(map.projection()) {
+            let cell = locator.locate(radial);
             sampled_cells.push(cell);
-            if components == [0.0, 0.0] {
-                continue;
-            }
-            let radial = globe.cell_centroids()[index];
-            let color_position = normalize_magnitude(field.display_range(), magnitude);
-            let mut pair = prepare_vector_glyph_pair(
+            let (glyph, diagnostic) = prepare_map_vector_glyph(
                 cell,
+                origin,
                 radial,
-                components,
-                magnitude,
-                color_position,
-                map_spacing,
-                globe_spacing,
+                field,
+                lattice.map_spacing,
                 map.projection(),
             );
-            if let Some(mut diagnostic) = pair.diagnostic.take() {
-                diagnostic.field_id = Some(field.field_id().clone());
-                diagnostics.push(diagnostic);
-            }
-            if let Some(glyph) = pair.map {
+            if let Some(glyph) = glyph {
                 map_glyphs.push(glyph);
             }
-            if let Some(glyph) = pair.globe {
+            if let Some(mut diagnostic) = diagnostic {
+                // Several anchors can sample the same degenerate cell; one
+                // diagnostic per cell is the useful signal.
+                if !diagnostics
+                    .iter()
+                    .any(|existing: &OwnedViewDiagnostic| existing.cell_id == Some(cell))
+                {
+                    diagnostic.field_id = Some(field.field_id().clone());
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+        for radial in GlyphLattice::globe_anchors(lattice.globe_spacing) {
+            let cell = locator.locate(radial);
+            sampled_cells.push(cell);
+            if let Some(glyph) =
+                prepare_globe_vector_glyph(cell, radial, field, lattice.globe_spacing)
+            {
                 globe_glyphs.push(glyph);
             }
         }
+        if let Some(cell) = selected_cell {
+            sampled_cells.push(cell);
+            let radial = globe.cell_centroids()[cell.raw() as usize];
+            if let Ok(origin) = map.projection().forward(radial) {
+                let (glyph, diagnostic) = prepare_map_vector_glyph(
+                    cell,
+                    [origin.x() as f32, origin.y() as f32],
+                    radial,
+                    field,
+                    lattice.map_spacing,
+                    map.projection(),
+                );
+                map_glyphs.extend(glyph);
+                if let Some(mut diagnostic) = diagnostic {
+                    if !diagnostics
+                        .iter()
+                        .any(|existing: &OwnedViewDiagnostic| existing.cell_id == Some(cell))
+                    {
+                        diagnostic.field_id = Some(field.field_id().clone());
+                        diagnostics.push(diagnostic);
+                    }
+                }
+            }
+            globe_glyphs.extend(prepare_globe_vector_glyph(
+                cell,
+                radial,
+                field,
+                lattice.globe_spacing,
+            ));
+        }
+        sampled_cells.sort_unstable();
+        sampled_cells.dedup();
 
         Ok(Self {
             source: source.clone(),
@@ -659,44 +690,8 @@ pub(crate) fn prepare_map_vector_glyphs(
     lod_key: GlyphLodKey,
 ) -> Result<(Vec<MapVectorGlyph>, Vec<OwnedViewDiagnostic>), FieldLayerError> {
     validate_map_vector_inputs(source, map, globe, field, selected_cell)?;
-    let cell_count = map.cell_count();
-    let map_area = (map.bounds().max_x() - map.bounds().min_x())
-        * (map.bounds().max_y() - map.bounds().min_y());
-    let denominator = lod_key.denominator_for(cell_count);
-    let map_spacing = (map_area * denominator as f64 / cell_count as f64).sqrt() as f32;
-    let mut glyphs = Vec::new();
-    let mut diagnostics = Vec::new();
-    for (index, (&components, &magnitude)) in field
-        .components()
-        .iter()
-        .zip(field.magnitudes())
-        .enumerate()
-    {
-        let cell = CellId::from_raw(index as u32);
-        if !vector_cell_is_sampled(source, cell, selected_cell, denominator)
-            || components == [0.0, 0.0]
-        {
-            continue;
-        }
-        let color_position = normalize_magnitude(field.display_range(), magnitude);
-        let (glyph, diagnostic) = prepare_map_vector_glyph(
-            cell,
-            globe.cell_centroids()[index],
-            components,
-            magnitude,
-            color_position,
-            map_spacing,
-            map.projection(),
-        );
-        if let Some(glyph) = glyph {
-            glyphs.push(glyph);
-        }
-        if let Some(mut diagnostic) = diagnostic {
-            diagnostic.field_id = Some(field.field_id().clone());
-            diagnostics.push(diagnostic);
-        }
-    }
-    Ok((glyphs, diagnostics))
+    let glyphs = PreparedVectorGlyphs::build(source, map, globe, field, selected_cell, lod_key)?;
+    Ok((glyphs.map.to_vec(), glyphs.diagnostics.to_vec()))
 }
 
 pub(crate) fn prepare_globe_vector_glyphs(
@@ -707,34 +702,26 @@ pub(crate) fn prepare_globe_vector_glyphs(
     lod_key: GlyphLodKey,
 ) -> Result<Vec<GlobeVectorGlyph>, FieldLayerError> {
     validate_globe_vector_inputs(source, globe, field, selected_cell)?;
-    let cell_count = globe.cell_count();
-    let denominator = lod_key.denominator_for(cell_count);
-    let globe_spacing =
-        (std::f64::consts::TAU * 2.0 * denominator as f64 / cell_count as f64).sqrt() as f32;
+    let globe_spacing = GlyphLattice::globe_spacing(globe, lod_key);
+    let locator = LatticeCellLocator::new(globe.cell_centroids());
     let mut glyphs = Vec::new();
-    for (index, (&components, &magnitude)) in field
-        .components()
-        .iter()
-        .zip(field.magnitudes())
-        .enumerate()
-    {
-        let cell = CellId::from_raw(index as u32);
-        if !vector_cell_is_sampled(source, cell, selected_cell, denominator)
-            || components == [0.0, 0.0]
-        {
-            continue;
-        }
-        let color_position = normalize_magnitude(field.display_range(), magnitude);
-        if let Some(glyph) = prepare_globe_vector_glyph(
+    for radial in GlyphLattice::globe_anchors(globe_spacing) {
+        let cell = locator.locate(radial);
+        glyphs.extend(prepare_globe_vector_glyph(
             cell,
-            globe.cell_centroids()[index],
-            components,
-            magnitude,
-            color_position,
+            radial,
+            field,
             globe_spacing,
-        ) {
-            glyphs.push(glyph);
-        }
+        ));
+    }
+    if let Some(cell) = selected_cell {
+        let radial = globe.cell_centroids()[cell.raw() as usize];
+        glyphs.extend(prepare_globe_vector_glyph(
+            cell,
+            radial,
+            field,
+            globe_spacing,
+        ));
     }
     Ok(glyphs)
 }
@@ -787,65 +774,187 @@ fn validate_globe_vector_inputs(
     Ok(())
 }
 
-fn vector_cell_is_sampled(
-    source: &SphericalPresentationSource,
-    cell: CellId,
-    selected_cell: Option<CellId>,
-    denominator: u64,
-) -> bool {
-    selected_cell == Some(cell)
-        || GlyphLodKey::includes_score(denominator, vector_glyph_score(source, cell))
-}
-
-struct PreparedVectorGlyphPair {
-    map: Option<MapVectorGlyph>,
-    globe: Option<GlobeVectorGlyph>,
-    diagnostic: Option<OwnedViewDiagnostic>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prepare_vector_glyph_pair(
-    cell: CellId,
-    radial: UnitVector3,
-    components: [f32; 2],
-    magnitude: f32,
-    color_position: f32,
+/// Regular glyph anchors: an axis-aligned lattice of the projection plane for
+/// the map and rings of equal arc spacing along parallels for the globe.
+///
+/// Anchors are lattice points, not cell centroids, so on screen the glyphs
+/// sit on an even grid whatever the cell tessellation; each anchor samples
+/// the nearest authoritative cell. Spacing never drops below the mean cell
+/// spacing, which bounds the anchor count by the cell count at any zoom.
+struct GlyphLattice {
     map_spacing: f32,
+    map_min: [f64; 2],
+    map_max: [f64; 2],
     globe_spacing: f32,
-    projection: SphericalProjection,
-) -> PreparedVectorGlyphPair {
-    let globe = prepare_globe_vector_glyph(
-        cell,
-        radial,
-        components,
-        magnitude,
-        color_position,
-        globe_spacing,
-    );
-    let (map, diagnostic) = prepare_map_vector_glyph(
-        cell,
-        radial,
-        components,
-        magnitude,
-        color_position,
-        map_spacing,
-        projection,
-    );
-    PreparedVectorGlyphPair {
-        map,
-        globe,
-        diagnostic,
+}
+
+impl GlyphLattice {
+    fn new(map: &PreparedProjectedMap, globe: &PreparedGlobeMesh, lod_key: GlyphLodKey) -> Self {
+        let cell_count = globe.cell_count().max(1) as f64;
+        let reference_pixels = lod_key.lattice_reference_pixels();
+        let width = map.bounds().max_x() - map.bounds().min_x();
+        let height = map.bounds().max_y() - map.bounds().min_y();
+        let cell_map_spacing = (width * height / cell_count).sqrt();
+        let map_spacing = (reference_pixels * width / GlyphLodKey::REFERENCE_CANVAS_WIDTH_PIXELS)
+            .max(cell_map_spacing);
+        Self {
+            map_spacing: map_spacing as f32,
+            map_min: [map.bounds().min_x(), map.bounds().min_y()],
+            map_max: [map.bounds().max_x(), map.bounds().max_y()],
+            globe_spacing: Self::globe_spacing(globe, lod_key),
+        }
+    }
+
+    /// Arc spacing (radians) between globe anchors for this density band.
+    fn globe_spacing(globe: &PreparedGlobeMesh, lod_key: GlyphLodKey) -> f32 {
+        let cell_count = globe.cell_count().max(1) as f64;
+        let cell_globe_spacing = (2.0 * std::f64::consts::TAU / cell_count).sqrt();
+        (lod_key.lattice_reference_pixels() * 2.0 / GlyphLodKey::REFERENCE_CANVAS_HEIGHT_PIXELS)
+            .max(cell_globe_spacing) as f32
+    }
+
+    /// Lattice points inside the projection outline, anchored at the
+    /// projection origin so finer bands keep every coarser point.
+    fn map_anchors(&self, projection: SphericalProjection) -> Vec<([f32; 2], UnitVector3)> {
+        let spacing = f64::from(self.map_spacing);
+        let mut anchors = Vec::new();
+        let first_column = (self.map_min[0] / spacing).ceil() as i64;
+        let last_column = (self.map_max[0] / spacing).floor() as i64;
+        let first_row = (self.map_min[1] / spacing).ceil() as i64;
+        let last_row = (self.map_max[1] / spacing).floor() as i64;
+        for row in first_row..=last_row {
+            let y = row as f64 * spacing;
+            for column in first_column..=last_column {
+                let x = column as f64 * spacing;
+                let Ok(radial) = projection.inverse(ProjectionPoint::new(x, y)) else {
+                    continue;
+                };
+                anchors.push(([x as f32, y as f32], radial));
+            }
+        }
+        anchors
+    }
+
+    /// Parallels every `spacing` radians (poles excluded), each carrying
+    /// meridians spaced by the same arc so the rings read evenly.
+    fn globe_anchors(globe_spacing: f32) -> Vec<UnitVector3> {
+        let spacing = f64::from(globe_spacing);
+        let rows = (std::f64::consts::PI / spacing).round().max(2.0) as i64;
+        let mut anchors = Vec::new();
+        for row in 1..rows {
+            let latitude =
+                -std::f64::consts::FRAC_PI_2 + row as f64 * std::f64::consts::PI / rows as f64;
+            let ring = latitude.cos();
+            let columns = ((std::f64::consts::TAU * ring) / spacing).round().max(1.0) as i64;
+            for column in 0..columns {
+                let longitude = column as f64 * std::f64::consts::TAU / columns as f64;
+                if let Ok(radial) = UnitVector3::new(
+                    ring * longitude.cos(),
+                    ring * longitude.sin(),
+                    latitude.sin(),
+                ) {
+                    anchors.push(radial);
+                }
+            }
+        }
+        anchors
+    }
+}
+
+/// Latitude/longitude bucket index over cell centroids for nearest-site
+/// lookup of lattice anchors: build once per glyph rebuild, then each query
+/// scans only the neighbouring buckets.
+struct LatticeCellLocator<'a> {
+    centroids: &'a [UnitVector3],
+    rows: usize,
+    columns: usize,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl<'a> LatticeCellLocator<'a> {
+    fn new(centroids: &'a [UnitVector3]) -> Self {
+        let count = centroids.len().max(1) as f64;
+        let angle = (2.0 * std::f64::consts::TAU / count).sqrt();
+        let rows = ((std::f64::consts::PI / angle).ceil() as usize).max(1);
+        let columns = ((std::f64::consts::TAU / angle).ceil() as usize).max(1);
+        let mut buckets = vec![Vec::new(); rows * columns];
+        for (index, centroid) in centroids.iter().enumerate() {
+            let (row, column) = Self::bucket_of(*centroid, rows, columns);
+            buckets[row * columns + column].push(index as u32);
+        }
+        Self {
+            centroids,
+            rows,
+            columns,
+            buckets,
+        }
+    }
+
+    fn bucket_of(direction: UnitVector3, rows: usize, columns: usize) -> (usize, usize) {
+        let [x, y, z] = direction.components();
+        let latitude = z.clamp(-1.0, 1.0).asin();
+        let longitude = y.atan2(x);
+        let row_position = (latitude + std::f64::consts::FRAC_PI_2) / std::f64::consts::PI;
+        let column_position = (longitude + std::f64::consts::PI) / std::f64::consts::TAU;
+        let row = ((row_position * rows as f64) as usize).min(rows - 1);
+        let column = ((column_position * columns as f64) as usize).min(columns - 1);
+        (row, column)
+    }
+
+    /// Nearest centroid by maximum dot product over the surrounding buckets
+    /// (two rows either side, columns widened by the parallel's cosine);
+    /// falls back to a full scan if that neighbourhood is empty.
+    fn locate(&self, direction: UnitVector3) -> CellId {
+        let (row, column) = Self::bucket_of(direction, self.rows, self.columns);
+        let latitude = direction.components()[2].clamp(-1.0, 1.0).asin();
+        let reach = ((2.0 / latitude.cos().max(1.0e-3)).ceil() as i64).min(self.columns as i64 / 2);
+        let mut best: Option<(u32, f64)> = None;
+        let row_start = row.saturating_sub(2);
+        let row_end = (row + 2).min(self.rows - 1);
+        for bucket_row in row_start..=row_end {
+            for delta in -reach..=reach {
+                let bucket_column =
+                    (column as i64 + delta).rem_euclid(self.columns as i64) as usize;
+                for &index in &self.buckets[bucket_row * self.columns + bucket_column] {
+                    let dot = self.centroids[index as usize].dot(direction);
+                    // Ties (anchors on a symmetry plane of the tessellation)
+                    // go to the lower cell id, like discrete picking.
+                    if best.is_none_or(|(best_index, best_dot)| {
+                        dot > best_dot || (dot == best_dot && index < best_index)
+                    }) {
+                        best = Some((index, dot));
+                    }
+                }
+            }
+        }
+        let index = match best {
+            Some((index, _)) => index,
+            None => self
+                .centroids
+                .iter()
+                .enumerate()
+                .map(|(index, centroid)| (index as u32, centroid.dot(direction)))
+                .max_by(|left, right| left.1.total_cmp(&right.1).then(right.0.cmp(&left.0)))
+                .map(|(index, _)| index)
+                .unwrap_or(0),
+        };
+        CellId::from_raw(index)
     }
 }
 
 fn prepare_globe_vector_glyph(
     cell: CellId,
     radial: UnitVector3,
-    components: [f32; 2],
-    magnitude: f32,
-    color_position: f32,
+    field: &PreparedVectorField,
     globe_spacing: f32,
 ) -> Option<GlobeVectorGlyph> {
+    let index = cell.raw() as usize;
+    let components = field.components()[index];
+    if components == [0.0, 0.0] {
+        return None;
+    }
+    let magnitude = field.magnitudes()[index];
+    let color_position = normalize_magnitude(field.display_range(), magnitude);
     let (east, north) = canonical_east_north_basis(radial);
     let tangent = [
         east[0] * f64::from(components[0]) + north[0] * f64::from(components[1]),
@@ -870,36 +979,38 @@ fn prepare_globe_vector_glyph(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_map_vector_glyph(
     cell: CellId,
+    origin: [f32; 2],
     radial: UnitVector3,
-    components: [f32; 2],
-    magnitude: f32,
-    color_position: f32,
+    field: &PreparedVectorField,
     map_spacing: f32,
     projection: SphericalProjection,
 ) -> (Option<MapVectorGlyph>, Option<OwnedViewDiagnostic>) {
+    let index = cell.raw() as usize;
+    let components = field.components()[index];
+    if components == [0.0, 0.0] {
+        return (None, None);
+    }
+    let magnitude = field.magnitudes()[index];
+    let color_position = normalize_magnitude(field.display_range(), magnitude);
     let length_fraction = 0.35 + 0.65 * color_position;
     let mapped =
         projection.map_local_vector(radial, [f64::from(components[0]), f64::from(components[1])]);
     match mapped {
-        Ok(Some(direction)) => match projection.forward(radial) {
-            Ok(origin) => (
-                Some(MapVectorGlyph {
-                    cell,
-                    origin: [origin.x() as f32, origin.y() as f32],
-                    direction: [direction.x() as f32, direction.y() as f32],
-                    components,
-                    magnitude,
-                    color_position,
-                    length: map_spacing * length_fraction,
-                    cell_spacing: map_spacing,
-                }),
-                None,
-            ),
-            Err(_) => (None, None),
-        },
+        Ok(Some(direction)) => (
+            Some(MapVectorGlyph {
+                cell,
+                origin,
+                direction: [direction.x() as f32, direction.y() as f32],
+                components,
+                magnitude,
+                color_position,
+                length: map_spacing * length_fraction,
+                cell_spacing: map_spacing,
+            }),
+            None,
+        ),
         Err(SphericalProjectionError::ProjectionJacobianDegenerate) => (
             None,
             Some(OwnedViewDiagnostic {
@@ -923,22 +1034,6 @@ fn normalize_magnitude(range: ResolvedDisplayRange, magnitude: f32) -> f32 {
     } else {
         ((magnitude - min) / (max - min)).clamp(0.0, 1.0)
     }
-}
-
-fn vector_glyph_score(source: &SphericalPresentationSource, cell: CellId) -> u64 {
-    let mut hasher = blake3::Hasher::new_keyed(source.build_result_hash().as_bytes());
-    hasher.update(b"sekai.spherical-vector-glyph-lod.v1\0");
-    hasher.update(&source.root_seed().raw().to_le_bytes());
-    let surface_ref: SurfaceRef = source.surface_ref();
-    hasher.update(&surface_ref.fingerprint());
-    hasher.update(&source.graph_contract_version().to_le_bytes());
-    hasher.update(&cell.raw().to_le_bytes());
-    let bytes = hasher.finalize();
-    u64::from_le_bytes(
-        bytes.as_bytes()[..8]
-            .try_into()
-            .expect("BLAKE3 prefix is eight bytes"),
-    )
 }
 
 /// The optional non-fill payload for one spherical presentation packet.
@@ -2379,24 +2474,67 @@ mod vector_glyph_tests {
     }
 
     #[test]
+    fn lattice_cell_locator_matches_the_brute_force_nearest_site() {
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: 642,
+        })
+        .unwrap();
+        let centroids = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.centroid)
+            .collect::<Vec<_>>();
+        let locator = super::LatticeCellLocator::new(&centroids);
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..4_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let z = (state >> 11) as f64 / (1_u64 << 53) as f64 * 2.0 - 1.0;
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let longitude = (state >> 11) as f64 / (1_u64 << 53) as f64 * std::f64::consts::TAU;
+            let ring = (1.0 - z * z).max(0.0).sqrt();
+            let direction =
+                UnitVector3::new(ring * longitude.cos(), ring * longitude.sin(), z).unwrap();
+            let expected = centroids
+                .iter()
+                .enumerate()
+                .map(|(index, centroid)| (index, centroid.dot(direction)))
+                .max_by(|left, right| left.1.total_cmp(&right.1).then(right.0.cmp(&left.0)))
+                .map(|(index, _)| index)
+                .unwrap();
+            assert_eq!(locator.locate(direction).raw() as usize, expected);
+        }
+    }
+
+    #[test]
     fn degenerate_map_jacobian_omits_only_map_glyph_and_emits_display_diagnostic() {
         let radial = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
         let projection =
             SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0).unwrap();
-        let prepared = super::prepare_vector_glyph_pair(
-            CellId::from_raw(7),
-            radial,
-            [3.0, 4.0],
-            5.0,
-            0.5,
-            0.25,
-            0.5,
-            projection,
-        );
+        let mut components = vec![[1.0_f32, 0.0]; 8];
+        components[7] = [3.0, 4.0];
+        let magnitudes = components
+            .iter()
+            .map(|value| value[0].hypot(value[1]))
+            .collect();
+        let field = PreparedVectorField {
+            field_id: FieldId::new("test.spherical", "vectors", 1).unwrap(),
+            components,
+            magnitudes,
+            display_range: ResolvedDisplayRange::new(0.0, 10.0).unwrap(),
+        };
+        let cell = CellId::from_raw(7);
+        let (map, diagnostic) =
+            super::prepare_map_vector_glyph(cell, [0.0, 0.0], radial, &field, 0.25, projection);
+        let globe = super::prepare_globe_vector_glyph(cell, radial, &field, 0.5);
 
-        assert!(prepared.map.is_none());
-        assert!(prepared.globe.is_some());
-        let diagnostic = prepared.diagnostic.unwrap();
+        assert!(map.is_none());
+        assert!(globe.is_some());
+        let diagnostic = diagnostic.unwrap();
         assert_eq!(diagnostic.cell_id, Some(CellId::from_raw(7)));
         assert_eq!(
             diagnostic.code,

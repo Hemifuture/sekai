@@ -129,46 +129,37 @@ fn vector_display_speed_rejects_non_finite_and_out_of_range_values() {
 }
 
 #[test]
-fn glyph_lod_denominators_meet_the_spacing_target_and_nest_by_density() {
-    // Draft and Standard authoritative cell counts at zoom 1.
-    for cell_count in [20_252_usize, 79_212] {
-        let cells_across = (2.0 * cell_count as f64).sqrt();
-        let cell_pixels = GlyphLodKey::REFERENCE_CANVAS_WIDTH_PIXELS / cells_across;
-        let mut previous = u64::MAX;
-        for lod in [
-            VectorGlyphLod::Low,
-            VectorGlyphLod::Medium,
-            VectorGlyphLod::High,
-        ] {
-            let denominator = GlyphLodKey::for_zoom(lod, 1.0).denominator_for(cell_count);
-            assert!(
-                denominator.is_power_of_two(),
-                "{lod:?} denominator {denominator}"
-            );
-            let spacing = cell_pixels * (denominator as f64).sqrt();
-            assert!(
-                spacing >= GlyphLodKey::target_spacing_pixels(lod),
-                "{lod:?} at {cell_count} cells spaces glyphs {spacing} px"
-            );
-            assert!(
-                spacing < 2.0 * GlyphLodKey::target_spacing_pixels(lod),
-                "{lod:?} at {cell_count} cells overshoots the target: {spacing} px"
-            );
-            assert!(
-                denominator <= previous,
-                "denser settings must not sample fewer cells"
-            );
-            previous = denominator;
-        }
+fn glyph_lod_spacings_are_powers_of_two_that_nest_by_density() {
+    let mut previous = f64::INFINITY;
+    for lod in [
+        VectorGlyphLod::Low,
+        VectorGlyphLod::Medium,
+        VectorGlyphLod::High,
+    ] {
+        let spacing = GlyphLodKey::target_spacing_pixels(lod);
+        assert_eq!(spacing.log2().fract(), 0.0, "{lod:?} spacing {spacing} px");
+        assert!(
+            spacing < previous,
+            "denser settings must place glyphs closer"
+        );
+        assert_eq!(
+            GlyphLodKey::for_zoom(lod, 1.0).lattice_reference_pixels(),
+            spacing
+        );
+        previous = spacing;
     }
-
-    for score in 0_u64..256 {
-        let low = GlyphLodKey::includes_score(256, score);
-        let medium = GlyphLodKey::includes_score(64, score);
-        let high = GlyphLodKey::includes_score(32, score);
-        assert!(!low || medium, "low score {score} must remain in medium");
-        assert!(!medium || high, "medium score {score} must remain in high");
-    }
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::High),
+        16.0
+    );
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::Medium),
+        32.0
+    );
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::Low),
+        64.0
+    );
 }
 
 #[test]
@@ -202,19 +193,17 @@ fn zoom_lod_changes_only_at_power_of_two_bands_and_only_adds_glyphs() {
         GlyphLodKey::for_zoom(VectorGlyphLod::High, 1.0)
     );
 
-    let cell_count = 20_252;
-    let mut previous = u64::MAX;
+    let mut previous = f64::INFINITY;
     for band_zoom in [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0] {
-        let denominator =
-            GlyphLodKey::for_zoom(VectorGlyphLod::Medium, band_zoom).denominator_for(cell_count);
-        assert!(denominator <= previous, "zoom {band_zoom} removed glyphs");
-        assert!(denominator >= 1);
-        previous = denominator;
+        let spacing =
+            GlyphLodKey::for_zoom(VectorGlyphLod::Medium, band_zoom).lattice_reference_pixels();
+        assert!(
+            spacing < previous,
+            "zoom {band_zoom} must halve the lattice spacing"
+        );
+        assert_eq!(spacing.log2().fract(), 0.0);
+        previous = spacing;
     }
-    assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 4096.0).denominator_for(cell_count),
-        1
-    );
 }
 
 #[test]
