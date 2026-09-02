@@ -23,7 +23,58 @@ fn near_surface_wind_zonal_structure() {
         "[wind] non-zonal variance fraction = {:.4}",
         metric.value().unwrap_or(f64::NAN)
     );
+    for name in [
+        "precipitation-global-mean-mm-day",
+        "evaporation-global-mean-mm-day",
+        "toa-net-radiation-global-mean-w-m2",
+        "orographic-rain-shadow-leeward-drying",
+        "orographic-uplift-enrichment-ratio",
+        "orographic-precipitation-response",
+    ] {
+        let value = bundle
+            .climate_quality()
+            .metrics()
+            .iter()
+            .find(|metric| metric.id().name() == name)
+            .and_then(|metric| metric.value())
+            .unwrap_or(f64::NAN);
+        eprintln!("[wind] {name} = {value:.4}");
+    }
 
+    {
+        let fields = bundle.climate().fields();
+        let land_mask = bundle
+            .surface_formation()
+            .terrain_fields()
+            .land_ocean()
+            .raw_values();
+        let mut sums = [[0.0_f64; 3]; 2];
+        for (index, cell) in fixture.surface.cells().iter().enumerate() {
+            let area = cell.area.get();
+            let evaporation = fields.monthly_evaporation_mm_day().values()[index]
+                .iter()
+                .map(|value| f64::from(*value))
+                .sum::<f64>()
+                / 12.0;
+            let precipitation = fields.monthly_precipitation_mm_day().values()[index]
+                .iter()
+                .map(|value| f64::from(*value))
+                .sum::<f64>()
+                / 12.0;
+            let bucket = usize::from(land_mask[index] == 1);
+            sums[bucket][0] += area;
+            sums[bucket][1] += area * evaporation;
+            sums[bucket][2] += area * precipitation;
+        }
+        for (name, [area, evaporation, precipitation]) in [("ocean", sums[0]), ("land", sums[1])] {
+            eprintln!(
+                "[wind] {name}: area share {:.3}, E {:.3} mm/day, P {:.3} mm/day",
+                area / (sums[0][0] + sums[1][0]),
+                evaporation / area,
+                precipitation / area
+            );
+        }
+    }
     let wind = bundle.climate().fields().near_surface_wind_m_s().values();
     let land = bundle
         .surface_formation()
