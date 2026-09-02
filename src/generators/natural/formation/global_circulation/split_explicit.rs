@@ -46,6 +46,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
         terrain_floor_m: &'grid [f32],
         land_evapotranspiration_fraction: &'grid [f32],
+        sea_ice_fraction: &'grid [f32],
         maximum_fast_step_seconds: f64,
     ) -> Result<Self, ClimateIntegratorError> {
         let mut integrator = Self::new(grid, maximum_fast_step_seconds)?;
@@ -54,6 +55,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             terrain_gradient_m_per_m,
             terrain_floor_m,
             land_evapotranspiration_fraction,
+            sea_ice_fraction,
         );
         Ok(integrator)
     }

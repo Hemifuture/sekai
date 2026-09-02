@@ -15,10 +15,11 @@ use crate::world::natural::{
     bulk_surface_evaporation_kg_m2_s, large_scale_condensation_kg_m2_s,
     lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
     neutral_surface_air_specific_humidity_kg_kg, p4_thermodynamic_constants_fingerprint,
-    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
-    CLIMATE_MONTH_COUNT, EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
-    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
-    STANDARD_GRAVITY_M_S2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    sea_ice_heat_exchange_fraction, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
+    ForcingError, PlanetForcing, CLIMATE_MONTH_COUNT, EARTH_ROTATION_RATE_RAD_S,
+    GLOBAL_CIRCULATION_FAST_CFL_TARGET, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, STANDARD_GRAVITY_M_S2,
+    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 const SEAWATER_THERMAL_EXPANSION_K_INV: f64 = 2.0e-4;
@@ -95,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v12\0");
+    hasher.update(b"sekai.global-circulation-equations.v13\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -921,6 +922,9 @@ pub struct LayeredTendencySystem<'grid> {
     /// Share of each cell's precipitation that land evaporates back (steady
     /// water balance with the P5 runoff partition); `None` keeps land dry.
     land_evapotranspiration_fraction: Option<&'grid [f32]>,
+    /// Sea-ice prior (0 or 1) that insulates the air–mixed-layer heat
+    /// exchange (design 2026-09-03 A4 §4).
+    sea_ice_fraction: Option<&'grid [f32]>,
     forcing_prevalidated: bool,
 }
 
@@ -960,6 +964,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             terrain_gradient_m_per_m: None,
             terrain_floor_m: None,
             land_evapotranspiration_fraction: None,
+            sea_ice_fraction: None,
             forcing_prevalidated: false,
         }
     }
@@ -971,12 +976,14 @@ impl<'grid> LayeredTendencySystem<'grid> {
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
         terrain_floor_m: &'grid [f32],
         land_evapotranspiration_fraction: &'grid [f32],
+        sea_ice_fraction: &'grid [f32],
     ) -> Self {
         Self {
             grid,
             terrain_gradient_m_per_m: Some(terrain_gradient_m_per_m),
             terrain_floor_m: Some(terrain_floor_m),
             land_evapotranspiration_fraction: Some(land_evapotranspiration_fraction),
+            sea_ice_fraction: Some(sea_ice_fraction),
             forcing_prevalidated: true,
         }
     }
@@ -2349,6 +2356,18 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 if water_scale == 0.0 {
                     continue;
                 }
+                // Milestone A4 (§4): sea ice insulates the air–mixed-layer heat
+                // exchange down to its conductive fraction; momentum is untouched.
+                let heat_water_scale = if first_role == ClimateLayerRole::LowerAtmosphere
+                    && second_role == ClimateLayerRole::OceanMixedLayer
+                {
+                    let ice = self
+                        .sea_ice_fraction
+                        .map_or(0.0, |ice| f64::from(ice[cell]));
+                    water_scale * (1.0 - ice * (1.0 - sea_ice_heat_exchange_fraction()))
+                } else {
+                    water_scale
+                };
                 let area = self.grid.cells()[cell].area_m2();
                 if include_heat_exchange {
                     let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
@@ -2364,8 +2383,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         heat_timescale,
                     )?;
                     let pair_tendencies = [
-                        water_scale * heat.first_tendency_k_s,
-                        water_scale * heat.second_tendency_k_s,
+                        heat_water_scale * heat.first_tendency_k_s,
+                        heat_water_scale * heat.second_tendency_k_s,
                     ];
                     let heat_scale = subsurface_pair_exchange_scale_for_step(
                         [first_role, second_role],
@@ -3586,18 +3605,23 @@ mod tests {
             .unwrap();
         let flat_floor = vec![0.0_f32; grid.cell_count()];
         let dry_land = vec![0.0_f32; grid.cell_count()];
-        let supplied =
-            LayeredTendencySystem::with_terrain(&grid, &terrain_gradient, &flat_floor, &dry_land)
-                .evaluate_thermodynamic_moisture_with_workspace_for_step(
-                    &state,
-                    &forcing,
-                    &permeability,
-                    0,
-                    7_200.0,
-                    &cancellation,
-                    &mut workspace,
-                )
-                .unwrap();
+        let supplied = LayeredTendencySystem::with_terrain(
+            &grid,
+            &terrain_gradient,
+            &flat_floor,
+            &dry_land,
+            &dry_land,
+        )
+        .evaluate_thermodynamic_moisture_with_workspace_for_step(
+            &state,
+            &forcing,
+            &permeability,
+            0,
+            7_200.0,
+            &cancellation,
+            &mut workspace,
+        )
+        .unwrap();
 
         for role in state.active_roles() {
             assert_eq!(

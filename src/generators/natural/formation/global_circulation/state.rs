@@ -115,18 +115,42 @@ impl LayeredClimateState {
         forcing: &PlanetForcing,
         month: usize,
     ) -> Result<Self, LayeredStateError> {
-        Self::from_forcing_impl(grid, layout, forcing, Some(month), None)
+        Self::from_forcing_impl(grid, layout, forcing, Some(month), None, None)
     }
 
     /// Initializes a periodic climatology from the annual mean boundary
     /// state so no arbitrary calendar phase receives a dynamical head start.
+    ///
+    /// `annual_initial_temperature_c`, when given, replaces the mean of the
+    /// monthly targets as the annual surface temperature of every role: the
+    /// transport-aware energy-balance state of milestone A4 §4.2.
     pub(crate) fn from_annual_mean_forcing_cancellable(
         grid: &CubedSphereGrid,
         layout: &ClimateLayerLayout,
         forcing: &PlanetForcing,
+        annual_initial_temperature_c: Option<&[f32]>,
         cancellation: &BuildCancellation,
     ) -> Result<Self, LayeredStateError> {
-        Self::from_forcing_impl(grid, layout, forcing, None, Some(cancellation))
+        if let Some(values) = annual_initial_temperature_c {
+            if values.len() != grid.cell_count() {
+                return Err(LayeredStateError::InvalidInput {
+                    role: "annual_initial_temperature_c",
+                    reason: format!(
+                        "expected {} cells, found {}",
+                        grid.cell_count(),
+                        values.len()
+                    ),
+                });
+            }
+        }
+        Self::from_forcing_impl(
+            grid,
+            layout,
+            forcing,
+            None,
+            annual_initial_temperature_c,
+            Some(cancellation),
+        )
     }
 
     fn from_forcing_impl(
@@ -134,6 +158,7 @@ impl LayeredClimateState {
         layout: &ClimateLayerLayout,
         forcing: &PlanetForcing,
         month: Option<usize>,
+        annual_initial_temperature_c: Option<&[f32]>,
         cancellation: Option<&BuildCancellation>,
     ) -> Result<Self, LayeredStateError> {
         check_state_cancelled(cancellation)?;
@@ -178,12 +203,17 @@ impl LayeredClimateState {
             let mut temperature_c = Vec::with_capacity(grid.cell_count());
             for cell in 0..grid.cell_count() {
                 poll_state_cancelled(cell, cancellation)?;
-                let value = forcing_initial_temperature(
-                    &forcing.equilibrium_air_temperature_c()[cell],
-                    &forcing.equilibrium_surface_temperature_c()[cell],
-                    month,
-                    *role,
-                );
+                let value = match (month, annual_initial_temperature_c) {
+                    (None, Some(annual)) => {
+                        role_reference_temperature_c(*role, annual[cell], annual[cell])
+                    }
+                    _ => forcing_initial_temperature(
+                        &forcing.equilibrium_air_temperature_c()[cell],
+                        &forcing.equilibrium_surface_temperature_c()[cell],
+                        month,
+                        *role,
+                    ),
+                };
                 temperature_c.push(value);
             }
             active_layers.push(ActiveLayerState {
@@ -204,18 +234,26 @@ impl LayeredClimateState {
                 &forcing.equilibrium_air_temperature_c()[cell],
                 &forcing.equilibrium_specific_humidity()[cell],
                 month,
+                annual_initial_temperature_c.map(|annual| annual[cell]),
             );
             specific_humidity.push(humidity);
             if let Some(upper) = &mut upper_specific_humidity {
                 upper.push(UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION * humidity);
             }
             if let Some(deep) = &mut deep_ocean_temperature_c {
-                deep.push(forcing_initial_temperature(
-                    &forcing.equilibrium_air_temperature_c()[cell],
-                    &forcing.equilibrium_surface_temperature_c()[cell],
-                    month,
-                    ClimateLayerRole::DeepOceanReservoir,
-                ));
+                deep.push(match (month, annual_initial_temperature_c) {
+                    (None, Some(annual)) => role_reference_temperature_c(
+                        ClimateLayerRole::DeepOceanReservoir,
+                        annual[cell],
+                        annual[cell],
+                    ),
+                    _ => forcing_initial_temperature(
+                        &forcing.equilibrium_air_temperature_c()[cell],
+                        &forcing.equilibrium_surface_temperature_c()[cell],
+                        month,
+                        ClimateLayerRole::DeepOceanReservoir,
+                    ),
+                });
             }
         }
         let state = Self {
@@ -479,6 +517,7 @@ fn forcing_initial_humidity(
     air_temperature_c: &[f32; CLIMATE_MONTH_COUNT],
     specific_humidity: &[f32; CLIMATE_MONTH_COUNT],
     month: Option<usize>,
+    annual_temperature_override_c: Option<f32>,
 ) -> f32 {
     if let Some(month) = month {
         return specific_humidity[month];
@@ -496,12 +535,14 @@ fn forcing_initial_humidity(
         })
         .sum::<f64>()
         / CLIMATE_MONTH_COUNT as f64;
-    let annual_mean_temperature = forcing_initial_temperature(
-        air_temperature_c,
-        air_temperature_c,
-        None,
-        ClimateLayerRole::LowerAtmosphere,
-    );
+    let annual_mean_temperature = annual_temperature_override_c.unwrap_or_else(|| {
+        forcing_initial_temperature(
+            air_temperature_c,
+            air_temperature_c,
+            None,
+            ClimateLayerRole::LowerAtmosphere,
+        )
+    });
     (relative_humidity * saturation_specific_humidity_kg_kg(f64::from(annual_mean_temperature)))
         as f32
 }

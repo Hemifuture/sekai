@@ -234,6 +234,46 @@ pub const P4_HIGHLAND_ALBEDO_RAMP_ONSET_M: f64 = 1_500.0;
 /// Together with `P4_HIGHLAND_ALBEDO_RAMP_ONSET_M`, it reaches full
 /// brightening at 5 km. The limitations documented on the onset apply here.
 pub const P4_HIGHLAND_ALBEDO_RAMP_SPAN_M: f64 = 3_500.0;
+/// Annual-mean broadband albedo of the P4 sea-ice prior (milestone A4 §4).
+///
+/// Perovich, Grenfell, Light & Hobbs (2002), DOI `10.1029/2000JC000438`,
+/// measured multiyear Arctic ice from `0.80–0.85` (cold, snow covered) down
+/// to `0.40–0.50` (melt ponds); `0.60` is the midpoint of that seasonal
+/// envelope because P4 resolves neither snow on ice nor melt ponds.
+pub const P4_SEA_ICE_SURFACE_ALBEDO: f64 = 0.60;
+/// Thermal conductivity of sea ice, Untersteiner (1961) *Arch. Met. Geophys.
+/// Bioklim. A* 12, 151–182.
+pub const SEA_ICE_THERMAL_CONDUCTIVITY_W_M_K: f64 = 2.03;
+/// Equilibrium thickness of perennial sea ice, Maykut & Untersteiner (1971),
+/// DOI `10.1029/JC076i006p01550`.
+pub const SEA_ICE_EQUILIBRIUM_THICKNESS_M: f64 = 3.0;
+/// Neutral bulk sensible-heat transfer coefficient over open water, Large &
+/// Pond (1982), DOI `10.1175/1520-0485(1982)012<0464:SALHFM>2.0.CO;2`.
+pub const OPEN_WATER_SENSIBLE_HEAT_TRANSFER_COEFFICIENT: f64 = 1.2e-3;
+/// Reference marine near-surface wind speed for the open-water exchange
+/// coefficient (global-mean 10 m ocean wind, order 6 m/s).
+pub const OPEN_WATER_REFERENCE_WIND_SPEED_M_S: f64 = 6.0;
+
+/// Fraction of the open-water air–sea heat exchange rate that survives under
+/// equilibrium sea ice (milestone A4 §4): conductive `k / h` over the bulk
+/// sensible coefficient `rho c_p C_H U`, about `0.68 / 8.9 = 0.076`.
+pub fn sea_ice_heat_exchange_fraction() -> f64 {
+    let conductive = SEA_ICE_THERMAL_CONDUCTIVITY_W_M_K / SEA_ICE_EQUILIBRIUM_THICKNESS_M;
+    let open_water = P4_REFERENCE_AIR_DENSITY_KG_M3
+        * P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+        * OPEN_WATER_SENSIBLE_HEAT_TRANSFER_COEFFICIENT
+        * OPEN_WATER_REFERENCE_WIND_SPEED_M_S;
+    conductive / open_water
+}
+/// Meridional heat-transport diffusion coefficient of the energy-balance
+/// climate model on the unit sphere, `W m-2 K-1` (milestone A4 §4.2).
+///
+/// North, Cahalan & Coakley (1981), DOI `10.1029/RG019i001p00091`, fit Earth's
+/// annual zonal temperature with `D = 0.649 W m-2 K-1`. `D` measures the
+/// atmosphere-ocean transport efficiency, independent of the longwave slope,
+/// so P4 imports it unchanged; on the physical sphere the diffusivity is
+/// `D R^2`.
+pub const P4_EBM_DIFFUSION_W_M2_K: f64 = 0.649;
 /// IAU 2015 Resolution B3 nominal total solar irradiance at 1 au.
 pub const EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2: f64 = 1_361.0;
 /// CERES EBAF Ed4 global-mean incoming shortwave flux (Loeb et al. 2018).

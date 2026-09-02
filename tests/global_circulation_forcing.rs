@@ -27,10 +27,10 @@ use sekai::world::natural::{
     EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE,
     EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX, P4_REFERENCE_AIR_DENSITY_KG_M3,
-    REFERENCE_SURFACE_RELATIVE_HUMIDITY, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-    SECONDS_PER_CLIMATOLOGICAL_MONTH, STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
-    STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
-    WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+    P4_SEA_ICE_SURFACE_ALBEDO, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
+    STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+    WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
 };
 use sekai::world::{Meters, RootSeed};
 
@@ -306,13 +306,15 @@ fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
         expected_land
     );
     for (cell, land_fraction) in expected_land.iter().copied().enumerate() {
+        let sea_ice = fixture.forcing.sea_ice_fraction()[cell];
+        assert!(sea_ice == 0.0 || (sea_ice == 1.0 && land_fraction < 1.0));
         assert_eq!(
             fixture
                 .forcing
                 .planet_forcing()
                 .surface_moisture_availability()[cell]
                 .to_bits(),
-            (1.0_f32 - land_fraction).to_bits()
+            (((1.0 - f64::from(land_fraction)) * (1.0 - f64::from(sea_ice))) as f32).to_bits()
         );
         for month in 0..12 {
             let air_temperature = fixture
@@ -758,4 +760,105 @@ fn forcing_targets_are_storage_consistent_over_land_and_sea() {
     }
     assert!(land_swing > 20.0, "{land_swing}");
     assert!(sea_swing < 6.0, "{sea_swing}");
+}
+
+/// A4 §4: the sea-ice prior covers exactly the ocean whose ice-free annual
+/// gray target is below the liquid mixed-layer floor, brightens it to the
+/// sea-ice albedo, and removes its evaporation.
+#[test]
+fn sea_ice_prior_covers_only_cold_ocean_and_brightens_it() {
+    let fixture = fixture();
+    let planet = fixture.forcing.planet_forcing();
+    let grid = fixture.domain.climate_surface();
+    let mut ice_cells = 0_usize;
+    let mut cold_ocean_cells = 0_usize;
+    for cell in 0..planet.cell_count() {
+        let land = f64::from(planet.land_fraction()[cell]);
+        let ice = f64::from(fixture.forcing.sea_ice_fraction()[cell]);
+        let albedo = f64::from(planet.surface_albedo()[cell]);
+        let latitude = grid.cells()[cell].centroid.components()[2]
+            .asin()
+            .to_degrees();
+        if ice == 1.0 {
+            ice_cells += 1;
+            assert!(land < 1.0);
+            assert!(
+                albedo >= (1.0 - land) * P4_SEA_ICE_SURFACE_ALBEDO - 1e-6,
+                "{albedo} at {latitude}"
+            );
+            assert_eq!(planet.surface_moisture_availability()[cell], 0.0);
+            assert!(latitude.abs() > 45.0, "sea ice at {latitude} degrees");
+        } else {
+            assert_eq!(ice, 0.0);
+            assert!(albedo < 0.6, "{albedo}");
+        }
+        if land < 0.5 && latitude.abs() > 80.0 {
+            cold_ocean_cells += 1;
+            assert_eq!(
+                ice, 1.0,
+                "polar ocean at {latitude} degrees is not ice covered"
+            );
+        }
+    }
+    assert!(cold_ocean_cells == 0 || ice_cells >= cold_ocean_cells);
+}
+
+/// A4 §4.2: the diffusive energy-balance state keeps the slope-weighted global
+/// mean of the no-transport targets, warms the poles, cools the tropics, and
+/// bounds the sea-ice prior.
+#[test]
+fn diffusive_annual_state_transports_heat_poleward_and_bounds_the_ice_line() {
+    let fixture = fixture();
+    let planet = fixture.forcing.planet_forcing();
+    let grid = fixture.domain.climate_surface();
+    let elevation = fixture.forcing.relative_elevation_m();
+    let initial = fixture.forcing.annual_initial_temperature_c();
+    assert_eq!(initial.len(), planet.cell_count());
+    let mut weighted_target = 0.0_f64;
+    let mut weighted_initial = 0.0_f64;
+    let mut polar = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut tropical = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (cell, value) in initial.iter().copied().enumerate() {
+        assert!(
+            value.is_finite() && (-100.0..=65.0).contains(&value),
+            "{value}"
+        );
+        let months = planet.equilibrium_surface_temperature_c()[cell];
+        let target = months.iter().map(|v| f64::from(*v)).sum::<f64>() / 12.0;
+        let slope = gray_longwave_slope_w_m2_k(target);
+        let area = grid.cells()[cell].area.get();
+        weighted_target += area * slope * target;
+        weighted_initial += area * slope * f64::from(value);
+        let latitude = grid.cells()[cell].centroid.components()[2]
+            .asin()
+            .to_degrees();
+        if latitude.abs() > 70.0 {
+            polar.0 += area;
+            polar.1 += area * target;
+            polar.2 += area * f64::from(value);
+        } else if latitude.abs() < 10.0 {
+            tropical.0 += area;
+            tropical.1 += area * target;
+            tropical.2 += area * f64::from(value);
+        }
+        let land = f64::from(planet.land_fraction()[cell]);
+        let orography = f64::from(elevation[cell].max(0.0)) * land;
+        if fixture.forcing.sea_ice_fraction()[cell] == 1.0 {
+            let sea_level_c = f64::from(value)
+                + sekai::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography;
+            assert!(sea_level_c < -2.0 + 0.5, "ice over {sea_level_c} C water");
+        }
+    }
+    assert!(
+        (weighted_initial - weighted_target).abs() < 1e-3 * weighted_target.abs().max(1.0),
+        "{weighted_initial} vs {weighted_target}"
+    );
+    assert!(
+        polar.2 / polar.0 > polar.1 / polar.0 + 5.0,
+        "polar {polar:?}"
+    );
+    assert!(
+        tropical.2 / tropical.0 < tropical.1 / tropical.0,
+        "tropical {tropical:?}"
+    );
 }

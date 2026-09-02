@@ -13,11 +13,13 @@ use crate::world::natural::{
     ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
     FormationTerrainFields, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
     SurfaceWaterGeometry, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
-    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
+    P4_EBM_DIFFUSION_W_M2_K, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SEA_ICE_SURFACE_ALBEDO,
     P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
+
+use super::state::LIQUID_MIXED_LAYER_MIN_C;
 
 const MONTH_PHASE_OFFSET: f64 = 0.5;
 
@@ -40,6 +42,14 @@ pub struct GlobalClimateForcing {
     /// atmosphere: land fraction times the complement of the P5 runoff
     /// fraction (design 2026-09-02 A3 §3).
     land_evapotranspiration_fraction: Vec<f32>,
+    /// Sea-ice prior per work cell (0 or 1): ocean whose ice-free annual
+    /// gray target is below the liquid mixed-layer floor (design 2026-09-03
+    /// A4 §4, North 1975 ice line), diagnosed once without albedo feedback.
+    sea_ice_fraction: Vec<f32>,
+    /// Annual-mean surface temperature of the diffusive energy-balance model
+    /// (North 1975) on the work grid: the transport-aware annual state that
+    /// initialises the layered climate (design 2026-09-03 A4 §4.2).
+    annual_initial_temperature_c: Vec<f32>,
 }
 
 impl GlobalClimateForcing {
@@ -264,7 +274,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v5\0");
+        hasher.update(b"sekai.global-climate-forcing.v7\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -281,6 +291,12 @@ impl GlobalClimateForcing {
         hash_f32_slice_cancellable(
             &mut hasher,
             &self.land_evapotranspiration_fraction,
+            cancellation,
+        )?;
+        hash_f32_slice_cancellable(&mut hasher, &self.sea_ice_fraction, cancellation)?;
+        hash_f32_slice_cancellable(
+            &mut hasher,
+            &self.annual_initial_temperature_c,
             cancellation,
         )?;
         for (index, months) in self.monthly_insolation_fraction.iter().enumerate() {
@@ -335,6 +351,17 @@ impl GlobalClimateForcing {
     /// Returns the per-work-cell precipitation share evaporated back over land.
     pub fn land_evapotranspiration_fraction(&self) -> &[f32] {
         &self.land_evapotranspiration_fraction
+    }
+
+    /// Returns the per-work-cell sea-ice prior (0 or 1).
+    pub fn sea_ice_fraction(&self) -> &[f32] {
+        &self.sea_ice_fraction
+    }
+
+    /// Returns the transport-aware annual-mean surface temperature that
+    /// initialises the layered climate state.
+    pub fn annual_initial_temperature_c(&self) -> &[f32] {
+        &self.annual_initial_temperature_c
     }
 
     pub fn ocean_edge_permeability(&self) -> &[f32] {
@@ -504,15 +531,31 @@ impl GlobalClimateForcingBuilder {
         let axial_tilt_rad = f64::from(climate_spec.axial_tilt_degrees()).to_radians();
         let temperature_offset_c = f64::from(climate_spec.temperature_offset_c());
         let moisture_scale = f64::from(climate_spec.moisture_scale());
-        let mut monthly_insolation_fraction = Vec::with_capacity(grid.cell_count());
-        let mut equilibrium_surface_temperature_c = Vec::with_capacity(grid.cell_count());
-        let mut equilibrium_air_temperature_c = Vec::with_capacity(grid.cell_count());
-        let mut equilibrium_specific_humidity = Vec::with_capacity(grid.cell_count());
-        let mut surface_albedo = Vec::with_capacity(grid.cell_count());
-        let mut surface_moisture_availability = Vec::with_capacity(grid.cell_count());
-        let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(grid.cell_count());
+        let cell_count = grid.cell_count();
         let (air_storage_j_m2_k, mixed_layer_storage_j_m2_k) =
             p4_seasonal_storage_heat_capacities_j_m2_k();
+        let absorbed_months = |insolation: &[f32; CLIMATE_MONTH_COUNT], albedo: f32| {
+            let mut months = [0.0_f32; CLIMATE_MONTH_COUNT];
+            for (target, fraction) in months.iter_mut().zip(insolation) {
+                *target = absorbed_shortwave_w_m2(f64::from(*fraction), f64::from(albedo)) as f32;
+            }
+            months
+        };
+        let annual_gray_target = |months: &[f32; CLIMATE_MONTH_COUNT], lapse_m: f64| {
+            let annual =
+                months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
+            (gray_equilibrium_surface_temperature_c(annual) + temperature_offset_c
+                - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * lapse_m)
+                .clamp(-90.0, 65.0)
+        };
+
+        // Pass 1: geometry, ice-free albedo, insolation and the ice-free
+        // annual gray target of every cell.
+        let mut monthly_insolation_fraction = Vec::with_capacity(cell_count);
+        let mut orography_m = Vec::with_capacity(cell_count);
+        let mut ice_free_albedo = Vec::with_capacity(cell_count);
+        let mut ice_free_targets = Vec::with_capacity(cell_count);
+        let mut ice_free_slopes = Vec::with_capacity(cell_count);
         for (index, cell) in grid.cells().iter().enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -523,43 +566,85 @@ impl GlobalClimateForcingBuilder {
             let snow_prior = ((orography - P4_HIGHLAND_ALBEDO_RAMP_ONSET_M)
                 / P4_HIGHLAND_ALBEDO_RAMP_SPAN_M)
                 .clamp(0.0, 1.0);
-            surface_albedo.push(
-                (P4_OPEN_OCEAN_SURFACE_ALBEDO
-                    + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT * land
-                    + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land)
-                    as f32,
-            );
-            surface_moisture_availability.push(1.0_f32 - land_fraction[index]);
-
+            let albedo = P4_OPEN_OCEAN_SURFACE_ALBEDO
+                + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT * land
+                + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land;
             let mut insolation = [0.0_f32; CLIMATE_MONTH_COUNT];
-            let mut surface_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
-            let mut air_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
-            let mut humidity = [0.0_f32; CLIMATE_MONTH_COUNT];
-            let mut absorbed_shortwave_months = [0.0_f32; CLIMATE_MONTH_COUNT];
-            let mut absorbed_shortwave_exact = [0.0_f64; CLIMATE_MONTH_COUNT];
-            for month in 0..CLIMATE_MONTH_COUNT {
+            for (month, value) in insolation.iter_mut().enumerate() {
                 let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
                     / CLIMATE_MONTH_COUNT as f64;
                 let declination = axial_tilt_rad * (-phase.cos());
-                insolation[month] = daily_mean_insolation(latitude, declination) as f32;
-                let absorbed_shortwave = absorbed_shortwave_w_m2(
-                    f64::from(insolation[month]),
-                    f64::from(surface_albedo[index]),
-                );
-                absorbed_shortwave_months[month] = absorbed_shortwave as f32;
-                absorbed_shortwave_exact[month] = f64::from(absorbed_shortwave_months[month]);
+                *value = daily_mean_insolation(latitude, declination) as f32;
+            }
+            let target =
+                annual_gray_target(&absorbed_months(&insolation, albedo as f32), orography);
+            ice_free_targets.push(target);
+            ice_free_slopes.push(gray_longwave_slope_w_m2_k(target));
+            ice_free_albedo.push(albedo);
+            orography_m.push(orography);
+            monthly_insolation_fraction.push(insolation);
+        }
+        // Milestone A4 (§4.2): the ice line is read off the transport-aware
+        // annual state of the diffusive energy-balance model (North 1975),
+        // diagnosed once from the ice-free albedo so the switch cannot feed
+        // back into itself.
+        let ice_free_transport = diffusive_energy_balance_temperature_c(
+            &grid,
+            &ice_free_targets,
+            &ice_free_slopes,
+            cancellation,
+        )?;
+
+        // Pass 2: sea-ice prior, final albedo, absorbed shortwave and the
+        // storage-consistent seasonal targets (§3.1).
+        let mut equilibrium_surface_temperature_c = Vec::with_capacity(cell_count);
+        let mut equilibrium_air_temperature_c = Vec::with_capacity(cell_count);
+        let mut equilibrium_specific_humidity = Vec::with_capacity(cell_count);
+        let mut surface_albedo = Vec::with_capacity(cell_count);
+        let mut surface_moisture_availability = Vec::with_capacity(cell_count);
+        let mut sea_ice_fraction = Vec::with_capacity(cell_count);
+        let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(cell_count);
+        let mut annual_targets = Vec::with_capacity(cell_count);
+        let mut annual_slopes = Vec::with_capacity(cell_count);
+        for index in 0..cell_count {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let land = f64::from(land_fraction[index]);
+            let orography = orography_m[index];
+            let insolation = monthly_insolation_fraction[index];
+            // The sea surface of a partly-land cell sits at sea level: undo
+            // the orographic lapse that the cell target carries for its land.
+            let sea_level_transport_c =
+                ice_free_transport[index] + CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography;
+            let sea_ice =
+                if land < 1.0 && sea_level_transport_c < f64::from(LIQUID_MIXED_LAYER_MIN_C) {
+                    1.0
+                } else {
+                    0.0
+                };
+            let albedo = (ice_free_albedo[index]
+                + (1.0 - land)
+                    * sea_ice
+                    * (P4_SEA_ICE_SURFACE_ALBEDO - P4_OPEN_OCEAN_SURFACE_ALBEDO))
+                as f32;
+            surface_albedo.push(albedo);
+            surface_moisture_availability.push(((1.0 - land) * (1.0 - sea_ice)) as f32);
+            sea_ice_fraction.push(sea_ice as f32);
+
+            let absorbed_shortwave_months = absorbed_months(&insolation, albedo);
+            let mut absorbed_shortwave_exact = [0.0_f64; CLIMATE_MONTH_COUNT];
+            for (exact, value) in absorbed_shortwave_exact
+                .iter_mut()
+                .zip(absorbed_shortwave_months)
+            {
+                *exact = f64::from(value);
             }
             // Milestone A4 (§3.1): the monthly targets are the storage-consistent
             // seasonal equilibrium around the annual-mean gray target, not the
             // instantaneous monthly radiative equilibrium (which has no heat
             // inertia and diverges in polar night).
-            let annual_absorbed_shortwave =
-                absorbed_shortwave_exact.iter().sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
-            let annual_surface_c =
-                (gray_equilibrium_surface_temperature_c(annual_absorbed_shortwave)
-                    + temperature_offset_c
-                    - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
-                    .clamp(-90.0, 65.0);
+            let annual_surface_c = annual_gray_target(&absorbed_shortwave_months, orography);
             let longwave_slope = gray_longwave_slope_w_m2_k(annual_surface_c);
             let surface_months = seasonal_storage_equilibrium_temperature_c(
                 &absorbed_shortwave_exact,
@@ -574,6 +659,9 @@ impl GlobalClimateForcingBuilder {
                 longwave_slope,
                 air_storage_j_m2_k + (1.0 - land) * mixed_layer_storage_j_m2_k,
             );
+            let mut surface_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
+            let mut air_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
+            let mut humidity = [0.0_f32; CLIMATE_MONTH_COUNT];
             for month in 0..CLIMATE_MONTH_COUNT {
                 let surface_c = surface_months[month].clamp(-90.0, 65.0);
                 let air_c = air_months[month].clamp(-100.0, 65.0);
@@ -585,12 +673,24 @@ impl GlobalClimateForcingBuilder {
                     * (moisture_scale * REFERENCE_SURFACE_RELATIVE_HUMIDITY).clamp(0.0, 1.0))
                     as f32;
             }
-            monthly_insolation_fraction.push(insolation);
             equilibrium_surface_temperature_c.push(surface_temperature);
             equilibrium_air_temperature_c.push(air_temperature);
             equilibrium_specific_humidity.push(humidity);
             monthly_absorbed_shortwave_w_m2.push(absorbed_shortwave_months);
+            annual_targets.push(annual_surface_c);
+            annual_slopes.push(longwave_slope);
         }
+        // Final transport-aware annual state under the sea-ice albedo: the
+        // initial condition of the layered climate (§4.2).
+        let annual_initial_temperature_c = diffusive_energy_balance_temperature_c(
+            &grid,
+            &annual_targets,
+            &annual_slopes,
+            cancellation,
+        )?
+        .into_iter()
+        .map(|value| value as f32)
+        .collect::<Vec<_>>();
 
         let planet_forcing = PlanetForcing::new_cancellable_with_ocean_depth(
             *grid.fingerprint(),
@@ -620,11 +720,127 @@ impl GlobalClimateForcingBuilder {
             ocean_edge_permeability,
             monthly_insolation_fraction,
             land_evapotranspiration_fraction,
+            sea_ice_fraction,
+            annual_initial_temperature_c,
         };
         forcing.fingerprint = forcing.calculate_fingerprint_impl(Some(cancellation))?;
         forcing.validate_payload_against_cancellable(domain, cancellation)?;
         Ok(forcing)
     }
+}
+
+/// Annual-mean surface temperature of the diffusive energy-balance model on
+/// the work grid (milestone A4 §4.2; North 1975):
+///
+/// ```text
+/// A_i B_i (T_i - T_eq,i) = kappa sum_j (L_ij / d_ij) (T_j - T_i)
+/// kappa = P4_EBM_DIFFUSION_W_M2_K * mean(B) * R^2
+/// ```
+///
+/// The system is symmetric positive definite (diagonal `A_i B_i` plus a
+/// weighted graph Laplacian) and is solved by conjugate gradients in `f64`
+/// with sequential reductions, so the result is deterministic. Diffusion
+/// conserves the `A B`-weighted global mean of the targets.
+fn diffusive_energy_balance_temperature_c(
+    grid: &CubedSphereGrid,
+    equilibrium_c: &[f64],
+    longwave_slope_w_m2_k: &[f64],
+    cancellation: &BuildCancellation,
+) -> Result<Vec<f64>, GlobalClimateForcingError> {
+    const MAX_ITERATIONS: usize = 20_000;
+    const RESIDUAL_TOLERANCE_K: f64 = 1.0e-7;
+    let cell_count = grid.cell_count();
+    let mut diagonal = Vec::with_capacity(cell_count);
+    for (cell, slope) in grid.cells().iter().zip(longwave_slope_w_m2_k) {
+        diagonal.push(cell.area_m2() * slope);
+    }
+    let kappa = P4_EBM_DIFFUSION_W_M2_K * grid.radius_m() * grid.radius_m();
+    let edges = grid
+        .edges()
+        .iter()
+        .map(|edge| {
+            let [first, second] = *edge.cells();
+            (
+                first as usize,
+                second as usize,
+                kappa * edge.length_m() / edge.center_distance_m(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let apply = |x: &[f64], out: &mut [f64]| {
+        for (target, (value, weight)) in out.iter_mut().zip(x.iter().zip(&diagonal)) {
+            *target = value * weight;
+        }
+        for &(first, second, weight) in &edges {
+            let flux = weight * (x[first] - x[second]);
+            out[first] += flux;
+            out[second] -= flux;
+        }
+    };
+    let rhs = diagonal
+        .iter()
+        .zip(equilibrium_c)
+        .map(|(weight, target)| weight * target)
+        .collect::<Vec<_>>();
+    let mut solution = equilibrium_c.to_vec();
+    let mut product = vec![0.0_f64; cell_count];
+    apply(&solution, &mut product);
+    let mut residual = rhs
+        .iter()
+        .zip(&product)
+        .map(|(b, ax)| b - ax)
+        .collect::<Vec<_>>();
+    let mut direction = residual.clone();
+    let converged = |residual: &[f64]| {
+        residual
+            .iter()
+            .zip(&diagonal)
+            .all(|(value, weight)| value.abs() <= RESIDUAL_TOLERANCE_K * weight)
+    };
+    let mut residual_norm = residual.iter().map(|value| value * value).sum::<f64>();
+    let mut iteration = 0;
+    while !converged(&residual) {
+        if iteration % 16 == 0 {
+            check_cancelled(cancellation)?;
+        }
+        if iteration >= MAX_ITERATIONS {
+            return Err(GlobalClimateForcingError::InvalidInput {
+                role: "diffusive_energy_balance",
+                reason: format!(
+                    "conjugate gradients did not converge in {MAX_ITERATIONS} iterations"
+                ),
+            });
+        }
+        apply(&direction, &mut product);
+        let curvature = direction
+            .iter()
+            .zip(&product)
+            .map(|(d, ad)| d * ad)
+            .sum::<f64>();
+        if !(curvature > 0.0) {
+            return Err(GlobalClimateForcingError::InvalidInput {
+                role: "diffusive_energy_balance",
+                reason: format!("lost positive definiteness (curvature {curvature})"),
+            });
+        }
+        let step = residual_norm / curvature;
+        for ((x, d), (r, ad)) in solution
+            .iter_mut()
+            .zip(&direction)
+            .zip(residual.iter_mut().zip(&product))
+        {
+            *x += step * d;
+            *r -= step * ad;
+        }
+        let next_norm = residual.iter().map(|value| value * value).sum::<f64>();
+        let ratio = next_norm / residual_norm;
+        for (d, r) in direction.iter_mut().zip(&residual) {
+            *d = r + ratio * *d;
+        }
+        residual_norm = next_norm;
+        iteration += 1;
+    }
+    Ok(solution)
 }
 
 fn validate_common_inputs(

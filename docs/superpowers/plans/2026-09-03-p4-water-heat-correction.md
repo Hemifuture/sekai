@@ -26,11 +26,20 @@
       seed 42：北极 SST +10 → −1.9 °C，45–90° N TOA +13 → 0，47.5° N 冷池 −17 → −6 K，
       全球 TOA +7.0 → −3.8；南极暴露平流 – 辐射瞬变（设计 §3.5）。
 
-- [ ] Task 2 —— 海冰面先验
-      `forcing.rs`：`ice` 诊断（无冰 T_eq,ann,surface < −2 °C）、
-      `P4_SEA_ICE_SURFACE_ALBEDO`、辐射权重 / 蒸发可用度 `(1 − land)(1 − ice)`、
-      气–海交换 `water_scale` 乘 1/13；指纹再升。度量清单不变。
-      证据：seed 42 极区 RH / 降水 / TOA；17 seed 硬门。
+- [x] Task 2 —— 海冰面先验
+      `forcing.rs`：`sea_ice_fraction`（无冰海面年目标 < −2 °C，不带直减）、
+      `P4_SEA_ICE_SURFACE_ALBEDO = 0.60`、辐射权重 / 蒸发可用度 `(1 − land)(1 − ice)`，
+      指纹 v6；`tendency.rs` 气–混合层热交换乘 `sea_ice_heat_exchange_fraction()`
+      （0.076，动量不动），方程指纹 v13。
+      seed 42：极区空气 −9 → −33 °C、冰面蒸发 0；但冰线 60°、冰盖初值 −60 °C 把
+      45–60° N 推成 −28 K 冷带、全球 TOA −9（设计 §4.1）→ Task 2b。
+
+- [ ] Task 2b —— 扩散 EBM 年平均态（North 1975）作冰线判据与初值
+      `forcing.rs`：共轭梯度解 `B_i (T_i − T_eq,i) = (κ/A_i) Σ (L/d)(T_j − T_i)`，
+      `κ = 0.31 · B̄ · R²`；无冰解定冰线，冰反照率下的最终解发布为
+      `annual_initial_temperature_c`（指纹 v7）；`state.rs` 年平均初值改取该场。
+      辐射线性化与交换距平参考不变（设计 §4.2）。
+      证据：seed 42 冰线纬度、极区 / 45–60° 气温、全球 TOA。
 
 - [ ] Task 3 —— 语料证据、时延门、时间结构裁定备忘
       17 seed（P / TOA / 雨影 / 增湿 / 非纬向 / 季节相位）、32 seed 冷启动、全量

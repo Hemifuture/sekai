@@ -158,12 +158,14 @@ impl GlobalCirculationGenerator {
             forcing.terrain_gradient_m_per_m(),
             &terrain_floor_m,
             forcing.land_evapotranspiration_fraction(),
+            forcing.sea_ice_fraction(),
             fast_step_seconds,
         )?;
         let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(
             &grid,
             &layout,
             planet,
+            Some(forcing.annual_initial_temperature_c()),
             cancellation,
         )
         .map_err(map_state_error)?;

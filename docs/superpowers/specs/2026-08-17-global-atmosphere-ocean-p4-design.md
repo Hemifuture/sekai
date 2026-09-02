@@ -384,10 +384,19 @@ column mass to `kg m-2 s-1 == mm s-1`. Its resolved orographic term is
 by P3 land fraction; the same conservative humidity tendency creates the
 precipitation sink. The water-limited orographic contribution is retained as a
 separate monthly extensive field, is conservatively projected, and is
-validated cell-by-cell not to exceed total precipitation. Because sea ice is
-explicitly unavailable in P4, liquid
+validated cell-by-cell not to exceed total precipitation. Liquid
 mixed-layer equilibrium is bounded at `-2 C` and subsurface ocean equilibrium
 at `-5 C` rather than allowing impossible supercooled liquid values.
+
+Revision 2026-09-03 (milestone A4 §4): ocean whose ice-free annual gray target
+is below the liquid mixed-layer floor carries a static sea-ice prior (North
+1975 ice line, diagnosed once, no albedo feedback): surface albedo
+`P4_SEA_ICE_SURFACE_ALBEDO = 0.60` (Perovich et al. 2002), TOA radiation
+weighted onto the lower atmosphere as over land, zero evaporation, and the
+air–mixed-layer heat exchange reduced to the conductive fraction
+`(k_ice / h_ice) / (rho c_p C_H U)` (Untersteiner 1961; Maykut & Untersteiner
+1971; Large & Pond 1982). Momentum exchange is untouched. Forcing fingerprint
+v6, equation-model fingerprint v13.
 
 The C1 single lower layer retains its declared effective hypsometric pressure
 coupling of `30 m2 s-2 K-1`. C2 uses a first-baroclinic pair: the upper
