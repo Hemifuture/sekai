@@ -157,6 +157,7 @@ impl GlobalCirculationGenerator {
             &grid,
             forcing.terrain_gradient_m_per_m(),
             &terrain_floor_m,
+            forcing.land_evapotranspiration_fraction(),
             fast_step_seconds,
         )?;
         let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(

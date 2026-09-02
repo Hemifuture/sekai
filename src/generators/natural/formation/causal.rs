@@ -142,6 +142,7 @@ impl CausalNaturalFormationGenerator {
         let start_forcing = GlobalClimateForcingBuilder::build(
             surface,
             &primary_relief,
+            geologic_substrate.relative_permeability(),
             inputs.climate_spec,
             inputs.climate_domain,
             cancellation,
@@ -328,6 +329,7 @@ mod tests {
         let rebuilt_forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
             bundle.authoritative_surface(),
             output.surface.terrain_fields(),
+            output.geologic_substrate.relative_permeability(),
             &climate_spec,
             &domain,
             &cancellation,
@@ -541,6 +543,7 @@ mod tests {
                         GlobalClimateForcingBuilder::build_for_formation_terrain(
                             surface,
                             &start_terrain,
+                            substrate.relative_permeability(),
                             inputs.climate_spec,
                             inputs.climate_domain,
                             cancellation,
@@ -549,6 +552,7 @@ mod tests {
                         GlobalClimateForcingBuilder::build(
                             surface,
                             &primary_relief,
+                            substrate.relative_permeability(),
                             inputs.climate_spec,
                             inputs.climate_domain,
                             cancellation,
@@ -605,6 +609,7 @@ mod tests {
                         GlobalClimateForcingBuilder::build_for_formation_terrain(
                             surface,
                             &midpoint_terrain,
+                            substrate.relative_permeability(),
                             inputs.climate_spec,
                             inputs.climate_domain,
                             cancellation,
@@ -632,6 +637,7 @@ mod tests {
                         GlobalClimateForcingBuilder::build_for_formation_terrain(
                             surface,
                             &endpoint_terrain,
+                            substrate.relative_permeability(),
                             inputs.climate_spec,
                             inputs.climate_domain,
                             cancellation,
@@ -1028,6 +1034,7 @@ mod timing_probe {
         let start_forcing = GlobalClimateForcingBuilder::build(
             surface,
             &primary_relief,
+            substrate.relative_permeability(),
             &climate_spec,
             &domain,
             &cancellation,

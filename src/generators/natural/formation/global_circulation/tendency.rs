@@ -95,7 +95,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v10\0");
+    hasher.update(b"sekai.global-circulation-equations.v11\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -569,6 +569,9 @@ pub struct LayeredClimateTendency {
     external_moisture_tendency_s_inv: Vec<f64>,
     upper_specific_humidity_tendency_s_inv: Option<Vec<f32>>,
     evaporation_rate_mm_s: Vec<f32>,
+    /// Part of `evaporation_rate_mm_s` supplied by land evapotranspiration;
+    /// its latent heat is taken from the lower atmosphere, not the mixed layer.
+    land_evapotranspiration_rate_mm_s: Vec<f32>,
     precipitation_rate_mm_s: Vec<f32>,
     orographic_precipitation_rate_mm_s: Vec<f32>,
     external_radiative_heat_flux_w_m2: Vec<f64>,
@@ -596,6 +599,7 @@ impl LayeredClimateTendency {
                 .upper_specific_humidity()
                 .map(|_| vec![0.0; count]),
             evaporation_rate_mm_s: vec![0.0; count],
+            land_evapotranspiration_rate_mm_s: vec![0.0; count],
             precipitation_rate_mm_s: vec![0.0; count],
             orographic_precipitation_rate_mm_s: vec![0.0; count],
             external_radiative_heat_flux_w_m2: vec![0.0; count],
@@ -914,6 +918,9 @@ pub struct LayeredTendencySystem<'grid> {
     /// Land surface height under the lower atmosphere, per work cell; `None`
     /// integrates over a flat floor (test and comparison harnesses).
     terrain_floor_m: Option<&'grid [f32]>,
+    /// Share of each cell's precipitation that land evaporates back (steady
+    /// water balance with the P5 runoff partition); `None` keeps land dry.
+    land_evapotranspiration_fraction: Option<&'grid [f32]>,
     forcing_prevalidated: bool,
 }
 
@@ -952,6 +959,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             grid,
             terrain_gradient_m_per_m: None,
             terrain_floor_m: None,
+            land_evapotranspiration_fraction: None,
             forcing_prevalidated: false,
         }
     }
@@ -962,11 +970,13 @@ impl<'grid> LayeredTendencySystem<'grid> {
         grid: &'grid CubedSphereGrid,
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
         terrain_floor_m: &'grid [f32],
+        land_evapotranspiration_fraction: &'grid [f32],
     ) -> Self {
         Self {
             grid,
             terrain_gradient_m_per_m: Some(terrain_gradient_m_per_m),
             terrain_floor_m: Some(terrain_floor_m),
+            land_evapotranspiration_fraction: Some(land_evapotranspiration_fraction),
             forcing_prevalidated: true,
         }
     }
@@ -2008,14 +2018,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .map(|(velocity, gradient)| f64::from(*velocity) * f64::from(gradient))
                 .sum::<f64>();
             let land_fraction = f64::from(forcing.land_fraction()[cell]);
-            let after_evaporation =
+            let ocean_evaporation =
                 transported + step_seconds * evaporation_rate_kg_m2_s / atmospheric_column_mass;
-            let large_scale_condensation_rate_kg_m2_s = large_scale_condensation_kg_m2_s(
-                after_evaporation,
-                f64::from(lower_temperature[cell]),
-                atmospheric_column_mass,
-                step_seconds,
-            );
             let orographic_rate_kg_m2_s = lcl_adjusted_orographic_condensation_kg_m2_s(
                 transported,
                 f64::from(lower_temperature[cell]),
@@ -2023,6 +2027,32 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 wind_speed,
                 self.grid.cells()[cell].area_m2(),
             ) * land_fraction;
+            // Land returns the non-runoff share of its own precipitation to
+            // the atmosphere (steady bucket balance E = P - R, Manabe 1969,
+            // with the P5 runoff partition). One Picard pass: condense once
+            // without recycling, evaporate that share, condense again.
+            let recycling_fraction = self
+                .land_evapotranspiration_fraction
+                .map_or(0.0, |fraction| f64::from(fraction[cell]));
+            let first_pass_precipitation = (large_scale_condensation_kg_m2_s(
+                ocean_evaporation,
+                f64::from(lower_temperature[cell]),
+                atmospheric_column_mass,
+                step_seconds,
+            ) + orographic_rate_kg_m2_s)
+                .min(ocean_evaporation.max(0.0) * atmospheric_column_mass / step_seconds);
+            let land_evapotranspiration_rate_kg_m2_s =
+                recycling_fraction * first_pass_precipitation.max(0.0);
+            let evaporation_rate_kg_m2_s =
+                evaporation_rate_kg_m2_s + land_evapotranspiration_rate_kg_m2_s;
+            let after_evaporation = ocean_evaporation
+                + step_seconds * land_evapotranspiration_rate_kg_m2_s / atmospheric_column_mass;
+            let large_scale_condensation_rate_kg_m2_s = large_scale_condensation_kg_m2_s(
+                after_evaporation,
+                f64::from(lower_temperature[cell]),
+                atmospheric_column_mass,
+                step_seconds,
+            );
             let available_rate_kg_m2_s =
                 after_evaporation.max(0.0) * atmospheric_column_mass / step_seconds;
             let requested_precipitation_rate_kg_m2_s = (large_scale_condensation_rate_kg_m2_s
@@ -2053,6 +2083,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
             tendency.external_moisture_tendency_s_inv[cell] =
                 f64::from(tendency.specific_humidity_tendency_s_inv[cell]);
             tendency.evaporation_rate_mm_s[cell] = evaporation_rate_kg_m2_s as f32;
+            tendency.land_evapotranspiration_rate_mm_s[cell] =
+                land_evapotranspiration_rate_kg_m2_s as f32;
             tendency.precipitation_rate_mm_s[cell] = retained_precipitation as f32;
             tendency.orographic_precipitation_rate_mm_s[cell] =
                 (orographic_rate_kg_m2_s * retained_orographic_fraction) as f32;
@@ -2072,19 +2104,27 @@ impl<'grid> LayeredTendencySystem<'grid> {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            let evaporation = f64::from(tendency.evaporation_rate_mm_s[cell]);
+            let land_evapotranspiration =
+                f64::from(tendency.land_evapotranspiration_rate_mm_s[cell]);
+            let ocean_evaporation =
+                f64::from(tendency.evaporation_rate_mm_s[cell]) - land_evapotranspiration;
             let condensation = f64::from(tendency.precipitation_rate_mm_s[cell]);
+            // Over land the radiation scheme already treats the lower
+            // atmosphere as the surface, so land evapotranspiration draws its
+            // latent heat there; only sea evaporation cools the mixed layer.
             let lower = &mut tendency
                 .layer_mut(ClimateLayerRole::LowerAtmosphere)
                 .expect("lower atmosphere is active")
                 .temperature_tendency_k_s[cell];
-            *lower += (WATER_VAPORIZATION_LATENT_HEAT_J_KG * condensation / lower_capacity) as f32;
+            *lower += (WATER_VAPORIZATION_LATENT_HEAT_J_KG
+                * (condensation - land_evapotranspiration)
+                / lower_capacity) as f32;
             let surface = &mut tendency
                 .layer_mut(ClimateLayerRole::OceanMixedLayer)
                 .expect("mixed layer is active")
                 .temperature_tendency_k_s[cell];
             *surface -=
-                (WATER_VAPORIZATION_LATENT_HEAT_J_KG * evaporation / surface_capacity) as f32;
+                (WATER_VAPORIZATION_LATENT_HEAT_J_KG * ocean_evaporation / surface_capacity) as f32;
         }
         Ok(())
     }
@@ -2608,6 +2648,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
         }
         for (field, values) in [
             ("evaporation_rate_mm_s", &tendency.evaporation_rate_mm_s),
+            (
+                "land_evapotranspiration_rate_mm_s",
+                &tendency.land_evapotranspiration_rate_mm_s,
+            ),
             ("precipitation_rate_mm_s", &tendency.precipitation_rate_mm_s),
             (
                 "orographic_precipitation_rate_mm_s",
@@ -3519,17 +3563,19 @@ mod tests {
             .gradient(forcing.elevation_m())
             .unwrap();
         let flat_floor = vec![0.0_f32; grid.cell_count()];
-        let supplied = LayeredTendencySystem::with_terrain(&grid, &terrain_gradient, &flat_floor)
-            .evaluate_thermodynamic_moisture_with_workspace_for_step(
-                &state,
-                &forcing,
-                &permeability,
-                0,
-                7_200.0,
-                &cancellation,
-                &mut workspace,
-            )
-            .unwrap();
+        let dry_land = vec![0.0_f32; grid.cell_count()];
+        let supplied =
+            LayeredTendencySystem::with_terrain(&grid, &terrain_gradient, &flat_floor, &dry_land)
+                .evaluate_thermodynamic_moisture_with_workspace_for_step(
+                    &state,
+                    &forcing,
+                    &permeability,
+                    0,
+                    7_200.0,
+                    &cancellation,
+                    &mut workspace,
+                )
+                .unwrap();
 
         for role in state.active_roles() {
             assert_eq!(

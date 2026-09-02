@@ -263,6 +263,7 @@ fn zero_axial_tilt_marks_seasonal_phase_not_applicable_without_rejecting_product
     let forcing = GlobalClimateForcingBuilder::build(
         surface,
         &fixture.relief,
+        fixture.substrate.relative_permeability(),
         &spec,
         &fixture.domain,
         &BuildCancellation::new(),

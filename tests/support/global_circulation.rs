@@ -148,6 +148,7 @@ pub fn global_circulation_fixture() -> &'static GlobalCirculationFixture {
         let forcing = GlobalClimateForcingBuilder::build(
             bundle.authoritative_surface(),
             &relief,
+            substrate.relative_permeability(),
             &ClimateSpec::default(),
             &domain,
             &cancellation,

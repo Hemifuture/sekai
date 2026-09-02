@@ -45,11 +45,16 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         grid: &'grid CubedSphereGrid,
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
         terrain_floor_m: &'grid [f32],
+        land_evapotranspiration_fraction: &'grid [f32],
         maximum_fast_step_seconds: f64,
     ) -> Result<Self, ClimateIntegratorError> {
         let mut integrator = Self::new(grid, maximum_fast_step_seconds)?;
-        integrator.tendency_system =
-            LayeredTendencySystem::with_terrain(grid, terrain_gradient_m_per_m, terrain_floor_m);
+        integrator.tendency_system = LayeredTendencySystem::with_terrain(
+            grid,
+            terrain_gradient_m_per_m,
+            terrain_floor_m,
+            land_evapotranspiration_fraction,
+        );
         Ok(integrator)
     }
 

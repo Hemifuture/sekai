@@ -436,6 +436,7 @@ fn c2_cross_resolution_climatology_is_statistically_stable() {
     let standard_forcing = GlobalClimateForcingBuilder::build(
         surface,
         &fixture.relief,
+        fixture.substrate.relative_permeability(),
         &sekai::world::natural::ClimateSpec::default(),
         &standard_domain,
         &cancellation,

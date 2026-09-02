@@ -6,14 +6,13 @@ use thiserror::Error;
 use super::topology::NaturalTopologyIndex;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_monthly_precipitation_mm, BasinOutletKind, ClimateValidationError, DrainageBasin,
-    ElevationField, HydroErosionSpec, HydroErosionSpecError, HydrologySnapshot,
-    HydrologyValidationError, Lake, LandOceanField, LandOceanKind, PreliminaryClimateSnapshot,
-    ReliefValidationError, RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField,
-    SurfaceWaterKind, CLIMATE_MONTH_COUNT, ELEVATION_MAX_M, ELEVATION_MIN_M,
-    FORMATION_ENDORHEIC_RESIDENCE_YEARS, FORMATION_MINIMUM_LAKE_DEPTH_M,
-    FORMATION_RUNOFF_MIN_FRACTION, FORMATION_RUNOFF_PERMEABILITY_RANGE, HYDROLOGY_SCHEMA_V1,
-    SECONDS_PER_CLIMATOLOGICAL_MONTH,
+    formation_monthly_precipitation_mm, formation_runoff_fraction, BasinOutletKind,
+    ClimateValidationError, DrainageBasin, ElevationField, HydroErosionSpec, HydroErosionSpecError,
+    HydrologySnapshot, HydrologyValidationError, Lake, LandOceanField, LandOceanKind,
+    PreliminaryClimateSnapshot, ReliefValidationError, RiverSegment, RiverSegmentKind,
+    StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind, CLIMATE_MONTH_COUNT, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_ENDORHEIC_RESIDENCE_YEARS, FORMATION_MINIMUM_LAKE_DEPTH_M,
+    HYDROLOGY_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use crate::world::spatial::{
     NaturalSurface, PlanarNaturalSurface, SpatialSnapshot, SpatialValidationError, Topology,
@@ -875,9 +874,7 @@ fn local_runoff(
                     })
                 }
                 RunoffForcingKind::FormationMeanDailyRates => {
-                    let runoff_fraction = FORMATION_RUNOFF_MIN_FRACTION
-                        + FORMATION_RUNOFF_PERMEABILITY_RANGE
-                            * (1.0 - f64::from(relative_permeability[index]));
+                    let runoff_fraction = formation_runoff_fraction(relative_permeability[index]);
                     let bounded =
                         formation_monthly_precipitation_mm(&monthly_precipitation_mm[index]);
                     std::array::from_fn(|month| (bounded[month] * runoff_fraction) as f32)

@@ -15,6 +15,7 @@ fn public_p4_boundary_stays_relief_bound_deterministic_and_selected() {
     let repeated = GlobalClimateForcingBuilder::build(
         surface,
         &fixture.relief,
+        fixture.substrate.relative_permeability(),
         &ClimateSpec::default(),
         &fixture.domain,
         &BuildCancellation::new(),

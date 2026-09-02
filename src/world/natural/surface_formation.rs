@@ -33,6 +33,16 @@ pub const SURFACE_FORMATION_HORIZON_YEARS: f64 = 100_000.0;
 pub const FORMATION_RUNOFF_MIN_FRACTION: f64 = 0.15;
 /// Additional runoff fraction removed linearly by unit permeability.
 pub const FORMATION_RUNOFF_PERMEABILITY_RANGE: f64 = 0.70;
+
+/// Precipitation fraction that leaves a land cell as runoff for one relative
+/// permeability. P5 routes exactly this share; its complement is what the
+/// steady-state land water balance `E = P - R` (Manabe 1969 bucket) returns
+/// to the atmosphere, and P4 evaporates that share back over land so the two
+/// stages close the same water budget (design 2026-09-02 A3 §3).
+pub fn formation_runoff_fraction(relative_permeability: f32) -> f64 {
+    FORMATION_RUNOFF_MIN_FRACTION
+        + FORMATION_RUNOFF_PERMEABILITY_RANGE * (1.0 - f64::from(relative_permeability))
+}
 /// Minimum depression depth retained as a P5 lake after centimeter routing.
 pub const FORMATION_MINIMUM_LAKE_DEPTH_M: f64 = 1.0;
 /// Drainage-area exponent in the locked stream-power law.

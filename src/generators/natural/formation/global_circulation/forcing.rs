@@ -7,7 +7,7 @@ use crate::generators::natural::circulation::{
 use crate::generators::natural::surface_water_geometry::build_surface_water_geometry;
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
-    absorbed_shortwave_w_m2, gray_equilibrium_surface_temperature_c,
+    absorbed_shortwave_w_m2, formation_runoff_fraction, gray_equilibrium_surface_temperature_c,
     saturation_specific_humidity_kg_kg, ClimateSpec, ClimateWorkDomainSnapshot,
     ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, PlanetForcing,
     PrimaryReliefSnapshot, PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
@@ -35,6 +35,10 @@ pub struct GlobalClimateForcing {
     terrain_gradient_m_per_m: Vec<[f32; 3]>,
     ocean_edge_permeability: Vec<f32>,
     monthly_insolation_fraction: Vec<[f32; CLIMATE_MONTH_COUNT]>,
+    /// Share of a work cell's precipitation that land returns to the
+    /// atmosphere: land fraction times the complement of the P5 runoff
+    /// fraction (design 2026-09-02 A3 §3).
+    land_evapotranspiration_fraction: Vec<f32>,
 }
 
 impl GlobalClimateForcing {
@@ -169,6 +173,10 @@ impl GlobalClimateForcing {
         }
         for (field, found) in [
             ("relative_elevation_m", self.relative_elevation_m.len()),
+            (
+                "land_evapotranspiration_fraction",
+                self.land_evapotranspiration_fraction.len(),
+            ),
             ("ocean_depth_m", self.ocean_depth_m.len()),
             (
                 "terrain_gradient_m_per_m",
@@ -255,7 +263,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v3\0");
+        hasher.update(b"sekai.global-climate-forcing.v4\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -269,6 +277,11 @@ impl GlobalClimateForcing {
             hash_f32_slice(&mut hasher, value);
         }
         hash_f32_slice_cancellable(&mut hasher, &self.ocean_edge_permeability, cancellation)?;
+        hash_f32_slice_cancellable(
+            &mut hasher,
+            &self.land_evapotranspiration_fraction,
+            cancellation,
+        )?;
         for (index, months) in self.monthly_insolation_fraction.iter().enumerate() {
             poll_optional_cancelled(index, cancellation)?;
             hash_f32_slice(&mut hasher, months);
@@ -318,6 +331,11 @@ impl GlobalClimateForcing {
         &self.terrain_gradient_m_per_m
     }
 
+    /// Returns the per-work-cell precipitation share evaporated back over land.
+    pub fn land_evapotranspiration_fraction(&self) -> &[f32] {
+        &self.land_evapotranspiration_fraction
+    }
+
     pub fn ocean_edge_permeability(&self) -> &[f32] {
         &self.ocean_edge_permeability
     }
@@ -336,12 +354,14 @@ struct ClimateTerrainInput<'a> {
     source_fingerprint: [u8; 32],
     elevation_m: &'a [f32],
     surface_water_geometry: &'a SurfaceWaterGeometry,
+    relative_permeability: &'a [f32],
 }
 
 impl GlobalClimateForcingBuilder {
     pub fn build(
         surface: &SphericalSurfaceSnapshot,
         relief: &PrimaryReliefSnapshot,
+        relative_permeability: &[f32],
         climate_spec: &ClimateSpec,
         domain: &ClimateWorkDomainSnapshot,
         cancellation: &BuildCancellation,
@@ -355,6 +375,7 @@ impl GlobalClimateForcingBuilder {
             source_fingerprint: relief_fingerprint_cancellable(relief, cancellation)?,
             elevation_m: relief.elevation_m(),
             surface_water_geometry: relief.surface_water_geometry(),
+            relative_permeability,
         };
         Self::build_from_validated_terrain(terrain, climate_spec, domain, cancellation)
     }
@@ -365,6 +386,7 @@ impl GlobalClimateForcingBuilder {
     pub(crate) fn build_for_formation_terrain(
         surface: &SphericalSurfaceSnapshot,
         terrain: &FormationTerrainFields,
+        relative_permeability: &[f32],
         climate_spec: &ClimateSpec,
         domain: &ClimateWorkDomainSnapshot,
         cancellation: &BuildCancellation,
@@ -382,6 +404,7 @@ impl GlobalClimateForcingBuilder {
             source_fingerprint,
             elevation_m: terrain.current_elevation_m(),
             surface_water_geometry,
+            relative_permeability,
         };
         Self::build_from_validated_terrain(input, climate_spec, domain, cancellation)
     }
@@ -411,6 +434,28 @@ impl GlobalClimateForcingBuilder {
             cancellation.is_cancelled()
         })
         .map_err(map_remap_error)?;
+        if terrain.relative_permeability.len() != source_land_fraction.len() {
+            return Err(GlobalClimateForcingError::InvalidInput {
+                role: "relative_permeability",
+                reason: format!(
+                    "expected {} source cells, found {}",
+                    source_land_fraction.len(),
+                    terrain.relative_permeability.len()
+                ),
+            });
+        }
+        let source_land_evapotranspiration = source_land_fraction
+            .iter()
+            .zip(terrain.relative_permeability)
+            .map(|(&land, &permeability)| {
+                (f64::from(land) * (1.0 - formation_runoff_fraction(permeability))) as f32
+            })
+            .collect::<Vec<_>>();
+        let land_evapotranspiration_fraction =
+            remap_intensive_f32_cancellable(map, &source_land_evapotranspiration, &|| {
+                cancellation.is_cancelled()
+            })
+            .map_err(map_remap_error)?;
         let sea_level_m = terrain.surface_water_geometry.sea_level_m();
         let mut source_ocean_depth = Vec::with_capacity(terrain.elevation_m.len());
         for (index, &elevation) in terrain.elevation_m.iter().enumerate() {
@@ -545,6 +590,7 @@ impl GlobalClimateForcingBuilder {
             terrain_gradient_m_per_m,
             ocean_edge_permeability,
             monthly_insolation_fraction,
+            land_evapotranspiration_fraction,
         };
         forcing.fingerprint = forcing.calculate_fingerprint_impl(Some(cancellation))?;
         forcing.validate_payload_against_cancellable(domain, cancellation)?;
@@ -811,6 +857,7 @@ mod formation_tests {
         surface: SphericalSurfaceSnapshot,
         relief: PrimaryReliefSnapshot,
         domain: ClimateWorkDomainSnapshot,
+        permeability: Vec<f32>,
     }
 
     fn fixture() -> &'static Fixture {
@@ -866,6 +913,7 @@ mod formation_tests {
                 surface,
                 relief,
                 domain,
+                permeability: vec![0.5; count],
             }
         })
     }
@@ -930,6 +978,7 @@ mod formation_tests {
         let baseline = GlobalClimateForcingBuilder::build(
             &fixture.surface,
             &fixture.relief,
+            &fixture.permeability,
             &ClimateSpec::default(),
             &fixture.domain,
             &cancellation,
@@ -938,6 +987,7 @@ mod formation_tests {
         let unchanged = GlobalClimateForcingBuilder::build_for_formation_terrain(
             &fixture.surface,
             &candidate(&fixture.surface, &fixture.relief, None),
+            &fixture.permeability,
             &ClimateSpec::default(),
             &fixture.domain,
             &cancellation,
@@ -948,6 +998,7 @@ mod formation_tests {
         let changed = GlobalClimateForcingBuilder::build_for_formation_terrain(
             &fixture.surface,
             &candidate(&fixture.surface, &fixture.relief, Some(0)),
+            &fixture.permeability,
             &ClimateSpec::default(),
             &fixture.domain,
             &cancellation,
@@ -956,6 +1007,7 @@ mod formation_tests {
         let changed_repeated = GlobalClimateForcingBuilder::build_for_formation_terrain(
             &fixture.surface,
             &candidate(&fixture.surface, &fixture.relief, Some(0)),
+            &fixture.permeability,
             &ClimateSpec::default(),
             &fixture.domain,
             &BuildCancellation::new(),
@@ -1012,6 +1064,7 @@ mod formation_tests {
             GlobalClimateForcingBuilder::build_for_formation_terrain(
                 &fixture.surface,
                 &wrong,
+                &fixture.permeability,
                 &ClimateSpec::default(),
                 &fixture.domain,
                 &BuildCancellation::new(),
@@ -1028,6 +1081,7 @@ mod formation_tests {
             GlobalClimateForcingBuilder::build_for_formation_terrain(
                 &fixture.surface,
                 &candidate(&fixture.surface, &fixture.relief, None),
+                &fixture.permeability,
                 &ClimateSpec::default(),
                 &fixture.domain,
                 &cancellation,
@@ -1042,6 +1096,7 @@ mod formation_tests {
                 GlobalClimateForcingBuilder::build_for_formation_terrain(
                     &fixture.surface,
                     &terrain,
+                    &fixture.permeability,
                     &ClimateSpec::default(),
                     &fixture.domain,
                     &cancellation,

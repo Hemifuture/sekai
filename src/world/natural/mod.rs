@@ -258,9 +258,9 @@ pub use spherical_tectonics::{
 pub use surface_formation::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
     formation_elevation_from_components, formation_monthly_precipitation_mm,
-    surface_formation_model_fingerprint, surface_formation_state_fingerprint,
-    FormationElevationComponents, FormationEvolutionReport, FormationProcessRates,
-    FormationResiduals, FormationSedimentFields, FormationTerrainFields,
+    formation_runoff_fraction, surface_formation_model_fingerprint,
+    surface_formation_state_fingerprint, FormationElevationComponents, FormationEvolutionReport,
+    FormationProcessRates, FormationResiduals, FormationSedimentFields, FormationTerrainFields,
     NaturalSurfaceFormationSnapshot, SedimentBudgetReport, SurfaceFormationCapabilityAvailability,
     SurfaceFormationCapabilityId, SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationModelId, SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError,

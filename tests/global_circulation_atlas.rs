@@ -288,6 +288,7 @@ fn generate_world(
     let forcing = GlobalClimateForcingBuilder::build(
         surface,
         &relief,
+        substrate.relative_permeability(),
         &ClimateSpec::default(),
         domain,
         &BuildCancellation::new(),

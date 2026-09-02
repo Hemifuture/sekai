@@ -108,6 +108,7 @@ impl SurfaceFormationGenerator {
         let forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
             surface,
             &final_terrain,
+            inputs.substrate.relative_permeability(),
             inputs.climate_spec,
             inputs.domain,
             cancellation,

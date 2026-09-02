@@ -198,6 +198,7 @@ fn fixture() -> &'static Fixture {
         let forcing = GlobalClimateForcingBuilder::build(
             bundle.authoritative_surface(),
             &relief,
+            substrate.relative_permeability(),
             &ClimateSpec::default(),
             &domain,
             &cancellation,
@@ -374,6 +375,7 @@ fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
     let repeated = GlobalClimateForcingBuilder::build(
         surface,
         &fixture.relief,
+        fixture.substrate.relative_permeability(),
         &ClimateSpec::default(),
         &fixture.domain,
         &BuildCancellation::new(),
@@ -540,6 +542,7 @@ fn forcing_and_projection_reject_cancellation_and_wrong_inputs_atomically() {
         GlobalClimateForcingBuilder::build(
             fixture.bundle.authoritative_surface(),
             &fixture.relief,
+            fixture.substrate.relative_permeability(),
             &ClimateSpec::default(),
             &fixture.domain,
             &cancellation,
@@ -595,6 +598,7 @@ fn forcing_builder_observes_cancellation_after_dense_work_has_started() {
             GlobalClimateForcingBuilder::build(
                 fixture.bundle.authoritative_surface(),
                 &fixture.relief,
+                fixture.substrate.relative_permeability(),
                 &ClimateSpec::default(),
                 &fixture.domain,
                 &cancellation,
