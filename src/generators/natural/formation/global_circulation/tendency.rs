@@ -12,13 +12,14 @@ use crate::generators::natural::circulation::{
     SecondOrderTransportWorkspace,
 };
 use crate::world::natural::{
-    bulk_surface_evaporation_kg_m2_s, large_scale_condensation_kg_m2_s,
+    bulk_surface_evaporation_kg_m2_s, gray_longwave_slope_w_m2_k, large_scale_condensation_kg_m2_s,
     lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
     neutral_surface_air_specific_humidity_kg_kg, p4_thermodynamic_constants_fingerprint,
     ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing,
     CLIMATE_MONTH_COUNT, EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
-    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
-    STANDARD_GRAVITY_M_S2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, STANDARD_GRAVITY_M_S2,
+    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 const SEAWATER_THERMAL_EXPANSION_K_INV: f64 = 2.0e-4;
@@ -95,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v12\0");
+    hasher.update(b"sekai.global-circulation-equations.v13\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -1369,7 +1370,14 @@ impl<'grid> LayeredTendencySystem<'grid> {
         }
 
         if mode.includes_thermodynamics() {
-            self.apply_external_radiation(state, forcing, month, &mut tendency, cancellation)?;
+            self.apply_external_radiation(
+                state,
+                forcing,
+                month,
+                transport_step_seconds,
+                &mut tendency,
+                cancellation,
+            )?;
         }
 
         if mode.includes_dynamics()
@@ -1528,6 +1536,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
         state: &LayeredClimateState,
         forcing: &PlanetForcing,
         month: usize,
+        step_seconds: f64,
         tendency: &mut LayeredClimateTendency,
         cancellation: &BuildCancellation,
     ) -> Result<(), LayeredTendencyError> {
@@ -1587,19 +1596,42 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 equilibrium_surface_temperature,
                 resolved_surface_temperature,
             );
-            let requested_power = absorbed_shortwave - outgoing_longwave;
             let mut baselines = [0.0_f32; 2];
             let mut heat_capacities = [0.0_f64; 2];
             let mut retained_power = 0.0_f64;
+
+            // Milestone A4 (§6.2): the formation sweeps a year per model day,
+            // so the radiatively forced layers carry the heat capacity that
+            // the compressed clock presents (Bryan 1984 distorted physics).
+            // The same capacity converts the retained tendency back to power
+            // below, so the published flux stays physical.
+            for (role_index, role) in SURFACE_ROLES.iter().copied().enumerate() {
+                heat_capacities[role_index] = formation_thermal_heat_capacity_per_area(state, role);
+            }
+            // External relaxation is a slow term applied once per macro step,
+            // and the compressed air capacity puts its rate near the step, so
+            // an explicit application would ring. Damping the requested power
+            // by the closed-form implicit factor makes one forward step equal
+            // one backward-Euler step of the same relaxation, which is
+            // monotone for any step. The weighted surface temperature relaxes
+            // at `B * sum(w_i^2 / C_i)` because role `i` receives `w_i` of the
+            // power and contributes `w_i` of the temperature.
+            let relaxation_rate_per_s = gray_longwave_slope_w_m2_k(equilibrium_surface_temperature)
+                * weights
+                    .iter()
+                    .zip(heat_capacities)
+                    .map(|(weight, capacity)| weight * weight / capacity)
+                    .sum::<f64>();
+            let requested_power = (absorbed_shortwave - outgoing_longwave)
+                / (1.0 + step_seconds * relaxation_rate_per_s);
 
             for (role_index, role) in SURFACE_ROLES.iter().copied().enumerate() {
                 let baseline = tendency
                     .layer(role)
                     .expect("active tendency role")
                     .temperature_tendency_k_s[cell];
-                let heat_capacity = heat_capacity_per_area(state, role);
+                let heat_capacity = heat_capacities[role_index];
                 baselines[role_index] = baseline;
-                heat_capacities[role_index] = heat_capacity;
                 let target = &mut tendency
                     .layer_mut(role)
                     .expect("active tendency role")
@@ -2333,8 +2365,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let second_temperature = state.temperature_c(second_role).expect("pair role");
             let first_velocity = state.velocity_m_s(first_role).expect("pair role");
             let second_velocity = state.velocity_m_s(second_role).expect("pair role");
-            let first_capacity = heat_capacity_per_area(state, first_role);
-            let second_capacity = heat_capacity_per_area(state, second_role);
+            let first_capacity = formation_thermal_heat_capacity_per_area(state, first_role);
+            let second_capacity = formation_thermal_heat_capacity_per_area(state, second_role);
             let first_mass = mass_per_area(state, first_role);
             let second_mass = mass_per_area(state, second_role);
             for cell in 0..self.grid.cell_count() {
@@ -2354,18 +2386,28 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
                     let surface_reference =
                         forcing.equilibrium_surface_temperature_c()[cell][month];
+                    let first_reference =
+                        role_reference_temperature_c(first_role, air_reference, surface_reference);
+                    let second_reference =
+                        role_reference_temperature_c(second_role, air_reference, surface_reference);
                     let heat = equilibrium_anomaly_heat_exchange(
                         first_temperature[cell],
-                        role_reference_temperature_c(first_role, air_reference, surface_reference),
+                        first_reference,
                         second_temperature[cell],
-                        role_reference_temperature_c(second_role, air_reference, surface_reference),
+                        second_reference,
                         first_capacity,
                         second_capacity,
                         heat_timescale,
                     )?;
+                    let implicit = implicit_pair_relaxation_factor(
+                        (f64::from(first_temperature[cell]) - f64::from(first_reference))
+                            - (f64::from(second_temperature[cell]) - f64::from(second_reference)),
+                        heat.first_tendency_k_s - heat.second_tendency_k_s,
+                        moisture_step_seconds,
+                    );
                     let pair_tendencies = [
-                        water_scale * heat.first_tendency_k_s,
-                        water_scale * heat.second_tendency_k_s,
+                        water_scale * implicit * heat.first_tendency_k_s,
+                        water_scale * implicit * heat.second_tendency_k_s,
                     ];
                     let heat_scale = subsurface_pair_exchange_scale_for_step(
                         [first_role, second_role],
@@ -2535,8 +2577,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .expect("C2 thermocline");
             let deep = state.deep_ocean_temperature_c().expect("C2 deep reservoir");
             let thermocline_capacity =
-                heat_capacity_per_area(state, ClimateLayerRole::OceanThermocline);
-            let deep_capacity = 1_025.0 * 3_990.0 * 3_000.0;
+                formation_thermal_heat_capacity_per_area(state, ClimateLayerRole::OceanThermocline);
+            let deep_capacity =
+                1_025.0 * 3_990.0 * 3_000.0 / GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION;
             let deep_exchange = layout
                 .exchange(
                     ClimateLayerRole::OceanThermocline,
@@ -2560,26 +2603,34 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 }
                 let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
                 let surface_reference = forcing.equilibrium_surface_temperature_c()[cell][month];
+                let thermocline_reference = role_reference_temperature_c(
+                    ClimateLayerRole::OceanThermocline,
+                    air_reference,
+                    surface_reference,
+                );
+                let deep_reference = role_reference_temperature_c(
+                    ClimateLayerRole::DeepOceanReservoir,
+                    air_reference,
+                    surface_reference,
+                );
                 let exchange = equilibrium_anomaly_heat_exchange(
                     thermocline[cell],
-                    role_reference_temperature_c(
-                        ClimateLayerRole::OceanThermocline,
-                        air_reference,
-                        surface_reference,
-                    ),
+                    thermocline_reference,
                     deep[cell],
-                    role_reference_temperature_c(
-                        ClimateLayerRole::DeepOceanReservoir,
-                        air_reference,
-                        surface_reference,
-                    ),
+                    deep_reference,
                     thermocline_capacity,
                     deep_capacity,
                     timescale,
                 )?;
+                let implicit = implicit_pair_relaxation_factor(
+                    (f64::from(thermocline[cell]) - f64::from(thermocline_reference))
+                        - (f64::from(deep[cell]) - f64::from(deep_reference)),
+                    exchange.first_tendency_k_s - exchange.second_tendency_k_s,
+                    moisture_step_seconds,
+                );
                 let pair_tendencies = [
-                    water_scale * exchange.first_tendency_k_s,
-                    water_scale * exchange.second_tendency_k_s,
+                    water_scale * implicit * exchange.first_tendency_k_s,
+                    water_scale * implicit * exchange.second_tendency_k_s,
                 ];
                 let heat_scale = subsurface_pair_exchange_scale_for_step(
                     [
@@ -3100,6 +3151,44 @@ fn mass_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {
         .find(|layer| layer.role() == role)
         .expect("active role belongs to the profile layout");
     layer.density_kg_m3() * f64::from(state.reference_thickness_m(role).expect("active role"))
+}
+
+/// Heat capacity that the formation's compressed clock presents to a local
+/// thermodynamic relaxation (design 2026-09-03 A4 §6.2; Bryan 1984 distorted
+/// physics).
+///
+/// Every local thermal term divides the physical capacity by the same ratio,
+/// so their rates stay in proportion to one another and the shared `f32`
+/// tendency lattice keeps its relative precision. Transport, momentum and
+/// moisture keep their physical rates, which is exactly the trade the user
+/// froze on 2026-09-03: the radiative prior owns the zonal-mean temperature
+/// structure, so relatively weakening dynamical meridional heat transport
+/// costs the published climate nothing.
+fn formation_thermal_heat_capacity_per_area(
+    state: &LayeredClimateState,
+    role: ClimateLayerRole,
+) -> f64 {
+    heat_capacity_per_area(state, role) / GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION
+}
+
+/// Closed-form factor that makes one forward application of a linear pair
+/// relaxation equal one backward-Euler step of the same relaxation.
+///
+/// The compressed clock puts several exchange rates above the macro step,
+/// where an explicit application would ring or diverge. The rate is read back
+/// from the returned tendencies, so the factor needs no knowledge of the pair
+/// formula, and because the same factor multiplies both sides it cannot
+/// disturb the equal-and-opposite extensive budget.
+fn implicit_pair_relaxation_factor(
+    anomaly_difference_k: f64,
+    difference_rate_k_s: f64,
+    step_seconds: f64,
+) -> f64 {
+    if anomaly_difference_k == 0.0 {
+        return 1.0;
+    }
+    let rate_per_s = (-difference_rate_k_s / anomaly_difference_k).max(0.0);
+    1.0 / (1.0 + step_seconds * rate_per_s)
 }
 
 fn heat_capacity_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {

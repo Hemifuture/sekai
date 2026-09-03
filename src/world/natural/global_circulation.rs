@@ -64,6 +64,31 @@ pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
 /// integrator comparison recorded in
 /// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
 pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
+/// Factor by which formation compresses local thermodynamic heat capacities
+/// (milestone A4 §6.2; Bryan 1984 distorted physics).
+///
+/// The formation advances one macro step per forcing month, so it sweeps a
+/// whole year in one model day. Matching the real per-month thermal response
+/// exactly would need `SECONDS_PER_CLIMATOLOGICAL_MONTH /
+/// GLOBAL_CIRCULATION_MACRO_STEP_SECONDS`, about `365`. Measured on
+/// 2026-09-03, that full ratio breaks two couplings this compression does not
+/// touch: the moisture cycle keeps its physical rate and answers the enlarged
+/// temperature swings with runaway condensation, and the paired-exchange
+/// residual, which shares one `f32` tendency lattice with the enlarged
+/// radiative term, rises to `5.2e-6` against a `1e-6` conservation gate.
+/// `30` is the largest value that holds every conservation gate. It recovers
+/// most of the seasonal cycle and moves global precipitation onto the GPCP
+/// reference. Raising it toward `365` requires taking the radiative
+/// relaxation off the shared tendency lattice and compressing the moisture
+/// cycle with it.
+///
+/// The user froze the underlying trade on 2026-09-03: the radiative prior owns
+/// the zonal-mean temperature structure and the resolved dynamics owns the
+/// departures from it, so relatively weakening dynamical meridional heat
+/// transport costs nothing the published climate relies on. The published
+/// radiative flux stays in physical `W m-2` because the same effective
+/// capacity converts the retained tendency back to power.
+pub const GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION: f64 = 30.0;
 /// Earth's sidereal rotation rate (IERS Conventions 2010, Table 1.1).
 pub const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
 /// Reference gravity-wave phase speed that sizes the fast substep.

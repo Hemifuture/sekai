@@ -11,8 +11,9 @@ use sekai::generators::natural::{
 use sekai::world::natural::{
     large_scale_condensation_kg_m2_s, saturation_specific_humidity_kg_kg, ClimateLayerLayout,
     ClimateLayerRole, ClimateModelProfile, PlanetForcing, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
-    P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
-    P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION, P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
+    P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
+    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 fn uniform_forcing(grid: &CubedSphereGrid, temperature_c: f32) -> PlanetForcing {
@@ -159,6 +160,11 @@ fn all_integrators_preserve_the_exact_uniform_c1_equilibrium() {
     assert_eq!(imex.diagnostics().final_linear_relative_residual(), 0.0);
 }
 
+/// The declared radiative power is the power that advances temperature on the
+/// formation's compressed clock (milestone A4 §6.2): local thermodynamics runs
+/// against `GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION` times less heat
+/// capacity than the physical column, and the same effective capacity converts
+/// the retained tendency back to the physical `W m-2` that is published.
 #[test]
 fn retained_radiative_power_is_the_same_power_that_advances_temperature() {
     let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
@@ -192,8 +198,8 @@ fn retained_radiative_power_is_the_same_power_that_advances_temperature() {
             .iter()
             .filter(|layer| layer.dynamically_active())
             .map(|layer| {
-                layer.density_kg_m3()
-                    * layer.reference_thickness_m()
+                layer.density_kg_m3() * layer.reference_thickness_m()
+                    / GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION
                     * layer.heat_capacity_j_kg_k()
                     * f64::from(tendency.temperature_tendency_k_s(layer.role()).unwrap()[cell])
             })
