@@ -96,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v15\0");
+    hasher.update(b"sekai.global-circulation-equations.v16\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -165,6 +165,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         b"depth-mean-boussinesq-steric-v1".as_slice(),
         b"resolved-temperature-pressure-gradient-v1".as_slice(),
         b"donor-upwind-nonlinear-layer-continuity-v1".as_slice(),
+        b"axisymmetric-baroclinic-thickness-closure-v1".as_slice(),
         b"single-lower-boundary-linearized-gray-longwave-v1".as_slice(),
         b"reference-stratification-anomaly-heat-exchange-v1".as_slice(),
         b"subsurface-temperature-floor-pair-flux-limiter-v1".as_slice(),
@@ -881,6 +882,15 @@ pub struct LayeredTendencyWorkspace {
     open_edges: Vec<f32>,
     scalar_scratch: Vec<f32>,
     thickness_tendency_m_s: Vec<f64>,
+    /// Upper-atmosphere thickness tendency held while the lower layer's is
+    /// being closed against it (A5 Task 2 axisymmetric closure).
+    upper_thickness_tendency_m_s: Vec<f64>,
+    /// Latitude band of every cell for the axisymmetric closure, one band per
+    /// cubed-sphere cell row (`2 * face_resolution` bands), computed once per
+    /// workspace.
+    axisymmetric_band: Vec<u32>,
+    band_area_m2: Vec<f64>,
+    band_exchange_m3_s: Vec<f64>,
     vector_scratch: Vec<[f32; 3]>,
     transport: SecondOrderTransportWorkspace,
 }
@@ -893,17 +903,25 @@ impl LayeredTendencyWorkspace {
             open_edges: vec![1.0; grid.edges().len()],
             scalar_scratch: vec![0.0; grid.cell_count()],
             thickness_tendency_m_s: vec![0.0; grid.cell_count()],
+            upper_thickness_tendency_m_s: vec![0.0; grid.cell_count()],
+            axisymmetric_band: axisymmetric_bands(grid),
+            band_area_m2: vec![0.0; axisymmetric_band_count(grid)],
+            band_exchange_m3_s: vec![0.0; axisymmetric_band_count(grid)],
             vector_scratch: vec![[0.0; 3]; grid.cell_count()],
             transport: SecondOrderTransportWorkspace::for_grid(grid),
         }
     }
 
-    pub fn allocation_signature(&self) -> [usize; 16] {
+    pub fn allocation_signature(&self) -> [usize; 20] {
         let transport = self.transport.allocation_signature();
         [
             self.open_edges.capacity(),
             self.scalar_scratch.capacity(),
             self.thickness_tendency_m_s.capacity(),
+            self.upper_thickness_tendency_m_s.capacity(),
+            self.axisymmetric_band.capacity(),
+            self.band_area_m2.capacity(),
+            self.band_exchange_m3_s.capacity(),
             self.vector_scratch.capacity(),
             transport[0],
             transport[1],
@@ -1282,35 +1300,52 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 &mut workspace.vector_scratch,
                 cancellation,
             )?;
-            let reference_thickness =
-                f64::from(state.reference_thickness_m(*role).expect("active role"));
-            let terrain_floor = self.layer_terrain_floor(*role);
-            if mode.uses_explicit_dynamics() {
-                conservative_layer_thickness_tendency(
-                    self.grid,
-                    reference_thickness,
-                    terrain_floor,
-                    height,
-                    velocity,
-                    permeability,
+            let layered_atmosphere = state.profile() == ClimateModelProfile::C2LayeredV1;
+            if layered_atmosphere && *role == ClimateLayerRole::LowerAtmosphere {
+                // Both atmosphere layers are needed at once: the axisymmetric
+                // baroclinic part of their divergence is closed vertically
+                // before either layer's own relaxation and ledger are applied.
+                self.layer_thickness_tendency_into(
+                    &operators,
+                    state,
+                    ClimateLayerRole::LowerAtmosphere,
+                    &workspace.open_edges,
+                    mode.uses_explicit_dynamics(),
                     &mut workspace.thickness_tendency_m_s,
                     cancellation,
                 )?;
-            } else {
-                let divergence = operators.divergence_with_permeability_cancellable(
-                    velocity,
-                    permeability,
+                self.layer_thickness_tendency_into(
+                    &operators,
+                    state,
+                    ClimateLayerRole::UpperAtmosphere,
+                    &workspace.open_edges,
+                    mode.uses_explicit_dynamics(),
+                    &mut workspace.upper_thickness_tendency_m_s,
                     cancellation,
                 )?;
-                for (cell, (target, divergence)) in workspace
+                close_axisymmetric_baroclinic_thickness(
+                    self.grid,
+                    state,
+                    &workspace.axisymmetric_band,
+                    &mut workspace.thickness_tendency_m_s,
+                    &mut workspace.upper_thickness_tendency_m_s,
+                    &mut workspace.band_area_m2,
+                    &mut workspace.band_exchange_m3_s,
+                );
+            } else if layered_atmosphere && *role == ClimateLayerRole::UpperAtmosphere {
+                workspace
                     .thickness_tendency_m_s
-                    .iter_mut()
-                    .zip(divergence)
-                    .enumerate()
-                {
-                    let floor_m = terrain_floor.map_or(0.0, |floor| f64::from(floor[cell]));
-                    *target = -(reference_thickness - floor_m) * f64::from(divergence);
-                }
+                    .copy_from_slice(&workspace.upper_thickness_tendency_m_s);
+            } else {
+                self.layer_thickness_tendency_into(
+                    &operators,
+                    state,
+                    *role,
+                    permeability,
+                    mode.uses_explicit_dynamics(),
+                    &mut workspace.thickness_tendency_m_s,
+                    cancellation,
+                )?;
             }
             let mut external_amount_rate_m3_s = 0.0_f64;
             {
@@ -1535,6 +1570,49 @@ impl<'grid> LayeredTendencySystem<'grid> {
         }
         self.validate_tendency(&tendency, cancellation)?;
         Ok(tendency)
+    }
+
+    /// Divergence-driven thickness tendency of one layer: the donor-thickness
+    /// conservative form for explicit dynamics, the linearized reference-depth
+    /// form otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn layer_thickness_tendency_into(
+        &self,
+        operators: &CirculationOperators<'_>,
+        state: &LayeredClimateState,
+        role: ClimateLayerRole,
+        permeability: &[f32],
+        explicit: bool,
+        target_m_s: &mut [f64],
+        cancellation: &BuildCancellation,
+    ) -> Result<(), LayeredTendencyError> {
+        let height = state.height_anomaly_m(role).expect("active role");
+        let velocity = state.velocity_m_s(role).expect("active role");
+        let reference_thickness =
+            f64::from(state.reference_thickness_m(role).expect("active role"));
+        let terrain_floor = self.layer_terrain_floor(role);
+        if explicit {
+            return conservative_layer_thickness_tendency(
+                self.grid,
+                reference_thickness,
+                terrain_floor,
+                height,
+                velocity,
+                permeability,
+                target_m_s,
+                cancellation,
+            );
+        }
+        let divergence = operators.divergence_with_permeability_cancellable(
+            velocity,
+            permeability,
+            cancellation,
+        )?;
+        for (cell, (target, divergence)) in target_m_s.iter_mut().zip(divergence).enumerate() {
+            let floor_m = terrain_floor.map_or(0.0, |floor| f64::from(floor[cell]));
+            *target = -(reference_thickness - floor_m) * f64::from(divergence);
+        }
+        Ok(())
     }
 
     /// Applies one linearized TOA gray-radiation source to the resolved lower
@@ -2982,6 +3060,94 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
     }
 }
 
+/// One latitude band per cubed-sphere cell row: the equatorial faces tile
+/// 90 degrees of latitude with `face_resolution` cells, so the axisymmetric
+/// mean is taken at the grid's own meridional resolution.
+fn axisymmetric_band_count(grid: &CubedSphereGrid) -> usize {
+    2 * usize::from(grid.face_resolution())
+}
+
+/// Band index of every cell, evaluated once per workspace.
+fn axisymmetric_bands(grid: &CubedSphereGrid) -> Vec<u32> {
+    let band_count = axisymmetric_band_count(grid);
+    grid.cells()
+        .iter()
+        .map(|cell| {
+            let sine_latitude = cell.center_unit()[2].clamp(-1.0, 1.0);
+            let fraction = sine_latitude.asin() / std::f64::consts::PI + 0.5;
+            ((fraction * band_count as f64).floor() as usize).min(band_count - 1) as u32
+        })
+        .collect()
+}
+
+/// Closes the axisymmetric baroclinic divergence of the two atmosphere layers
+/// vertically: the meridional overturning circulation (A5 Task 2).
+///
+/// Each layer's divergence-driven thickness tendency splits into a barotropic
+/// part, shared in proportion to the layers' reference thicknesses, and a
+/// baroclinic part of equal and opposite sign in the two layers (Vallis 2017,
+/// §3.4 two-layer modes). Independent per-layer thickness relaxation lets the
+/// baroclinic part build an interface anomaly whose pressure gradient opposes
+/// the divergence that created it; for the zonal-mean flow that push-back
+/// muzzles the thermally direct overturning and leaves the diagnosed eddy
+/// torque to drive a poleward Ekman drift in both layers, which put the low
+/// level convergence at 17-35 degrees instead of the equator. The zonal-mean
+/// baroclinic divergence is therefore treated as mass moving across the
+/// interface (the Gill 1980 first-baroclinic heating mode; convective
+/// adjustment within one macro step, Betts & Miller 1986): the lower layer
+/// loses what the upper layer gains, so the atmosphere-column ledger is
+/// unchanged, and the only new quantity is the band mean of tendencies the
+/// explicit kernel already computes. It is a per-macro-step adjustment of the
+/// declared slow tendency; the fast RK3 stages keep their unclosed shallow
+/// water divergence, and the two-hour lag that leaves on the zonal-mean
+/// interface is far below the interface push-back the closure removes
+/// (`g' dt H / L^2` against the one-day drag). Non-axisymmetric divergence
+/// keeps the resolved interface response at every scale and stage, which is
+/// what brakes grid-scale moist feedbacks.
+fn close_axisymmetric_baroclinic_thickness(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    axisymmetric_band: &[u32],
+    lower_tendency_m_s: &mut [f64],
+    upper_tendency_m_s: &mut [f64],
+    band_area_m2: &mut [f64],
+    band_exchange_m3_s: &mut [f64],
+) {
+    debug_assert_eq!(lower_tendency_m_s.len(), grid.cell_count());
+    debug_assert_eq!(upper_tendency_m_s.len(), grid.cell_count());
+    debug_assert_eq!(axisymmetric_band.len(), grid.cell_count());
+    debug_assert_eq!(band_area_m2.len(), band_exchange_m3_s.len());
+    let lower_thickness = f64::from(
+        state
+            .reference_thickness_m(ClimateLayerRole::LowerAtmosphere)
+            .expect("C2 lower atmosphere"),
+    );
+    let upper_thickness = f64::from(
+        state
+            .reference_thickness_m(ClimateLayerRole::UpperAtmosphere)
+            .expect("C2 upper atmosphere"),
+    );
+    let column_thickness = lower_thickness + upper_thickness;
+    band_area_m2.fill(0.0);
+    band_exchange_m3_s.fill(0.0);
+    for (cell, geometry) in grid.cells().iter().enumerate() {
+        let barotropic = (lower_tendency_m_s[cell] + upper_tendency_m_s[cell]) / column_thickness;
+        let upward_exchange = lower_tendency_m_s[cell] - lower_thickness * barotropic;
+        let band = axisymmetric_band[cell] as usize;
+        band_area_m2[band] += geometry.area_m2();
+        band_exchange_m3_s[band] += geometry.area_m2() * upward_exchange;
+    }
+    for cell in 0..grid.cell_count() {
+        let band = axisymmetric_band[cell] as usize;
+        if band_area_m2[band] <= 0.0 {
+            continue;
+        }
+        let upward_exchange = band_exchange_m3_s[band] / band_area_m2[band];
+        lower_tendency_m_s[cell] -= upward_exchange;
+        upper_tendency_m_s[cell] += upward_exchange;
+    }
+}
+
 fn conservative_layer_thickness_tendency(
     grid: &CubedSphereGrid,
     reference_thickness_m: f64,
@@ -3325,6 +3491,7 @@ impl From<CirculationOperatorError> for LayeredTendencyError {
 mod tests {
     use super::{
         add_balanced_pair_to_f32, apply_baroclinic_reynolds_stress_closure,
+        axisymmetric_band_count, axisymmetric_bands, close_axisymmetric_baroclinic_thickness,
         conservative_layer_thickness_tendency, diagnose_axisymmetric_circulation, dot,
         equilibrium_anomaly_heat_exchange, horizontal_velocity_diffusion, next_f32_down,
         role_constants, subsurface_pair_exchange_scale_for_step, tangentize,
@@ -3841,6 +4008,95 @@ mod tests {
                     .reynolds_stress_zonal_acceleration_m_s2(extratropical)
                     .abs()
         );
+    }
+
+    #[test]
+    fn axisymmetric_closure_moves_only_the_zonal_mean_baroclinic_divergence() {
+        let grid = CubedSphereGrid::new(6, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let lower_thickness = f64::from(
+            state
+                .reference_thickness_m(ClimateLayerRole::LowerAtmosphere)
+                .unwrap(),
+        );
+        let upper_thickness = f64::from(
+            state
+                .reference_thickness_m(ClimateLayerRole::UpperAtmosphere)
+                .unwrap(),
+        );
+        let band_count = axisymmetric_band_count(&grid);
+        let bands = axisymmetric_bands(&grid);
+        let mut band_area = vec![0.0; band_count];
+        let mut band_exchange = vec![0.0; band_count];
+
+        // Axisymmetric upper divergence with a resting lower layer: after the
+        // closure every cell's pair is barotropic (same fractional tendency)
+        // and the per-cell column tendency is untouched.
+        let mut lower = vec![0.0_f64; count];
+        let mut upper: Vec<f64> = grid
+            .cells()
+            .iter()
+            .map(|cell| -1.0e-3 * (1.0 - cell.center_unit()[2].powi(2)))
+            .collect();
+        let column_before: Vec<f64> = lower.iter().zip(&upper).map(|(l, u)| l + u).collect();
+        close_axisymmetric_baroclinic_thickness(
+            &grid,
+            &state,
+            &bands,
+            &mut lower,
+            &mut upper,
+            &mut band_area,
+            &mut band_exchange,
+        );
+        for cell in 0..count {
+            let column = lower[cell] + upper[cell];
+            assert!((column - column_before[cell]).abs() <= 1.0e-15);
+            // The band mean of an axisymmetric field is the field itself up to
+            // the latitude spread inside one band, so the pair is barotropic
+            // to that tolerance.
+            assert!(
+                (lower[cell] / lower_thickness - upper[cell] / upper_thickness).abs()
+                    <= 1.0e-4 * column.abs().max(1.0e-9)
+                    || (lower[cell] / lower_thickness - upper[cell] / upper_thickness).abs()
+                        <= 5.0e-8
+            );
+        }
+
+        // A zonal-wavenumber-one pattern has zero band mean: untouched.
+        let mut lower = vec![0.0_f64; count];
+        let mut upper: Vec<f64> = grid
+            .cells()
+            .iter()
+            .map(|cell| 1.0e-3 * cell.center_unit()[0])
+            .collect();
+        let upper_before = upper.clone();
+        close_axisymmetric_baroclinic_thickness(
+            &grid,
+            &state,
+            &bands,
+            &mut lower,
+            &mut upper,
+            &mut band_area,
+            &mut band_exchange,
+        );
+        for cell in 0..count {
+            assert!(lower[cell].abs() <= 1.0e-12);
+            assert!((upper[cell] - upper_before[cell]).abs() <= 1.0e-12);
+        }
     }
 
     #[test]

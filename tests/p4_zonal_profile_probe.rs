@@ -215,6 +215,125 @@ fn p4_zonal_profile() {
         1000.0 * ocean_deficit / ocean_area,
         ocean_evaporation / ocean_area,
     );
+    // A5 Task 2: where does the lower layer converge, and which term of the
+    // zonal-mean momentum balance puts it there? Annual, area-weighted
+    // zonal means of the published lower/upper winds and height anomalies;
+    // the divergence of the mean meridional wind is the axisymmetric mass
+    // convergence, and the zonal-momentum residual `r u - f v` is the sum of
+    // every non-Coriolis, non-drag torque (the diagnosed Reynolds stress and
+    // the resolved nonlinear/viscous terms).
+    let radius_m = fixture.surface.radius().get();
+    // columns: area, lower u, lower v, upper u, upper v, lower h, upper h,
+    // monthly-mean meridional moisture flux v*q (m/s * kg/kg), P-E (mm/day)
+    let mut circ = vec![[0.0_f64; 9]; BANDS];
+    let moisture_mass = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1)
+        .moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
+    let upper_wind = fields.upper_wind_m_s();
+    let upper_height = fields.monthly_upper_atmosphere_height_anomaly_m();
+    for (index, cell) in fixture.surface.cells().iter().enumerate() {
+        let [x, y, z] = cell.centroid.components();
+        let latitude = z.asin().to_degrees();
+        let band = (((latitude + 90.0) / 5.0).floor() as usize).min(BANDS - 1);
+        let cos_latitude = (x * x + y * y).sqrt();
+        if cos_latitude < 1.0e-6 {
+            continue;
+        }
+        let east = [-y / cos_latitude, x / cos_latitude, 0.0];
+        let north = [-x * z / cos_latitude, -y * z / cos_latitude, cos_latitude];
+        let area = cell.area.get();
+        let mean_wind = |field: &sekai::world::natural::MonthlyVector3Field| {
+            let mut u = 0.0_f64;
+            let mut v = 0.0_f64;
+            for month in 0..12 {
+                let w = field.values()[index][month].map(f64::from);
+                u += w[0] * east[0] + w[1] * east[1] + w[2] * east[2];
+                v += w[0] * north[0] + w[1] * north[1] + w[2] * north[2];
+            }
+            (u / 12.0, v / 12.0)
+        };
+        let (lower_u, lower_v) = mean_wind(fields.near_surface_wind_m_s());
+        let (upper_u, upper_v) = upper_wind.map_or((0.0, 0.0), mean_wind);
+        let mut moisture_flux = 0.0_f64;
+        for month in 0..12 {
+            let w = fields.near_surface_wind_m_s().values()[index][month].map(f64::from);
+            let v = w[0] * north[0] + w[1] * north[1] + w[2] * north[2];
+            moisture_flux +=
+                v * f64::from(fields.monthly_specific_humidity().values()[index][month]);
+        }
+        moisture_flux /= 12.0;
+        let p_minus_e = annual(&fields.monthly_precipitation_mm_day().values()[index])
+            - annual(&fields.monthly_evaporation_mm_day().values()[index]);
+        let row = &mut circ[band];
+        row[7] += area * moisture_flux;
+        row[8] += area * p_minus_e;
+        row[0] += area;
+        row[1] += area * lower_u;
+        row[2] += area * lower_v;
+        row[3] += area * upper_u;
+        row[4] += area * upper_v;
+        row[5] +=
+            area * annual(&fields.monthly_lower_atmosphere_height_anomaly_m().values()[index]);
+        row[6] += area * upper_height.map_or(0.0, |field| annual(&field.values()[index]));
+    }
+    eprintln!(
+        "[circ]   lat   low_u  low_v   up_u   up_v  low_h   up_h  div_low(1e-6/s) div_up  f*v_low r*u_low resid_low(1e-5 m/s2) | qconv(mm/d)  P-E"
+    );
+    let band_mean = |row: &[f64; 9], column: usize| {
+        if row[0] > 0.0 {
+            row[column] / row[0]
+        } else {
+            0.0
+        }
+    };
+    let rotation = 7.292_115_9e-5_f64;
+    for band in 0..BANDS {
+        let row = &circ[band];
+        if row[0] <= 0.0 {
+            continue;
+        }
+        let latitude = (-90.0 + 5.0 * band as f64 + 2.5).to_radians();
+        let cos_latitude = latitude.cos();
+        // Centred difference of v cos(phi) across the neighbouring bands.
+        let divergence = |column: usize| {
+            let south = band.checked_sub(1).map(|b| &circ[b]);
+            let north = circ.get(band + 1);
+            match (south, north) {
+                (Some(s), Some(n)) if s[0] > 0.0 && n[0] > 0.0 => {
+                    let lat_s = (-90.0 + 5.0 * (band as f64 - 1.0) + 2.5).to_radians();
+                    let lat_n = (-90.0 + 5.0 * (band as f64 + 1.0) + 2.5).to_radians();
+                    (band_mean(n, column) * lat_n.cos() - band_mean(s, column) * lat_s.cos())
+                        / ((lat_n - lat_s) * radius_m * cos_latitude)
+                }
+                _ => f64::NAN,
+            }
+        };
+        let lower_u = band_mean(row, 1);
+        let lower_v = band_mean(row, 2);
+        let coriolis = 2.0 * rotation * latitude.sin();
+        let f_v = coriolis * lower_v;
+        let r_u = lower_u / 86_400.0;
+        eprintln!(
+            "[circ] {:>5.1} {:>7.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>6.1} {:>10.3} {:>10.3} {:>8.2} {:>7.2} {:>8.2}",
+            latitude.to_degrees(),
+            lower_u,
+            lower_v,
+            band_mean(row, 3),
+            band_mean(row, 4),
+            band_mean(row, 5),
+            band_mean(row, 6),
+            1.0e6 * divergence(2),
+            1.0e6 * divergence(4),
+            1.0e5 * f_v,
+            1.0e5 * r_u,
+            1.0e5 * (r_u - f_v),
+        );
+        eprintln!(
+            "[qflux] {:>5.1} {:>8.2} {:>6.2}",
+            latitude.to_degrees(),
+            -divergence(7) * moisture_mass * 86_400.0,
+            band_mean(row, 8),
+        );
+    }
     // A5 Task 1: the prognostic humidity is converted to water mass through the
     // dry-air column mass. Precipitable water and the moisture residence time
     // say whether that conversion is the right one.
