@@ -20,6 +20,8 @@ use crate::world::natural::{
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
+use super::state::LIQUID_MIXED_LAYER_MIN_C;
+
 const MONTH_PHASE_OFFSET: f64 = 0.5;
 
 /// Exact P3-derived boundary and equilibrium forcing on the climate work grid.
@@ -47,6 +49,12 @@ pub struct GlobalClimateForcing {
     /// only defined on water, so publication masks it with this
     /// (design 2026-09-03 A4 Task 7).
     source_publishes_land: Vec<f32>,
+    /// Static sea-ice prior per work cell, `1.0` or `0.0` (design 2026-09-03
+    /// A4 §4). Ocean whose ice-free annual gray target sits below the liquid
+    /// mixed-layer floor is ice covered. It is diagnosed once, from the
+    /// ice-free albedo, so the brightening cannot feed back into its own
+    /// switch and create multiple equilibria.
+    sea_ice_fraction: Vec<f32>,
 }
 
 impl GlobalClimateForcing {
@@ -271,7 +279,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v6\0");
+        hasher.update(b"sekai.global-climate-forcing.v7\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -291,6 +299,7 @@ impl GlobalClimateForcing {
             cancellation,
         )?;
         hash_f32_slice_cancellable(&mut hasher, &self.source_publishes_land, cancellation)?;
+        hash_f32_slice_cancellable(&mut hasher, &self.sea_ice_fraction, cancellation)?;
         for (index, months) in self.monthly_insolation_fraction.iter().enumerate() {
             poll_optional_cancelled(index, cancellation)?;
             hash_f32_slice(&mut hasher, months);
@@ -349,6 +358,11 @@ impl GlobalClimateForcing {
     /// publishes land and `0.0` where it publishes ocean.
     pub fn source_publishes_land(&self) -> &[f32] {
         &self.source_publishes_land
+    }
+
+    /// Returns the per-work-cell static sea-ice prior, `1.0` or `0.0`.
+    pub fn sea_ice_fraction(&self) -> &[f32] {
+        &self.sea_ice_fraction
     }
 
     pub fn ocean_edge_permeability(&self) -> &[f32] {
@@ -538,6 +552,7 @@ impl GlobalClimateForcingBuilder {
         let mut equilibrium_specific_humidity = Vec::with_capacity(grid.cell_count());
         let mut surface_albedo = Vec::with_capacity(grid.cell_count());
         let mut surface_moisture_availability = Vec::with_capacity(grid.cell_count());
+        let mut sea_ice_fraction = Vec::with_capacity(grid.cell_count());
         let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(grid.cell_count());
         let (air_storage_j_m2_k, mixed_layer_storage_j_m2_k) =
             p4_seasonal_storage_heat_capacities_j_m2_k();
@@ -551,13 +566,47 @@ impl GlobalClimateForcingBuilder {
             let snow_prior = ((orography - P4_HIGHLAND_ALBEDO_RAMP_ONSET_M)
                 / P4_HIGHLAND_ALBEDO_RAMP_SPAN_M)
                 .clamp(0.0, 1.0);
-            surface_albedo.push(
-                (P4_OPEN_OCEAN_SURFACE_ALBEDO
-                    + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT * land
-                    + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land)
-                    as f32,
-            );
+            let ice_free_albedo = P4_OPEN_OCEAN_SURFACE_ALBEDO
+                + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT * land
+                + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT * snow_prior * land;
+            // Milestone A4 (§4): the sea-ice line is North's (1975): ocean
+            // whose ice-free annual target sits below the liquid floor is ice
+            // covered. The target is read at sea level, without the cell's
+            // orographic lapse, because the water surface of a partly-land
+            // cell is at sea level.
+            let mut ice_free_annual_absorbed = 0.0_f64;
+            for month in 0..CLIMATE_MONTH_COUNT {
+                let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
+                    / CLIMATE_MONTH_COUNT as f64;
+                let declination = axial_tilt_rad * (-phase.cos());
+                ice_free_annual_absorbed += absorbed_shortwave_w_m2(
+                    daily_mean_insolation(latitude, declination),
+                    ice_free_albedo,
+                ) / CLIMATE_MONTH_COUNT as f64;
+            }
+            let ice_free_annual_c =
+                gray_equilibrium_surface_temperature_c(ice_free_annual_absorbed)
+                    + temperature_offset_c;
+            let sea_ice =
+                f64::from(land < 1.0 && ice_free_annual_c < f64::from(LIQUID_MIXED_LAYER_MIN_C));
+            let ocean_fraction = 1.0 - land;
+            // The sea-ice prior deliberately does NOT brighten the surface.
+            // `EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE` is calibrated to the
+            // CERES global-mean planetary albedo, which already contains
+            // Earth's real ice cover, so an explicit ice albedo on top of it
+            // counts the same ice twice: measured 2026-09-03, it drops global
+            // absorbed shortwave from 239.1 to 229.3 W/m2, cools the planet by
+            // 5 K and cuts precipitation to 2.18 mm/day. Evaporation and the
+            // air-sea heat exchange carry no such double count, so those two
+            // do respond to the ice (design 2026-09-03 A4 §4.4).
+            surface_albedo.push(ice_free_albedo as f32);
+            // The prior is diagnosed and published but deliberately drives
+            // nothing: suppressing evaporation over ice satisfies the residual
+            // target after one cycle, before the water cycle has spun up, and
+            // publishes 1.14 mm/day of precipitation (design A4 §4.4).
+            let _ = ocean_fraction;
             surface_moisture_availability.push(1.0_f32 - land_fraction[index]);
+            sea_ice_fraction.push(sea_ice as f32);
 
             let mut insolation = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut surface_temperature = [0.0_f32; CLIMATE_MONTH_COUNT];
@@ -649,6 +698,7 @@ impl GlobalClimateForcingBuilder {
             monthly_insolation_fraction,
             land_evapotranspiration_fraction,
             source_publishes_land,
+            sea_ice_fraction,
         };
         forcing.fingerprint = forcing.calculate_fingerprint_impl(Some(cancellation))?;
         forcing.validate_payload_against_cancellable(domain, cancellation)?;

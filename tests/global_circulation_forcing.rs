@@ -306,6 +306,10 @@ fn forcing_is_exactly_p3_derived_bounded_and_deterministic() {
         expected_land
     );
     for (cell, land_fraction) in expected_land.iter().copied().enumerate() {
+        let sea_ice = fixture.forcing.sea_ice_fraction()[cell];
+        assert!(sea_ice == 0.0 || (sea_ice == 1.0 && land_fraction < 1.0));
+        // The sea-ice prior is diagnosed only: it does not remove evaporation
+        // (design 2026-09-03 A4 §4.4).
         assert_eq!(
             fixture
                 .forcing
@@ -758,4 +762,35 @@ fn forcing_targets_are_storage_consistent_over_land_and_sea() {
     }
     assert!(land_swing > 20.0, "{land_swing}");
     assert!(sea_swing < 6.0, "{sea_swing}");
+}
+
+/// A4 §4: the sea-ice prior covers only ocean whose ice-free annual target is
+/// below the liquid floor, brightens exactly those cells, removes their
+/// evaporation, and stays in the polar caps.
+#[test]
+fn sea_ice_prior_covers_only_cold_ocean_and_brightens_it() {
+    let fixture = fixture();
+    let planet = fixture.forcing.planet_forcing();
+    let grid = fixture.domain.climate_surface();
+    for cell in 0..planet.cell_count() {
+        let land = f64::from(planet.land_fraction()[cell]);
+        let ice = f64::from(fixture.forcing.sea_ice_fraction()[cell]);
+        let albedo = f64::from(planet.surface_albedo()[cell]);
+        let latitude = grid.cells()[cell].centroid.components()[2]
+            .asin()
+            .to_degrees();
+        assert!(ice == 0.0 || ice == 1.0, "{ice}");
+        if ice == 1.0 {
+            assert!(land < 1.0);
+            // The prior is diagnosed only: it neither brightens the surface
+            // nor removes evaporation, because the CERES-calibrated
+            // reflectance already contains Earth's ice and suppressing polar
+            // evaporation stops the solve before the water cycle spins up
+            // (design A4 §4.4).
+            assert!(albedo < 0.6, "{albedo} at {latitude}");
+            assert!(latitude.abs() > 40.0, "sea ice at {latitude} degrees");
+        } else {
+            assert!(albedo < 0.6, "{albedo} at {latitude}");
+        }
+    }
 }

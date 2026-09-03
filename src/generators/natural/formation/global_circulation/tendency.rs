@@ -96,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v13\0");
+    hasher.update(b"sekai.global-circulation-equations.v14\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -810,11 +810,21 @@ pub struct LayeredTendencyBudget {
     external_moisture_source_rate_kg_s: f64,
     external_precipitation_sink_rate_kg_s: f64,
     external_heat_rate_w: f64,
+    external_heat_absolute_w: f64,
 }
 
 impl LayeredTendencyBudget {
     pub const fn paired_heat_absolute_w(self) -> f64 {
         self.paired_heat_absolute_w
+    }
+
+    /// Magnitude, not sign, of the external radiative power the layer
+    /// temperature tendencies carry this evaluation. It is the rest of the
+    /// heat on the same `f32` lattice as the paired exchange, so it is the
+    /// scale the paired residual is measured against (design 2026-09-03 A4
+    /// §6.4).
+    pub const fn external_heat_absolute_w(self) -> f64 {
+        self.external_heat_absolute_w
     }
 
     pub const fn paired_heat_residual_w(self) -> f64 {
@@ -1696,8 +1706,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 );
             }
             tendency.external_radiative_heat_flux_w_m2[cell] = retained_power;
-            tendency.budget.external_heat_rate_w +=
-                self.grid.cells()[cell].area_m2() * retained_power;
+            let area = self.grid.cells()[cell].area_m2();
+            tendency.budget.external_heat_rate_w += area * retained_power;
+            tendency.budget.external_heat_absolute_w += area * retained_power.abs();
         }
         Ok(())
     }

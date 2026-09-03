@@ -1512,6 +1512,7 @@ struct BudgetAccumulator {
     paired_heat_scale: f64,
     paired_momentum_scale: f64,
     paired_moisture_scale: f64,
+    external_heat_scale: f64,
 }
 
 impl BudgetAccumulator {
@@ -1542,6 +1543,7 @@ impl BudgetAccumulator {
             paired_heat_scale: 0.0,
             paired_momentum_scale: 0.0,
             paired_moisture_scale: 0.0,
+            external_heat_scale: 0.0,
         })
     }
 
@@ -1578,6 +1580,7 @@ impl BudgetAccumulator {
         self.paired_momentum_residual += tendency_budget.paired_momentum_residual_n().abs();
         self.paired_moisture_residual += tendency_budget.paired_moisture_residual_kg_s().abs();
         self.paired_heat_scale += tendency_budget.paired_heat_absolute_w();
+        self.external_heat_scale += tendency_budget.external_heat_absolute_w();
         self.paired_momentum_scale += tendency_budget.paired_momentum_absolute_n();
         self.paired_moisture_scale += tendency_budget.paired_moisture_absolute_kg_s();
         check_cancelled(cancellation)?;
@@ -1589,7 +1592,18 @@ impl BudgetAccumulator {
         final_cycle: FinalCycleBudget,
     ) -> Result<ClimateBudgetReport, ClimateReportError> {
         let component_pair_errors = [
-            relative_exchange_error(self.paired_heat_residual, self.paired_heat_scale),
+            // Milestone A4 (§6.4): the paired heat residual is `f32`
+            // quantization of increments added to a lattice that also carries
+            // the external radiative term, so its floor is set by that term,
+            // not by the exchange. Measuring it against the exchange alone is
+            // ill posed: as the layers approach mutual equilibrium the
+            // exchange legitimately goes to zero while the quantization floor
+            // does not. It is measured against all the heat the same lattice
+            // carries.
+            relative_exchange_error(
+                self.paired_heat_residual,
+                self.paired_heat_scale + self.external_heat_scale,
+            ),
             relative_exchange_error(self.paired_momentum_residual, self.paired_momentum_scale),
             relative_exchange_error(self.paired_moisture_residual, self.paired_moisture_scale),
         ];
