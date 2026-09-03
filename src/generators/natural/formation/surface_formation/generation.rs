@@ -17,6 +17,7 @@ use crate::generators::natural::formation::global_circulation::{
     GlobalClimateForcingBuilder, GlobalClimateForcingError,
 };
 use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
+use crate::world::natural::water_volume_relative_error;
 use crate::world::natural::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
     formation_elevation_from_components, formation_relative_flux_imbalance,
@@ -29,7 +30,7 @@ use crate::world::natural::{
     SurfaceFormationUpstreamFingerprints, SurfaceFormationValidationError, WaterVolumeSolveError,
     ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ALLUVIAL_BULK_DENSITY_KG_M3,
     NATURAL_SURFACE_FORMATION_SCHEMA_V5, SEDIMENT_PROVENANCE_SOURCE_COUNT,
-    SURFACE_FORMATION_HORIZON_YEARS,
+    SURFACE_FORMATION_HORIZON_YEARS, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError};
 use crate::world::CellId;
@@ -103,8 +104,12 @@ impl SurfaceFormationGenerator {
             cancellation,
         )?;
         let (advance_summary, final_sediment_fields) = advance_report.into_parts();
-        let final_terrain =
-            state.project_final_terrain(surface, final_sediment_fields, cancellation)?;
+        let final_terrain = state.project_final_terrain(
+            surface,
+            final_sediment_fields,
+            inputs.relief.water_inventory_m3(),
+            cancellation,
+        )?;
         let forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
             surface,
             &final_terrain,
@@ -1210,12 +1215,13 @@ pub(in crate::generators::natural) fn finalize_surface_formation(
     cancellation: &BuildCancellation,
 ) -> Result<NaturalSurfaceFormationSnapshot, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
+    // The terrain carries the inventory the state was solved from; the
+    // state's realized volume matches it only within the solve's closure.
     if state.current_elevation_exact_m().len() != final_terrain.current_elevation_m().len()
-        || state
-            .surface_water_geometry()
-            .total_water_volume_m3()
-            .to_bits()
-            != final_terrain.water_inventory_m3().to_bits()
+        || water_volume_relative_error(
+            state.surface_water_geometry().total_water_volume_m3(),
+            final_terrain.water_inventory_m3(),
+        ) > WATER_VOLUME_RELATIVE_TOLERANCE
     {
         return Err(SurfaceFormationGenerationError::InvalidFormationState {
             reason: "final terrain does not match the accepted exact state".to_owned(),

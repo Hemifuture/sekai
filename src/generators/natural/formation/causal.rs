@@ -538,8 +538,12 @@ mod tests {
                     current.replace_surface_water_geometry(water);
 
                     let start_forcing = if let Some(sediment) = retained_sediment.take() {
-                        let start_terrain =
-                            current.project_final_terrain(surface, sediment, cancellation)?;
+                        let start_terrain = current.project_final_terrain(
+                            surface,
+                            sediment,
+                            primary_relief.water_inventory_m3(),
+                            cancellation,
+                        )?;
                         GlobalClimateForcingBuilder::build_for_formation_terrain(
                             surface,
                             &start_terrain,
@@ -603,6 +607,7 @@ mod tests {
                     let midpoint_terrain = current.project_final_terrain(
                         surface,
                         midpoint_sediment,
+                        primary_relief.water_inventory_m3(),
                         cancellation,
                     )?;
                     let midpoint_forcing =
@@ -631,6 +636,7 @@ mod tests {
                     let endpoint_terrain = current.project_final_terrain(
                         surface,
                         endpoint_sediment,
+                        primary_relief.water_inventory_m3(),
                         cancellation,
                     )?;
                     let endpoint_forcing =

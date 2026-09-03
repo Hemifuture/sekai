@@ -518,10 +518,17 @@ impl FormationState {
     }
 
     /// Projects the accepted exact state into the sole final wire terrain.
+    ///
+    /// `water_inventory_m3` is the P3 inventory the state was solved from; the
+    /// terrain carries that inventory itself, never the realized volume of the
+    /// final solve, because the bundle and quality identities compare it
+    /// bitwise with the relief while the realized volume only matches the
+    /// inventory within the solve's closure tolerance.
     pub(in crate::generators::natural) fn project_final_terrain(
         &self,
         surface: &SphericalSurfaceSnapshot,
         sediment: FormationSedimentFields,
+        water_inventory_m3: f64,
         cancellation: &BuildCancellation,
     ) -> Result<FormationTerrainFields, FormationStateError> {
         let components = self.wire_components()?;
@@ -534,7 +541,7 @@ impl FormationState {
             FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
             components,
             water,
-            self.surface_water_geometry.total_water_volume_m3(),
+            water_inventory_m3,
             sediment,
         )?)
     }
