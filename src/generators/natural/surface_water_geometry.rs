@@ -61,7 +61,15 @@ impl SurfaceWaterWorkingGeometry {
         )?
         .into_geometry();
         wire.validate_against(surface, projected_elevation_m)?;
-        for index in 0..self.land_ocean.len() {
+        // The land/ocean classifier works on centimetre-rounded values, and
+        // the wire re-solves its sea level on `f32` elevations, so a cell whose
+        // elevation sits within the classifier's own resolution of sea level
+        // can legitimately round to the other side once projected. That is the
+        // classifier's resolution, not an identity break; only a disagreement
+        // beyond one quantized centimetre reports a mismatch.
+        let wire_sea_level_cm =
+            LandOceanKind::quantized_centimeters_exact(f64::from(wire.sea_level_m()));
+        for (index, projected_elevation) in projected_elevation_m.iter().enumerate() {
             let exact = self
                 .land_ocean
                 .get(index)
@@ -70,13 +78,19 @@ impl SurfaceWaterWorkingGeometry {
                 .land_ocean()
                 .get(index)
                 .expect("validated wire land/ocean field is dense");
-            if exact != projected {
-                return Err(WaterVolumeSolveError::LandOceanProjectionMismatch {
-                    cell: CellId::from_raw(index as u32),
-                    exact,
-                    projected,
-                });
+            if exact == projected {
+                continue;
             }
+            let projected_elevation_cm =
+                LandOceanKind::quantized_centimeters_exact(f64::from(*projected_elevation));
+            if (projected_elevation_cm - wire_sea_level_cm).abs() <= 1 {
+                continue;
+            }
+            return Err(WaterVolumeSolveError::LandOceanProjectionMismatch {
+                cell: CellId::from_raw(index as u32),
+                exact,
+                projected,
+            });
         }
         Ok(wire)
     }
