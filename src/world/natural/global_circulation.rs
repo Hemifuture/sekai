@@ -76,11 +76,19 @@ pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
 /// temperature swings with runaway condensation, and the paired-exchange
 /// residual, which shares one `f32` tendency lattice with the enlarged
 /// radiative term, rises to `5.2e-6` against a `1e-6` conservation gate.
-/// `30` is the largest value that holds every conservation gate. It recovers
-/// most of the seasonal cycle and moves global precipitation onto the GPCP
-/// reference. Raising it toward `365` requires taking the radiative
-/// relaxation off the shared tendency lattice and compressing the moisture
-/// cycle with it.
+/// Two blockers were measured on 2026-09-03. The paired-exchange one was a
+/// gate-normalisation defect and is fixed (§6.4). The remaining one is the
+/// moisture cycle, which keeps its physical rate and answers the enlarged
+/// temperature swings with runaway condensation. The ceiling was re-measured
+/// on 2026-09-03 after that gate defect was fixed, and it did not move: `200`
+/// breaks Draft on one seed (`4637 mm` of local runoff against a `4000 mm`
+/// bound), `100` passes Draft but breaks Standard (`4050 mm`), and `60`
+/// passes seed 42 at both resolutions yet still fails the 32-seed cold-start
+/// sweep. The binding constraint is the sweep, not any single seed. `30` is
+/// the value that holds 32/32 at both resolutions. Raising it requires
+/// compressing the moisture cycle and dividing the published rates back,
+/// which would weaken moisture transport by the same factor and destroy the
+/// precipitation pattern.
 ///
 /// The user froze the underlying trade on 2026-09-03: the radiative prior owns
 /// the zonal-mean temperature structure and the resolved dynamics owns the
