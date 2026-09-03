@@ -96,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v16\0");
+    hasher.update(b"sekai.global-circulation-equations.v17\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -166,6 +166,7 @@ pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -
         b"resolved-temperature-pressure-gradient-v1".as_slice(),
         b"donor-upwind-nonlinear-layer-continuity-v1".as_slice(),
         b"axisymmetric-baroclinic-thickness-closure-v1".as_slice(),
+        b"convergent-moisture-excess-condenses-latent-heat-exported-v1".as_slice(),
         b"single-lower-boundary-linearized-gray-longwave-v1".as_slice(),
         b"reference-stratification-anomaly-heat-exchange-v1".as_slice(),
         b"subsurface-temperature-floor-pair-flux-limiter-v1".as_slice(),
@@ -576,6 +577,10 @@ pub struct LayeredClimateTendency {
     land_evapotranspiration_rate_mm_s: Vec<f32>,
     precipitation_rate_mm_s: Vec<f32>,
     orographic_precipitation_rate_mm_s: Vec<f32>,
+    /// Part of `precipitation_rate_mm_s` condensed from moisture that
+    /// converged beyond the transport bound; its latent heat is exported by
+    /// the overturning instead of warming a layer.
+    convective_precipitation_rate_mm_s: Vec<f32>,
     external_radiative_heat_flux_w_m2: Vec<f64>,
     deep_ocean_temperature_tendency_k_s: Option<Vec<f32>>,
     budget: LayeredTendencyBudget,
@@ -604,6 +609,7 @@ impl LayeredClimateTendency {
             land_evapotranspiration_rate_mm_s: vec![0.0; count],
             precipitation_rate_mm_s: vec![0.0; count],
             orographic_precipitation_rate_mm_s: vec![0.0; count],
+            convective_precipitation_rate_mm_s: vec![0.0; count],
             external_radiative_heat_flux_w_m2: vec![0.0; count],
             deep_ocean_temperature_tendency_k_s: state
                 .deep_ocean_temperature_c()
@@ -655,6 +661,10 @@ impl LayeredClimateTendency {
 
     pub fn orographic_precipitation_rate_mm_s(&self) -> &[f32] {
         &self.orographic_precipitation_rate_mm_s
+    }
+
+    pub fn convective_precipitation_rate_mm_s(&self) -> &[f32] {
+        &self.convective_precipitation_rate_mm_s
     }
 
     pub fn external_radiative_heat_flux_w_m2(&self) -> &[f64] {
@@ -726,8 +736,11 @@ impl LayeredClimateTendency {
             cell,
             (
                 (
-                    (((external_tendency, physical_tendency), evaporation), precipitation),
-                    orographic_precipitation,
+                    (
+                        (((external_tendency, physical_tendency), evaporation), precipitation),
+                        orographic_precipitation,
+                    ),
+                    convective_precipitation,
                 ),
                 available_humidity,
             ),
@@ -738,6 +751,7 @@ impl LayeredClimateTendency {
             .zip(&mut self.evaporation_rate_mm_s)
             .zip(&mut self.precipitation_rate_mm_s)
             .zip(&mut self.orographic_precipitation_rate_mm_s)
+            .zip(&mut self.convective_precipitation_rate_mm_s)
             .zip(transported_humidity)
             .enumerate()
         {
@@ -761,6 +775,8 @@ impl LayeredClimateTendency {
                 };
                 *orographic_precipitation =
                     (f64::from(*orographic_precipitation) * retained_fraction) as f32;
+                *convective_precipitation =
+                    (f64::from(*convective_precipitation) * retained_fraction) as f32;
             }
             *evaporation = if requested_evaporation == 0.0 {
                 0.0
@@ -1456,12 +1472,11 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 .velocity_m_s(ClimateLayerRole::LowerAtmosphere)
                 .expect("lower atmosphere is active");
             let transported_humidity = operators
-                .advect_scalar_monotone_second_order_into_cancellable(
+                .advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable(
                     state.specific_humidity(),
                     lower_velocity,
                     &workspace.open_edges,
                     transport_step_seconds,
-                    true,
                     &mut workspace.transport,
                     cancellation,
                 )?;
@@ -1470,6 +1485,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 forcing,
                 terrain_gradient,
                 transported_humidity.values(),
+                transported_humidity.convergent_excess(),
                 transport_step_seconds,
                 &mut tendency,
                 cancellation,
@@ -2108,6 +2124,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
         forcing: &PlanetForcing,
         terrain_gradient: &[[f32; 3]],
         transported_humidity: &[f32],
+        convergent_excess: &[f64],
         step_seconds: f64,
         tendency: &mut LayeredClimateTendency,
         cancellation: &BuildCancellation,
@@ -2173,6 +2190,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 lifting_speed,
                 self.grid.cells()[cell].area_m2(),
             ) * land_fraction;
+            // Moisture that converged beyond the transport bound is the water
+            // carried by the mass that must leave the layer upward; it
+            // condenses as it rises (Kuo 1965: converged moisture precipitates).
+            let convective_rate_kg_m2_s =
+                convergent_excess[cell].max(0.0) * atmospheric_column_mass / step_seconds;
+            let lifted_rate_kg_m2_s = orographic_rate_kg_m2_s + convective_rate_kg_m2_s;
             // Land returns the non-runoff share of its own precipitation to
             // the atmosphere (steady bucket balance E = P - R, Manabe 1969,
             // with the P5 runoff partition). One Picard pass: condense once
@@ -2186,7 +2209,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 atmospheric_column_mass,
                 atmospheric_dry_mass,
                 step_seconds,
-            ) + orographic_rate_kg_m2_s)
+            ) + lifted_rate_kg_m2_s)
                 .min(ocean_evaporation.max(0.0) * atmospheric_column_mass / step_seconds);
             let land_evapotranspiration_rate_kg_m2_s =
                 recycling_fraction * first_pass_precipitation.max(0.0);
@@ -2204,7 +2227,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let available_rate_kg_m2_s =
                 after_evaporation.max(0.0) * atmospheric_column_mass / step_seconds;
             let requested_precipitation_rate_kg_m2_s = (large_scale_condensation_rate_kg_m2_s
-                + orographic_rate_kg_m2_s)
+                + lifted_rate_kg_m2_s)
                 .min(available_rate_kg_m2_s);
             let desired_end = after_evaporation
                 - step_seconds * requested_precipitation_rate_kg_m2_s / atmospheric_column_mass;
@@ -2222,7 +2245,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 (evaporation_rate_kg_m2_s - atmospheric_column_mass * f64::from(retained_tendency))
                     .max(0.0)
             };
-            let retained_orographic_fraction = if requested_precipitation_rate_kg_m2_s > 0.0 {
+            let retained_lifted_fraction = if requested_precipitation_rate_kg_m2_s > 0.0 {
                 (retained_precipitation / requested_precipitation_rate_kg_m2_s).clamp(0.0, 1.0)
             } else {
                 0.0
@@ -2235,7 +2258,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 land_evapotranspiration_rate_kg_m2_s as f32;
             tendency.precipitation_rate_mm_s[cell] = retained_precipitation as f32;
             tendency.orographic_precipitation_rate_mm_s[cell] =
-                (orographic_rate_kg_m2_s * retained_orographic_fraction) as f32;
+                (orographic_rate_kg_m2_s * retained_lifted_fraction) as f32;
+            tendency.convective_precipitation_rate_mm_s[cell] =
+                (convective_rate_kg_m2_s * retained_lifted_fraction) as f32;
         }
         Ok(())
     }
@@ -2256,7 +2281,21 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 f64::from(tendency.land_evapotranspiration_rate_mm_s[cell]);
             let ocean_evaporation =
                 f64::from(tendency.evaporation_rate_mm_s[cell]) - land_evapotranspiration;
-            let condensation = f64::from(tendency.precipitation_rate_mm_s[cell]);
+            // Convective condensation of converged moisture releases its
+            // latent heat in the ascending branch, where the adiabatic cooling
+            // of that ascent balances it (weak temperature gradient, Sobel,
+            // Nilsson & Polvani 2001). The heat becomes potential energy of the
+            // overturning and is exported by its upper branch, whose
+            // zonal-mean transport the radiative prior already owns (A4 §6.1);
+            // depositing it here would count it twice and drive the lower
+            // layer's pressure into a moisture-convergence runaway. It is
+            // booked as an explicit external energy sink instead.
+            let convective = f64::from(tendency.convective_precipitation_rate_mm_s[cell]);
+            let condensation = f64::from(tendency.precipitation_rate_mm_s[cell]) - convective;
+            let exported_power_w_m2 = WATER_VAPORIZATION_LATENT_HEAT_J_KG * convective;
+            let area = self.grid.cells()[cell].area_m2();
+            tendency.budget.external_heat_rate_w -= area * exported_power_w_m2;
+            tendency.budget.external_heat_absolute_w += area * exported_power_w_m2;
             // Over land the radiation scheme already treats the lower
             // atmosphere as the surface, so land evapotranspiration draws its
             // latent heat there; only sea evaporation cools the mixed layer.
@@ -4007,6 +4046,90 @@ mod tests {
                 > diagnostic
                     .reynolds_stress_zonal_acceleration_m_s2(extratropical)
                     .abs()
+        );
+    }
+
+    #[test]
+    fn convective_condensation_of_converged_moisture_exports_its_latent_heat() {
+        // A lower-layer flow converging on one pole piles moisture up beyond
+        // the transport bound there; that surplus must fall as convective
+        // precipitation whose latent heat is booked as an external export
+        // instead of warming the lower layer, so the energy ledger closes on
+        // radiation plus that export alone.
+        let grid = CubedSphereGrid::new(4, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[25.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[25.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.014; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let velocity: Vec<[f32; 3]> = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                let axial = [0.0, 0.0, 10.0];
+                let along = radial.iter().zip(axial).map(|(r, a)| r * a).sum::<f64>();
+                [
+                    (axial[0] - along * radial[0]) as f32,
+                    (axial[1] - along * radial[1]) as f32,
+                    (axial[2] - along * radial[2]) as f32,
+                ]
+            })
+            .collect();
+        state
+            .velocity_m_s_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap()
+            .copy_from_slice(&velocity);
+        let system = LayeredTendencySystem::new(&grid);
+        let permeability = vec![1.0_f32; grid.edges().len()];
+        let tendency = system
+            .evaluate_for_step(
+                &state,
+                &forcing,
+                &permeability,
+                0,
+                7_200.0,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        let convective_export_w = grid
+            .cells()
+            .iter()
+            .zip(tendency.convective_precipitation_rate_mm_s())
+            .map(|(cell, rate)| {
+                cell.area_m2()
+                    * crate::world::natural::WATER_VAPORIZATION_LATENT_HEAT_J_KG
+                    * f64::from(*rate)
+            })
+            .sum::<f64>();
+        assert!(convective_export_w > 0.0);
+        for (convective, total) in tendency
+            .convective_precipitation_rate_mm_s()
+            .iter()
+            .zip(tendency.precipitation_rate_mm_s())
+        {
+            assert!(*convective >= 0.0 && *convective <= *total);
+        }
+        let radiative_w = grid
+            .cells()
+            .iter()
+            .zip(tendency.external_radiative_heat_flux_w_m2())
+            .map(|(cell, flux)| cell.area_m2() * flux)
+            .sum::<f64>();
+        let expected = radiative_w - convective_export_w;
+        assert!(
+            (tendency.budget().external_heat_rate_w() - expected).abs()
+                <= 1.0e-9 * expected.abs().max(1.0)
         );
     }
 

@@ -646,6 +646,7 @@ impl<'grid> CirculationOperators<'grid> {
             edge_permeability,
             dt_seconds,
             enforce_nonnegative,
+            false,
             workspace,
             || false,
         )
@@ -669,6 +670,42 @@ impl<'grid> CirculationOperators<'grid> {
             edge_permeability,
             dt_seconds,
             enforce_nonnegative,
+            false,
+            workspace,
+            || cancellation.is_cancelled(),
+        )
+    }
+
+    /// Same monotone update for a non-negative intensive scalar, except that
+    /// the amount by which a convergent cell's flux-form update exceeds its
+    /// one-ring upper bound stays in that cell instead of being redistributed
+    /// over the connected component, and the shortfall of a divergent cell
+    /// below its bound stays too. In a fixed-thickness layer the surplus is
+    /// exactly the scalar carried by the mass that converged and must leave
+    /// the layer vertically, and the shortfall is the dilution by the mass
+    /// that replaced what diverged; the caller reads the surplus back through
+    /// [`SecondOrderTransport::convergent_excess`] and disposes of it (A5
+    /// Task 2b: converged moisture condenses). No redistribution runs, so the
+    /// update is conservative by the paired edge fluxes alone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable<
+        'workspace,
+    >(
+        &self,
+        scalar: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        dt_seconds: f64,
+        workspace: &'workspace mut SecondOrderTransportWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<SecondOrderTransport<'workspace>, CirculationOperatorError> {
+        self.advect_scalar_monotone_second_order_with_cancel(
+            scalar,
+            velocity,
+            edge_permeability,
+            dt_seconds,
+            true,
+            true,
             workspace,
             || cancellation.is_cancelled(),
         )
@@ -682,6 +719,7 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: &[f32],
         dt_seconds: f64,
         enforce_nonnegative: bool,
+        retain_convergent_excess: bool,
         workspace: &'workspace mut SecondOrderTransportWorkspace,
         mut cancelled: F,
     ) -> Result<SecondOrderTransport<'workspace>, CirculationOperatorError>
@@ -882,20 +920,33 @@ impl<'grid> CirculationOperators<'grid> {
             } else {
                 workspace.local_min[index]
             };
-            workspace.bounded_values[index] =
-                value.clamp(lower, workspace.local_max[index].max(lower));
+            let upper = workspace.local_max[index].max(lower);
+            if retain_convergent_excess {
+                // Both sides of the flux-form result are physical for a
+                // fixed-thickness intensive scalar in divergent flow: the
+                // surplus above the bound is what converging mass carried in
+                // (it leaves vertically), the shortfall below it is dilution
+                // by the mass that replaced diverging air. Positivity is
+                // already guaranteed by the outgoing-flux limiter above.
+                workspace.convergent_excess[index] = (value - upper).max(0.0);
+                workspace.bounded_values[index] = value.max(0.0);
+            } else {
+                workspace.bounded_values[index] = value.clamp(lower, upper);
+            }
         }
         let before = extensive_total_cancellable(self.grid, scalar, false, &mut cancelled)?;
         if cancelled() {
             return Err(CirculationOperatorError::Cancelled);
         }
-        conservative_bound_redistribution(
-            self.grid,
-            scalar,
-            enforce_nonnegative,
-            workspace,
-            &mut cancelled,
-        )?;
+        if !retain_convergent_excess {
+            conservative_bound_redistribution(
+                self.grid,
+                scalar,
+                enforce_nonnegative,
+                workspace,
+                &mut cancelled,
+            )?;
+        }
         for (index, (target, value)) in workspace
             .output
             .iter_mut()
@@ -916,6 +967,7 @@ impl<'grid> CirculationOperators<'grid> {
             .max(f64::MIN_POSITIVE);
         Ok(SecondOrderTransport {
             values: &workspace.output,
+            convergent_excess: &workspace.convergent_excess,
             relative_mass_error: (after - before).abs() / mass_scale,
             positivity_scaled_cells,
         })
@@ -1302,6 +1354,7 @@ pub struct SecondOrderTransportWorkspace {
     bounded_values: Vec<f64>,
     output: Vec<f32>,
     component_root: Vec<u32>,
+    convergent_excess: Vec<f64>,
 }
 
 impl SecondOrderTransportWorkspace {
@@ -1323,6 +1376,7 @@ impl SecondOrderTransportWorkspace {
             bounded_values: vec![0.0; cell_count],
             output: vec![0.0; cell_count],
             component_root: vec![0; cell_count],
+            convergent_excess: vec![0.0; cell_count],
         }
     }
 
@@ -1385,6 +1439,7 @@ impl SecondOrderTransportWorkspace {
         self.bounded_values.fill(0.0);
         self.output.fill(0.0);
         self.component_root.fill(0);
+        self.convergent_excess.fill(0.0);
     }
 }
 
@@ -1392,6 +1447,7 @@ impl SecondOrderTransportWorkspace {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SecondOrderTransport<'workspace> {
     values: &'workspace [f32],
+    convergent_excess: &'workspace [f64],
     relative_mass_error: f64,
     positivity_scaled_cells: usize,
 }
@@ -1399,6 +1455,14 @@ pub struct SecondOrderTransport<'workspace> {
 impl SecondOrderTransport<'_> {
     pub const fn values(&self) -> &[f32] {
         self.values
+    }
+
+    /// Per-cell amount by which the flux-form update exceeded the cell's
+    /// one-ring upper bound and was retained in `values` instead of being
+    /// redistributed; all zeros unless the update was requested with
+    /// [`CirculationOperators::advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable`].
+    pub const fn convergent_excess(&self) -> &[f64] {
+        self.convergent_excess
     }
 
     pub const fn relative_mass_error(&self) -> f64 {
@@ -2134,6 +2198,99 @@ pub enum CirculationOperatorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_convergent_excess_is_conservative_and_local() {
+        // A divergent lower-layer flow on a uniform scalar: the flux form
+        // piles the scalar up where the flow converges and thins it where the
+        // flow diverges. The clamped update hides both behind the one-ring
+        // bound and a component-wide redistribution; the retaining update
+        // keeps them, reports the surplus, and still conserves the total.
+        let grid = CubedSphereGrid::new(4, 6_371_000.0).unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let count = grid.cell_count();
+        let scalar = vec![0.01_f32; count];
+        // Velocity converging toward the +z pole and diverging from the -z
+        // pole: the meridional component of a fixed axial vector.
+        let velocity: Vec<[f32; 3]> = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                let axial = [0.0, 0.0, 10.0];
+                let along = radial.iter().zip(axial).map(|(r, a)| r * a).sum::<f64>();
+                [
+                    (axial[0] - along * radial[0]) as f32,
+                    (axial[1] - along * radial[1]) as f32,
+                    (axial[2] - along * radial[2]) as f32,
+                ]
+            })
+            .collect();
+        let permeability = vec![1.0_f32; grid.edges().len()];
+        let mut clamped_workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+        let clamped = operators
+            .advect_scalar_monotone_second_order_into(
+                &scalar,
+                &velocity,
+                &permeability,
+                7_200.0,
+                true,
+                &mut clamped_workspace,
+            )
+            .unwrap()
+            .values()
+            .to_vec();
+        let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+        let retained = operators
+            .advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable(
+                &scalar,
+                &velocity,
+                &permeability,
+                7_200.0,
+                &mut workspace,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        let total = |values: &[f32]| {
+            grid.cells()
+                .iter()
+                .zip(values)
+                .map(|(cell, value)| cell.area_m2() * f64::from(*value))
+                .sum::<f64>()
+        };
+        let before = total(&scalar);
+        assert!((total(retained.values()) - before).abs() <= 1.0e-9 * before);
+        assert!(retained.relative_mass_error() <= 1.0e-9);
+        // The uniform field is its own one-ring bound, so every convergent
+        // cell carries a surplus equal to its rise above the uniform value,
+        // every divergent cell sits below it, and the clamped update returns
+        // the uniform value everywhere.
+        let mut surplus_cells = 0_usize;
+        let mut deficit_cells = 0_usize;
+        for (index, (value, excess)) in retained
+            .values()
+            .iter()
+            .zip(retained.convergent_excess())
+            .enumerate()
+        {
+            assert!(*excess >= 0.0);
+            assert!(*value >= 0.0);
+            let rise = f64::from(*value) - 0.01;
+            if rise > 1.0e-9 {
+                surplus_cells += 1;
+                // `value` went through f32 (one ULP at 0.01 is about 1e-9).
+                assert!((excess - rise).abs() <= 4.0e-9);
+            } else {
+                assert_eq!(*excess, 0.0);
+                if rise < -1.0e-9 {
+                    deficit_cells += 1;
+                }
+            }
+            assert!((f64::from(clamped[index]) - 0.01).abs() <= 1.0e-9);
+        }
+        assert!(surplus_cells > 0);
+        assert!(deficit_cells > 0);
+    }
 
     #[test]
     fn reusable_fast_operator_buffers_are_bitwise_equivalent() {

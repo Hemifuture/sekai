@@ -318,7 +318,23 @@ fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
         let evaporation = f64::from(wet.evaporation_rate_mm_s()[cell]);
         assert!(evaporation > 0.0);
         assert_eq!(dry.evaporation_rate_mm_s()[cell], 0.0);
-        assert_eq!(wet.precipitation_rate_mm_s()[cell], 0.0);
+        // A solid-body rotation is not discretely divergence-free on this
+        // two-cell face, and the moisture transport keeps that flux-form
+        // residual (A5 Task 2b): the converged part condenses as the same
+        // small convective precipitation in the wet and dry evaluations, so
+        // every closure below is stated as the wet-minus-dry difference.
+        assert!(
+            (f64::from(wet.precipitation_rate_mm_s()[cell])
+                - f64::from(wet.convective_precipitation_rate_mm_s()[cell]))
+            .abs()
+                <= 1.0e-6 * evaporation
+        );
+        assert!(
+            (f64::from(wet.precipitation_rate_mm_s()[cell])
+                - f64::from(dry.precipitation_rate_mm_s()[cell]))
+            .abs()
+                <= 1.0e-6 * evaporation
+        );
         let humidity_power = WATER_VAPORIZATION_LATENT_HEAT_J_KG
             * lower_moisture_mass
             * f64::from(
@@ -344,7 +360,11 @@ fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
         let scale = (WATER_VAPORIZATION_LATENT_HEAT_J_KG * evaporation).max(1.0);
         assert!((sensible_power + humidity_power).abs() / scale <= 2.0e-4);
         assert!(
-            (lower_moisture_mass * f64::from(wet.specific_humidity_tendency_s_inv()[cell])
+            (lower_moisture_mass
+                * f64::from(
+                    wet.specific_humidity_tendency_s_inv()[cell]
+                        - dry.specific_humidity_tendency_s_inv()[cell]
+                )
                 - evaporation)
                 .abs()
                 / evaporation
