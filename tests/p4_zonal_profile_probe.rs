@@ -10,7 +10,8 @@ mod support;
 use sekai::world::natural::{
     gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
     p4_seasonal_storage_heat_capacities_j_m2_k, saturation_specific_humidity_kg_kg,
-    seasonal_storage_equilibrium_temperature_c, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    seasonal_storage_equilibrium_temperature_c, ClimateLayerLayout, ClimateLayerRole,
+    ClimateModelProfile, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
 };
 use support::causal_formation::causal_formation_fixture;
 
@@ -213,6 +214,21 @@ fn p4_zonal_profile() {
         ocean_wind / ocean_area,
         1000.0 * ocean_deficit / ocean_area,
         ocean_evaporation / ocean_area,
+    );
+    // A5 Task 1: the prognostic humidity is converted to water mass through the
+    // dry-air column mass. Precipitable water and the moisture residence time
+    // say whether that conversion is the right one.
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+    let moisture_column_mass =
+        layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
+    let mean_humidity = global[3] / a;
+    let precipitable_water = mean_humidity * moisture_column_mass;
+    let precipitation = global[5] / a;
+    eprintln!(
+        "[water] moisture column mass {:.0} kg/m2, precipitable water {:.1} kg/m2 (Earth 25), residence {:.1} d (Earth 9)",
+        moisture_column_mass,
+        precipitable_water,
+        precipitable_water / precipitation.max(1e-9),
     );
     eprintln!(
         "[zonal] GLOBAL land {:.1}% T {:.2} T_eq {:.2} dT {:.2} q {:.2} g/kg RH {:.0}% P {:.3} E {:.3} ASR {:.1} OLR {:.1} TOA {:.2}",

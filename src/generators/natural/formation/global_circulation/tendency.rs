@@ -96,7 +96,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v14\0");
+    hasher.update(b"sekai.global-circulation-equations.v15\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     for value in [
@@ -719,7 +719,8 @@ impl LayeredClimateTendency {
         step_seconds: f64,
         cancellation: &BuildCancellation,
     ) -> Result<(), LayeredTendencyError> {
-        let atmospheric_column_mass = mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
+        let atmospheric_column_mass =
+            moisture_column_mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
         for (
             cell,
             (
@@ -2049,7 +2050,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
         let surface_temperature = state
             .temperature_c(ClimateLayerRole::OceanMixedLayer)
             .expect("mixed layer is active");
-        let atmospheric_column_mass = mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
+        let atmospheric_column_mass =
+            moisture_column_mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
+        let atmospheric_dry_mass = mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -2103,6 +2106,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 ocean_evaporation,
                 f64::from(lower_temperature[cell]),
                 atmospheric_column_mass,
+                atmospheric_dry_mass,
                 step_seconds,
             ) + orographic_rate_kg_m2_s)
                 .min(ocean_evaporation.max(0.0) * atmospheric_column_mass / step_seconds);
@@ -2116,6 +2120,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 after_evaporation,
                 f64::from(lower_temperature[cell]),
                 atmospheric_column_mass,
+                atmospheric_dry_mass,
                 step_seconds,
             );
             let available_rate_kg_m2_s =
@@ -2207,7 +2212,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
         let upper_temperature = state
             .temperature_c(ClimateLayerRole::UpperAtmosphere)
             .expect("C2 upper atmosphere");
-        let upper_mass = mass_per_area(state, ClimateLayerRole::UpperAtmosphere);
+        let upper_mass = moisture_column_mass_per_area(state, ClimateLayerRole::UpperAtmosphere);
+        let upper_dry_mass = mass_per_area(state, ClimateLayerRole::UpperAtmosphere);
         let upper_capacity = heat_capacity_per_area(state, ClimateLayerRole::UpperAtmosphere);
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
@@ -2225,6 +2231,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 predicted_humidity,
                 f64::from(upper_temperature[cell]),
                 upper_mass,
+                upper_dry_mass,
                 step_seconds,
             );
             if requested_precipitation == 0.0 {
@@ -2518,8 +2525,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 tendency.upper_specific_humidity_tendency_s_inv.as_ref(),
             ) {
                 let lower_humidity = state.specific_humidity();
-                let lower_mass = mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
-                let upper_mass = mass_per_area(state, ClimateLayerRole::UpperAtmosphere);
+                let lower_mass =
+                    moisture_column_mass_per_area(state, ClimateLayerRole::LowerAtmosphere);
+                let upper_mass =
+                    moisture_column_mass_per_area(state, ClimateLayerRole::UpperAtmosphere);
                 let coupling_mass = lower_mass.min(upper_mass);
                 let timescale = layout
                     .exchange(
@@ -3200,6 +3209,16 @@ fn implicit_pair_relaxation_factor(
     }
     let rate_per_s = (-difference_rate_k_s / anomaly_difference_k).max(0.0);
     1.0 / (1.0 + step_seconds * rate_per_s)
+}
+
+/// Water-vapour column mass of one layer (design 2026-09-03 A5 Task 1).
+///
+/// Every conversion between the prognostic mixing ratio and a water mass uses
+/// this, never the dry-air column mass: the layer's humidity is a
+/// near-surface value while its dry-air mass spans the whole slab, and water
+/// is concentrated in the lowest couple of kilometres.
+fn moisture_column_mass_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {
+    ClimateLayerLayout::for_profile(state.profile()).moisture_column_mass_per_area(role)
 }
 
 fn heat_capacity_per_area(state: &LayeredClimateState, role: ClimateLayerRole) -> f64 {

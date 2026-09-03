@@ -1513,6 +1513,7 @@ struct BudgetAccumulator {
     paired_momentum_scale: f64,
     paired_moisture_scale: f64,
     external_heat_scale: f64,
+    external_moisture_scale: f64,
 }
 
 impl BudgetAccumulator {
@@ -1544,6 +1545,7 @@ impl BudgetAccumulator {
             paired_momentum_scale: 0.0,
             paired_moisture_scale: 0.0,
             external_heat_scale: 0.0,
+            external_moisture_scale: 0.0,
         })
     }
 
@@ -1583,6 +1585,10 @@ impl BudgetAccumulator {
         self.external_heat_scale += tendency_budget.external_heat_absolute_w();
         self.paired_momentum_scale += tendency_budget.paired_momentum_absolute_n();
         self.paired_moisture_scale += tendency_budget.paired_moisture_absolute_kg_s();
+        self.external_moisture_scale += tendency_budget.external_moisture_source_rate_kg_s().abs()
+            + tendency_budget
+                .external_precipitation_sink_rate_kg_s()
+                .abs();
         check_cancelled(cancellation)?;
         Ok(())
     }
@@ -1605,7 +1611,16 @@ impl BudgetAccumulator {
                 self.paired_heat_scale + self.external_heat_scale,
             ),
             relative_exchange_error(self.paired_momentum_residual, self.paired_momentum_scale),
-            relative_exchange_error(self.paired_moisture_residual, self.paired_moisture_scale),
+            // Same well-posedness argument as the heat component above
+            // (design 2026-09-03 A4 §6.4): the residual is `f32` quantization
+            // of a lattice that also carries evaporation and precipitation,
+            // and the inter-layer moisture exchange legitimately shrinks as
+            // the layers equilibrate, so it is measured against all the water
+            // the lattice carries.
+            relative_exchange_error(
+                self.paired_moisture_residual,
+                self.paired_moisture_scale + self.external_moisture_scale,
+            ),
         ];
         let paired_relative_error = component_pair_errors.into_iter().fold(0.0_f64, f64::max);
         ClimateBudgetReport::new_with_climatology(
@@ -1717,13 +1732,15 @@ fn layer_heat_capacity_per_area(layout: &ClimateLayerLayout, role: ClimateLayerR
     layer_mass_per_area(layout, role) * layer.heat_capacity_j_kg_k()
 }
 
+/// Water mass, so every conversion below uses the moisture column mass rather
+/// than the dry-air one (design 2026-09-03 A5 Task 1).
 fn moisture_total(
     grid: &CubedSphereGrid,
     state: &LayeredClimateState,
     cancellation: &BuildCancellation,
 ) -> Result<f64, GlobalCirculationGenerationError> {
     let layout = ClimateLayerLayout::for_profile(state.profile());
-    let lower_mass = layer_mass_per_area(&layout, ClimateLayerRole::LowerAtmosphere);
+    let lower_mass = layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
     let mut total = 0.0;
     for (index, (cell, value)) in grid
         .cells()
@@ -1737,7 +1754,7 @@ fn moisture_total(
         total += cell.area_m2() * lower_mass * f64::from(*value);
     }
     if let Some(upper) = state.upper_specific_humidity() {
-        let upper_mass = layer_mass_per_area(&layout, ClimateLayerRole::UpperAtmosphere);
+        let upper_mass = layout.moisture_column_mass_per_area(ClimateLayerRole::UpperAtmosphere);
         for (index, (cell, value)) in grid.cells().iter().zip(upper).enumerate() {
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -1755,7 +1772,7 @@ fn moisture_change_total(
     cancellation: &BuildCancellation,
 ) -> Result<f64, GlobalCirculationGenerationError> {
     let layout = ClimateLayerLayout::for_profile(before.profile());
-    let lower_mass = layer_mass_per_area(&layout, ClimateLayerRole::LowerAtmosphere);
+    let lower_mass = layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
     let mut total = 0.0;
     for (index, (cell, (before_value, after_value))) in grid
         .cells()
@@ -1777,7 +1794,7 @@ fn moisture_change_total(
         before.upper_specific_humidity(),
         after.upper_specific_humidity(),
     ) {
-        let upper_mass = layer_mass_per_area(&layout, ClimateLayerRole::UpperAtmosphere);
+        let upper_mass = layout.moisture_column_mass_per_area(ClimateLayerRole::UpperAtmosphere);
         for (index, (cell, (before_value, after_value))) in grid
             .cells()
             .iter()
@@ -2215,7 +2232,9 @@ mod tests {
             vec![[240.0; CLIMATE_MONTH_COUNT]; cell_count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; cell_count],
-            vec![[0.008; CLIMATE_MONTH_COUNT]; cell_count],
+            // Below the condensation threshold so the state is quiescent and
+            // any moisture change is the injected leak (design A5 Task 1).
+            vec![[0.006; CLIMATE_MONTH_COUNT]; cell_count],
         )
         .unwrap();
         let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);

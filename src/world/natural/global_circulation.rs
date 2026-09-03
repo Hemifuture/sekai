@@ -152,6 +152,15 @@ const fn ceil_ratio_u64(numerator: f64, denominator: f64) -> u64 {
 /// its idealized lower-boundary forcing; it is not a resolved moist lapse
 /// rate or a claim about every generated atmosphere.
 pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
+/// Sea-level temperature of the U.S. Standard Atmosphere 1976.
+///
+/// This is the reference state whose tropospheric lapse rate P4 already
+/// declares just above. It fixes the vertical moisture profile that
+/// `ClimateLayerLayout::moisture_column_mass_per_area` integrates, and it is
+/// a reference profile rather than a per-cell temperature on purpose: the
+/// transport advects the intensive mixing ratio, so a spatially varying
+/// conversion from mixing ratio to water mass would stop conserving water.
+pub const STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C: f64 = 15.0;
 /// Fixed sea-level pressure used by P4's single lower-atmosphere humidity
 /// closure. P4 does not resolve pressure-dependent saturation within the
 /// lower layer, so the limitation is explicit rather than inferred from
@@ -224,13 +233,31 @@ pub const STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2: f64 = 98.0;
 /// Specific humidity is water-vapor mass divided by total moist-air mass, so
 /// `1` is the definition-derived ceiling rather than an Earth calibration.
 pub const P4_MAX_SPECIFIC_HUMIDITY_KG_KG: f64 = 1.0;
-/// Grid-mean relative-humidity threshold for unresolved large-scale cloud
-/// condensation in the coarse P4 lower atmosphere.
+/// Grid-mean relative-humidity threshold for unresolved cloud condensation in
+/// the coarse P4 lower atmosphere.
 ///
-/// The `0.9` lower-troposphere threshold follows the intermediate-complexity
-/// SPEEDY formulation (Molteni 2003, DOI `10.1007/s00382-002-0268-2`). It is
-/// distinct from both physical saturation and the initialization humidity.
-pub const P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY: f64 = 0.9;
+/// SPEEDY (Molteni 2003, DOI `10.1007/s00382-002-0268-2`) uses `0.9`, but that
+/// threshold governs SPEEDY's *large-scale* condensation only: a separate
+/// convection scheme produces most of its tropical rain. P4 has no convection
+/// scheme, so this single closure carries both paths and its threshold cannot
+/// be SPEEDY's.
+///
+/// It is pinned instead on an observable P4 can be held to. Trenberth, Smith,
+/// Qian, Dai & Fasullo (2007), DOI `10.1175/JHM600.1`, put Earth's global
+/// water-vapour residence time near nine days. With the water-vapour column
+/// mass corrected (`ClimateLayerLayout::moisture_column_mass_per_area`), a
+/// threshold of `0.65` reproduces that: measured on Draft seed 42, the
+/// precipitable water is `25.0 kg/m2` against the observed `25`, the residence
+/// time is `9.5 days`, and global precipitation lands at `2.63 mm/day` against
+/// GPCP's `2.81`. Precipitation is a check here rather than a fit, because the
+/// column mass and the residence time already determine it.
+///
+/// Design 2026-09-03 A5 Task 1 records what this replaced: `0.9` held only
+/// because the humidity was converted to water mass with the dry-air column
+/// mass, which over-counted the water by a factor of `2.6` and slowed the
+/// water cycle by the same factor. The two errors cancelled in global
+/// precipitation and in nothing else.
+pub const P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY: f64 = 0.70;
 /// E-folding time for unresolved grid-mean large-scale condensation.
 ///
 /// SPEEDY uses four hours for this coarse-grid closure. P4 integrates the
@@ -435,6 +462,33 @@ pub fn absorbed_shortwave_w_m2(daily_mean_insolation_fraction: f64, surface_albe
     EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
         * daily_mean_insolation_fraction.max(0.0)
         * (1.0 - planetary_albedo_from_surface(surface_albedo))
+}
+
+/// Integrates `q_sat(T_ref - lapse * z) / q_sat(T_ref)` over one height
+/// interval, in metres, by Simpson's rule on a fixed lattice.
+fn reference_moisture_profile_integral_m(base_height_m: f64, thickness_m: f64) -> f64 {
+    if !base_height_m.is_finite() || !thickness_m.is_finite() || thickness_m <= 0.0 {
+        return 0.0;
+    }
+    let surface_saturation =
+        saturation_specific_humidity_kg_kg(STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C);
+    if surface_saturation <= 0.0 {
+        return 0.0;
+    }
+    let intervals = MOISTURE_COLUMN_INTEGRATION_INTERVALS;
+    let step = thickness_m / intervals as f64;
+    let weight_at = |index: usize| -> f64 {
+        let height = base_height_m + step * index as f64;
+        let temperature = STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C
+            - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * height;
+        saturation_specific_humidity_kg_kg(temperature) / surface_saturation
+    };
+    let mut total = weight_at(0) + weight_at(intervals);
+    for index in 1..intervals {
+        let multiplier = if index % 2 == 0 { 2.0 } else { 4.0 };
+        total += multiplier * weight_at(index);
+    }
+    total * step / 3.0
 }
 
 /// Gray-body equilibrium surface temperature implied by absorbed shortwave.
@@ -717,27 +771,42 @@ pub fn lcl_adjusted_orographic_condensation_kg_m2_s(
 pub fn large_scale_condensation_kg_m2_s(
     specific_humidity_kg_kg: f64,
     temperature_c: f64,
-    atmospheric_column_mass_kg_m2: f64,
+    moisture_column_mass_kg_m2: f64,
+    dry_column_mass_kg_m2: f64,
     step_seconds: f64,
 ) -> f64 {
     if !specific_humidity_kg_kg.is_finite()
         || !temperature_c.is_finite()
-        || !atmospheric_column_mass_kg_m2.is_finite()
+        || !moisture_column_mass_kg_m2.is_finite()
+        || !dry_column_mass_kg_m2.is_finite()
         || !step_seconds.is_finite()
         || specific_humidity_kg_kg <= 0.0
-        || atmospheric_column_mass_kg_m2 <= 0.0
+        || moisture_column_mass_kg_m2 <= 0.0
+        || dry_column_mass_kg_m2 <= 0.0
         || step_seconds <= 0.0
     {
         return 0.0;
     }
+    let latent_heating_mass_ratio = moisture_column_mass_kg_m2 / dry_column_mass_kg_m2;
     let humidity = specific_humidity_kg_kg.max(0.0);
     let saturation = saturation_specific_humidity_kg_kg(temperature_c);
     let (saturation_adjusted_humidity, saturation_adjusted_temperature) = if humidity > saturation {
-        let adjusted =
-            solve_moist_enthalpy_humidity_endpoint(humidity, temperature_c, humidity, 1.0, 0.0);
+        let adjusted = solve_moist_enthalpy_humidity_endpoint(
+            humidity,
+            temperature_c,
+            humidity,
+            1.0,
+            0.0,
+            latent_heating_mass_ratio,
+        );
         (
             adjusted,
-            moist_enthalpy_temperature_c(humidity, temperature_c, adjusted),
+            moist_enthalpy_temperature_c(
+                humidity,
+                temperature_c,
+                adjusted,
+                latent_heating_mass_ratio,
+            ),
         )
     } else {
         (humidity, temperature_c)
@@ -757,17 +826,27 @@ pub fn large_scale_condensation_kg_m2_s(
         saturation_adjusted_humidity,
         P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
         remaining_cloudy_excess,
+        latent_heating_mass_ratio,
     );
-    atmospheric_column_mass_kg_m2 * (humidity - adjusted_humidity).max(0.0) / step_seconds
+    moisture_column_mass_kg_m2 * (humidity - adjusted_humidity).max(0.0) / step_seconds
 }
 
+/// Temperature reached by condensing from `initial` to `adjusted`.
+///
+/// The mixing ratio belongs to the water-vapour column and the heat capacity
+/// to the dry-air column, so the released heat is `L * M_q * dq` spread over
+/// `c_p * M_dry`. `latent_heating_mass_ratio` is `M_q / M_dry`; passing `1`
+/// recovers the single-column form (design 2026-09-03 A5 Task 1).
 fn moist_enthalpy_temperature_c(
     initial_humidity_kg_kg: f64,
     initial_temperature_c: f64,
     adjusted_humidity_kg_kg: f64,
+    latent_heating_mass_ratio: f64,
 ) -> f64 {
     initial_temperature_c
-        + WATER_VAPORIZATION_LATENT_HEAT_J_KG * (initial_humidity_kg_kg - adjusted_humidity_kg_kg)
+        + latent_heating_mass_ratio
+            * WATER_VAPORIZATION_LATENT_HEAT_J_KG
+            * (initial_humidity_kg_kg - adjusted_humidity_kg_kg)
             / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
 }
 
@@ -777,12 +856,14 @@ fn solve_moist_enthalpy_humidity_endpoint(
     upper_humidity_kg_kg: f64,
     relative_humidity: f64,
     remaining_cloudy_excess_kg_kg: f64,
+    latent_heating_mass_ratio: f64,
 ) -> f64 {
     let residual_and_derivative = |adjusted_humidity_kg_kg: f64| {
         let adjusted_temperature_c = moist_enthalpy_temperature_c(
             initial_humidity_kg_kg,
             initial_temperature_c,
             adjusted_humidity_kg_kg,
+            latent_heating_mass_ratio,
         );
         let (saturation, saturation_temperature_derivative) =
             saturation_specific_humidity_and_temperature_derivative(adjusted_temperature_c);
@@ -790,7 +871,9 @@ fn solve_moist_enthalpy_humidity_endpoint(
             adjusted_humidity_kg_kg
                 - relative_humidity * saturation
                 - remaining_cloudy_excess_kg_kg,
-            1.0 + relative_humidity * WATER_VAPORIZATION_LATENT_HEAT_J_KG
+            1.0 + relative_humidity
+                * latent_heating_mass_ratio
+                * WATER_VAPORIZATION_LATENT_HEAT_J_KG
                 / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
                 * saturation_temperature_derivative,
         )
@@ -1098,7 +1181,50 @@ where
     deserialize_bounded_vec::<_, _, 5>(deserializer)
 }
 
+/// Simpson intervals used to integrate the reference moisture profile. The
+/// integrand is smooth and monotone, so this is far past convergence; it is
+/// fixed rather than adaptive to keep the result bit-reproducible.
+const MOISTURE_COLUMN_INTEGRATION_INTERVALS: usize = 1_024;
+
 impl ClimateLayerLayout {
+    /// Water-vapour column mass of one atmosphere layer, `kg m-2`.
+    ///
+    /// A P4 atmosphere layer carries near-surface intensive values: the bulk
+    /// evaporation reads its humidity as the air the sea exchanges with, the
+    /// condensation threshold compares that humidity against saturation at the
+    /// same temperature, and the published air temperature is compared against
+    /// Earth's 2 m field. Converting that humidity to water mass with the
+    /// layer's dry-air column mass therefore over-counts, because water is not
+    /// distributed like dry air. Under uniform relative humidity (Manabe &
+    /// Wetherald 1967) the mixing ratio follows `q_sat(T(z))`, which the
+    /// standard lapse rate concentrates in the lowest couple of kilometres:
+    ///
+    /// ```text
+    /// M_q = rho * integral over the layer of q_sat(T_ref - lapse * z) / q_sat(T_ref) dz
+    /// ```
+    ///
+    /// The integrand is the model's own saturation curve, so this introduces
+    /// no coefficient of its own. Ocean roles have no water-vapour column and
+    /// return zero.
+    pub fn moisture_column_mass_per_area(&self, role: ClimateLayerRole) -> f64 {
+        let mut base_height_m = 0.0_f64;
+        for layer in self.layers() {
+            if !matches!(
+                layer.role(),
+                ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere
+            ) {
+                continue;
+            }
+            let thickness = layer.reference_thickness_m();
+            if layer.role() == role {
+                return layer.density_kg_m3()
+                    * reference_moisture_profile_integral_m(base_height_m, thickness);
+            }
+            base_height_m += thickness;
+        }
+        0.0
+    }
+
     /// Returns the only legal layout for a closed model profile.
     pub fn for_profile(profile: ClimateModelProfile) -> Self {
         let atmosphere = |role, thickness| ClimateLayerSpec {

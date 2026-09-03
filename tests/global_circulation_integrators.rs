@@ -35,7 +35,10 @@ fn uniform_forcing_with_absorbed_shortwave(
         vec![[absorbed_shortwave_w_m2; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[temperature_c; 12]; count],
-        vec![[0.008; 12]; count],
+        // Below the condensation threshold, so the uniform state is genuinely
+        // quiescent: `P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY` is 0.70
+        // and saturation at 15 C is about 0.0107 (design A5 Task 1).
+        vec![[0.006; 12]; count],
     )
     .unwrap()
 }
@@ -55,7 +58,10 @@ fn uniform_forcing_with_surface_water(
         vec![[240.0; 12]; count],
         vec![[temperature_c; 12]; count],
         vec![[temperature_c; 12]; count],
-        vec![[0.008; 12]; count],
+        // Below the condensation threshold, so the uniform state is genuinely
+        // quiescent: `P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY` is 0.70
+        // and saturation at 15 C is about 0.0107 (design A5 Task 1).
+        vec![[0.006; 12]; count],
     )
     .unwrap()
 }
@@ -301,6 +307,10 @@ fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
         .unwrap();
     let lower_mass = lower.density_kg_m3() * lower.reference_thickness_m();
     let lower_capacity = lower_mass * lower.heat_capacity_j_kg_k();
+    // Heat rides the dry-air mass, water rides the moisture column mass
+    // (design A5 Task 1).
+    let lower_moisture_mass =
+        layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
     let surface_capacity =
         surface.density_kg_m3() * surface.reference_thickness_m() * surface.heat_capacity_j_kg_k();
 
@@ -310,7 +320,7 @@ fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
         assert_eq!(dry.evaporation_rate_mm_s()[cell], 0.0);
         assert_eq!(wet.precipitation_rate_mm_s()[cell], 0.0);
         let humidity_power = WATER_VAPORIZATION_LATENT_HEAT_J_KG
-            * lower_mass
+            * lower_moisture_mass
             * f64::from(
                 wet.specific_humidity_tendency_s_inv()[cell]
                     - dry.specific_humidity_tendency_s_inv()[cell],
@@ -334,7 +344,8 @@ fn retained_evaporation_draws_only_surface_heat_and_closes_moist_energy() {
         let scale = (WATER_VAPORIZATION_LATENT_HEAT_J_KG * evaporation).max(1.0);
         assert!((sensible_power + humidity_power).abs() / scale <= 2.0e-4);
         assert!(
-            (lower_mass * f64::from(wet.specific_humidity_tendency_s_inv()[cell]) - evaporation)
+            (lower_moisture_mass * f64::from(wet.specific_humidity_tendency_s_inv()[cell])
+                - evaporation)
                 .abs()
                 / evaporation
                 <= 2.0e-6
@@ -456,7 +467,14 @@ fn coarse_grid_condensation_relaxes_cloudy_humidity_without_overshoot() {
     let initial = 0.95 * saturation;
     let column_mass = 1.225 * 8_000.0;
     let step_seconds = 7_200.0;
-    let rate = large_scale_condensation_kg_m2_s(initial, temperature_c, column_mass, step_seconds);
+    // Same mass for water and heat: this is the single-column form, ratio 1.
+    let rate = large_scale_condensation_kg_m2_s(
+        initial,
+        temperature_c,
+        column_mass,
+        column_mass,
+        step_seconds,
+    );
     let adjusted = initial - step_seconds * rate / column_mass;
     let adjusted_temperature = temperature_c
         + WATER_VAPORIZATION_LATENT_HEAT_J_KG * (initial - adjusted)
@@ -486,6 +504,7 @@ fn coupled_saturation_adjustment_is_invariant_to_physical_step_partition() {
             let rate = large_scale_condensation_kg_m2_s(
                 humidity,
                 temperature_c,
+                column_mass,
                 column_mass,
                 step_seconds,
             );
@@ -721,7 +740,10 @@ fn split_macro_step_moisture_delta_matches_declared_external_sources_minus_preci
         .unwrap()
         .advance(&initial, &forcing, &permeability, 0, 7_200.0, &cancellation)
         .unwrap();
-    let column_mass = 1.225 * 8_000.0;
+    // Water mass, so the moisture column mass rather than the dry-air mass
+    // (design A5 Task 1).
+    let column_mass = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1)
+        .moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
     let actual_change = grid
         .cells()
         .iter()

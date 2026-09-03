@@ -189,8 +189,13 @@ fn final_c2_tendency_retains_mass_paired_vertical_moisture_exchange() {
     let upper = tendency.upper_specific_humidity_tendency_s_inv().unwrap();
     assert!(lower.iter().all(|value| *value > 0.0));
     assert!(upper.iter().all(|value| *value < 0.0));
-    let lower_mass = 1.225 * 6_000.0;
-    let upper_mass = 1.225 * 4_000.0;
+    // Water mass, so the moisture column masses rather than the dry-air ones
+    // (design 2026-09-03 A5 Task 1).
+    let moisture_layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+    let lower_mass =
+        moisture_layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
+    let upper_mass =
+        moisture_layout.moisture_column_mass_per_area(ClimateLayerRole::UpperAtmosphere);
     let residual = grid
         .cells()
         .iter()
@@ -350,10 +355,17 @@ fn shared_tendency_is_tangent_budgeted_and_honors_closed_ocean_edges() {
         open.budget().paired_momentum_residual_n() / open.budget().paired_momentum_absolute_n()
     );
     assert!(open.budget().paired_moisture_absolute_kg_s() > 0.0);
+    // Measured against all the water the tendency lattice carries, not the
+    // inter-layer exchange alone: the exchange legitimately shrinks as the
+    // layers equilibrate while the `f32` quantization floor does not
+    // (design 2026-09-03 A4 §6.4, extended to moisture in A5 Task 1).
+    let moisture_scale = open.budget().paired_moisture_absolute_kg_s()
+        + open.budget().external_moisture_source_rate_kg_s().abs()
+        + open.budget().external_precipitation_sink_rate_kg_s().abs();
     assert!(
-        open.budget().paired_moisture_residual_kg_s()
-            / open.budget().paired_moisture_absolute_kg_s()
-            <= 1.0e-6
+        open.budget().paired_moisture_residual_kg_s() / moisture_scale <= 1.0e-6,
+        "paired moisture residual {} against lattice scale {moisture_scale}",
+        open.budget().paired_moisture_residual_kg_s(),
     );
     assert!(open
         .budget()
