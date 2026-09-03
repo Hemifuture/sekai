@@ -176,6 +176,44 @@ fn p4_zonal_profile() {
         );
     }
     let a = global[0];
+    // Evaporation closure diagnostic (A5 Task 0): the bulk formula wants a
+    // near-surface wind, the model hands it the 6 km slab mean. Compare the
+    // ocean-mean slab wind against Earth's ~6.6 m/s 10 m ocean wind, and
+    // reconstruct the bulk flux from its own factors.
+    let mut ocean_area = 0.0_f64;
+    let mut ocean_wind = 0.0_f64;
+    let mut ocean_deficit = 0.0_f64;
+    let mut ocean_evaporation = 0.0_f64;
+    for (index, cell) in fixture.surface.cells().iter().enumerate() {
+        if land[index] == 1 {
+            continue;
+        }
+        let area = cell.area.get();
+        let winds = &fields.near_surface_wind_m_s().values()[index];
+        let sst = &fields.monthly_sea_surface_temperature_c().values()[index];
+        let humidity = &fields.monthly_specific_humidity().values()[index];
+        let evaporation = &fields.monthly_evaporation_mm_day().values()[index];
+        for month in 0..12 {
+            let speed = winds[month]
+                .iter()
+                .map(|component| f64::from(*component).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let deficit = (saturation_specific_humidity_kg_kg(f64::from(sst[month]))
+                - f64::from(humidity[month]))
+            .max(0.0);
+            ocean_area += area;
+            ocean_wind += area * speed;
+            ocean_deficit += area * deficit;
+            ocean_evaporation += area * f64::from(evaporation[month]);
+        }
+    }
+    eprintln!(
+        "[evap] ocean mean |U| {:.2} m/s (Earth 10 m ocean wind 6.6), saturation deficit {:.2} g/kg, E {:.3} mm/day",
+        ocean_wind / ocean_area,
+        1000.0 * ocean_deficit / ocean_area,
+        ocean_evaporation / ocean_area,
+    );
     eprintln!(
         "[zonal] GLOBAL land {:.1}% T {:.2} T_eq {:.2} dT {:.2} q {:.2} g/kg RH {:.0}% P {:.3} E {:.3} ASR {:.1} OLR {:.1} TOA {:.2}",
         100.0 * global[11] / a,

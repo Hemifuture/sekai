@@ -193,7 +193,23 @@ fn write_global_circulation_evidence() {
         let world = generate_world(&bundle, &domain, &formation, seed);
         let budget = world.snapshot.budget_report();
         eprintln!(
-            "P4 evidence seed={seed} residual={:.9} precipitation={:.6} evaporation={:.6} latent={:.3} toa={:.3} wind={:.6} current={:.6}",
+            "P4 evidence seed={seed} land={:.4} residual={:.9} precipitation={:.6} evaporation={:.6} latent={:.3} toa={:.3} wind={:.6} current={:.6}",
+            {
+                let mut land_area = 0.0_f64;
+                let mut total_area = 0.0_f64;
+                for (cell, elevation) in surface
+                    .cells()
+                    .iter()
+                    .zip(world.relief.elevation_m().iter().copied())
+                {
+                    let area = cell.area.get();
+                    total_area += area;
+                    if elevation >= 0.0 {
+                        land_area += area;
+                    }
+                }
+                land_area / total_area
+            },
             world.snapshot.solve_report().final_residual(),
             budget.precipitation_global_mean_mm_day(),
             budget.evaporation_global_mean_mm_day(),
