@@ -11,11 +11,12 @@ use crate::world::natural::{
     gray_longwave_slope_w_m2_k, p4_seasonal_storage_heat_capacities_j_m2_k,
     saturation_specific_humidity_kg_kg, seasonal_storage_equilibrium_temperature_c, ClimateSpec,
     ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
-    FormationTerrainFields, PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError,
-    SurfaceWaterGeometry, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
-    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
-    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+    FormationTerrainFields, LandOceanKind, PlanetForcing, PrimaryReliefSnapshot,
+    PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+    P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
+    P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -40,6 +41,12 @@ pub struct GlobalClimateForcing {
     /// atmosphere: land fraction times the complement of the P5 runoff
     /// fraction (design 2026-09-02 A3 §3).
     land_evapotranspiration_fraction: Vec<f32>,
+    /// Whether each source cell is published as land, by the exact predicate
+    /// that produces the released land/ocean field (`LandOceanKind::
+    /// classify_exact`). `1.0` is land, `0.0` is ocean. The ocean current is
+    /// only defined on water, so publication masks it with this
+    /// (design 2026-09-03 A4 Task 7).
+    source_publishes_land: Vec<f32>,
 }
 
 impl GlobalClimateForcing {
@@ -264,7 +271,7 @@ impl GlobalClimateForcing {
     ) -> Result<[u8; 32], GlobalClimateForcingError> {
         check_optional_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-climate-forcing.v5\0");
+        hasher.update(b"sekai.global-climate-forcing.v6\0");
         hasher.update(&self.source_ref.fingerprint());
         hasher.update(&self.source_relief_fingerprint);
         hasher.update(&self.climate_spec_fingerprint);
@@ -283,6 +290,7 @@ impl GlobalClimateForcing {
             &self.land_evapotranspiration_fraction,
             cancellation,
         )?;
+        hash_f32_slice_cancellable(&mut hasher, &self.source_publishes_land, cancellation)?;
         for (index, months) in self.monthly_insolation_fraction.iter().enumerate() {
             poll_optional_cancelled(index, cancellation)?;
             hash_f32_slice(&mut hasher, months);
@@ -335,6 +343,12 @@ impl GlobalClimateForcing {
     /// Returns the per-work-cell precipitation share evaporated back over land.
     pub fn land_evapotranspiration_fraction(&self) -> &[f32] {
         &self.land_evapotranspiration_fraction
+    }
+
+    /// Returns, per source cell, `1.0` where the released land/ocean field
+    /// publishes land and `0.0` where it publishes ocean.
+    pub fn source_publishes_land(&self) -> &[f32] {
+        &self.source_publishes_land
     }
 
     pub fn ocean_edge_permeability(&self) -> &[f32] {
@@ -458,6 +472,20 @@ impl GlobalClimateForcingBuilder {
             })
             .map_err(map_remap_error)?;
         let sea_level_m = terrain.surface_water_geometry.sea_level_m();
+        // The same predicate that produces the released land/ocean field, so a
+        // cell this calls land is exactly a cell the world publishes as land.
+        let mut source_publishes_land = Vec::with_capacity(terrain.elevation_m.len());
+        for (index, &elevation) in terrain.elevation_m.iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            source_publishes_land.push(
+                match LandOceanKind::classify_exact(f64::from(elevation), f64::from(sea_level_m)) {
+                    LandOceanKind::Land => 1.0_f32,
+                    LandOceanKind::Ocean => 0.0_f32,
+                },
+            );
+        }
         let mut source_ocean_depth = Vec::with_capacity(terrain.elevation_m.len());
         for (index, &elevation) in terrain.elevation_m.iter().enumerate() {
             if index % 256 == 0 {
@@ -620,6 +648,7 @@ impl GlobalClimateForcingBuilder {
             ocean_edge_permeability,
             monthly_insolation_fraction,
             land_evapotranspiration_fraction,
+            source_publishes_land,
         };
         forcing.fingerprint = forcing.calculate_fingerprint_impl(Some(cancellation))?;
         forcing.validate_payload_against_cancellable(domain, cancellation)?;

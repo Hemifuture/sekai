@@ -1251,15 +1251,22 @@ impl WorkClimatology {
             cancellation,
         )?;
         observer(GlobalCirculationPhase::PublicationStarted);
-        for (cell, (vectors, &land_fraction)) in ocean_current
+        // The ocean current is defined on water only. Conservative remapping
+        // from the coarse work grid spreads a wet work cell's velocity across
+        // every source cell it covers, including the dry ones, so publication
+        // masks the field with the released land/ocean classification rather
+        // than with the sub-cell land area fraction: a cell can sit above sea
+        // level, and therefore publish as land, while still holding some water
+        // area (design 2026-09-03 A4 Task 7).
+        for (cell, (vectors, &publishes_land)) in ocean_current
             .iter_mut()
-            .zip(forcing.source_land_fraction())
+            .zip(forcing.source_publishes_land())
             .enumerate()
         {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            if land_fraction >= 1.0 {
+            if publishes_land == 1.0 {
                 *vectors = [[0.0; 3]; CLIMATE_MONTH_COUNT];
             }
         }

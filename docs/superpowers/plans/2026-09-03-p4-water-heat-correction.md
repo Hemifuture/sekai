@@ -68,9 +68,13 @@
       回收分支 `a4-task2-sea-ice-experiment`（ba5ebdf）的海冰先验，Task 4 之后
       复测 TOA 门。
 
-- [ ] Task 7 —— 洋流陆地泄漏
-      `WorkClimatology::project` 的既有缺陷，`ocean-current-land-leakage-max-m-s`
-      17/17 失败。
+- [x] Task 7 —— 洋流陆地泄漏
+      发布掩码用的是**次网格陆地面积分数**（`land_fraction >= 1.0`），而发布的
+      land/ocean 场用的是 `LandOceanKind::classify_exact`（高程与海平面比较）。
+      两者不等：一格可以高于海平面（发布为陆地）却仍有水域面积。粗工作网格到
+      权威面的守恒重映射把湿格速度铺到它覆盖的每个源格，于是陆地格上出现
+      0.18–0.50 m/s 的洋流。强迫新增 `source_publishes_land`（同一判据，指纹 v6），
+      发布按它掩码。17 seed 失败 17/17 → **0/17**，度量由软提为硬门。
 
 ## 用户验证步骤
 

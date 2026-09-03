@@ -105,7 +105,7 @@ declare_expected_metrics! {
     "midlatitude-westerly-fraction" => (Some(0.55), None, false),
     "mixed-layer-warmer-than-thermocline-fraction" => (Some(0.70), None, false),
     "near-surface-wind-non-zonal-variance-fraction" => (None, None, false),
-    "ocean-current-land-leakage-max-m-s" => (None, Some(0.0), false),
+    "ocean-current-land-leakage-max-m-s" => (None, Some(0.0), true),
     "ocean-gyre-circulation-fraction" => (Some(0.20), None, false),
     "orographic-precipitation-response" => (Some(0.01), None, false),
     "orographic-rain-shadow-leeward-drying" => (Some(0.02), None, false),
