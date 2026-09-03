@@ -83,9 +83,11 @@ pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
 /// on 2026-09-03 after that gate defect was fixed, and it did not move: `200`
 /// breaks Draft on one seed (`4637 mm` of local runoff against a `4000 mm`
 /// bound), `100` passes Draft but breaks Standard (`4050 mm`), and `60`
-/// passes seed 42 at both resolutions yet still fails the 32-seed cold-start
-/// sweep. The binding constraint is the sweep, not any single seed. `30` is
-/// the value that holds 32/32 at both resolutions. Raising it requires
+/// passes seed 42 at both resolutions yet fails the Draft 32-seed cold-start
+/// sweep while passing the Standard one. Which resolution breaks first is set
+/// by the seed and its terrain, not by grid spacing, so the binding test is
+/// the 32-seed sweep at each resolution and no single seed predicts it. `30`
+/// is the value that holds at both. Raising it requires
 /// compressing the moisture cycle and dividing the published rates back,
 /// which would weaken moisture transport by the same factor and destroy the
 /// precipitation pattern.
