@@ -155,15 +155,15 @@ impl GlobalCirculationGenerator {
         );
         let integrator = SplitExplicitRk3Integrator::new_with_terrain(
             &grid,
-            forcing.terrain_gradient_m_per_m(),
+            forcing,
             &terrain_floor_m,
-            forcing.land_evapotranspiration_fraction(),
             fast_step_seconds,
         )?;
         let mut state = LayeredClimateState::from_annual_mean_forcing_cancellable(
             &grid,
             &layout,
             planet,
+            forcing.sea_level_m(),
             cancellation,
         )
         .map_err(map_state_error)?;
@@ -202,6 +202,130 @@ impl GlobalCirculationGenerator {
                     cancellation,
                 )?;
                 observer(GlobalCirculationPhase::TransportCompleted);
+                tendency_system.print_zonal_momentum_budget_probe(
+                    &before,
+                    planet,
+                    &declared,
+                    usize::from(cycle),
+                    month,
+                    cancellation,
+                )?;
+                if cycle == 0 && month == 0 && grid.cell_count() > 309 {
+                    for cell in [308, 309] {
+                        tendency_system.print_non_zonal_pressure_outflow_probe(
+                            &before,
+                            planet,
+                            cell,
+                            cancellation,
+                        )?;
+                    }
+                }
+                if cycle == 3 {
+                    eprintln!("[column-momentum-phase] month={month}");
+                    let predicted = tendency_system.print_column_momentum_probe(
+                        &before,
+                        planet,
+                        &declared,
+                        cancellation,
+                    )?;
+                    if month == 0 {
+                        let initial = tendency_system.column_angular_momentum_probe(&before);
+                        for probe_step in [60.0, 30.0] {
+                            let result = integrator
+                                .advance_with_declared_tendency_and_phase_observer(
+                                    &before,
+                                    planet,
+                                    forcing.ocean_edge_permeability(),
+                                    month,
+                                    probe_step,
+                                    &declared,
+                                    cancellation,
+                                    &mut |_| {},
+                                )?;
+                            let observed = (tendency_system
+                                .column_angular_momentum_probe(&result.into_state())
+                                - initial)
+                                / probe_step;
+                            eprintln!("[column-momentum-short-step] dt={probe_step} predicted={predicted:.8e} observed={observed:.8e} relative_difference={:.6e}", (observed-predicted)/predicted);
+                        }
+                        for divisions in [1, 2, 4] {
+                            let mut reference_state = before
+                                .clone_cancellable(cancellation)
+                                .map_err(map_state_error)?;
+                            let step = GLOBAL_CIRCULATION_MACRO_STEP_SECONDS / f64::from(divisions);
+                            let mut precipitation = 0.0;
+                            let mut evaporation = 0.0;
+                            for _ in 0..divisions {
+                                let reference_tendency = tendency_system.evaluate_for_step(
+                                    &reference_state,
+                                    planet,
+                                    forcing.ocean_edge_permeability(),
+                                    month,
+                                    step,
+                                    cancellation,
+                                )?;
+                                for (cell, geometry) in grid.cells().iter().enumerate() {
+                                    precipitation += geometry.area_m2()
+                                        * f64::from(
+                                            reference_tendency.precipitation_rate_mm_s()[cell],
+                                        )
+                                        / f64::from(divisions);
+                                    evaporation += geometry.area_m2()
+                                        * f64::from(
+                                            reference_tendency.evaporation_rate_mm_s()[cell],
+                                        )
+                                        / f64::from(divisions);
+                                }
+                                reference_state = integrator
+                                    .advance_with_declared_tendency_and_phase_observer(
+                                        &reference_state,
+                                        planet,
+                                        forcing.ocean_edge_permeability(),
+                                        month,
+                                        step,
+                                        &reference_tendency,
+                                        cancellation,
+                                        &mut |_| {},
+                                    )?
+                                    .into_state();
+                            }
+                            let mut totals = [0.0_f64; 5];
+                            let mut minimum = [f64::INFINITY; 2];
+                            for (cell, geometry) in grid.cells().iter().enumerate() {
+                                let area = geometry.area_m2();
+                                totals[0] += area;
+                                for (index, role) in [
+                                    ClimateLayerRole::LowerAtmosphere,
+                                    ClimateLayerRole::UpperAtmosphere,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                {
+                                    let depth = f64::from(
+                                        reference_state.reference_thickness_m(role).expect("C2"),
+                                    ) + f64::from(
+                                        reference_state.height_anomaly_m(role).expect("C2")[cell],
+                                    ) - if index == 0 {
+                                        f64::from(terrain_floor_m[cell])
+                                    } else {
+                                        0.0
+                                    };
+                                    minimum[index] = minimum[index].min(depth);
+                                    let speed_squared =
+                                        reference_state.velocity_m_s(role).expect("C2")[cell]
+                                            .iter()
+                                            .map(|&v| f64::from(v).powi(2))
+                                            .sum::<f64>();
+                                    totals[1 + index] += area * speed_squared;
+                                    totals[3 + index] += 0.5 * area * depth * speed_squared;
+                                }
+                            }
+                            eprintln!("[macro-refinement] divisions={divisions} speed_rms={:.8}/{:.8} minimum_depth={:.8}/{:.8} kinetic_per_density={:.8e}/{:.8e} P={:.8} E={:.8}",
+                                (totals[1]/totals[0]).sqrt(), (totals[2]/totals[0]).sqrt(), minimum[0], minimum[1], totals[3], totals[4],
+                                precipitation*86400.0/totals[0], evaporation*86400.0/totals[0]);
+                        }
+                    }
+                }
                 let result = integrator.advance_with_declared_tendency_and_phase_observer(
                     &before,
                     planet,
@@ -211,7 +335,40 @@ impl GlobalCirculationGenerator {
                     &declared,
                     cancellation,
                     &mut observer,
-                )?;
+                ).inspect_err(|error| {
+                    eprintln!("[thin-probe] cycle={cycle} month={month} {error:?}");
+                    let mut workspace = super::LayeredTendencyWorkspace::for_grid(&grid);
+                    let fast = tendency_system.evaluate_fast_with_workspace_validated(&before, planet, forcing.ocean_edge_permeability(), cancellation, &mut workspace).expect("diagnostic fast tendency");
+                    let cell = match error {
+                        ClimateIntegratorError::Tendency(LayeredTendencyError::UnstableAtmosphericStratification { cell, .. }
+                            | LayeredTendencyError::InvalidFluidThickness { cell, .. }) => *cell,
+                        _ => 310,
+                    };
+                    tendency_system.print_non_zonal_pressure_outflow_probe(
+                        &before, planet, cell, cancellation,
+                    ).expect("read-only pressure diagnostic");
+                    for role in [ClimateLayerRole::LowerAtmosphere, ClimateLayerRole::UpperAtmosphere] {
+                        let h = before.height_anomaly_m(role).expect("atmosphere")[cell];
+                        let full_h = declared.height_tendency_m_s(role).expect("atmosphere")[cell];
+                        let fast_h = fast.height_tendency_m_s(role).expect("atmosphere")[cell];
+                        eprintln!("[thin-probe] role={role:?} cell={cell} latitude={} h={h} floor={} T={} U={:?} full_dh={full_h} fast_dh={fast_h} slow_delta={} terrain={} land={} Teq={}", grid.cells()[cell].center_unit()[2].asin().to_degrees(), terrain_floor_m[cell], before.temperature_c(role).expect("atmosphere")[cell], before.velocity_m_s(role).expect("atmosphere")[cell], f64::from(full_h-fast_h)*GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, forcing.relative_elevation_m()[cell], planet.land_fraction()[cell], planet.equilibrium_air_temperature_c()[cell][month]);
+                        let operators = crate::generators::natural::circulation::CirculationOperators::new(&grid);
+                        let temperature = before.temperature_c(role).expect("atmosphere");
+                        let kelvin = temperature.iter().map(|t| *t + 273.15).collect::<Vec<_>>();
+                        let mut transport_workspace = crate::generators::natural::circulation::SecondOrderTransportWorkspace::for_grid(&grid);
+                        let mut results = Vec::new();
+                        for field in [temperature, kelvin.as_slice()] {
+                            results.push(operators.advect_scalar_monotone_second_order_into_cancellable(
+                                field, before.velocity_m_s(role).expect("atmosphere"), &vec![1.0; grid.edges().len()],
+                                GLOBAL_CIRCULATION_MACRO_STEP_SECONDS, false, &mut transport_workspace, cancellation,
+                            ).expect("temperature diagnostic").values().to_vec());
+                        }
+                        let maximum_offset_error = results[0].iter().zip(&results[1]).map(|(&c,&k)| (f64::from(k)-273.15-f64::from(c)).abs()).fold(0.0_f64,f64::max);
+                        eprintln!("[temperature-probe] role={role:?} cell={cell} full_delta={} transport_delta_C={} transport_delta_K={} global_max_offset_error={maximum_offset_error}",
+                            f64::from(declared.temperature_tendency_k_s(role).expect("atmosphere")[cell])*GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+                            results[0][cell]-temperature[cell], results[1][cell]-kelvin[cell]);
+                    }
+                })?;
                 let diagnostics = result.diagnostics();
                 state = result.into_state();
                 state
@@ -240,6 +397,48 @@ impl GlobalCirculationGenerator {
             }
             final_residual = residual;
             formation_cycles = cycle + 1;
+            let mut momentum_probe = [0.0_f64; 7];
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                let radial = geometry.center_unit();
+                let latitude = radial[2].asin();
+                if !(35.0..55.0).contains(&latitude.abs().to_degrees()) {
+                    continue;
+                }
+                let cosine = latitude.cos();
+                let east = [-radial[1] / cosine, radial[0] / cosine, 0.0];
+                let north = [
+                    -radial[0] * radial[2] / cosine,
+                    -radial[1] * radial[2] / cosine,
+                    cosine,
+                ];
+                let area = geometry.area_m2();
+                momentum_probe[0] += area;
+                for (index, role) in [
+                    ClimateLayerRole::LowerAtmosphere,
+                    ClimateLayerRole::UpperAtmosphere,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let velocity =
+                        state.velocity_m_s(role).expect("probe layer")[cell].map(f64::from);
+                    let u = velocity.iter().zip(east).map(|(v, e)| v * e).sum::<f64>();
+                    let v = velocity.iter().zip(north).map(|(v, n)| v * n).sum::<f64>();
+                    let h = f64::from(state.height_anomaly_m(role).expect("probe layer")[cell]);
+                    let depth = f64::from(state.reference_thickness_m(role).expect("probe layer"))
+                        + h
+                        - if index == 0 {
+                            f64::from(terrain_floor_m[cell])
+                        } else {
+                            0.0
+                        };
+                    momentum_probe[1 + index] += area * u;
+                    momentum_probe[3 + index] += area * h;
+                    momentum_probe[5] += area * depth * v * latitude.signum();
+                    momentum_probe[6] += area * depth;
+                }
+            }
+            eprintln!("[momentum-spinup] cycle={} residual={residual:.6} mid_u={:.3}/{:.3} mid_h={:.1}/{:.1} column_v_poleward={:.5}", cycle + 1, momentum_probe[1]/momentum_probe[0], momentum_probe[2]/momentum_probe[0], momentum_probe[3]/momentum_probe[0], momentum_probe[4]/momentum_probe[0], momentum_probe[5]/momentum_probe[6]);
             final_cycle_budget = work.final_cycle_budget(&grid, forcing, cancellation)?;
             let hard_closures_pass = final_cycle_budget.hard_closures_pass();
             final_budgets = Some(cycle_budgets);
@@ -264,7 +463,7 @@ impl GlobalCirculationGenerator {
             previous_cycle = state
                 .clone_cancellable(cancellation)
                 .map_err(map_state_error)?;
-            if final_residual <= FORMATION_RESIDUAL_TARGET && hard_closures_pass {
+            if cycle >= 3 && final_residual <= FORMATION_RESIDUAL_TARGET && hard_closures_pass {
                 break;
             }
         }

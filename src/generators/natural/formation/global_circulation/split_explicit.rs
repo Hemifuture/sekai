@@ -43,17 +43,17 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
 
     pub(crate) fn new_with_terrain(
         grid: &'grid CubedSphereGrid,
-        terrain_gradient_m_per_m: &'grid [[f32; 3]],
+        forcing: &'grid super::forcing::GlobalClimateForcing,
         terrain_floor_m: &'grid [f32],
-        land_evapotranspiration_fraction: &'grid [f32],
         maximum_fast_step_seconds: f64,
     ) -> Result<Self, ClimateIntegratorError> {
         let mut integrator = Self::new(grid, maximum_fast_step_seconds)?;
         integrator.tendency_system = LayeredTendencySystem::with_terrain(
             grid,
-            terrain_gradient_m_per_m,
+            forcing.terrain_gradient_m_per_m(),
             terrain_floor_m,
-            land_evapotranspiration_fraction,
+            forcing.land_evapotranspiration_fraction(),
+            forcing.sea_level_m(),
         );
         Ok(integrator)
     }
@@ -113,8 +113,6 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         cancellation: &BuildCancellation,
     ) -> Result<ClimateStepResult, ClimateIntegratorError> {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
-        let (substeps, fast_step_seconds) =
-            self.fast_substep_plan(state, macro_step_seconds, cancellation)?;
         let system = self.tendency_system;
         let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
         system.validate_fast_inputs(
@@ -125,6 +123,20 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             cancellation,
             &fast_workspace,
         )?;
+        let initial_fast = system.evaluate_fast_with_workspace_validated(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            cancellation,
+            &mut fast_workspace,
+        )?;
+        let (substeps, fast_step_seconds) = self.fast_substep_plan(
+            state,
+            macro_step_seconds,
+            initial_fast.momentum_transport_rate_s_inv(),
+            cancellation,
+        )?;
+        drop(initial_fast);
         let mut advanced = state.clone_cancellable(cancellation)?;
         let mut evaluations = 0_u64;
         for _ in 0..substeps {
@@ -296,8 +308,6 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         F: FnMut(GlobalCirculationPhase),
     {
         validate_step(self.grid, state, macro_step_seconds, cancellation)?;
-        let (substeps, fast_step_seconds) =
-            self.fast_substep_plan(state, macro_step_seconds, cancellation)?;
         let system = self.tendency_system;
 
         let evaluated_full = if declared_full.is_none() {
@@ -316,13 +326,22 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         let full = declared_full
             .or(evaluated_full.as_ref())
             .expect("full tendency is supplied or evaluated");
-        let fast = system.evaluate_fast_with_workspace_validated(
+        let (substeps, fast_step_seconds) = self.fast_substep_plan(
+            state,
+            macro_step_seconds,
+            full.momentum_transport_rate_s_inv(),
+            cancellation,
+        )?;
+        let mut fast = system.evaluate_fast_with_workspace_validated(
             state,
             forcing,
             ocean_edge_permeability,
             cancellation,
             fast_workspace,
         )?;
+        if let Some(exchange) = full.overturning_exchange_m_s() {
+            system.apply_declared_overturning_momentum(state, exchange, cancellation, &mut fast)?;
+        }
         let full_derivative = ClimateDerivative::from_tendency(state, full, cancellation)?;
         let fast_derivative = ClimateDerivative::from_tendency(state, &fast, cancellation)?;
         let mut slow = full_derivative.subtract(&fast_derivative, cancellation)?;
@@ -351,17 +370,51 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                 cancellation,
                 fast_workspace,
             )?;
-        let thermal_pressure_difference = ClimateDerivative::from_tendency(
+        let mut thermal_pressure_difference = ClimateDerivative::from_tendency(
             &advanced,
             &thermal_pressure_difference,
             cancellation,
         )?;
+        if state.profile() == ClimateModelProfile::C2LayeredV1 {
+            // Atmospheric thermal pressure is recomputed in each fast stage.
+            // Only ocean thermal pressure retains a frozen endpoint correction.
+            for layer in &mut thermal_pressure_difference.layers {
+                if matches!(
+                    layer.role,
+                    crate::world::natural::ClimateLayerRole::LowerAtmosphere
+                        | crate::world::natural::ClimateLayerRole::UpperAtmosphere
+                ) {
+                    layer.velocity.fill([0.0; 3]);
+                }
+            }
+        }
         slow = slow.add(&thermal_pressure_difference, cancellation)?;
         clear_scalar_components(&mut slow);
-        let first_fast_plus_slow = fast_derivative.add(&slow, cancellation)?;
+        let first_fast_plus_slow = if state.profile() == ClimateModelProfile::C2LayeredV1 {
+            let mut endpoint_fast = system.evaluate_fast_with_workspace_validated(
+                &advanced,
+                forcing,
+                ocean_edge_permeability,
+                cancellation,
+                fast_workspace,
+            )?;
+            if let Some(exchange) = full.overturning_exchange_m_s() {
+                system.apply_declared_overturning_momentum(
+                    &advanced,
+                    exchange,
+                    cancellation,
+                    &mut endpoint_fast,
+                )?;
+            }
+            ClimateDerivative::from_tendency(&advanced, &endpoint_fast, cancellation)?
+                .add(&slow, cancellation)?
+        } else {
+            fast_derivative.add(&slow, cancellation)?
+        };
         drop(thermal_pressure_difference);
         drop(fast_derivative);
-        let mut evaluations = 3_u64;
+        let mut evaluations =
+            3_u64 + u64::from(state.profile() == ClimateModelProfile::C2LayeredV1);
         let mut first_fast_plus_slow = Some(first_fast_plus_slow);
         observer(GlobalCirculationPhase::FastSubstepsStarted);
         if cancellation.is_cancelled() {
@@ -373,13 +426,21 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             }
             let mut evaluate = |stage: &LayeredClimateState| {
                 evaluations += 1;
-                let value = system.evaluate_fast_with_workspace_validated(
+                let mut value = system.evaluate_fast_with_workspace_validated(
                     stage,
                     forcing,
                     ocean_edge_permeability,
                     cancellation,
                     fast_workspace,
                 )?;
+                if let Some(exchange) = full.overturning_exchange_m_s() {
+                    system.apply_declared_overturning_momentum(
+                        stage,
+                        exchange,
+                        cancellation,
+                        &mut value,
+                    )?;
+                }
                 ClimateDerivative::from_tendency(stage, &value, cancellation)?
                     .add(&slow, cancellation)
             };
@@ -420,6 +481,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         &self,
         state: &LayeredClimateState,
         macro_step_seconds: f64,
+        momentum_exchange_rate_s_inv: f64,
         cancellation: &BuildCancellation,
     ) -> Result<(u32, f64), ClimateIntegratorError> {
         let configured_cfl = estimate_cfl(
@@ -427,7 +489,8 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             state,
             self.maximum_fast_step_seconds,
             cancellation,
-        )?;
+        )?
+        .max(self.maximum_fast_step_seconds * momentum_exchange_rate_s_inv);
         let cfl_limited_step = if configured_cfl > GLOBAL_CIRCULATION_FAST_CFL_TARGET {
             self.maximum_fast_step_seconds * GLOBAL_CIRCULATION_FAST_CFL_TARGET / configured_cfl
         } else {

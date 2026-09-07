@@ -21,6 +21,54 @@ const BOLTON_DEWPOINT_OFFSET_C: f64 = 243.5;
 const BOLTON_LCL_TEMPERATURE_OFFSET_K: f64 = 56.0;
 const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
 
+// Peixoto & Oort (1992), Fig. 11.8b YEAR 粗实线：纬度、NH 北向应力、SH 北向应力。
+// 按原图刻度取整；常规读图误差约 ±1 m²/s²，陡坡／重叠线约 ±2。
+// 原图与 SHA256、奇对称化和极冠边界近似见 A5 设计 §7.20。
+const EARTH_TRANSIENT_EDDY_STRESS_PROFILE: [(f64, f64, f64); 9] = [
+    (0.0, 1.0, 1.0),
+    (10.0, 4.0, -3.0),
+    (20.0, 8.0, -9.0),
+    (30.0, 12.0, -15.0),
+    (40.0, 10.0, -16.0),
+    (50.0, 2.0, -7.0),
+    (60.0, -3.0, 3.0),
+    (70.0, -2.0, 10.0),
+    (80.0, -1.0, 9.0),
+];
+
+/// 原图年均瞬变通量的奇对称粗插值所对应的球面扭矩加速度。
+///
+/// `latitude_rad` 为地理纬度，`radius_m` 为正球半径；返回 m/s²。
+/// 仅用于离线观测形状对照，节点导数取右侧，极点取正则极限。
+pub(crate) fn observed_transient_eddy_acceleration_m_s2(latitude_rad: f64, radius_m: f64) -> f64 {
+    let latitude = latitude_rad.abs();
+    if latitude >= std::f64::consts::FRAC_PI_2 {
+        return 0.0;
+    }
+    let &(last_degrees, last_north, last_south) = EARTH_TRANSIENT_EDDY_STRESS_PROFILE
+        .last()
+        .expect("observed stress nodes");
+    let last_latitude = last_degrees.to_radians();
+    let stress = |north: f64, south: f64| (north - south) * 0.5;
+    if latitude >= last_latitude {
+        // Smooth axisymmetric shear stress permits O(cos²φ) at the pole.
+        // This extension is a regularity assumption, not observed polar data.
+        return 4.0 * latitude.sin() * latitude.cos() * stress(last_north, last_south)
+            / (radius_m * last_latitude.cos().powi(2));
+    }
+    let interval = EARTH_TRANSIENT_EDDY_STRESS_PROFILE
+        .windows(2)
+        .find(|nodes| latitude < nodes[1].0.to_radians())
+        .expect("latitude below final observed node");
+    let [(lower_degrees, lower_north, lower_south), (upper_degrees, upper_north, upper_south)] =
+        [interval[0], interval[1]];
+    let lower_latitude = lower_degrees.to_radians();
+    let slope = (stress(upper_north, upper_south) - stress(lower_north, lower_south))
+        / (upper_degrees.to_radians() - lower_latitude);
+    let value = stress(lower_north, lower_south) + slope * (latitude - lower_latitude);
+    (2.0 * latitude.tan() * value - slope) / radius_m
+}
+
 fn deserialize_global_circulation_scalars<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
 where
     D: Deserializer<'de>,
@@ -152,6 +200,18 @@ const fn ceil_ratio_u64(numerator: f64, denominator: f64) -> u64 {
 /// its idealized lower-boundary forcing; it is not a resolved moist lapse
 /// rate or a claim about every generated atmosphere.
 pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
+
+/// Returns the overlap-weighted emergent surface height above sea level.
+///
+/// The forcing's standard-atmosphere reference lapse and the pressure
+/// coordinate correction must use the same height, including partial land.
+/// Both inputs come from validated forcing geometry; the result is in metres.
+pub(crate) fn atmospheric_reference_surface_height_m(
+    relative_elevation_m: f32,
+    land_fraction: f32,
+) -> f64 {
+    f64::from(relative_elevation_m.max(0.0)) * f64::from(land_fraction)
+}
 /// Sea-level temperature of the U.S. Standard Atmosphere 1976.
 ///
 /// This is the reference state whose tropospheric lapse rate P4 already
@@ -190,6 +250,15 @@ pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 /// from dissipation measurements. P4 intentionally adds no unmeasured
 /// minimum-wind or gustiness term.
 pub const BULK_MOISTURE_TRANSFER_COEFFICIENT: f64 = 1.15e-3;
+
+/// 中性近地面相对风对应的动量交换速度 `C_D |U|`。
+///
+/// Large & Yeager (2004), NCAR/TN-460+STR, Eq. (6a)。直接组合系数与风速，
+/// 保留光滑海面的有限低风极限；乘以相对风后，应力在静风时严格为零。
+/// 参数为非负、有限的相对风速（m/s），返回交换速度（m/s）。
+pub(crate) fn neutral_surface_momentum_transfer_velocity_m_s(relative_speed_m_s: f64) -> f64 {
+    1.0e-3 * (2.70 + 0.142 * relative_speed_m_s + relative_speed_m_s.powi(2) / 13.09)
+}
 /// Reference near-surface relative humidity for forcing initialization.
 ///
 /// Manabe & Wetherald (1967), DOI

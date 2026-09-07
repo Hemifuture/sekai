@@ -1039,8 +1039,45 @@ pub(crate) fn estimate_cfl(
             maximum_speed = maximum_speed.max(speed);
         }
     }
-    let advective = dt_seconds * (GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S + maximum_speed)
-        / grid.minimum_center_distance_m();
+    let reference_speed =
+        if state.profile() == crate::world::natural::ClimateModelProfile::C2LayeredV1 {
+            let lower = f64::from(
+                state
+                    .reference_thickness_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
+                    .expect("C2"),
+            );
+            let upper = f64::from(
+                state
+                    .reference_thickness_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
+                    .expect("C2"),
+            );
+            let mut speed = GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S;
+            for (cell, (&lower_height, &upper_height)) in state
+                .height_anomaly_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
+                .expect("C2")
+                .iter()
+                .zip(
+                    state
+                        .height_anomaly_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
+                        .expect("C2"),
+                )
+                .enumerate()
+            {
+                poll_integrator_cancelled(cell, Some(cancellation))?;
+                // Omitting the nonnegative bottom floor overestimates the fluid
+                // depth, keeping this wave-speed bound conservative over terrain.
+                speed = speed.max(super::tendency::atmospheric_fast_mode_speed_m_s(
+                    lower + f64::from(lower_height),
+                    upper + f64::from(upper_height),
+                    super::tendency::atmospheric_thermal_buoyancy_difference_m_s2(state, cell),
+                ));
+            }
+            speed
+        } else {
+            GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S
+        };
+    let advective =
+        dt_seconds * (reference_speed + maximum_speed) / grid.minimum_center_distance_m();
     let rotational = dt_seconds * 2.0 * EARTH_ROTATION_RATE_RAD_S;
     check_integrator_cancelled(Some(cancellation))?;
     Ok(advective.max(rotational))

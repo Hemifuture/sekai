@@ -110,7 +110,6 @@ pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
-pub(crate) use global_circulation::p4_thermodynamic_constants_fingerprint;
 pub use global_circulation::{
     absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s, climatological_annual_total_mm,
     climatological_monthly_mean, expected_global_circulation_dense_state_bytes,
@@ -158,6 +157,10 @@ pub use global_circulation::{
     STEFAN_BOLTZMANN_CONSTANT_W_M2_K4, STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
     STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
     WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+};
+pub(crate) use global_circulation::{
+    atmospheric_reference_surface_height_m, neutral_surface_momentum_transfer_velocity_m_s,
+    observed_transient_eddy_acceleration_m_s2, p4_thermodynamic_constants_fingerprint,
 };
 #[cfg(test)]
 pub(crate) use global_circulation::{

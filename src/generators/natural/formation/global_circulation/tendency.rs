@@ -1,15 +1,16 @@
 use thiserror::Error;
 
 use super::state::{
-    role_reference_temperature_c, LayeredClimateState, LayeredStateError,
+    axisymmetric_band_count, axisymmetric_bands, role_reference_temperature_c,
+    upper_atmosphere_reference_air_temperature_c, LayeredClimateState, LayeredStateError,
     DEEP_OCEAN_EQUILIBRIUM_OFFSET_C, LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C,
     SUBSURFACE_OCEAN_MIN_C, THERMOCLINE_EQUILIBRIUM_OFFSET_C,
     UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C, UPPER_SPECIFIC_HUMIDITY_INITIAL_FRACTION,
 };
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{
-    interpolate_vector, CirculationOperatorError, CirculationOperators, CubedSphereGrid,
-    SecondOrderTransportWorkspace,
+    donor_layer_edge_amount_rate_m3_s, CirculationOperatorError, CirculationOperators,
+    CubedSphereGrid, LayerTransportFields, SecondOrderTransportWorkspace,
 };
 use crate::world::natural::{
     bulk_surface_evaporation_kg_m2_s, gray_longwave_slope_w_m2_k, large_scale_condensation_kg_m2_s,
@@ -72,10 +73,12 @@ const LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 6_000.0;
 const LOWER_ATMOSPHERE_MIN_THICKNESS_M: f64 = LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M / 6.0;
 const UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 4_000.0;
 const C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 30.0;
-const UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = 25.0;
-const C2_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K
+const UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = STANDARD_GRAVITY_M_S2
+    * LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M
+    / (2.0 * (crate::world::natural::STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C + 273.15));
+const C2_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K: f64 = STANDARD_GRAVITY_M_S2
     * UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M
-    / LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M;
+    / (2.0 * (crate::world::natural::STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C + 273.15));
 // The accelerated formation solve cannot resolve a multi-hundred-day
 // synoptic-eddy spin-up. Its monthly-mean atmospheric momentum closure uses
 // the annual-mean available-potential-energy velocity scale in a regular
@@ -86,7 +89,7 @@ const ATMOSPHERE_COLUMN_DEPTH_M: f64 = 10_000.0;
 // Eady activity vanishes with |f| at the equator. U_e is total horizontal
 // eddy speed. Because max(|sin(phi)|^2 cos(phi)^2)=1/4, C=2/3 retains at most
 // U_e^2/6, one third of the Cauchy bound |u'v'|<=0.5 U_e^2.
-const BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY: f64 = 2.0 / 3.0;
+const BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY: f64 = 4.0 * 10.0 / (65.0 * 65.0);
 // A retained pair must remain more tightly balanced than the public 1e-6
 // exchange budget. Its magnitude may differ from the requested exchange by
 // at most 0.1%; less representable cases use the bounded lattice search.
@@ -568,6 +571,8 @@ struct ActiveLayerTendency {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayeredClimateTendency {
     active_layers: Vec<ActiveLayerTendency>,
+    overturning_exchange_m_s: Option<Vec<f64>>,
+    momentum_transport_rate_s_inv: f64,
     specific_humidity_tendency_s_inv: Vec<f32>,
     external_moisture_tendency_s_inv: Vec<f64>,
     upper_specific_humidity_tendency_s_inv: Option<Vec<f32>>,
@@ -590,6 +595,8 @@ impl LayeredClimateTendency {
     fn zeroed(state: &LayeredClimateState) -> Self {
         let count = state.cell_count();
         Self {
+            overturning_exchange_m_s: None,
+            momentum_transport_rate_s_inv: 0.0,
             active_layers: state
                 .active_roles()
                 .iter()
@@ -631,6 +638,14 @@ impl LayeredClimateTendency {
     pub fn height_tendency_m_s(&self, role: ClimateLayerRole) -> Option<&[f32]> {
         self.layer(role)
             .map(|layer| layer.height_tendency_m_s.as_slice())
+    }
+
+    pub(super) fn overturning_exchange_m_s(&self) -> Option<&[f64]> {
+        self.overturning_exchange_m_s.as_deref()
+    }
+
+    pub(super) const fn momentum_transport_rate_s_inv(&self) -> f64 {
+        self.momentum_transport_rate_s_inv
     }
 
     pub fn velocity_tendency_m_s2(&self, role: ClimateLayerRole) -> Option<&[[f32; 3]]> {
@@ -964,6 +979,7 @@ pub struct LayeredTendencySystem<'grid> {
     /// Land surface height under the lower atmosphere, per work cell; `None`
     /// integrates over a flat floor (test and comparison harnesses).
     terrain_floor_m: Option<&'grid [f32]>,
+    sea_level_m: f32,
     /// Share of each cell's precipitation that land evaporates back (steady
     /// water balance with the P5 runoff partition); `None` keeps land dry.
     land_evapotranspiration_fraction: Option<&'grid [f32]>,
@@ -1005,6 +1021,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             grid,
             terrain_gradient_m_per_m: None,
             terrain_floor_m: None,
+            sea_level_m: 0.0,
             land_evapotranspiration_fraction: None,
             forcing_prevalidated: false,
         }
@@ -1017,11 +1034,13 @@ impl<'grid> LayeredTendencySystem<'grid> {
         terrain_gradient_m_per_m: &'grid [[f32; 3]],
         terrain_floor_m: &'grid [f32],
         land_evapotranspiration_fraction: &'grid [f32],
+        sea_level_m: f32,
     ) -> Self {
         Self {
             grid,
             terrain_gradient_m_per_m: Some(terrain_gradient_m_per_m),
             terrain_floor_m: Some(terrain_floor_m),
+            sea_level_m,
             land_evapotranspiration_fraction: Some(land_evapotranspiration_fraction),
             forcing_prevalidated: true,
         }
@@ -1034,6 +1053,50 @@ impl<'grid> LayeredTendencySystem<'grid> {
             ClimateLayerRole::LowerAtmosphere => self.terrain_floor_m,
             _ => None,
         }
+    }
+
+    fn fluid_layer_thickness_m(
+        &self,
+        state: &LayeredClimateState,
+        role: ClimateLayerRole,
+        cell: usize,
+    ) -> Result<f64, LayeredTendencyError> {
+        let depth = f64::from(state.reference_thickness_m(role).expect("active layer"))
+            + f64::from(state.height_anomaly_m(role).expect("active layer")[cell])
+            - self
+                .layer_terrain_floor(role)
+                .map_or(0.0, |floor| f64::from(floor[cell]));
+        if !depth.is_finite() || depth <= 0.0 {
+            return Err(LayeredTendencyError::InvalidFluidThickness {
+                role,
+                cell,
+                found: depth,
+            });
+        }
+        Ok(depth)
+    }
+
+    fn momentum_pair_mass_per_area(
+        &self,
+        state: &LayeredClimateState,
+        roles: [ClimateLayerRole; 2],
+        reference_masses: [f64; 2],
+        cell: usize,
+    ) -> Result<[f64; 2], LayeredTendencyError> {
+        if roles
+            != [
+                ClimateLayerRole::LowerAtmosphere,
+                ClimateLayerRole::UpperAtmosphere,
+            ]
+        {
+            return Ok(reference_masses);
+        }
+        let mut masses = reference_masses;
+        for (mass, role) in masses.iter_mut().zip(roles) {
+            *mass *= self.fluid_layer_thickness_m(state, role, cell)?
+                / f64::from(state.reference_thickness_m(role).expect("C2"));
+        }
+        Ok(masses)
     }
 
     /// Terrain floor under the lower atmosphere for one work grid: land
@@ -1050,6 +1113,768 @@ impl<'grid> LayeredTendencySystem<'grid> {
             .zip(land_fraction)
             .map(|(&elevation, &land)| (elevation.max(0.0) * land).min(cap))
             .collect()
+    }
+
+    /// 临时研发量测：低层纬向动量收支的带均分解，逐项复用生产算子。
+    pub(super) fn print_zonal_momentum_budget_probe(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        full: &LayeredClimateTendency,
+        cycle: usize,
+        month: usize,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), LayeredTendencyError> {
+        if state.profile() != ClimateModelProfile::C2LayeredV1 {
+            return Ok(());
+        }
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        let operators = CirculationOperators::new(self.grid);
+        let open = vec![1.0_f32; self.grid.edges().len()];
+        let velocity = state.velocity_m_s(lower).expect("C2");
+        let upper_velocity = state.velocity_m_s(upper).expect("C2");
+        let exchange = full.overturning_exchange_m_s().expect("C2 exchange");
+        let mut scratch = vec![0.0; self.grid.cell_count()];
+        let mut eddy = LayeredClimateTendency::zeroed(state);
+        apply_baroclinic_reynolds_stress_closure(
+            self.grid,
+            state,
+            forcing,
+            &mut eddy,
+            &mut scratch,
+            cancellation,
+        )?;
+        let mut thermal = LayeredClimateTendency::zeroed(state);
+        self.apply_atmospheric_thermal_pressure(state, Some(forcing), cancellation, &mut thermal)?;
+        let mut mechanical = LayeredClimateTendency::zeroed(state);
+        {
+            let gradient = operators.gradient_with_permeability_cancellable(
+                state.height_anomaly_m(lower).expect("C2"),
+                &open,
+                cancellation,
+            )?;
+            let gravity = role_constants(state.profile(), lower).0;
+            for (cell, gradient) in gradient.into_iter().enumerate() {
+                mechanical
+                    .layer_mut(lower)
+                    .expect("C2")
+                    .velocity_tendency_m_s2[cell] =
+                    gradient.map(|value| (-gravity * f64::from(value)) as f32);
+            }
+            self.apply_common_surface_pressure_probe(state, &open, cancellation, &mut mechanical)?;
+        }
+        let mut transport = LayeredClimateTendency::zeroed(state);
+        self.apply_horizontal_momentum_transport(state, cancellation, &mut transport)?;
+        let mut viscous = vec![[0.0_f32; 3]; self.grid.cell_count()];
+        horizontal_velocity_diffusion(
+            self.grid,
+            velocity,
+            &open,
+            ATMOSPHERE_HORIZONTAL_EDDY_VISCOSITY_M2_S,
+            &mut viscous,
+            cancellation,
+        )?;
+        let mut pair = LayeredClimateTendency::zeroed(state);
+        self.apply_pair_momentum_exchanges(state, forcing, cancellation, &mut pair)?;
+        let mut donor = LayeredClimateTendency::zeroed(state);
+        self.apply_declared_overturning_momentum(
+            state,
+            full.overturning_exchange_m_s().expect("C2 exchange"),
+            cancellation,
+            &mut donor,
+        )?;
+        let layout = ClimateLayerLayout::for_profile(state.profile());
+        let pair_time = layout
+            .exchanges()
+            .iter()
+            .find(|pair| pair.first() == lower && pair.second() == upper)
+            .expect("C2 pair")
+            .momentum_exchange_time_s()
+            .expect("mechanical pair");
+        let drag_s_inv = role_constants(state.profile(), lower).1;
+        const COLUMNS: usize = 17;
+        let mut bands = [[0.0_f64; COLUMNS]; 2];
+        for (cell, geometry) in self.grid.cells().iter().enumerate() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let radial = geometry.center_unit();
+            let latitude = radial[2].asin().to_degrees().abs();
+            let band = if (35.0..55.0).contains(&latitude) {
+                0
+            } else if (10.0..20.0).contains(&latitude) {
+                1
+            } else {
+                continue;
+            };
+            let cosine = radial[0].hypot(radial[1]);
+            if cosine < 1.0e-6 {
+                continue;
+            }
+            let east = [-radial[1] / cosine, radial[0] / cosine, 0.0];
+            let north = [
+                -radial[0] * radial[2] / cosine,
+                -radial[1] * radial[2] / cosine,
+                cosine,
+            ];
+            let project = |vector: [f32; 3]| dot(vector.map(f64::from), east);
+            let northward = |vector: [f32; 3]| dot(vector.map(f64::from), north);
+            let layer = |tendency: &LayeredClimateTendency| {
+                project(tendency.layer(lower).expect("C2").velocity_tendency_m_s2[cell])
+            };
+            let masses = self.momentum_pair_mass_per_area(
+                state,
+                [lower, upper],
+                [mass_per_area(state, lower), mass_per_area(state, upper)],
+                cell,
+            )?;
+            let vertical = paired_momentum_exchange(
+                velocity[cell].map(f64::from),
+                upper_velocity[cell].map(f64::from),
+                masses[0],
+                masses[1],
+                pair_time,
+            )?;
+            let vertical_u = dot(vertical.first_acceleration_m_s2, east);
+            let coriolis = operators.coriolis_cell_projected_validated(
+                cell,
+                velocity[cell],
+                EARTH_ROTATION_RATE_RAD_S,
+            );
+            let drag = -drag_s_inv
+                * LAND_SEA_SURFACE_DRAG_RATIO
+                * f64::from(forcing.land_fraction()[cell])
+                * project(velocity[cell]);
+            let values = [
+                1.0,
+                project(velocity[cell]),
+                project(upper_velocity[cell]),
+                layer(full),
+                layer(&eddy),
+                project(coriolis),
+                drag,
+                layer(&pair) - vertical_u,
+                vertical_u,
+                layer(&thermal),
+                layer(&mechanical),
+                layer(&transport),
+                project(viscous[cell]),
+                layer(&donor),
+                northward(velocity[cell]) * radial[2].signum(),
+                northward(upper_velocity[cell]) * radial[2].signum(),
+                exchange[cell],
+            ];
+            let area = geometry.area_m2();
+            for (target, value) in bands[band].iter_mut().zip(values) {
+                *target += area * value;
+            }
+        }
+        for (name, row) in ["mid35-55", "trade10-20"].into_iter().zip(bands) {
+            let mean = |index: usize| row[index] / row[0];
+            let sum = (4..14).map(mean).sum::<f64>();
+            eprintln!(
+                "[u-budget] cycle={cycle} month={month} band={name} u_low={:.3} u_up={:.3} v_pole_low={:.3} v_pole_up={:.3} q_up_mm_s={:.3} total={:.3} eddy={:.3} coriolis={:.3} drag={:.3} ocean_stress={:.3} vertical={:.3} thermal={:.3} mechanical={:.3} transport={:.3} viscous={:.3} donor={:.3} residual={:.3}",
+                mean(1), mean(2), mean(14), mean(15), 1.0e3 * mean(16), 1.0e6 * mean(3), 1.0e6 * mean(4), 1.0e6 * mean(5), 1.0e6 * mean(6),
+                1.0e6 * mean(7), 1.0e6 * mean(8), 1.0e6 * mean(9), 1.0e6 * mean(10), 1.0e6 * mean(11),
+                1.0e6 * mean(12), 1.0e6 * mean(13), 1.0e6 * (mean(3) - sum)
+            );
+        }
+        Ok(())
+    }
+
+    /// 临时研发量测：非纬向热压力与机械压力分别对局部净出流的瞬时贡献。
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn print_non_zonal_pressure_outflow_probe(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        cell: usize,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), LayeredTendencyError> {
+        if state.profile() != ClimateModelProfile::C2LayeredV1 {
+            return Ok(());
+        }
+        check_cancelled(cancellation)?;
+        let operators = CirculationOperators::new(self.grid);
+        let open = vec![1.0; self.grid.edges().len()];
+        let bands = axisymmetric_bands(self.grid);
+        let mut areas = vec![0.0; axisymmetric_band_count(self.grid)];
+        let mut reference_heights = Vec::with_capacity(self.grid.cell_count());
+        let mut equilibrium = Vec::with_capacity(self.grid.cell_count());
+        let mut equilibrium_sums = vec![0.0; areas.len()];
+        let lapse = crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M;
+        for (index, geometry) in self.grid.cells().iter().enumerate() {
+            if index % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let height = crate::world::natural::atmospheric_reference_surface_height_m(
+                forcing.elevation_m()[index] - self.sea_level_m,
+                forcing.land_fraction()[index],
+            );
+            reference_heights.push(height);
+            // 接口无月份参数；明确量年均目标，避免误报为失败月份目标。
+            let target = forcing.equilibrium_air_temperature_c()[index]
+                .iter()
+                .copied()
+                .map(f64::from)
+                .sum::<f64>()
+                / CLIMATE_MONTH_COUNT as f64
+                + lapse * height;
+            equilibrium.push(target);
+            let band = bands[index] as usize;
+            areas[band] += geometry.area_m2();
+            equilibrium_sums[band] += geometry.area_m2() * target;
+        }
+        let mut zonal = state.clone_cancellable(cancellation)?;
+        let mut temperature_sums = vec![0.0; areas.len()];
+        let roles = [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ];
+        for role in roles {
+            temperature_sums.fill(0.0);
+            for (index, geometry) in self.grid.cells().iter().enumerate() {
+                if index % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                temperature_sums[bands[index] as usize] += geometry.area_m2()
+                    * (f64::from(state.temperature_c(role).expect("C2")[index])
+                        + lapse * reference_heights[index]);
+            }
+            for (index, temperature) in zonal
+                .temperature_c_mut(role)
+                .expect("C2")
+                .iter_mut()
+                .enumerate()
+            {
+                if index % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let band = bands[index] as usize;
+                *temperature = (temperature_sums[band] / areas[band]
+                    - lapse * reference_heights[index]) as f32;
+            }
+        }
+        let mut thermal = LayeredClimateTendency::zeroed(state);
+        let mut zonal_thermal = LayeredClimateTendency::zeroed(state);
+        let mut mechanical = LayeredClimateTendency::zeroed(state);
+        self.apply_atmospheric_thermal_pressure(state, Some(forcing), cancellation, &mut thermal)?;
+        self.apply_atmospheric_thermal_pressure(
+            &zonal,
+            Some(forcing),
+            cancellation,
+            &mut zonal_thermal,
+        )?;
+        // 先复原原快核的分层压力，再复用共同表面修正，得到完整机械压力。
+        for role in roles {
+            let gradient = operators.gradient_with_permeability_cancellable(
+                state.height_anomaly_m(role).expect("C2"),
+                &open,
+                cancellation,
+            )?;
+            let gravity = role_constants(state.profile(), role).0;
+            for (index, gradient) in gradient.into_iter().enumerate() {
+                if index % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                mechanical
+                    .layer_mut(role)
+                    .expect("C2")
+                    .velocity_tendency_m_s2[index] =
+                    gradient.map(|value| (-gravity * f64::from(value)) as f32);
+            }
+        }
+        self.apply_common_surface_pressure_probe(state, &open, cancellation, &mut mechanical)?;
+        let mut selected = Vec::with_capacity(5);
+        selected.push(cell);
+        selected.extend(
+            self.grid.cells()[cell]
+                .neighbors()
+                .iter()
+                .map(|&cell| cell as usize),
+        );
+        let mut baseline = vec![0.0; self.grid.cell_count()];
+        let mut perturbed_thickness = vec![0.0; self.grid.cell_count()];
+        let mut perturbed = state.clone_cancellable(cancellation)?;
+        eprintln!("[pressure-outflow-probe] target={cell} eps_seconds=[1,0.5] positive=accelerating_outflow finite_difference_may_change_donor_branch_and_contains_f32_rounding");
+        for role in roles {
+            self.layer_thickness_tendency_into(
+                &operators,
+                state,
+                role,
+                &open,
+                true,
+                &mut baseline,
+                cancellation,
+            )?;
+            let mut derivatives = vec![[[0.0; 2]; 2]; selected.len()];
+            #[allow(clippy::needless_range_loop)]
+            for component in 0..2 {
+                for (step, epsilon) in [1.0, 0.5].into_iter().enumerate() {
+                    for (index, velocity) in perturbed
+                        .velocity_m_s_mut(role)
+                        .expect("C2")
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        if index % 256 == 0 {
+                            check_cancelled(cancellation)?;
+                        }
+                        for (axis, value) in velocity.iter_mut().enumerate() {
+                            let acceleration = if component == 0 {
+                                f64::from(
+                                    thermal.layer(role).expect("C2").velocity_tendency_m_s2[index]
+                                        [axis],
+                                ) - f64::from(
+                                    zonal_thermal
+                                        .layer(role)
+                                        .expect("C2")
+                                        .velocity_tendency_m_s2[index][axis],
+                                )
+                            } else {
+                                f64::from(
+                                    mechanical.layer(role).expect("C2").velocity_tendency_m_s2
+                                        [index][axis],
+                                )
+                            };
+                            *value = (f64::from(state.velocity_m_s(role).expect("C2")[index][axis])
+                                + epsilon * acceleration)
+                                as f32;
+                        }
+                    }
+                    self.layer_thickness_tendency_into(
+                        &operators,
+                        &perturbed,
+                        role,
+                        &open,
+                        true,
+                        &mut perturbed_thickness,
+                        cancellation,
+                    )?;
+                    for (sample, &index) in selected.iter().enumerate() {
+                        derivatives[sample][component][step] =
+                            -(perturbed_thickness[index] - baseline[index]) / epsilon;
+                    }
+                }
+            }
+            for (sample, &index) in selected.iter().enumerate() {
+                let band = bands[index] as usize;
+                let theta_prime = f64::from(state.temperature_c(role).expect("C2")[index])
+                    - f64::from(zonal.temperature_c(role).expect("C2")[index]);
+                let equilibrium_prime = equilibrium[index] - equilibrium_sums[band] / areas[band];
+                eprintln!("[pressure-outflow-probe] role={role:?} cell={index} H={} theta_prime_c={theta_prime} teq_annual_prime_c={equilibrium_prime} baseline_dh_m_s={} thermal_prime_outflow_m_s2={:?} mechanical_outflow_m_s2={:?}",
+                    self.fluid_layer_thickness_m(state, role, index)?, baseline[index],
+                    derivatives[sample][0], derivatives[sample][1]);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn print_column_momentum_probe(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        full: &LayeredClimateTendency,
+        cancellation: &BuildCancellation,
+    ) -> Result<f64, LayeredTendencyError> {
+        let operators = CirculationOperators::new(self.grid);
+        let open = vec![1.0; self.grid.edges().len()];
+        let mut horizontal = vec![0.0; self.grid.cell_count()];
+        let mut eddy = LayeredClimateTendency::zeroed(state);
+        let mut scratch = vec![0.0; self.grid.cell_count()];
+        apply_baroclinic_reynolds_stress_closure(
+            self.grid,
+            state,
+            forcing,
+            &mut eddy,
+            &mut scratch,
+            cancellation,
+        )?;
+        // Global axial torque, N m. Latitude-band boundary fluxes would not
+        // cancel, so only the complete closed sphere is used for this audit.
+        let mut totals = [0.0_f64; 8];
+        let mut vertical_relative_torque = 0.0_f64;
+        let mut advective = vec![[0.0_f64; 3]; self.grid.cell_count()];
+        let mut incoming = vec![0.0_f64; self.grid.cell_count()];
+        let mut advective_torque = 0.0;
+        let mut edge_torque = 0.0;
+        let mut kinetic_rate = 0.0;
+        let mut edge_dissipation = 0.0;
+        let mut maximum_incoming_rate = 0.0_f64;
+        let mut centered = vec![[0.0_f64; 3]; self.grid.cell_count()];
+        let mut exchange_rates = vec![0.0_f64; self.grid.cell_count()];
+        let mut centered_torque = 0.0;
+        let mut centered_edge_torque = 0.0;
+        let mut centered_kinetic = 0.0;
+        let mut maximum_exchange_rate = 0.0_f64;
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            self.layer_thickness_tendency_into(
+                &operators,
+                state,
+                role,
+                &open,
+                true,
+                &mut horizontal,
+                cancellation,
+            )?;
+            let reference = f64::from(state.reference_thickness_m(role).expect("C2"));
+            let density = mass_per_area(state, role) / reference;
+            let velocity = state.velocity_m_s(role).expect("C2");
+            let height = state.height_anomaly_m(role).expect("C2");
+            advective.fill([0.0; 3]);
+            incoming.fill(0.0);
+            centered.fill([0.0; 3]);
+            exchange_rates.fill(0.0);
+            for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+                if edge_index % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let flux = donor_layer_edge_amount_rate_m3_s(
+                    edge,
+                    1.0,
+                    LayerTransportFields {
+                        velocity_m_s: velocity,
+                        height_anomaly_m: height,
+                        reference_thickness_m: reference,
+                        terrain_floor_m: self.layer_terrain_floor(role),
+                    },
+                );
+                if flux == 0.0 {
+                    continue;
+                }
+                let [first, second] = edge.cells().map(|cell| cell as usize);
+                let (donor, receiver) = if flux > 0.0 {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                let amount = flux.abs();
+                let rate = amount
+                    / (self.grid.cells()[receiver].area_m2()
+                        * self.fluid_layer_thickness_m(state, role, receiver)?);
+                incoming[receiver] += rate;
+                let difference = std::array::from_fn::<_, 3, _>(|component| {
+                    f64::from(velocity[donor][component]) - f64::from(velocity[receiver][component])
+                });
+                for (target, difference) in advective[receiver].iter_mut().zip(difference) {
+                    *target += rate * difference;
+                }
+                edge_dissipation -= 0.5 * density * amount * dot(difference, difference);
+                let donor_position = self.grid.cells()[donor].center_unit();
+                let receiver_position = self.grid.cells()[receiver].center_unit();
+                let lever = [
+                    -self.grid.radius_m() * (receiver_position[1] - donor_position[1]),
+                    self.grid.radius_m() * (receiver_position[0] - donor_position[0]),
+                    0.0,
+                ];
+                edge_torque += density * amount * dot(velocity[donor].map(f64::from), lever);
+                let average = std::array::from_fn::<_, 3, _>(|component| {
+                    0.5 * (f64::from(velocity[donor][component])
+                        + f64::from(velocity[receiver][component]))
+                });
+                centered_edge_torque += density * amount * dot(average, lever);
+                for target in [donor, receiver] {
+                    let local_rate = amount
+                        / (self.grid.cells()[target].area_m2()
+                            * self.fluid_layer_thickness_m(state, role, target)?);
+                    exchange_rates[target] += local_rate;
+                    for (value, difference) in centered[target].iter_mut().zip(difference) {
+                        *value += 0.5 * local_rate * difference;
+                    }
+                }
+            }
+            for (cell, geometry) in self.grid.cells().iter().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let radial = geometry.center_unit();
+                let cosine = radial[0].hypot(radial[1]);
+                let lever = [
+                    -self.grid.radius_m() * radial[1],
+                    self.grid.radius_m() * radial[0],
+                    0.0,
+                ];
+                let project = |vector: [f32; 3]| dot(vector.map(f64::from), lever);
+                let depth = reference + f64::from(height[cell])
+                    - self
+                        .layer_terrain_floor(role)
+                        .map_or(0.0, |floor| f64::from(floor[cell]));
+                let weight = geometry.area_m2() * density;
+                let acceleration = tangentize(advective[cell], radial);
+                advective_torque += weight * depth * dot(acceleration, lever);
+                kinetic_rate += weight
+                    * (depth * dot(velocity[cell].map(f64::from), acceleration)
+                        + 0.5
+                            * dot(velocity[cell].map(f64::from), velocity[cell].map(f64::from))
+                            * horizontal[cell]);
+                maximum_incoming_rate = maximum_incoming_rate.max(incoming[cell]);
+                let center_acceleration = tangentize(centered[cell], radial);
+                centered_torque += weight * depth * dot(center_acceleration, lever);
+                centered_kinetic += weight
+                    * (depth * dot(velocity[cell].map(f64::from), center_acceleration)
+                        + 0.5
+                            * dot(velocity[cell].map(f64::from), velocity[cell].map(f64::from))
+                            * horizontal[cell]);
+                maximum_exchange_rate = maximum_exchange_rate.max(exchange_rates[cell]);
+                let u = project(velocity[cell]);
+                let q = full.overturning_exchange_m_s().expect("C2 exchange")[cell];
+                vertical_relative_torque += weight
+                    * u
+                    * if role == ClimateLayerRole::LowerAtmosphere {
+                        -q
+                    } else {
+                        q
+                    };
+                let relaxation = f64::from(full.height_tendency_m_s(role).expect("C2")[cell])
+                    - horizontal[cell]
+                    + if role == ClimateLayerRole::LowerAtmosphere {
+                        q
+                    } else {
+                        -q
+                    };
+                let coriolis = operators.coriolis_cell_projected_validated(
+                    cell,
+                    velocity[cell],
+                    EARTH_ROTATION_RATE_RAD_S,
+                );
+                totals[0] += weight
+                    * depth
+                    * project(full.layer(role).expect("C2").velocity_tendency_m_s2[cell]);
+                totals[1] += weight * u * horizontal[cell];
+                totals[2] += weight * u * relaxation;
+                totals[3] += weight * depth * project(coriolis);
+                let planetary = EARTH_ROTATION_RATE_RAD_S * (self.grid.radius_m() * cosine).powi(2);
+                totals[4] += weight * planetary * horizontal[cell];
+                totals[5] += weight * planetary * relaxation;
+                totals[6] += (weight
+                    * reference
+                    * project(eddy.layer(role).expect("C2").velocity_tendency_m_s2[cell]))
+                .abs();
+                totals[7] += weight
+                    * reference
+                    * project(eddy.layer(role).expect("C2").velocity_tendency_m_s2[cell]);
+            }
+        }
+        let layout = ClimateLayerLayout::for_profile(state.profile());
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        let time = layout
+            .exchanges()
+            .iter()
+            .find(|pair| pair.first() == lower && pair.second() == upper)
+            .expect("C2 pair")
+            .momentum_exchange_time_s()
+            .expect("mechanical pair");
+        let lower_reference = f64::from(state.reference_thickness_m(lower).expect("C2"));
+        let upper_reference = f64::from(state.reference_thickness_m(upper).expect("C2"));
+        let mut pair_defect = 0.0;
+        for (cell, geometry) in self.grid.cells().iter().enumerate() {
+            let masses = self.momentum_pair_mass_per_area(
+                state,
+                [lower, upper],
+                [mass_per_area(state, lower), mass_per_area(state, upper)],
+                cell,
+            )?;
+            let exchange = paired_momentum_exchange(
+                state.velocity_m_s(lower).expect("C2")[cell].map(f64::from),
+                state.velocity_m_s(upper).expect("C2")[cell].map(f64::from),
+                masses[0],
+                masses[1],
+                time,
+            )?;
+            let radial = geometry.center_unit();
+            let lever = [
+                -self.grid.radius_m() * radial[1],
+                self.grid.radius_m() * radial[0],
+                0.0,
+            ];
+            let depth = |role, reference| {
+                reference + f64::from(state.height_anomaly_m(role).expect("C2")[cell])
+                    - self
+                        .layer_terrain_floor(role)
+                        .map_or(0.0, |floor| f64::from(floor[cell]))
+            };
+            pair_defect += geometry.area_m2()
+                * (mass_per_area(state, lower) * depth(lower, lower_reference) / lower_reference
+                    * dot(exchange.first_acceleration_m_s2, lever)
+                    + mass_per_area(state, upper) * depth(upper, upper_reference)
+                        / upper_reference
+                        * dot(exchange.second_acceleration_m_s2, lever));
+        }
+        eprintln!("[column-momentum] velocity={:.8e} horizontal_relative={:.8e} relaxation_relative={:.8e} coriolis={:.8e} horizontal_planetary={:.8e} relaxation_planetary={:.8e} eddy_absolute={:.8e} eddy_signed={:.8e} mechanical_actual_defect={pair_defect:.8e} (N m)",totals[0],totals[1],totals[2],totals[3],totals[4],totals[5],totals[6],totals[7]);
+        eprintln!("[momentum-transport-discrete] advection={advective_torque:.8e} paired={:.8e} edge_geometry={edge_torque:.8e} kinetic={kinetic_rate:.8e} edge_dissipation={edge_dissipation:.8e} incoming_step_bound={:.6}",totals[1]+advective_torque,1.0/maximum_incoming_rate);
+        eprintln!("[momentum-centered-discrete] advection={centered_torque:.8e} paired={:.8e} edge_geometry={centered_edge_torque:.8e} kinetic={centered_kinetic:.8e} exchange_time={:.6}", totals[1]+centered_torque, 1.0/maximum_exchange_rate);
+        Ok(totals[0] + totals[1] + totals[2] + totals[4] + totals[5] + vertical_relative_torque)
+    }
+
+    pub(super) fn column_angular_momentum_probe(&self, state: &LayeredClimateState) -> f64 {
+        let mut total = 0.0;
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            let reference = f64::from(state.reference_thickness_m(role).expect("C2"));
+            let density = mass_per_area(state, role) / reference;
+            for (cell, geometry) in self.grid.cells().iter().enumerate() {
+                let radial = geometry.center_unit();
+                let lever = [
+                    -self.grid.radius_m() * radial[1],
+                    self.grid.radius_m() * radial[0],
+                    0.0,
+                ];
+                let planetary = EARTH_ROTATION_RATE_RAD_S
+                    * self.grid.radius_m().powi(2)
+                    * (radial[0].powi(2) + radial[1].powi(2));
+                let depth = reference + f64::from(state.height_anomaly_m(role).expect("C2")[cell])
+                    - self
+                        .layer_terrain_floor(role)
+                        .map_or(0.0, |floor| f64::from(floor[cell]));
+                total += geometry.area_m2()
+                    * density
+                    * depth
+                    * (dot(
+                        state.velocity_m_s(role).expect("C2")[cell].map(f64::from),
+                        lever,
+                    ) + planetary);
+            }
+        }
+        total
+    }
+
+    #[cfg(test)]
+    pub(super) fn apply_overturning_exchange(
+        &self,
+        state: &mut LayeredClimateState,
+        exchanges_m_s: &[f64],
+        step_seconds: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), LayeredTendencyError> {
+        let mut maximum_demand = 0.0_f64;
+        for (cell, &exchange) in exchanges_m_s.iter().enumerate() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            if exchange == 0.0 {
+                continue;
+            }
+            let (donor, receiver) = if exchange > 0.0 {
+                (
+                    ClimateLayerRole::LowerAtmosphere,
+                    ClimateLayerRole::UpperAtmosphere,
+                )
+            } else {
+                (
+                    ClimateLayerRole::UpperAtmosphere,
+                    ClimateLayerRole::LowerAtmosphere,
+                )
+            };
+            let donor_height = state.height_anomaly_m(donor).expect("atmosphere")[cell];
+            let receiver_height = state.height_anomaly_m(receiver).expect("atmosphere")[cell];
+            let donor_mass = self.fluid_layer_thickness_m(state, donor, cell)?;
+            let receiver_mass = self.fluid_layer_thickness_m(state, receiver, cell)?;
+            let requested = exchange.abs() * step_seconds;
+            maximum_demand = maximum_demand.max(requested / donor_mass);
+            if requested >= donor_mass {
+                eprintln!("[vertical-exhaustion] cell={cell} latitude={} donor={donor:?} depth={donor_mass} requested={requested} rate={exchange} dt={step_seconds} floor={}",
+                    self.grid.cells()[cell].center_unit()[2].asin().to_degrees(), self.layer_terrain_floor(donor).map_or(0.0, |floor| floor[cell]));
+                return Err(LayeredTendencyError::InvalidFluidThickness {
+                    role: donor,
+                    cell,
+                    found: donor_mass - requested,
+                });
+            }
+            let mut donor_after = donor_height;
+            let mut receiver_after = receiver_height;
+            let (donor_delta, receiver_delta) = add_balanced_pair_to_f32(
+                &mut donor_after,
+                &mut receiver_after,
+                -requested,
+                1.0,
+                1.0,
+            );
+            let donor_remaining = donor_mass + donor_delta;
+            if donor_remaining <= 0.0 {
+                return Err(LayeredTendencyError::InvalidFluidThickness {
+                    role: donor,
+                    cell,
+                    found: donor_remaining,
+                });
+            }
+            let donor_velocity = state.velocity_m_s(donor).expect("atmosphere")[cell];
+            let receiver_velocity = state.velocity_m_s(receiver).expect("atmosphere")[cell];
+            state.height_anomaly_m_mut(donor).expect("atmosphere")[cell] = donor_after;
+            state.height_anomaly_m_mut(receiver).expect("atmosphere")[cell] = receiver_after;
+            state.velocity_m_s_mut(receiver).expect("atmosphere")[cell] =
+                std::array::from_fn(|component| {
+                    ((receiver_mass * f64::from(receiver_velocity[component])
+                        - donor_delta * f64::from(donor_velocity[component]))
+                        / (receiver_mass + receiver_delta)) as f32
+                });
+        }
+        eprintln!(
+            "[vertical-transfer] max_requested_fraction={maximum_demand:.8} step={step_seconds}"
+        );
+        check_cancelled(cancellation)
+    }
+
+    pub(super) fn apply_declared_overturning_momentum(
+        &self,
+        state: &LayeredClimateState,
+        exchanges_m_s: &[f64],
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+    ) -> Result<(), LayeredTendencyError> {
+        let mut maximum_exchange_rate = 0.0_f64;
+        for (cell, &exchange) in exchanges_m_s.iter().enumerate() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            if exchange == 0.0 {
+                continue;
+            }
+            let (donor, receiver) = if exchange > 0.0 {
+                (
+                    ClimateLayerRole::LowerAtmosphere,
+                    ClimateLayerRole::UpperAtmosphere,
+                )
+            } else {
+                (
+                    ClimateLayerRole::UpperAtmosphere,
+                    ClimateLayerRole::LowerAtmosphere,
+                )
+            };
+            let donor_depth = self.fluid_layer_thickness_m(state, donor, cell)?;
+            let receiver_depth = self.fluid_layer_thickness_m(state, receiver, cell)?;
+            if cell == 308 && donor_depth < 100.0 {
+                eprintln!(
+                    "[thin-stage] H={donor_depth} Q={exchange} D={} U={:?}",
+                    tendency.height_tendency_m_s(donor).expect("C2")[cell],
+                    state.velocity_m_s(donor).expect("C2")[cell]
+                );
+            }
+            let rate = exchange.abs() / receiver_depth;
+            maximum_exchange_rate =
+                maximum_exchange_rate.max(rate.max(exchange.abs() / donor_depth));
+            let donor_velocity = state.velocity_m_s(donor).expect("C2")[cell];
+            let receiver_velocity = state.velocity_m_s(receiver).expect("C2")[cell];
+            let target = &mut tendency
+                .layer_mut(receiver)
+                .expect("C2")
+                .velocity_tendency_m_s2[cell];
+            for component in 0..3 {
+                target[component] = (f64::from(target[component])
+                    + rate
+                        * (f64::from(donor_velocity[component])
+                            - f64::from(receiver_velocity[component])))
+                    as f32;
+            }
+        }
+        tendency.momentum_transport_rate_s_inv += maximum_exchange_rate;
+        check_cancelled(cancellation)
     }
 
     pub fn evaluate(
@@ -1259,21 +2084,41 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 &workspace.open_edges
             };
             if mode.includes_explicit_transport_and_moisture() {
-                let transported = operators.advect_scalar_monotone_second_order_into_cancellable(
-                    temperature,
-                    velocity,
-                    permeability,
-                    transport_step_seconds,
-                    false,
-                    &mut workspace.transport,
-                    cancellation,
-                )?;
+                let intensive_transport;
+                let conservative_transport;
+                let transported = if state.profile() == ClimateModelProfile::C2LayeredV1
+                    && is_atmosphere_role(*role)
+                {
+                    // Temperature is intensive: compressing a parcel cannot
+                    // multiply its value by a factor that depends on °C vs K.
+                    intensive_transport = operators
+                        .advect_scalar_upwind_tracer_subcycled_cancellable(
+                            temperature,
+                            velocity,
+                            permeability,
+                            transport_step_seconds,
+                            cancellation,
+                        )?;
+                    intensive_transport.values()
+                } else {
+                    conservative_transport = operators
+                        .advect_scalar_monotone_second_order_into_cancellable(
+                            temperature,
+                            velocity,
+                            permeability,
+                            transport_step_seconds,
+                            false,
+                            &mut workspace.transport,
+                            cancellation,
+                        )?;
+                    conservative_transport.values()
+                };
                 for (cell, (target, (transported, original))) in tendency
                     .layer_mut(*role)
                     .expect("active tendency role")
                     .temperature_tendency_k_s
                     .iter_mut()
-                    .zip(transported.values().iter().zip(temperature))
+                    .zip(transported.iter().zip(temperature))
                     .enumerate()
                 {
                     if cell % 256 == 0 {
@@ -1281,6 +2126,27 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     }
                     *target = ((f64::from(*transported) - f64::from(*original))
                         / transport_step_seconds) as f32;
+                }
+                if state.profile() == ClimateModelProfile::C2LayeredV1 && is_atmosphere_role(*role)
+                {
+                    let transport = &mut tendency
+                        .layer_mut(*role)
+                        .expect("active role")
+                        .temperature_tendency_k_s;
+                    workspace.band_area_m2.fill(0.0);
+                    workspace.band_exchange_m3_s.fill(0.0);
+                    for (cell, geometry) in self.grid.cells().iter().enumerate() {
+                        let band = workspace.axisymmetric_band[cell] as usize;
+                        workspace.band_area_m2[band] += geometry.area_m2();
+                        workspace.band_exchange_m3_s[band] +=
+                            geometry.area_m2() * f64::from(transport[cell]);
+                    }
+                    for (cell, target) in transport.iter_mut().enumerate() {
+                        let band = workspace.axisymmetric_band[cell] as usize;
+                        *target = (f64::from(*target)
+                            - workspace.band_exchange_m3_s[band] / workspace.band_area_m2[band])
+                            as f32;
+                    }
                 }
             }
             if !mode.includes_dynamics() {
@@ -1297,11 +2163,17 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 EARTH_ROTATION_RATE_RAD_S,
                 cancellation,
             )?;
-            let thermal_gradient = operators.gradient_with_permeability_cancellable(
-                temperature,
-                permeability,
-                cancellation,
-            )?;
+            let thermal_gradient = if state.profile() == ClimateModelProfile::C2LayeredV1
+                && is_atmosphere_role(*role)
+            {
+                None
+            } else {
+                Some(operators.gradient_with_permeability_cancellable(
+                    temperature,
+                    permeability,
+                    cancellation,
+                )?)
+            };
             let (reduced_gravity, drag_s_inv, height_relax_s, thermal_gradient_acceleration) =
                 role_constants(state.profile(), *role);
             horizontal_velocity_diffusion(
@@ -1348,6 +2220,16 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     &mut workspace.band_area_m2,
                     &mut workspace.band_exchange_m3_s,
                 );
+                tendency.overturning_exchange_m_s = Some(
+                    workspace
+                        .axisymmetric_band
+                        .iter()
+                        .map(|&band| {
+                            workspace.band_exchange_m3_s[band as usize]
+                                / workspace.band_area_m2[band as usize]
+                        })
+                        .collect(),
+                );
             } else if layered_atmosphere && *role == ClimateLayerRole::UpperAtmosphere {
                 workspace
                     .thickness_tendency_m_s
@@ -1376,8 +2258,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     }
                     layer.height_tendency_m_s[cell] = workspace.thickness_tendency_m_s[cell] as f32;
                     let before_height = layer.height_tendency_m_s[cell];
-                    layer.height_tendency_m_s[cell] +=
-                        (-f64::from(height[cell]) / height_relax_s) as f32;
+                    if !(state.profile() == ClimateModelProfile::C2LayeredV1
+                        && is_atmosphere_role(*role))
+                    {
+                        layer.height_tendency_m_s[cell] +=
+                            (-f64::from(height[cell]) / height_relax_s) as f32;
+                    }
                     let retained_external_height =
                         f64::from(layer.height_tendency_m_s[cell]) - f64::from(before_height);
                     external_amount_rate_m3_s +=
@@ -1389,10 +2275,16 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         0.0
                     };
                     let surface_drag_s_inv = if *role == ClimateLayerRole::LowerAtmosphere {
-                        drag_s_inv
-                            * (1.0
-                                + (LAND_SEA_SURFACE_DRAG_RATIO - 1.0)
-                                    * f64::from(forcing.land_fraction()[cell]))
+                        if state.profile() == ClimateModelProfile::C2LayeredV1 {
+                            drag_s_inv
+                                * LAND_SEA_SURFACE_DRAG_RATIO
+                                * f64::from(forcing.land_fraction()[cell])
+                        } else {
+                            drag_s_inv
+                                * (1.0
+                                    + (LAND_SEA_SURFACE_DRAG_RATIO - 1.0)
+                                        * f64::from(forcing.land_fraction()[cell]))
+                        }
                     } else {
                         drag_s_inv
                     };
@@ -1417,7 +2309,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                                 + bathymetric_bottom_drag_s_inv)
                                 * f64::from(velocity[cell][component])
                             + thermal_gradient_acceleration
-                                * f64::from(thermal_gradient[cell][component])
+                                * thermal_gradient
+                                    .as_ref()
+                                    .map_or(0.0, |gradient| f64::from(gradient[cell][component]))
                             + f64::from(workspace.vector_scratch[cell][component]);
                     }
                     acceleration = tangentize(acceleration, radial);
@@ -1558,6 +2452,32 @@ impl<'grid> LayeredTendencySystem<'grid> {
         }
         if mode.includes_explicit_transport_and_moisture() {
             tendency.enforce_moisture_availability(state, transport_step_seconds, cancellation)?;
+        }
+        if mode.includes_dynamics() {
+            self.apply_atmospheric_thermal_pressure(
+                state,
+                Some(forcing),
+                cancellation,
+                &mut tendency,
+            )?;
+            self.apply_common_surface_pressure_probe(
+                state,
+                &workspace.open_edges,
+                cancellation,
+                &mut tendency,
+            )?;
+        }
+        if mode.uses_explicit_dynamics() {
+            self.apply_horizontal_momentum_transport(state, cancellation, &mut tendency)?;
+        }
+        if let Some(exchange) = tendency.overturning_exchange_m_s.take() {
+            self.apply_declared_overturning_momentum(
+                state,
+                &exchange,
+                cancellation,
+                &mut tendency,
+            )?;
+            tendency.overturning_exchange_m_s = Some(exchange);
         }
         // Add exchanges after every unrelated tendency so the budget measures
         // the increments that are actually retained in the final f32 arrays.
@@ -1967,9 +2887,222 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 }
             }
         }
+        self.apply_common_surface_pressure_probe(
+            state,
+            &workspace.open_edges,
+            cancellation,
+            &mut tendency,
+        )?;
+        self.apply_atmospheric_thermal_pressure(state, Some(forcing), cancellation, &mut tendency)?;
+        self.apply_horizontal_momentum_transport(state, cancellation, &mut tendency)?;
         self.apply_pair_momentum_exchanges(state, forcing, cancellation, &mut tendency)?;
         self.validate_tendency(&tendency, cancellation)?;
         Ok(tendency)
+    }
+
+    fn apply_horizontal_momentum_transport(
+        &self,
+        state: &LayeredClimateState,
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+    ) -> Result<(), LayeredTendencyError> {
+        if state.profile() != ClimateModelProfile::C2LayeredV1 {
+            return Ok(());
+        }
+        let mut maximum_rate = 0.0_f64;
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            let fields = LayerTransportFields {
+                velocity_m_s: state.velocity_m_s(role).expect("C2 atmosphere"),
+                height_anomaly_m: state.height_anomaly_m(role).expect("C2 atmosphere"),
+                reference_thickness_m: f64::from(
+                    state.reference_thickness_m(role).expect("C2 atmosphere"),
+                ),
+                terrain_floor_m: self.layer_terrain_floor(role),
+            };
+            let layer = tendency.layer_mut(role).expect("C2 atmosphere");
+            for (cell, geometry) in self.grid.cells().iter().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let volume =
+                    geometry.area_m2() * self.fluid_layer_thickness_m(state, role, cell)?;
+                let mut acceleration = [0.0_f64; 3];
+                let mut exchange_rate = 0.0;
+                for &edge_index in geometry.edges() {
+                    let edge = &self.grid.edges()[edge_index as usize];
+                    let flux = donor_layer_edge_amount_rate_m3_s(edge, 1.0, fields);
+                    let [first, second] = edge.cells().map(|index| index as usize);
+                    exchange_rate += flux.abs() / volume;
+                    // Chandrashekar (2013): F*(u_i+u_j)/2 preserves the
+                    // convective kinetic energy with the same mass flux F.
+                    // Subtract only u*dH_horizontal in converting H*u to u;
+                    // vertical exchange has its own donor momentum operator.
+                    for (component, target) in acceleration.iter_mut().enumerate() {
+                        *target += 0.5 * flux / volume
+                            * (f64::from(fields.velocity_m_s[first][component])
+                                - f64::from(fields.velocity_m_s[second][component]));
+                    }
+                }
+                maximum_rate = maximum_rate.max(exchange_rate);
+                let acceleration = tangentize(acceleration, geometry.center_unit());
+                for (target, acceleration) in layer.velocity_tendency_m_s2[cell]
+                    .iter_mut()
+                    .zip(acceleration)
+                {
+                    *target = (f64::from(*target) + acceleration) as f32;
+                }
+            }
+        }
+        tendency.momentum_transport_rate_s_inv = maximum_rate;
+        Ok(())
+    }
+
+    fn apply_atmospheric_thermal_pressure(
+        &self,
+        state: &LayeredClimateState,
+        forcing: Option<&PlanetForcing>,
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+    ) -> Result<(), LayeredTendencyError> {
+        if state.profile() != ClimateModelProfile::C2LayeredV1 {
+            return Ok(());
+        }
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        let operators = CirculationOperators::new(self.grid);
+        let open = vec![1.0; self.grid.edges().len()];
+        let gradient = |role| -> Result<Vec<[f32; 3]>, LayeredTendencyError> {
+            let mut corrected = Vec::with_capacity(self.grid.cell_count());
+            for (cell, &temperature) in state.temperature_c(role).expect("C2").iter().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                let height = forcing.map_or(0.0, |forcing| {
+                    crate::world::natural::atmospheric_reference_surface_height_m(
+                        forcing.elevation_m()[cell] - self.sea_level_m,
+                        forcing.land_fraction()[cell],
+                    )
+                });
+                corrected.push(
+                    (f64::from(temperature)
+                        + crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * height)
+                        as f32,
+                );
+            }
+            Ok(
+                operators.gradient_with_permeability_cancellable(
+                    &corrected,
+                    &open,
+                    cancellation,
+                )?,
+            )
+        };
+        let lower_gradient = gradient(lower)?;
+        let upper_gradient = gradient(upper)?;
+        let interface_gradient = operators.gradient_with_permeability_cancellable(
+            state.height_anomaly_m(lower).expect("C2"),
+            &open,
+            cancellation,
+        )?;
+        let internal_gravity =
+            role_constants(state.profile(), lower).0 + role_constants(state.profile(), upper).0;
+        for cell in 0..self.grid.cell_count() {
+            if cell % 256 == 0 {
+                check_cancelled(cancellation)?;
+            }
+            let lower_depth = self.fluid_layer_thickness_m(state, lower, cell)?;
+            let upper_depth = self.fluid_layer_thickness_m(state, upper, cell)?;
+            let buoyancy_difference = atmospheric_thermal_buoyancy_difference_m_s2(state, cell);
+            if internal_gravity <= buoyancy_difference {
+                eprintln!("[stratification-probe] cell={cell} H={lower_depth}/{upper_depth} T={}/{} db={buoyancy_difference}",
+                    state.temperature_c(lower).expect("C2")[cell], state.temperature_c(upper).expect("C2")[cell]);
+                return Err(LayeredTendencyError::UnstableAtmosphericStratification {
+                    cell,
+                    reduced_gravity_m_s2: internal_gravity - buoyancy_difference,
+                });
+            }
+            // Hydrostatic integration at fixed physical height precedes layer
+            // averaging. Differentiating an actual-depth weighted T instead
+            // would introduce a spurious bottom-slope pressure term.
+            let difference = std::array::from_fn(|component| {
+                0.5 * atmospheric_thermal_buoyancy_m_s2(
+                    lower_depth * f64::from(lower_gradient[cell][component])
+                        + upper_depth * f64::from(upper_gradient[cell][component]),
+                ) + buoyancy_difference * f64::from(interface_gradient[cell][component])
+            });
+            let difference = tangentize(difference, self.grid.cells()[cell].center_unit());
+            for (component, difference) in difference.into_iter().enumerate() {
+                let mut lower_value =
+                    tendency.layer(lower).expect("C2").velocity_tendency_m_s2[cell][component];
+                let mut upper_value =
+                    tendency.layer(upper).expect("C2").velocity_tendency_m_s2[cell][component];
+                add_balanced_pair_to_f32(
+                    &mut lower_value,
+                    &mut upper_value,
+                    upper_depth * difference / (lower_depth + upper_depth),
+                    lower_depth,
+                    upper_depth,
+                );
+                tendency
+                    .layer_mut(lower)
+                    .expect("C2")
+                    .velocity_tendency_m_s2[cell][component] = lower_value;
+                tendency
+                    .layer_mut(upper)
+                    .expect("C2")
+                    .velocity_tendency_m_s2[cell][component] = upper_value;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_common_surface_pressure_probe(
+        &self,
+        state: &LayeredClimateState,
+        permeability: &[f32],
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+    ) -> Result<(), LayeredTendencyError> {
+        if state.profile() != ClimateModelProfile::C2LayeredV1 {
+            return Ok(());
+        }
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        let operators = CirculationOperators::new(self.grid);
+        let lower_gradient = operators.gradient_with_permeability_cancellable(
+            state.height_anomaly_m(lower).expect("C2"),
+            permeability,
+            cancellation,
+        )?;
+        let upper_gradient = operators.gradient_with_permeability_cancellable(
+            state.height_anomaly_m(upper).expect("C2"),
+            permeability,
+            cancellation,
+        )?;
+        let upper_gravity = role_constants(state.profile(), upper).0;
+        for role in [lower, upper] {
+            let (lower_coefficient, upper_coefficient) = if role == lower {
+                (STANDARD_GRAVITY_M_S2 + upper_gravity, STANDARD_GRAVITY_M_S2)
+            } else {
+                (STANDARD_GRAVITY_M_S2, STANDARD_GRAVITY_M_S2 - upper_gravity)
+            };
+            let velocities = &mut tendency.layer_mut(role).expect("C2").velocity_tendency_m_s2;
+            for (cell, velocity) in velocities.iter_mut().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
+                }
+                for (component, target) in velocity.iter_mut().enumerate() {
+                    *target = (f64::from(*target)
+                        - lower_coefficient * f64::from(lower_gradient[cell][component])
+                        - upper_coefficient * f64::from(upper_gradient[cell][component]))
+                        as f32;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Diagnoses the pressure-acceleration change caused only by replacing one
@@ -1993,8 +3126,38 @@ impl<'grid> LayeredTendencySystem<'grid> {
         debug_assert_eq!(ocean_edge_permeability.len(), self.grid.edges().len());
         let operators = CirculationOperators::new(self.grid);
         let mut tendency = LayeredClimateTendency::zeroed(before);
+        if before.profile() == ClimateModelProfile::C2LayeredV1 {
+            let mut previous = LayeredClimateTendency::zeroed(before);
+            self.apply_atmospheric_thermal_pressure(before, None, cancellation, &mut previous)?;
+            self.apply_atmospheric_thermal_pressure(after, None, cancellation, &mut tendency)?;
+            for role in [
+                ClimateLayerRole::LowerAtmosphere,
+                ClimateLayerRole::UpperAtmosphere,
+            ] {
+                for (target, &old) in tendency
+                    .layer_mut(role)
+                    .expect("C2")
+                    .velocity_tendency_m_s2
+                    .iter_mut()
+                    .flatten()
+                    .zip(
+                        previous
+                            .layer(role)
+                            .expect("C2")
+                            .velocity_tendency_m_s2
+                            .iter()
+                            .flatten(),
+                    )
+                {
+                    *target -= old;
+                }
+            }
+        }
         for role in before.active_roles() {
             check_cancelled(cancellation)?;
+            if before.profile() == ClimateModelProfile::C2LayeredV1 && is_atmosphere_role(*role) {
+                continue;
+            }
             let before_temperature = before.temperature_c(*role).expect("active role");
             let after_temperature = after.temperature_c(*role).expect("active role");
             for (target, (&after, &before)) in workspace
@@ -2420,6 +3583,28 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 if water_scale == 0.0 {
                     continue;
                 }
+                let [first_mass, second_mass] = self.momentum_pair_mass_per_area(
+                    state,
+                    [first_role, second_role],
+                    [first_mass, second_mass],
+                    cell,
+                )?;
+                let momentum_timescale = if state.profile() == ClimateModelProfile::C2LayeredV1
+                    && first_role == ClimateLayerRole::LowerAtmosphere
+                    && second_role == ClimateLayerRole::OceanMixedLayer
+                {
+                    let relative = std::array::from_fn::<_, 3, _>(|component| {
+                        f64::from(first_velocity[cell][component])
+                            - f64::from(second_velocity[cell][component])
+                    });
+                    first_mass.min(second_mass)
+                        / (crate::world::natural::P4_REFERENCE_AIR_DENSITY_KG_M3
+                            * crate::world::natural::neutral_surface_momentum_transfer_velocity_m_s(
+                                norm(relative),
+                            ))
+                } else {
+                    momentum_timescale
+                };
                 let momentum = paired_momentum_exchange(
                     first_velocity[cell].map(f64::from),
                     second_velocity[cell].map(f64::from),
@@ -2483,7 +3668,21 @@ impl<'grid> LayeredTendencySystem<'grid> {
         include_moisture_exchange: bool,
         moisture_step_seconds: f64,
     ) -> Result<(), LayeredTendencyError> {
+        if include_momentum_exchange {
+            self.apply_pair_momentum_exchanges(state, forcing, cancellation, tendency)?;
+        }
         let layout = ClimateLayerLayout::for_profile(state.profile());
+        let upper_reference_c = if include_heat_exchange {
+            upper_atmosphere_reference_air_temperature_c(
+                self.grid,
+                forcing,
+                self.sea_level_m,
+                Some(month),
+                Some(cancellation),
+            )?
+        } else {
+            Vec::new()
+        };
         for exchange in layout.exchanges().iter().copied().filter(|exchange| {
             exchange.heat_exchange_time_s().is_some()
                 && exchange.momentum_exchange_time_s().is_some()
@@ -2493,17 +3692,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let heat_timescale = exchange
                 .heat_exchange_time_s()
                 .expect("filtered exchange has heat timescale");
-            let momentum_timescale = exchange
-                .momentum_exchange_time_s()
-                .expect("filtered exchange has momentum timescale");
             let first_temperature = state.temperature_c(first_role).expect("pair role");
             let second_temperature = state.temperature_c(second_role).expect("pair role");
-            let first_velocity = state.velocity_m_s(first_role).expect("pair role");
-            let second_velocity = state.velocity_m_s(second_role).expect("pair role");
             let first_capacity = formation_thermal_heat_capacity_per_area(state, first_role);
             let second_capacity = formation_thermal_heat_capacity_per_area(state, second_role);
-            let first_mass = mass_per_area(state, first_role);
-            let second_mass = mass_per_area(state, second_role);
             for cell in 0..self.grid.cell_count() {
                 if cell % 256 == 0 {
                     check_cancelled(cancellation)?;
@@ -2521,10 +3713,18 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     let air_reference = forcing.equilibrium_air_temperature_c()[cell][month];
                     let surface_reference =
                         forcing.equilibrium_surface_temperature_c()[cell][month];
-                    let first_reference =
-                        role_reference_temperature_c(first_role, air_reference, surface_reference);
-                    let second_reference =
-                        role_reference_temperature_c(second_role, air_reference, surface_reference);
+                    let first_reference = role_reference_temperature_c(
+                        first_role,
+                        air_reference,
+                        surface_reference,
+                        upper_reference_c[cell],
+                    );
+                    let second_reference = role_reference_temperature_c(
+                        second_role,
+                        air_reference,
+                        surface_reference,
+                        upper_reference_c[cell],
+                    );
                     let heat = equilibrium_anomaly_heat_exchange(
                         first_temperature[cell],
                         first_reference,
@@ -2584,54 +3784,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         area * 0.5 * (first_heat.abs() + second_heat.abs());
                     tendency.budget.paired_heat_residual_w +=
                         area * (first_heat + second_heat).abs();
-                }
-
-                if include_momentum_exchange {
-                    let momentum = paired_momentum_exchange(
-                        first_velocity[cell].map(f64::from),
-                        second_velocity[cell].map(f64::from),
-                        first_mass,
-                        second_mass,
-                        momentum_timescale,
-                    )?;
-                    let mut first_momentum_delta = [0.0_f64; 3];
-                    let mut second_momentum_delta = [0.0_f64; 3];
-                    for component in 0..3 {
-                        let mut first_target = tendency
-                            .layer(first_role)
-                            .expect("pair role")
-                            .velocity_tendency_m_s2[cell][component];
-                        let mut second_target = tendency
-                            .layer(second_role)
-                            .expect("pair role")
-                            .velocity_tendency_m_s2[cell][component];
-                        (
-                            first_momentum_delta[component],
-                            second_momentum_delta[component],
-                        ) = add_balanced_pair_to_f32(
-                            &mut first_target,
-                            &mut second_target,
-                            water_scale * momentum.first_acceleration_m_s2[component],
-                            first_mass,
-                            second_mass,
-                        );
-                        tendency
-                            .layer_mut(first_role)
-                            .expect("pair role")
-                            .velocity_tendency_m_s2[cell][component] = first_target;
-                        tendency
-                            .layer_mut(second_role)
-                            .expect("pair role")
-                            .velocity_tendency_m_s2[cell][component] = second_target;
-                    }
-                    let first_impulse = first_momentum_delta.map(|value| first_mass * value);
-                    let second_impulse = second_momentum_delta.map(|value| second_mass * value);
-                    tendency.budget.paired_momentum_absolute_n +=
-                        area * 0.5 * (norm(first_impulse) + norm(second_impulse));
-                    tendency.budget.paired_momentum_residual_n += area
-                        * norm(std::array::from_fn(|component| {
-                            first_impulse[component] + second_impulse[component]
-                        }));
                 }
             }
         }
@@ -2744,11 +3896,13 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     ClimateLayerRole::OceanThermocline,
                     air_reference,
                     surface_reference,
+                    air_reference,
                 );
                 let deep_reference = role_reference_temperature_c(
                     ClimateLayerRole::DeepOceanReservoir,
                     air_reference,
                     surface_reference,
+                    air_reference,
                 );
                 let exchange = equilibrium_anomaly_heat_exchange(
                     thermocline[cell],
@@ -3009,7 +4163,16 @@ fn apply_baroclinic_reynolds_stress_closure(
             }
             let radial = grid.cells()[cell].center_unit();
             let cosine_latitude = (radial[0] * radial[0] + radial[1] * radial[1]).sqrt();
-            let raw = diagnostic.reynolds_stress_zonal_acceleration_m_s2(radial);
+            let raw = if state.profile() == ClimateModelProfile::C2LayeredV1 {
+                crate::world::natural::observed_transient_eddy_acceleration_m_s2(
+                    radial[2].clamp(-1.0, 1.0).asin(),
+                    grid.radius_m(),
+                ) * (diagnostic.eddy_velocity_scale_m_s
+                    / GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S)
+                    .powi(2)
+            } else {
+                diagnostic.reynolds_stress_zonal_acceleration_m_s2(radial)
+            };
             *raw_zonal_acceleration = raw as f32;
             let area_mass = grid.cells()[cell].area_m2() * layer_mass_per_area;
             let axial_lever_arm_m = grid.radius_m() * cosine_latitude;
@@ -3052,6 +4215,24 @@ fn apply_baroclinic_reynolds_stress_closure(
     check_cancelled(cancellation)
 }
 
+pub(super) fn atmospheric_fast_mode_speed_m_s(
+    lower_depth: f64,
+    upper_depth: f64,
+    buoyancy_difference: f64,
+) -> f64 {
+    let profile = ClimateModelProfile::C2LayeredV1;
+    let internal_gravity = role_constants(profile, ClimateLayerRole::LowerAtmosphere).0
+        + role_constants(profile, ClimateLayerRole::UpperAtmosphere).0;
+    // For positive internal stratification, c_plus^2 <= trace(G diag(H)).
+    // Discarding the negative trace correction gives a monotone depth bound,
+    // so the caller may overestimate depths by omitting the bottom floor.
+    // This bounds the frozen-temperature pressure mode, not the full RK system.
+    let trace_bound = STANDARD_GRAVITY_M_S2 * (lower_depth + upper_depth)
+        + internal_gravity * lower_depth
+        + (-buoyancy_difference).max(0.0) * lower_depth * upper_depth / (lower_depth + upper_depth);
+    trace_bound.sqrt()
+}
+
 fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64, f64, f64, f64) {
     match role {
         ClimateLayerRole::LowerAtmosphere => (
@@ -3059,7 +4240,11 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
             // One-day boundary-layer Rayleigh friction. The upper layer keeps
             // its ten-day free-tropospheric drag; using five days here left a
             // spurious inertial phase in the accelerated monthly continuation.
-            1.0 / SECONDS_PER_DAY,
+            if profile == ClimateModelProfile::C2LayeredV1 {
+                0.25 / SECONDS_PER_DAY
+            } else {
+                1.0 / SECONDS_PER_DAY
+            },
             7.0 * SECONDS_PER_DAY,
             // Fixed lower-layer hypsometric pressure coupling. Its sign and
             // amplitude are independent of morphology acceptance bands.
@@ -3071,7 +4256,7 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
         ),
         ClimateLayerRole::UpperAtmosphere => (
             0.45,
-            1.0 / (10.0 * SECONDS_PER_DAY),
+            0.0,
             12.0 * SECONDS_PER_DAY,
             -UPPER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K,
         ),
@@ -3097,26 +4282,6 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
         ),
         ClimateLayerRole::DeepOceanReservoir => unreachable!(),
     }
-}
-
-/// One latitude band per cubed-sphere cell row: the equatorial faces tile
-/// 90 degrees of latitude with `face_resolution` cells, so the axisymmetric
-/// mean is taken at the grid's own meridional resolution.
-fn axisymmetric_band_count(grid: &CubedSphereGrid) -> usize {
-    2 * usize::from(grid.face_resolution())
-}
-
-/// Band index of every cell, evaluated once per workspace.
-fn axisymmetric_bands(grid: &CubedSphereGrid) -> Vec<u32> {
-    let band_count = axisymmetric_band_count(grid);
-    grid.cells()
-        .iter()
-        .map(|cell| {
-            let sine_latitude = cell.center_unit()[2].clamp(-1.0, 1.0);
-            let fraction = sine_latitude.asin() / std::f64::consts::PI + 0.5;
-            ((fraction * band_count as f64).floor() as usize).min(band_count - 1) as u32
-        })
-        .collect()
 }
 
 /// Closes the axisymmetric baroclinic divergence of the two atmosphere layers
@@ -3213,20 +4378,16 @@ fn conservative_layer_thickness_tendency(
         let [first, second] = *edge.cells();
         let first = first as usize;
         let second = second as usize;
-        let normal_velocity_m_s = dot(
-            interpolate_vector(edge, velocity_m_s[first], velocity_m_s[second]),
-            edge.normal_from_first(),
+        let amount_rate_m3_s = donor_layer_edge_amount_rate_m3_s(
+            edge,
+            *permeability,
+            LayerTransportFields {
+                velocity_m_s,
+                height_anomaly_m,
+                reference_thickness_m,
+                terrain_floor_m,
+            },
         );
-        let donor = if normal_velocity_m_s >= 0.0 {
-            first
-        } else {
-            second
-        };
-        let floor_m = terrain_floor_m.map_or(0.0, |floor| f64::from(floor[donor]));
-        let donor_thickness_m =
-            (reference_thickness_m - floor_m + f64::from(height_anomaly_m[donor])).max(0.0);
-        let amount_rate_m3_s =
-            normal_velocity_m_s * edge.length_m() * f64::from(*permeability) * donor_thickness_m;
         target_m_s[first] -= amount_rate_m3_s / grid.cells()[first].area_m2();
         target_m_s[second] += amount_rate_m3_s / grid.cells()[second].area_m2();
     }
@@ -3338,7 +4499,8 @@ fn accumulate_horizontal_scalar_diffusion(
         let first = first as usize;
         let second = second as usize;
         let conductance_m2_s =
-            diffusivity_m2_s * permeability * edge.length_m() / edge.center_distance_m();
+            diffusivity_m2_s * edge.midpoint_unit()[2].abs() * permeability * edge.length_m()
+                / edge.center_distance_m();
         let amount_rate = conductance_m2_s * (f64::from(values[second]) - f64::from(values[first]));
         target_tendency_s_inv[first] += (amount_rate / grid.cells()[first].area_m2()) as f32;
         target_tendency_s_inv[second] -= (amount_rate / grid.cells()[second].area_m2()) as f32;
@@ -3365,6 +4527,25 @@ fn is_atmosphere_role(role: ClimateLayerRole) -> bool {
     matches!(
         role,
         ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere
+    )
+}
+
+fn atmospheric_thermal_buoyancy_m_s2(temperature_anomaly_c: f64) -> f64 {
+    STANDARD_GRAVITY_M_S2 * temperature_anomaly_c
+        / (crate::world::natural::STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C + 273.15)
+}
+
+pub(super) fn atmospheric_thermal_buoyancy_difference_m_s2(
+    state: &LayeredClimateState,
+    cell: usize,
+) -> f64 {
+    let lower = ClimateLayerRole::LowerAtmosphere;
+    let upper = ClimateLayerRole::UpperAtmosphere;
+    // The shared terrain lapse correction cancels between the two layers.
+    atmospheric_thermal_buoyancy_m_s2(
+        f64::from(state.temperature_c(lower).expect("C2 lower layer")[cell])
+            - f64::from(state.temperature_c(upper).expect("C2 upper layer")[cell])
+            - f64::from(UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C),
     )
 }
 
@@ -3465,6 +4646,17 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), LayeredTenden
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LayeredTendencyError {
+    #[error("atmospheric cell {cell} has nonpositive internal reduced gravity {reduced_gravity_m_s2} m/s2")]
+    UnstableAtmosphericStratification {
+        cell: usize,
+        reduced_gravity_m_s2: f64,
+    },
+    #[error("{role:?} cell {cell} has invalid available fluid thickness {found} m")]
+    InvalidFluidThickness {
+        role: ClimateLayerRole,
+        cell: usize,
+        found: f64,
+    },
     #[error("layered tendency evaluation was cancelled")]
     Cancelled,
     #[error(transparent)]
@@ -3529,13 +4721,16 @@ impl From<CirculationOperatorError> for LayeredTendencyError {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_balanced_pair_to_f32, apply_baroclinic_reynolds_stress_closure,
-        axisymmetric_band_count, axisymmetric_bands, close_axisymmetric_baroclinic_thickness,
-        conservative_layer_thickness_tendency, diagnose_axisymmetric_circulation, dot,
-        equilibrium_anomaly_heat_exchange, horizontal_velocity_diffusion, next_f32_down,
-        role_constants, subsurface_pair_exchange_scale_for_step, tangentize,
-        LayeredClimateTendency, LayeredTendencySystem, LayeredTendencyWorkspace,
-        SUBSURFACE_OCEAN_MIN_C,
+        accumulate_horizontal_scalar_diffusion, add_balanced_pair_to_f32,
+        apply_baroclinic_reynolds_stress_closure, atmospheric_thermal_buoyancy_difference_m_s2,
+        atmospheric_thermal_buoyancy_m_s2, axisymmetric_band_count, axisymmetric_bands,
+        close_axisymmetric_baroclinic_thickness, conservative_layer_thickness_tendency,
+        diagnose_axisymmetric_circulation, dot, equilibrium_anomaly_heat_exchange,
+        horizontal_velocity_diffusion, next_f32_down, role_constants,
+        subsurface_pair_exchange_scale_for_step, tangentize, LayeredClimateTendency,
+        LayeredTendencySystem, LayeredTendencyWorkspace,
+        ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S, SUBSURFACE_OCEAN_MIN_C,
+        UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C,
     };
 
     #[test]
@@ -3559,9 +4754,11 @@ mod tests {
                     first_role,
                     forcing_temperature,
                     forcing_temperature,
+                    forcing_temperature,
                 );
                 let second_reference = role_reference_temperature_c(
                     second_role,
+                    forcing_temperature,
                     forcing_temperature,
                     forcing_temperature,
                 );
@@ -3636,6 +4833,110 @@ mod tests {
     use crate::generators::natural::formation::global_circulation::{
         state::role_reference_temperature_c, LayeredClimateState,
     };
+
+    #[test]
+    fn upper_atmosphere_reference_confines_cold_surface_anomaly_below_interface() {
+        // Lindzen & Nigam (1987); Battisti, Sarachik & Hirst (1999) Eq. (4)-(5)
+        // and section 2b: a cold non-zonal surface anomaly belongs to the
+        // lower troposphere while the free troposphere keeps the zonal-mean
+        // structure; a column warmer than that mean convects and keeps its
+        // own equilibrium stratification. Over a plateau half-sphere with an
+        // albedo-type cold anomaly the plateau upper layer must sit at the
+        // band mean after sea-level reduction, the sea upper layer at its own
+        // offset, both columns must be zero-flux states of the paired heat
+        // exchange, and only the plateau column may be the more stable one.
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let lapse = crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M;
+        let plateau_m = 3_500.0_f32;
+        let cold_anomaly_c = 20.0_f32;
+        let elevation = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                if cell.center_unit()[0] > 0.0 {
+                    plateau_m
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<f32>>();
+        let air = elevation
+            .iter()
+            .map(|&height| {
+                let anomaly = if height > 0.0 { cold_anomaly_c } else { 0.0 };
+                [15.0 - (lapse * f64::from(height)) as f32 - anomaly; CLIMATE_MONTH_COUNT]
+            })
+            .collect::<Vec<_>>();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            elevation.clone(),
+            vec![1.0; count],
+            vec![0.25; count],
+            vec![0.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            air.clone(),
+            air,
+            vec![[0.001; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let bands = axisymmetric_bands(&grid);
+        let reduced = |role: ClimateLayerRole, cell: usize| {
+            f64::from(state.temperature_c(role).unwrap()[cell]) + lapse * f64::from(elevation[cell])
+        };
+        let mut band_area = vec![0.0_f64; axisymmetric_band_count(&grid)];
+        let mut band_lower_sum = vec![0.0_f64; band_area.len()];
+        for (cell, geometry) in grid.cells().iter().enumerate() {
+            let expected_lower = if elevation[cell] > 0.0 {
+                15.0 - f64::from(cold_anomaly_c)
+            } else {
+                15.0
+            };
+            let lower = reduced(ClimateLayerRole::LowerAtmosphere, cell);
+            assert!((lower - expected_lower).abs() < 1.0e-3);
+            band_area[bands[cell] as usize] += geometry.area_m2();
+            band_lower_sum[bands[cell] as usize] += geometry.area_m2() * lower;
+        }
+        let offset = f64::from(UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C);
+        for cell in 0..count {
+            let band_mean = band_lower_sum[bands[cell] as usize] / band_area[bands[cell] as usize];
+            let upper = reduced(ClimateLayerRole::UpperAtmosphere, cell);
+            let expected = if elevation[cell] > 0.0 {
+                band_mean - offset
+            } else {
+                15.0 - offset
+            };
+            assert!(
+                (upper - expected).abs() < 1.0e-3,
+                "cell {cell}: {upper} vs {expected}"
+            );
+        }
+        let tendency = LayeredTendencySystem::new(&grid)
+            .evaluate(
+                &state,
+                &forcing,
+                &vec![1.0; grid.edges().len()],
+                0,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        assert_eq!(tendency.budget.paired_heat_absolute_w, 0.0);
+        let plateau_cell = (0..count).find(|&cell| elevation[cell] > 0.0).unwrap();
+        let sea_cell = (0..count)
+            .find(|&cell| elevation[cell] == 0.0 && bands[cell] == bands[plateau_cell])
+            .unwrap();
+        let plateau = atmospheric_thermal_buoyancy_difference_m_s2(&state, plateau_cell);
+        let sea = atmospheric_thermal_buoyancy_difference_m_s2(&state, sea_cell);
+        let plateau_band = bands[plateau_cell] as usize;
+        let expected = atmospheric_thermal_buoyancy_m_s2(
+            15.0 - f64::from(cold_anomaly_c)
+                - band_lower_sum[plateau_band] / band_area[plateau_band],
+        );
+        assert!(plateau < 0.0 && (plateau - expected).abs() < 1.0e-5 * expected.abs());
+        assert!(sea.abs() < 1.0e-6);
+    }
     use crate::world::natural::{
         ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
         CLIMATE_MONTH_COUNT,
@@ -3683,6 +4984,663 @@ mod tests {
             .1,
             1.0 / 86_400.0
         );
+    }
+
+    #[test]
+    fn fast_operator_retains_quadratic_momentum_transport() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                let radial = geometry.center_unit();
+                state.velocity_m_s_mut(role).unwrap()[cell] = tangentize(
+                    [
+                        12.0 * radial[2] - 3.0 * radial[1],
+                        5.0 * radial[0],
+                        2.0 * radial[1],
+                    ],
+                    radial,
+                )
+                .map(|value| value as f32);
+            }
+        }
+        let evaluate = |state: &LayeredClimateState| {
+            LayeredTendencySystem::new(&grid)
+                .evaluate_fast(
+                    state,
+                    &forcing,
+                    &vec![1.0; grid.edges().len()],
+                    0,
+                    &BuildCancellation::new(),
+                )
+                .unwrap()
+        };
+        let forward = evaluate(&state);
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            for value in state.velocity_m_s_mut(role).unwrap().iter_mut().flatten() {
+                *value = -*value;
+            }
+        }
+        let reversed = evaluate(&state);
+        // With uniform heights, Coriolis, drag, and viscosity are odd in u.
+        // The quadratic transport must leave an even component above roundoff.
+        let mut even_squared = 0.0_f64;
+        let mut total_squared = 0.0_f64;
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            for (&first, &second) in forward
+                .velocity_tendency_m_s2(role)
+                .unwrap()
+                .iter()
+                .flatten()
+                .zip(
+                    reversed
+                        .velocity_tendency_m_s2(role)
+                        .unwrap()
+                        .iter()
+                        .flatten(),
+                )
+            {
+                even_squared += (f64::from(first) + f64::from(second)).powi(2);
+                total_squared += f64::from(first).powi(2) + f64::from(second).powi(2);
+            }
+        }
+        assert!(
+            even_squared > f64::from(f32::EPSILON) * total_squared,
+            "fast operator is missing quadratic momentum transport: {even_squared}/{total_squared}"
+        );
+
+        // Reuse the fixture to check the convective energy contract at
+        // nonuniform positive depths, including a thin lower layer.
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            let reference = f64::from(state.reference_thickness_m(role).unwrap());
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                state.height_anomaly_m_mut(role).unwrap()[cell] =
+                    (reference * (-0.9 + 0.09 * geometry.center_unit()[2])) as f32;
+            }
+        }
+        let system = LayeredTendencySystem::new(&grid);
+        let mut transport = LayeredClimateTendency::zeroed(&state);
+        system
+            .apply_horizontal_momentum_transport(&state, &BuildCancellation::new(), &mut transport)
+            .unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let mut height_rate = vec![0.0; count];
+        let mut power = 0.0_f64;
+        let mut absolute_power = 0.0_f64;
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            system
+                .layer_thickness_tendency_into(
+                    &operators,
+                    &state,
+                    role,
+                    &vec![1.0; grid.edges().len()],
+                    true,
+                    &mut height_rate,
+                    &BuildCancellation::new(),
+                )
+                .unwrap();
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                let velocity = state.velocity_m_s(role).unwrap()[cell].map(f64::from);
+                let acceleration =
+                    transport.velocity_tendency_m_s2(role).unwrap()[cell].map(f64::from);
+                let thickness = system.fluid_layer_thickness_m(&state, role, cell).unwrap();
+                let momentum_power = geometry.area_m2() * thickness * dot(velocity, acceleration);
+                let mass_power =
+                    0.5 * geometry.area_m2() * dot(velocity, velocity) * height_rate[cell];
+                power += momentum_power + mass_power;
+                absolute_power += momentum_power.abs() + mass_power.abs();
+            }
+        }
+        assert!(
+            power.abs() <= f64::from(f32::EPSILON) * absolute_power,
+            "convective kinetic energy residual {power} / {absolute_power}"
+        );
+    }
+
+    #[test]
+    fn declared_overturning_transfers_full_amount_and_conserves_momentum() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        state.height_anomaly_m_mut(lower).unwrap().fill(-4_000.0);
+        for (cell, geometry) in grid.cells().iter().enumerate() {
+            state.velocity_m_s_mut(lower).unwrap()[cell] =
+                tangentize([8.0, -3.0, 1.0], geometry.center_unit()).map(|value| value as f32);
+            state.velocity_m_s_mut(upper).unwrap()[cell] =
+                tangentize([-2.0, 4.0, 0.0], geometry.center_unit()).map(|value| value as f32);
+        }
+        let before = state.clone();
+        let floor = vec![500.0; count];
+        let gradient = vec![[0.0; 3]; count];
+        let land_evaporation = vec![0.0; count];
+        let system =
+            LayeredTendencySystem::with_terrain(&grid, &gradient, &floor, &land_evaporation, 0.0);
+        let step = crate::world::natural::GLOBAL_CIRCULATION_MACRO_STEP_SECONDS;
+        let mut exchanges = vec![0.0; count];
+        exchanges[0] = 1_000.0 / step;
+        exchanges[1] = -1_000.0 / step;
+        system
+            .apply_overturning_exchange(&mut state, &exchanges, step, &BuildCancellation::new())
+            .unwrap();
+        for (cell, &exchange) in exchanges.iter().enumerate().take(2) {
+            let lower_change = f64::from(state.height_anomaly_m(lower).unwrap()[cell])
+                - f64::from(before.height_anomaly_m(lower).unwrap()[cell]);
+            assert_eq!(
+                lower_change,
+                -exchange * step,
+                "declared Q must not be reduced when the donor has enough mass"
+            );
+            for component in 0..3 {
+                let momentum = |state: &LayeredClimateState| {
+                    [lower, upper]
+                        .iter()
+                        .map(|&role| {
+                            system.fluid_layer_thickness_m(state, role, cell).unwrap()
+                                * f64::from(state.velocity_m_s(role).unwrap()[cell][component])
+                        })
+                        .sum::<f64>()
+                };
+                let scale = [lower, upper]
+                    .iter()
+                    .map(|&role| {
+                        system.fluid_layer_thickness_m(&before, role, cell).unwrap()
+                            * f64::from(before.velocity_m_s(role).unwrap()[cell][component]).abs()
+                    })
+                    .sum::<f64>();
+                assert!(
+                    (momentum(&state) - momentum(&before)).abs() <= f64::from(f32::EPSILON) * scale
+                );
+            }
+        }
+        let mut half_steps = before.clone();
+        for _ in 0..2 {
+            system
+                .apply_overturning_exchange(
+                    &mut half_steps,
+                    &exchanges,
+                    step / 2.0,
+                    &BuildCancellation::new(),
+                )
+                .unwrap();
+        }
+        for role in [lower, upper] {
+            assert_eq!(
+                state.height_anomaly_m(role),
+                half_steps.height_anomaly_m(role)
+            );
+            for (&full, &half) in state
+                .velocity_m_s(role)
+                .unwrap()
+                .iter()
+                .flatten()
+                .zip(half_steps.velocity_m_s(role).unwrap().iter().flatten())
+            {
+                assert!((full - half).abs() <= 2.0 * f32::EPSILON * full.abs().max(half.abs()));
+            }
+        }
+        // Exercise the production stage generator against the isolated exact
+        // donor solution at three step sizes, allowing accumulated f32 roundoff.
+        let mut errors = Vec::new();
+        for divisions in [1, 2, 4] {
+            let mut integrated = before.clone();
+            for _ in 0..divisions {
+                integrated = super::super::rk3::rk3_step_with(
+                    &grid,
+                    &integrated,
+                    step / f64::from(divisions),
+                    &BuildCancellation::new(),
+                    |stage| {
+                        let cancellation = BuildCancellation::new();
+                        let mut derivative = LayeredClimateTendency::zeroed(stage);
+                        for (cell, &exchange) in exchanges.iter().enumerate() {
+                            derivative.layer_mut(lower).unwrap().height_tendency_m_s[cell] =
+                                -exchange as f32;
+                            derivative.layer_mut(upper).unwrap().height_tendency_m_s[cell] =
+                                exchange as f32;
+                        }
+                        system.apply_declared_overturning_momentum(
+                            stage,
+                            &exchanges,
+                            &cancellation,
+                            &mut derivative,
+                        )?;
+                        super::super::rk3::ClimateDerivative::from_tendency(
+                            stage,
+                            &derivative,
+                            &cancellation,
+                        )
+                    },
+                )
+                .unwrap();
+            }
+            let error = [lower, upper]
+                .iter()
+                .flat_map(|&role| {
+                    integrated
+                        .velocity_m_s(role)
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .zip(state.velocity_m_s(role).unwrap().iter().flatten())
+                })
+                .map(|(&actual, &expected)| f64::from(actual - expected).abs())
+                .fold(0.0_f64, f64::max);
+            errors.push(error);
+        }
+        let velocity_scale = [lower, upper]
+            .iter()
+            .flat_map(|&role| before.velocity_m_s(role).unwrap().iter().flatten())
+            .map(|&value| f64::from(value).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            errors.iter().zip([1, 2, 4]).all(|(&error, steps)| error
+                <= f64::from(steps) * f64::from(f32::EPSILON) * velocity_scale),
+            "stage exchange differs from the frozen-Q donor solution: {errors:?}"
+        );
+        let mut exhausted = before.clone();
+        exchanges.fill(0.0);
+        exchanges[0] = system.fluid_layer_thickness_m(&before, lower, 0).unwrap() / step;
+        assert!(
+            matches!(system.apply_overturning_exchange(&mut exhausted, &exchanges, step, &BuildCancellation::new()),
+            Err(super::LayeredTendencyError::InvalidFluidThickness { role, cell: 0, .. }) if role == lower)
+        );
+    }
+
+    #[test]
+    fn atmospheric_mechanical_exchange_conserves_actual_column_momentum() {
+        use super::{mass_per_area, PAIRED_EXCHANGE_RELATIVE_BALANCE_TOLERANCE};
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![0.25; count],
+            vec![0.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        for (cell, geometry) in grid.cells().iter().enumerate() {
+            state.velocity_m_s_mut(upper).unwrap()[cell] =
+                tangentize([2.0, 1.0, 0.0], geometry.center_unit()).map(|v| v as f32);
+        }
+        let system = LayeredTendencySystem::new(&grid);
+        state.height_anomaly_m_mut(lower).unwrap().fill(-5_000.0);
+        state.height_anomaly_m_mut(upper).unwrap().fill(5_000.0);
+        let mut tendency = LayeredClimateTendency::zeroed(&state);
+        system
+            .apply_pair_momentum_exchanges(
+                &state,
+                &forcing,
+                &BuildCancellation::new(),
+                &mut tendency,
+            )
+            .unwrap();
+        for cell in 0..count {
+            let mass = |role| {
+                mass_per_area(&state, role)
+                    * (1.0
+                        + f64::from(state.height_anomaly_m(role).unwrap()[cell])
+                            / f64::from(state.reference_thickness_m(role).unwrap()))
+            };
+            for component in 0..3 {
+                let first = mass(lower)
+                    * f64::from(tendency.velocity_tendency_m_s2(lower).unwrap()[cell][component]);
+                let second = mass(upper)
+                    * f64::from(tendency.velocity_tendency_m_s2(upper).unwrap()[cell][component]);
+                assert!(
+                    (first + second).abs()
+                        <= PAIRED_EXCHANGE_RELATIVE_BALANCE_TOLERANCE
+                            * (first.abs() + second.abs()),
+                    "mechanical exchange creates column momentum: {first} + {second}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equal_inertia_layers_have_reciprocal_interface_pressure_response() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let initial = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        let responses = [(lower, upper), (upper, lower)].map(|(source, target)| {
+            let mut state = initial.clone();
+            for (cell, value) in state
+                .height_anomaly_m_mut(source)
+                .unwrap()
+                .iter_mut()
+                .enumerate()
+            {
+                *value = (12.0 * grid.cells()[cell].center_unit()[0]) as f32;
+            }
+            LayeredTendencySystem::new(&grid)
+                .evaluate_fast(
+                    &state,
+                    &forcing,
+                    &vec![1.0; grid.edges().len()],
+                    0,
+                    &BuildCancellation::new(),
+                )
+                .unwrap()
+                .velocity_tendency_m_s2(target)
+                .unwrap()
+                .to_vec()
+        });
+        for (first, second) in responses[0]
+            .iter()
+            .flatten()
+            .zip(responses[1].iter().flatten())
+        {
+            assert!(
+                (first - second).abs() <= f32::EPSILON * (first.abs() + second.abs()),
+                "equal-inertia pressure response is asymmetric: {first} vs {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn closed_two_layer_atmosphere_has_no_external_height_source() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        state
+            .height_anomaly_m_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap()
+            .fill(12.0);
+        let tendency = LayeredTendencySystem::new(&grid)
+            .evaluate(
+                &state,
+                &forcing,
+                &vec![1.0; grid.edges().len()],
+                0,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        assert_eq!(tendency.budget.external_atmosphere_amount_rate_m3_s(), 0.0);
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            assert!(tendency
+                .height_tendency_m_s(role)
+                .unwrap()
+                .iter()
+                .all(|value| *value == 0.0));
+        }
+    }
+
+    #[test]
+    fn independent_layer_temperatures_do_not_force_the_column_pressure_mode() {
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.008; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        for lower_height_anomaly in [0.0, -4_000.0] {
+            let mut before =
+                LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+            before
+                .height_anomaly_m_mut(ClimateLayerRole::LowerAtmosphere)
+                .unwrap()
+                .fill(lower_height_anomaly);
+            let mut after = before.clone();
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                after
+                    .temperature_c_mut(ClimateLayerRole::LowerAtmosphere)
+                    .unwrap()[cell] += (3.0 * geometry.center_unit()[0]) as f32;
+                after
+                    .temperature_c_mut(ClimateLayerRole::UpperAtmosphere)
+                    .unwrap()[cell] += (7.0 * geometry.center_unit()[2]) as f32;
+            }
+            let tendency = LayeredTendencySystem::new(&grid)
+                .evaluate_thermal_pressure_endpoint_difference_with_workspace_validated(
+                    &before,
+                    &after,
+                    &vec![1.0; grid.edges().len()],
+                    &BuildCancellation::new(),
+                    &mut LayeredTendencyWorkspace::for_grid(&grid),
+                )
+                .unwrap();
+            let lower = ClimateLayerRole::LowerAtmosphere;
+            let upper = ClimateLayerRole::UpperAtmosphere;
+            let lower_mass =
+                f64::from(before.reference_thickness_m(lower).unwrap() + lower_height_anomaly);
+            let upper_mass = f64::from(before.reference_thickness_m(upper).unwrap());
+            for (a_lower, a_upper) in tendency
+                .velocity_tendency_m_s2(lower)
+                .unwrap()
+                .iter()
+                .flatten()
+                .zip(
+                    tendency
+                        .velocity_tendency_m_s2(upper)
+                        .unwrap()
+                        .iter()
+                        .flatten(),
+                )
+            {
+                let lower_force = lower_mass * f64::from(*a_lower);
+                let upper_force = upper_mass * f64::from(*a_upper);
+                assert!(
+                    (lower_force + upper_force).abs()
+                        <= f64::from(f32::EPSILON) * (lower_force.abs() + upper_force.abs()),
+                    "independent temperatures forced column: {lower_force} + {upper_force}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn atmospheric_reference_lapse_does_not_drive_horizontal_pressure_wind() {
+        // The same reference atmosphere sampled at two terrain heights has
+        // no horizontal thermal anomaly. A small operator fixture isolates
+        // the coordinate error without solving a generated world's climate.
+        let grid = CubedSphereGrid::new(2, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let elevation = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                if cell.center_unit()[0] > 0.0 {
+                    2_000.0
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<f32>>();
+        // The production forcing publishes the surface target already reduced
+        // by the reference lapse over the orography.
+        let air = elevation
+            .iter()
+            .map(|&height| {
+                [15.0 - (crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M
+                    * f64::from(height)) as f32; CLIMATE_MONTH_COUNT]
+            })
+            .collect::<Vec<_>>();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            elevation.clone(),
+            vec![1.0; count],
+            vec![0.25; count],
+            vec![0.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            air.clone(),
+            air,
+            vec![[0.001; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let tendency = LayeredTendencySystem::new(&grid)
+            .evaluate(
+                &state,
+                &forcing,
+                &vec![1.0; grid.edges().len()],
+                0,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            assert!(tendency
+                .layer(role)
+                .unwrap()
+                .velocity_tendency_m_s2
+                .iter()
+                .flatten()
+                .all(|value| *value == 0.0));
+        }
+        // Varying actual lower depth must not turn a horizontally uniform
+        // reference anomaly into a bottom-slope thermal pressure force.
+        let terrain_gradient = vec![[0.0; 3]; count];
+        let evaporation_fraction = vec![1.0; count];
+        let system = LayeredTendencySystem::with_terrain(
+            &grid,
+            &terrain_gradient,
+            &elevation,
+            &evaporation_fraction,
+            0.0,
+        );
+        let mut thermal = LayeredClimateTendency::zeroed(&state);
+        system
+            .apply_atmospheric_thermal_pressure(
+                &state,
+                Some(&forcing),
+                &BuildCancellation::new(),
+                &mut thermal,
+            )
+            .unwrap();
+        for role in [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ] {
+            assert!(thermal
+                .velocity_tendency_m_s2(role)
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|value| *value == 0.0));
+        }
+    }
+
+    #[test]
+    fn atmospheric_moisture_diffusion_does_not_cross_the_equator() {
+        // A hemispheric step isolates the inappropriate tropical eddy flux:
+        // only edges on the equator see a gradient. No climate solve is needed.
+        let grid = CubedSphereGrid::new(4, 6_371_000.0).unwrap();
+        let values = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                if cell.center_unit()[2] > 0.0 {
+                    0.02
+                } else {
+                    0.01
+                }
+            })
+            .collect::<Vec<f32>>();
+        let mut tendency = vec![0.0; grid.cell_count()];
+        accumulate_horizontal_scalar_diffusion(
+            &grid,
+            &values,
+            &vec![1.0; grid.edges().len()],
+            ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S,
+            &mut tendency,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+        assert!(tendency.iter().all(|value| *value == 0.0));
     }
 
     #[test]
@@ -3911,18 +5869,23 @@ mod tests {
             .unwrap();
         let flat_floor = vec![0.0_f32; grid.cell_count()];
         let dry_land = vec![0.0_f32; grid.cell_count()];
-        let supplied =
-            LayeredTendencySystem::with_terrain(&grid, &terrain_gradient, &flat_floor, &dry_land)
-                .evaluate_thermodynamic_moisture_with_workspace_for_step(
-                    &state,
-                    &forcing,
-                    &permeability,
-                    0,
-                    7_200.0,
-                    &cancellation,
-                    &mut workspace,
-                )
-                .unwrap();
+        let supplied = LayeredTendencySystem::with_terrain(
+            &grid,
+            &terrain_gradient,
+            &flat_floor,
+            &dry_land,
+            0.0,
+        )
+        .evaluate_thermodynamic_moisture_with_workspace_for_step(
+            &state,
+            &forcing,
+            &permeability,
+            0,
+            7_200.0,
+            &cancellation,
+            &mut workspace,
+        )
+        .unwrap();
 
         for role in state.active_roles() {
             assert_eq!(
