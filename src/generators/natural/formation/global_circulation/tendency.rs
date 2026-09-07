@@ -1280,6 +1280,52 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 1.0e6 * mean(12), 1.0e6 * mean(13), 1.0e6 * (mean(3) - sum)
             );
         }
+        // 热带 5° 带：降水分项、进入低层的潜热、低层温度对月目标的偏差、翻转通量。
+        const TROPIC_BANDS: usize = 12;
+        let lower_capacity = heat_capacity_per_area(state, lower);
+        let mut tropic = [[0.0_f64; 8]; TROPIC_BANDS];
+        let lower_temperature = state.temperature_c(lower).expect("C2");
+        for (cell, geometry) in self.grid.cells().iter().enumerate() {
+            let latitude = geometry.center_unit()[2].asin().to_degrees();
+            if !(-30.0..30.0).contains(&latitude) {
+                continue;
+            }
+            let band = ((latitude + 30.0) / 5.0).floor() as usize;
+            let band = band.min(TROPIC_BANDS - 1);
+            let area = geometry.area_m2();
+            let precipitation = f64::from(full.precipitation_rate_mm_s[cell]);
+            let convective = f64::from(full.convective_precipitation_rate_mm_s[cell]);
+            let orographic = f64::from(full.orographic_precipitation_rate_mm_s[cell]);
+            let land_evapotranspiration = f64::from(full.land_evapotranspiration_rate_mm_s[cell]);
+            let latent_into_lower = WATER_VAPORIZATION_LATENT_HEAT_J_KG
+                * (precipitation - convective - land_evapotranspiration);
+            let anomaly = f64::from(lower_temperature[cell])
+                - f64::from(forcing.equilibrium_air_temperature_c()[cell][month]);
+            let heating_k_day = latent_into_lower / lower_capacity * 86_400.0;
+            let values = [
+                1.0,
+                precipitation * 86_400.0,
+                convective * 86_400.0,
+                orographic * 86_400.0,
+                latent_into_lower,
+                anomaly,
+                exchange[cell] * 1.0e3,
+                heating_k_day,
+            ];
+            for (target, value) in tropic[band].iter_mut().zip(values) {
+                *target += area * value;
+            }
+        }
+        for (band, row) in tropic.iter().enumerate() {
+            if row[0] <= 0.0 {
+                continue;
+            }
+            let mean = |index: usize| row[index] / row[0];
+            eprintln!(
+                "[tropic] cycle={cycle} month={month} lat={:.1} P={:.3} conv={:.3} oro={:.3} latent_in_w_m2={:.2} dT={:.3} q_up_mm_s={:.3} heat_k_day={:.3}",
+                -27.5 + 5.0 * band as f64, mean(1), mean(2), mean(3), mean(4), mean(5), mean(6), mean(7)
+            );
+        }
         Ok(())
     }
 
@@ -3436,6 +3482,19 @@ impl<'grid> LayeredTendencySystem<'grid> {
     ) -> Result<(), LayeredTendencyError> {
         let lower_capacity = heat_capacity_per_area(state, ClimateLayerRole::LowerAtmosphere);
         let surface_capacity = heat_capacity_per_area(state, ClimateLayerRole::OceanMixedLayer);
+        // 研究候选（§7.27）：翻转上升支（声明 Q 向上）内的大尺度凝结与对流凝结处于
+        // 同一上升气流，其潜热同样由上升的绝热冷却平衡（Sobel, Nilsson & Polvani
+        // 2001 弱温度梯度），按 Task 2b 同一记账作为外部输出；下沉支与无翻转处不变。
+        let ascending = tendency
+            .overturning_exchange_m_s
+            .as_deref()
+            .map(|exchange| {
+                exchange
+                    .iter()
+                    .map(|&value| value > 0.0)
+                    .collect::<Vec<bool>>()
+            })
+            .unwrap_or_default();
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -3454,8 +3513,15 @@ impl<'grid> LayeredTendencySystem<'grid> {
             // layer's pressure into a moisture-convergence runaway. It is
             // booked as an explicit external energy sink instead.
             let convective = f64::from(tendency.convective_precipitation_rate_mm_s[cell]);
-            let condensation = f64::from(tendency.precipitation_rate_mm_s[cell]) - convective;
-            let exported_power_w_m2 = WATER_VAPORIZATION_LATENT_HEAT_J_KG * convective;
+            let orographic = f64::from(tendency.orographic_precipitation_rate_mm_s[cell]);
+            let mut condensation = f64::from(tendency.precipitation_rate_mm_s[cell]) - convective;
+            let mut exported = convective;
+            if ascending.get(cell).copied().unwrap_or(false) {
+                let large_scale = (condensation - orographic).max(0.0);
+                exported += large_scale;
+                condensation -= large_scale;
+            }
+            let exported_power_w_m2 = WATER_VAPORIZATION_LATENT_HEAT_J_KG * exported;
             let area = self.grid.cells()[cell].area_m2();
             tendency.budget.external_heat_rate_w -= area * exported_power_w_m2;
             tendency.budget.external_heat_absolute_w += area * exported_power_w_m2;
