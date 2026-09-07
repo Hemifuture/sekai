@@ -3482,19 +3482,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
     ) -> Result<(), LayeredTendencyError> {
         let lower_capacity = heat_capacity_per_area(state, ClimateLayerRole::LowerAtmosphere);
         let surface_capacity = heat_capacity_per_area(state, ClimateLayerRole::OceanMixedLayer);
-        // 研究候选（§7.27）：翻转上升支（声明 Q 向上）内的大尺度凝结与对流凝结处于
-        // 同一上升气流，其潜热同样由上升的绝热冷却平衡（Sobel, Nilsson & Polvani
-        // 2001 弱温度梯度），按 Task 2b 同一记账作为外部输出；下沉支与无翻转处不变。
-        let ascending = tendency
-            .overturning_exchange_m_s
-            .as_deref()
-            .map(|exchange| {
-                exchange
-                    .iter()
-                    .map(|&value| value > 0.0)
-                    .collect::<Vec<bool>>()
-            })
-            .unwrap_or_default();
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -3513,15 +3500,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
             // layer's pressure into a moisture-convergence runaway. It is
             // booked as an explicit external energy sink instead.
             let convective = f64::from(tendency.convective_precipitation_rate_mm_s[cell]);
-            let orographic = f64::from(tendency.orographic_precipitation_rate_mm_s[cell]);
-            let mut condensation = f64::from(tendency.precipitation_rate_mm_s[cell]) - convective;
-            let mut exported = convective;
-            if ascending.get(cell).copied().unwrap_or(false) {
-                let large_scale = (condensation - orographic).max(0.0);
-                exported += large_scale;
-                condensation -= large_scale;
-            }
-            let exported_power_w_m2 = WATER_VAPORIZATION_LATENT_HEAT_J_KG * exported;
+            let condensation = f64::from(tendency.precipitation_rate_mm_s[cell]) - convective;
+            let exported_power_w_m2 = WATER_VAPORIZATION_LATENT_HEAT_J_KG * convective;
             let area = self.grid.cells()[cell].area_m2();
             tendency.budget.external_heat_rate_w -= area * exported_power_w_m2;
             tendency.budget.external_heat_absolute_w += area * exported_power_w_m2;
