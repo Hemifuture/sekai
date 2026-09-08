@@ -1115,682 +1115,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
             .collect()
     }
 
-    /// 临时研发量测：低层纬向动量收支的带均分解，逐项复用生产算子。
-    pub(super) fn print_zonal_momentum_budget_probe(
-        &self,
-        state: &LayeredClimateState,
-        forcing: &PlanetForcing,
-        full: &LayeredClimateTendency,
-        cycle: usize,
-        month: usize,
-        cancellation: &BuildCancellation,
-    ) -> Result<(), LayeredTendencyError> {
-        if state.profile() != ClimateModelProfile::C2LayeredV1 {
-            return Ok(());
-        }
-        let lower = ClimateLayerRole::LowerAtmosphere;
-        let upper = ClimateLayerRole::UpperAtmosphere;
-        let operators = CirculationOperators::new(self.grid);
-        let open = vec![1.0_f32; self.grid.edges().len()];
-        let velocity = state.velocity_m_s(lower).expect("C2");
-        let upper_velocity = state.velocity_m_s(upper).expect("C2");
-        let exchange = full.overturning_exchange_m_s().expect("C2 exchange");
-        let mut scratch = vec![0.0; self.grid.cell_count()];
-        let mut eddy = LayeredClimateTendency::zeroed(state);
-        apply_baroclinic_reynolds_stress_closure(
-            self.grid,
-            state,
-            forcing,
-            &mut eddy,
-            &mut scratch,
-            cancellation,
-        )?;
-        let mut thermal = LayeredClimateTendency::zeroed(state);
-        self.apply_atmospheric_thermal_pressure(state, Some(forcing), cancellation, &mut thermal)?;
-        let mut mechanical = LayeredClimateTendency::zeroed(state);
-        {
-            let gradient = operators.gradient_with_permeability_cancellable(
-                state.height_anomaly_m(lower).expect("C2"),
-                &open,
-                cancellation,
-            )?;
-            let gravity = role_constants(state.profile(), lower).0;
-            for (cell, gradient) in gradient.into_iter().enumerate() {
-                mechanical
-                    .layer_mut(lower)
-                    .expect("C2")
-                    .velocity_tendency_m_s2[cell] =
-                    gradient.map(|value| (-gravity * f64::from(value)) as f32);
-            }
-            self.apply_common_surface_pressure_probe(state, &open, cancellation, &mut mechanical)?;
-        }
-        let mut transport = LayeredClimateTendency::zeroed(state);
-        self.apply_horizontal_momentum_transport(state, cancellation, &mut transport)?;
-        let mut viscous = vec![[0.0_f32; 3]; self.grid.cell_count()];
-        horizontal_velocity_diffusion(
-            self.grid,
-            velocity,
-            &open,
-            ATMOSPHERE_HORIZONTAL_EDDY_VISCOSITY_M2_S,
-            &mut viscous,
-            cancellation,
-        )?;
-        let mut pair = LayeredClimateTendency::zeroed(state);
-        self.apply_pair_momentum_exchanges(state, forcing, cancellation, &mut pair)?;
-        let mut donor = LayeredClimateTendency::zeroed(state);
-        self.apply_declared_overturning_momentum(
-            state,
-            full.overturning_exchange_m_s().expect("C2 exchange"),
-            cancellation,
-            &mut donor,
-        )?;
-        let layout = ClimateLayerLayout::for_profile(state.profile());
-        let pair_time = layout
-            .exchanges()
-            .iter()
-            .find(|pair| pair.first() == lower && pair.second() == upper)
-            .expect("C2 pair")
-            .momentum_exchange_time_s()
-            .expect("mechanical pair");
-        let drag_s_inv = role_constants(state.profile(), lower).1;
-        const COLUMNS: usize = 17;
-        let mut bands = [[0.0_f64; COLUMNS]; 2];
-        for (cell, geometry) in self.grid.cells().iter().enumerate() {
-            if cell % 256 == 0 {
-                check_cancelled(cancellation)?;
-            }
-            let radial = geometry.center_unit();
-            let latitude = radial[2].asin().to_degrees().abs();
-            let band = if (35.0..55.0).contains(&latitude) {
-                0
-            } else if (10.0..20.0).contains(&latitude) {
-                1
-            } else {
-                continue;
-            };
-            let cosine = radial[0].hypot(radial[1]);
-            if cosine < 1.0e-6 {
-                continue;
-            }
-            let east = [-radial[1] / cosine, radial[0] / cosine, 0.0];
-            let north = [
-                -radial[0] * radial[2] / cosine,
-                -radial[1] * radial[2] / cosine,
-                cosine,
-            ];
-            let project = |vector: [f32; 3]| dot(vector.map(f64::from), east);
-            let northward = |vector: [f32; 3]| dot(vector.map(f64::from), north);
-            let layer = |tendency: &LayeredClimateTendency| {
-                project(tendency.layer(lower).expect("C2").velocity_tendency_m_s2[cell])
-            };
-            let masses = self.momentum_pair_mass_per_area(
-                state,
-                [lower, upper],
-                [mass_per_area(state, lower), mass_per_area(state, upper)],
-                cell,
-            )?;
-            let vertical = paired_momentum_exchange(
-                velocity[cell].map(f64::from),
-                upper_velocity[cell].map(f64::from),
-                masses[0],
-                masses[1],
-                pair_time,
-            )?;
-            let vertical_u = dot(vertical.first_acceleration_m_s2, east);
-            let coriolis = operators.coriolis_cell_projected_validated(
-                cell,
-                velocity[cell],
-                EARTH_ROTATION_RATE_RAD_S,
-            );
-            let drag = -drag_s_inv
-                * LAND_SEA_SURFACE_DRAG_RATIO
-                * f64::from(forcing.land_fraction()[cell])
-                * project(velocity[cell]);
-            let values = [
-                1.0,
-                project(velocity[cell]),
-                project(upper_velocity[cell]),
-                layer(full),
-                layer(&eddy),
-                project(coriolis),
-                drag,
-                layer(&pair) - vertical_u,
-                vertical_u,
-                layer(&thermal),
-                layer(&mechanical),
-                layer(&transport),
-                project(viscous[cell]),
-                layer(&donor),
-                northward(velocity[cell]) * radial[2].signum(),
-                northward(upper_velocity[cell]) * radial[2].signum(),
-                exchange[cell],
-            ];
-            let area = geometry.area_m2();
-            for (target, value) in bands[band].iter_mut().zip(values) {
-                *target += area * value;
-            }
-        }
-        for (name, row) in ["mid35-55", "trade10-20"].into_iter().zip(bands) {
-            let mean = |index: usize| row[index] / row[0];
-            let sum = (4..14).map(mean).sum::<f64>();
-            eprintln!(
-                "[u-budget] cycle={cycle} month={month} band={name} u_low={:.3} u_up={:.3} v_pole_low={:.3} v_pole_up={:.3} q_up_mm_s={:.3} total={:.3} eddy={:.3} coriolis={:.3} drag={:.3} ocean_stress={:.3} vertical={:.3} thermal={:.3} mechanical={:.3} transport={:.3} viscous={:.3} donor={:.3} residual={:.3}",
-                mean(1), mean(2), mean(14), mean(15), 1.0e3 * mean(16), 1.0e6 * mean(3), 1.0e6 * mean(4), 1.0e6 * mean(5), 1.0e6 * mean(6),
-                1.0e6 * mean(7), 1.0e6 * mean(8), 1.0e6 * mean(9), 1.0e6 * mean(10), 1.0e6 * mean(11),
-                1.0e6 * mean(12), 1.0e6 * mean(13), 1.0e6 * (mean(3) - sum)
-            );
-        }
-        // 热带 5° 带：降水分项、进入低层的潜热、低层温度对月目标的偏差、翻转通量。
-        const TROPIC_BANDS: usize = 12;
-        let lower_capacity = heat_capacity_per_area(state, lower);
-        let mut tropic = [[0.0_f64; 8]; TROPIC_BANDS];
-        let lower_temperature = state.temperature_c(lower).expect("C2");
-        for (cell, geometry) in self.grid.cells().iter().enumerate() {
-            let latitude = geometry.center_unit()[2].asin().to_degrees();
-            if !(-30.0..30.0).contains(&latitude) {
-                continue;
-            }
-            let band = ((latitude + 30.0) / 5.0).floor() as usize;
-            let band = band.min(TROPIC_BANDS - 1);
-            let area = geometry.area_m2();
-            let precipitation = f64::from(full.precipitation_rate_mm_s[cell]);
-            let convective = f64::from(full.convective_precipitation_rate_mm_s[cell]);
-            let orographic = f64::from(full.orographic_precipitation_rate_mm_s[cell]);
-            let land_evapotranspiration = f64::from(full.land_evapotranspiration_rate_mm_s[cell]);
-            let latent_into_lower = WATER_VAPORIZATION_LATENT_HEAT_J_KG
-                * (precipitation - convective - land_evapotranspiration);
-            let anomaly = f64::from(lower_temperature[cell])
-                - f64::from(forcing.equilibrium_air_temperature_c()[cell][month]);
-            let heating_k_day = latent_into_lower / lower_capacity * 86_400.0;
-            let values = [
-                1.0,
-                precipitation * 86_400.0,
-                convective * 86_400.0,
-                orographic * 86_400.0,
-                latent_into_lower,
-                anomaly,
-                exchange[cell] * 1.0e3,
-                heating_k_day,
-            ];
-            for (target, value) in tropic[band].iter_mut().zip(values) {
-                *target += area * value;
-            }
-        }
-        for (band, row) in tropic.iter().enumerate() {
-            if row[0] <= 0.0 {
-                continue;
-            }
-            let mean = |index: usize| row[index] / row[0];
-            eprintln!(
-                "[tropic] cycle={cycle} month={month} lat={:.1} P={:.3} conv={:.3} oro={:.3} latent_in_w_m2={:.2} dT={:.3} q_up_mm_s={:.3} heat_k_day={:.3}",
-                -27.5 + 5.0 * band as f64, mean(1), mean(2), mean(3), mean(4), mean(5), mean(6), mean(7)
-            );
-        }
-        Ok(())
-    }
-
-    /// 临时研发量测：非纬向热压力与机械压力分别对局部净出流的瞬时贡献。
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn print_non_zonal_pressure_outflow_probe(
-        &self,
-        state: &LayeredClimateState,
-        forcing: &PlanetForcing,
-        cell: usize,
-        cancellation: &BuildCancellation,
-    ) -> Result<(), LayeredTendencyError> {
-        if state.profile() != ClimateModelProfile::C2LayeredV1 {
-            return Ok(());
-        }
-        check_cancelled(cancellation)?;
-        let operators = CirculationOperators::new(self.grid);
-        let open = vec![1.0; self.grid.edges().len()];
-        let bands = axisymmetric_bands(self.grid);
-        let mut areas = vec![0.0; axisymmetric_band_count(self.grid)];
-        let mut reference_heights = Vec::with_capacity(self.grid.cell_count());
-        let mut equilibrium = Vec::with_capacity(self.grid.cell_count());
-        let mut equilibrium_sums = vec![0.0; areas.len()];
-        let lapse = crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M;
-        for (index, geometry) in self.grid.cells().iter().enumerate() {
-            if index % 256 == 0 {
-                check_cancelled(cancellation)?;
-            }
-            let height = crate::world::natural::atmospheric_reference_surface_height_m(
-                forcing.elevation_m()[index] - self.sea_level_m,
-                forcing.land_fraction()[index],
-            );
-            reference_heights.push(height);
-            // 接口无月份参数；明确量年均目标，避免误报为失败月份目标。
-            let target = forcing.equilibrium_air_temperature_c()[index]
-                .iter()
-                .copied()
-                .map(f64::from)
-                .sum::<f64>()
-                / CLIMATE_MONTH_COUNT as f64
-                + lapse * height;
-            equilibrium.push(target);
-            let band = bands[index] as usize;
-            areas[band] += geometry.area_m2();
-            equilibrium_sums[band] += geometry.area_m2() * target;
-        }
-        let mut zonal = state.clone_cancellable(cancellation)?;
-        let mut temperature_sums = vec![0.0; areas.len()];
-        let roles = [
-            ClimateLayerRole::LowerAtmosphere,
-            ClimateLayerRole::UpperAtmosphere,
-        ];
-        for role in roles {
-            temperature_sums.fill(0.0);
-            for (index, geometry) in self.grid.cells().iter().enumerate() {
-                if index % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                temperature_sums[bands[index] as usize] += geometry.area_m2()
-                    * (f64::from(state.temperature_c(role).expect("C2")[index])
-                        + lapse * reference_heights[index]);
-            }
-            for (index, temperature) in zonal
-                .temperature_c_mut(role)
-                .expect("C2")
-                .iter_mut()
-                .enumerate()
-            {
-                if index % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                let band = bands[index] as usize;
-                *temperature = (temperature_sums[band] / areas[band]
-                    - lapse * reference_heights[index]) as f32;
-            }
-        }
-        let mut thermal = LayeredClimateTendency::zeroed(state);
-        let mut zonal_thermal = LayeredClimateTendency::zeroed(state);
-        let mut mechanical = LayeredClimateTendency::zeroed(state);
-        self.apply_atmospheric_thermal_pressure(state, Some(forcing), cancellation, &mut thermal)?;
-        self.apply_atmospheric_thermal_pressure(
-            &zonal,
-            Some(forcing),
-            cancellation,
-            &mut zonal_thermal,
-        )?;
-        // 先复原原快核的分层压力，再复用共同表面修正，得到完整机械压力。
-        for role in roles {
-            let gradient = operators.gradient_with_permeability_cancellable(
-                state.height_anomaly_m(role).expect("C2"),
-                &open,
-                cancellation,
-            )?;
-            let gravity = role_constants(state.profile(), role).0;
-            for (index, gradient) in gradient.into_iter().enumerate() {
-                if index % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                mechanical
-                    .layer_mut(role)
-                    .expect("C2")
-                    .velocity_tendency_m_s2[index] =
-                    gradient.map(|value| (-gravity * f64::from(value)) as f32);
-            }
-        }
-        self.apply_common_surface_pressure_probe(state, &open, cancellation, &mut mechanical)?;
-        let mut selected = Vec::with_capacity(5);
-        selected.push(cell);
-        selected.extend(
-            self.grid.cells()[cell]
-                .neighbors()
-                .iter()
-                .map(|&cell| cell as usize),
-        );
-        let mut baseline = vec![0.0; self.grid.cell_count()];
-        let mut perturbed_thickness = vec![0.0; self.grid.cell_count()];
-        let mut perturbed = state.clone_cancellable(cancellation)?;
-        eprintln!("[pressure-outflow-probe] target={cell} eps_seconds=[1,0.5] positive=accelerating_outflow finite_difference_may_change_donor_branch_and_contains_f32_rounding");
-        for role in roles {
-            self.layer_thickness_tendency_into(
-                &operators,
-                state,
-                role,
-                &open,
-                true,
-                &mut baseline,
-                cancellation,
-            )?;
-            let mut derivatives = vec![[[0.0; 2]; 2]; selected.len()];
-            #[allow(clippy::needless_range_loop)]
-            for component in 0..2 {
-                for (step, epsilon) in [1.0, 0.5].into_iter().enumerate() {
-                    for (index, velocity) in perturbed
-                        .velocity_m_s_mut(role)
-                        .expect("C2")
-                        .iter_mut()
-                        .enumerate()
-                    {
-                        if index % 256 == 0 {
-                            check_cancelled(cancellation)?;
-                        }
-                        for (axis, value) in velocity.iter_mut().enumerate() {
-                            let acceleration = if component == 0 {
-                                f64::from(
-                                    thermal.layer(role).expect("C2").velocity_tendency_m_s2[index]
-                                        [axis],
-                                ) - f64::from(
-                                    zonal_thermal
-                                        .layer(role)
-                                        .expect("C2")
-                                        .velocity_tendency_m_s2[index][axis],
-                                )
-                            } else {
-                                f64::from(
-                                    mechanical.layer(role).expect("C2").velocity_tendency_m_s2
-                                        [index][axis],
-                                )
-                            };
-                            *value = (f64::from(state.velocity_m_s(role).expect("C2")[index][axis])
-                                + epsilon * acceleration)
-                                as f32;
-                        }
-                    }
-                    self.layer_thickness_tendency_into(
-                        &operators,
-                        &perturbed,
-                        role,
-                        &open,
-                        true,
-                        &mut perturbed_thickness,
-                        cancellation,
-                    )?;
-                    for (sample, &index) in selected.iter().enumerate() {
-                        derivatives[sample][component][step] =
-                            -(perturbed_thickness[index] - baseline[index]) / epsilon;
-                    }
-                }
-            }
-            for (sample, &index) in selected.iter().enumerate() {
-                let band = bands[index] as usize;
-                let theta_prime = f64::from(state.temperature_c(role).expect("C2")[index])
-                    - f64::from(zonal.temperature_c(role).expect("C2")[index]);
-                let equilibrium_prime = equilibrium[index] - equilibrium_sums[band] / areas[band];
-                eprintln!("[pressure-outflow-probe] role={role:?} cell={index} H={} theta_prime_c={theta_prime} teq_annual_prime_c={equilibrium_prime} baseline_dh_m_s={} thermal_prime_outflow_m_s2={:?} mechanical_outflow_m_s2={:?}",
-                    self.fluid_layer_thickness_m(state, role, index)?, baseline[index],
-                    derivatives[sample][0], derivatives[sample][1]);
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn print_column_momentum_probe(
-        &self,
-        state: &LayeredClimateState,
-        forcing: &PlanetForcing,
-        full: &LayeredClimateTendency,
-        cancellation: &BuildCancellation,
-    ) -> Result<f64, LayeredTendencyError> {
-        let operators = CirculationOperators::new(self.grid);
-        let open = vec![1.0; self.grid.edges().len()];
-        let mut horizontal = vec![0.0; self.grid.cell_count()];
-        let mut eddy = LayeredClimateTendency::zeroed(state);
-        let mut scratch = vec![0.0; self.grid.cell_count()];
-        apply_baroclinic_reynolds_stress_closure(
-            self.grid,
-            state,
-            forcing,
-            &mut eddy,
-            &mut scratch,
-            cancellation,
-        )?;
-        // Global axial torque, N m. Latitude-band boundary fluxes would not
-        // cancel, so only the complete closed sphere is used for this audit.
-        let mut totals = [0.0_f64; 8];
-        let mut vertical_relative_torque = 0.0_f64;
-        let mut advective = vec![[0.0_f64; 3]; self.grid.cell_count()];
-        let mut incoming = vec![0.0_f64; self.grid.cell_count()];
-        let mut advective_torque = 0.0;
-        let mut edge_torque = 0.0;
-        let mut kinetic_rate = 0.0;
-        let mut edge_dissipation = 0.0;
-        let mut maximum_incoming_rate = 0.0_f64;
-        let mut centered = vec![[0.0_f64; 3]; self.grid.cell_count()];
-        let mut exchange_rates = vec![0.0_f64; self.grid.cell_count()];
-        let mut centered_torque = 0.0;
-        let mut centered_edge_torque = 0.0;
-        let mut centered_kinetic = 0.0;
-        let mut maximum_exchange_rate = 0.0_f64;
-        for role in [
-            ClimateLayerRole::LowerAtmosphere,
-            ClimateLayerRole::UpperAtmosphere,
-        ] {
-            self.layer_thickness_tendency_into(
-                &operators,
-                state,
-                role,
-                &open,
-                true,
-                &mut horizontal,
-                cancellation,
-            )?;
-            let reference = f64::from(state.reference_thickness_m(role).expect("C2"));
-            let density = mass_per_area(state, role) / reference;
-            let velocity = state.velocity_m_s(role).expect("C2");
-            let height = state.height_anomaly_m(role).expect("C2");
-            advective.fill([0.0; 3]);
-            incoming.fill(0.0);
-            centered.fill([0.0; 3]);
-            exchange_rates.fill(0.0);
-            for (edge_index, edge) in self.grid.edges().iter().enumerate() {
-                if edge_index % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                let flux = donor_layer_edge_amount_rate_m3_s(
-                    edge,
-                    1.0,
-                    LayerTransportFields {
-                        velocity_m_s: velocity,
-                        height_anomaly_m: height,
-                        reference_thickness_m: reference,
-                        terrain_floor_m: self.layer_terrain_floor(role),
-                    },
-                );
-                if flux == 0.0 {
-                    continue;
-                }
-                let [first, second] = edge.cells().map(|cell| cell as usize);
-                let (donor, receiver) = if flux > 0.0 {
-                    (first, second)
-                } else {
-                    (second, first)
-                };
-                let amount = flux.abs();
-                let rate = amount
-                    / (self.grid.cells()[receiver].area_m2()
-                        * self.fluid_layer_thickness_m(state, role, receiver)?);
-                incoming[receiver] += rate;
-                let difference = std::array::from_fn::<_, 3, _>(|component| {
-                    f64::from(velocity[donor][component]) - f64::from(velocity[receiver][component])
-                });
-                for (target, difference) in advective[receiver].iter_mut().zip(difference) {
-                    *target += rate * difference;
-                }
-                edge_dissipation -= 0.5 * density * amount * dot(difference, difference);
-                let donor_position = self.grid.cells()[donor].center_unit();
-                let receiver_position = self.grid.cells()[receiver].center_unit();
-                let lever = [
-                    -self.grid.radius_m() * (receiver_position[1] - donor_position[1]),
-                    self.grid.radius_m() * (receiver_position[0] - donor_position[0]),
-                    0.0,
-                ];
-                edge_torque += density * amount * dot(velocity[donor].map(f64::from), lever);
-                let average = std::array::from_fn::<_, 3, _>(|component| {
-                    0.5 * (f64::from(velocity[donor][component])
-                        + f64::from(velocity[receiver][component]))
-                });
-                centered_edge_torque += density * amount * dot(average, lever);
-                for target in [donor, receiver] {
-                    let local_rate = amount
-                        / (self.grid.cells()[target].area_m2()
-                            * self.fluid_layer_thickness_m(state, role, target)?);
-                    exchange_rates[target] += local_rate;
-                    for (value, difference) in centered[target].iter_mut().zip(difference) {
-                        *value += 0.5 * local_rate * difference;
-                    }
-                }
-            }
-            for (cell, geometry) in self.grid.cells().iter().enumerate() {
-                if cell % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                let radial = geometry.center_unit();
-                let cosine = radial[0].hypot(radial[1]);
-                let lever = [
-                    -self.grid.radius_m() * radial[1],
-                    self.grid.radius_m() * radial[0],
-                    0.0,
-                ];
-                let project = |vector: [f32; 3]| dot(vector.map(f64::from), lever);
-                let depth = reference + f64::from(height[cell])
-                    - self
-                        .layer_terrain_floor(role)
-                        .map_or(0.0, |floor| f64::from(floor[cell]));
-                let weight = geometry.area_m2() * density;
-                let acceleration = tangentize(advective[cell], radial);
-                advective_torque += weight * depth * dot(acceleration, lever);
-                kinetic_rate += weight
-                    * (depth * dot(velocity[cell].map(f64::from), acceleration)
-                        + 0.5
-                            * dot(velocity[cell].map(f64::from), velocity[cell].map(f64::from))
-                            * horizontal[cell]);
-                maximum_incoming_rate = maximum_incoming_rate.max(incoming[cell]);
-                let center_acceleration = tangentize(centered[cell], radial);
-                centered_torque += weight * depth * dot(center_acceleration, lever);
-                centered_kinetic += weight
-                    * (depth * dot(velocity[cell].map(f64::from), center_acceleration)
-                        + 0.5
-                            * dot(velocity[cell].map(f64::from), velocity[cell].map(f64::from))
-                            * horizontal[cell]);
-                maximum_exchange_rate = maximum_exchange_rate.max(exchange_rates[cell]);
-                let u = project(velocity[cell]);
-                let q = full.overturning_exchange_m_s().expect("C2 exchange")[cell];
-                vertical_relative_torque += weight
-                    * u
-                    * if role == ClimateLayerRole::LowerAtmosphere {
-                        -q
-                    } else {
-                        q
-                    };
-                let relaxation = f64::from(full.height_tendency_m_s(role).expect("C2")[cell])
-                    - horizontal[cell]
-                    + if role == ClimateLayerRole::LowerAtmosphere {
-                        q
-                    } else {
-                        -q
-                    };
-                let coriolis = operators.coriolis_cell_projected_validated(
-                    cell,
-                    velocity[cell],
-                    EARTH_ROTATION_RATE_RAD_S,
-                );
-                totals[0] += weight
-                    * depth
-                    * project(full.layer(role).expect("C2").velocity_tendency_m_s2[cell]);
-                totals[1] += weight * u * horizontal[cell];
-                totals[2] += weight * u * relaxation;
-                totals[3] += weight * depth * project(coriolis);
-                let planetary = EARTH_ROTATION_RATE_RAD_S * (self.grid.radius_m() * cosine).powi(2);
-                totals[4] += weight * planetary * horizontal[cell];
-                totals[5] += weight * planetary * relaxation;
-                totals[6] += (weight
-                    * reference
-                    * project(eddy.layer(role).expect("C2").velocity_tendency_m_s2[cell]))
-                .abs();
-                totals[7] += weight
-                    * reference
-                    * project(eddy.layer(role).expect("C2").velocity_tendency_m_s2[cell]);
-            }
-        }
-        let layout = ClimateLayerLayout::for_profile(state.profile());
-        let lower = ClimateLayerRole::LowerAtmosphere;
-        let upper = ClimateLayerRole::UpperAtmosphere;
-        let time = layout
-            .exchanges()
-            .iter()
-            .find(|pair| pair.first() == lower && pair.second() == upper)
-            .expect("C2 pair")
-            .momentum_exchange_time_s()
-            .expect("mechanical pair");
-        let lower_reference = f64::from(state.reference_thickness_m(lower).expect("C2"));
-        let upper_reference = f64::from(state.reference_thickness_m(upper).expect("C2"));
-        let mut pair_defect = 0.0;
-        for (cell, geometry) in self.grid.cells().iter().enumerate() {
-            let masses = self.momentum_pair_mass_per_area(
-                state,
-                [lower, upper],
-                [mass_per_area(state, lower), mass_per_area(state, upper)],
-                cell,
-            )?;
-            let exchange = paired_momentum_exchange(
-                state.velocity_m_s(lower).expect("C2")[cell].map(f64::from),
-                state.velocity_m_s(upper).expect("C2")[cell].map(f64::from),
-                masses[0],
-                masses[1],
-                time,
-            )?;
-            let radial = geometry.center_unit();
-            let lever = [
-                -self.grid.radius_m() * radial[1],
-                self.grid.radius_m() * radial[0],
-                0.0,
-            ];
-            let depth = |role, reference| {
-                reference + f64::from(state.height_anomaly_m(role).expect("C2")[cell])
-                    - self
-                        .layer_terrain_floor(role)
-                        .map_or(0.0, |floor| f64::from(floor[cell]))
-            };
-            pair_defect += geometry.area_m2()
-                * (mass_per_area(state, lower) * depth(lower, lower_reference) / lower_reference
-                    * dot(exchange.first_acceleration_m_s2, lever)
-                    + mass_per_area(state, upper) * depth(upper, upper_reference)
-                        / upper_reference
-                        * dot(exchange.second_acceleration_m_s2, lever));
-        }
-        eprintln!("[column-momentum] velocity={:.8e} horizontal_relative={:.8e} relaxation_relative={:.8e} coriolis={:.8e} horizontal_planetary={:.8e} relaxation_planetary={:.8e} eddy_absolute={:.8e} eddy_signed={:.8e} mechanical_actual_defect={pair_defect:.8e} (N m)",totals[0],totals[1],totals[2],totals[3],totals[4],totals[5],totals[6],totals[7]);
-        eprintln!("[momentum-transport-discrete] advection={advective_torque:.8e} paired={:.8e} edge_geometry={edge_torque:.8e} kinetic={kinetic_rate:.8e} edge_dissipation={edge_dissipation:.8e} incoming_step_bound={:.6}",totals[1]+advective_torque,1.0/maximum_incoming_rate);
-        eprintln!("[momentum-centered-discrete] advection={centered_torque:.8e} paired={:.8e} edge_geometry={centered_edge_torque:.8e} kinetic={centered_kinetic:.8e} exchange_time={:.6}", totals[1]+centered_torque, 1.0/maximum_exchange_rate);
-        Ok(totals[0] + totals[1] + totals[2] + totals[4] + totals[5] + vertical_relative_torque)
-    }
-
-    pub(super) fn column_angular_momentum_probe(&self, state: &LayeredClimateState) -> f64 {
-        let mut total = 0.0;
-        for role in [
-            ClimateLayerRole::LowerAtmosphere,
-            ClimateLayerRole::UpperAtmosphere,
-        ] {
-            let reference = f64::from(state.reference_thickness_m(role).expect("C2"));
-            let density = mass_per_area(state, role) / reference;
-            for (cell, geometry) in self.grid.cells().iter().enumerate() {
-                let radial = geometry.center_unit();
-                let lever = [
-                    -self.grid.radius_m() * radial[1],
-                    self.grid.radius_m() * radial[0],
-                    0.0,
-                ];
-                let planetary = EARTH_ROTATION_RATE_RAD_S
-                    * self.grid.radius_m().powi(2)
-                    * (radial[0].powi(2) + radial[1].powi(2));
-                let depth = reference + f64::from(state.height_anomaly_m(role).expect("C2")[cell])
-                    - self
-                        .layer_terrain_floor(role)
-                        .map_or(0.0, |floor| f64::from(floor[cell]));
-                total += geometry.area_m2()
-                    * density
-                    * depth
-                    * (dot(
-                        state.velocity_m_s(role).expect("C2")[cell].map(f64::from),
-                        lever,
-                    ) + planetary);
-            }
-        }
-        total
-    }
-
     #[cfg(test)]
     pub(super) fn apply_overturning_exchange(
         &self,
@@ -1799,7 +1123,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
         step_seconds: f64,
         cancellation: &BuildCancellation,
     ) -> Result<(), LayeredTendencyError> {
-        let mut maximum_demand = 0.0_f64;
         for (cell, &exchange) in exchanges_m_s.iter().enumerate() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -1823,10 +1146,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let donor_mass = self.fluid_layer_thickness_m(state, donor, cell)?;
             let receiver_mass = self.fluid_layer_thickness_m(state, receiver, cell)?;
             let requested = exchange.abs() * step_seconds;
-            maximum_demand = maximum_demand.max(requested / donor_mass);
             if requested >= donor_mass {
-                eprintln!("[vertical-exhaustion] cell={cell} latitude={} donor={donor:?} depth={donor_mass} requested={requested} rate={exchange} dt={step_seconds} floor={}",
-                    self.grid.cells()[cell].center_unit()[2].asin().to_degrees(), self.layer_terrain_floor(donor).map_or(0.0, |floor| floor[cell]));
                 return Err(LayeredTendencyError::InvalidFluidThickness {
                     role: donor,
                     cell,
@@ -1861,9 +1181,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         / (receiver_mass + receiver_delta)) as f32
                 });
         }
-        eprintln!(
-            "[vertical-transfer] max_requested_fraction={maximum_demand:.8} step={step_seconds}"
-        );
         check_cancelled(cancellation)
     }
 
@@ -1895,13 +1212,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
             };
             let donor_depth = self.fluid_layer_thickness_m(state, donor, cell)?;
             let receiver_depth = self.fluid_layer_thickness_m(state, receiver, cell)?;
-            if cell == 308 && donor_depth < 100.0 {
-                eprintln!(
-                    "[thin-stage] H={donor_depth} Q={exchange} D={} U={:?}",
-                    tendency.height_tendency_m_s(donor).expect("C2")[cell],
-                    state.velocity_m_s(donor).expect("C2")[cell]
-                );
-            }
             let rate = exchange.abs() / receiver_depth;
             maximum_exchange_rate =
                 maximum_exchange_rate.max(rate.max(exchange.abs() / donor_depth));
@@ -3063,8 +2373,6 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let upper_depth = self.fluid_layer_thickness_m(state, upper, cell)?;
             let buoyancy_difference = atmospheric_thermal_buoyancy_difference_m_s2(state, cell);
             if internal_gravity <= buoyancy_difference {
-                eprintln!("[stratification-probe] cell={cell} H={lower_depth}/{upper_depth} T={}/{} db={buoyancy_difference}",
-                    state.temperature_c(lower).expect("C2")[cell], state.temperature_c(upper).expect("C2")[cell]);
                 return Err(LayeredTendencyError::UnstableAtmosphericStratification {
                     cell,
                     reduced_gravity_m_s2: internal_gravity - buoyancy_difference,
@@ -4283,9 +3591,8 @@ fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64,
     match role {
         ClimateLayerRole::LowerAtmosphere => (
             0.31,
-            // One-day boundary-layer Rayleigh friction. The upper layer keeps
-            // its ten-day free-tropospheric drag; using five days here left a
-            // spurious inertial phase in the accelerated monthly continuation.
+            // C2 uses the layer-mass integral of Held--Suarez surface friction
+            // (A5 design §7.2); C1 retains its original boundary-layer drag.
             if profile == ClimateModelProfile::C2LayeredV1 {
                 0.25 / SECONDS_PER_DAY
             } else {
@@ -4772,10 +4079,11 @@ mod tests {
         atmospheric_thermal_buoyancy_m_s2, axisymmetric_band_count, axisymmetric_bands,
         close_axisymmetric_baroclinic_thickness, conservative_layer_thickness_tendency,
         diagnose_axisymmetric_circulation, dot, equilibrium_anomaly_heat_exchange,
-        horizontal_velocity_diffusion, next_f32_down, role_constants,
+        horizontal_velocity_diffusion, is_atmosphere_role, next_f32_down, role_constants,
         subsurface_pair_exchange_scale_for_step, tangentize, LayeredClimateTendency,
         LayeredTendencySystem, LayeredTendencyWorkspace,
-        ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S, SUBSURFACE_OCEAN_MIN_C,
+        ATMOSPHERE_HORIZONTAL_EDDY_MOISTURE_DIFFUSIVITY_M2_S,
+        C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K, SUBSURFACE_OCEAN_MIN_C,
         UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C,
     };
 
@@ -5002,17 +4310,15 @@ mod tests {
 
     #[test]
     fn atmospheric_baroclinic_pressure_mode_is_column_mass_neutral() {
-        let lower = role_constants(
-            ClimateModelProfile::C2LayeredV1,
-            ClimateLayerRole::LowerAtmosphere,
-        )
-        .3;
-        let upper = role_constants(
-            ClimateModelProfile::C2LayeredV1,
-            ClimateLayerRole::UpperAtmosphere,
-        )
-        .3;
-        let column_weighted_coupling = 6_000.0 * lower + 4_000.0 * upper;
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let column_weighted_coupling: f64 = layout
+            .layers()
+            .iter()
+            .filter(|layer| is_atmosphere_role(layer.role()))
+            .map(|layer| {
+                layer.reference_thickness_m() * role_constants(layout.profile(), layer.role()).3
+            })
+            .sum();
         assert!(column_weighted_coupling.abs() <= 1.0e-10);
         assert_eq!(
             role_constants(
@@ -5020,15 +4326,7 @@ mod tests {
                 ClimateLayerRole::LowerAtmosphere,
             )
             .3,
-            30.0
-        );
-        assert_eq!(
-            role_constants(
-                ClimateModelProfile::C2LayeredV1,
-                ClimateLayerRole::LowerAtmosphere,
-            )
-            .1,
-            1.0 / 86_400.0
+            C1_LOWER_ATMOSPHERE_THERMAL_PRESSURE_M2_S2_K
         );
     }
 

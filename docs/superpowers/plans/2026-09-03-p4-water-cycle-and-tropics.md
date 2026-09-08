@@ -99,6 +99,42 @@
 | 32 seed 冷启动扫描 | Draft 32/32；Standard 32/32 |
 | 产品级时延（同机同时段成对） | Task 2 代码 21.66 / 63.70 s，Task 2b **19.88 / 58.49 s**（Draft 终点 P4 5 轮而非 6 轮），两档回到预算内 |
 
+## 2026-09-08 续查：研究诊断与生成路径分离
+
+当前基点为研究分支 `9937e6b`。本轮先完成 §7.26 尚缺的两层经向动量量测，
+校正 §7.27 潜热探针的层归属，然后清理已经完成使命的临时插桩。
+不预设新的 Q 方程或数值常量；Task 3 的最终质量与 UI 发布项仍保持未完成。
+
+- [x] 复核现有环流单元回归：45 通过、1 失败；失败为压力测试夹带旧阻尼断言。
+- [x] 用同一个因果 Draft seed 42 补测两层经向动量，单列上层凝结（设计 §7.28）。
+- [x] 删除每次生成中强制执行的历史参考求解与诊断，恢复原错误传播；
+      活跃量测结束后保存研发补丁，移除临时字段及调用，不新增运行时开关或 schema。
+- [x] 压力契约测试引用层注册表与生产常量，移除与压力无关的旧阻尼断言。
+- [x] 跑环流模块与直接消费者的 Release 套件、fmt / clippy / wasm check，构建应用；
+      本轮不改变物理算子，因此不重跑统计语料或性能包络。
+- [x] 记录量测与证据边界更正（设计 §7.28–7.29）。
+- [ ] 用户 UI 验证：运行 `target/probe/release/sekai.exe`，用 Draft seed 42 生成，
+      查看“年降水量（环流）”与“近地面风”；再重建并点“取消”，预期保留旧地图、
+      可再次生成。本构建仍是 Task 3 研究态，雨峰过强与风偏弱尚未验收。
+
+本轮结论：补测排除了雨峰加热来自上层凝结统计错层的解释，但没有证明原
+“Q 三倍于 WTG”估计的垂直映射。下一步先审计净非绝热加热、辐射先验分工和
+两层垂直模，再形成闭合修订候选；不直接调幅度或把该估计作为待用户裁定方案。
+
+验证记录：`cargo test --release --lib global_circulation::` 46 通过；
+`global_circulation_generation` 6 通过（含字段身份、主动取消和跨分辨率），
+`global_circulation_integrators` 19 通过；本轮因果离线探针 1 通过。
+fmt、workspace/all-targets/all-features Clippy `-D warnings`、wasm32 lib check、
+桌面 Release 构建均通过；Trunk Release 输出在 `target/probe/resume-web/`。
+检查日志在 `target/probe/a5-task3-resume-*`。一次编译和文档写入遇到磁盘空间不足；
+文档从本轮基点恢复后重新追加修订，使用 Cargo 清理本项目 dev 构建缓存，重试均通过。
+后续检查使用 `CARGO_INCREMENTAL=0` 控制缓存占用；没有性能测量或参数调整。
+
+本轮承重技术出处：动量分解复用 §7.26 的生产算子；潜热层归属由
+`apply_phase_change_latent_heat` 与 `apply_upper_condensation_after_exchange` 的调用次序
+确定；弱温度梯度解释核对 Sobel, Nilsson & Polvani (2001)，不直接据此替换冻结闭合。
+删除参考求解遵循 `AGENTS.md` 的产品边界和测试范围纪律；错误传播沿既有 Rust `Result` 契约。
+
 ## 用户验证步骤
 
 Task 3 本轮状态（2026-09-05）：**未通过，不发布**。原版五表、单独 Eady 扩散、
