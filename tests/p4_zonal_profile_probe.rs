@@ -215,13 +215,10 @@ fn p4_zonal_profile() {
         1000.0 * ocean_deficit / ocean_area,
         ocean_evaporation / ocean_area,
     );
-    // A5 Task 2: where does the lower layer converge, and which term of the
-    // zonal-mean momentum balance puts it there? Annual, area-weighted
-    // zonal means of the published lower/upper winds and height anomalies;
-    // the divergence of the mean meridional wind is the axisymmetric mass
-    // convergence, and the zonal-momentum residual `r u - f v` is the sum of
-    // every non-Coriolis, non-drag torque (the diagnosed Reynolds stress and
-    // the resolved nonlinear/viscous terms).
+    // Annual, area-weighted zonal means of the published winds and heights.
+    // The band-centred divergence estimates describe the flow, not a closed
+    // momentum budget: surface stress and donor exchange require the private
+    // solver state and production tendencies (A5 design §7.28).
     let radius_m = fixture.surface.radius().get();
     // columns: area, lower u, lower v, upper u, upper v, lower h, upper h,
     // monthly-mean meridional moisture flux v*q (m/s * kg/kg), P-E (mm/day)
@@ -275,9 +272,7 @@ fn p4_zonal_profile() {
             area * annual(&fields.monthly_lower_atmosphere_height_anomaly_m().values()[index]);
         row[6] += area * upper_height.map_or(0.0, |field| annual(&field.values()[index]));
     }
-    eprintln!(
-        "[circ]   lat   low_u  low_v   up_u   up_v  low_h   up_h  div_low(1e-6/s) div_up  f*v_low r*u_low resid_low(1e-5 m/s2) | qconv(mm/d)  P-E"
-    );
+    eprintln!("[circ]   lat   low_u  low_v   up_u   up_v  low_h   up_h  div_low(1e-6/s) div_up");
     let band_mean = |row: &[f64; 9], column: usize| {
         if row[0] > 0.0 {
             row[column] / row[0]
@@ -285,7 +280,6 @@ fn p4_zonal_profile() {
             0.0
         }
     };
-    let rotation = 7.292_115_9e-5_f64;
     for band in 0..BANDS {
         let row = &circ[band];
         if row[0] <= 0.0 {
@@ -309,11 +303,8 @@ fn p4_zonal_profile() {
         };
         let lower_u = band_mean(row, 1);
         let lower_v = band_mean(row, 2);
-        let coriolis = 2.0 * rotation * latitude.sin();
-        let f_v = coriolis * lower_v;
-        let r_u = lower_u / 86_400.0;
         eprintln!(
-            "[circ] {:>5.1} {:>7.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>6.1} {:>10.3} {:>10.3} {:>8.2} {:>7.2} {:>8.2}",
+            "[circ] {:>5.1} {:>7.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>6.1} {:>10.3} {:>10.3}",
             latitude.to_degrees(),
             lower_u,
             lower_v,
@@ -323,9 +314,6 @@ fn p4_zonal_profile() {
             band_mean(row, 6),
             1.0e6 * divergence(2),
             1.0e6 * divergence(4),
-            1.0e5 * f_v,
-            1.0e5 * r_u,
-            1.0e5 * (r_u - f_v),
         );
         eprintln!(
             "[qflux] {:>5.1} {:>8.2} {:>6.2}",
@@ -335,8 +323,8 @@ fn p4_zonal_profile() {
         );
     }
     // A5 Task 1: the prognostic humidity is converted to water mass through the
-    // dry-air column mass. Precipitable water and the moisture residence time
-    // say whether that conversion is the right one.
+    // effective water-vapour column mass. Precipitable water and the moisture
+    // residence time say whether that conversion is the right one.
     let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
     let moisture_column_mass =
         layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
