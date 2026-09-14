@@ -110,21 +110,22 @@ pub use geology::{
     BedrockKind, BedrockKindField, GeologicSnapshot, GeologicValidationError,
     GEOLOGIC_SNAPSHOT_SCHEMA_V1, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
+#[cfg(test)]
+pub(crate) use global_circulation::global_circulation_tendency_cell_bytes;
 pub use global_circulation::{
     absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s, climatological_annual_total_mm,
     climatological_monthly_mean, expected_global_circulation_dense_state_bytes,
     gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
     large_scale_condensation_kg_m2_s, latent_heat_flux_w_m2_from_evaporation_mm_day,
     lcl_adjusted_orographic_condensation_kg_m2_s, linearized_outgoing_longwave_w_m2,
-    neutral_surface_air_specific_humidity_kg_kg, p4_seasonal_storage_heat_capacities_j_m2_k,
-    planetary_albedo_from_surface, raw_orographic_condensation_kg_m2_s,
-    saturation_specific_humidity_kg_kg, sea_ice_heat_exchange_fraction,
-    seasonal_storage_equilibrium_temperature_c, water_cycle_relative_imbalance,
-    ClimateBudgetReport, ClimateCapabilityAvailability, ClimateCapabilityError,
-    ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError,
-    ClimateLayerExchangeSpec, ClimateLayerLayout, ClimateLayerLayoutError, ClimateLayerRole,
-    ClimateLayerSpec, ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport,
-    ClimateReportError, ClimateSolveReport, ClimateWorkDomainSnapshot,
+    p4_seasonal_storage_heat_capacities_j_m2_k, planetary_albedo_from_surface,
+    raw_orographic_condensation_kg_m2_s, saturation_specific_humidity_kg_kg,
+    sea_ice_heat_exchange_fraction, seasonal_storage_equilibrium_temperature_c,
+    water_cycle_relative_imbalance, ClimateBudgetReport, ClimateCapabilityAvailability,
+    ClimateCapabilityError, ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint,
+    ClimateCheckpointError, ClimateLayerExchangeSpec, ClimateLayerLayout, ClimateLayerLayoutError,
+    ClimateLayerRole, ClimateLayerSpec, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateReportError, ClimateSolveReport, ClimateWorkDomainSnapshot,
     ClimateWorkDomainValidationError, GlobalCirculationFields, GlobalCirculationSnapshot,
     GlobalCirculationValidationError, ProductionIntegratorId, BULK_MOISTURE_TRANSFER_COEFFICIENT,
     CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
@@ -159,12 +160,16 @@ pub use global_circulation::{
     WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
 };
 pub(crate) use global_circulation::{
-    atmospheric_reference_surface_height_m, neutral_surface_momentum_transfer_velocity_m_s,
-    observed_transient_eddy_acceleration_m_s2, p4_thermodynamic_constants_fingerprint,
-};
-#[cfg(test)]
-pub(crate) use global_circulation::{
-    global_circulation_owner_inventory, global_circulation_tendency_cell_bytes,
+    atmosphere_strain_triangle_count, atmosphere_surface_wind_weights,
+    atmospheric_reference_surface_height_m, global_circulation_axisymmetric_band_count,
+    held_suarez_land_friction_forces_n_m2, neutral_surface_momentum_transfer_velocity_m_s,
+    observed_transient_eddy_acceleration_m_s2, p4_momentum_constants_fingerprint,
+    p4_thermodynamic_constants_fingerprint, reconstruct_atmosphere_surface_wind_m_s,
+    AtmosphereStrainTriangle, ATMOSPHERE_COLUMN_DEPTH_M, BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY,
+    BOUNDARY_LAYER_CONVECTIVE_VENTING_SECONDS, BOUNDARY_LAYER_DRY_VENTING_SECONDS,
+    GLOBAL_CIRCULATION_MAXIMUM_SLOW_STEP_SECONDS, GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES,
+    GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
+    LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M, UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
 };
 pub use hydro_erosion::{
     HydroErosionSnapshot, HydroErosionValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V1,

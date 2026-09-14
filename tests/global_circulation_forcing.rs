@@ -14,13 +14,12 @@ use sekai::world::natural::{
     absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s,
     gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
     latent_heat_flux_w_m2_from_evaporation_mm_day, lcl_adjusted_orographic_condensation_kg_m2_s,
-    linearized_outgoing_longwave_w_m2, neutral_surface_air_specific_humidity_kg_kg,
-    p4_seasonal_storage_heat_capacities_j_m2_k, planetary_albedo_from_surface,
-    raw_orographic_condensation_kg_m2_s, saturation_specific_humidity_kg_kg,
-    seasonal_storage_equilibrium_temperature_c, ClimateSpec, ClimateWorkDomainSnapshot,
-    GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile, PrimaryReliefSnapshot,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    linearized_outgoing_longwave_w_m2, p4_seasonal_storage_heat_capacities_j_m2_k,
+    planetary_albedo_from_surface, raw_orographic_condensation_kg_m2_s,
+    saturation_specific_humidity_kg_kg, seasonal_storage_equilibrium_temperature_c, ClimateSpec,
+    ClimateWorkDomainSnapshot, GeologicSpec, GeologicSubstrateSnapshot, NaturalQualityProfile,
+    PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    TectonicSpec, WorldFormationPreset, CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
     CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
     CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2,
     EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN, EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
@@ -60,30 +59,6 @@ fn physical_moisture_helpers_obey_analytic_limits() {
         0.0
     );
     assert!(bulk_surface_evaporation_kg_m2_s(15.0, unsaturated, 12.0, 1.0) > 0.0);
-
-    let surface_temperature_c = 20.0;
-    let relative_humidity = 0.8;
-    let cold_slab_temperature_c = 5.0;
-    let mild_slab_temperature_c = 15.0;
-    let cold_slab_humidity =
-        relative_humidity * saturation_specific_humidity_kg_kg(cold_slab_temperature_c);
-    let mild_slab_humidity =
-        relative_humidity * saturation_specific_humidity_kg_kg(mild_slab_temperature_c);
-    let cold_neutral = neutral_surface_air_specific_humidity_kg_kg(
-        surface_temperature_c,
-        cold_slab_temperature_c,
-        cold_slab_humidity,
-    );
-    let mild_neutral = neutral_surface_air_specific_humidity_kg_kg(
-        surface_temperature_c,
-        mild_slab_temperature_c,
-        mild_slab_humidity,
-    );
-    assert!((cold_neutral - mild_neutral).abs() <= 1.0e-12);
-    assert_eq!(
-        bulk_surface_evaporation_kg_m2_s(surface_temperature_c, cold_neutral, 8.0, 1.0,).to_bits(),
-        bulk_surface_evaporation_kg_m2_s(surface_temperature_c, mild_neutral, 8.0, 1.0,).to_bits(),
-    );
 
     assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, -0.02), 0.0);
     assert_eq!(raw_orographic_condensation_kg_m2_s(0.01, 0.0), 0.0);

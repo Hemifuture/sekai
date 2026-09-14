@@ -549,11 +549,9 @@ fn forcing_initial_temperature(
     )
 }
 
-/// One latitude band per cubed-sphere cell row: the equatorial faces tile
-/// 90 degrees of latitude with `face_resolution` cells, so the axisymmetric
-/// mean is taken at the grid's own meridional resolution.
+/// Latitude-band count shared with the work-domain memory inventory.
 pub(super) fn axisymmetric_band_count(grid: &CubedSphereGrid) -> usize {
-    2 * usize::from(grid.face_resolution())
+    crate::world::natural::global_circulation_axisymmetric_band_count(grid.face_resolution())
 }
 
 /// Band index of every cell, evaluated once per workspace.

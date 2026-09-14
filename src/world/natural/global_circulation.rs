@@ -21,6 +21,40 @@ const BOLTON_DEWPOINT_OFFSET_C: f64 = 243.5;
 const BOLTON_LCL_TEMPERATURE_OFFSET_K: f64 = 56.0;
 const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
 
+/// C2 lower-layer reference depth from the frozen P4 two-layer layout.
+pub(crate) const LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 6_000.0;
+/// C2 upper-layer reference depth from the frozen P4 two-layer layout.
+pub(crate) const UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 4_000.0;
+/// Column depth used by the existing annual-mean available-potential-energy closure.
+pub(crate) const ATMOSPHERE_COLUMN_DEPTH_M: f64 =
+    LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M + UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M;
+/// Convecting boundary-layer mass venting time from Battisti, Sarachik & Hirst
+/// (1999), Journal of Climate 12, Table 1 (8 hours). This is a mass adjustment
+/// time, distinct from radiation-clock compression and saturation removal.
+pub(crate) const BOUNDARY_LAYER_CONVECTIVE_VENTING_SECONDS: f64 = MEAN_SOLAR_DAY_SECONDS / 3.0;
+/// Dry boundary-layer entrainment time from Battisti, Sarachik & Hirst (1999),
+/// p.2958 and footnote 5: one day (48 times Lindzen & Nigam's 30 minutes).
+pub(crate) const BOUNDARY_LAYER_DRY_VENTING_SECONDS: f64 = MEAN_SOLAR_DAY_SECONDS;
+/// C1 analytic stress normalization retained from the A5 research state (§7.17).
+///
+/// Peixoto & Oort (1992), Fig. 11.8b motivated the reference stress amplitude;
+/// the factor four cancels the maximum of sin²φ cos²φ. This preserves the
+/// existing candidate value pending acceptance; C2 uses the observed profile.
+pub(crate) const BAROCLINIC_REYNOLDS_STRESS_EFFICIENCY: f64 = 4.0 * 10.0
+    / (GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S * GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S);
+
+// Large & Yeager (2004), NCAR/TN-460+STR, Eq. (6a), written as C_D |U|.
+const NEUTRAL_MOMENTUM_COEFFICIENT_SCALE: f64 = 1.0e-3;
+const NEUTRAL_MOMENTUM_LOW_WIND_LIMIT_M_S: f64 = 2.70;
+const NEUTRAL_MOMENTUM_LINEAR_COEFFICIENT: f64 = 0.142;
+const NEUTRAL_MOMENTUM_QUADRATIC_SPEED_SCALE_M_S: f64 = 13.09;
+
+// Held & Suarez (1994), BAMS 75, p.1826: sigma-coordinate boundary-layer
+// top and surface Rayleigh friction. These retain the original HS profile;
+// the land roughness multiplier remains a separate forcing consumer.
+const HELD_SUAREZ_BOUNDARY_LAYER_TOP_SIGMA: f64 = 0.7;
+const HELD_SUAREZ_SURFACE_FRICTION_RATE_S_INV: f64 = 1.0 / MEAN_SOLAR_DAY_SECONDS;
+
 // Peixoto & Oort (1992), Fig. 11.8b YEAR 粗实线：纬度、NH 北向应力、SH 北向应力。
 // 按原图刻度取整；常规读图误差约 ±1 m²/s²，陡坡／重叠线约 ±2。
 // 原图与 SHA256、奇对称化和极冠边界近似见 A5 设计 §7.20。
@@ -39,7 +73,8 @@ const EARTH_TRANSIENT_EDDY_STRESS_PROFILE: [(f64, f64, f64); 9] = [
 /// 原图年均瞬变通量的奇对称粗插值所对应的球面扭矩加速度。
 ///
 /// `latitude_rad` 为地理纬度，`radius_m` 为正球半径；返回 m/s²。
-/// 仅用于离线观测形状对照，节点导数取右侧，极点取正则极限。
+/// 用于当前 C2 生产候选的涡动闭合；节点导数取右侧，极点取正则极限。
+/// 数据读取与极冠延伸的研究依据及验收状态见 A5 设计 §7.20。
 pub(crate) fn observed_transient_eddy_acceleration_m_s2(latitude_rad: f64, radius_m: f64) -> f64 {
     let latitude = latitude_rad.abs();
     if latitude >= std::f64::consts::FRAC_PI_2 {
@@ -104,6 +139,22 @@ pub const GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2: f64 = 10.0;
 pub const GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX: f64 = 0.25;
 /// Absolute public ceiling across Draft/Standard/High formation cycles.
 pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
+/// Candidate ratio between the fine and coarse mechanical face resolutions.
+///
+/// P4 water-cycle/tropics design sections 7.55-7.58 measure existing cubed-sphere
+/// refinement levels, followed by PETSc FAS with restricted atmospheric
+/// injection (SNESFAS/NASM). This ratio is a numerical work-domain candidate;
+/// the finer-grid comparison and final quality acceptance remain pending.
+pub(crate) const GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR: u16 = 4;
+/// Candidate number of coarse fixed-background mechanical cycles per FAS update.
+///
+/// The same-operator iteration-doubling comparison in P4 water-cycle/tropics
+/// design section 7.58 did not materially alter the final wind/precipitation result,
+/// so the shorter measured solve is retained. PETSc FAS supplies the defect
+/// equation; this count is an iteration budget, not a physical parameter or
+/// a claim that the candidate has passed final quality acceptance.
+pub(crate) const GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES: u16 = 48;
+
 /// SI integration time advanced for one climatological forcing phase.
 ///
 /// This is a numerical stability choice, not the duration of a calendar month.
@@ -112,6 +163,13 @@ pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
 /// integrator comparison recorded in
 /// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
 pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
+/// Candidate slow-step cap for the existing first-order split endpoint.
+/// Step halving of the same production operators reduces the C1 wind and
+/// precipitation errors against the refined RK reference (P4 A5, 2026-09-12).
+/// This changes numerical resolution, not the forcing-phase duration; C2
+/// acceptance remains pending and the candidate is not yet frozen.
+pub(crate) const GLOBAL_CIRCULATION_MAXIMUM_SLOW_STEP_SECONDS: f64 =
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS / 2.0;
 /// Factor by which formation compresses local thermodynamic heat capacities
 /// (milestone A4 §6.2; Bryan 1984 distorted physics).
 ///
@@ -250,6 +308,13 @@ pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
 /// from dissipation measurements. P4 intentionally adds no unmeasured
 /// minimum-wind or gustiness term.
 pub const BULK_MOISTURE_TRANSFER_COEFFICIENT: f64 = 1.15e-3;
+/// Fixed ordinary-seawater reduction of pure-water saturation vapour pressure.
+///
+/// Fairall et al. (2003), COARE section 2b, and NOAA-PSL/COARE-algorithm,
+/// `Matlab/COARE3.5/coare35vn.m::qsat26sea`, apply this factor to vapour
+/// pressure before conversion to specific humidity. This is the fixed
+/// seawater-composition approximation, not a salinity-dependent equation.
+const SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION: f64 = 0.98;
 
 /// 中性近地面相对风对应的动量交换速度 `C_D |U|`。
 ///
@@ -257,8 +322,186 @@ pub const BULK_MOISTURE_TRANSFER_COEFFICIENT: f64 = 1.15e-3;
 /// 保留光滑海面的有限低风极限；乘以相对风后，应力在静风时严格为零。
 /// 参数为非负、有限的相对风速（m/s），返回交换速度（m/s）。
 pub(crate) fn neutral_surface_momentum_transfer_velocity_m_s(relative_speed_m_s: f64) -> f64 {
-    1.0e-3 * (2.70 + 0.142 * relative_speed_m_s + relative_speed_m_s.powi(2) / 13.09)
+    NEUTRAL_MOMENTUM_COEFFICIENT_SCALE
+        * (NEUTRAL_MOMENTUM_LOW_WIND_LIMIT_M_S
+            + NEUTRAL_MOMENTUM_LINEAR_COEFFICIENT * relative_speed_m_s
+            + relative_speed_m_s.powi(2) / NEUTRAL_MOMENTUM_QUADRATIC_SPEED_SCALE_M_S)
 }
+
+/// Returns the lower/upper layer weights for an affine wind extrapolated to the floor.
+///
+/// Both depths must already be validated as positive and finite. For uniform
+/// layer density, an affine profile's layer mean equals its value at the layer
+/// centre. Extrapolating those two means to the floor therefore introduces no
+/// independent coefficient. This is a macroscopic surface-wind approximation,
+/// not a resolved atmospheric profile at the bulk formula's reference height.
+///
+/// The reconstruction follows the cell-average/centroid approach of Berger &
+/// Aftosmis (2012), AIAA 2012-1301, §IV. Applying surface forces with these same
+/// weights transposed preserves work in the existing lumped mass inner product
+/// (Bao et al. 2017, JCP 347, §3.2, DOI `10.1016/j.jcp.2017.06.041`). That
+/// discrete energy omits the affine profile's within-layer shear energy; its
+/// approximation is not uniformly accurate as either layer becomes thin.
+pub(crate) fn atmosphere_surface_wind_weights(lower_depth_m: f64, upper_depth_m: f64) -> [f64; 2] {
+    let lower_fraction = lower_depth_m / (lower_depth_m + upper_depth_m);
+    [1.0 + lower_fraction, -lower_fraction]
+}
+
+/// Reconstructs a surface wind in m/s from finite lower/upper layer-mean vectors.
+///
+/// `weights` must come from [`atmosphere_surface_wind_weights`] for the same
+/// column. The returned vector uses `f64` so surface fluxes and final field
+/// projection share one reconstruction before their own storage conversion.
+pub(crate) fn reconstruct_atmosphere_surface_wind_m_s(
+    lower: [f32; 3],
+    upper: [f32; 3],
+    weights: [f64; 2],
+) -> [f64; 3] {
+    std::array::from_fn(|component| {
+        weights[0] * f64::from(lower[component]) + weights[1] * f64::from(upper[component])
+    })
+}
+
+/// Integrates Held--Suarez land friction against the affine atmosphere basis.
+///
+/// `depths_m` are validated positive lower/upper fluid depths and `velocities`
+/// are their finite layer means in m/s. Returns lower/upper force per area in
+/// N/m2 before land fraction and the existing land roughness multiplier.
+///
+/// Held & Suarez (1994), BAMS 75, p.1826 prescribe the linear sigma-coordinate
+/// friction profile. The constant-density mass coordinate maps it to height.
+/// Integrating the same trial/test basis gives a symmetric positive matrix,
+/// so these forces dissipate the existing lumped-mass kinetic energy. See
+/// A5 design section 7.38 for the analytic moments and approximation boundary.
+pub(crate) fn held_suarez_land_friction_forces_n_m2(
+    depths_m: [f64; 2],
+    velocities: [[f32; 3]; 2],
+) -> [[f64; 3]; 2] {
+    let surface_weights = atmosphere_surface_wind_weights(depths_m[0], depths_m[1]);
+    let slopes = [-2.0, 2.0];
+    let boundary_depth_fraction = 1.0 - HELD_SUAREZ_BOUNDARY_LAYER_TOP_SIGMA;
+    let moments = [
+        boundary_depth_fraction / 2.0,
+        boundary_depth_fraction.powi(2) / 6.0,
+        boundary_depth_fraction.powi(3) / 12.0,
+    ];
+    let column_drag = P4_REFERENCE_AIR_DENSITY_KG_M3
+        * (depths_m[0] + depths_m[1])
+        * HELD_SUAREZ_SURFACE_FRICTION_RATE_S_INV;
+    let matrix: [[f64; 2]; 2] = std::array::from_fn(|row| {
+        std::array::from_fn(|column| {
+            column_drag
+                * (moments[0] * surface_weights[row] * surface_weights[column]
+                    + moments[1]
+                        * (surface_weights[row] * slopes[column]
+                            + slopes[row] * surface_weights[column])
+                    + moments[2] * slopes[row] * slopes[column])
+        })
+    });
+    std::array::from_fn(|row| {
+        std::array::from_fn(|component| {
+            -matrix[row][0] * f64::from(velocities[0][component])
+                - matrix[row][1] * f64::from(velocities[1][component])
+        })
+    })
+}
+
+/// Returns the identity of the production stress data and bulk momentum coefficients.
+///
+/// The equation identity incorporates this digest so changing an observed
+/// node or a surface-stress coefficient invalidates the previous model state.
+pub(crate) fn p4_momentum_constants_fingerprint() -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.p4-momentum-constants.v1\0");
+    for (latitude, north, south) in EARTH_TRANSIENT_EDDY_STRESS_PROFILE {
+        for value in [latitude, north, south] {
+            hasher.update(&value.to_bits().to_le_bytes());
+        }
+    }
+    for value in [
+        NEUTRAL_MOMENTUM_COEFFICIENT_SCALE,
+        NEUTRAL_MOMENTUM_LOW_WIND_LIMIT_M_S,
+        NEUTRAL_MOMENTUM_LINEAR_COEFFICIENT,
+        NEUTRAL_MOMENTUM_QUADRATIC_SPEED_SCALE_M_S,
+        HELD_SUAREZ_BOUNDARY_LAYER_TOP_SIGMA,
+        HELD_SUAREZ_SURFACE_FRICTION_RATE_S_INV,
+        BOUNDARY_LAYER_CONVECTIVE_VENTING_SECONDS,
+        BOUNDARY_LAYER_DRY_VENTING_SECONDS,
+    ] {
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+#[cfg(test)]
+mod surface_wind_tests {
+    use super::*;
+
+    #[test]
+    fn land_friction_preserves_reference_uniform_column_drag() {
+        // This local contract compares the new projection with the former
+        // reference-column drag; a full climate fixture adds no evidence.
+        let velocity = [3.0_f32, -4.0, 0.5];
+        let forces = held_suarez_land_friction_forces_n_m2(
+            [
+                LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+                UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+            ],
+            [velocity; 2],
+        );
+        let old_column_drag =
+            P4_REFERENCE_AIR_DENSITY_KG_M3 * LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M * 0.25
+                / MEAN_SOLAR_DAY_SECONDS;
+        for (component, speed) in velocity.into_iter().enumerate() {
+            let expected = -old_column_drag * f64::from(speed);
+            let actual = forces[0][component] + forces[1][component];
+            assert!(
+                (actual - expected).abs()
+                    <= GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX * expected.abs()
+            );
+        }
+    }
+
+    #[test]
+    fn land_friction_dissipates_shear_with_both_layer_forces() {
+        // The same sheared column reverses the reconstructed surface wind.
+        // Friction must act through both basis functions and retain negative work.
+        let velocities = [[1.0_f32, 0.0, 0.0], [4.0, 0.0, 0.0]];
+        let forces = held_suarez_land_friction_forces_n_m2(
+            [
+                LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+                UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+            ],
+            velocities,
+        );
+        assert!(forces[0][0] > 0.0);
+        assert!(forces[1][0] < 0.0);
+        let work: f64 = velocities
+            .iter()
+            .zip(forces)
+            .map(|(velocity, force)| f64::from(velocity[0]) * force[0])
+            .sum();
+        assert!(work < 0.0);
+    }
+
+    #[test]
+    fn surface_wind_recovers_affine_layer_means_and_preserves_uniform_flow() {
+        // Unequal layers occupy z=0..2 and z=2..8. These are the exact
+        // averages of [2 + 3z, -3 + 2z, 8 - z], not point samples at interfaces.
+        // This local reconstruction contract needs no climate-generation fixture.
+        let weights = atmosphere_surface_wind_weights(2.0, 6.0);
+        assert_eq!(weights.iter().sum::<f64>(), 1.0);
+        let surface =
+            reconstruct_atmosphere_surface_wind_m_s([5.0, -1.0, 7.0], [17.0, 7.0, 3.0], weights);
+        assert_eq!(surface, [2.0, -3.0, 8.0]);
+
+        let uniform = [3.0, -4.0, 0.5];
+        assert_eq!(
+            reconstruct_atmosphere_surface_wind_m_s(uniform, uniform, weights),
+            uniform.map(f64::from)
+        );
+    }
+}
+
 /// Reference near-surface relative humidity for forcing initialization.
 ///
 /// Manabe & Wetherald (1967), DOI
@@ -452,6 +695,22 @@ pub const EARTH_GRAY_GREENHOUSE_OFFSET_K: f64 = 34.197_511_769_327_21;
 /// target or an Earth-climate tuning coefficient.
 pub const GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2: f64 =
     2.0 * EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2;
+/// Unserialized flat P1 geometry for the atmosphere's cell-center dual mesh.
+/// The solver consumes this record; the dense-owner ledger uses its exact layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AtmosphereStrainTriangle {
+    pub(crate) nodes: [u32; 3],
+    pub(crate) normal: [f64; 3],
+    pub(crate) area_m2: f64,
+    pub(crate) gradients_m_inv: [[f64; 3]; 3],
+}
+
+/// Euler's closed-sphere identity: V-E+F=2 and 3F=2E imply F=2V-4.
+/// `cell_count` counts dual-mesh nodes and must belong to a validated grid.
+pub(crate) const fn atmosphere_strain_triangle_count(cell_count: usize) -> usize {
+    2 * cell_count - 4
+}
+
 /// Locked dense-owner memory budget for the High C2 product.
 pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
 
@@ -476,6 +735,7 @@ pub(crate) fn p4_thermodynamic_constants_fingerprint() -> [u8; 32] {
         P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
         STANDARD_GRAVITY_M_S2,
         BULK_MOISTURE_TRANSFER_COEFFICIENT,
+        SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION,
         WATER_VAPORIZATION_LATENT_HEAT_J_KG,
         P4_MAX_SPECIFIC_HUMIDITY_KG_KG,
         P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
@@ -675,14 +935,18 @@ pub fn p4_seasonal_storage_heat_capacities_j_m2_k() -> (f64, f64) {
 /// `611.2 exp(17.67 T / (T + 243.5)) Pa`; the denominator below converts
 /// vapor pressure to specific humidity rather than mixing ratio.
 pub fn saturation_specific_humidity_kg_kg(temperature_c: f64) -> f64 {
-    saturation_specific_humidity_and_temperature_derivative(temperature_c).0
+    saturation_specific_humidity_and_temperature_derivative(temperature_c, 1.0).0
 }
 
-fn saturation_specific_humidity_and_temperature_derivative(temperature_c: f64) -> (f64, f64) {
+fn saturation_specific_humidity_and_temperature_derivative(
+    temperature_c: f64,
+    water_activity: f64,
+) -> (f64, f64) {
     let saturation_vapor_pressure_pa = BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA
         * (BOLTON_SATURATION_EXPONENT_COEFFICIENT * temperature_c
             / (temperature_c + BOLTON_DEWPOINT_OFFSET_C))
             .exp();
+    let saturation_vapor_pressure_pa = water_activity * saturation_vapor_pressure_pa;
     let denominator = P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
         - (1.0 - WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO) * saturation_vapor_pressure_pa;
     let raw_humidity =
@@ -703,31 +967,11 @@ fn saturation_specific_humidity_and_temperature_derivative(temperature_c: f64) -
     (humidity, derivative)
 }
 
-/// Diagnoses neutral near-surface air humidity from P4's deep lower slab.
+/// Large–Pond neutral bulk evaporation from the open-ocean area fraction.
 ///
-/// Large–Pond bulk transfer is a near-surface neutral closure, whereas P4's
-/// prognostic lower atmosphere has the deep slab extent declared by
-/// `ClimateLayerLayout`. Directly subtracting that cold slab's specific
-/// humidity from saturation at the warmer ocean surface spuriously counts the
-/// slab's vertical temperature contrast as an air–sea humidity deficit. This
-/// zero-parameter closure preserves the slab's resolved relative humidity
-/// while evaluating it at the surface temperature, consistent with P4's
-/// existing Manabe–Wetherald relative-humidity state.
-pub fn neutral_surface_air_specific_humidity_kg_kg(
-    surface_temperature_c: f64,
-    lower_temperature_c: f64,
-    lower_specific_humidity_kg_kg: f64,
-) -> f64 {
-    let lower_saturation = saturation_specific_humidity_kg_kg(lower_temperature_c);
-    let relative_humidity = if lower_saturation > 0.0 {
-        (lower_specific_humidity_kg_kg / lower_saturation).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    relative_humidity * saturation_specific_humidity_kg_kg(surface_temperature_c)
-}
-
-/// Large–Pond neutral bulk evaporation from an explicitly wet surface.
+/// The air humidity is the prognostic near-surface value. Only the sea's
+/// saturation pressure receives the fixed COARE seawater-activity correction;
+/// atmospheric condensation and freshwater saturation retain unit activity.
 pub fn bulk_surface_evaporation_kg_m2_s(
     surface_temperature_c: f64,
     lower_specific_humidity_kg_kg: f64,
@@ -737,8 +981,11 @@ pub fn bulk_surface_evaporation_kg_m2_s(
     P4_REFERENCE_AIR_DENSITY_KG_M3
         * BULK_MOISTURE_TRANSFER_COEFFICIENT
         * lower_wind_speed_m_s.max(0.0)
-        * (saturation_specific_humidity_kg_kg(surface_temperature_c)
-            - lower_specific_humidity_kg_kg)
+        * (saturation_specific_humidity_and_temperature_derivative(
+            surface_temperature_c,
+            SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION,
+        )
+        .0 - lower_specific_humidity_kg_kg)
             .max(0.0)
         * water_fraction.clamp(0.0, 1.0)
 }
@@ -935,7 +1182,7 @@ fn solve_moist_enthalpy_humidity_endpoint(
             latent_heating_mass_ratio,
         );
         let (saturation, saturation_temperature_derivative) =
-            saturation_specific_humidity_and_temperature_derivative(adjusted_temperature_c);
+            saturation_specific_humidity_and_temperature_derivative(adjusted_temperature_c, 1.0);
         (
             adjusted_humidity_kg_kg
                 - relative_humidity * saturation
@@ -993,7 +1240,15 @@ pub fn water_cycle_relative_imbalance(
             .max(f64::MIN_POSITIVE)
 }
 
-pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64, u64) {
+/// Returns the latitude-band count at a positive cubed-sphere face resolution.
+///
+/// The equatorial faces span half the latitude range with `face_resolution`
+/// cell rows. The solver and its dense-memory inventory share this geometry.
+pub(crate) fn global_circulation_axisymmetric_band_count(face_resolution: u16) -> usize {
+    2 * usize::from(face_resolution)
+}
+
+const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64, u64) {
     // Conservative simultaneous dense-owner upper bound:
     //
     // states (7): generation state/before/previous-cycle plus split advanced
@@ -1002,13 +1257,14 @@ pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64,
     // tendency construction allowance used by full/fast evaluation;
     // derivatives (5): frozen slow plus RK3 first/second/third and the
     // combine return value;
-    // vector temporaries (3): height gradient, Coriolis acceleration, and
-    // thermal gradient in the full tendency role loop. The persistent
-    // workspace vector is counted separately in `workspace_bytes`;
+    // vector temporaries (6 f32-vector equivalents): two temperature gradients,
+    // two interface gradients and the last gradient's independent f64
+    // accumulator coexist during collection. The persistent workspace vector
+    // is counted separately in `workspace_bytes`;
     // publication outputs (1): projected vectors are moved into
     // `Monthly*Field` and then into `GlobalCirculationFields` without a
     // second dense allocation.
-    (7, 5, 5, 3, 1)
+    (7, 5, 5, 6, 1)
 }
 
 const fn global_circulation_dense_profile_inventory(
@@ -1016,11 +1272,20 @@ const fn global_circulation_dense_profile_inventory(
 ) -> (u64, u64, u64, u64, u64, u64) {
     match profile {
         ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 16, 16, 1),
-        // C2 work has four vector fields plus fourteen monthly scalar fields;
+        // C2 work has four vector fields plus sixteen monthly scalar fields;
         // thermocline depth is derived at publication. The static output is
         // surface albedo.
-        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 26, 27, 1),
+        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 28, 27, 1),
     }
+}
+
+fn global_circulation_derivative_cell_bytes(profile: ClimateModelProfile) -> u64 {
+    let (active_layers, humidity_fields, reservoir_fields, _, _, _) =
+        global_circulation_dense_profile_inventory(profile);
+    let f32_bytes = std::mem::size_of::<f32>() as u64;
+    let layer_cell_bytes =
+        f32_bytes + std::mem::size_of::<f64>() as u64 + std::mem::size_of::<[f64; 3]>() as u64;
+    active_layers * layer_cell_bytes + (humidity_fields + reservoir_fields) * f32_bytes
 }
 
 pub(crate) fn global_circulation_tendency_cell_bytes(profile: ClimateModelProfile) -> u64 {
@@ -1028,12 +1293,17 @@ pub(crate) fn global_circulation_tendency_cell_bytes(profile: ClimateModelProfil
         global_circulation_dense_profile_inventory(profile);
     let f32_bytes = std::mem::size_of::<f32>() as u64;
     let f64_bytes = std::mem::size_of::<f64>() as u64;
-    let layer_cell_bytes = 2 * f32_bytes + std::mem::size_of::<[f32; 3]>() as u64;
-    active_layers * layer_cell_bytes
-        + (humidity_fields + reservoir_fields + 3) * f32_bytes
+    let overturning_fields = u64::from(profile == ClimateModelProfile::C2LayeredV1);
+    // Tendencies retain K/s in f32; only the RK derivative converts ocean
+    // temperature to f64 H*T/s. They therefore have different layer sizes.
+    active_layers * (2 * f32_bytes + std::mem::size_of::<[f64; 3]>() as u64)
+        + (humidity_fields + reservoir_fields) * f32_bytes
+        // Evaporation, land evapotranspiration, total precipitation,
+        // orographic precipitation, and convective precipitation.
+        + 5 * f32_bytes
         // The retained external moisture and radiative ledgers preserve the
-        // exact extensive contributions per cell in f64.
-        + 2 * f64_bytes
+        // exact extensive contributions; C2 also retains its diagnosed Q.
+        + (2 + overturning_fields) * f64_bytes
 }
 
 /// Returns the mechanically-derived conservative peak dense-owner inventory
@@ -1043,7 +1313,9 @@ pub fn expected_global_circulation_dense_state_bytes(
     profile: ClimateModelProfile,
     output_cells: u32,
 ) -> Option<u64> {
-    let face_resolution = u64::from(quality_profile.climate_face_resolution());
+    let face_resolution = quality_profile.climate_face_resolution();
+    let band_count = global_circulation_axisymmetric_band_count(face_resolution) as u64;
+    let face_resolution = u64::from(face_resolution);
     let climate_cells = 6_u64
         .checked_mul(face_resolution)?
         .checked_mul(face_resolution)?;
@@ -1071,17 +1343,29 @@ pub fn expected_global_circulation_dense_state_bytes(
         .checked_mul(layer_cell_bytes)?
         .checked_add((humidity_fields + reservoir_fields) * f32_bytes)?;
     let tendency_cell_bytes = global_circulation_tendency_cell_bytes(profile);
+    let derivative_cell_bytes = global_circulation_derivative_cell_bytes(profile);
     let transport_cell_bytes = vector_f64_bytes
-        .checked_add(7 * f64_bytes)?
+        .checked_add(8 * f64_bytes)?
         .checked_add(f32_bytes + u32_bytes)?;
     let workspace_cell_bytes = f32_bytes
-        .checked_add(f64_bytes)?
+        .checked_add(2 * f64_bytes + u32_bytes)?
         .checked_add(vector_f32_bytes)?
         .checked_add(transport_cell_bytes)?;
     let workspace_edge_bytes = f32_bytes + 2 * f64_bytes;
+    let strain_workspace_bytes = if profile == ClimateModelProfile::C2LayeredV1 {
+        let triangles =
+            atmosphere_strain_triangle_count(usize::try_from(climate_cells).ok()?) as u64;
+        triangles
+            .checked_mul(std::mem::size_of::<AtmosphereStrainTriangle>() as u64)?
+            .checked_add(climate_cells.checked_mul(vector_f64_bytes)?)?
+    } else {
+        0
+    };
     let workspace_bytes = climate_cells
         .checked_mul(workspace_cell_bytes)?
-        .checked_add(climate_edges.checked_mul(workspace_edge_bytes)?)?;
+        .checked_add(climate_edges.checked_mul(workspace_edge_bytes)?)?
+        .checked_add(band_count.checked_mul(2 * f64_bytes)?)?
+        .checked_add(strain_workspace_bytes)?;
     let work_bytes = climate_cells
         .checked_mul(work_components)?
         .checked_mul(months)?
@@ -1093,7 +1377,7 @@ pub fn expected_global_circulation_dense_state_bytes(
         .checked_mul(tendency_cell_bytes)?
         .checked_mul(tendency_owners)?;
     let derivative_owner_bytes = climate_cells
-        .checked_mul(state_cell_bytes)?
+        .checked_mul(derivative_cell_bytes)?
         .checked_mul(derivative_owners)?;
     let vector_temp_bytes = climate_cells
         .checked_mul(vector_f32_bytes)?
@@ -1328,8 +1612,14 @@ impl ClimateLayerLayout {
             ),
             ClimateModelProfile::C2LayeredV1 => (
                 vec![
-                    atmosphere(ClimateLayerRole::LowerAtmosphere, 6_000.0),
-                    atmosphere(ClimateLayerRole::UpperAtmosphere, 4_000.0),
+                    atmosphere(
+                        ClimateLayerRole::LowerAtmosphere,
+                        LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+                    ),
+                    atmosphere(
+                        ClimateLayerRole::UpperAtmosphere,
+                        UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
+                    ),
                     ocean(ClimateLayerRole::OceanMixedLayer, 100.0, true),
                     ocean(ClimateLayerRole::OceanThermocline, 900.0, true),
                     ocean(ClimateLayerRole::DeepOceanReservoir, 3_000.0, false),
@@ -1340,7 +1630,7 @@ impl ClimateLayerLayout {
                         first: ClimateLayerRole::LowerAtmosphere,
                         second: ClimateLayerRole::UpperAtmosphere,
                         heat_exchange_time_s: Some(5.0 * 86_400.0),
-                        momentum_exchange_time_s: Some(5.0 * 86_400.0),
+                        momentum_exchange_time_s: None,
                         moisture_exchange_time_s: Some(5.0 * 86_400.0),
                         water_only: false,
                     },
@@ -4892,4 +5182,133 @@ pub enum ClimateWorkDomainValidationError {
     RadiusMismatch { source_m: f64, climate_m: f64 },
     #[error("conservative maps are not the canonical overlap geometry: {reason}")]
     NonCanonicalConservativeMaps { reason: String },
+}
+
+#[cfg(test)]
+mod sea_surface_humidity_tests {
+    use super::{
+        bulk_surface_evaporation_kg_m2_s, saturation_specific_humidity_and_temperature_derivative,
+        saturation_specific_humidity_kg_kg, SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION,
+    };
+
+    #[test]
+    fn seawater_bulk_does_not_evaporate_into_air_above_its_saturation_humidity() {
+        // NOAA COARE3.5 qsat26sea reduces vapour pressure before
+        // converting to q. Multiplying pure-water q by that same factor is
+        // slightly higher, so this air cannot accept evaporation from seawater.
+        let surface_temperature_c = 20.0;
+        let air_humidity = SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION
+            * saturation_specific_humidity_kg_kg(surface_temperature_c);
+        let sea_humidity = saturation_specific_humidity_and_temperature_derivative(
+            surface_temperature_c,
+            SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION,
+        )
+        .0;
+        assert!(sea_humidity < air_humidity);
+        assert_eq!(
+            bulk_surface_evaporation_kg_m2_s(surface_temperature_c, sea_humidity, 7.2, 1.0),
+            0.0
+        );
+        let evaporation =
+            bulk_surface_evaporation_kg_m2_s(surface_temperature_c, air_humidity, 7.2, 1.0);
+        assert_eq!(
+            evaporation, 0.0,
+            "seawater bulk creates evaporation {evaporation} kg/m2/s at q_air={air_humidity}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod memory_inventory_tests {
+    use super::*;
+    use crate::generators::natural::circulation::CubedSphereGrid;
+    use crate::generators::natural::formation::{
+        LayeredClimateState, LayeredTendencySystem, LayeredTendencyWorkspace,
+    };
+    use crate::world::natural::PlanetForcing;
+
+    #[test]
+    fn formation_memory_inventory_includes_every_workspace_buffer() {
+        // One real workspace exposes the allocated cell/edge/band capacities;
+        // one real fast RHS initializes the lazy geometry without a time integration.
+        let quality = NaturalQualityProfile::Draft;
+        let profile = ClimateModelProfile::C2LayeredV1;
+        let grid = CubedSphereGrid::new(quality.climate_face_resolution(), 6_371_000.0).unwrap();
+        let mut workspace = LayeredTendencyWorkspace::for_grid(&grid);
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[0.001; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(profile);
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        LayeredTendencySystem::new(&grid)
+            .evaluate_fast_with_workspace(
+                &state,
+                &forcing,
+                &vec![1.0; grid.edges().len()],
+                0,
+                &crate::engine::BuildCancellation::new(),
+                &mut workspace,
+            )
+            .unwrap();
+        let f32_bytes = std::mem::size_of::<f32>() as u64;
+        let f64_bytes = std::mem::size_of::<f64>() as u64;
+        let u32_bytes = std::mem::size_of::<u32>() as u64;
+        let field_sizes = [
+            f32_bytes,
+            f32_bytes,
+            f64_bytes,
+            f64_bytes,
+            u32_bytes,
+            f64_bytes,
+            f64_bytes,
+            3 * f32_bytes,
+            3 * f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f64_bytes,
+            f32_bytes,
+            u32_bytes,
+            std::mem::size_of::<AtmosphereStrainTriangle>() as u64,
+            3 * f64_bytes,
+        ];
+        let cells = grid.cell_count() as u64;
+        let workspace_bytes = workspace
+            .allocation_signature()
+            .into_iter()
+            .zip(field_sizes)
+            .map(|(capacity, size)| capacity as u64 * size)
+            .sum::<u64>()
+            // The existing reuse signature predates this retained f64/cell
+            // transport buffer; it is still a real allocation to account for.
+            + cells * f64_bytes;
+        let (layers, humidity, reservoir, work_components, _, _) =
+            global_circulation_dense_profile_inventory(profile);
+        let (states, tendencies, derivatives, vector_temps, _) =
+            global_circulation_owner_inventory();
+        let other_owners = cells
+            * (work_components * CLIMATE_MONTH_COUNT as u64 * f32_bytes
+                + states * (layers * 5 + humidity + reservoir) * f32_bytes
+                + tendencies * global_circulation_tendency_cell_bytes(profile)
+                + derivatives * global_circulation_derivative_cell_bytes(profile)
+                + vector_temps * 3 * f32_bytes);
+        // Zero output cells isolates formation ownership from remapping.
+        let reported = expected_global_circulation_dense_state_bytes(quality, profile, 0).unwrap();
+        assert_eq!(reported - other_owners, 2 * workspace_bytes);
+    }
 }

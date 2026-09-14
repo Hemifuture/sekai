@@ -8,7 +8,7 @@ use super::{
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
 use crate::world::natural::{
-    ClimateCapabilitySet, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    ClimateCapabilitySet, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
     EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S,
 };
 
@@ -135,6 +135,7 @@ pub struct ClimateStepResult {
     state: LayeredClimateState,
     diagnostics: ClimateIntegratorDiagnostics,
     mean_precipitation_rate_mm_s: Vec<f32>,
+    ocean_mass_source_heat_j: f64,
 }
 
 impl ClimateStepResult {
@@ -147,6 +148,7 @@ impl ClimateStepResult {
             state,
             diagnostics,
             mean_precipitation_rate_mm_s,
+            ocean_mass_source_heat_j: 0.0,
         }
     }
 
@@ -165,6 +167,18 @@ impl ClimateStepResult {
 
     pub fn into_state(self) -> LayeredClimateState {
         self.state
+    }
+
+    /// Returns signed heat carried by local ocean mass sources, in joules;
+    /// it excludes internal transport and ordinary local heating.
+    pub(crate) const fn ocean_mass_source_heat_j(&self) -> f64 {
+        self.ocean_mass_source_heat_j
+    }
+
+    /// Attaches the integrated source heat computed from validated endpoints.
+    pub(crate) const fn with_ocean_mass_source_heat_j(mut self, heat_j: f64) -> Self {
+        self.ocean_mass_source_heat_j = heat_j;
+        self
     }
 }
 
@@ -267,7 +281,19 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
         )?;
         let mean_precipitation_rate_mm_s =
             copy_scalars(endpoint.precipitation_rate_mm_s(), cancellation)?;
-        let endpoint_derivative = ClimateDerivative::from_tendency(state, &endpoint, cancellation)?;
+        let mut endpoint_derivative =
+            ClimateDerivative::from_tendency(state, &endpoint, cancellation)?;
+        if state.profile() == ClimateModelProfile::C2LayeredV1 {
+            let fast = system.evaluate_fast_with_workspace_validated(
+                state,
+                forcing,
+                ocean_edge_permeability,
+                cancellation,
+                &mut dynamics_workspace,
+            )?;
+            let fast = ClimateDerivative::from_tendency(state, &fast, cancellation)?;
+            endpoint_derivative = endpoint_derivative.subtract(&fast, cancellation)?;
+        }
         let mut endpoint_state = state.clone_cancellable(cancellation)?;
         apply_scalar_endpoint(
             state,
@@ -276,7 +302,10 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
             &mut endpoint_state,
             cancellation,
         )?;
-        let mut evaluations = 1_u64;
+        let source_heat =
+            ocean_mass_source_heat_j(self.grid, state, &endpoint_state, cancellation)?;
+        let mut evaluations =
+            1_u64 + u64::from(state.profile() == ClimateModelProfile::C2LayeredV1);
         let advanced = rk3_step_with(
             self.grid,
             &endpoint_state,
@@ -284,7 +313,7 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
             cancellation,
             |stage| {
                 evaluations += 1;
-                let tendency = system.evaluate_smooth_dynamics_with_workspace(
+                let mut tendency = system.evaluate_smooth_dynamics_with_workspace(
                     stage,
                     forcing,
                     ocean_edge_permeability,
@@ -292,6 +321,17 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
                     cancellation,
                     &mut dynamics_workspace,
                 )?;
+                // Moisture selects Q once at this physical endpoint. The
+                // smooth operator owns no independent Q; retain the declared
+                // mass source and recompute its donor momentum at each stage.
+                if let Some(exchange) = endpoint.overturning_exchange_m_s() {
+                    system.apply_declared_overturning_tendency(
+                        stage,
+                        exchange,
+                        cancellation,
+                        &mut tendency,
+                    )?;
+                }
                 ClimateDerivative::from_tendency(stage, &tendency, cancellation)
             },
         )?;
@@ -303,7 +343,8 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
                 estimate_cfl(self.grid, state, dt_seconds, cancellation)?,
             ),
             mean_precipitation_rate_mm_s,
-        ))
+        )
+        .with_ocean_mass_source_heat_j(source_heat))
     }
 }
 
@@ -311,8 +352,9 @@ impl<'grid> ExplicitRk3Integrator<'grid> {
 pub(crate) struct LayerDerivative {
     pub(crate) role: ClimateLayerRole,
     pub(crate) height: Vec<f32>,
-    pub(crate) velocity: Vec<[f32; 3]>,
-    pub(crate) temperature: Vec<f32>,
+    pub(crate) velocity: Vec<[f64; 3]>,
+    // C2 ocean layers store d(H*T)/dt; other roles retain dT/dt.
+    pub(crate) temperature: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -331,6 +373,24 @@ impl ClimateDerivative {
     ) -> Result<Self, ClimateIntegratorError> {
         let mut layers = Vec::with_capacity(state.active_roles().len());
         for role in state.active_roles() {
+            let mut temperature = Vec::with_capacity(state.cell_count());
+            let temperature_rate = tendency
+                .temperature_tendency_k_s(*role)
+                .expect("active temperature tendency");
+            let height_rate = tendency
+                .height_tendency_m_s(*role)
+                .expect("active height tendency");
+            let values = state.temperature_c(*role).expect("active temperature");
+            for cell in 0..state.cell_count() {
+                poll_integrator_cancelled(cell, Some(cancellation))?;
+                let rate = if conservative_ocean_layer(state.profile(), *role) {
+                    ocean_layer_thickness_m(state, *role, cell)? * f64::from(temperature_rate[cell])
+                        + f64::from(values[cell]) * f64::from(height_rate[cell])
+                } else {
+                    f64::from(temperature_rate[cell])
+                };
+                temperature.push(rate);
+            }
             layers.push(LayerDerivative {
                 role: *role,
                 height: copy_scalars(
@@ -345,12 +405,7 @@ impl ClimateDerivative {
                         .expect("active tendency role"),
                     cancellation,
                 )?,
-                temperature: copy_scalars(
-                    tendency
-                        .temperature_tendency_k_s(*role)
-                        .expect("active tendency role"),
-                    cancellation,
-                )?,
+                temperature,
             });
         }
         Ok(Self {
@@ -465,6 +520,69 @@ impl ClimateDerivative {
     }
 }
 
+/// Identifies active C2 ocean roles whose RK tracer variable is H*T.
+pub(super) fn conservative_ocean_layer(
+    profile: ClimateModelProfile,
+    role: ClimateLayerRole,
+) -> bool {
+    profile == ClimateModelProfile::C2LayeredV1
+        && matches!(
+            role,
+            ClimateLayerRole::OceanMixedLayer | ClimateLayerRole::OceanThermocline
+        )
+}
+
+/// Returns actual ocean H for an active role and valid cell index.
+/// Rejects non-finite or non-positive thickness with `InvalidFluidThickness`.
+pub(super) fn ocean_layer_thickness_m(
+    state: &LayeredClimateState,
+    role: ClimateLayerRole,
+    cell: usize,
+) -> Result<f64, ClimateIntegratorError> {
+    Ok(LayeredTendencySystem::validated_fluid_layer_thickness_m(
+        f64::from(
+            state
+                .reference_thickness_m(role)
+                .expect("active ocean layer"),
+        ),
+        state.height_anomaly_m(role).expect("active ocean layer")[cell],
+        0.0,
+        role,
+        cell,
+    )?)
+}
+
+/// Integrates local ocean mass-source heat between matching validated states.
+/// The endpoint must precede transport; returns signed joules and rejects
+/// cancellation or invalid ocean thickness/capacity through the shared helpers.
+pub(super) fn ocean_mass_source_heat_j(
+    grid: &CubedSphereGrid,
+    before: &LayeredClimateState,
+    endpoint: &LayeredClimateState,
+    cancellation: &BuildCancellation,
+) -> Result<f64, ClimateIntegratorError> {
+    let layout = ClimateLayerLayout::for_profile(before.profile());
+    let mut heat_j = 0.0;
+    for layer in layout
+        .layers()
+        .iter()
+        .filter(|layer| conservative_ocean_layer(before.profile(), layer.role()))
+    {
+        let role = layer.role();
+        for cell in 0..grid.cell_count() {
+            poll_integrator_cancelled(cell, Some(cancellation))?;
+            let old_depth = ocean_layer_thickness_m(before, role, cell)?;
+            let new_depth = ocean_layer_thickness_m(endpoint, role, cell)?;
+            let capacity = super::tendency::cell_heat_capacity_per_area(before, layer, cell)?;
+            heat_j += grid.cells()[cell].area_m2() * capacity / old_depth
+                * (f64::from(endpoint.temperature_c(role).expect("ocean temperature")[cell])
+                    + 273.15)
+                * (new_depth - old_depth);
+        }
+    }
+    Ok(heat_j)
+}
+
 pub(crate) fn apply_scalar_endpoint(
     initial: &LayeredClimateState,
     endpoint: &ClimateDerivative,
@@ -472,8 +590,8 @@ pub(crate) fn apply_scalar_endpoint(
     advanced: &mut LayeredClimateState,
     cancellation: &BuildCancellation,
 ) -> Result<(), ClimateIntegratorError> {
-    let quantize = |before: f32, tendency: f32| -> Result<f32, ClimateIntegratorError> {
-        let value = f64::from(before) + step_seconds * f64::from(tendency);
+    let quantize = |before: f32, tendency: f64| -> Result<f32, ClimateIntegratorError> {
+        let value = f64::from(before) + step_seconds * tendency;
         if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
             return Err(ClimateIntegratorError::LinearSolveBreakdown);
         }
@@ -484,12 +602,47 @@ pub(crate) fn apply_scalar_endpoint(
         let after = advanced.temperature_c_mut(layer.role).expect("active role");
         for (cell, target) in after.iter_mut().enumerate() {
             poll_integrator_cancelled(cell, Some(cancellation))?;
-            *target = quantize(before[cell], layer.temperature[cell])?;
+            let rate = if conservative_ocean_layer(initial.profile(), layer.role) {
+                (layer.temperature[cell] - f64::from(before[cell]) * f64::from(layer.height[cell]))
+                    / ocean_layer_thickness_m(initial, layer.role, cell)?
+            } else {
+                layer.temperature[cell]
+            };
+            *target = quantize(before[cell], rate)?;
+        }
+        if conservative_ocean_layer(initial.profile(), layer.role) {
+            let initial_height = initial
+                .height_anomaly_m(layer.role)
+                .expect("active ocean layer");
+            for (cell, target) in advanced
+                .height_anomaly_m_mut(layer.role)
+                .expect("active ocean layer")
+                .iter_mut()
+                .enumerate()
+            {
+                poll_integrator_cancelled(cell, Some(cancellation))?;
+                *target = quantize(initial_height[cell], f64::from(layer.height[cell]))?;
+                LayeredTendencySystem::validated_fluid_layer_thickness_m(
+                    f64::from(
+                        initial
+                            .reference_thickness_m(layer.role)
+                            .expect("ocean reference"),
+                    ),
+                    *target,
+                    0.0,
+                    layer.role,
+                    cell,
+                )?;
+            }
         }
     }
     for (cell, target) in advanced.specific_humidity_mut().iter_mut().enumerate() {
         poll_integrator_cancelled(cell, Some(cancellation))?;
-        *target = quantize(initial.specific_humidity()[cell], endpoint.humidity[cell])?.max(0.0);
+        *target = quantize(
+            initial.specific_humidity()[cell],
+            f64::from(endpoint.humidity[cell]),
+        )?
+        .max(0.0);
     }
     if let (Some(before), Some(tendency), Some(after)) = (
         initial.upper_specific_humidity(),
@@ -498,7 +651,7 @@ pub(crate) fn apply_scalar_endpoint(
     ) {
         for (cell, target) in after.iter_mut().enumerate() {
             poll_integrator_cancelled(cell, Some(cancellation))?;
-            *target = quantize(before[cell], tendency[cell])?.max(0.0);
+            *target = quantize(before[cell], f64::from(tendency[cell]))?.max(0.0);
         }
     }
     if let (Some(before), Some(tendency), Some(after)) = (
@@ -508,7 +661,7 @@ pub(crate) fn apply_scalar_endpoint(
     ) {
         for (cell, target) in after.iter_mut().enumerate() {
             poll_integrator_cancelled(cell, Some(cancellation))?;
-            *target = quantize(before[cell], tendency[cell])?;
+            *target = quantize(before[cell], f64::from(tendency[cell]))?;
         }
     }
     check_integrator_cancelled(Some(cancellation))
@@ -601,16 +754,38 @@ pub(crate) fn combine_state(
             }
             *target = operators.project_tangent_cell_validated(index, value);
         }
-        for (index, target) in result
-            .temperature_c_mut(*role)
-            .expect("active role")
-            .iter_mut()
-            .enumerate()
-        {
+        for (index, &base_temperature) in base_temperature.iter().enumerate() {
             poll_integrator_cancelled(index, Some(cancellation))?;
-            *target = accumulate_scalar(base_temperature[index], terms, |derivative| {
-                derivative.layer(*role).temperature[index]
-            })?;
+            let temperature = if conservative_ocean_layer(base.profile(), *role) {
+                let mut depth = ocean_layer_thickness_m(base, *role, index)?;
+                let mut heat_content = depth * f64::from(base_temperature);
+                for (coefficient, derivative) in terms {
+                    depth += coefficient * f64::from(derivative.layer(*role).height[index]);
+                    heat_content += coefficient * derivative.layer(*role).temperature[index];
+                }
+                if !depth.is_finite() || depth <= 0.0 {
+                    return Err(LayeredTendencyError::InvalidFluidThickness {
+                        role: *role,
+                        cell: index,
+                        found: depth,
+                    }
+                    .into());
+                }
+                // Form both conservative variables before storage rounding.
+                // Dividing by the already-quantized H would turn its f32
+                // rounding into a spurious change of a constant tracer.
+                let value = heat_content / depth;
+                if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX)
+                {
+                    return Err(ClimateIntegratorError::LinearSolveBreakdown);
+                }
+                value as f32
+            } else {
+                accumulate_scalar(base_temperature, terms, |derivative| {
+                    derivative.layer(*role).temperature[index]
+                })?
+            };
+            result.temperature_c_mut(*role).expect("active role")[index] = temperature;
         }
     }
     for (index, target) in result.specific_humidity_mut().iter_mut().enumerate() {
@@ -650,17 +825,18 @@ pub(crate) fn combine_state(
     Ok(result)
 }
 
-fn accumulate_scalar<F>(
+fn accumulate_scalar<F, T>(
     base: f32,
     terms: &[(f64, &ClimateDerivative)],
     mut component: F,
 ) -> Result<f32, ClimateIntegratorError>
 where
-    F: FnMut(&ClimateDerivative) -> f32,
+    F: FnMut(&ClimateDerivative) -> T,
+    T: Into<f64>,
 {
     let mut value = f64::from(base);
     for (coefficient, derivative) in terms {
-        value += coefficient * f64::from(component(derivative));
+        value += coefficient * component(derivative).into();
     }
     if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
         return Err(ClimateIntegratorError::LinearSolveBreakdown);
@@ -681,9 +857,9 @@ pub(crate) fn copy_scalars(
 }
 
 fn copy_vectors(
-    values: &[[f32; 3]],
+    values: &[[f64; 3]],
     cancellation: &BuildCancellation,
-) -> Result<Vec<[f32; 3]>, ClimateIntegratorError> {
+) -> Result<Vec<[f64; 3]>, ClimateIntegratorError> {
     let mut copy = Vec::with_capacity(values.len());
     for (index, value) in values.iter().copied().enumerate() {
         poll_integrator_cancelled(index, Some(cancellation))?;
@@ -692,12 +868,12 @@ fn copy_vectors(
     Ok(copy)
 }
 
-fn combine_scalars(
-    left: &[f32],
-    right: &[f32],
+fn combine_scalars<T: Copy>(
+    left: &[T],
+    right: &[T],
     cancellation: &BuildCancellation,
-    combine: impl Fn(f32, f32) -> f32,
-) -> Result<Vec<f32>, ClimateIntegratorError> {
+    combine: impl Fn(T, T) -> T,
+) -> Result<Vec<T>, ClimateIntegratorError> {
     debug_assert_eq!(left.len(), right.len());
     let mut result = Vec::with_capacity(left.len());
     for (index, (&left, &right)) in left.iter().zip(right).enumerate() {
@@ -708,11 +884,11 @@ fn combine_scalars(
 }
 
 fn combine_vectors(
-    left: &[[f32; 3]],
-    right: &[[f32; 3]],
+    left: &[[f64; 3]],
+    right: &[[f64; 3]],
     cancellation: &BuildCancellation,
-    combine: impl Fn(f32, f32) -> f32,
-) -> Result<Vec<[f32; 3]>, ClimateIntegratorError> {
+    combine: impl Fn(f64, f64) -> f64,
+) -> Result<Vec<[f64; 3]>, ClimateIntegratorError> {
     debug_assert_eq!(left.len(), right.len());
     let mut result = Vec::with_capacity(left.len());
     for (index, (left, right)) in left.iter().zip(right).enumerate() {
@@ -1070,7 +1246,9 @@ pub(crate) fn estimate_cfl(
                     lower + f64::from(lower_height),
                     upper + f64::from(upper_height),
                     super::tendency::atmospheric_thermal_buoyancy_difference_m_s2(state, cell),
-                ));
+                    super::tendency::atmospheric_unlapsed_upper_buoyancy_m_s2(state, cell),
+                    cell,
+                )?);
             }
             speed
         } else {
@@ -1081,4 +1259,183 @@ pub(crate) fn estimate_cfl(
     let rotational = dt_seconds * 2.0 * EARTH_ROTATION_RATE_RAD_S;
     check_integrator_cancelled(Some(cancellation))?;
     Ok(advective.max(rotational))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (
+        CubedSphereGrid,
+        PlanetForcing,
+        LayeredClimateState,
+        ClimateDerivative,
+    ) {
+        let grid = CubedSphereGrid::new(1, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![[240.0; 12]; count],
+            vec![[15.0; 12]; count],
+            vec![[15.0; 12]; count],
+            vec![[0.001; 12]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let derivative = ClimateDerivative {
+            layers: state
+                .active_roles()
+                .iter()
+                .map(|role| LayerDerivative {
+                    role: *role,
+                    height: vec![0.0; count],
+                    velocity: vec![[0.0; 3]; count],
+                    temperature: vec![0.0; count],
+                })
+                .collect(),
+            humidity: vec![0.0; count],
+            upper_humidity: Some(vec![0.0; count]),
+            deep_temperature: Some(vec![0.0; count]),
+        };
+        (grid, forcing, state, derivative)
+    }
+
+    #[test]
+    fn explicit_reference_consumes_the_full_endpoint_declared_venting_mass() {
+        // Uniform interface displacement and zero velocity isolate the
+        // frozen Q source. Global layer sums also cancel horizontal fluxes.
+        let (grid, forcing, mut initial, _) = fixture();
+        let lower = ClimateLayerRole::LowerAtmosphere;
+        let upper = ClimateLayerRole::UpperAtmosphere;
+        initial.height_anomaly_m_mut(lower).unwrap().fill(12.0);
+        initial.height_anomaly_m_mut(upper).unwrap().fill(-12.0);
+        let cancellation = BuildCancellation::new();
+        let permeability = vec![1.0; grid.edges().len()];
+        let step = 60.0;
+        let declared = LayeredTendencySystem::new(&grid)
+            .evaluate_for_step(&initial, &forcing, &permeability, 0, step, &cancellation)
+            .unwrap();
+        let transfer = step
+            * grid
+                .cells()
+                .iter()
+                .zip(declared.overturning_exchange_m_s().unwrap())
+                .map(|(cell, rate)| cell.area_m2() * rate)
+                .sum::<f64>();
+        assert!(
+            transfer > 0.0,
+            "positive interface must declare upward venting"
+        );
+        let result = ExplicitRk3Integrator::new(&grid)
+            .advance(&initial, &forcing, &permeability, 0, step, &cancellation)
+            .unwrap();
+        for (role, sign) in [(lower, -1.0), (upper, 1.0)] {
+            let before = initial.height_anomaly_m(role).unwrap();
+            let after = result.state().height_anomaly_m(role).unwrap();
+            let change = grid
+                .cells()
+                .iter()
+                .zip(before.iter().zip(after))
+                .map(|(cell, (before, after))| {
+                    cell.area_m2() * (f64::from(*after) - f64::from(*before))
+                })
+                .sum::<f64>();
+            let stored_scale = grid
+                .cells()
+                .iter()
+                .zip(before)
+                .map(|(cell, value)| cell.area_m2() * f64::from(value.abs()))
+                .sum::<f64>();
+            let tolerance = 8.0 * f64::from(f32::EPSILON) * stored_scale;
+            assert!(
+                (change - sign * transfer).abs() <= tolerance,
+                "{role:?}: retained={change}, declared={}, rounding={tolerance}",
+                sign * transfer
+            );
+        }
+    }
+
+    #[test]
+    fn ocean_rk_combination_preserves_constant_temperature_and_extensive_heat() {
+        // A single conservative face exchange isolates the RK representation
+        // from radiation and circulation; unequal H exposes a T-only update.
+        let (grid, _, initial, zero) = fixture();
+        let role = ClimateLayerRole::OceanMixedLayer;
+        let cancellation = BuildCancellation::new();
+        for (donor_temperature, receiver_temperature) in [(-5.0, -5.0), (10.0, 10.0), (10.0, 20.0)]
+        {
+            let mut state = initial.clone();
+            state
+                .temperature_c_mut(role)
+                .unwrap()
+                .fill(donor_temperature);
+            state.temperature_c_mut(role).unwrap()[1] = receiver_temperature;
+            state.height_anomaly_m_mut(role).unwrap()[0] = 20.0;
+            state.height_anomaly_m_mut(role).unwrap()[1] = -20.0;
+            let mut first = zero.clone();
+            let layer = first
+                .layers
+                .iter_mut()
+                .find(|layer| layer.role == role)
+                .unwrap();
+            // This rate makes the final H round to a different f32 value;
+            // include the ocean temperature floor to catch false violations.
+            layer.height[0] = -1.2345;
+            layer.height[1] = 1.2345;
+            layer.temperature[0] = f64::from(layer.height[0]) * f64::from(donor_temperature);
+            layer.temperature[1] = f64::from(layer.height[1]) * f64::from(donor_temperature);
+            let mut second = first.clone();
+            for value in &mut second
+                .layers
+                .iter_mut()
+                .find(|layer| layer.role == role)
+                .unwrap()
+                .height
+            {
+                *value *= 0.5;
+            }
+            for value in &mut second
+                .layers
+                .iter_mut()
+                .find(|layer| layer.role == role)
+                .unwrap()
+                .temperature
+            {
+                *value *= 0.5;
+            }
+            let advanced = combine_state(
+                &grid,
+                &state,
+                &[(0.25, &first), (0.75, &second)],
+                &cancellation,
+            )
+            .unwrap();
+            let total = |value: &LayeredClimateState| {
+                grid.cells()
+                    .iter()
+                    .enumerate()
+                    .map(|(cell, record)| {
+                        record.area_m2()
+                            * ocean_layer_thickness_m(value, role, cell).unwrap()
+                            * f64::from(value.temperature_c(role).unwrap()[cell])
+                    })
+                    .sum::<f64>()
+            };
+            let before = total(&state);
+            let after = total(&advanced);
+            assert!((after - before).abs() <= f64::from(f32::EPSILON) * before.abs());
+            if receiver_temperature == donor_temperature {
+                assert!(advanced
+                    .temperature_c(role)
+                    .unwrap()
+                    .iter()
+                    .all(|value| *value == donor_temperature));
+            }
+        }
+    }
 }

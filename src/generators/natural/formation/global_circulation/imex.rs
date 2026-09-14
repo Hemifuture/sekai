@@ -1,6 +1,6 @@
 use super::rk3::{
-    combine_state, estimate_cfl, validate_step, ClimateDerivative, ClimateIntegratorDiagnostics,
-    ClimateIntegratorError, ClimateStepResult,
+    combine_state, conservative_ocean_layer, estimate_cfl, ocean_layer_thickness_m, validate_step,
+    ClimateDerivative, ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
 };
 use super::{
     ClimateConservationInterpretation, ClimateIntegrationProcedure, FormationProcedureIdentity,
@@ -89,7 +89,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
         let implicit_derivative =
             ClimateDerivative::from_tendency(state, &base_implicit_tendency, cancellation)?;
         let explicit_derivative = base_derivative.subtract(&implicit_derivative, cancellation)?;
-        let base_implicit_derivative = flatten_implicit_derivative(state, &implicit_derivative);
+        let base_implicit_derivative = flatten_implicit_derivative(state, &implicit_derivative)?;
         let right_hand_side = base_implicit_derivative
             .iter()
             .copied()
@@ -121,7 +121,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
                     tendency_evaluations += 1;
                     let derivative =
                         ClimateDerivative::from_tendency(&perturbed, &tendency, cancellation)?;
-                    let linear_action = flatten_implicit_derivative(&perturbed, &derivative)
+                    let linear_action = flatten_implicit_derivative(&perturbed, &derivative)?
                         .into_iter()
                         .zip(&base_implicit_derivative)
                         .map(|(perturbed, base)| perturbed - base)
@@ -147,7 +147,7 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
             let residual = increment
                 .iter()
                 .zip(
-                    flatten_implicit_derivative(&perturbed, &derivative)
+                    flatten_implicit_derivative(&perturbed, &derivative)?
                         .into_iter()
                         .zip(&base_implicit_derivative),
                 )
@@ -286,20 +286,31 @@ impl<'grid> ImexCrankNicolsonIntegrator<'grid> {
 fn flatten_implicit_derivative(
     state: &LayeredClimateState,
     derivative: &ClimateDerivative,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, ClimateIntegratorError> {
     let mut values = Vec::with_capacity(implicit_len(state));
     for role in state.active_roles() {
         let layer = derivative.layer(*role);
         values.extend(layer.height.iter().map(|value| f64::from(*value)));
         for velocity in &layer.velocity {
-            values.extend(velocity.iter().map(|value| f64::from(*value)));
+            values.extend(velocity.iter().copied());
         }
-        values.extend(layer.temperature.iter().map(|value| f64::from(*value)));
+        for (cell, &rate) in layer.temperature.iter().enumerate() {
+            // The Krylov vector still stores temperature increments, while
+            // C2 ocean RK derivatives carry the conservative H*T tendency.
+            values.push(if conservative_ocean_layer(state.profile(), *role) {
+                (rate
+                    - f64::from(state.temperature_c(*role).expect("active temperature")[cell])
+                        * f64::from(layer.height[cell]))
+                    / ocean_layer_thickness_m(state, *role, cell)?
+            } else {
+                rate
+            });
+        }
     }
     if let Some(deep) = &derivative.deep_temperature {
         values.extend(deep.iter().map(|value| f64::from(*value)));
     }
-    values
+    Ok(values)
 }
 
 fn implicit_len(state: &LayeredClimateState) -> usize {

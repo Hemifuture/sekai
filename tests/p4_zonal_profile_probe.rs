@@ -46,6 +46,24 @@ fn p4_zonal_profile() {
     let fixture = causal_formation_fixture();
     let bundle = fixture.artifact.bundle();
     let climate = bundle.climate();
+    eprintln!(
+        "[quality] {}",
+        serde_json::to_string(bundle.climate_quality()).expect("serializable climate quality")
+    );
+    // Offline paired solver comparisons consume the existing final snapshot;
+    // no reference state or iteration history enters the product schema.
+    if let Some(path) = std::env::var_os("SEKAI_ZONAL_REFERENCE_OUTPUT") {
+        use std::io::Write as _;
+
+        let file = std::fs::File::create(path).expect("writable offline reference path");
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(
+            &mut writer,
+            &(&fixture.surface, climate, bundle.climate_quality()),
+        )
+        .expect("serializable offline final snapshot");
+        writer.flush().expect("complete offline final snapshot");
+    }
     let fields = climate.fields();
     let solve = climate.solve_report();
     eprintln!(
@@ -177,12 +195,12 @@ fn p4_zonal_profile() {
         );
     }
     let a = global[0];
-    // Evaporation closure diagnostic (A5 Task 0): the bulk formula wants a
-    // near-surface wind, the model hands it the 6 km slab mean. Compare the
-    // ocean-mean slab wind against Earth's ~6.6 m/s 10 m ocean wind, and
-    // reconstruct the bulk flux from its own factors.
+    // Published monthly endpoints describe the evaporation environment; they
+    // cannot reconstruct the budget's nonlinear average over transported q.
+    // The wind is the reconstructed near-surface field, not a slab mean.
     let mut ocean_area = 0.0_f64;
     let mut ocean_wind = 0.0_f64;
+    let mut ocean_relative_wind = 0.0_f64;
     let mut ocean_deficit = 0.0_f64;
     let mut ocean_evaporation = 0.0_f64;
     for (index, cell) in fixture.surface.cells().iter().enumerate() {
@@ -191,6 +209,7 @@ fn p4_zonal_profile() {
         }
         let area = cell.area.get();
         let winds = &fields.near_surface_wind_m_s().values()[index];
+        let currents = &fields.surface_ocean_current_m_s().values()[index];
         let sst = &fields.monthly_sea_surface_temperature_c().values()[index];
         let humidity = &fields.monthly_specific_humidity().values()[index];
         let evaporation = &fields.monthly_evaporation_mm_day().values()[index];
@@ -205,15 +224,23 @@ fn p4_zonal_profile() {
             .max(0.0);
             ocean_area += area;
             ocean_wind += area * speed;
+            ocean_relative_wind += area
+                * winds[month]
+                    .iter()
+                    .zip(currents[month])
+                    .map(|(&wind, current)| (f64::from(wind) - f64::from(current)).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
             ocean_deficit += area * deficit;
             ocean_evaporation += area * f64::from(evaporation[month]);
         }
     }
     eprintln!(
-        "[evap] ocean mean |U| {:.2} m/s (Earth 10 m ocean wind 6.6), saturation deficit {:.2} g/kg, E {:.3} mm/day",
+        "[evap] ocean mean |U| {:.2} m/s (Earth 10 m ocean wind 6.6), pure-water endpoint saturation deficit {:.2} g/kg, E {:.3} mm/day, mean |U_air-U_ocean| {:.2} m/s",
         ocean_wind / ocean_area,
         1000.0 * ocean_deficit / ocean_area,
         ocean_evaporation / ocean_area,
+        ocean_relative_wind / ocean_area,
     );
     // Annual, area-weighted zonal means of the published winds and heights.
     // The band-centred divergence estimates describe the flow, not a closed
