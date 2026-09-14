@@ -1312,6 +1312,11 @@ impl TemplateApp {
                             .iter()
                             .map(|segment| segment.strahler_order())
                             .collect(),
+                        surface_water: document
+                            .formation_snapshot()
+                            .hydrology()
+                            .surface_water()
+                            .clone(),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
@@ -2848,6 +2853,9 @@ mod natural_app_tests {
                 display_radius_m: 2_000.0,
                 river_cells: Vec::new(),
                 river_orders: Vec::new(),
+                surface_water: crate::world::natural::SurfaceWaterField::from_kinds(vec![
+                    crate::world::natural::SurfaceWaterKind::DryLand; count
+                ]),
             }),
             initial_hash: 0,
         }

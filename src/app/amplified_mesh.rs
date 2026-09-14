@@ -2,7 +2,7 @@
 //!
 //! The visible surface is a mosaic of T1 v2 hierarchical primitives: every
 //! leaf triangle is one data atom rendered as one solid patch whose color
-//! is its `PrimitiveValue` through the shared hypsometric palette, carried
+//! uses the published water class and the land hypsometric palette, carried
 //! by a dedicated provoking vertex and flat-interpolated on the GPU.
 //!
 //! A *selection* replaces the M1 uniform global depth (Ulrich 2002 chunked
@@ -33,10 +33,10 @@ use crate::generators::natural::{
     HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
-    built_in_palette, project_unit_direction, sample_palette, AmplifiedSurfaceMesh, GlobeCamera,
-    MapScreenTransform, PaletteId, ProjectionPoint, RiverPolylineSegment,
-    SphericalPresentationViewState, SphericalProjection, SphericalViewMode,
+    project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
+    RiverPolylineSegment, SphericalPresentationViewState, SphericalProjection, SphericalViewMode,
 };
+use crate::world::natural::SurfaceWaterField;
 use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 
@@ -93,6 +93,8 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) river_cells: Vec<(u32, u32)>,
     /// Per reach: the published Strahler order for scale selection.
     pub(super) river_orders: Vec<u8>,
+    /// The same validated water classification used to clip river mouths.
+    pub(super) surface_water: SurfaceWaterField,
 }
 
 /// One renderable subtree: the leaves `extra` levels below
@@ -891,7 +893,7 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         let provoking = u32::try_from(directions.len()).ok()?;
         let corner = directions[triangle[0] as usize];
         directions.push(corner);
-        colors.push(flat_color(context, values[leaf]));
+        colors.push(flat_color(context, cell, values[leaf]));
         triangle[0] = provoking;
     }
     Some(CachedBatch {
@@ -973,12 +975,17 @@ fn midpoint_index(
     Some(index)
 }
 
-/// One leaf primitive's solid hypsometric color from its face value.
-fn flat_color(context: &AmplifiedDetailContext, value: PrimitiveValue) -> [u8; 4] {
-    let t = ((f64::from(value.elevation_m) - (context.sea_level_m - context.display_radius_m))
-        / (2.0 * context.display_radius_m))
-        .clamp(0.0, 1.0);
-    let base = sample_palette(built_in_palette(PaletteId::Hypsometric), t as f32);
+/// One leaf's water-aware color, preserving the authoritative cell boundary.
+fn flat_color(context: &AmplifiedDetailContext, cell: CellId, value: PrimitiveValue) -> [u8; 4] {
+    let base = crate::view::terrain_water_color(
+        value.elevation_m,
+        context.sea_level_m,
+        context.display_radius_m,
+        context
+            .surface_water
+            .get(cell.raw() as usize)
+            .expect("validated water covers the mesh"),
+    );
     let components = base.components();
     [
         encode_srgb(f64::from(components[0])),
@@ -999,8 +1006,8 @@ fn encode_srgb(linear: f64) -> u8 {
 }
 
 /// Builds display river polylines for one terrain selection. Each deeper
-/// leaf level reveals one lower Strahler tier; visible reaches use the
-/// deeper endpoint's path depth so their geometry follows the terrain.
+/// leaf level seeds one lower Strahler tier, extended to complete main stems;
+/// reaches use their deeper endpoint's path depth to follow the terrain.
 pub(super) fn build_river_polylines(
     context: &AmplifiedDetailContext,
     selection: &DetailSelection,
@@ -1023,16 +1030,21 @@ pub(super) fn build_river_polylines(
             .copied()
             .unwrap_or(1)
     };
-    let max_order = context.river_orders.iter().copied().max().unwrap_or(0);
+    let visible = crate::view::select_river_reaches(
+        &context.river_cells,
+        &context.river_orders,
+        &selection.cell_levels,
+        |reach| {
+            context
+                .evaluator
+                .river_width_m(reach as u32)
+                .expect("aligned reach")
+        },
+    );
     let mut polylines = Vec::with_capacity(context.river_cells.len());
-    for (reach, (&(from, to), &order)) in context
-        .river_cells
-        .iter()
-        .zip(&context.river_orders)
-        .enumerate()
-    {
+    for (reach, &(from, to)) in context.river_cells.iter().enumerate() {
         let level = cell_level(from).max(cell_level(to));
-        if !river_order_is_visible(order, level, max_order) {
+        if !visible[reach] {
             continue;
         }
         let width_m = context
@@ -1053,19 +1065,13 @@ pub(super) fn build_river_polylines(
     polylines
 }
 
-/// Multi-scale river selection: level one keeps only the trunk order and
-/// every deeper terrain level reveals exactly one lower order.
-fn river_order_is_visible(order: u8, leaf_level: u8, max_order: u8) -> bool {
-    u16::from(order) + u16::from(leaf_level.saturating_sub(1)) >= u16::from(max_order)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::generators::natural::{AmplificationFieldsView, LocatedPrimitive};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{MapCamera, SphericalProjectionKind};
-    use crate::world::natural::SphericalOrogenyKind;
+    use crate::world::natural::{SphericalOrogenyKind, SurfaceWaterKind};
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     fn test_context() -> AmplifiedDetailContext {
@@ -1104,6 +1110,17 @@ mod tests {
             display_radius_m: 2_000.0,
             river_cells: Vec::new(),
             river_orders: Vec::new(),
+            // Exercise the actual mesh binding and its cache with all three
+            // water classes, rather than only testing the palette in isolation.
+            surface_water: SurfaceWaterField::from_kinds(
+                (0..count)
+                    .map(|index| match index % 3 {
+                        0 => SurfaceWaterKind::DryLand,
+                        1 => SurfaceWaterKind::Ocean,
+                        _ => SurfaceWaterKind::Lake,
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -1198,6 +1215,7 @@ mod tests {
                 .iter()
                 .map(|segment| segment.strahler_order())
                 .collect(),
+            surface_water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
         }
     }
 
@@ -1207,23 +1225,19 @@ mod tests {
     fn river_polylines_follow_selection_levels() {
         let context = river_context();
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
-        let max_order = context.river_orders.iter().copied().max().unwrap();
-        let coarse_expected: usize = context
-            .river_orders
-            .iter()
-            .enumerate()
-            .filter(|&(_, &order)| river_order_is_visible(order, 1, max_order))
-            .map(|(reach, _)| context.evaluator.river_path(reach as u32, 0).len() - 1)
+        let coarse_expected: usize = (0..context.evaluator.river_reach_count() as u32)
+            .map(|reach| context.evaluator.river_path(reach, 0).len() - 1)
             .sum();
-        assert_eq!(coarse.len(), coarse_expected, "level one keeps the trunk");
+        assert_eq!(
+            coarse.len(),
+            coarse_expected,
+            "level one keeps the trunk to its source"
+        );
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
         let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
             .map(|reach| context.evaluator.river_path(reach, 3).len() - 1)
             .sum();
         assert_eq!(deeper.len(), deep_expected);
-        for (first, second) in coarse.iter().zip(&coarse) {
-            assert_eq!(first, second);
-        }
         let again = build_river_polylines(&context, &uniform_selection(&context, 4));
         assert_eq!(deeper, again, "polylines are deterministic");
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
@@ -1249,33 +1263,6 @@ mod tests {
             cursor += segment_count;
         }
         assert_eq!(cursor, polylines.len());
-    }
-
-    #[test]
-    fn river_visibility_reveals_one_order_per_level() {
-        let visible = |level| {
-            (1_u8..=4)
-                .filter(|&order| river_order_is_visible(order, level, 4))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(visible(1), vec![4]);
-        assert_eq!(visible(2), vec![3, 4]);
-        assert_eq!(visible(3), vec![2, 3, 4]);
-        assert_eq!(visible(4), vec![1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn visible_river_selection_keeps_downstream_continuity() {
-        let downstream_orders = [1_u8, 1, 2, 3, 3, 4];
-        for level in 1..=4 {
-            for start in 0..downstream_orders.len() {
-                if river_order_is_visible(downstream_orders[start], level, 4) {
-                    assert!(downstream_orders[start..]
-                        .iter()
-                        .all(|&order| river_order_is_visible(order, level, 4)));
-                }
-            }
-        }
     }
 
     /// Symptom regression (user acceptance, 2026-08-21): a reach follows
@@ -1547,7 +1534,7 @@ mod tests {
                             context.evaluator.value(cell, sector, path.steps())
                         }
                     };
-                    let expected = flat_color(&context, located);
+                    let expected = flat_color(&context, CellId::from_raw(batch.cell), located);
                     assert_eq!(
                         mesh.colors()[indices[base] as usize],
                         expected,

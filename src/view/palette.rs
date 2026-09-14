@@ -504,6 +504,52 @@ pub fn sample_palette(palette: &[LinearRgba], t: f32) -> LinearRgba {
     }
 }
 
+/// Colors derived terrain without reclassifying the published hydrology.
+/// Water uses the shared semantic water color; dry terrain retains its land
+/// hypsometric range even inside a below-sea-level closed depression.
+pub(crate) fn terrain_water_color(
+    elevation_m: f32,
+    sea_level_m: f64,
+    display_radius_m: f64,
+    water: crate::world::natural::SurfaceWaterKind,
+) -> LinearRgba {
+    use crate::world::natural::SurfaceWaterKind;
+
+    match water {
+        SurfaceWaterKind::Lake | SurfaceWaterKind::Ocean => {
+            return sample_palette(built_in_palette(PaletteId::LandOcean), 0.0);
+        }
+        SurfaceWaterKind::DryLand => {}
+    }
+    let t = ((f64::from(elevation_m) - (sea_level_m - display_radius_m))
+        / (2.0 * display_radius_m))
+        .clamp(0.5, 1.0);
+    sample_palette(built_in_palette(PaletteId::Hypsometric), t as f32)
+}
+
+#[cfg(test)]
+mod terrain_water_tests {
+    use super::*;
+    use crate::world::natural::SurfaceWaterKind;
+
+    #[test]
+    fn published_water_overrides_derived_elevation() {
+        let water_color = sample_palette(built_in_palette(PaletteId::LandOcean), 0.0);
+        for water in [SurfaceWaterKind::Lake, SurfaceWaterKind::Ocean] {
+            for elevation in [-500.0, 500.0] {
+                assert_eq!(
+                    terrain_water_color(elevation, 0.0, 2000.0, water),
+                    water_color
+                );
+            }
+        }
+        assert_eq!(
+            terrain_water_color(-500.0, 0.0, 2000.0, SurfaceWaterKind::DryLand),
+            sample_palette(built_in_palette(PaletteId::Hypsometric), 0.5)
+        );
+    }
+}
+
 /// Resolves the active range for a scalar field.
 pub fn resolve_display_range(
     field: &FieldView<'_>,
