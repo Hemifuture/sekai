@@ -56,3 +56,11 @@ check、桌面 Release 和 Trunk Release 均通过。Trunk 的 `NO_COLOR` 环境
 - Stanislawski (2009), USGS SIR 2009-5202：基于网络的河系制图选择。
 - 水体身份沿已验证 P5 `SurfaceWaterField`；分类渲染复用 `palette.rs`，
   不新增物理公式、常量、容差或 artifact 字段。具体修订见完整性规格 R5。
+
+### 2026-09-16 出处更正
+
+上文 USGS SIR 2009-5202 的作者误记为 Stanislawski，正确为 Gary 等
+（2009，2010 年修订）。该报告不能直接支持 R5 的河宽排序规则；后续以
+[河网完整性规格 R6](../specs/2026-08-23-t1v2-1-river-integrity-design.md#r6--以可复核的-horton-追踪替换河宽代理2026-09-16)
+及 [9 月 16 日计划](2026-09-16-river-selection-provenance.md) 为准。
+原修复的水体一致性和连通性证据仍有效，不扩张为整套水文机制的科学验收。

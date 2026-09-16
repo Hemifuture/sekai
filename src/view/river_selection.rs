@@ -3,12 +3,15 @@
 /// Selects complete main-stem paths seeded by local LOD, in reach order.
 ///
 /// Inputs are aligned metadata from a validated, single-receiver river network;
-/// `width_m` reads its production hydraulic width. No hydrology is recomputed.
+/// `drainage_area_km2` reads the upstream area at each reach origin. Main-stem
+/// tracing follows GRASS `r.stream.order -a`'s Horton rule: greatest Strahler
+/// order, then greatest contributing area (river integrity spec R6). The local
+/// LOD threshold is a display policy, not a hydrological classification.
 pub(crate) fn select_river_reaches(
     cells: &[(u32, u32)],
     orders: &[u8],
     cell_levels: &[u8],
-    width_m: impl Fn(usize) -> f32,
+    drainage_area_km2: impl Fn(usize) -> f32,
 ) -> Vec<bool> {
     let max_order = orders.iter().copied().max().unwrap_or(0);
     let mut visible: Vec<bool> = cells
@@ -27,7 +30,7 @@ pub(crate) fn select_river_reaches(
         let replace = preferred.is_none_or(|previous| {
             orders[reach]
                 .cmp(&orders[previous])
-                .then_with(|| width_m(reach).total_cmp(&width_m(previous)))
+                .then_with(|| drainage_area_km2(reach).total_cmp(&drainage_area_km2(previous)))
                 // Cell IDs, unlike storage positions, survive reach reordering.
                 .then_with(|| cells[previous].0.cmp(&from))
                 .is_gt()
@@ -64,13 +67,26 @@ mod tests {
     // sinks. This small graph covers the defect without generating a world.
     const CELLS: [(u32, u32); 5] = [(0, 2), (1, 2), (2, 3), (3, 4), (4, 5)];
     const ORDERS: [u8; 5] = [1, 1, 2, 2, 2];
-    const WIDTHS: [f32; 5] = [10.0, 8.0, 20.0, 20.0, 20.0];
+    const AREAS_KM2: [f32; 5] = [10.0, 8.0, 20.0, 20.0, 20.0];
 
     #[test]
     fn coarse_trunk_retains_one_real_headwater() {
         assert_eq!(
-            select_river_reaches(&CELLS, &ORDERS, &[1; 6], |i| WIDTHS[i]),
+            select_river_reaches(&CELLS, &ORDERS, &[1; 6], |i| AREAS_KM2[i]),
             vec![true, false, true, true, true]
+        );
+    }
+
+    // GRASS's Horton rule chooses area only within the highest Strahler tier.
+    // A single junction distinguishes it from area-only (Hack) selection.
+    #[test]
+    fn horton_tracing_prioritizes_order_then_contributing_area() {
+        let cells = [(0, 3), (1, 3), (2, 3), (3, 4)];
+        let orders = [1, 2, 2, 3];
+        let areas = [100.0, 10.0, 20.0, 131.0];
+        assert_eq!(
+            select_river_reaches(&cells, &orders, &[1; 5], |i| areas[i]),
+            vec![false, false, true, true]
         );
     }
 
@@ -98,7 +114,7 @@ mod tests {
     #[test]
     fn deep_selection_restores_tributaries() {
         assert!(
-            select_river_reaches(&CELLS, &ORDERS, &[4; 6], |i| WIDTHS[i])
+            select_river_reaches(&CELLS, &ORDERS, &[4; 6], |i| AREAS_KM2[i])
                 .into_iter()
                 .all(|visible| visible)
         );

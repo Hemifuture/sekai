@@ -93,6 +93,8 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) river_cells: Vec<(u32, u32)>,
     /// Per reach: the published Strahler order for scale selection.
     pub(super) river_orders: Vec<u8>,
+    /// Per reach: P5 contributing area at its origin, for Horton main-stem tracing.
+    pub(super) river_drainage_area_km2: Vec<f32>,
     /// The same validated water classification used to clip river mouths.
     pub(super) surface_water: SurfaceWaterField,
 }
@@ -1034,12 +1036,7 @@ pub(super) fn build_river_polylines(
         &context.river_cells,
         &context.river_orders,
         &selection.cell_levels,
-        |reach| {
-            context
-                .evaluator
-                .river_width_m(reach as u32)
-                .expect("aligned reach")
-        },
+        |reach| context.river_drainage_area_km2[reach],
     );
     let mut polylines = Vec::with_capacity(context.river_cells.len());
     for (reach, &(from, to)) in context.river_cells.iter().enumerate() {
@@ -1110,6 +1107,7 @@ mod tests {
             display_radius_m: 2_000.0,
             river_cells: Vec::new(),
             river_orders: Vec::new(),
+            river_drainage_area_km2: Vec::new(),
             // Exercise the actual mesh binding and its cache with all three
             // water classes, rather than only testing the palette in isolation.
             surface_water: SurfaceWaterField::from_kinds(
@@ -1124,7 +1122,7 @@ mod tests {
         }
     }
 
-    /// A context with a two-reach chain for the polyline builder tests.
+    /// A confluence whose wetter, narrower catchment opposes area-based tracing.
     fn river_context() -> AmplifiedDetailContext {
         use crate::world::natural::{
             RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
@@ -1172,6 +1170,13 @@ mod tests {
         } else {
             next.cells[0]
         };
+        let d = surface
+            .edges()
+            .iter()
+            .filter(|candidate| candidate.cells.contains(&b))
+            .flat_map(|candidate| candidate.cells)
+            .find(|cell| ![a, b, c].contains(cell))
+            .unwrap();
         let segments = vec![
             RiverSegment::new(
                 RiverSegmentId::from_raw(0),
@@ -1189,6 +1194,15 @@ mod tests {
                 RiverSegmentKind::Channel,
                 2,
                 90.0,
+            )
+            .unwrap(),
+            RiverSegment::new(
+                RiverSegmentId::from_raw(2),
+                d,
+                b,
+                RiverSegmentKind::Channel,
+                1,
+                4.0,
             )
             .unwrap(),
         ];
@@ -1215,6 +1229,7 @@ mod tests {
                 .iter()
                 .map(|segment| segment.strahler_order())
                 .collect(),
+            river_drainage_area_km2: vec![1.0, 4.0, 2.0],
             surface_water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
         }
     }
@@ -1225,13 +1240,21 @@ mod tests {
     fn river_polylines_follow_selection_levels() {
         let context = river_context();
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
-        let coarse_expected: usize = (0..context.evaluator.river_reach_count() as u32)
+        let coarse_expected: usize = [1, 2]
+            .into_iter()
             .map(|reach| context.evaluator.river_path(reach, 0).len() - 1)
             .sum();
         assert_eq!(
             coarse.len(),
             coarse_expected,
             "level one keeps the trunk to its source"
+        );
+        // The selected headwater is reach 2 (larger area), although reach 0
+        // has greater discharge and hydraulic width. This catches wrong UI binding.
+        let trunk_segments = context.evaluator.river_path(1, 0).len() - 1;
+        assert_eq!(
+            coarse[trunk_segments].start,
+            context.evaluator.river_path(2, 0)[0].components()
         );
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
         let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
@@ -1284,10 +1307,12 @@ mod tests {
         };
         let polylines = build_river_polylines(&context, &selection);
         // Reach 0 renders at its deeper endpoint (level 4 → depth 3)
-        // although its other endpoint sits at level 1; reach 1 touches
-        // no deep cell and stays at its portal-split depth-zero path.
+        // although its other endpoint sits at level 1; the other reaches
+        // stay at their portal-split depth-zero paths.
         let expected = context.evaluator.river_path(0, 3).len() - 1
             + context.evaluator.river_path(1, 0).len()
+            - 1
+            + context.evaluator.river_path(2, 0).len()
             - 1;
         assert_eq!(polylines.len(), expected);
     }

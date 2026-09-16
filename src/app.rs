@@ -1299,7 +1299,8 @@ impl TemplateApp {
                             root_seed,
                         )
                         .ok()?;
-                    let segments = document.formation_snapshot().hydrology().river_segments();
+                    let hydrology = document.formation_snapshot().hydrology();
+                    let segments = hydrology.river_segments();
                     let detail = std::sync::Arc::new(amplified_mesh::AmplifiedDetailContext {
                         evaluator,
                         sea_level_m: f64::from(sea_level_m),
@@ -1312,11 +1313,13 @@ impl TemplateApp {
                             .iter()
                             .map(|segment| segment.strahler_order())
                             .collect(),
-                        surface_water: document
-                            .formation_snapshot()
-                            .hydrology()
-                            .surface_water()
-                            .clone(),
+                        river_drainage_area_km2: segments
+                            .iter()
+                            .map(|segment| {
+                                hydrology.drainage_area_km2()[segment.from().raw() as usize]
+                            })
+                            .collect(),
+                        surface_water: hydrology.surface_water().clone(),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
@@ -2853,6 +2856,7 @@ mod natural_app_tests {
                 display_radius_m: 2_000.0,
                 river_cells: Vec::new(),
                 river_orders: Vec::new(),
+                river_drainage_area_km2: Vec::new(),
                 surface_water: crate::world::natural::SurfaceWaterField::from_kinds(vec![
                     crate::world::natural::SurfaceWaterKind::DryLand; count
                 ]),

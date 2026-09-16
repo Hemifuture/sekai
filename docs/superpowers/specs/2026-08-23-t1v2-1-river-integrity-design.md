@@ -283,6 +283,52 @@ Strahler 级优先、生产河宽次之、上游 CellId 稳定打破并列。其
 不改 P5 阈值、receiver、河宽、流量或 artifact。测试使用局部合成图，专门
 覆盖混合层级和反向存储顺序；水体测试覆盖海拔以上湖泊和海拔以下干陆。
 
+### R6 — 以可复核的 Horton 追踪替换河宽代理（2026-09-16）
+
+用户要求先有科学算法支撑，再观察效果。R5 对连通性有测试，但将
+「Strahler、河宽、CellId」组合规则笼统归给网络制图文献，不能证明该规则
+直接来自引用。此次逐项核对原文及工业实现，修订如下。
+
+**直接方法。** 采用 GRASS GIS `r.stream.order -a` 的 Horton 主流追踪：
+上溯一个汇流点时，先选择 Strahler 级最高的入流；同级选贡献汇水面积最大者。
+Horton (1945) 提供整条主流的分级思想，具体消歧算法以 Jarek Jasiewicz 的
+GRASS 实现为准，不声称它是 Horton 原文中唯一的自然主流定义。
+GRASS 手册还明确指出，此方法可能优先选择分支更多、而不是总汇水面积最大的
+支流；这是保留 Strahler 优先级的已知性质，不以事后效果调换排序。
+
+- [GRASS 手册](https://grass.osgeo.org/grass-stable/manuals/addons/r.stream.order.html)，
+  `Horton's stream ordering` 和 `-a` 小节。
+- [固定版本源码](https://github.com/OSGeo/grass-addons/blob/a0e37beaf0ce8a4cc6ec615b6d3d40e39f9d725f/src/raster/r.stream.order/stream_order.c#L118)，
+  `horton()` 的 Strahler／accum 比较；SHA-256
+  `3e35239b8982d288e70a6bf58e753405b85b6d1391310453cb8dd7a1d24d2433`。
+
+**输入映射。** P5 是已验证的单 receiver、无环网络，符合 GRASS `-a` 的单流向
+前提。输入取 `drainage_area_km2()[segment.from()]`，即合流前该支流贡献的面积。
+球面格元不等面积，因此用生产累积面积而不是格子个数；不取合流后的共同面积，
+不拿流量或被限宽后的河宽代替。选择器只追踪主流，不新增持久 Horton 字段。
+库实现与本项目都按河段汇流图处理，格内折线细分不参与主流判断。
+
+**显示边界。** R5 的逐段 LOD 选择起点保留为 UI 显示密度策略；它并非
+Horton 分级公式，也没有从文献推导“放大一级就显示低一级”的物理意义。
+既有河段被选中后，上游按上述 Horton 规则连到已发布河网的 headwater，
+下游沿唯一 receiver 连到出口或已有路径。下游网络追踪参考 Gary et al.
+(2009, revised May 2010), USGS SIR 2009–5202, pp. 7–10。
+本项目没有 GNIS 名称和人工选源输入，因此不宣称复现该报告的整套生产流程。
+原 §11 将该报告误写为 Stanislawski (2009)，本修订明确勘正为 Gary 等。
+PDF SHA-256：`2b5c45b1f07758a55f3c5c3e4103ed145157b6c599ee56b82b6f4699a1c4e0d1`。
+
+精确同级同面积时保留 CellId 稳定打破并列；这是可复现性约定，没有物理偏好。
+水岸仍消费同一 P5 水体分类。既有几何、流量、河宽和 P5 指纹不受此次显示选择
+影响；每边只访问常数次，复杂度仍为 O(V+E)。无新增依赖或数值常量。
+
+本修订证明的是**河网主流追踪的直接出处**，不意味着审计过全部源头形成、
+细域曲流、侵蚀或岸线科学机制。UI 中“源头”仅指当前 P5 发布河网的起点。
+
+**最小充分证据。** 一个汇流点验证河级优先、同级面积消歧；混合 LOD 与反序
+存储的既有测试继续验证连通性。app 现有 fixture 扩为一次汇流：让较大面积支流
+的流量更小，实际构建折线必须选择该支流，避免只改函数名却继续传河宽。
+一次同配置生产 UI 对照验证可见效果；不为显示层修复增加多 seed 水文求解。
+
 ## 11. 每项承重技术的出处
 
 | 技术 | 出处 | 落点 |
@@ -293,4 +339,5 @@ Strahler 级优先、生产河宽次之、上游 CellId 稳定打破并列。其
 | Gnomonic 将球面大圆映为直线，适用范围小于半球 | Snyder (1987), USGS Professional Paper 1395，<https://pubs.usgs.gov/publication/pp1395> | §5 O(1) 单调/扇区证明 |
 | 河宽与流量的幂律，系数/指数随位置变化 | Leopold & Maddock (1953), USGS Professional Paper 252，<https://pubs.usgs.gov/publication/pp252> | §6 |
 | Strahler 河级定义 | Strahler (1957), *Transactions, AGU* 38(6), 913–920，<https://doi.org/10.1029/TR038i006p00913> | §8 层级抽稀 |
-| 河网制图须先做要素选择/密度控制再简化几何 | Stanislawski (2009), USGS SIR 2009-5202，<https://pubs.usgs.gov/sir/2009/5202/> | §8 |
+| 河网制图要素选择、下游网络追踪与几何简化 | Gary et al. (2009, revised May 2010), USGS SIR 2009-5202，<https://pubs.usgs.gov/sir/2009/5202/>；作者勘误见 R6 | §8、R6 |
+| Strahler 优先、同级汇水面积消歧的 Horton 主流追踪 | GRASS GIS `r.stream.order -a`，Jarek Jasiewicz；固定源码与适用边界见 R6 | R6 |
