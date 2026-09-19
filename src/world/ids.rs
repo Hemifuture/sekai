@@ -32,10 +32,6 @@ define_id!(HotspotId, u32);
 define_id!(DrainageBasinId, u32);
 define_id!(LakeId, u32);
 define_id!(RiverSegmentId, u32);
-define_id!(SpeciesId, u32);
-define_id!(CultureId, u32);
-define_id!(SettlementId, u32);
-define_id!(PolityId, u32);
 define_id!(AuthorObjectId, u64);
 
 /// The deterministic seed from which a world is generated.

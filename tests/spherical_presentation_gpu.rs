@@ -12,7 +12,7 @@ use sekai::app::{
 use sekai::engine::MemoryStageCache;
 use sekai::view::{
     sample_palette, DisplayRevisionClock, GlobeCamera, MapCamera, PreparedFieldKind,
-    PreparedOverlayKind, PreparedSphericalOverlay, PreparedVectorGlyphs,
+    PreparedOverlayKind, PreparedSphericalOverlay, PreparedVectorGlyphs, ProjectionPoint,
     SphericalFieldDisplayState, SphericalPresentationViewState, SphericalProjection,
     SphericalProjectionKind, SphericalViewMode, VectorAnimationUniform,
 };
@@ -376,82 +376,82 @@ fn complete_spherical_offscreen_rgba8_goldens_keep_cpu_semantic_oracles() {
         (
             "map_scalar_fill",
             &map_scalar,
-            "cf6eed6fcda34baf87df656aacb68e61096e995f72c6c17d2a4c3c74f20101e8",
+            "96c8ffb312dc1fee1be91e2829611fe937ba5ed2c0d3e53d99a5bf517f84e528",
         ),
         (
             "globe_scalar_fill",
             &globe_scalar,
-            "007d43626dc6e0f63ffd5124079938c00c7d0eb5f360fe6468235470c21f9eee",
+            "9495e1e1894b5f2842045fec74070ac01479e787d69e631807b4a6b74003213b",
         ),
         (
             "map_category_fill",
             &map_category,
-            "d41abd98f3205e33040e1e6cebf1c804d71537e8d3380b08e281a8b0e4850de8",
+            "ad3d5d42d9a57ef8f517e7b0ff539e57a834288cacc8f206c397e49d74a27c59",
         ),
         (
             "globe_category_fill",
             &globe_category,
-            "6bc7212197e6b7522ee0282e533f07703f1487ae9069c135c9df661f2a988e1c",
+            "038228655af50d4a12bbfc92ccd651a0060733539f21b762f1d1c28232eaddb1",
         ),
         (
             "map_edge_scalar",
             &map_edge_scalar,
-            "0442e45cbc6b51bed0f1172f6c66af828f36c3f6aa3b4aeced1231d6ed39cd22",
+            "cc78f8332c5dff7eafacd1cd37cde2ab588855c6c9a0aa9349bb89271fcbcefb",
         ),
         (
             "globe_edge_scalar",
             &globe_edge_scalar,
-            "a8ce2272b90898dd71b60fddf503fca382e32e43c75dbfb1804255dc93527d4a",
+            "ca76951d2ed6f34b39f7888c31743fad4719b8808e41e485bbecc3b195ecf362",
         ),
         (
             "map_edge_category",
             &map_edge_category,
-            "932645da008738f62cc8174c55013572738572660fd76aa817097490a12b4431",
+            "759055ebb4f04d9c3606dc0e21d796f8358bec047e56b29bb5fa7b34bc1d0ddb",
         ),
         (
             "globe_edge_category",
             &globe_edge_category,
-            "ef3ea43b416be8ccbab6217475c1606c26fd9f38c368c3e4ce284fb36b95789e",
+            "0bb2408e8d9ba3b4715d8e29d973483af6914ef17adc2e6d8b3375d4e1b4782f",
         ),
         (
             "map_vector_paused",
             &map_vector_paused,
-            "bfe37933afd9fa9485fefe432a7ff98c13da528632e79f24d9d9931d27f6a93d",
+            "6aebdaac7fe3e89ecec66587cdf37252f7553fc8f5de06c394e870cbf1cd64ab",
         ),
         (
             "map_vector_animated",
             &map_vector_animated,
-            "61794f059d1a04e82e38ff4a6a29bfd6ee30e0c8d008e9fc5a8996f9834fb437",
+            "f21336a16e5559260fe3ab621cad33bd44a308e1f7180afa0868cb3d4231e823",
         ),
         (
             "globe_vector_paused",
             &globe_vector_paused,
-            "dddc9c656bdcdd94b1229e80532134b8f67c217860d299d7da771d7e1ab27b29",
+            "0693ef66fce54d676050c20f4dfa05a1d9425324ec4ea543d808bcf6b8e09b1e",
         ),
         (
             "globe_vector_animated",
             &globe_vector_animated,
-            "f63baca918fdde0b9033030bd75179aa5983359268a550bb411e04462091f47e",
+            "7de24d07a592f7b3ae3310790e5c1c7b86de1f84956f798d4b0cb4af9f5dedd3",
         ),
         (
             "map_seam_fragments",
             &map_seam,
-            "64288e48d9e61b29c0c56cf1919188fce221c100226aecc750eb2392c546e8ae",
+            "f505ab127f62dd7cc2240a7c0fd988d936d0446e22f5737d70a1964adf7acfb1",
         ),
         (
             "map_poles",
             &map_poles,
-            "1de9760cf9c80f57b5cb151b9ed7bfdda33893486d4ee7e2eb1ea633b518a4e2",
+            "a3df8e83afbec6ddaf132190befac43bd02ed3b28fba094ca00abe7bafc30270",
         ),
         (
             "globe_front_visibility",
             &globe_front,
-            "6bc7212197e6b7522ee0282e533f07703f1487ae9069c135c9df661f2a988e1c",
+            "038228655af50d4a12bbfc92ccd651a0060733539f21b762f1d1c28232eaddb1",
         ),
         (
             "globe_back_visibility",
             &globe_back,
-            "f7aed911964d0a699810bc3613b993655c1ffc3523a0c5dbc8f05a94a5dba4cf",
+            "4d90b88ff6a401ef01261ae7af508c517662c67ccf1fd55a05383ac94b4f542e",
         ),
     ]
     .into_iter()
@@ -675,92 +675,133 @@ fn assert_vector_glyph_semantics(
     candidate: &SphericalPresentationCandidate,
     glyphs: &PreparedVectorGlyphs,
 ) {
-    const EXPECTED_SAMPLED_IDS: &[u32] = &[
-        5, 11, 23, 37, 38, 42, 47, 53, 64, 66, 67, 81, 100, 101, 108, 125, 127, 129, 151, 155, 158,
-    ];
     assert_eq!(glyphs.source(), candidate.source());
     assert_eq!(glyphs.lod_key(), candidate.layers().glyph_lod_key());
-    assert_eq!(
-        glyphs
-            .sampled_cells()
-            .iter()
-            .map(|cell| cell.raw())
-            .collect::<Vec<_>>(),
-        EXPECTED_SAMPLED_IDS
-    );
+    // Anchors are lattice points, so every map glyph origin is an integer
+    // multiple of the lattice spacing and the sampled cells are the distinct
+    // nearest cells of those points, sorted and in range.
+    let cell_count = candidate.map().cell_count();
+    let sampled = glyphs
+        .sampled_cells()
+        .iter()
+        .map(|cell| cell.raw())
+        .collect::<Vec<_>>();
+    assert!(!sampled.is_empty());
+    assert!(sampled.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(sampled.iter().all(|&id| (id as usize) < cell_count));
+    for glyph in glyphs.map() {
+        let spacing = f64::from(glyph.lattice_spacing());
+        for coordinate in glyph.origin() {
+            let steps = f64::from(coordinate) / spacing;
+            assert!(
+                (steps - steps.round()).abs() < 1.0e-3,
+                "map glyph origin {coordinate} is off the {spacing} lattice"
+            );
+        }
+    }
     assert!(glyphs.diagnostics().is_empty());
-    let map_ids = glyphs
-        .map()
-        .iter()
-        .map(|glyph| glyph.cell())
-        .collect::<Vec<_>>();
-    let globe_ids = glyphs
-        .globe()
-        .iter()
-        .map(|glyph| glyph.cell())
-        .collect::<Vec<_>>();
-    assert_eq!(map_ids, globe_ids);
     let field = match candidate.layers().overlay().unwrap() {
         PreparedSphericalOverlay::Vector(field) => field,
         PreparedSphericalOverlay::Edge(_) => unreachable!(),
     };
-    let expected_rendered_ids = glyphs
-        .sampled_cells()
-        .iter()
-        .copied()
-        .filter(|cell| field.components()[cell.raw() as usize] != [0.0, 0.0])
-        .collect::<Vec<_>>();
-    assert_eq!(
-        map_ids, expected_rendered_ids,
-        "sampled zero vectors are intentionally omitted from rendered instances"
-    );
+    // Map and globe lattices differ, so their glyphs sample different cells;
+    // every rendered glyph still names a sampled cell with a non-zero vector,
+    // and sampled zero vectors are intentionally omitted from instances.
+    let map_ids = glyphs.map().iter().map(|glyph| glyph.cell());
+    let globe_ids = glyphs.globe().iter().map(|glyph| glyph.cell());
+    for cell in map_ids.chain(globe_ids) {
+        assert!(glyphs.sampled_cells().contains(&cell));
+        assert_ne!(field.components()[cell.raw() as usize], [0.0, 0.0]);
+    }
+    assert!(!glyphs.map().is_empty());
+    assert!(!glyphs.globe().is_empty());
 
     let palette = candidate.layers().overlay_palette().unwrap();
     let (display_min, display_max) = field.display_range().bounds();
-    for (map, globe) in glyphs.map().iter().zip(glyphs.globe()) {
-        assert_eq!(map.cell(), globe.cell());
-        let index = map.cell().raw() as usize;
-        let authoritative = candidate
-            .document()
-            .catalog()
+    let surface = candidate.document().surface();
+    let authoritative_values = candidate
+        .document()
+        .catalog()
+        .unwrap()
+        .get(&preliminary_prevailing_wind_m_s_field_id())
+        .unwrap()
+        .view()
+        .unwrap()
+        .vector_values()
+        .unwrap()
+        .to_vec();
+    let nearest_cell = |radial: UnitVector3| {
+        surface
+            .cells()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| (index, cell.centroid.dot(radial)))
+            // Ties on a symmetry plane go to the lower cell id.
+            .max_by(|left, right| left.1.total_cmp(&right.1).then(right.0.cmp(&left.0)))
+            .map(|(index, _)| index)
             .unwrap()
-            .get(&preliminary_prevailing_wind_m_s_field_id())
-            .unwrap()
-            .view()
-            .unwrap()
-            .vector_values()
-            .unwrap()[index];
-        let magnitude = authoritative[0].hypot(authoritative[1]);
-        let color_position = if display_max == display_min {
+    };
+    let expected_color = |magnitude: f32| {
+        if display_max == display_min {
             0.5
         } else {
             ((magnitude - display_min) / (display_max - display_min)).clamp(0.0, 1.0)
-        };
+        }
+    };
+
+    for map in glyphs.map() {
+        // Rebuild the exact f64 lattice point the anchor was placed at.
+        let spacing = f64::from(map.lattice_spacing());
+        let [x, y] = map
+            .origin()
+            .map(|coordinate| (f64::from(coordinate) / spacing).round() * spacing);
+        let radial = candidate
+            .map()
+            .projection()
+            .inverse(ProjectionPoint::new(x, y))
+            .expect("lattice anchors lie inside the projection outline");
+        let index = nearest_cell(radial);
+        assert_eq!(map.cell().raw() as usize, index);
+        let authoritative = authoritative_values[index];
+        let magnitude = authoritative[0].hypot(authoritative[1]);
+        let color_position = expected_color(magnitude);
         assert_eq!(
             map.components().map(f32::to_bits),
             authoritative.map(f32::to_bits)
         );
+        assert_close(map.magnitude(), magnitude, 2.0e-6);
+        assert_close(map.color_position(), color_position, 2.0e-6);
+        assert_close(map.length_fraction(), 0.35 + 0.65 * color_position, 2.0e-6);
+        assert!(sample_palette(palette, color_position)
+            .components()
+            .into_iter()
+            .all(f32::is_finite));
+        let expected_map = finite_difference_map_direction(
+            candidate.map().projection(),
+            radial,
+            authoritative.map(f64::from),
+        );
+        assert_direction2(map.cell(), map.direction(), expected_map, 2.0e-4);
+    }
+
+    for globe in glyphs.globe() {
+        let radial = globe.radial();
+        let index = nearest_cell(radial);
+        assert_eq!(globe.cell().raw() as usize, index);
+        let authoritative = authoritative_values[index];
+        let magnitude = authoritative[0].hypot(authoritative[1]);
+        let color_position = expected_color(magnitude);
         assert_eq!(
             globe.components().map(f32::to_bits),
             authoritative.map(f32::to_bits)
         );
-        assert_close(map.magnitude(), magnitude, 2.0e-6);
         assert_close(globe.magnitude(), magnitude, 2.0e-6);
-        assert_close(map.color_position(), color_position, 2.0e-6);
         assert_close(globe.color_position(), color_position, 2.0e-6);
-        assert_close(map.length_fraction(), 0.35 + 0.65 * color_position, 2.0e-6);
         assert_close(
             globe.length_fraction(),
             0.35 + 0.65 * color_position,
             2.0e-6,
         );
-        assert!(sample_palette(palette, color_position)
-            .components()
-            .into_iter()
-            .all(f32::is_finite));
-
-        let radial = candidate.document().surface().cells()[index].centroid;
-        assert_eq!(globe.radial(), radial);
         let (east, north) = canonical_east_north_basis(radial);
         let tangent = [
             east[0] * f64::from(authoritative[0]) + north[0] * f64::from(authoritative[1]),
@@ -774,15 +815,6 @@ fn assert_vector_glyph_semantics(
             .sqrt();
         let expected_globe = tangent.map(|value| (value / tangent_length) as f32);
         assert_direction3(globe.direction(), expected_globe, 3.0e-6);
-        let expected_map = finite_difference_map_direction(
-            candidate.map().projection(),
-            radial,
-            authoritative.map(f64::from),
-        );
-        assert_direction2(map.cell(), map.direction(), expected_map, 2.0e-4);
-        let origin = candidate.map().projection().forward(radial).unwrap();
-        assert_close(map.origin()[0], origin.x() as f32, 2.0e-6);
-        assert_close(map.origin()[1], origin.y() as f32, 2.0e-6);
     }
 }
 

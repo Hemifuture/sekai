@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
@@ -237,6 +235,7 @@ enum GeodesicMeshError {
 }
 
 impl GeodesicMesh {
+    #[cfg(test)]
     fn build(frequency: u32) -> Result<Self, GeodesicMeshError> {
         let mut never_cancelled = || false;
         let mut cancellation = CancellationPoll::new(&mut never_cancelled);

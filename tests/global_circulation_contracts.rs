@@ -2,12 +2,14 @@ use sekai::generators::natural::circulation::CubedSphereGrid;
 use sekai::generators::natural::global_circulation_model_fingerprint;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    ClimateBudgetReport, ClimateCapabilityAvailability, ClimateCapabilityId, ClimateCapabilitySet,
-    ClimateCheckpoint, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields,
-    GlobalCirculationSnapshot, GlobalCirculationValidationError, MonthlyScalarField,
-    MonthlyVector3Field, NaturalQualityProfile, ProductionIntegratorId,
-    GLOBAL_CIRCULATION_SCHEMA_V1,
+    climatological_annual_total_mm, climatological_monthly_mean, ClimateBudgetReport,
+    ClimateCapabilityAvailability, ClimateCapabilityId, ClimateCapabilitySet, ClimateCheckpoint,
+    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateSolveReport, GlobalCirculationFields, GlobalCirculationSnapshot,
+    GlobalCirculationValidationError, MonthlyScalarField, MonthlyVector3Field,
+    NaturalQualityProfile, ProductionIntegratorId, CLIMATE_MONTH_COUNT,
+    CLIMATOLOGICAL_YEAR_SECONDS, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    GLOBAL_CIRCULATION_SCHEMA_V2, MEAN_SOLAR_DAY_SECONDS,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec};
@@ -26,6 +28,30 @@ fn scalar(cell_count: usize, value: f32) -> MonthlyScalarField {
 
 fn vectors(cell_count: usize, value: [f32; 3]) -> MonthlyVector3Field {
     MonthlyVector3Field::from_values(vec![[value; 12]; cell_count]).unwrap()
+}
+
+#[test]
+fn climatological_display_reductions_follow_the_equal_phase_time_contract() {
+    let monthly = [2.0_f32; CLIMATE_MONTH_COUNT];
+    assert_eq!(
+        climatological_monthly_mean(&monthly).to_bits(),
+        2.0_f32.to_bits()
+    );
+    assert_eq!(
+        climatological_annual_total_mm(&monthly).to_bits(),
+        (2.0 * CLIMATOLOGICAL_YEAR_SECONDS / MEAN_SOLAR_DAY_SECONDS).to_bits()
+    );
+
+    let budget = ClimateBudgetReport::new_with_climatology(
+        0.0, 0.0, 0.0, 0.0, 0.0, 2.8, 2.7, 240.9, 240.0, 0.291,
+    )
+    .unwrap();
+    assert_eq!(
+        budget
+            .evaporation_minus_precipitation_global_mean_mm_day()
+            .to_bits(),
+        (2.8_f64 - 2.7_f64).to_bits()
+    );
 }
 
 fn checkpoint(profile: ClimateModelProfile) -> ClimateCheckpoint {
@@ -58,9 +84,13 @@ fn c2_fields(
         vectors(count, [0.0; 3]),
         scalar(count, 12.0),
         scalar(count, 15.0),
+        vec![0.1; count],
+        scalar(count, 240.0),
+        scalar(count, 240.0),
         scalar(count, 8.0),
         scalar(count, 900.0 + thermocline_height_m),
         scalar(count, 0.008),
+        scalar(count, 0.0),
         scalar(count, 2.0),
         scalar(count, 0.5),
         scalar(count, lower_height_m),
@@ -95,7 +125,7 @@ fn c2_snapshot(surface: &SphericalSurfaceSnapshot) -> GlobalCirculationSnapshot 
     )
     .unwrap();
     GlobalCirculationSnapshot::new(
-        GLOBAL_CIRCULATION_SCHEMA_V1,
+        GLOBAL_CIRCULATION_SCHEMA_V2,
         SurfaceRef::for_spherical(surface),
         layout,
         ProductionIntegratorId::SplitExplicitRk3V1,
@@ -280,16 +310,17 @@ fn checkpoint_fingerprint_covers_every_resume_identity() {
     );
 
     let mut tampered = serde_json::to_value(&first).unwrap();
-    tampered["completed_months"] = serde_json::json!(36);
+    tampered["completed_phase_steps"] = serde_json::json!(36);
     assert!(serde_json::from_value::<ClimateCheckpoint>(tampered).is_err());
 
-    for (quality, completed_months) in [
-        (sekai::world::natural::NaturalQualityProfile::Draft, 9 * 12),
-        (
-            sekai::world::natural::NaturalQualityProfile::Standard,
-            11 * 12,
-        ),
+    for quality in [
+        NaturalQualityProfile::Draft,
+        NaturalQualityProfile::Standard,
+        NaturalQualityProfile::High,
     ] {
+        let completed_phase_steps = (u32::from(quality.global_circulation_formation_cycles_max())
+            + 1)
+            * CLIMATE_MONTH_COUNT as u32;
         assert!(matches!(
             ClimateCheckpoint::new(
                 quality,
@@ -300,12 +331,42 @@ fn checkpoint_fingerprint_covers_every_resume_identity() {
                 global_circulation_model_fingerprint(ClimateModelProfile::C2LayeredV1),
                 [3; 32],
                 ClimateQuantizationId::DeterministicF64V1,
-                completed_months,
+                completed_phase_steps,
                 [4; 32],
             ),
-            Err(sekai::world::natural::ClimateCheckpointError::CompletedMonthsExceedProfile { .. })
+            Err(
+                sekai::world::natural::ClimateCheckpointError::CompletedPhaseStepsExceedProfile { .. }
+            )
         ));
     }
+}
+
+#[test]
+fn v2_time_contract_distinguishes_forcing_phases_from_integrated_time() {
+    let source = surface(42);
+    let snapshot = c2_snapshot(&source);
+    let checkpoint = serde_json::to_value(snapshot.checkpoint()).unwrap();
+    let solve = serde_json::to_value(snapshot.solve_report()).unwrap();
+
+    assert_eq!(checkpoint["schema_version"], serde_json::json!(2));
+    assert_eq!(checkpoint["completed_phase_steps"], serde_json::json!(24));
+    assert!(checkpoint.get("completed_months").is_none());
+    assert_eq!(solve["formation_cycles"], serde_json::json!(2));
+    assert_eq!(solve["continuation_steps"], serde_json::json!(24));
+    assert_eq!(
+        solve["integrated_model_seconds"],
+        serde_json::json!(24 * GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+    );
+    assert!(solve.get("formation_years").is_none());
+    assert!(solve.get("macro_steps").is_none());
+
+    let mut old_checkpoint = checkpoint;
+    old_checkpoint["schema_version"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<ClimateCheckpoint>(old_checkpoint).is_err());
+
+    let mut old_snapshot = serde_json::to_value(snapshot).unwrap();
+    old_snapshot["schema_version"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<GlobalCirculationSnapshot>(old_snapshot).is_err());
 }
 
 #[test]
@@ -356,7 +417,7 @@ fn contextual_snapshot_validation_rejects_a_validly_rehashed_noncanonical_grid()
         *canonical.checkpoint().model_fingerprint(),
         *canonical.checkpoint().input_fingerprint(),
         ClimateQuantizationId::DeterministicF64V1,
-        canonical.checkpoint().completed_months(),
+        canonical.checkpoint().completed_phase_steps(),
         *canonical.checkpoint().state_fingerprint(),
     )
     .unwrap();
@@ -439,7 +500,7 @@ fn snapshot_constructor_and_serde_reject_nonpositive_actual_layer_depths() {
         )
         .unwrap();
         GlobalCirculationSnapshot::new(
-            GLOBAL_CIRCULATION_SCHEMA_V1,
+            GLOBAL_CIRCULATION_SCHEMA_V2,
             SurfaceRef::for_spherical(&source),
             layout,
             ProductionIntegratorId::SplitExplicitRk3V1,

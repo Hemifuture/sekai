@@ -30,7 +30,6 @@ enum AtlasField {
     CrustDensity,
     BedrockLithology,
     IsostaticBase,
-    DynamicTectonic,
     VolcanicConstruction,
     PassiveMargin,
     RegionalDetail,
@@ -39,11 +38,10 @@ enum AtlasField {
 }
 
 impl AtlasField {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::CrustDensity,
         Self::BedrockLithology,
         Self::IsostaticBase,
-        Self::DynamicTectonic,
         Self::VolcanicConstruction,
         Self::PassiveMargin,
         Self::RegionalDetail,
@@ -56,7 +54,6 @@ impl AtlasField {
             Self::CrustDensity => "crust-density",
             Self::BedrockLithology => "bedrock-lithology",
             Self::IsostaticBase => "isostatic-base",
-            Self::DynamicTectonic => "dynamic-tectonic-response",
             Self::VolcanicConstruction => "volcanic-construction",
             Self::PassiveMargin => "passive-margin",
             Self::RegionalDetail => "conditioned-regional-detail",
@@ -363,9 +360,6 @@ fn field_color(
             BedrockKind::Volcanic => Rgba([96, 49, 45, 255]),
         },
         AtlasField::IsostaticBase => elevation_color(relief.isostatic_base_m()[index]),
-        AtlasField::DynamicTectonic => {
-            signed_component_color(relief.dynamic_tectonic_offset_m()[index], 5_000.0)
-        }
         AtlasField::VolcanicConstruction => gradient(
             Rgba([20, 23, 28, 255]),
             Rgba([243, 101, 48, 255]),
@@ -481,8 +475,8 @@ fn output_directory() -> PathBuf {
 
 #[test]
 fn atlas_palette_projection_and_row_order_are_deterministic() {
-    assert_eq!(AtlasField::ALL.len(), 9);
-    assert_eq!(AtlasField::ALL[8].slug(), "physical-water");
+    assert_eq!(AtlasField::ALL.len(), 8);
+    assert_eq!(AtlasField::ALL[7].slug(), "physical-water");
     assert_ne!(
         signed_component_color(-500.0, 1_000.0),
         signed_component_color(500.0, 1_000.0)

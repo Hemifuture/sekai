@@ -9,6 +9,7 @@ use sekai::world::natural::{
     ResolvedWorldFormationPreset, TectonicActivity, TectonicSpec, WorldFormationPreset,
     MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 #[derive(Clone, Copy)]
@@ -39,7 +40,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "3fef8cebc8589442c48d5b36c4faebabf6d6cba5390c0f04cea653ef90f4e459",
+        expected_tectonic_hash: "ac7d16298e1276aa1b4edf49c60d06aaf1968b0dc0aad150c05a8cff8818a88c",
         expected_mantle_hash: "3f7b966c4918d1d4a3edf0c94990c2ab1f0870e209e1803fd7e36378a2eda77d",
     },
     MatrixCase {
@@ -53,7 +54,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "53ee0381473881bfeb9d289ea3885a8096219007f68f160aeb1d0936cc2d2b04",
+        expected_tectonic_hash: "84b7e49fc6bed386089449e2c9355700a30c6f03cdaf32b568471774da7691a3",
         expected_mantle_hash: "6235cfbdb57d1bfbce12fa426916b7e4376191da13f80efeb2750e5802b047db",
     },
     MatrixCase {
@@ -67,7 +68,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_tectonic_hash: "f81ea4119877673b1fb39bfb1b35893ef296f72d4c4951e09e4381e6d9bac5d1",
+        expected_tectonic_hash: "a3033f096164721c2ac9f2a98381672a37619345a3b7ff46331bc775c70c6f2d",
         expected_mantle_hash: "03a432dafeead07521176d659a29f904ef52efe34e239389adbb6602682e5cfa",
     },
     MatrixCase {
@@ -81,7 +82,7 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_tectonic_hash: "fe0d4bfefc2a25ff724ed514cffd08701901102858e61bb1490e4acd769c3ef6",
+        expected_tectonic_hash: "c9747e80dff0eb9e47283e66bd759cd029ae110b7722a7367fdddd41d8358c38",
         expected_mantle_hash: "6e5def0d9603031ce138043672e45f8487e7779e92ec5b8c5f0d62c2c118f673",
     },
 ];
@@ -285,8 +286,12 @@ fn spherical_natural_scientific_and_deterministic_matrix() {
         "the matrix never exercised an evolved final plate count"
     );
 
-    for (case, tectonic_hash, mantle_hash) in actual_hashes {
-        assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);
-        assert_eq!(mantle_hash, case.expected_mantle_hash, "{}", case.name);
+    if audited_float_platform() {
+        for (case, tectonic_hash, mantle_hash) in actual_hashes {
+            assert_eq!(tectonic_hash, case.expected_tectonic_hash, "{}", case.name);
+            assert_eq!(mantle_hash, case.expected_mantle_hash, "{}", case.name);
+        }
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
     }
 }

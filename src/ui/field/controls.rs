@@ -4,7 +4,7 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldPaletteHint, ValueRange};
 
-use super::localization::{localized_field_key, localized_palette};
+use super::localization::{localized_field_label, localized_palette};
 
 /// Declarative field-viewer changes emitted for the app composition layer.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +58,7 @@ pub fn show_field_controls(
 
     for entry in catalog.entries() {
         let schema = entry.schema();
-        let label = field_label(schema);
+        let label = localized_field_label(schema);
         let inspecting = state.inspected_field() == Some(&schema.id);
         ui.horizontal_wrapped(|ui| {
             if ui.selectable_label(inspecting, label).clicked() {
@@ -200,20 +200,6 @@ pub fn show_field_controls(
     actions
 }
 
-fn field_label(schema: &crate::world::fields::FieldSchema) -> String {
-    let label = schema.display.label_key();
-    if label.is_empty() {
-        format!(
-            "{}.{}@{}",
-            schema.id.namespace(),
-            schema.id.name(),
-            schema.id.version()
-        )
-    } else {
-        localized_field_key(label).into_owned()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -229,7 +215,7 @@ mod tests {
         FieldPaletteHint, FieldRegistry, FieldRegistryBuilder, FieldSchema, FieldUnit,
         FieldValueType, MissingValuePolicy,
     };
-    use crate::world::natural::natural_field_registry;
+    use crate::world::natural::{natural_field_registry, spherical_formation_field_registry};
 
     fn field_id(name: &str) -> FieldId {
         FieldId::new("test.ui", name, 1).unwrap()
@@ -376,16 +362,24 @@ mod tests {
 
     #[test]
     fn every_formal_natural_field_and_category_has_a_chinese_label() {
-        let registry = natural_field_registry(12).unwrap();
-        for (_, schema) in registry.iter() {
-            let key = schema.display.label_key();
-            assert_ne!(localized_field_key(key), key, "missing label for {key}");
-            for category_key in schema.category_labels.values() {
-                assert_ne!(
-                    localized_field_key(category_key),
-                    category_key.as_str(),
-                    "missing label for {category_key}"
-                );
+        for registry in [
+            natural_field_registry(12).unwrap(),
+            spherical_formation_field_registry(
+                12,
+                4.0 * std::f64::consts::PI * 6_371_000.0_f64.powi(2),
+            )
+            .unwrap(),
+        ] {
+            for (_, schema) in registry.iter() {
+                let key = schema.display.label_key();
+                assert_ne!(localized_field_key(key), key, "missing label for {key}");
+                for category_key in schema.category_labels.values() {
+                    assert_ne!(
+                        localized_field_key(category_key),
+                        category_key.as_str(),
+                        "missing label for {category_key}"
+                    );
+                }
             }
         }
     }

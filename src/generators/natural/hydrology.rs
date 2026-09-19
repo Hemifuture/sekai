@@ -6,13 +6,13 @@ use thiserror::Error;
 use super::topology::NaturalTopologyIndex;
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    formation_monthly_precipitation_mm, BasinOutletKind, ClimateValidationError, DrainageBasin,
-    ElevationField, HydroErosionSpec, HydroErosionSpecError, HydrologySnapshot,
-    HydrologyValidationError, Lake, PreliminaryClimateSnapshot, ReliefValidationError,
-    RiverSegment, RiverSegmentKind, StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind,
-    CLIMATE_MONTH_COUNT, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_ENDORHEIC_RESIDENCE_YEARS,
-    FORMATION_MINIMUM_LAKE_DEPTH_M, FORMATION_RUNOFF_MIN_FRACTION,
-    FORMATION_RUNOFF_PERMEABILITY_RANGE, HYDROLOGY_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
+    formation_monthly_precipitation_mm, formation_runoff_fraction, BasinOutletKind,
+    ClimateValidationError, DrainageBasin, ElevationField, HydroErosionSpec, HydroErosionSpecError,
+    HydrologySnapshot, HydrologyValidationError, Lake, LandOceanField, LandOceanKind,
+    PreliminaryClimateSnapshot, ReliefValidationError, RiverSegment, RiverSegmentKind,
+    StrahlerOrderField, SurfaceWaterField, SurfaceWaterKind, CLIMATE_MONTH_COUNT, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, FORMATION_ENDORHEIC_RESIDENCE_YEARS, FORMATION_MINIMUM_LAKE_DEPTH_M,
+    HYDROLOGY_SCHEMA_V1, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
 use crate::world::spatial::{
     NaturalSurface, PlanarNaturalSurface, SpatialSnapshot, SpatialValidationError, Topology,
@@ -116,11 +116,17 @@ pub(crate) fn generate_hydrology_core(
     spec: &HydroErosionSpec,
     outlet_policy: DrainageOutletPolicy,
 ) -> Result<HydrologySnapshot, HydrologyGenerationError> {
+    let original_height_cm = quantized_surface_heights(surface_elevation_m, None)?;
+    let sea_level_cm = quantize_centimeters_exact(f64::from(sea_level_m));
+    let ocean = original_height_cm
+        .iter()
+        .map(|&height| height < sea_level_cm)
+        .collect();
     generate_hydrology_core_impl(
         surface,
         topology,
-        surface_elevation_m,
-        sea_level_m,
+        original_height_cm,
+        ocean,
         relative_permeability,
         monthly_precipitation_mm,
         spec,
@@ -138,8 +144,8 @@ pub(crate) fn generate_hydrology_core(
 pub(crate) fn generate_formation_hydrology_core(
     surface: &impl NaturalSurface,
     topology: &NaturalTopologyIndex,
-    surface_elevation_m: &ElevationField,
-    sea_level_m: f32,
+    surface_elevation_m: &[f64],
+    land_ocean: &LandOceanField,
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; CLIMATE_MONTH_COUNT]],
     spec: &HydroErosionSpec,
@@ -149,16 +155,29 @@ pub(crate) fn generate_formation_hydrology_core(
     validate_dense_inputs(
         surface.cell_count(),
         surface_elevation_m,
-        sea_level_m,
         relative_permeability,
         monthly_precipitation_mm_day,
         Some(cancellation),
     )?;
+    if land_ocean.len() != surface.cell_count() {
+        return Err(HydrologyGenerationError::CellCountMismatch {
+            input: "land_ocean",
+            expected: surface.cell_count(),
+            found: land_ocean.len(),
+        });
+    }
+    let original_height_cm =
+        quantized_surface_heights_exact(surface_elevation_m, Some(cancellation))?;
+    let mut ocean = Vec::with_capacity(land_ocean.len());
+    for index in 0..land_ocean.len() {
+        poll_cancelled(Some(cancellation), index)?;
+        ocean.push(land_ocean.get(index) == Some(LandOceanKind::Ocean));
+    }
     generate_hydrology_core_impl(
         surface,
         topology,
-        surface_elevation_m,
-        sea_level_m,
+        original_height_cm,
+        ocean,
         relative_permeability,
         monthly_precipitation_mm_day,
         spec,
@@ -178,26 +197,14 @@ pub(crate) fn generate_formation_hydrology_core(
 fn generate_hydrology_core_impl(
     surface: &impl NaturalSurface,
     topology: &NaturalTopologyIndex,
-    surface_elevation_m: &ElevationField,
-    sea_level_m: f32,
+    original_height_cm: Vec<i64>,
+    ocean: Vec<bool>,
     relative_permeability: &[f32],
     monthly_precipitation_mm: &[[f32; CLIMATE_MONTH_COUNT]],
     spec: &HydroErosionSpec,
     options: HydrologyCoreOptions<'_>,
 ) -> Result<HydrologySnapshot, HydrologyGenerationError> {
     check_cancelled(options.cancellation)?;
-    let mut original_height_cm = Vec::with_capacity(surface_elevation_m.len());
-    for (index, &value) in surface_elevation_m.values().iter().enumerate() {
-        poll_cancelled(options.cancellation, index)?;
-        original_height_cm.push(quantize_centimeters(value));
-    }
-    let sea_level_cm = quantize_centimeters(sea_level_m);
-    let mut ocean = Vec::with_capacity(original_height_cm.len());
-    for (index, &height) in original_height_cm.iter().enumerate() {
-        poll_cancelled(options.cancellation, index)?;
-        ocean.push(height < sea_level_cm);
-    }
-
     let flood = priority_flood(
         topology,
         &original_height_cm,
@@ -307,8 +314,7 @@ fn generate_hydrology_core_impl(
 
 fn validate_dense_inputs(
     cell_count: usize,
-    surface_elevation_m: &ElevationField,
-    sea_level_m: f32,
+    surface_elevation_m: &[f64],
     relative_permeability: &[f32],
     monthly_precipitation_mm_day: &[[f32; CLIMATE_MONTH_COUNT]],
     cancellation: Option<&BuildCancellation>,
@@ -329,13 +335,12 @@ fn validate_dense_inputs(
             });
         }
     }
-    if !sea_level_m.is_finite() {
-        return Err(HydrologyGenerationError::NonFiniteSeaLevel { found: sea_level_m });
-    }
     for index in 0..cell_count {
         poll_cancelled(cancellation, index)?;
-        let elevation = surface_elevation_m.values()[index];
-        if !elevation.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&elevation) {
+        let elevation = surface_elevation_m[index];
+        if !elevation.is_finite()
+            || !(f64::from(ELEVATION_MIN_M)..=f64::from(ELEVATION_MAX_M)).contains(&elevation)
+        {
             return Err(HydrologyGenerationError::SurfaceElevationOutOfRange {
                 cell: CellId::from_raw(index as u32),
                 found: elevation,
@@ -358,6 +363,30 @@ fn validate_dense_inputs(
         }
     }
     check_cancelled(cancellation)
+}
+
+fn quantized_surface_heights(
+    surface_elevation_m: &ElevationField,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<Vec<i64>, HydrologyGenerationError> {
+    let mut heights = Vec::with_capacity(surface_elevation_m.len());
+    for (index, &value) in surface_elevation_m.values().iter().enumerate() {
+        poll_cancelled(cancellation, index)?;
+        heights.push(quantize_centimeters_exact(f64::from(value)));
+    }
+    Ok(heights)
+}
+
+fn quantized_surface_heights_exact(
+    surface_elevation_m: &[f64],
+    cancellation: Option<&BuildCancellation>,
+) -> Result<Vec<i64>, HydrologyGenerationError> {
+    let mut heights = Vec::with_capacity(surface_elevation_m.len());
+    for (index, &value) in surface_elevation_m.iter().enumerate() {
+        poll_cancelled(cancellation, index)?;
+        heights.push(quantize_centimeters_exact(value));
+    }
+    Ok(heights)
 }
 
 fn validate_inputs_against_validated_spatial(
@@ -399,7 +428,7 @@ fn validate_inputs_against_validated_spatial(
         if !found.is_finite() || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&found) {
             return Err(HydrologyGenerationError::SurfaceElevationOutOfRange {
                 cell: CellId::from_raw(index as u32),
-                found,
+                found: f64::from(found),
             });
         }
     }
@@ -845,9 +874,7 @@ fn local_runoff(
                     })
                 }
                 RunoffForcingKind::FormationMeanDailyRates => {
-                    let runoff_fraction = FORMATION_RUNOFF_MIN_FRACTION
-                        + FORMATION_RUNOFF_PERMEABILITY_RANGE
-                            * (1.0 - f64::from(relative_permeability[index]));
+                    let runoff_fraction = formation_runoff_fraction(relative_permeability[index]);
                     let bounded =
                         formation_monthly_precipitation_mm(&monthly_precipitation_mm[index]);
                     std::array::from_fn(|month| (bounded[month] * runoff_fraction) as f32)
@@ -1189,8 +1216,8 @@ fn update_strahler_aggregate(maximum: &mut u8, count: &mut u32, order: u8) {
     }
 }
 
-fn quantize_centimeters(value_m: f32) -> i64 {
-    (f64::from(value_m) * CENTIMETERS_PER_METER).round() as i64
+fn quantize_centimeters_exact(value_m: f64) -> i64 {
+    (value_m * CENTIMETERS_PER_METER).round() as i64
 }
 
 fn poll_cancelled(
@@ -1256,7 +1283,7 @@ pub enum HydrologyGenerationError {
         /// The affected cell.
         cell: CellId,
         /// The rejected elevation.
-        found: f32,
+        found: f64,
     },
     /// Relative permeability is invalid.
     #[error("relative permeability {found} at {cell:?} is outside finite 0..=1")]

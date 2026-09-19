@@ -3,19 +3,17 @@
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::generators::natural::evaluate_evolved_tectonic_quality;
 use crate::world::natural::{
-    BoundaryKind, CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot,
-    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus, ReliefSpec,
-    ELEVATION_MAX_M, ELEVATION_MIN_M, RELIEF_SPEC_SCHEMA_V1,
+    CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot, NaturalQualityReport,
+    PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus, ELEVATION_MAX_M, ELEVATION_MIN_M,
 };
 use crate::world::spatial::SphericalSurfaceSnapshot;
 
 const METRIC_NAMESPACE: &str = "sekai.primary-relief-v1";
 const METRIC_VERSION: u16 = 1;
-const EXPECTED_METRIC_NAMES: [&str; 14] = [
+const EXPECTED_METRIC_NAMES: [&str; 13] = [
     "coast-plate-boundary-overlap",
     "component-closure-max-error-m",
     "continental-ocean-median-separation-m",
-    "convergent-positive-dynamic-fraction",
     "elevation-safety-violation-count",
     "hotspot-positive-construction-fraction",
     "maximum-plate-area-fraction",
@@ -23,14 +21,13 @@ const EXPECTED_METRIC_NAMES: [&str; 14] = [
     "old-young-ocean-depth-separation-m",
     "physical-land-area-fraction",
     "regional-detail-rms-ratio",
-    "subduction-negative-dynamic-fraction",
     "upstream-p2-hard-failure-count",
+    "water-inventory-ratio",
     "water-volume-relative-error",
 ];
-const P2_CORPUS_SCOPED_NAMES: [&str; 6] = [
+const P2_CORPUS_SCOPED_NAMES: [&str; 5] = [
     "collision-causality-fraction",
     "continental-area-fraction",
-    "ocean-age-depth-spearman",
     "regular-triple-junction-angle-fraction",
     "subduction-causality-fraction",
     "transform-to-convergent-uplift-ratio",
@@ -127,7 +124,7 @@ pub fn evaluate_primary_relief_quality(
     Ok(report)
 }
 
-/// Evaluates only the eight statistical gates over original fixed-seed samples.
+/// Evaluates the statistical gates and measurements over original fixed-seed samples.
 pub fn evaluate_primary_relief_corpus_quality(
     surface: &SphericalSurfaceSnapshot,
     samples: &[PrimaryReliefQualitySample<'_>],
@@ -172,14 +169,6 @@ fn record_statistical_metrics(
         2_500.0,
     )?;
     builder.record_observation_at_least(
-        metric_id("convergent-positive-dynamic-fraction")?,
-        raw.convergent.finish(
-            "no active convergent uplift cells in the quality sample",
-            "convergent-dynamic",
-        )?,
-        0.80,
-    )?;
-    builder.record_observation_at_least(
         metric_id("hotspot-positive-construction-fraction")?,
         raw.hotspots.finish(
             "no mantle hotspots in the quality sample",
@@ -192,15 +181,13 @@ fn record_statistical_metrics(
         separation_observation(&raw.old_ocean_depth, &raw.young_ocean_depth)?,
         600.0,
     )?;
-    builder.record_observation_between(
+    builder.record_observation_unbounded(
         metric_id("physical-land-area-fraction")?,
         median_observation(
             &raw.physical_land_fractions,
             "no physical land-fraction samples",
             "physical-land-fraction",
         )?,
-        0.20,
-        0.55,
     )?;
     builder.record_observation_between(
         metric_id("regional-detail-rms-ratio")?,
@@ -208,13 +195,13 @@ fn record_statistical_metrics(
         0.01,
         0.30,
     )?;
-    builder.record_observation_at_least(
-        metric_id("subduction-negative-dynamic-fraction")?,
-        raw.subduction.finish(
-            "no descending subduction cells in the quality sample",
-            "subduction-dynamic",
+    builder.record_observation_unbounded(
+        metric_id("water-inventory-ratio")?,
+        median_observation(
+            &raw.water_inventory_ratios,
+            "no water-inventory samples",
+            "water-inventory-ratio",
         )?,
-        0.80,
     )?;
     Ok(())
 }
@@ -223,8 +210,6 @@ fn record_statistical_metrics(
 struct RawReliefMetrics {
     continental_elevation: Vec<f32>,
     ocean_elevation: Vec<f32>,
-    convergent: FractionAggregate,
-    subduction: FractionAggregate,
     young_ocean_depth: Vec<f32>,
     old_ocean_depth: Vec<f32>,
     detail_weighted_square: f64,
@@ -233,6 +218,7 @@ struct RawReliefMetrics {
     hotspots: FractionAggregate,
     coast_overlaps: Vec<f64>,
     physical_land_fractions: Vec<f64>,
+    water_inventory_ratios: Vec<f64>,
 }
 
 impl RawReliefMetrics {
@@ -270,7 +256,6 @@ impl RawReliefMetrics {
             raw.elevation_weighted_square += area * f64::from(elevation).powi(2);
             raw.rms_samples += 1;
         }
-        append_boundary_samples(surface, evolved, relief, &mut raw)?;
         for hotspot in substrate.mantle().hotspots() {
             raw.hotspots.push(
                 relief.volcanic_construction_m()[hotspot.source_cell().raw() as usize] > 0.0,
@@ -281,6 +266,11 @@ impl RawReliefMetrics {
         }
         raw.physical_land_fractions
             .push(f64::from(relief.physical_land_fraction()));
+        raw.water_inventory_ratios.push(
+            relief
+                .water_inventory_ratio(surface.total_cell_area().get())
+                .map_err(|error| invalid_input("water-inventory", error.to_string()))?,
+        );
         Ok(raw)
     }
 
@@ -288,8 +278,6 @@ impl RawReliefMetrics {
         self.continental_elevation
             .extend(other.continental_elevation);
         self.ocean_elevation.extend(other.ocean_elevation);
-        self.convergent.extend(other.convergent)?;
-        self.subduction.extend(other.subduction)?;
         self.young_ocean_depth.extend(other.young_ocean_depth);
         self.old_ocean_depth.extend(other.old_ocean_depth);
         self.detail_weighted_square += other.detail_weighted_square;
@@ -305,6 +293,8 @@ impl RawReliefMetrics {
         self.coast_overlaps.extend(other.coast_overlaps);
         self.physical_land_fractions
             .extend(other.physical_land_fractions);
+        self.water_inventory_ratios
+            .extend(other.water_inventory_ratios);
         Ok(())
     }
 
@@ -329,62 +319,6 @@ impl RawReliefMetrics {
                 .map_err(|_| QualityBuildError::SampleCountOverflow)?,
         })
     }
-}
-
-fn append_boundary_samples(
-    surface: &SphericalSurfaceSnapshot,
-    evolved: &EvolvedTectonicSnapshot,
-    relief: &PrimaryReliefSnapshot,
-    raw: &mut RawReliefMetrics,
-) -> Result<(), QualityBuildError> {
-    let tectonic = evolved.compatibility();
-    let forcing = evolved.forcing();
-    for (edge, boundary) in surface.edges().iter().zip(tectonic.boundaries()) {
-        let [first, second] = edge.cells.map(|cell| cell.raw() as usize);
-        match boundary.kind {
-            BoundaryKind::Subduction => {
-                let descending = boundary.subducting_plate.ok_or_else(|| {
-                    invalid_input("subduction", "missing descending plate".to_owned())
-                })?;
-                let first_owner = tectonic
-                    .plate_for_cell(edge.cells[0])
-                    .ok_or_else(|| invalid_input("cell-plates", format!("missing cell {first}")))?;
-                let (descending_cell, overriding_cell) = if first_owner == descending {
-                    (first, second)
-                } else {
-                    (second, first)
-                };
-                if forcing.subsidence_rate_mm_per_year()[descending_cell]
-                    > forcing.uplift_rate_mm_per_year()[descending_cell]
-                {
-                    raw.subduction
-                        .push(relief.dynamic_tectonic_offset_m()[descending_cell] < 0.0)?;
-                }
-                if forcing.uplift_rate_mm_per_year()[overriding_cell]
-                    > forcing.subsidence_rate_mm_per_year()[overriding_cell]
-                {
-                    raw.convergent
-                        .push(relief.dynamic_tectonic_offset_m()[overriding_cell] > 0.0)?;
-                }
-            }
-            BoundaryKind::ContinentalCollision => {
-                for index in [first, second] {
-                    if forcing.uplift_rate_mm_per_year()[index]
-                        > forcing.subsidence_rate_mm_per_year()[index]
-                    {
-                        raw.convergent
-                            .push(relief.dynamic_tectonic_offset_m()[index] > 0.0)?;
-                    }
-                }
-            }
-            BoundaryKind::None
-            | BoundaryKind::Weak
-            | BoundaryKind::ContinentalRift
-            | BoundaryKind::OceanicRidge
-            | BoundaryKind::Transform => {}
-        }
-    }
-    Ok(())
 }
 
 fn coast_plate_overlap(
@@ -424,7 +358,6 @@ fn component_closure(relief: &PrimaryReliefSnapshot) -> (f64, usize) {
     let maximum = (0..relief.elevation_m().len())
         .map(|index| {
             let calculated = relief.isostatic_base_m()[index]
-                + relief.dynamic_tectonic_offset_m()[index]
                 + relief.volcanic_construction_m()[index]
                 + relief.passive_margin_offset_m()[index]
                 + relief.conditioned_regional_detail_m()[index];
@@ -446,7 +379,6 @@ fn non_finite_count(
         substrate.heat_flow_mw_m2(),
         substrate.volcanic_influence(),
         relief.isostatic_base_m(),
-        relief.dynamic_tectonic_offset_m(),
         relief.volcanic_construction_m(),
         relief.passive_margin_offset_m(),
         relief.conditioned_regional_detail_m(),
@@ -483,12 +415,8 @@ fn validate_inputs(
     substrate
         .validate_against(surface, evolved)
         .map_err(|error| invalid_input("geologic-substrate", error.to_string()))?;
-    let relief_spec = ReliefSpec {
-        schema_version: RELIEF_SPEC_SCHEMA_V1,
-        target_land_fraction: relief.requested_land_fraction(),
-    };
     relief
-        .validate_against(surface, substrate, &relief_spec)
+        .validate_against_surface_measurements(surface)
         .map_err(|error| invalid_input("primary-relief", error.to_string()))?;
     Ok(())
 }

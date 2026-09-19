@@ -7,9 +7,10 @@ use thiserror::Error;
 
 use super::{
     classify_boundary_kinematics, BoundaryClassification, BoundaryKind, BoundaryKinematics,
-    BoundaryRecord, CrustKind, CrustKindField, PlateIdField, CONTINENTAL_CRUST_MAX_THICKNESS_KM,
-    CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M, ELEVATION_MIN_M, MAX_PLATE_COUNT,
-    OCEANIC_CRUST_MAX_THICKNESS_KM, OCEANIC_CRUST_MIN_THICKNESS_KM,
+    BoundaryRecord, CrustKind, CrustKindField, PlateIdField, TectonicActivity,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CONTINENTAL_CRUST_MIN_THICKNESS_KM, ELEVATION_MAX_M,
+    ELEVATION_MIN_M, MAX_PLATE_COUNT, OCEANIC_CRUST_MAX_THICKNESS_KM,
+    OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
@@ -33,6 +34,86 @@ pub const MAX_CRUST_AGE_MYR: f32 = 512.0;
 pub const MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR: f64 = 120.0;
 /// The largest representable angular rate, sized for 120 mm/year on a one-meter sphere.
 pub const MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR: u64 = 120_000_000_000;
+/// Cloos (1993): oceanic lithosphere becomes negatively buoyant relative to the
+/// asthenosphere after about 10 Myr. G1d uses this only as the necessary
+/// (not sufficient) age for intra-ocean spontaneous subduction initiation;
+/// complete passive margins stay closed because of continental lithosphere
+/// strength (McKenzie 1977; Stern 2004), not because of this number.
+pub const CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR: f32 = 10.0;
+/// No plate may hold more than this share of the sphere. Inherited V5
+/// publication bound (evolved-tectonics-v5 design): Earth's largest plate,
+/// the Pacific, holds about a fifth of the surface (Bird 2003), and a
+/// single-plate Pangea with its shelves stayed below half. The opening
+/// supercontinent plate of dispersal-phase morphologies and terrane transfer
+/// both respect it.
+pub const MAXIMUM_PLATE_AREA_FRACTION: f64 = 0.45;
+/// Slab-pull force per metre of trench, toward subduction. Conrad &
+/// Lithgow-Bertelloni (2002) make slab pull the leading driving term (about
+/// half of net driving force). The unit is the solver's force scale against
+/// [`PLATE_OCEAN_BASAL_DRAG_PER_M2`]; G1e §9 R1 measured plates that descend
+/// somewhere at 16–74 mm/yr median (max 66–120) on the draft corpus, inside
+/// the MORVEL range (DeMets et al. 2010) with the fastest few at the cap.
+pub const PLATE_SLAB_PULL_FORCE_PER_M: f64 = 0.75;
+/// Ranking placeholder: slab-suction force per metre of trench acting on the
+/// overriding plate, directed toward the trench. Conrad & Lithgow-Bertelloni
+/// (2004, JGR 109, B10407) find slab suction comparable to direct slab pull in
+/// the Cenozoic torque budget and the main driver of plates without slabs; it
+/// is also what pulls a supercontinent apart toward its subduction girdle
+/// (Gurnis 1988). Two thirds of [`PLATE_SLAB_PULL_FORCE_PER_M`] keeps the
+/// pull the larger term; G1e §9 R1 measured overriding plates at 4–84 mm/yr.
+pub const PLATE_SLAB_SUCTION_FORCE_PER_M: f64 = 0.5;
+/// Ridge-push force per metre of spreading ridge, away from the ridge. Conrad
+/// & Lithgow-Bertelloni (2002) give ridge push about 5–10% of slab pull; 8% of
+/// [`PLATE_SLAB_PULL_FORCE_PER_M`].
+pub const PLATE_RIDGE_PUSH_FORCE_PER_M: f64 = 0.06;
+/// Oceanic basal-drag density in force per square metre per (metre/year).
+/// Forsyth & Uyeda (1975) put linear drag on the left-hand side of the torque
+/// balance. Together with [`PLATE_SLAB_PULL_FORCE_PER_M`] it sets the speed
+/// scale measured in G1e §9 R1.
+pub const PLATE_OCEAN_BASAL_DRAG_PER_M2: f64 = 1.0e-6;
+/// Continental basal-drag density. Forsyth & Uyeda (1975) find plates with
+/// continental lithosphere significantly slower; four times
+/// [`PLATE_OCEAN_BASAL_DRAG_PER_M2`] by ranking, not a fitted Earth-table copy.
+pub const PLATE_CONTINENT_BASAL_DRAG_PER_M2: f64 = 4.0e-6;
+
+/// Returns the asthenosphere mobility an authored activity level selects.
+///
+/// Plate speed is set by the balance between the boundary driving forces and
+/// the resisting basal drag (Forsyth & Uyeda 1975), and the first-order control
+/// on that drag is asthenosphere viscosity (Becker 2006, *GJI* 167, 943-957,
+/// DOI `10.1111/j.1365-246X.2006.03172.x`; Hoeink, Lenardic & Richards 2012,
+/// *GJI* 191, 30-41, DOI `10.1111/j.1365-246X.2012.05617.x`). The quasi-static
+/// balance is `M(drag) * omega = tau`, so dividing the drag densities by this
+/// factor scales the solved angular velocities by it directly, with no second
+/// mechanical path and no change to any force term.
+///
+/// `Moderate` is the Earth anchor: it is the calibration whose published
+/// subducting-plate speeds G1e section 9 R1 measured at a `9-74 mm/yr` median
+/// inside the MORVEL `10-100 mm/yr` band (DeMets, Gordon & Argus 2010). The
+/// other two levels halve and double it, well inside the order-of-magnitude
+/// spread the same asthenosphere-viscosity estimates carry. A world may sit
+/// off Earth's parameter values; the mechanism does not change with the level.
+pub const fn asthenosphere_mobility(activity: TectonicActivity) -> f64 {
+    match activity {
+        TectonicActivity::Quiet => 0.5,
+        TectonicActivity::Moderate => 1.0,
+        TectonicActivity::Active => 2.0,
+    }
+}
+/// Collision dashpot per metre of continent–continent convergent boundary in
+/// the coupled torque balance (G1e §3.3). Collision slows convergence without
+/// stopping it (India–Eurasia fell from about 150 to 40–50 mm/yr: Molnar &
+/// Stock 2009; Copley et al. 2010); G1e §9 R1 measured residual convergence
+/// at sutures of 1–25 mm/yr median on the draft corpus.
+pub const PLATE_COLLISION_RESISTANCE_PER_M: f64 = 60.0;
+/// Dashpot per metre of interplate convergent boundary whose descending
+/// candidate is still positively buoyant (Cloos 1993, younger than
+/// [`CLOOS_OCEANIC_NEGATIVE_BUOYANCY_AGE_MYR`]). Such a boundary can neither
+/// consume nor thicken, so the convergence must be resisted in the torque
+/// balance instead of being absorbed by resampling (G1e §3.3). Pinned as the
+/// smallest decade at which the coupled solve holds locked edges below the
+/// activity threshold: G1e §9 R1 measured 0–15 mm/yr median residual.
+pub const PLATE_LOCKED_MARGIN_RESISTANCE_PER_M: f64 = 2000.0;
 
 const PRAD_TO_RAD: f64 = 1.0e-12;
 const METERS_TO_MILLIMETERS: f64 = 1_000.0;
@@ -124,6 +205,61 @@ impl SphericalPlateRotation {
             });
         }
         Ok(())
+    }
+
+    /// Builds a rotation from an angular-velocity vector in radians per year.
+    ///
+    /// The pole follows \(\boldsymbol{\omega}\). Magnitude is clamped so local speed
+    /// stays inside [`MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SphericalTectonicValidationError::InvalidRadius`] when `radius`
+    /// is not finite and positive. Returns
+    /// [`SphericalTectonicValidationError::AngularRateOutOfRange`] when `omega`
+    /// is zero or non-finite.
+    pub fn from_angular_velocity_rad_per_year(
+        omega: [f64; 3],
+        radius: Meters,
+    ) -> Result<Self, SphericalTectonicValidationError> {
+        validate_radius(radius)?;
+        if omega.iter().any(|component| !component.is_finite()) {
+            return Err(SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            });
+        }
+        let magnitude = (omega[0] * omega[0] + omega[1] * omega[1] + omega[2] * omega[2]).sqrt();
+        if magnitude == 0.0 {
+            return Err(SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            });
+        }
+        let pole = UnitVector3::new(
+            omega[0] / magnitude,
+            omega[1] / magnitude,
+            omega[2] / magnitude,
+        )
+        .map_err(
+            |_| SphericalTectonicValidationError::AngularRateOutOfRange {
+                found: 0,
+                min: 1,
+                max: MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR,
+            },
+        )?;
+        let max_rate =
+            MAX_SPHERICAL_PLATE_SPEED_MM_PER_YEAR / (radius.get() * METERS_TO_MILLIMETERS);
+        let rate = magnitude.min(max_rate);
+        let prad = (rate / PRAD_TO_RAD)
+            .round()
+            .clamp(1.0, MAX_SPHERICAL_PLATE_ANGULAR_RATE_PRAD_PER_YEAR as f64)
+            as u64;
+        let rotation = Self::new(pole, prad)?;
+        rotation.validate_for_radius(radius)?;
+        Ok(rotation)
     }
 
     /// Derives the local tangent velocity from the shared Euler rotation.
@@ -1507,7 +1643,10 @@ pub enum SphericalTectonicValidationError {
 mod tests {
     use super::{
         deserialize_boundary_segments_with_limit, deserialize_spherical_boundaries_with_limit,
+        SphericalPlateRotation,
     };
+    use crate::world::spatial::UnitVector3;
+    use crate::world::Meters;
 
     #[test]
     fn edge_records_are_rejected_before_a_bounded_sequence_can_grow() {
@@ -1534,5 +1673,19 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("at most 2 are allowed"), "{error}");
+    }
+
+    #[test]
+    fn angular_velocity_vector_round_trips_inside_the_speed_envelope() {
+        let radius = Meters::new(6_371_000.0).unwrap();
+        let omega = [0.0, 0.0, 1.0e-8];
+        let rotation =
+            SphericalPlateRotation::from_angular_velocity_rad_per_year(omega, radius).unwrap();
+        let recovered = rotation.angular_velocity_vector_rad_per_year();
+        assert!((recovered[2] - 1.0e-8).abs() < 1.0e-14);
+        assert!(recovered[0].abs() < 1.0e-20);
+        assert!(recovered[1].abs() < 1.0e-20);
+        let pole = UnitVector3::new(0.0, 0.0, 1.0).unwrap();
+        assert_eq!(rotation.pole(), pole);
     }
 }

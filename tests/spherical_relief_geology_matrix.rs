@@ -9,6 +9,7 @@ use sekai::world::natural::{
     WorldFormationPreset, COMPONENT_IDENTITY_TOLERANCE_M, ELEVATION_MAX_M,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 #[derive(Clone, Copy)]
@@ -39,8 +40,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.42,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "3ef4de5cdbcd58cba8594785121b8a1d62f4820dcac61393b336803491752f84",
-        expected_geology_hash: "71c95e6a386f92d079e659fafec2456e279590fdce451f9e8c50baa20b4bed1f",
+        expected_relief_hash: "c99258b0705b8a48cf9a72ca95acb5d5c01fdc085951ed46918814ae61f8d17f",
+        expected_geology_hash: "c5ccd8f480946e532dec51709e68c62f7acb02c7af7de07d026918340b312d51",
     },
     MatrixCase {
         name: "regional-great-island",
@@ -53,8 +54,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.28,
         mantle_activity: MantleActivity::Active,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "068ec9890519d7d0ada69ba6774716857185f48ec8ad86b43355a76e2d2edb99",
-        expected_geology_hash: "1e54d0c63413ba41b1272bc30e421c13b9b7dd6290aeec075849fe35e0aae184",
+        expected_relief_hash: "6d596d846915ef7a57a01a7e80a0cdd5541e3b19a544192470a9facaff027201",
+        expected_geology_hash: "1c6a0012df3fe388772c737024c20c95ff6a49ff863486a914f8994216264594",
     },
     MatrixCase {
         name: "earth-continents",
@@ -67,8 +68,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.38,
         mantle_activity: MantleActivity::Moderate,
         mantle_bias: MantleFormationBias::Neutral,
-        expected_relief_hash: "6c69a7ae67325b5713bbdb30e2b6f9fd13317fb31655626dd8f13f332e79a91e",
-        expected_geology_hash: "32424b37f247a850a11227fca8972ec2a38b8dad26b6cbebbdf77cd86a6559b1",
+        expected_relief_hash: "77312515da4d079174d590b2a92321c5f6bc5e530c4eb66f554bbae022fd775e",
+        expected_geology_hash: "7f989b571d4e3b936b514055c1859159258d6c165a9a68415c6d29062b9f0120",
     },
     MatrixCase {
         name: "maximum-radius-volcanic",
@@ -81,8 +82,8 @@ const CASES: [MatrixCase; 4] = [
         continental_fraction: 0.16,
         mantle_activity: MantleActivity::Quiet,
         mantle_bias: MantleFormationBias::VolcanicIslands,
-        expected_relief_hash: "081b1352a5a40665517790cecfc7c8c27fe8a629de7ea228d868fa2f473cbbf9",
-        expected_geology_hash: "1f4835a164466c8d1a5fed033ba63312784df7606327bbc71fcb06248cf1552b",
+        expected_relief_hash: "b63696be8df24982366e153db92fb4caeaf1af6d9ef8114adfc433fefd244798",
+        expected_geology_hash: "f2e0c90eca739e96d6204de5575788773e900fe6dc62c065093a165df5cb0c26",
     },
 ];
 
@@ -247,8 +248,12 @@ fn spherical_relief_and_geology_scientific_deterministic_matrix() {
         actual_hashes.push((case, relief_hash, geology_hash));
     }
 
-    for (case, relief_hash, geology_hash) in actual_hashes {
-        assert_eq!(relief_hash, case.expected_relief_hash, "{}", case.name);
-        assert_eq!(geology_hash, case.expected_geology_hash, "{}", case.name);
+    if audited_float_platform() {
+        for (case, relief_hash, geology_hash) in actual_hashes {
+            assert_eq!(relief_hash, case.expected_relief_hash, "{}", case.name);
+            assert_eq!(geology_hash, case.expected_geology_hash, "{}", case.name);
+        }
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
     }
 }

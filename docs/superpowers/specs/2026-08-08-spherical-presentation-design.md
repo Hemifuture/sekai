@@ -178,7 +178,10 @@ SphericalPresentationSource
 
 - 长度和颜色由字段模长及显式显示范围确定；
 - 箭头朝向是权威向量方向；
-- 沿箭身移动的亮段／箭头相位显示流向；
+- 箭身是像素周期固定（8 px，占空比 5/8）的虚线，箭头是与投影箭身长度成比例
+  （35 %，钳于 3–10 px）的开口人字两笔；实心固定像素三角头在缩小时比箭身还大、
+  整屏只剩三角，已于 2026-09-02 按用户反馈废止；
+- 虚线沿箭身随相位漂移显示流向，不再叠加亮度脉冲；
 - 动画速度经有界可读性曲线映射，不宣称等于物理秒、季节或传播时间；
 - 暂停时保留静态方向和强度；
 - 动画开启时只更新相位 uniform，并请求下一帧，不重建或重传实例数组。
@@ -195,6 +198,22 @@ SphericalPresentationSource
 - LOD 只影响 glyph 实例缓存，不影响字段 payload、拾取或科学缓存。
 
 每帧不得扫描全部 cell 来重新决定 LOD。只有跨越离散缩放阈值时才重建实例集合。
+
+向量 glyph 的**摆放规则**（2026-09-02 修订，取代"抽样格心"）：
+
+- 锚点是规则格点，不是格心。二维地图用投影平面上以投影原点为基准的等距正交
+  格点（屏幕上严格等间距）；三维球体用纬线圈：纬线每隔一个弧长间距一条（不含
+  极点），每条纬线上按同一弧长等分经度，所以各处间距相同。
+- 每个锚点采样**最近格心**的权威向量（经纬桶索引；点积打平时取较小格元 id，
+  与离散拾取一致），箭头原点就是锚点，方向按该点的局部基／投影 Jacobian 映射。
+- 三档密度是格点间距 2^level 参考像素（高 16 / 中 32 / 低 64，参考画布
+  1280×720），缓存键是「档位 + ⌊log2(缩放)⌋ 带」，缩放每翻一倍间距减半；
+  2 的幂间距保证放大与调密都只在现有格点之间插入新格点，已有 glyph 不移位。
+- 间距永不小于平均格元间距，因此任何缩放下锚点数不超过格元数。
+- 选中 cell 仍额外在其格心画一支箭头。
+
+此前按 1/16、1/8、1/4 的格元份额哈希抽样：Goldberg 格心本身不规则，再经哈希
+抽稀后箭头平行成串、间距忽疏忽密，Standard 档一屏上万支，不可读。
 
 ## 6. 二维投影地图
 
@@ -564,3 +583,98 @@ S0C 只有在以下条件全部满足后完成：
 8. 新世界原子替换旧世界，任何失败都不混合来源或暴露半成品；
 9. 旧无标签状态进入明确 `LegacyPlanarV1`，只有显式重新生成才能成为球面世界；
 10. native、WASM、完整测试、严格 Clippy、GPU 抽查和 20k 性能门全部通过。
+
+## 17. 显式修订
+
+- **R1（2026-08-24，P5/Formation 应用发布事务）——应用装配层的四条发布不变量。**
+  §4.2「任何一步失败都保留上一份完整世界和显示包」与 §12 的恢复规则，在
+  `src/app.rs` 的世界构建装配路径上细化为下列四条不变量。它们全部由
+  `src/app.rs::natural_app_tests` 守门，此后任何静默变化都不允许。
+
+  1. **工作 cache 只在世界发布成功后提交。** Formation/P5 请求把已发布的
+     `MemoryStageCache` 分叉成工作副本，并保留发布快照；只有
+     `install_*` 返回 `Ok` 时工作副本才成为新的已发布 cache，失败、取消与
+     worker 线程意外终止一律回滚到保留快照。成功侧同样有守门：初始
+     （`replacement = false`）与替换（`replacement = true`）两条路径都必须经
+     完整 settle 证明工作副本确实成为新的已发布 cache。
+
+     回归断言分两档：**关键回滚路径**（初始安装失败、取消、render state 缺失）
+     用内容探针——以已发布种子重建并比对
+     `BuildReport::cache_hits()`／`cache_misses()`，证明回滚拿回的是同一份内容
+     而非同样长度的新壳；**其余路径**先断言工作副本严格长于发布副本，条目数
+     本身即可判别两者，不再重复内容探针。探针"确实命中"这一前提集中守在
+     `published_cache_hits` 内部而非各调用点：fixture 一旦漂移到零命中就立即
+     失败，不会退化成 `(0, n) == (0, n)` 的自证恒等式。Legacy 链路不在本事务
+     范围内，保持既有 move-through 行为。
+
+     **豁免：`formation_surface` 不在本事务内。** worker 借走的
+     `FormationSurfaceCacheEntry` 按 `(profile, radius_m)` 内容寻址（取用前一律
+     过 `formation_surface_key_is_stale`），是纯派生缓存：它不参与发布血缘，
+     不进入 artifact 指纹，参数变了就重建。因此取消、worker `Err` 与安装失败
+     三条路径都无条件回填它，省掉一次昂贵的测地面重建。这是刻意的不对称，
+     不是事务遗漏。
+  2. **初始与替换的 amplified 状态也只在对应发布成功后提交。**
+     `store_amplified_bundle` 与 `upload_amplified_display` 在初始安装路径上
+     必须排在 `PublishedSphericalPresentation::try_new` 成功之后，与替换路径
+     （`try_replace` 成功之后）的顺序一致。lineage、GPU 预检或交叉验证失败时，
+     不得留下 `amplified_mesh`、`amplified_map_projected`、`river_polylines`、
+     `river_radius_m` 或后台细节引擎。
+
+     由此得到的"没有后台错误源能覆盖安装错误"是**有限定的**，不是全局
+     性质：**初始路径**上它成立——初始安装之前本就没有发布，也就没有细节
+     引擎，失败后也没有新引擎被装上。**替换路径**不在此列：上一份发布的
+     细节引擎仍在运行。跨 pass 的覆盖仍可能发生（`poll_amplified_detail`
+     在 `update` 首行，后续 pass 里它的失败会写进同一个
+     `spherical_runtime_error`），这是既有行为，本条不作保证；**本 pass 内**
+     则不会，因为 world-build／安装错误在 `update` 的顺序上写在最后
+     （见第 4 条）。
+  3. **取消在 pointer-down 即线性化，keyboard clicked 仍然有效。**
+     egui 的 `Response::clicked()` 只在抬起 pass 触发，因此「按住取消不放」
+     的手势会被同一 pass 落地的 completion 抢先发布。取消按钮同时响应
+     `clicked()` 与 `is_pointer_button_down_on()`：指针按下即刻标记取消，
+     `clicked()` 保留键盘（Space／Enter）激活语义。不使用固定时间宽限，也不
+     使用魔法帧数。取消判定排在 render state 可用性检查之前——取消就是取消，
+     与是否存在 renderer 无关。
+
+     pointer-down 语义使取消**不可撤销**：按下的那一 pass 已经调用了
+     `BuildCancellation::cancel()`——不可逆的 `store(true)`，重复调用幂等——
+     取消在那一刻就已线性化。因此按下后拖出按钮再释放同样已取消，
+     此后按钮是否还认为自己被按住都改变不了这个结果。
+     GUI 常见的"按下后滑开以撤销"逃生口在这条路径上不适用，这是为消除
+     release-pass 竞态而明确接受的取舍。
+  4. **接收与结算之间必须隔着一个"取消按钮能处理输入"的 pass。**
+     这条不变量由两个互补的部件共同成立，缺一不可：
+
+     - **同-pass 禁止结算。** `PendingWorldBuild` 把 completion 与其入栈时的
+       `Context::cumulative_pass_nr()` 一并记录；只要当前 pass 号与入栈 pass
+       号相同就不结算。同一 pass 内被调用两次的 poll 只 stage、不结算。
+     - **`update` 内先画状态行、后 poll。** 结算所在的那个 pass 本身也可能带着
+       用户按下取消的事件，所以 `TemplateApp::update` 先绘制控制面板里的
+       `show_pending_world_build_status`（让状态行消费本 pass 的取消输入），
+       再调用 `poll_world_build`。若顺序相反，一次"物理按下发生在上一 pass
+       快照之后"的取消——其事件已经在本 pass 的 `RawInput` 里——会在按钮拿到
+       它之前就被结算吞掉，世界照常发布。
+
+     结算之后请求一次重绘：本 pass 的面板摘要是按结算前的世界画的，要下一
+     pass 才追上（画布在 poll 之后绘制，本 pass 即已是新世界）。worker 线程
+     意外终止的回滚同样请求一次重绘：它的错误消息也是在状态行画完之后才
+     写入，而此时 pending build 连同它的 150 ms 轮询计时器都已消失，没有别的
+     部件会再要求这一帧。此处同样不使用固定时间宽限，也不使用魔法帧数。
+
+  `cumulative_pass_nr` 只是**同-pass 防重计数器**，不是墙钟帧或时间保证：
+  egui 可以在一次 `Context::run` 内推进多个 pass。真实的「按住取消」手势由
+  第 3 条的 pointer-down 语义覆盖，不依赖此计数器。
+
+- **R2（2026-08-25，Task 0 继承基线的 Formation 字段身份）。** 本提交只把
+  已有 R4 基线变成可复现提交：Formation 字段文档的生产 binding 与 registry
+  schema 声明 `primary_relief_m`、`equilibrium_adjustment_m` 和八个具名当前过程率；
+  registry、binding 与中文本地化键必须使用同一组字段身份。该集合取代工作树
+  所基于 HEAD 中尚待后续恢复的九项累计组成，因此生产 registry 的规范序列化
+  摘要会因字段集合、
+  单位、依赖与显示元数据的真实变化而改变；直接 consumer 的 golden 只在逐项
+  核实 `ScalarF32` schema、`m`/`m/year` 单位和 localization key 后重钉。旧绝对
+  稳态在默认语料无域内解，Task 0 因而不以合成成功产物冒充真实 payload 物化；
+  默认成功 artifact 与真实字段值验证按恢复计划留给 Task 9/11。本条只记录
+  Task 0 的继承因果，不改变
+  `2026-08-24-geologic-pipeline-contract-restoration-design.md` §0.1(2) 对 Task 7
+  九项最终因果组成的恢复要求，也不提前实现该任务。

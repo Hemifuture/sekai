@@ -4,12 +4,14 @@ use thiserror::Error;
 
 use super::{
     TectonicSnapshot, AIR_TEMPERATURE_MAX_C, AIR_TEMPERATURE_MIN_C, ANNUAL_PRECIPITATION_MAX_MM,
-    CLIMATOLOGICAL_YEAR_SECONDS, CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M,
-    CRUST_BASE_ELEVATION_MIN_M, ELEVATION_MAX_M, ELEVATION_MIN_M, HEAT_FLOW_MAX_MW_M2,
-    HEAT_FLOW_MIN_MW_M2, MAX_DEPOSITION_THICKNESS_M, MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M,
-    MAX_PLATE_COUNT, MAX_STRAHLER_ORDER, MIN_PLATE_COUNT, OCEANIC_CRUST_MIN_THICKNESS_KM,
-    REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M, TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M,
-    TEMPERATURE_SEASONALITY_MAX_C, VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
+    CLIMATOLOGICAL_YEAR_SECONDS, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+    CONTINENTAL_CRUST_MAX_THICKNESS_KM, CRUST_BASE_ELEVATION_MAX_M, CRUST_BASE_ELEVATION_MIN_M,
+    ELEVATION_MAX_M, ELEVATION_MIN_M, GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2,
+    HEAT_FLOW_MAX_MW_M2, HEAT_FLOW_MIN_MW_M2, MAX_CRUST_AGE_MYR, MAX_DEPOSITION_THICKNESS_M,
+    MAX_EROSION_DEPTH_M, MAX_LAKE_DEPTH_M, MAX_PLATE_COUNT, MAX_STRAHLER_ORDER, MIN_PLATE_COUNT,
+    OCEANIC_CRUST_MIN_THICKNESS_KM, REGIONAL_OFFSET_MAX_M, REGIONAL_OFFSET_MIN_M,
+    TECTONIC_OFFSET_MAX_M, TECTONIC_OFFSET_MIN_M, TEMPERATURE_SEASONALITY_MAX_C,
+    VOLCANIC_OFFSET_MAX_M, VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::fields::{
     FieldDisplayMetadata, FieldDomain, FieldId, FieldPaletteHint, FieldRegistry,
@@ -46,6 +48,11 @@ pub fn crust_kind_field_id() -> FieldId {
 /// Returns the stable crust-thickness field ID.
 pub fn crust_thickness_field_id() -> FieldId {
     field_id("crust_thickness_km")
+}
+
+/// Returns the stable oceanic-crust-age field ID.
+pub fn ocean_age_myr_field_id() -> FieldId {
+    field_id("ocean_age_myr")
 }
 
 /// Returns the stable per-cell plate-velocity field ID.
@@ -804,9 +811,69 @@ pub fn isostatic_response_m_field_id() -> FieldId {
     field_id("isostatic_response_m")
 }
 
+/// Returns the stable P5 current tectonic displacement-rate field ID.
+pub fn tectonic_displacement_rate_m_per_year_field_id() -> FieldId {
+    field_id("tectonic_displacement_rate_m_per_year")
+}
+
+/// Returns the stable P5 current fluvial erosion-rate field ID.
+pub fn fluvial_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("fluvial_erosion_rate_m_per_year")
+}
+
+/// Returns the stable P5 current hillslope erosion-rate field ID.
+pub fn hillslope_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("hillslope_erosion_rate_m_per_year")
+}
+
+/// Returns the stable P5 current hillslope deposition-rate field ID.
+pub fn hillslope_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("hillslope_deposition_rate_m_per_year")
+}
+
+/// Returns the stable P5 current routed-sediment deposition-rate field ID.
+pub fn routed_sediment_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("routed_sediment_deposition_rate_m_per_year")
+}
+
+/// Returns the stable P5 current coastal erosion-rate field ID.
+pub fn coastal_erosion_rate_m_per_year_field_id() -> FieldId {
+    field_id("coastal_erosion_rate_m_per_year")
+}
+
+/// Returns the stable P5 current coastal deposition-rate field ID.
+pub fn coastal_deposition_rate_m_per_year_field_id() -> FieldId {
+    field_id("coastal_deposition_rate_m_per_year")
+}
+
+/// Returns the stable P5 current isostatic response-rate field ID.
+pub fn isostatic_response_rate_m_per_year_field_id() -> FieldId {
+    field_id("isostatic_response_rate_m_per_year")
+}
+
 /// Returns the stable P4 circulation annual precipitation field ID.
 pub fn circulation_annual_precipitation_mm_field_id() -> FieldId {
     field_id("circulation_annual_precipitation_mm")
+}
+
+/// Returns the stable P4 circulation annual evaporation field ID.
+pub fn circulation_annual_evaporation_mm_field_id() -> FieldId {
+    field_id("circulation_annual_evaporation_mm")
+}
+
+/// Returns the stable P4 annual-mean absorbed-shortwave field ID.
+pub fn circulation_mean_absorbed_shortwave_w_m2_field_id() -> FieldId {
+    field_id("circulation_mean_absorbed_shortwave_w_m2")
+}
+
+/// Returns the stable P4 annual-mean outgoing-longwave field ID.
+pub fn circulation_mean_outgoing_longwave_w_m2_field_id() -> FieldId {
+    field_id("circulation_mean_outgoing_longwave_w_m2")
+}
+
+/// Returns the stable P4 resolved surface-albedo field ID.
+pub fn circulation_surface_albedo_field_id() -> FieldId {
+    field_id("circulation_surface_albedo")
 }
 
 /// Returns the stable P4 circulation mean air temperature field ID.
@@ -867,6 +934,7 @@ fn formation_schemas(
     let plate_id = plate_id_field_id();
     let crust_kind = crust_kind_field_id();
     let crust_thickness = crust_thickness_field_id();
+    let ocean_age = ocean_age_myr_field_id();
     let primary_elevation = primary_elevation_m_field_id();
     let tectonic_displacement = tectonic_displacement_m_field_id();
     let fluvial_erosion_depth = fluvial_erosion_depth_m_field_id();
@@ -876,12 +944,24 @@ fn formation_schemas(
     let coastal_erosion = coastal_erosion_m_field_id();
     let coastal_deposition = coastal_deposition_m_field_id();
     let isostatic_response = isostatic_response_m_field_id();
+    let tectonic_displacement_rate = tectonic_displacement_rate_m_per_year_field_id();
+    let fluvial_erosion_rate = fluvial_erosion_rate_m_per_year_field_id();
+    let hillslope_erosion_rate = hillslope_erosion_rate_m_per_year_field_id();
+    let hillslope_deposition_rate = hillslope_deposition_rate_m_per_year_field_id();
+    let routed_sediment_deposition_rate = routed_sediment_deposition_rate_m_per_year_field_id();
+    let coastal_erosion_rate = coastal_erosion_rate_m_per_year_field_id();
+    let coastal_deposition_rate = coastal_deposition_rate_m_per_year_field_id();
+    let isostatic_response_rate = isostatic_response_rate_m_per_year_field_id();
     let sediment_deposition_thickness = sediment_deposition_thickness_m_field_id();
     let surface_elevation = surface_elevation_m_field_id();
     let land_ocean = land_ocean_field_id();
+    let annual_evaporation = circulation_annual_evaporation_mm_field_id();
     let annual_precipitation = circulation_annual_precipitation_mm_field_id();
+    let mean_absorbed_shortwave = circulation_mean_absorbed_shortwave_w_m2_field_id();
     let mean_air_temperature = circulation_mean_air_temperature_c_field_id();
+    let mean_outgoing_longwave = circulation_mean_outgoing_longwave_w_m2_field_id();
     let prevailing_wind = circulation_prevailing_wind_m_s_field_id();
+    let surface_albedo = circulation_surface_albedo_field_id();
     let annual_local_runoff = annual_local_runoff_mm_field_id();
     let lake_depth = lake_depth_m_field_id();
     let surface_water_kind = surface_water_kind_field_id();
@@ -916,6 +996,16 @@ fn formation_schemas(
             custom_unit("kilometer", "km"),
             OCEANIC_CRUST_MIN_THICKNESS_KM,
             CONTINENTAL_CRUST_MAX_THICKNESS_KM,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![crust_kind.clone()],
+        )?,
+        scalar_schema(
+            ocean_age,
+            FieldDomain::Cells,
+            custom_unit("million-year", "Myr"),
+            CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
+            MAX_CRUST_AGE_MYR,
             FieldPaletteHint::Sequential,
             1,
             vec![crust_kind.clone()],
@@ -1010,6 +1100,70 @@ fn formation_schemas(
             1,
             vec![fluvial_erosion_depth.clone()],
         )?,
+        unbounded_scalar_schema(
+            tectonic_displacement_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Diverging,
+            4,
+            vec![plate_id.clone()],
+        )?,
+        unbounded_scalar_schema(
+            fluvial_erosion_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            4,
+            vec![primary_elevation.clone()],
+        )?,
+        unbounded_scalar_schema(
+            hillslope_erosion_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            4,
+            vec![primary_elevation.clone()],
+        )?,
+        unbounded_scalar_schema(
+            hillslope_deposition_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            4,
+            vec![hillslope_erosion_rate.clone()],
+        )?,
+        unbounded_scalar_schema(
+            routed_sediment_deposition_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            4,
+            vec![fluvial_erosion_rate.clone()],
+        )?,
+        unbounded_scalar_schema(
+            coastal_erosion_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            6,
+            vec![primary_elevation.clone()],
+        )?,
+        unbounded_scalar_schema(
+            coastal_deposition_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Sequential,
+            6,
+            vec![coastal_erosion_rate.clone()],
+        )?,
+        unbounded_scalar_schema(
+            isostatic_response_rate.clone(),
+            FieldDomain::Cells,
+            custom_unit("meter-per-year", "m/year"),
+            FieldPaletteHint::Diverging,
+            6,
+            vec![fluvial_erosion_rate.clone()],
+        )?,
         scalar_schema(
             sediment_deposition_thickness.clone(),
             FieldDomain::Cells,
@@ -1033,8 +1187,14 @@ fn formation_schemas(
             0,
             vec![
                 primary_elevation.clone(),
-                fluvial_erosion_depth.clone(),
-                sediment_deposition_thickness.clone(),
+                tectonic_displacement,
+                fluvial_erosion_depth,
+                hillslope_erosion,
+                hillslope_deposition,
+                routed_sediment_deposition,
+                coastal_erosion,
+                coastal_deposition,
+                isostatic_response,
             ],
         )?,
         category_schema_with_palette(
@@ -1047,15 +1207,31 @@ fn formation_schemas(
             vec![surface_elevation.clone()],
             FieldPaletteHint::LandOcean,
         )?,
-        scalar_schema(
+        unbounded_scalar_schema(
+            annual_evaporation,
+            FieldDomain::Cells,
+            custom_unit("millimeter-per-year", "mm/year"),
+            FieldPaletteHint::Sequential,
+            0,
+            vec![land_ocean.clone()],
+        )?,
+        unbounded_scalar_schema(
             annual_precipitation.clone(),
             FieldDomain::Cells,
             custom_unit("millimeter-per-year", "mm/year"),
-            0.0,
-            ANNUAL_PRECIPITATION_MAX_MM,
             FieldPaletteHint::Sequential,
             0,
             Vec::new(),
+        )?,
+        scalar_schema(
+            mean_absorbed_shortwave.clone(),
+            FieldDomain::Cells,
+            custom_unit("watt-per-square-meter", "W/m²"),
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![surface_albedo.clone()],
         )?,
         scalar_schema(
             mean_air_temperature.clone(),
@@ -1067,10 +1243,30 @@ fn formation_schemas(
             1,
             Vec::new(),
         )?,
+        scalar_schema(
+            mean_outgoing_longwave,
+            FieldDomain::Cells,
+            custom_unit("watt-per-square-meter", "W/m²"),
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            FieldPaletteHint::Sequential,
+            1,
+            vec![mean_absorbed_shortwave, mean_air_temperature],
+        )?,
         vector_schema(
             prevailing_wind.clone(),
             custom_unit("meter-per-second", "m/s"),
             Vec::new(),
+        )?,
+        scalar_schema(
+            surface_albedo,
+            FieldDomain::Cells,
+            FieldUnit::Unitless,
+            0.0,
+            1.0,
+            FieldPaletteHint::Sequential,
+            3,
+            vec![land_ocean.clone(), surface_elevation.clone()],
         )?,
         scalar_schema(
             annual_local_runoff.clone(),
@@ -1231,6 +1427,27 @@ fn scalar_schema(
         value_type: FieldValueType::ScalarF32,
         unit,
         valid_range: Some(ValueRange::new(min, max)?),
+        missing: MissingValuePolicy::Forbidden,
+        dependencies,
+        category_labels: BTreeMap::new(),
+    })
+}
+
+fn unbounded_scalar_schema(
+    id: FieldId,
+    domain: FieldDomain,
+    unit: FieldUnit,
+    palette: FieldPaletteHint,
+    decimal_places: u8,
+    dependencies: Vec<FieldId>,
+) -> Result<FieldSchema, FieldSchemaError> {
+    Ok(FieldSchema {
+        display: display(&id, palette, decimal_places)?,
+        id,
+        domain,
+        value_type: FieldValueType::ScalarF32,
+        unit,
+        valid_range: None,
         missing: MissingValuePolicy::Forbidden,
         dependencies,
         category_labels: BTreeMap::new(),

@@ -74,6 +74,7 @@ pub fn build_fixture(
         land_fraction,
         surface_albedo,
         surface_moisture_availability,
+        vec![[240.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
         equilibrium_air_temperature_c,
         equilibrium_surface_temperature_c,
         equilibrium_specific_humidity,

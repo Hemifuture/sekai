@@ -401,3 +401,24 @@ state, and the complete checkpoint identity.
   4,263）；P3 海面 −78.6 m、P5 海面 −68.4 m、P3 陆地 0.2145。
 - 语料测高中位（P5 产物）：p05/p25/p50/p75/p95 = 101/335/675/1136/2269 m，
   均值 842 m，<100 m 份额 0.049，洋深 p50 3995 m。
+
+## 12. T0b 陆地占比驱动修订（2026-08-22）
+
+P5 方程与输入 wire 零改动；它继续只消费 P3 快照既有的
+`water_inventory_m3`，因此目标模式反推的隐含水量自然守恒到形成终态。
+默认 `WaterInventory` seed 42 工件仍逐位为
+`83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90`，
+checkpoint / state 指纹仍为
+`a980562acf3d0c1186f0c8245a45e68189e235692507e7736ba06a2a4398ed14` /
+`9c8cc9ebc2d0463c553bf416046ce6b0e047f081a841a94c952dc67a864cf12f`。
+
+目标模式新证据采用 Continents、seed 42、目标 0.38。P3 隐含水量比
+`0.693323320384 × 地球` 原样进入 P5；终态海面 `−1227.130127 m`、陆地占比
+`0.379413068`，相对 P3 的陆比漂移约 `0.000634`，通过既有
+`final-land-fraction-absolute-change <= 0.01` 门禁。P5 工件 BLAKE3 为
+`95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8`。
+
+应用呈现从同一已验证 P3 工件推导 `FormationAreaSummary::water_inventory_ratio`；
+左侧面板提供“陆壳比例 / 陆地占比”驱动、互斥锁定值、海水量摘要，以及只提示
+不钳制的建议带与洋底露出信息。算法由此完成 UI 交付边界，最终视觉验收仍由
+用户按 T0b 规格 §7 执行。

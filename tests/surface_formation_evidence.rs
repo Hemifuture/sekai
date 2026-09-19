@@ -1,33 +1,45 @@
+mod support;
+
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Instant;
 
-use sekai::engine::{
-    derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
-};
+use sekai::engine::{Artifact, BuildCancellation};
 use sekai::generators::natural::{
-    evaluate_surface_formation_corpus_hypsometry, ClimateWorkDomainBuilder,
-    EvolvedTectonicGenerator, GeologicSubstrateGenerator, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, NaturalSurfaceFormationArtifact, PrimaryReliefGenerator,
-    SurfaceFormationInputs,
+    evaluate_surface_formation_corpus_hypsometry, NaturalFormationBundleArtifact,
 };
-use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
+use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, HydroErosionSpec,
-    NaturalQualityProfile, NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricStatus,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    NaturalQualityProfile, NaturalQualityReport, QualityMetricStatus, SurfaceFormationModelId,
 };
-use sekai::world::{Meters, RootSeed};
+use sekai::world::Meters;
 use serde::Serialize;
 
+use support::causal_formation::build_causal_formation;
+
 const RADIUS_M: f64 = 6_371_000.0;
-/// Envelope rows the frozen T0 calibration spec records as open (§11.3 R4):
-/// their corpus medians are written to the evidence but not asserted. Both
-/// are the lowest land: the P3 product meets them (p05 60 m, share 0.087) and
-/// the first 100 kyr of P5 deposition raise the coastal cells by ~40 m.
-const OPEN_ENVELOPE_ROWS: [&str; 2] = [
+/// Envelope rows whose corpus medians are written to the evidence but not
+/// asserted, because they measure the P3 land-elevation distribution rather
+/// than anything P5 owns.
+///
+/// The first two were already recorded as open by the frozen T0 calibration
+/// spec (§11.3 R4). The two quartile rows joined them on 2026-09-02 (audit
+/// remediation A0 tasks 3/7/9) once P5's denudation was pinned against
+/// observation: at the calibrated `50 m/Myr` the frozen `100 kyr` horizon
+/// removes about five metres, which cannot move a median of hundreds of
+/// metres in any direction. Their earlier pass was an artefact of a
+/// stream-power erodibility an order of magnitude above every observational
+/// compilation, whose excess was invisible only while `V_eff = 0` exported the
+/// whole eroded mass to the ocean; that combination was acting as an
+/// undeclared hypsometric corrector for an upstream cause. All four rows fail
+/// in the same direction - too little low land - and belong to the continental
+/// margin milestone in `2026-08-26-natural-geography-short-horizon-roadmap.md`
+/// §G3.
+const OPEN_ENVELOPE_ROWS: [&str; 4] = [
     "corpus-median-land-area-share-below-100m",
     "corpus-median-land-relief-p05-m",
+    "corpus-median-land-relief-p25-m",
+    "corpus-median-land-relief-p50-m",
 ];
 const SEEDS: [u64; 17] = [
     42, 3, 7, 11, 19, 23, 29, 31, 43, 47, 59, 61, 71, 73, 83, 89, 97,
@@ -37,9 +49,7 @@ const SEEDS: [u64; 17] = [
 struct P5Evidence {
     schema_version: u16,
     profile: NaturalQualityProfile,
-    model: &'static str,
-    horizon_years: f64,
-    macro_step_years: f64,
+    model: SurfaceFormationModelId,
     algorithm_references: Vec<&'static str>,
     procedural_closures: Vec<&'static str>,
     retired_baseline: RetiredBaseline,
@@ -73,28 +83,31 @@ struct SeedEvidence {
     checkpoint_fingerprint: String,
     state_fingerprint: String,
     primary_sea_level_m: f32,
-    final_sea_level_m: f32,
+    current_sea_level_m: f32,
     primary_land_fraction: f32,
-    outer_iterations: u8,
-    geomorphic_macro_steps: u16,
-    final_elevation_rms_m: f64,
-    final_receiver_changed_fraction: f64,
-    final_log_discharge_rms: f64,
-    final_sediment_thickness_rms_m: f64,
-    final_coastline_area_changed_fraction: f64,
-    final_normalized_residual: f64,
+    accepted_surface_substeps: u32,
+    integrated_duration_years: f64,
+    terminal_net_surface_rate_rms_m_per_year: f64,
+    terminal_gross_surface_rate_rms_m_per_year: f64,
+    terminal_local_surface_flux_imbalance_ratio: f64,
+    terminal_mean_elevation_rate_m_per_year: f64,
+    terminal_mean_elevation_flux_balance_ratio: f64,
+    terminal_rms_relief_rate_m_per_year: f64,
+    terminal_rms_relief_flux_balance_ratio: f64,
+    terminal_sediment_stock_change_kg_per_year: f64,
+    terminal_sediment_stock_change_ratio: f64,
     dense_state_bytes: u64,
-    produced_sediment_mass_kg: f64,
-    land_lake_deposited_mass_kg: f64,
-    shelf_deposited_mass_kg: f64,
-    deep_ocean_delivery_mass_kg: f64,
+    produced_sediment_kg_per_year: f64,
+    land_lake_deposition_kg_per_year: f64,
+    shelf_deposition_kg_per_year: f64,
+    deep_ocean_export_kg_per_year: f64,
     sediment_global_relative_error: f64,
     sediment_provenance_relative_error: f64,
-    mean_fluvial_erosion_m: f64,
-    mean_hillslope_erosion_m: f64,
-    mean_routed_deposition_m: f64,
-    mean_coastal_erosion_m: f64,
-    mean_absolute_isostatic_response_m: f64,
+    mean_fluvial_erosion_rate_m_per_year: f64,
+    mean_hillslope_erosion_rate_m_per_year: f64,
+    mean_routed_deposition_rate_m_per_year: f64,
+    mean_coastal_erosion_rate_m_per_year: f64,
+    mean_absolute_isostatic_response_rate_m_per_year: f64,
     basin_count: usize,
     lake_count: usize,
     river_segment_count: usize,
@@ -121,8 +134,7 @@ struct CorpusMetricEvidence {
 }
 
 struct GeneratedWorld {
-    relief: PrimaryReliefSnapshot,
-    artifact: NaturalSurfaceFormationArtifact,
+    artifact: Arc<NaturalFormationBundleArtifact>,
 }
 
 #[test]
@@ -137,22 +149,23 @@ fn write_surface_formation_evidence() {
     )
     .unwrap();
     let surface = bundle.authoritative_surface();
-    let domain =
-        ClimateWorkDomainBuilder::build(surface, NaturalQualityProfile::Draft, &cancellation)
-            .unwrap();
-
     let mut worlds = Vec::new();
     for seed in SEEDS {
-        let world = generate_world(&bundle, &domain, seed);
-        let report = world.artifact.snapshot().solve_report();
+        let world = generate_world(surface, seed);
+        let report = world
+            .artifact
+            .bundle()
+            .surface_formation()
+            .evolution_report();
         eprintln!(
-            "P5 evidence seed={seed} iterations={} residual={:.6}",
-            report.outer_iterations(),
-            report.final_residual().normalized_max()
+            "P5 evidence seed={seed} substeps={} duration={} years",
+            report.accepted_surface_substeps(),
+            report.integrated_duration_years()
         );
         for metric in world
             .artifact
-            .quality_report()
+            .bundle()
+            .surface_quality()
             .metrics()
             .iter()
             .filter(|metric| metric.status() != QualityMetricStatus::Pass)
@@ -173,7 +186,8 @@ fn write_surface_formation_evidence() {
         assert!(
             world
                 .artifact
-                .quality_report()
+                .bundle()
+                .surface_quality()
                 .metrics()
                 .iter()
                 .all(|metric| metric.status() == QualityMetricStatus::Pass),
@@ -183,10 +197,20 @@ fn write_surface_formation_evidence() {
         seeds.push(seed_evidence(surface, seed, world));
     }
 
-    let repeated = generate_world(&bundle, &domain, SEEDS[0]);
+    let repeated = generate_world(surface, SEEDS[0]);
     assert_eq!(
-        worlds[0].artifact.snapshot().checkpoint().fingerprint(),
-        repeated.artifact.snapshot().checkpoint().fingerprint()
+        worlds[0]
+            .artifact
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .fingerprint(),
+        repeated
+            .artifact
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .fingerprint()
     );
     assert_eq!(worlds[0].artifact, repeated.artifact);
 
@@ -197,7 +221,7 @@ fn write_surface_formation_evidence() {
     let corpus_hypsometry = evaluate_surface_formation_corpus_hypsometry(
         &worlds
             .iter()
-            .map(|world| world.artifact.quality_report().clone())
+            .map(|world| world.artifact.bundle().surface_quality().clone())
             .collect::<Vec<_>>(),
     )
     .unwrap();
@@ -225,27 +249,26 @@ fn write_surface_formation_evidence() {
     );
 
     let evidence = P5Evidence {
-        schema_version: 1,
+        schema_version: 2,
         profile: NaturalQualityProfile::Draft,
-        model: "priority-flood-fastscape-sediment-hillslope-coast-isostasy-v1",
-        horizon_years: sekai::world::natural::SURFACE_FORMATION_HORIZON_YEARS,
-        macro_step_years: sekai::world::natural::SURFACE_FORMATION_MACRO_STEP_YEARS,
+        model:
+            SurfaceFormationModelId::PriorityFloodFastscapeDavyLagueHillslopeCoastIsostasyFiniteTimeV4,
         algorithm_references: vec![
             "barnes-lehman-mulla-priority-flood",
             "braun-willett-o-n-implicit-downstream-stack-stream-power",
             "cordonnier-drainage-uplift-stream-power-coupling",
             "roering-kirchner-dietrich-nonlinear-hillslope-transport",
-            "davy-lague-yuan-explicit-erosion-transport-deposition",
+            "davy-lague-landlab-analytic-erosion-deposition-continuity",
         ],
         procedural_closures: vec![
             "bounded-effective-formation-runoff-proxy",
             "bounded-annual-formation-precipitation-envelope",
             "thousand-year-endorheic-residence-horizon",
             "irregular-spherical-finite-volume-paired-hillslope-mass-packet",
-            "capacity-limited-five-source-provenance-ledger",
+            "current-annual-five-source-provenance-ledger",
             "map-scale-wind-current-coastal-exposure",
             "local-airy-loading-response-without-elastic-flexure",
-            "bounded-four-iteration-climate-surface-fixed-point",
+            "finite-physical-time-held-tectonic-forcing",
         ],
         retired_baseline: retired_baseline(),
         radius_m: RADIUS_M,
@@ -288,11 +311,6 @@ fn retired_baseline() -> RetiredBaseline {
                          separate causal elevation components P5 must reconstruct",
             },
             UnreportableGate {
-                metric: "fixed-point-normalized-residual",
-                reason: "the two-pass modifier runs exactly one erosion pass between two \
-                         hydrology solves and has no climate-surface fixed point",
-            },
-            UnreportableGate {
                 metric: "provenance-mass-relative-error",
                 reason: "the two-pass sediment ledger carries no five-source provenance",
             },
@@ -315,128 +333,79 @@ fn seed_evidence(
     seed: u64,
     world: &GeneratedWorld,
 ) -> SeedEvidence {
-    let snapshot = world.artifact.snapshot();
+    let bundle = world.artifact.bundle();
+    let snapshot = bundle.surface_formation();
     let terrain = snapshot.terrain_fields();
-    let components = terrain.elevation_components();
+    let rates = snapshot.process_rates();
     let budget = snapshot.sediment_budget_report();
-    let residual = snapshot.solve_report().final_residual();
-    let bytes = serde_json::to_vec(&world.artifact).unwrap();
+    let report = snapshot.evolution_report();
+    let residual = report.current_rates();
+    let bytes = serde_json::to_vec(world.artifact.as_ref()).unwrap();
     SeedEvidence {
         seed,
         artifact_json_bytes: bytes.len(),
         artifact_json_hash: blake3::hash(&bytes).to_hex().to_string(),
         checkpoint_fingerprint: hex(*snapshot.checkpoint().fingerprint()),
         state_fingerprint: hex(*snapshot.checkpoint().state_fingerprint()),
-        primary_sea_level_m: world.relief.sea_level_m(),
-        final_sea_level_m: terrain.sea_level_m(),
-        primary_land_fraction: world.relief.physical_land_fraction(),
-        outer_iterations: snapshot.solve_report().outer_iterations(),
-        geomorphic_macro_steps: snapshot.solve_report().geomorphic_macro_steps(),
-        final_elevation_rms_m: residual.elevation_rms_m(),
-        final_receiver_changed_fraction: residual.receiver_changed_fraction(),
-        final_log_discharge_rms: residual.log_discharge_rms(),
-        final_sediment_thickness_rms_m: residual.sediment_thickness_rms_m(),
-        final_coastline_area_changed_fraction: residual.coastline_area_changed_fraction(),
-        final_normalized_residual: residual.normalized_max(),
-        dense_state_bytes: snapshot.solve_report().dense_state_bytes(),
-        produced_sediment_mass_kg: budget.produced_mass_kg(),
-        land_lake_deposited_mass_kg: budget.land_lake_deposited_mass_kg(),
-        shelf_deposited_mass_kg: budget.shelf_deposited_mass_kg(),
-        deep_ocean_delivery_mass_kg: budget.deep_ocean_delivery_mass_kg(),
+        primary_sea_level_m: bundle.primary_relief().sea_level_m(),
+        current_sea_level_m: terrain.sea_level_m(),
+        primary_land_fraction: bundle.primary_relief().physical_land_fraction(),
+        accepted_surface_substeps: report.accepted_surface_substeps(),
+        integrated_duration_years: report.integrated_duration_years(),
+        terminal_net_surface_rate_rms_m_per_year: residual.net_surface_rate_rms_m_per_year(),
+        terminal_gross_surface_rate_rms_m_per_year: residual.gross_surface_rate_rms_m_per_year(),
+        terminal_local_surface_flux_imbalance_ratio: residual.local_surface_flux_imbalance_ratio(),
+        terminal_mean_elevation_rate_m_per_year: residual.mean_elevation_rate_m_per_year(),
+        terminal_mean_elevation_flux_balance_ratio: residual.mean_elevation_flux_balance_ratio(),
+        terminal_rms_relief_rate_m_per_year: residual.rms_relief_rate_m_per_year(),
+        terminal_rms_relief_flux_balance_ratio: residual.rms_relief_flux_balance_ratio(),
+        terminal_sediment_stock_change_kg_per_year: residual.sediment_stock_change_kg_per_year(),
+        terminal_sediment_stock_change_ratio: residual.sediment_stock_change_ratio(),
+        dense_state_bytes: report.dense_state_bytes(),
+        produced_sediment_kg_per_year: budget.produced_mass_kg_per_year(),
+        land_lake_deposition_kg_per_year: budget.land_lake_deposition_kg_per_year(),
+        shelf_deposition_kg_per_year: budget.shelf_deposition_kg_per_year(),
+        deep_ocean_export_kg_per_year: budget.deep_ocean_export_kg_per_year(),
         sediment_global_relative_error: budget.global_relative_error(),
         sediment_provenance_relative_error: budget
             .provenance_relative_errors()
             .iter()
             .copied()
             .fold(0.0_f64, f64::max),
-        mean_fluvial_erosion_m: area_mean(surface, components.fluvial_erosion_m()),
-        mean_hillslope_erosion_m: area_mean(surface, components.hillslope_erosion_m()),
-        mean_routed_deposition_m: area_mean(surface, components.routed_sediment_deposition_m()),
-        mean_coastal_erosion_m: area_mean(surface, components.coastal_erosion_m()),
-        mean_absolute_isostatic_response_m: area_mean_abs(
+        mean_fluvial_erosion_rate_m_per_year: area_mean(
             surface,
-            components.isostatic_response_m(),
+            rates.fluvial_erosion_rate_m_per_year(),
+        ),
+        mean_hillslope_erosion_rate_m_per_year: area_mean(
+            surface,
+            rates.hillslope_erosion_rate_m_per_year(),
+        ),
+        mean_routed_deposition_rate_m_per_year: area_mean(
+            surface,
+            rates.routed_sediment_deposition_rate_m_per_year(),
+        ),
+        mean_coastal_erosion_rate_m_per_year: area_mean(
+            surface,
+            rates.coastal_erosion_rate_m_per_year(),
+        ),
+        mean_absolute_isostatic_response_rate_m_per_year: area_mean_abs(
+            surface,
+            rates.isostatic_response_rate_m_per_year(),
         ),
         basin_count: snapshot.hydrology().basins().len(),
         lake_count: snapshot.hydrology().lakes().len(),
         river_segment_count: snapshot.hydrology().river_segments().len(),
-        metrics: metric_evidence(world.artifact.quality_report()),
+        metrics: metric_evidence(bundle.surface_quality()),
     }
 }
 
 fn generate_world(
-    bundle: &ProfileSurfaceBundle,
-    domain: &ClimateWorkDomainSnapshot,
+    surface: &sekai::world::spatial::SphericalSurfaceSnapshot,
     seed: u64,
 ) -> GeneratedWorld {
-    let cancellation = BuildCancellation::new();
-    let surface = bundle.authoritative_surface();
-    let formation = ResolvedWorldFormation::new(
-        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
-        WorldFormationPreset::Continents,
-        ResolvedWorldFormationPreset::Continents,
-    )
-    .unwrap();
-    let mut evolved_rng = stage_rng(seed, "natural.evolved-tectonics", 5);
-    let evolved = EvolvedTectonicGenerator::generate(
-        bundle,
-        &TectonicSpec::default(),
-        &formation,
-        &mut evolved_rng,
-    )
-    .unwrap();
-    let mut substrate_rng = stage_rng(seed, "natural.geologic-substrate", 1);
-    let substrate = GeologicSubstrateGenerator::generate(
-        surface,
-        &evolved,
-        &GeologicSpec::default(),
-        &formation,
-        &mut substrate_rng,
-    )
-    .unwrap();
-    let mut relief_rng = stage_rng(seed, "natural.primary-relief", 1);
-    let mut diagnostics = Vec::<Diagnostic>::new();
-    let relief = PrimaryReliefGenerator::generate(
-        surface,
-        &evolved,
-        &substrate,
-        &ReliefSpec::default(),
-        &mut relief_rng,
-        &mut diagnostics,
-    )
-    .unwrap();
-    let forcing = GlobalClimateForcingBuilder::build(
-        surface,
-        &relief,
-        &ClimateSpec::default(),
-        domain,
-        &cancellation,
-    )
-    .unwrap();
-    let initial_climate = GlobalCirculationGenerator::generate(
-        surface,
-        domain,
-        &forcing,
-        ClimateModelProfile::C2LayeredV1,
-        &cancellation,
-    )
-    .unwrap();
-    let artifact = NaturalSurfaceFormationArtifact::generate(
-        SurfaceFormationInputs {
-            surface,
-            quality_profile: NaturalQualityProfile::Draft,
-            tectonics: &evolved,
-            substrate: &substrate,
-            relief: &relief,
-            domain,
-            climate_spec: &ClimateSpec::default(),
-            initial_climate: &initial_climate,
-            formation_spec: &HydroErosionSpec::default(),
-        },
-        &cancellation,
-    )
-    .unwrap();
-    GeneratedWorld { relief, artifact }
+    GeneratedWorld {
+        artifact: build_causal_formation(surface, NaturalQualityProfile::Draft, seed),
+    }
 }
 
 fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {
@@ -460,7 +429,7 @@ fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {
 }
 
 fn corpus_metric_evidence(worlds: &[GeneratedWorld]) -> Vec<CorpusMetricEvidence> {
-    let first = worlds[0].artifact.quality_report();
+    let first = worlds[0].artifact.bundle().surface_quality();
     first
         .metrics()
         .iter()
@@ -468,12 +437,14 @@ fn corpus_metric_evidence(worlds: &[GeneratedWorld]) -> Vec<CorpusMetricEvidence
         .map(|(index, metric)| {
             let values = worlds
                 .iter()
-                .filter_map(|world| world.artifact.quality_report().metrics()[index].value())
+                .filter_map(|world| {
+                    world.artifact.bundle().surface_quality().metrics()[index].value()
+                })
                 .collect::<Vec<_>>();
             let passing = worlds
                 .iter()
                 .filter(|world| {
-                    world.artifact.quality_report().metrics()[index].status()
+                    world.artifact.bundle().surface_quality().metrics()[index].status()
                         == QualityMetricStatus::Pass
                 })
                 .count();
@@ -496,30 +467,39 @@ fn render_csv(evidence: &P5Evidence) -> String {
     let mut csv = String::new();
     writeln!(
         csv,
-        "seed,outer_iterations,normalized_residual,elevation_rms_m,receiver_changed_fraction,\
-         log_discharge_rms,sediment_rms_m,coastline_changed_fraction,produced_mass_kg,\
-         sediment_relative_error,provenance_relative_error,mean_fluvial_erosion_m,\
-         mean_hillslope_erosion_m,mean_routed_deposition_m,basin_count,lake_count,river_segments"
+        "seed,accepted_surface_substeps,integrated_duration_years,\
+         terminal_net_surface_rate_rms_m_per_year,terminal_gross_surface_rate_rms_m_per_year,\
+         terminal_local_surface_flux_imbalance_ratio,terminal_mean_elevation_rate_m_per_year,\
+         terminal_mean_elevation_flux_balance_ratio,terminal_rms_relief_rate_m_per_year,\
+         terminal_rms_relief_flux_balance_ratio,terminal_sediment_stock_change_kg_per_year,\
+         terminal_sediment_stock_change_ratio,produced_kg_per_year,\
+         sediment_relative_error,provenance_relative_error,mean_fluvial_erosion_rate_m_per_year,\
+         mean_hillslope_erosion_rate_m_per_year,mean_routed_deposition_rate_m_per_year,\
+         basin_count,lake_count,river_segments"
     )
     .unwrap();
     for seed in &evidence.seeds {
         writeln!(
             csv,
-            "{},{},{:.9},{:.6},{:.9},{:.9},{:.6},{:.9},{:.6e},{:.3e},{:.3e},{:.6},{:.6},{:.6},{},{},{}",
+            "{},{},{:.9},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e},{:.6e},{:.3e},{:.3e},{:.6},{:.6},{:.6},{},{},{}",
             seed.seed,
-            seed.outer_iterations,
-            seed.final_normalized_residual,
-            seed.final_elevation_rms_m,
-            seed.final_receiver_changed_fraction,
-            seed.final_log_discharge_rms,
-            seed.final_sediment_thickness_rms_m,
-            seed.final_coastline_area_changed_fraction,
-            seed.produced_sediment_mass_kg,
+            seed.accepted_surface_substeps,
+            seed.integrated_duration_years,
+            seed.terminal_net_surface_rate_rms_m_per_year,
+            seed.terminal_gross_surface_rate_rms_m_per_year,
+            seed.terminal_local_surface_flux_imbalance_ratio,
+            seed.terminal_mean_elevation_rate_m_per_year,
+            seed.terminal_mean_elevation_flux_balance_ratio,
+            seed.terminal_rms_relief_rate_m_per_year,
+            seed.terminal_rms_relief_flux_balance_ratio,
+            seed.terminal_sediment_stock_change_kg_per_year,
+            seed.terminal_sediment_stock_change_ratio,
+            seed.produced_sediment_kg_per_year,
             seed.sediment_global_relative_error,
             seed.sediment_provenance_relative_error,
-            seed.mean_fluvial_erosion_m,
-            seed.mean_hillslope_erosion_m,
-            seed.mean_routed_deposition_m,
+            seed.mean_fluvial_erosion_rate_m_per_year,
+            seed.mean_hillslope_erosion_rate_m_per_year,
+            seed.mean_routed_deposition_rate_m_per_year,
             seed.basin_count,
             seed.lake_count,
             seed.river_segment_count,
@@ -547,13 +527,6 @@ fn area_mean_abs(surface: &sekai::world::spatial::SphericalSurfaceSnapshot, valu
         total += cell.area.get();
     }
     weighted / total
-}
-
-fn stage_rng(seed: u64, stage: &'static str, version: u32) -> StageRng {
-    StageRng::from_seed(derive_stage_seed(
-        RootSeed::new(seed),
-        StageIdentity::new(stage, version, "sekai.core"),
-    ))
 }
 
 fn hex(bytes: [u8; 32]) -> String {

@@ -158,6 +158,40 @@ d u_l / dt = -g'_l grad(eta_l)
              + sum exchange_momentum(l, k)
 ```
 
+Revision 2026-09-02 (milestone A2, `2026-09-02-p4-zonal-asymmetry-design.md`):
+the lower atmosphere is shallow water over topography (Vallis 2017 §3.1). Its
+pressure gradient still reads the layer top `eta`, but the transported
+thickness is `H_ref - z_b + eta` with the terrain floor
+`z_b = land_fraction * max(elevation - sea_level, 0)`, capped so the layer
+keeps at least `H_ref / 6`. Its Rayleigh rate is
+`r_lower = r_sea * (1 + (rho - 1) * land_fraction)` with `rho = 3`, the
+grassland-to-open-sea bulk drag ratio (Garratt 1992 §4.1). Both terms are
+per-cell constants of the bound forcing and enter the equation-model
+fingerprint (v10).
+
+Revision 2026-09-02 (milestone A3, `2026-09-02-p4-land-evapotranspiration-design.md`):
+land evaporates back the non-runoff share of its own precipitation,
+`E_land = land_fraction * (1 - runoff_fraction(kappa)) * P` with the P5 runoff
+partition (steady bucket balance, Manabe 1969), applied as one Picard pass in
+the moisture step; its latent heat is taken from the lower atmosphere. Orographic
+lifting and the orographic quality metrics use the over-flow wind (the C2 upper
+layer) because the terrain-aware lower layer flows around ridges. Forcing
+fingerprint v4, equation-model fingerprint v11.
+
+Revision 2026-09-03 (milestone A4, `2026-09-03-p4-water-heat-correction-design.md`):
+the monthly equilibrium targets are no longer the instantaneous monthly gray
+equilibrium (which has no heat inertia and diverges in polar night). Each cell
+solves the linear energy-balance equation `C dT/dt = ASR(t) - [ASR_ann +
+B (T - T_eq,ann)]` (Budyko 1969; North & Coakley 1979) exactly per month and
+publishes the month means of its periodic solution: the mixed-layer target with
+`C = C_ml`, the lower-air target with `C = C_air + (1 - land) C_ml`. The
+12-month mean of every target equals the annual gray target `T_eq,ann`
+(with the orographic lapse), so the annual-mean initial state is that target
+(clamped once per role), and the TOA gray longwave is linearized about the
+annual state, `OLR = ASR_ann + B_ann (T_s - T_eq,ann)`, so seasonal storage
+appears as a seasonal TOA imbalance instead of being forced to zero every
+month. Forcing fingerprint v5, equation-model fingerprint v12.
+
 Lower-atmosphere temperature and humidity, both atmospheric momentum fields,
 mixed-layer/thermocline temperature, and ocean momentum use paired exchange
 terms. Every pair is accumulated once with equal and opposite extensive

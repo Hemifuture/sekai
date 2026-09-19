@@ -1,14 +1,169 @@
 use std::f64::consts::PI;
 
-use sekai::world::fields::{FieldId, FieldRegistry};
+use sekai::world::fields::{FieldId, FieldRegistry, FieldValueType};
 use sekai::world::natural::{
-    drainage_area_km2_field_id, mean_annual_discharge_m3_s_field_id, natural_field_registry,
-    spherical_natural_field_registry, NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM,
-    CLIMATOLOGICAL_YEAR_SECONDS,
+    circulation_annual_evaporation_mm_field_id, circulation_annual_precipitation_mm_field_id,
+    coastal_deposition_m_field_id, coastal_deposition_rate_m_per_year_field_id,
+    coastal_erosion_m_field_id, coastal_erosion_rate_m_per_year_field_id,
+    drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
+    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_m_field_id,
+    hillslope_deposition_rate_m_per_year_field_id, hillslope_erosion_m_field_id,
+    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_m_field_id,
+    isostatic_response_rate_m_per_year_field_id, mean_annual_discharge_m3_s_field_id,
+    natural_field_registry, ocean_age_myr_field_id, primary_elevation_m_field_id,
+    routed_sediment_deposition_m_field_id, routed_sediment_deposition_rate_m_per_year_field_id,
+    spherical_formation_field_registry, spherical_natural_field_registry,
+    tectonic_displacement_m_field_id, tectonic_displacement_rate_m_per_year_field_id,
+    NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
 };
 
 fn maximum(registry: &FieldRegistry, id: FieldId) -> f32 {
     registry.get(&id).unwrap().valid_range.unwrap().max()
+}
+
+#[test]
+fn formation_registry_bytes_are_frozen_with_p4_budget_fields() {
+    let radius_m = 6_371_000.0_f64;
+    let registry = spherical_formation_field_registry(12, 4.0 * PI * radius_m * radius_m).unwrap();
+    let actual = blake3::hash(&serde_json::to_vec(&registry).unwrap())
+        .to_hex()
+        .to_string();
+
+    let retained_and_rate_fields = [
+        (
+            primary_elevation_m_field_id(),
+            "primary_elevation_m",
+            "m",
+            false,
+        ),
+        (
+            tectonic_displacement_m_field_id(),
+            "tectonic_displacement_m",
+            "m",
+            false,
+        ),
+        (
+            fluvial_erosion_depth_m_field_id(),
+            "fluvial_erosion_depth_m",
+            "m",
+            false,
+        ),
+        (
+            hillslope_erosion_m_field_id(),
+            "hillslope_erosion_m",
+            "m",
+            false,
+        ),
+        (
+            hillslope_deposition_m_field_id(),
+            "hillslope_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            routed_sediment_deposition_m_field_id(),
+            "routed_sediment_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            coastal_erosion_m_field_id(),
+            "coastal_erosion_m",
+            "m",
+            false,
+        ),
+        (
+            coastal_deposition_m_field_id(),
+            "coastal_deposition_m",
+            "m",
+            false,
+        ),
+        (
+            isostatic_response_m_field_id(),
+            "isostatic_response_m",
+            "m",
+            false,
+        ),
+        (ocean_age_myr_field_id(), "ocean_age_myr", "Myr", false),
+        (
+            tectonic_displacement_rate_m_per_year_field_id(),
+            "tectonic_displacement_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            fluvial_erosion_rate_m_per_year_field_id(),
+            "fluvial_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            hillslope_erosion_rate_m_per_year_field_id(),
+            "hillslope_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            hillslope_deposition_rate_m_per_year_field_id(),
+            "hillslope_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            routed_sediment_deposition_rate_m_per_year_field_id(),
+            "routed_sediment_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            coastal_erosion_rate_m_per_year_field_id(),
+            "coastal_erosion_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            coastal_deposition_rate_m_per_year_field_id(),
+            "coastal_deposition_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+        (
+            isostatic_response_rate_m_per_year_field_id(),
+            "isostatic_response_rate_m_per_year",
+            "m/year",
+            true,
+        ),
+    ];
+    assert_eq!(registry.len(), 37);
+    for (field, expected_name, expected_unit, is_unbounded) in retained_and_rate_fields {
+        assert_eq!(field.name(), expected_name);
+        let schema = registry
+            .get(&field)
+            .unwrap_or_else(|| panic!("R4 field {expected_name} is missing"));
+        assert_eq!(schema.value_type, FieldValueType::ScalarF32);
+        assert_eq!(schema.unit.symbol(), expected_unit);
+        assert_eq!(
+            schema.display.label_key(),
+            format!("field.sekai.core.natural.{expected_name}"),
+            "the registry key must remain the localization lookup key"
+        );
+        assert_eq!(schema.valid_range.is_none(), is_unbounded);
+    }
+
+    for field in [
+        circulation_annual_evaporation_mm_field_id(),
+        circulation_annual_precipitation_mm_field_id(),
+    ] {
+        assert!(
+            registry.get(&field).unwrap().valid_range.is_none(),
+            "raw P4 water totals must use their measured data range rather than an empirical envelope"
+        );
+    }
+
+    assert_eq!(
+        actual,
+        "71a318efdda1586a62c8fd1fb67a59828fe034d93ecc2afd197d5c5499b2253d"
+    );
 }
 
 #[test]
@@ -19,7 +174,7 @@ fn legacy_planar_registry_bytes_are_frozen_before_spherical_parameterization() {
 
     assert_eq!(
         actual,
-        "7daf32cc8d7d00033b9bc541c8642bbe6482d30cb85ab99aa0f0a4cf18f9e740"
+        "4a6517cee46cdfab4411175172752d7a02a38eef3edc88dae61701756d1aade1"
     );
 }
 

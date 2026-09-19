@@ -1,30 +1,24 @@
+use sekai::engine::BuildCancellation;
 use sekai::generators::natural::circulation::CubedSphereGrid;
-use sekai::generators::natural::global_circulation_model_fingerprint;
+use sekai::generators::natural::{
+    build_surface_water_geometry, global_circulation_model_fingerprint,
+};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::natural::{
-    expected_global_circulation_dense_state_bytes, formation_elevation_from_components,
-    surface_formation_model_fingerprint, surface_formation_state_fingerprint,
-    water_volume_at_sea_level_m3, ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint,
-    ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport,
-    ClimateSolveReport, FormationElevationComponents, FormationResiduals, FormationSedimentFields,
-    FormationSolveReport, FormationTerrainFields, GlobalCirculationFields,
-    GlobalCirculationSnapshot, HydrologySnapshot, LandOceanField, MonthlyScalarField,
+    expected_global_circulation_dense_state_bytes, surface_formation_model_fingerprint,
+    surface_formation_state_fingerprint, ClimateBudgetReport, ClimateCapabilitySet,
+    ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateSolveReport, FormationElevationComponents, FormationEvolutionReport,
+    FormationProcessRates, FormationResiduals, FormationSedimentFields, FormationTerrainFields,
+    GlobalCirculationFields, GlobalCirculationSnapshot, HydrologySnapshot, MonthlyScalarField,
     MonthlyVector3Field, NaturalQualityProfile, NaturalSurfaceFormationSnapshot,
     ProductionIntegratorId, SedimentBudgetReport, SphericalHydrologySnapshot, StrahlerOrderField,
     SurfaceFormationCapabilityAvailability, SurfaceFormationCapabilityId,
     SurfaceFormationCapabilitySet, SurfaceFormationCheckpoint,
     SurfaceFormationUpstreamFingerprints, SurfaceWaterField, SurfaceWaterKind,
-    FORMATION_HILLSLOPE_CRITICAL_SLOPE, FORMATION_HILLSLOPE_DENOMINATOR_MIN,
-    FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, FORMATION_MINIMUM_LAKE_DEPTH_M,
-    FORMATION_RUNOFF_MIN_FRACTION, FORMATION_RUNOFF_PERMEABILITY_RANGE,
-    FORMATION_STREAM_POWER_AREA_EXPONENT, FORMATION_STREAM_POWER_ERODIBILITY_BASE,
-    FORMATION_STREAM_POWER_ERODIBILITY_RANGE, FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX,
-    FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN, FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM,
-    FORMATION_STREAM_POWER_SLOPE_EXPONENT, FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
-    GLOBAL_CIRCULATION_SCHEMA_V1, HYDROLOGY_SCHEMA_V1, HYDROLOGY_SCHEMA_V2,
-    NATURAL_SURFACE_FORMATION_SCHEMA_V1, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
-    SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_MACRO_STEPS,
-    SURFACE_FORMATION_MAX_OUTER_ITERATIONS,
+    FORMATION_TERRAIN_FIELDS_SCHEMA_V4, GLOBAL_CIRCULATION_SCHEMA_V2, HYDROLOGY_SCHEMA_V1,
+    HYDROLOGY_SCHEMA_V2, NATURAL_SURFACE_FORMATION_SCHEMA_V5, SEDIMENT_BUDGET_RELATIVE_ERROR_MAX,
+    SEDIMENT_PROVENANCE_RELATIVE_ERROR_MAX, SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::{Meters, SphericalSpaceSpec, MAX_SPHERICAL_CELL_COUNT};
@@ -44,44 +38,17 @@ fn upstreams() -> SurfaceFormationUpstreamFingerprints {
     .unwrap()
 }
 
-fn elevation_components(primary: Vec<f32>) -> FormationElevationComponents {
-    let count = primary.len();
-    let tectonic = (0..count)
-        .map(|index| 10.0 + index as f32)
-        .collect::<Vec<_>>();
-    let fluvial = vec![2.0; count];
-    let hillslope_erosion = vec![3.0; count];
-    let hillslope_deposition = vec![1.0; count];
-    let routed_deposition = vec![0.5; count];
-    let coastal_erosion = vec![0.25; count];
-    let coastal_deposition = vec![0.125; count];
-    let isostatic = vec![0.75; count];
-    let final_elevation = (0..count)
-        .map(|index| {
-            formation_elevation_from_components(
-                primary[index],
-                tectonic[index],
-                fluvial[index],
-                hillslope_erosion[index],
-                hillslope_deposition[index],
-                routed_deposition[index],
-                coastal_erosion[index],
-                coastal_deposition[index],
-                isostatic[index],
-            )
-        })
-        .collect();
-    FormationElevationComponents::new(
-        primary,
-        tectonic,
-        fluvial,
-        hillslope_erosion,
-        hillslope_deposition,
-        routed_deposition,
-        coastal_erosion,
-        coastal_deposition,
-        isostatic,
-        final_elevation,
+fn upstreams_for_climate(
+    climate: &GlobalCirculationSnapshot,
+) -> SurfaceFormationUpstreamFingerprints {
+    SurfaceFormationUpstreamFingerprints::new(
+        [1; 32],
+        [2; 32],
+        [3; 32],
+        [4; 32],
+        [5; 32],
+        *climate.checkpoint().fingerprint(),
+        [7; 32],
     )
     .unwrap()
 }
@@ -90,6 +57,20 @@ fn zero_sediment(count: usize) -> FormationSedimentFields {
     FormationSedimentFields::new(
         vec![0.0; count],
         vec![[0.0; 5]; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
+    )
+    .unwrap()
+}
+
+fn zero_process_rates(count: usize) -> FormationProcessRates {
+    FormationProcessRates::new(
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.0; count],
         vec![0.0; count],
         vec![0.0; count],
         vec![0.0; count],
@@ -116,9 +97,13 @@ fn climate(surface: &SphericalSurfaceSnapshot) -> GlobalCirculationSnapshot {
         vectors(count),
         scalar(count, 12.0),
         scalar(count, 15.0),
+        vec![0.1; count],
+        scalar(count, 240.0),
+        scalar(count, 240.0),
         scalar(count, 8.0),
         scalar(count, 900.0),
         scalar(count, 0.008),
+        scalar(count, 0.0),
         scalar(count, 2.0),
         scalar(count, 0.5),
         scalar(count, 0.0),
@@ -147,7 +132,7 @@ fn climate(surface: &SphericalSurfaceSnapshot) -> GlobalCirculationSnapshot {
     )
     .unwrap();
     GlobalCirculationSnapshot::new(
-        GLOBAL_CIRCULATION_SCHEMA_V1,
+        GLOBAL_CIRCULATION_SCHEMA_V2,
         SurfaceRef::for_spherical(surface),
         ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1),
         ProductionIntegratorId::SplitExplicitRk3V1,
@@ -228,47 +213,127 @@ fn terrain_for_surface(surface: &SphericalSurfaceSnapshot) -> FormationTerrainFi
         vec![-1_000.0; count],
     )
     .unwrap();
-    let areas = surface
-        .cells()
-        .iter()
-        .map(|cell| cell.area.get())
-        .collect::<Vec<_>>();
-    let realized =
-        water_volume_at_sea_level_m3(components.final_elevation_m(), &areas, 0.0).unwrap();
-    FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
-        components,
+    let geometry = build_surface_water_geometry(
+        surface,
+        components.final_elevation_m(),
         0.0,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let realized = geometry.total_water_volume_m3();
+    FormationTerrainFields::new(
+        FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
+        components,
+        geometry,
         realized,
-        realized,
-        LandOceanField::from_kinds(vec![sekai::world::natural::LandOceanKind::Ocean; count]),
         zero_sediment(count),
     )
     .unwrap()
 }
 
 #[test]
+fn serialized_p5_contract_retains_current_state_without_work_history() {
+    let source = surface();
+    let terrain = terrain_for_surface(&source);
+    let terrain_wire = serde_json::to_value(&terrain).unwrap();
+    let elevation = terrain_wire["elevation_components"].as_object().unwrap();
+    for current_field in [
+        "primary_elevation_m",
+        "tectonic_displacement_m",
+        "fluvial_erosion_m",
+        "hillslope_erosion_m",
+        "hillslope_deposition_m",
+        "routed_sediment_deposition_m",
+        "coastal_erosion_m",
+        "coastal_deposition_m",
+        "isostatic_response_m",
+        "final_elevation_m",
+    ] {
+        assert!(elevation.contains_key(current_field));
+    }
+    for historical_field in [
+        "primary_relief_m",
+        "equilibrium_adjustment_m",
+        "current_elevation_m",
+    ] {
+        assert!(!elevation.contains_key(historical_field));
+    }
+
+    let sediment = terrain_wire["sediment"].as_object().unwrap();
+    for current_field in [
+        "sediment_thickness_m",
+        "provenance_fraction",
+        "sediment_throughput_kg_per_year",
+        "shelf_deposition_kg_per_year",
+        "deep_ocean_export_kg_per_year",
+        "endorheic_deposition_kg_per_year",
+        "delta_potential",
+    ] {
+        assert!(sediment.contains_key(current_field));
+    }
+    for historical_field in [
+        "sediment_throughput_kg",
+        "shelf_delivery_kg",
+        "deep_ocean_delivery_kg",
+        "endorheic_storage_kg",
+    ] {
+        assert!(!sediment.contains_key(historical_field));
+    }
+
+    let checkpoint = SurfaceFormationCheckpoint::new(
+        SurfaceRef::for_spherical(&source),
+        NaturalQualityProfile::Draft,
+        upstreams(),
+        [31; 32],
+    )
+    .unwrap();
+    let checkpoint_wire = serde_json::to_value(checkpoint).unwrap();
+    assert!(checkpoint_wire.get("outer_iterations").is_none());
+
+    let report = FormationEvolutionReport::new(
+        1,
+        SURFACE_FORMATION_HORIZON_YEARS,
+        FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
+        8_192,
+    )
+    .unwrap();
+    let report_wire = serde_json::to_value(report).unwrap();
+    assert!(report_wire.get("current_rates").is_some());
+    assert!(report_wire.get("accepted_surface_substeps").is_some());
+    assert!(report_wire.get("integrated_duration_years").is_some());
+    assert!(report_wire.get("terminal_residual").is_none());
+    assert!(report_wire.get("residuals").is_none());
+    assert!(report_wire.get("geomorphic_macro_steps").is_none());
+    let residual = report_wire["current_rates"].as_object().unwrap();
+    for current_field in [
+        "net_surface_rate_rms_m_per_year",
+        "gross_surface_rate_rms_m_per_year",
+        "mean_elevation_rate_m_per_year",
+        "rms_relief_rate_m_per_year",
+        "sediment_stock_change_kg_per_year",
+        "sediment_stock_change_ratio",
+    ] {
+        assert!(residual.contains_key(current_field));
+    }
+    for historical_field in [
+        "elevation_rms_m",
+        "receiver_changed_fraction",
+        "log_discharge_rms",
+        "sediment_thickness_rms_m",
+        "coastline_area_changed_fraction",
+    ] {
+        assert!(!residual.contains_key(historical_field));
+    }
+}
+
+#[test]
 fn model_and_checkpoint_fingerprints_cover_exact_upstream_identity() {
-    assert_eq!(FORMATION_RUNOFF_MIN_FRACTION, 0.15);
-    assert_eq!(FORMATION_RUNOFF_PERMEABILITY_RANGE, 0.70);
-    assert_eq!(FORMATION_MINIMUM_LAKE_DEPTH_M, 1.0);
-    assert_eq!(FORMATION_STREAM_POWER_AREA_EXPONENT, 0.5);
-    assert_eq!(FORMATION_STREAM_POWER_SLOPE_EXPONENT, 1.0);
-    assert_eq!(FORMATION_STREAM_POWER_ERODIBILITY_BASE, 0.25);
-    assert_eq!(FORMATION_STREAM_POWER_ERODIBILITY_RANGE, 1.50);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, 1_000.0);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_FACTOR_MIN, 0.10);
-    assert_eq!(FORMATION_STREAM_POWER_RUNOFF_FACTOR_MAX, 4.0);
-    assert_eq!(FORMATION_HILLSLOPE_DIFFUSIVITY_M2_PER_YEAR, 5_000.0);
-    assert_eq!(FORMATION_HILLSLOPE_DENOMINATOR_MIN, 0.10);
-    assert!((FORMATION_HILLSLOPE_CRITICAL_SLOPE - 32.0_f64.to_radians().tan()).abs() < 1.0e-15);
     let source = surface();
     let upstream = upstreams();
     let first = SurfaceFormationCheckpoint::new(
         SurfaceRef::for_spherical(&source),
         NaturalQualityProfile::Draft,
         upstream.clone(),
-        2,
         [31; 32],
     )
     .unwrap();
@@ -276,7 +341,6 @@ fn model_and_checkpoint_fingerprints_cover_exact_upstream_identity() {
         SurfaceRef::for_spherical(&source),
         NaturalQualityProfile::Draft,
         upstream.clone(),
-        2,
         [31; 32],
     )
     .unwrap();
@@ -315,7 +379,6 @@ fn model_and_checkpoint_fingerprints_cover_exact_upstream_identity() {
 
 #[test]
 fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
-    let components = elevation_components(vec![100.0, -200.0, 50.0]);
     let sediment = FormationSedimentFields::new(
         vec![2.0, 0.0, 4.0],
         vec![
@@ -339,20 +402,9 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
         sediment.dominant_source(2),
         Some(sekai::world::natural::SedimentSourceKind::Mafic)
     );
-    let final_elevation = components.final_elevation_m().to_vec();
-    let terrain = FormationTerrainFields::new(
-        FORMATION_TERRAIN_FIELDS_SCHEMA_V1,
-        components,
-        0.0,
-        1_000.0,
-        1_000.0,
-        LandOceanField::classify(
-            &sekai::world::natural::ElevationField::from_values(final_elevation).unwrap(),
-            0.0,
-        ),
-        sediment,
-    )
-    .unwrap();
+    let source = surface();
+    let terrain = terrain_for_surface(&source);
+    terrain.validate_against_surface(&source).unwrap();
     assert_ne!(terrain.fingerprint(), [0; 32]);
     assert_eq!(
         serde_json::from_slice::<FormationTerrainFields>(&serde_json::to_vec(&terrain).unwrap())
@@ -369,8 +421,13 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
         serde_json::json!([0.8, 0.8, 0.0, 0.0, 0.0]);
     assert!(serde_json::from_value::<FormationTerrainFields>(invalid_provenance).is_err());
 
-    let mut invalid_water = serde_json::to_value(&terrain).unwrap();
-    invalid_water["realized_water_volume_m3"] = serde_json::json!(2_000.0);
+    let wire = serde_json::to_value(&terrain).unwrap();
+    assert!(wire.get("surface_water_geometry").is_some());
+    assert!(wire.get("sea_level_m").is_none());
+    assert!(wire.get("realized_water_volume_m3").is_none());
+    assert!(wire.get("land_ocean").is_none());
+    let mut invalid_water = wire;
+    invalid_water["water_inventory_m3"] = serde_json::json!(1.0);
     assert!(serde_json::from_value::<FormationTerrainFields>(invalid_water).is_err());
 
     let mut oversized_wire = serde_json::to_value(&terrain).unwrap();
@@ -396,19 +453,17 @@ fn terrain_fields_enforce_component_identity_provenance_and_dense_bounds() {
 }
 
 #[test]
-fn solve_budget_and_capability_reports_are_derived_and_strict() {
-    let residuals = vec![
-        FormationResiduals::new(180.0, 0.08, 0.30, 20.0, 0.01).unwrap(),
-        FormationResiduals::new(40.0, 0.01, 0.02, 2.0, 0.001).unwrap(),
-    ];
-    let solve = FormationSolveReport::new(residuals, 8_192).unwrap();
-    assert_eq!(solve.outer_iterations(), 2);
+fn evolution_budget_and_capability_reports_are_strict() {
+    let terminal = FormationResiduals::new(1.0e-9, 1.0e-3, 2.0e-10, -3.0e-10, 1.0, 1.0e-6).unwrap();
+    let evolution =
+        FormationEvolutionReport::new(16, SURFACE_FORMATION_HORIZON_YEARS, terminal, 8_192)
+            .unwrap();
+    assert_eq!(evolution.accepted_surface_substeps(), 16);
     assert_eq!(
-        solve.geomorphic_macro_steps(),
-        2 * SURFACE_FORMATION_MACRO_STEPS
+        evolution.integrated_duration_years().to_bits(),
+        SURFACE_FORMATION_HORIZON_YEARS.to_bits()
     );
-    assert!(solve.converged());
-    assert!(solve.final_residual().normalized_max() <= 1.0);
+    assert_eq!(evolution.current_rates(), &terminal);
 
     let produced = [50.0, 20.0, 10.0, 15.0, 5.0];
     let accounted = [50.0, 20.0, 10.0, 15.0, 5.0];
@@ -443,46 +498,42 @@ fn solve_budget_and_capability_reports_are_derived_and_strict() {
 
     let mut forged_budget = serde_json::to_value(budget).unwrap();
     forged_budget["global_relative_error"] = serde_json::json!(1.0e-12);
-    forged_budget["deep_ocean_delivery_mass_kg"] = serde_json::json!(60.0);
+    forged_budget["deep_ocean_export_kg_per_year"] = serde_json::json!(60.0);
     assert!(serde_json::from_value::<SedimentBudgetReport>(forged_budget).is_err());
 
-    let mut oversized_solve = serde_json::to_value(&solve).unwrap();
-    let extra = oversized_solve["residuals"][0].clone();
-    while oversized_solve["residuals"].as_array().unwrap().len()
-        <= SURFACE_FORMATION_MAX_OUTER_ITERATIONS as usize
-    {
-        oversized_solve["residuals"]
-            .as_array_mut()
-            .unwrap()
-            .push(extra.clone());
-    }
-    assert!(serde_json::from_value::<FormationSolveReport>(oversized_solve).is_err());
+    let mut invalid_evolution = serde_json::to_value(&evolution).unwrap();
+    invalid_evolution["accepted_surface_substeps"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<FormationEvolutionReport>(invalid_evolution).is_err());
 }
 
 #[test]
-fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
+fn atomic_snapshot_binds_terrain_hydrology_and_endpoint_checkpoint() {
     let source = surface();
     let terrain = terrain_for_surface(&source);
+    let process_rates = zero_process_rates(source.cells().len());
     let hydrology = ocean_hydrology(&source);
     let climate = climate(&source);
-    let state_fingerprint = surface_formation_state_fingerprint(&terrain, &hydrology, &climate);
+    let state_fingerprint =
+        surface_formation_state_fingerprint(&terrain, &process_rates, &hydrology);
+    let upstream = upstreams_for_climate(&climate);
     let checkpoint = SurfaceFormationCheckpoint::new(
         SurfaceRef::for_spherical(&source),
         NaturalQualityProfile::Draft,
-        upstreams(),
-        1,
+        upstream.clone(),
         state_fingerprint,
     )
     .unwrap();
     let snapshot = NaturalSurfaceFormationSnapshot::new(
-        NATURAL_SURFACE_FORMATION_SCHEMA_V1,
+        NATURAL_SURFACE_FORMATION_SCHEMA_V5,
         SurfaceRef::for_spherical(&source),
         checkpoint,
         terrain,
+        process_rates,
         hydrology,
-        climate,
-        FormationSolveReport::new(
-            vec![FormationResiduals::new(10.0, 0.01, 0.01, 1.0, 0.001).unwrap()],
+        FormationEvolutionReport::new(
+            1,
+            SURFACE_FORMATION_HORIZON_YEARS,
+            FormationResiduals::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap(),
             8_192,
         )
         .unwrap(),
@@ -492,13 +543,14 @@ fn atomic_snapshot_binds_terrain_hydrology_climate_and_upstreams() {
     .unwrap();
     snapshot.validate_against(&source).unwrap();
     snapshot
-        .validate_against_inputs(&source, NaturalQualityProfile::Draft, &upstreams())
+        .validate_against_inputs(&source, NaturalQualityProfile::Draft, &upstream)
         .unwrap();
 
     let bytes = serde_json::to_vec(&snapshot).unwrap();
     let decoded: NaturalSurfaceFormationSnapshot = serde_json::from_slice(&bytes).unwrap();
     decoded.validate_against(&source).unwrap();
     assert_eq!(bytes, serde_json::to_vec(&decoded).unwrap());
+    assert!(serde_json::to_value(&decoded).unwrap()["formation_climate"].is_null());
 
     let mut unknown = serde_json::to_value(&snapshot).unwrap();
     unknown["surprise"] = serde_json::json!(true);

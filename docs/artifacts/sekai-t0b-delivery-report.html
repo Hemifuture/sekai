@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sekai T0b 交付报告</title>
+  <style>
+    @font-face {
+      font-family: "Noto Sans SC Local";
+      src: url("../../assets/fonts/NotoSansSC-Regular.otf") format("opentype");
+      font-weight: 100 900;
+      font-display: swap;
+    }
+
+    :root {
+      --paper: #f5f0e7;
+      --paper-deep: #e8dece;
+      --paper-light: #fbf8f2;
+      --ink: #182629;
+      --ink-soft: #596567;
+      --line: #c8bba7;
+      --sea: #27656a;
+      --sea-deep: #16464c;
+      --sea-wash: #dcebea;
+      --land: #5c704d;
+      --land-deep: #3c5138;
+      --land-wash: #e3eadc;
+      --ochre: #ad742d;
+      --ochre-deep: #7a4a19;
+      --ochre-wash: #f2e4cc;
+      --good: #2e6b56;
+      --shadow: 0 18px 48px rgb(38 47 45 / 10%);
+      --serif: "Noto Serif SC", "Songti SC", "STSong", serif;
+      --sans: "Noto Sans SC Local", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      --mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      background:
+        radial-gradient(circle at 12% 4%, rgb(39 101 106 / 10%), transparent 26rem),
+        radial-gradient(circle at 91% 18%, rgb(173 116 45 / 10%), transparent 24rem),
+        var(--paper-deep);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.7;
+    }
+
+    body { margin: 0; padding: 48px 22px 72px; }
+
+    a { color: var(--sea-deep); text-underline-offset: 0.2em; }
+    code, .mono { font-family: var(--mono); }
+    code { font-size: 0.88em; overflow-wrap: anywhere; }
+
+    .report {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      background: var(--paper);
+      border: 1px solid rgb(122 74 25 / 24%);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .masthead {
+      position: relative;
+      padding: 58px 64px 48px;
+      color: var(--paper-light);
+      background:
+        linear-gradient(124deg, rgb(22 70 76 / 98%), rgb(39 101 106 / 93%) 56%, rgb(60 81 56 / 92%)),
+        var(--sea-deep);
+      isolation: isolate;
+    }
+
+    .masthead::after {
+      content: "";
+      position: absolute;
+      inset: auto -8% -102px 42%;
+      z-index: -1;
+      height: 190px;
+      border: 1px solid rgb(245 240 231 / 30%);
+      border-radius: 50%;
+      transform: rotate(-5deg);
+      box-shadow:
+        0 -22px 0 -21px rgb(245 240 231 / 22%),
+        0 -45px 0 -44px rgb(245 240 231 / 16%);
+    }
+
+    .eyebrow {
+      margin: 0 0 20px;
+      color: #d9e9e6;
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 { font-family: var(--serif); }
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      font-size: clamp(2.8rem, 7vw, 5.6rem);
+      font-weight: 700;
+      letter-spacing: -0.055em;
+      line-height: 1.06;
+    }
+
+    .deck {
+      max-width: 780px;
+      margin: 24px 0 0;
+      color: #e2edeb;
+      font-family: var(--serif);
+      font-size: clamp(1rem, 1.8vw, 1.25rem);
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 34px;
+    }
+
+    .pill {
+      padding: 8px 13px;
+      border: 1px solid rgb(245 240 231 / 34%);
+      border-radius: 999px;
+      background: rgb(245 240 231 / 9%);
+      color: #f5f0e7;
+      font-family: var(--mono);
+      font-size: 0.71rem;
+      letter-spacing: 0.06em;
+    }
+
+    .pill.good { border-color: #a8d7c5; background: rgb(46 107 86 / 40%); }
+    .pill.pending { border-color: #e7c68e; background: rgb(173 116 45 / 30%); }
+
+    .fact-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-bottom: 1px solid var(--line);
+      background: var(--paper-light);
+    }
+
+    .fact {
+      min-height: 116px;
+      padding: 26px 30px;
+      border-right: 1px solid var(--line);
+    }
+    .fact:last-child { border-right: 0; }
+    .fact b {
+      display: block;
+      color: var(--sea-deep);
+      font-family: var(--serif);
+      font-size: 1.8rem;
+      line-height: 1.2;
+    }
+    .fact span { color: var(--ink-soft); font-size: 0.8rem; }
+
+    .content { padding: 58px 64px 66px; }
+
+    section { margin: 0 0 72px; scroll-margin-top: 30px; }
+    section:last-child { margin-bottom: 0; }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 28px;
+    }
+
+    .section-no {
+      padding-top: 6px;
+      color: var(--ochre);
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(1.85rem, 4vw, 3rem);
+      letter-spacing: -0.035em;
+      line-height: 1.18;
+    }
+    .section-head p { max-width: 760px; margin: 8px 0 0; color: var(--ink-soft); }
+    h3 { margin: 0 0 8px; font-size: 1.1rem; }
+
+    .lede {
+      padding: 28px 30px;
+      border-left: 4px solid var(--ochre);
+      background: var(--ochre-wash);
+      font-family: var(--serif);
+      font-size: 1.08rem;
+    }
+
+    .driver-map {
+      display: grid;
+      grid-template-columns: 1fr 76px 1fr;
+      align-items: stretch;
+      margin-top: 28px;
+    }
+
+    .driver {
+      position: relative;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--paper-light);
+    }
+    .driver.water { box-shadow: inset 0 4px 0 var(--sea); }
+    .driver.land { box-shadow: inset 0 4px 0 var(--land); }
+    .driver .kicker {
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+    .driver h3 { margin-top: 10px; font-size: 1.45rem; }
+    .driver p { margin: 10px 0 0; color: var(--ink-soft); }
+    .driver .equation {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: var(--sea-wash);
+      color: var(--sea-deep);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .driver.land .equation { background: var(--land-wash); color: var(--land-deep); }
+
+    .switch {
+      display: grid;
+      place-items: center;
+      color: var(--ochre);
+      font-family: var(--mono);
+      font-size: 1.7rem;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper-light);
+    }
+    .card.sea { border-top: 4px solid var(--sea); }
+    .card.land { border-top: 4px solid var(--land); }
+    .card.ochre { border-top: 4px solid var(--ochre); }
+    .card p { margin: 7px 0 0; color: var(--ink-soft); font-size: 0.9rem; }
+    .metric {
+      display: block;
+      margin-top: 14px;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: clamp(1.2rem, 2.4vw, 1.75rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1.2;
+    }
+    .metric.small { font-size: 0.78rem; letter-spacing: -0.015em; overflow-wrap: anywhere; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, auto);
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 26px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(90deg, var(--land-wash), var(--paper-light), var(--sea-wash));
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.77rem;
+      white-space: nowrap;
+    }
+    .flow .node { padding: 10px 12px; border-radius: 8px; background: var(--paper-light); box-shadow: 0 4px 12px rgb(24 38 41 / 8%); }
+    .flow .arrow { color: var(--ochre); font-size: 1.1rem; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+    th, td { padding: 15px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--ink-soft); font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    td.hash { max-width: 470px; font-family: var(--mono); font-size: 0.74rem; overflow-wrap: anywhere; }
+    .tag {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.67rem;
+      font-weight: 700;
+    }
+    .tag.changed { color: var(--ochre-deep); background: var(--ochre-wash); }
+    .tag.same { color: var(--good); background: var(--land-wash); }
+    .tag.pass { color: var(--good); background: var(--land-wash); }
+    .tag.pending { color: var(--ochre-deep); background: var(--ochre-wash); }
+
+    .gate-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .gate {
+      display: grid;
+      grid-template-columns: 86px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper-light);
+    }
+    .gate p { margin: 0; color: var(--ink-soft); font-size: 0.83rem; }
+    .gate strong { display: block; margin-bottom: 3px; color: var(--ink); }
+
+    .steps { counter-reset: accept; display: grid; gap: 14px; }
+    .step {
+      counter-increment: accept;
+      display: grid;
+      grid-template-columns: 46px 1fr;
+      gap: 18px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper-light);
+    }
+    .step::before {
+      content: counter(accept, decimal-leading-zero);
+      color: var(--ochre);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+    .step p { margin: 4px 0 0; color: var(--ink-soft); }
+
+    .source-note {
+      padding: 22px 24px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--sea-wash), var(--paper-light));
+      color: var(--ink-soft);
+      font-size: 0.86rem;
+    }
+    .source-note strong { color: var(--ink); }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 26px 64px;
+      border-top: 1px solid var(--line);
+      background: var(--paper-deep);
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 0.7rem;
+    }
+
+    @media (max-width: 820px) {
+      body { padding: 0; }
+      .report { border: 0; border-radius: 0; }
+      .masthead, .content { padding-left: 26px; padding-right: 26px; }
+      .fact-strip, .cards, .gate-grid { grid-template-columns: 1fr; }
+      .fact { border-right: 0; border-bottom: 1px solid var(--line); }
+      .driver-map { grid-template-columns: 1fr; gap: 10px; }
+      .switch { transform: rotate(90deg); }
+      .section-head { grid-template-columns: 1fr; gap: 4px; }
+      .footer { flex-direction: column; padding-left: 26px; padding-right: 26px; }
+    }
+
+    @media print {
+      @page { size: A4; margin: 14mm; }
+      html, body { background: white; }
+      body { padding: 0; }
+      .report { width: 100%; border: 0; border-radius: 0; box-shadow: none; }
+      .masthead { padding: 36px 40px; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+      .content { padding: 42px 40px; }
+      section { break-inside: avoid; margin-bottom: 50px; }
+      .card, .driver, .gate, .step, tr { break-inside: avoid; }
+      .footer { padding: 20px 40px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="report" data-document-role="report" data-label="Sekai T0b 交付报告">
+    <header class="masthead">
+      <p class="eyebrow">Sekai · Natural World Pipeline · T0b / 2026-08-22</p>
+      <h1>陆地占比驱动<br>与水线求解</h1>
+      <p class="deck">从“地球水量决定海面”到“玩家指定陆地占比、系统反推隐含水量”，两种物理解在同一 P3 水线算子上正交切换，并已进入形成链 UI。</p>
+      <div class="status-row">
+        <span class="pill good">ENGINEERING GATES · PASS</span>
+        <span class="pill good">DEFAULT OUTPUT · BIT-STABLE</span>
+        <span class="pill pending">FINAL UI ACCEPTANCE · USER</span>
+      </div>
+    </header>
+
+    <div class="fact-strip" aria-label="交付摘要">
+      <div class="fact"><b>Task 3→6</b><span>连续实现、接入、重钉与门禁</span></div>
+      <div class="fact"><b>4 commits</b><span>严格一任务一提交；本会话不推送</span></div>
+      <div class="fact"><b>0.693323×</b><span>38% 陆地目标的隐含地球水量比</span></div>
+      <div class="fact"><b>≤ 0.01</b><span>P3→P5 陆地占比漂移门禁</span></div>
+    </div>
+
+    <div class="content">
+      <section id="outcome">
+        <div class="section-head">
+          <span class="section-no">01 / OUTCOME</span>
+          <div><h2>一个水线，两种主张</h2><p>驱动只决定“已知量”；海面、水量与陆地占比仍由同一组物理关系闭合。</p></div>
+        </div>
+        <div class="lede">默认 <strong>陆壳比例</strong>驱动继续使用库存水量求海面，保持今日行为；新的 <strong>陆地占比</strong>驱动先选面积加权水线，再由同一测高积分反推隐含表层水量。P5 不新增分支，只消费 P3 已发布的 <code>water_inventory_m3</code>。</div>
+        <div class="driver-map" aria-label="两种水线驱动">
+          <article class="driver water">
+            <span class="kicker">DEFAULT · WATER INVENTORY</span>
+            <h3>陆壳比例</h3>
+            <p>世界参数给定水量；P3 解海面，陆地占比是测量结果。默认值继续是 1 × 地球水量。</p>
+            <div class="equation">water inventory → sea level → measured land</div>
+          </article>
+          <div class="switch" aria-hidden="true">⇄</div>
+          <article class="driver land">
+            <span class="kicker">NEW · TARGET LAND FRACTION</span>
+            <h3>陆地占比</h3>
+            <p>玩家给定目标陆地；P3 复用面积加权选择器定水线，再对水柱体积积分。</p>
+            <div class="equation">target land → sea level → implicit inventory</div>
+          </article>
+        </div>
+      </section>
+
+      <section id="default-evidence">
+        <div class="section-head">
+          <span class="section-no">02 / IDENTITY</span>
+          <div><h2>默认模式逐位不变</h2><p>schema 与质量报告封装扩展了，但默认物理输出没有漂移。守门测试直接固定 T0 证据投影与 P5 工件。</p></div>
+        </div>
+        <div class="cards">
+          <article class="card sea"><h3>P3 T0 证据投影</h3><span class="metric">BIT-STABLE</span><p>剔除唯一新增测量后，JSON / CSV 与 T0 基线逐位一致。</p><span class="metric small">ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2</span><span class="metric small">b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1</span></article>
+          <article class="card land"><h3>P3 默认快照</h3><span class="metric">UNCHANGED</span><p>快照 wire 保持既有字段，默认模式的序列化内容没有变化。</p><span class="metric small">051d0907261112e80b59f0c4f014b6a0a9f1d9a5f142b2a74c160ab675b3aede</span></article>
+          <article class="card ochre"><h3>P5 seed 42 工件</h3><span class="metric">83a67fc6…</span><p>P5 方程零改动，默认形成工件仍是 T0 刷新后的精确哈希。</p><span class="metric small">83a67fc6688db690f0a0e691cce280593febbc5b737b26afcb261479717a7f90</span></article>
+        </div>
+      </section>
+
+      <section id="target-evidence">
+        <div class="section-head">
+          <span class="section-no">03 / SOLVE</span>
+          <div><h2>38% 目标的闭环证据</h2><p>Continents · seed 42 · Release。面积目标成为水线约束，隐含水量作为世界快照的一等结果发布。</p></div>
+        </div>
+        <div class="flow" aria-label="目标模式数据流">
+          <span class="node">target 0.38</span><span class="arrow">→</span>
+          <span class="node">sea −1242.5 m</span><span class="arrow">→</span>
+          <span class="node">water 0.693323×</span><span class="arrow">→</span>
+          <span class="node">P5 land 0.379413</span>
+        </div>
+        <div class="cards">
+          <article class="card land"><h3>P3 达成值</h3><span class="metric">0.380047381</span><p>面积加权离散水线选择；<code>constraint_status == Satisfied</code>。</p></article>
+          <article class="card sea"><h3>隐含水量</h3><span class="metric">0.693323320384</span><p>由 <code>water_volume_at_sea_level_m3</code> 对选定水线反推，不受建议带钳制。</p></article>
+          <article class="card ochre"><h3>P5 达成值</h3><span class="metric">0.379413068</span><p>最终海面 −1227.130127 m；P3→P5 漂移约 0.000634，低于冻结的 0.01 门禁。</p></article>
+        </div>
+        <table aria-label="目标模式工件哈希" style="margin-top: 20px">
+          <thead><tr><th>工件</th><th>精确 BLAKE3</th></tr></thead>
+          <tbody>
+            <tr><td>P3 target artifact</td><td class="hash">8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27</td></tr>
+            <tr><td>P5 target artifact</td><td class="hash">95738e6773494eddf765dfccd7117bb259bc5268fd78200ec0cf6c5a1cdc76f8</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="fingerprints">
+        <div class="section-head">
+          <span class="section-no">04 / AUDIT</span>
+          <div><h2>指纹刷新清单</h2><p>运行时身份以实测输出为准：只刷新确实改变的证据，未变化的下游呈现与金样不做机械更新。</p></div>
+        </div>
+        <table aria-label="指纹刷新审计">
+          <thead><tr><th>状态</th><th>对象</th><th>审计结论</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag changed">改变</span></td><td><code>ReliefSpec</code> wire / 输入缓存身份</td><td>schema V2 纳入 <code>sea_level_policy</code> 与 <code>water_inventory_ratio</code>。</td></tr>
+            <tr><td><span class="tag changed">改变</span></td><td>P3 完整 evidence JSON / CSV</td><td class="hash">新增 <code>water-inventory-ratio</code>；86,089 B / 31,529 B；fa4bac425c1c040d4bc7e07fe3c39b107a1e43b3055c20b4181b252889b67590 / a7917feebe7d0aa1bbf6c4a9bc3c96071f2323ab8b6ef8c120ce940ff5114738</td></tr>
+            <tr><td><span class="tag changed">改变</span></td><td>默认 seed 42 P3 报告工件</td><td class="hash">报告封装扩展：18aff524ca7637abf59757e42e2c5f6ee2e000ecce09ec6fe0cc4a6a37079330</td></tr>
+            <tr><td><span class="tag same">不变</span></td><td>P3 物理快照 / P5 artifact、checkpoint、state</td><td class="hash">默认算法结果逐位不变；P5 checkpoint / state：a980562acf3d0c1186f0c8245a45e68189e235692507e7736ba06a2a4398ed14 / 9c8cc9ebc2d0463c553bf416046ce6b0e047f081a841a94c952dc67a864cf12f</td></tr>
+            <tr><td><span class="tag same">不变</span></td><td>P4 evidence JSON / CSV</td><td class="hash">01007ae263fed76c9901f6fa0ba9d7a30cc16caa30fa0ecd7411516d620c2920 / c0670df941fb1f872f70f70f7d3e6ec5f21001ca2069395b38ef8ab3ed0e1206</td></tr>
+            <tr><td><span class="tag same">不变</span></td><td>legacy 全图、字段哈希</td><td class="hash">18d0c1b4fef960847ad4b5d2c20b24c7a5fc0bdbd88477a4858ac194bdb4494c / 0d9ac9bf0a984aa2c94757bc030e70edfdcff4054a01a918a45447ad2b34158d</td></tr>
+            <tr><td><span class="tag same">不变</span></td><td><code>EXPECTED_SAMPLED_IDS</code> / 16 幅 GPU 金样</td><td>RTX 4080 SUPER / Vulkan 审计逐位一致；没有改写 golden。</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="ui">
+        <div class="section-head">
+          <span class="section-no">05 / UI</span>
+          <div><h2>算法已进入玩家手里</h2><p>互斥驱动、锁定语义、推算值与风险提示都在形成链左侧面板闭环。</p></div>
+        </div>
+        <div class="cards">
+          <article class="card sea"><h3>驱动单选</h3><p>“陆壳比例 / 陆地占比”只切换 <code>SeaLevelPolicy</code>。legacy 链继续保持目标陆地语义。</p></article>
+          <article class="card land"><h3>互斥锁定</h3><p>物理模式锁定陆地滑块并显示上次实测；目标模式锁定高级组陆壳滑块并保留预设几何。</p></article>
+          <article class="card ochre"><h3>摘要与提示</h3><p>显示“海水量 = r × 地球”；建议带外提示，以及目标跨过 <code>OCEAN_FLOOR_EXPOSURE_HINT_FRACTION</code> 时提示露出洋底。</p></article>
+        </div>
+        <div class="source-note" style="margin-top: 20px"><strong>预设标称陆地已按 17 粒实测中位重钉：</strong>Continents 0.20、Archipelago 0.22、Supercontinent 0.17、GreatIsland 0.23、VolcanicIslands 0.16；所有预设陆壳值保持不动。</div>
+      </section>
+
+      <section id="gates">
+        <div class="section-head">
+          <span class="section-no">06 / GATES</span>
+          <div><h2>门禁结果</h2><p>静态门禁与 release/debug 两档全量套件均以冻结命令执行；全量测试使用 <code>--no-fail-fast</code> 并由 PowerShell 分离进程启动。</p></div>
+        </div>
+        <div class="gate-grid">
+          <div class="gate"><span class="tag pass">PASS</span><p><strong>格式</strong><code>cargo fmt --all -- --check</code></p></div>
+          <div class="gate"><span class="tag pass">PASS</span><p><strong>Clippy</strong>workspace · all targets · all features · <code>-D warnings</code></p></div>
+          <div class="gate"><span class="tag pass">PASS</span><p><strong>wasm32</strong><code>cargo check --target wasm32-unknown-unknown --all-features --lib</code></p></div>
+          <div class="gate"><span class="tag pass">PASS</span><p><strong>Release 全量</strong>176 个结果组；1,552 passed / 0 failed / 50 ignored；exit 0。</p></div>
+          <div class="gate"><span class="tag pass">PASS</span><p><strong>Debug 全量</strong>176 个结果组；1,549 passed / 0 failed / 53 ignored；exit 0。</p></div>
+          <div class="gate"><span class="tag pending">USER</span><p><strong>UI 最终验收</strong>工程自测不能替代玩家上手；按下一节执行。</p></div>
+        </div>
+      </section>
+
+      <section id="acceptance">
+        <div class="section-head">
+          <span class="section-no">07 / ACCEPT</span>
+          <div><h2>用户验收路径</h2><p>唯一仍需人工完成的门：观察海岸线、锁定状态与摘要值是否符合玩家直觉。</p></div>
+        </div>
+        <div class="steps">
+          <div class="step"><div><h3>启动并复核默认世界</h3><p>运行 <code>cargo run --release</code>；选择 Continents、seed 42、草稿档，以默认“陆壳比例”驱动重建。预期与 T0 交付一致，陆地约 20%。</p></div></div>
+          <div class="step"><div><h3>切换到 38% 目标</h3><p>选择“陆地占比”，拨到 38% 后重建。预期海岸线外推、陆架露出，摘要显示 <code>海水量 ≈ 0.693 × 地球</code>。</p></div></div>
+          <div class="step"><div><h3>检查两端行为</h3><p>拨到 60%：出现“将露出洋底”提示，深海平原成为低地；拨到 10%：内陆海淹没，仅高地露出。</p></div></div>
+          <div class="step"><div><h3>回到物理模式</h3><p>切回“陆壳比例”并重建。预期回到步骤 1 的画面；陆地滑块被锁定并显示实测值。</p></div></div>
+        </div>
+      </section>
+
+      <section id="record">
+        <div class="section-head">
+          <span class="section-no">08 / RECORD</span>
+          <div><h2>提交与出处</h2><p>Task 3→6 遵循一任务一提交；设计真相、数值证据和来源继续由冻结规格承载。</p></div>
+        </div>
+        <table aria-label="任务提交">
+          <thead><tr><th>任务</th><th>提交</th><th>交付内容</th></tr></thead>
+          <tbody>
+            <tr><td>Task 3</td><td class="hash">a09dcaf</td><td>P3 水线策略、目标反解、质量测量与逐位守门。</td></tr>
+            <tr><td>Task 4</td><td class="hash">ea7a6dd</td><td>形成链 UI、互斥锁定、水量摘要与提示。</td></tr>
+            <tr><td>Task 5</td><td class="hash">a4c4bcd</td><td>预设重钉、目标证据、指纹与金样审计。</td></tr>
+            <tr><td>Task 6</td><td class="hash">本报告所在提交</td><td>两档全量门禁、计划核对、交付 artifact 与验收路径。</td></tr>
+          </tbody>
+        </table>
+        <div class="source-note" style="margin-top: 24px"><strong>出处纪律：</strong>海面—水量—测高闭合依据 Cowan &amp; Abbot（2014）与 Eakins &amp; Sharman（2010 / ETOPO1）；表层水量可变性依据 Hirschmann（2006）；干舷与陆壳分布依据 Wise（1974）及 CRUST1.0（Laske et al., 2013）。完整取值过程、语料测量与冻结常量表见 <a href="../superpowers/specs/2026-08-22-land-fraction-driver-design.md">T0b 冻结规格</a>。</div>
+      </section>
+    </div>
+
+    <footer class="footer">
+      <span>SEKAI T0b · DELIVERY ARTIFACT · 2026-08-22</span>
+      <span>SSOT: land-fraction-driver-design.md · ENGINEERING PASS / USER ACCEPTANCE PENDING</span>
+    </footer>
+  </main>
+</body>
+</html>

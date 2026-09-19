@@ -1,6 +1,7 @@
 use sekai::engine::BuildCancellation;
 use sekai::generators::spatial::{ProfileSurfaceBuildError, ProfileSurfaceBuilder};
 use sekai::world::natural::{NaturalQualityProfile, QualityMetricStatus};
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::spatial::SurfaceRef;
 use sekai::world::Meters;
 
@@ -33,10 +34,14 @@ fn draft_bundle_is_exact_identity_bound_quality_checked_and_repeatable() {
     assert_eq!(plan.climate_face_resolution(), 24);
     assert_eq!(first.authoritative_surface().cells().len(), 20_252);
     assert_eq!(first.tectonic_control_surface().cells().len(), 4_842);
-    assert_eq!(
-        first.authoritative_surface().fingerprint(),
-        DRAFT_AUTHORITATIVE_FINGERPRINT
-    );
+    if audited_float_platform() {
+        assert_eq!(
+            first.authoritative_surface().fingerprint(),
+            DRAFT_AUTHORITATIVE_FINGERPRINT
+        );
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
+    }
 
     let authoritative_ref = SurfaceRef::for_spherical(first.authoritative_surface());
     let control_ref = SurfaceRef::for_spherical(first.tectonic_control_surface());

@@ -24,24 +24,24 @@ T0 校准后形成链的海面由地球水量解出，陆地占比成为结果�
 - [x] Task 2 —— 规格冻结：§8 已由用户裁定（R1）；按 Task 1 钉预设
       `recommended_land_fraction` 实测值、水量比合法范围与建议带常量、
       陆地上限表；**停一次交用户确认**后冻结。
-- [ ] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy` 与
+- [x] Task 3 —— P3 水线求解：`ReliefSpec::sea_level_policy` 与
       `water_inventory_ratio`（schema 升版、校验、序列化）；物理模式库存
       = 比值 × 地球缩放水量；目标解复用 `select_area_weighted_sea_level` +
       `water_volume_at_sea_level_m3` 隐含水量（互逆测试）；P3 `generate` 分派，快照 wire 不变；
       P3 报告新增无界测量 `water-inventory-ratio`；默认模式逐位不变
       的守门测试（P3 证据哈希 / P5 seed 42 工件哈希）。验证：单元 +
       `primary_relief_*` / `surface_formation_stage`（release）。
-- [ ] Task 4 —— 接入 UI：驱动单选（陆壳比例 / 陆地占比）、陆地占比
+- [x] Task 4 —— 接入 UI：驱动单选（陆壳比例 / 陆地占比）、陆地占比
       滑块在两条链上启用、互斥锁定并显示推算/实测值、高级组里的陆壳
       滑块、摘要行"海水量 = r × 地球"与提示（带外、露出洋底）、
       `FormationAreaSummary::water_inventory_ratio`；应用测试（持久化
       往返、锁定语义）。验证：用户在 UI 上按规格 §7 走一遍。
-- [ ] Task 5 —— 预设标称陆地重钉 + 指纹/证据：按冻结值改
+- [x] Task 5 —— 预设标称陆地重钉 + 指纹/证据：按冻结值改
       `recommended_land_fraction`；实测哪些冻结值因 `ReliefSpec` wire
       改变而变（原则：输出哈希不变者不动）；目标模式证据
       （Continents / seed 42 / 0.38）入 P3、P5 完成记录修订条目；
       规格 §3.6 刷新清单落账。
-- [ ] Task 6 —— 门禁与验收：fmt / clippy -D warnings / wasm；全量套件
+- [x] Task 6 —— 门禁与验收：fmt / clippy -D warnings / wasm；全量套件
       两档 `--no-fail-fast` 分离进程；计划核对；用户验收步骤；交付报告
       artifact。最终验收归用户。
 

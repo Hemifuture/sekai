@@ -7,7 +7,7 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     NaturalQualityProfile, SedimentSourceKind, SedimentSourceKindField, SurfaceWaterField,
-    SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE,
+    SurfaceWaterKind, FORMATION_HILLSLOPE_CRITICAL_SLOPE, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
@@ -21,13 +21,14 @@ fn surface(radius_m: f64, target_cell_count: u32) -> SphericalSurfaceSnapshot {
 }
 
 struct Fields {
-    elevation_m: Vec<f32>,
+    elevation_m: Vec<f64>,
     water: SurfaceWaterField,
     erodibility: Vec<f32>,
     fracture: Vec<f32>,
     annual_precipitation_mm: Vec<f32>,
     substrate_density_kg_m3: Vec<f32>,
     sediment_sources: SedimentSourceKindField,
+    sediment_mass_by_source_kg: Vec<[f64; SEDIMENT_PROVENANCE_SOURCE_COUNT]>,
 }
 
 impl Fields {
@@ -40,11 +41,12 @@ impl Fields {
             annual_precipitation_mm: &self.annual_precipitation_mm,
             substrate_density_kg_m3: &self.substrate_density_kg_m3,
             sediment_sources: &self.sediment_sources,
+            sediment_mass_by_source_kg: &self.sediment_mass_by_source_kg,
         }
     }
 }
 
-fn uniform_fields(count: usize, elevation_m: f32) -> Fields {
+fn uniform_fields(count: usize, elevation_m: f64) -> Fields {
     Fields {
         elevation_m: vec![elevation_m; count],
         water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
@@ -56,6 +58,7 @@ fn uniform_fields(count: usize, elevation_m: f32) -> Fields {
             SedimentSourceKind::Felsic;
             count
         ]),
+        sediment_mass_by_source_kg: vec![[0.0; SEDIMENT_PROVENANCE_SOURCE_COUNT]; count],
     }
 }
 
@@ -129,7 +132,7 @@ fn isolated_edge_fields(
     let count = surface.cells().len();
     let (high, low, distance_m) = first_edge_cells(surface);
     let mut fields = uniform_fields(count, 0.0);
-    fields.elevation_m[high.raw() as usize] = (slope * distance_m) as f32;
+    fields.elevation_m[high.raw() as usize] = slope * distance_m;
     let mut water = vec![SurfaceWaterKind::Ocean; count];
     water[high.raw() as usize] = SurfaceWaterKind::DryLand;
     water[low.raw() as usize] = SurfaceWaterKind::DryLand;
@@ -191,7 +194,62 @@ fn nonlinear_flux_accelerates_near_critical_slope_without_inversion() {
 }
 
 #[test]
-fn normalized_edge_flux_is_resolution_invariant_before_the_shared_limiter() {
+fn finite_volume_cfl_rejects_an_unstable_step_instead_of_clipping_flux() {
+    let surface = surface(10_000.0, 42);
+    let (high, low, fields) = isolated_edge_fields(
+        &surface,
+        FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.5,
+        0.5,
+        0.5,
+        1_000.0,
+    );
+    let maximum = match NonlinearHillslopeTransport::advance(
+        &surface,
+        fields.inputs(),
+        1.0e12,
+        &mut HillslopeWorkspace::default(),
+        &BuildCancellation::new(),
+    ) {
+        Err(HillslopeGenerationError::UnstableStep { found, maximum }) => {
+            assert_eq!(found, 1.0e12);
+            maximum
+        }
+        other => panic!("an unstable explicit step must be rejected: {other:?}"),
+    };
+    assert!(maximum.is_finite() && maximum > 0.0 && maximum < 1.0e12);
+
+    let stable = NonlinearHillslopeTransport::advance(
+        &surface,
+        fields.inputs(),
+        maximum,
+        &mut HillslopeWorkspace::default(),
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let input_minimum = fields
+        .elevation_m
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let input_maximum = fields
+        .elevation_m
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(stable
+        .elevation_m()
+        .iter()
+        .all(|&elevation| (input_minimum..=input_maximum).contains(&elevation)));
+    assert!(stable.elevation_m()[high.raw() as usize] < fields.elevation_m[high.raw() as usize]);
+    assert!(stable.elevation_m()[low.raw() as usize] > fields.elevation_m[low.raw() as usize]);
+    assert_eq!(
+        stable.removed_mass_kg().to_bits(),
+        stable.deposited_mass_kg().to_bits()
+    );
+}
+
+#[test]
+fn normalized_edge_flux_is_resolution_invariant_within_the_monotone_step() {
     let slope = FORMATION_HILLSLOPE_CRITICAL_SLOPE * 0.20;
     let normalized = |target_cell_count| {
         let surface = surface(10_000.0, target_cell_count);
@@ -209,8 +267,8 @@ fn normalized_edge_flux_is_resolution_invariant_before_the_shared_limiter() {
             .iter()
             .find(|edge| edge.cells.contains(&high) && edge.cells.contains(&low))
             .unwrap();
-        let retained_slope = (f64::from(fields.elevation_m[high.raw() as usize])
-            - f64::from(fields.elevation_m[low.raw() as usize]))
+        let retained_slope = (fields.elevation_m[high.raw() as usize]
+            - fields.elevation_m[low.raw() as usize])
             / edge.center_distance.get();
         result.removed_volume_m3() / (0.001 * edge.length.get() * retained_slope)
     };

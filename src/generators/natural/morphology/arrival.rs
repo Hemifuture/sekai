@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
 
@@ -77,15 +75,6 @@ pub(in crate::generators::natural) enum ArrivalError {
     DuplicateOwner { owner: u32 },
     #[error("arrival cost overflowed while traversing from cell {cell:?}")]
     CostOverflow { cell: CellId },
-}
-
-pub(in crate::generators::natural) fn assign_arrivals(
-    topology: &NaturalTopologyIndex,
-    metric: &PositiveEdgeMetric,
-    sources: &[ArrivalSource],
-    workspace: &mut ArrivalWorkspace,
-) -> Result<ArrivalAssignment, ArrivalError> {
-    assign_arrivals_bounded(topology, metric, sources, None, workspace)
 }
 
 pub(in crate::generators::natural) fn assign_arrivals_bounded(
@@ -201,7 +190,7 @@ fn validate_inputs(
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{assign_arrivals, ArrivalSource, ArrivalWorkspace};
+    use super::{assign_arrivals_bounded, ArrivalSource, ArrivalWorkspace};
     use crate::generators::natural::morphology::metric::PositiveEdgeMetric;
     use crate::generators::natural::topology::NaturalTopologyIndex;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -301,9 +290,11 @@ mod tests {
         let sources = sources();
         let mut workspace = ArrivalWorkspace::default();
 
-        let first = assign_arrivals(&topology, &metric, &sources, &mut workspace).unwrap();
+        let first =
+            assign_arrivals_bounded(&topology, &metric, &sources, None, &mut workspace).unwrap();
         let capacities = workspace.capacities();
-        let repeated = assign_arrivals(&topology, &metric, &sources, &mut workspace).unwrap();
+        let repeated =
+            assign_arrivals_bounded(&topology, &metric, &sources, None, &mut workspace).unwrap();
 
         assert_eq!(first, repeated);
         assert_eq!(workspace.capacities(), capacities);
@@ -320,7 +311,7 @@ mod tests {
         let mut workspace = ArrivalWorkspace::default();
         let empty_capacities = workspace.capacities();
 
-        assert!(assign_arrivals(&topology, &metric, &[], &mut workspace).is_err());
+        assert!(assign_arrivals_bounded(&topology, &metric, &[], None, &mut workspace).is_err());
         assert_eq!(workspace.capacities(), empty_capacities);
 
         let duplicate_cell = [
@@ -335,7 +326,10 @@ mod tests {
                 initial_cost: 0,
             },
         ];
-        assert!(assign_arrivals(&topology, &metric, &duplicate_cell, &mut workspace).is_err());
+        assert!(
+            assign_arrivals_bounded(&topology, &metric, &duplicate_cell, None, &mut workspace)
+                .is_err()
+        );
         assert_eq!(workspace.capacities(), empty_capacities);
     }
 }

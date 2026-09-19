@@ -2,39 +2,932 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use super::{MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT};
+use super::{
+    MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT,
+    CLIMATOLOGICAL_YEAR_SECONDS, MEAN_SOLAR_DAY_SECONDS, SECONDS_PER_CLIMATOLOGICAL_MONTH,
+};
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
     ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
     SurfaceGeometryKind, SurfaceRef,
 };
-use crate::world::CellId;
+use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
+
+const MAX_GLOBAL_CIRCULATION_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
+const WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO: f64 = 0.622;
+const BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA: f64 = 611.2;
+const BOLTON_SATURATION_EXPONENT_COEFFICIENT: f64 = 17.67;
+const BOLTON_DEWPOINT_OFFSET_C: f64 = 243.5;
+const BOLTON_LCL_TEMPERATURE_OFFSET_K: f64 = 56.0;
+const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
+
+fn deserialize_global_circulation_scalars<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_vec::<_, _, MAX_GLOBAL_CIRCULATION_CELLS>(deserializer)
+}
 
 /// The first strict schema for the reconstructable climate work domain.
 pub const CLIMATE_WORK_DOMAIN_SCHEMA_V1: u16 = 1;
-/// The first public layered atmosphere-ocean climatology schema.
-pub const GLOBAL_CIRCULATION_SCHEMA_V1: u16 = 1;
+/// The physical-budget layered atmosphere-ocean climatology schema.
+pub const GLOBAL_CIRCULATION_SCHEMA_V2: u16 = 2;
 /// The first fixed-layout schema.
 pub const CLIMATE_LAYER_LAYOUT_SCHEMA_V1: u16 = 1;
-/// The first resumable climate-checkpoint identity schema.
-pub const CLIMATE_CHECKPOINT_SCHEMA_V1: u16 = 1;
+/// The forcing-phase continuation checkpoint identity schema.
+pub const CLIMATE_CHECKPOINT_SCHEMA_V2: u16 = 2;
 /// Maximum accepted radial component after publishing an `f32` tangent vector.
 pub const GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S: f64 = 1.0e-4;
 /// Maximum solver-reported relative mass, volume, moisture, or exchange error.
 pub const GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX: f64 = 1.0e-6;
 /// Energy integrates more source terms and uses a separately declared bound.
 pub const GLOBAL_CIRCULATION_ENERGY_RELATIVE_ERROR_MAX: f64 = 1.0e-5;
+/// Maximum final-cycle mismatch between globally integrated evaporation and
+/// precipitation. This is a periodic water-budget closure, not an Earth-like
+/// precipitation target.
+pub const GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX: f64 = 0.05;
+/// Maximum absolute final-cycle net TOA radiative flux.
+///
+/// The `10 W/m2` structural gate rejects a climatology that is still rapidly
+/// heating or cooling while remaining independent of an authored world's
+/// Earth-likeness. The tighter CERES comparison belongs to quality evidence.
+pub const GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2: f64 = 10.0;
 /// Public convergence threshold; generation uses a stricter 0.24 guard.
 pub const GLOBAL_CIRCULATION_FORMATION_RESIDUAL_MAX: f64 = 0.25;
 /// Absolute public ceiling across Draft/Standard/High formation cycles.
-pub const GLOBAL_CIRCULATION_FORMATION_YEARS_MAX: u16 = 12;
+pub const GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX: u16 = 12;
+/// SI integration time advanced for one climatological forcing phase.
+///
+/// This is a numerical stability choice, not the duration of a calendar month.
+/// The V2 time contract records it separately from the twelve forcing phases.
+/// Its value is the measured stable production step selected by the P4
+/// integrator comparison recorded in
+/// `2026-08-17-global-atmosphere-ocean-p4-integrator-selection.md`.
+pub const GLOBAL_CIRCULATION_MACRO_STEP_SECONDS: f64 = 7_200.0;
+/// Factor by which formation compresses local thermodynamic heat capacities
+/// (milestone A4 §6.2; Bryan 1984 distorted physics).
+///
+/// The formation advances one macro step per forcing month, so it sweeps a
+/// whole year in one model day. Matching the real per-month thermal response
+/// exactly would need `SECONDS_PER_CLIMATOLOGICAL_MONTH /
+/// GLOBAL_CIRCULATION_MACRO_STEP_SECONDS`, about `365`. Measured on
+/// 2026-09-03, that full ratio breaks two couplings this compression does not
+/// touch: the moisture cycle keeps its physical rate and answers the enlarged
+/// temperature swings with runaway condensation, and the paired-exchange
+/// residual, which shares one `f32` tendency lattice with the enlarged
+/// radiative term, rises to `5.2e-6` against a `1e-6` conservation gate.
+/// Two blockers were measured on 2026-09-03. The paired-exchange one was a
+/// gate-normalisation defect and is fixed (§6.4). The remaining one is the
+/// moisture cycle, which keeps its physical rate and answers the enlarged
+/// temperature swings with runaway condensation. The ceiling was re-measured
+/// on 2026-09-03 after that gate defect was fixed, and it did not move: `200`
+/// breaks Draft on one seed (`4637 mm` of local runoff against a `4000 mm`
+/// bound), `100` passes Draft but breaks Standard (`4050 mm`), and `60`
+/// passes seed 42 at both resolutions yet fails the Draft 32-seed cold-start
+/// sweep while passing the Standard one. Which resolution breaks first is set
+/// by the seed and its terrain, not by grid spacing, so the binding test is
+/// the 32-seed sweep at each resolution and no single seed predicts it. `30`
+/// is the value that holds at both. Raising it requires
+/// compressing the moisture cycle and dividing the published rates back,
+/// which would weaken moisture transport by the same factor and destroy the
+/// precipitation pattern.
+///
+/// The user froze the underlying trade on 2026-09-03: the radiative prior owns
+/// the zonal-mean temperature structure and the resolved dynamics owns the
+/// departures from it, so relatively weakening dynamical meridional heat
+/// transport costs nothing the published climate relies on. The published
+/// radiative flux stays in physical `W m-2` because the same effective
+/// capacity converts the retained tendency back to power.
+pub const GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION: f64 = 30.0;
+/// Earth's sidereal rotation rate (IERS Conventions 2010, Table 1.1).
+pub const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
+/// Reference gravity-wave phase speed that sizes the fast substep.
+///
+/// Retained from the P4 integrator selection
+/// (`2026-08-17-global-circulation-integrator-selection.md`); it bounds the
+/// first-baroclinic-mode speed of the layered model and is added to the
+/// measured maximum flow speed when the integrator plans its substeps.
+pub const GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
+/// Courant target of the split-explicit fast substeps.
+///
+/// The fast subsystem is advanced by the classical third-order Runge–Kutta
+/// method, whose absolute-stability region reaches `±√3` on the imaginary
+/// axis (Wicker & Skamarock 2002, Table 1), which bounds the centred
+/// gravity-wave and Coriolis terms, and `-2.51` on the real axis, which
+/// bounds the donor-cell thickness flux at a Courant number of `1.25`. The
+/// solver-comparison design (`2026-08-03`) froze `CFL ≤ 0.45` for the same
+/// discretisation; split-explicit practice runs the fast modes at Courant
+/// numbers up to about one (Skamarock et al. 2008, §3). `0.8` keeps a `1.56×`
+/// margin to the donor-cell bound and `2.2×` to the wave bound. Measured on
+/// Draft seed 42 (2026-09-02, milestone A1): the published fields differ from
+/// the earlier `0.2` by at most `1.2 %` (surface ocean current, `0.4 %` sea
+/// surface height, `< 0.1 %` for the atmosphere) with identical
+/// formation-cycle counts and final residuals, while the fast-substep count
+/// drops from `749` to `215`; a 32-seed Draft/Standard sweep converged
+/// without a single failure.
+pub const GLOBAL_CIRCULATION_FAST_CFL_TARGET: f64 = 0.8;
+/// Fewest fast substeps one macro step can legitimately report.
+///
+/// The Coriolis term alone bounds the fast step at
+/// `FAST_CFL_TARGET / (2 Ω)`, independent of grid resolution and flow speed,
+/// so every macro step needs at least the ceiling of the ratio below. The
+/// snapshot contract checks the recorded work against this derived floor.
+pub const GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP: u64 = ceil_ratio_u64(
+    GLOBAL_CIRCULATION_MACRO_STEP_SECONDS * 2.0 * EARTH_ROTATION_RATE_RAD_S,
+    GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+);
+
+const fn ceil_ratio_u64(numerator: f64, denominator: f64) -> u64 {
+    let ratio = numerator / denominator;
+    let floor = ratio as u64;
+    if floor as f64 == ratio {
+        floor
+    } else {
+        floor + 1
+    }
+}
+/// U.S. Standard Atmosphere 1976 tropospheric environmental lapse rate.
+///
+/// P4 applies this only to the overlap-weighted emergent-land elevation in
+/// its idealized lower-boundary forcing; it is not a resolved moist lapse
+/// rate or a claim about every generated atmosphere.
+pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
+/// Sea-level temperature of the U.S. Standard Atmosphere 1976.
+///
+/// This is the reference state whose tropospheric lapse rate P4 already
+/// declares just above. It fixes the vertical moisture profile that
+/// `ClimateLayerLayout::moisture_column_mass_per_area` integrates, and it is
+/// a reference profile rather than a per-cell temperature on purpose: the
+/// transport advects the intensive mixing ratio, so a spatially varying
+/// conversion from mixing ratio to water mass would stop conserving water.
+pub const STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C: f64 = 15.0;
+/// Fixed sea-level pressure used by P4's single lower-atmosphere humidity
+/// closure. P4 does not resolve pressure-dependent saturation within the
+/// lower layer, so the limitation is explicit rather than inferred from
+/// layer thickness. The value is the ISO 2533:1975 standard-atmosphere
+/// sea-level pressure.
+pub const P4_LOWER_LAYER_REFERENCE_PRESSURE_PA: f64 = 101_325.0;
+/// Dry-air reference density shared by the P4 layout and surface fluxes.
+///
+/// This is the ISO 2533:1975 standard-atmosphere sea-level value. A fixed
+/// density is consistent with P4's incompressible layer model; density-varying
+/// moist thermodynamics remain outside this milestone.
+pub const P4_REFERENCE_AIR_DENSITY_KG_M3: f64 = 1.225;
+/// Standard dry-air specific heat used by every P4 atmospheric slab.
+///
+/// Adopted from the constants table accompanying Wallace & Hobbs (2006),
+/// *Atmospheric Science: An Introductory Survey*, second edition.
+pub const P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K: f64 = 1_004.0;
+/// Conventional standard gravity used by P4 dynamics and dry parcel lifting.
+///
+/// This is the conventional value adopted by the 3rd CGPM (1901), Declaration
+/// 2, DOI `10.59161/CGPM1901DECL2E`.
+pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+/// Neutral bulk moisture-transfer coefficient over open water.
+///
+/// Large & Pond (1982), DOI
+/// `10.1175/1520-0485(1982)012<0464:SALHFM>2.0.CO;2`, report `1.15e-3`
+/// from dissipation measurements. P4 intentionally adds no unmeasured
+/// minimum-wind or gustiness term.
+pub const BULK_MOISTURE_TRANSFER_COEFFICIENT: f64 = 1.15e-3;
+/// Reference near-surface relative humidity for forcing initialization.
+///
+/// Manabe & Wetherald (1967), DOI
+/// `10.1175/1520-0469(1967)024<0241:TEOTAW>2.0.CO;2`, prescribe `0.77` at
+/// the surface. This initializes P4; it is not a relaxation target.
+pub const REFERENCE_SURFACE_RELATIVE_HUMIDITY: f64 = 0.77;
+/// Constant latent heat used by P4's water-vapor phase-change ledger.
+///
+/// Frierson, Held & Zurita-Gotor (2006), DOI `10.1175/JAS3753.1`, use the
+/// fixed `2.5 MJ/kg` reference in the idealized moist-GCM equations adopted by
+/// P4. Temperature-dependent latent heat is deferred until thermodynamic state
+/// complexity can support it without adding an orphaned approximation.
+pub const WATER_VAPORIZATION_LATENT_HEAT_J_KG: f64 = 2.5e6;
+/// GPCP V3.2 global annual-mean precipitation reference.
+///
+/// This adopts the annual global mean reported by Huffman et al. (2023), DOI
+/// `10.1175/JCLI-D-23-0123.1`. It is Earth-default evidence, not a
+/// player-world gate.
+pub const EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY: f64 = 2.81;
+/// Relative evidence envelope around the GPCP global precipitation mean.
+///
+/// This follows the multi-product global-mean spread synthesized by Adler et
+/// al. (2017), DOI `10.1007/s10712-017-9416-4`, and applies only to the frozen
+/// Earth-default corpus.
+pub const EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE: f64 = 0.07;
+/// Lower global latent-heat-flux evidence bound from Wild et al. (2015).
+pub const WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2: f64 = 70.0;
+/// Upper global latent-heat-flux evidence bound from Wild et al. (2015).
+///
+/// Wild et al., DOI `10.1007/s00382-014-2430-z`, derive the adopted evidence
+/// interval from water- and surface-energy-budget constraints.
+pub const WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2: f64 = 85.0;
+/// Lower global latent-heat-flux evidence bound from Stephens et al. (2012).
+pub const STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2: f64 = 78.0;
+/// Upper global latent-heat-flux evidence bound from Stephens et al. (2012).
+///
+/// The adopted interval follows Stephens et al., DOI `10.1038/ngeo1580`.
+pub const STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2: f64 = 98.0;
+/// Structural mass-fraction upper bound shared by legacy and layered humidity.
+///
+/// Specific humidity is water-vapor mass divided by total moist-air mass, so
+/// `1` is the definition-derived ceiling rather than an Earth calibration.
+pub const P4_MAX_SPECIFIC_HUMIDITY_KG_KG: f64 = 1.0;
+/// Grid-mean relative-humidity threshold for unresolved cloud condensation in
+/// the coarse P4 lower atmosphere.
+///
+/// SPEEDY (Molteni 2003, DOI `10.1007/s00382-002-0268-2`) uses `0.9`, but that
+/// threshold governs SPEEDY's *large-scale* condensation only: a separate
+/// convection scheme produces most of its tropical rain. P4 has no convection
+/// scheme, so this single closure carries both paths and its threshold cannot
+/// be SPEEDY's.
+///
+/// It is pinned instead on an observable P4 can be held to. Trenberth, Smith,
+/// Qian, Dai & Fasullo (2007), DOI `10.1175/JHM600.1`, put Earth's global
+/// water-vapour residence time near nine days. With the water-vapour column
+/// mass corrected (`ClimateLayerLayout::moisture_column_mass_per_area`), a
+/// threshold of `0.65` reproduces that: measured on Draft seed 42, the
+/// precipitable water is `25.0 kg/m2` against the observed `25`, the residence
+/// time is `9.5 days`, and global precipitation lands at `2.63 mm/day` against
+/// GPCP's `2.81`. Precipitation is a check here rather than a fit, because the
+/// column mass and the residence time already determine it.
+///
+/// Design 2026-09-03 A5 Task 1 records what this replaced: `0.9` held only
+/// because the humidity was converted to water mass with the dry-air column
+/// mass, which over-counted the water by a factor of `2.6` and slowed the
+/// water cycle by the same factor. The two errors cancelled in global
+/// precipitation and in nothing else.
+pub const P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY: f64 = 0.70;
+/// E-folding time for unresolved grid-mean large-scale condensation.
+///
+/// SPEEDY uses four hours for this coarse-grid closure. P4 integrates the
+/// relaxation analytically over its physical step, so it cannot overshoot its
+/// relative-humidity threshold when the step size changes.
+pub const P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS: f64 = 4.0 * 3_600.0;
+/// Broadband open-ocean albedo used by the idealized P4 lower boundary.
+///
+/// Payne (1972), DOI `10.1175/1520-0469(1972)029<0959:AOTSS>2.0.CO;2`,
+/// measured `0.061 +/- 0.005` under heavily overcast skies. P4 rounds this
+/// to `0.06` because it has no solar-angle-dependent ocean BRDF.
+pub const P4_OPEN_OCEAN_SURFACE_ALBEDO: f64 = 0.06;
+/// Snow-free land increment above the P4 open-ocean albedo.
+///
+/// The resulting full-land value is `0.22`. It is the frozen V1 aggregate
+/// prior retained by the 17-seed calibration, not a universal vegetation
+/// observation. Operational land-surface schemes commonly use roughly
+/// `0.20` for crops and grasslands (Masson et al. 2003, DOI
+/// `10.1175/1520-0442(2003)016<1261:AGDOLS>2.0.CO;2`).
+pub const P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT: f64 = 0.16;
+/// Maximum highland brightening above the snow-free P4 land prior.
+///
+/// Full brightened land therefore reaches `0.57`, within the MODIS
+/// snow-covered ecosystem climatology reported by Moody et al. (2007), DOI
+/// `10.1016/j.rse.2007.07.002`. This is a static highland proxy because P4
+/// does not resolve snow mass, aging, impurities, clouds, or solar angle.
+pub const P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT: f64 = 0.35;
+/// Start of the frozen V1 geometric highland-brightening ramp in metres.
+///
+/// This authored terrain proxy is retained to preserve the measured P4
+/// calibration corpus. It is not a physical snowline or an evidence gate;
+/// snow accumulation and melt remain outside the P4 capability boundary.
+pub const P4_HIGHLAND_ALBEDO_RAMP_ONSET_M: f64 = 1_500.0;
+/// Elevation span of the frozen V1 geometric highland-brightening ramp.
+///
+/// Together with `P4_HIGHLAND_ALBEDO_RAMP_ONSET_M`, it reaches full
+/// brightening at 5 km. The limitations documented on the onset apply here.
+pub const P4_HIGHLAND_ALBEDO_RAMP_SPAN_M: f64 = 3_500.0;
+/// Annual-mean broadband albedo of the P4 sea-ice prior (milestone A4 §4).
+///
+/// Perovich, Grenfell, Light & Hobbs (2002), DOI `10.1029/2000JC000438`,
+/// measured Arctic ice from `0.80-0.85` when cold and snow covered down to
+/// `0.40-0.50` once melt ponds open. `0.60` is the midpoint of that seasonal
+/// envelope, which is the resolution P4 can carry: it resolves neither snow on
+/// ice, nor pond fraction, nor ice age.
+pub const P4_SEA_ICE_SURFACE_ALBEDO: f64 = 0.60;
+/// Thermal conductivity of sea ice.
+///
+/// Untersteiner, N. (1961) *Arch. Met. Geophys. Bioklim. A* 12, 151-182.
+pub const SEA_ICE_THERMAL_CONDUCTIVITY_W_M_K: f64 = 2.03;
+/// Equilibrium thickness of perennial sea ice.
+///
+/// Maykut, G. A. & Untersteiner, N. (1971), DOI `10.1029/JC076i006p01550`.
+pub const SEA_ICE_EQUILIBRIUM_THICKNESS_M: f64 = 3.0;
+/// Neutral bulk sensible-heat transfer coefficient over open water.
+///
+/// Large, W. G. & Pond, S. (1982), DOI
+/// `10.1175/1520-0485(1982)012<0464:SALHFM>2.0.CO;2`.
+pub const OPEN_WATER_SENSIBLE_HEAT_TRANSFER_COEFFICIENT: f64 = 1.2e-3;
+/// Reference marine near-surface wind speed for the open-water exchange
+/// coefficient, the order of the global-mean 10 m ocean wind.
+pub const OPEN_WATER_REFERENCE_WIND_SPEED_M_S: f64 = 6.0;
+
+/// Fraction of the open-water air-sea heat exchange rate that survives under
+/// equilibrium sea ice (milestone A4 §4).
+///
+/// Ice conducts at `k / h` while open water exchanges at the bulk sensible
+/// rate `rho c_p C_H U`, so the ratio is about `0.68 / 8.9`. Momentum is not
+/// scaled: the ice still transmits wind stress to the water.
+pub fn sea_ice_heat_exchange_fraction() -> f64 {
+    let conductive = SEA_ICE_THERMAL_CONDUCTIVITY_W_M_K / SEA_ICE_EQUILIBRIUM_THICKNESS_M;
+    let open_water = P4_REFERENCE_AIR_DENSITY_KG_M3
+        * P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+        * OPEN_WATER_SENSIBLE_HEAT_TRANSFER_COEFFICIENT
+        * OPEN_WATER_REFERENCE_WIND_SPEED_M_S;
+    conductive / open_water
+}
+
+/// IAU 2015 Resolution B3 nominal total solar irradiance at 1 au.
+pub const EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2: f64 = 1_361.0;
+/// CERES EBAF Ed4 global-mean incoming shortwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 340.0;
+/// CERES EBAF Ed4 global-mean reflected shortwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 = 99.1;
+/// CERES EBAF Ed4 global-mean outgoing longwave flux (Loeb et al. 2018).
+pub const CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 240.0;
+/// CERES global-mean absorbed shortwave derived from incoming minus reflected SW.
+pub const CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2: f64 =
+    CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2
+        - CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2;
+/// CERES global-mean TOA net radiation derived as ASR minus OLR.
+pub const CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2: f64 =
+    CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2 - CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2;
+/// CERES EBAF Ed4 surface-up longwave flux (Kato et al. 2018).
+pub const CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2: f64 = 398.3;
+/// Earth planetary albedo derived from the two CERES TOA shortwave fluxes.
+pub const EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN: f64 =
+    CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2
+        / CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2;
+/// Area-weighted mean P4 surface albedo measured over the frozen 17-seed corpus.
+///
+/// The production probe and derivation are recorded in §2.2 of
+/// `2026-08-23-p4-physical-budget-correction-design.md`.
+pub const EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN: f64 = 0.094_949_501_628_588_96;
+/// Unresolved atmospheric shortwave reflectance calibrated to CERES albedo.
+///
+/// Derived as `(planetary - surface) / (1 - surface)` from the two constants
+/// above; it is not fitted to a generated temperature or precipitation field.
+pub const EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE: f64 = (EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN
+    - EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN)
+    / (1.0 - EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN);
+/// Stefan–Boltzmann constant from the 2018 CODATA/SI exact-constant relation.
+pub const STEFAN_BOLTZMANN_CONSTANT_W_M2_K4: f64 = 5.670_374_419e-8;
+/// Gray greenhouse temperature offset derived from CERES surface-up LW and ASR.
+///
+/// `34.19751176932721 K = (398.3/sigma)^0.25 - (240.9/sigma)^0.25` using
+/// Loeb et al. (2018), Kato et al. (2018), and the CODATA constant above.
+pub const EARTH_GRAY_GREENHOUSE_OFFSET_K: f64 = 34.197_511_769_327_21;
+/// Structural serialization ceiling for nonnegative radiative flux fields.
+///
+/// Twice the IAU nominal irradiance leaves room for transient OLR while
+/// rejecting corrupt infinities and implausible payloads; it is not a quality
+/// target or an Earth-climate tuning coefficient.
+pub const GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2: f64 =
+    2.0 * EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2;
 /// Locked dense-owner memory budget for the High C2 product.
 pub const GLOBAL_CIRCULATION_DENSE_STATE_BYTES_MAX: u64 = 512 * 1024 * 1024;
 
-pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64) {
+/// Fingerprints every numeric fact consumed by the P4 moist-thermodynamic
+/// closures, including the private Bolton/LCL coefficients.
+///
+/// Keeping this identity beside the formulas prevents a coefficient change
+/// from bypassing the generator's equation identity merely because the
+/// coefficient has the minimum private visibility.
+pub(crate) fn p4_thermodynamic_constants_fingerprint() -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sekai.p4-thermodynamic-constants.v1\0");
+    for value in [
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO,
+        BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA,
+        BOLTON_SATURATION_EXPONENT_COEFFICIENT,
+        BOLTON_DEWPOINT_OFFSET_C,
+        BOLTON_LCL_TEMPERATURE_OFFSET_K,
+        BOLTON_LCL_LOG_COEFFICIENT_K,
+        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA,
+        P4_REFERENCE_AIR_DENSITY_KG_M3,
+        P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
+        STANDARD_GRAVITY_M_S2,
+        BULK_MOISTURE_TRANSFER_COEFFICIENT,
+        WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+        P4_MAX_SPECIFIC_HUMIDITY_KG_KG,
+        P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
+        P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
+    ] {
+        hasher.update(&value.to_bits().to_le_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// Combines the unresolved atmosphere and resolved surface without duplicating
+/// the CERES calibration formula in generators, tests, quality, or UI code.
+pub fn planetary_albedo_from_surface(surface_albedo: f64) -> f64 {
+    EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE
+        + (1.0 - EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE) * surface_albedo.clamp(0.0, 1.0)
+}
+
+/// Converts P4's water-equivalent evaporation rate to latent heat flux.
+///
+/// In P4, `1 mm` water equivalent is `1 kg/m2`; dividing the fixed latent
+/// energy by the exact SI day makes this the only mm/day-to-W/m2 conversion
+/// used by evidence and presentation.
+pub fn latent_heat_flux_w_m2_from_evaporation_mm_day(evaporation_mm_day: f64) -> f64 {
+    evaporation_mm_day * WATER_VAPORIZATION_LATENT_HEAT_J_KG / MEAN_SOLAR_DAY_SECONDS
+}
+
+/// Reduces twelve equal-duration climatological forcing phases to their mean.
+///
+/// P4 publishes monthly phase means rather than a weather trajectory. The
+/// frozen time contract gives every phase the same climatological duration,
+/// so the annual mean is the arithmetic mean of the twelve values.
+pub fn climatological_monthly_mean(monthly: &[f32; CLIMATE_MONTH_COUNT]) -> f32 {
+    (monthly.iter().map(|value| f64::from(*value)).sum::<f64>() / CLIMATE_MONTH_COUNT as f64) as f32
+}
+
+/// Expands twelve mean daily water-equivalent rates to one climatological total.
+///
+/// The result remains `f64` so a renderer can reject an unrepresentable `f32`
+/// payload rather than silently clamp a physically published rate.
+pub fn climatological_annual_total_mm(monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT]) -> f64 {
+    monthly_mm_day
+        .iter()
+        .map(|value| f64::from(*value))
+        .sum::<f64>()
+        / CLIMATE_MONTH_COUNT as f64
+        * CLIMATOLOGICAL_YEAR_SECONDS
+        / MEAN_SOLAR_DAY_SECONDS
+}
+
+/// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar
+/// geometry fraction and resolved surface albedo.
+pub fn absorbed_shortwave_w_m2(daily_mean_insolation_fraction: f64, surface_albedo: f64) -> f64 {
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
+        * daily_mean_insolation_fraction.max(0.0)
+        * (1.0 - planetary_albedo_from_surface(surface_albedo))
+}
+
+/// Integrates `q_sat(T_ref - lapse * z) / q_sat(T_ref)` over one height
+/// interval, in metres, by Simpson's rule on a fixed lattice.
+fn reference_moisture_profile_integral_m(base_height_m: f64, thickness_m: f64) -> f64 {
+    if !base_height_m.is_finite() || !thickness_m.is_finite() || thickness_m <= 0.0 {
+        return 0.0;
+    }
+    let surface_saturation =
+        saturation_specific_humidity_kg_kg(STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C);
+    if surface_saturation <= 0.0 {
+        return 0.0;
+    }
+    let intervals = MOISTURE_COLUMN_INTEGRATION_INTERVALS;
+    let step = thickness_m / intervals as f64;
+    let weight_at = |index: usize| -> f64 {
+        let height = base_height_m + step * index as f64;
+        let temperature = STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C
+            - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * height;
+        saturation_specific_humidity_kg_kg(temperature) / surface_saturation
+    };
+    let mut total = weight_at(0) + weight_at(intervals);
+    for index in 1..intervals {
+        let multiplier = if index % 2 == 0 { 2.0 } else { 4.0 };
+        total += multiplier * weight_at(index);
+    }
+    total * step / 3.0
+}
+
+/// Gray-body equilibrium surface temperature implied by absorbed shortwave.
+pub fn gray_equilibrium_surface_temperature_c(absorbed_shortwave_w_m2: f64) -> f64 {
+    (absorbed_shortwave_w_m2.max(0.0) / STEFAN_BOLTZMANN_CONSTANT_W_M2_K4).powf(0.25)
+        + EARTH_GRAY_GREENHOUSE_OFFSET_K
+        - 273.15
+}
+
+/// Linearized gray outgoing longwave around the local radiative-equilibrium
+/// target. The intercept is the same ASR that constructed the target, so
+/// authored lapse-rate offsets do not create a fictitious TOA source.
+pub fn linearized_outgoing_longwave_w_m2(
+    absorbed_shortwave_w_m2: f64,
+    equilibrium_surface_temperature_c: f64,
+    resolved_surface_temperature_c: f64,
+) -> f64 {
+    (absorbed_shortwave_w_m2
+        + gray_longwave_slope_w_m2_k(equilibrium_surface_temperature_c)
+            * (resolved_surface_temperature_c - equilibrium_surface_temperature_c))
+        .max(0.0)
+}
+
+/// Gray longwave slope `B = 4 sigma T_e^3` at the emission temperature of one
+/// surface target (the `B` of the Budyko 1969 / North 1975 `A + B T` law).
+pub fn gray_longwave_slope_w_m2_k(equilibrium_surface_temperature_c: f64) -> f64 {
+    let emission_temperature_k =
+        (equilibrium_surface_temperature_c + 273.15 - EARTH_GRAY_GREENHOUSE_OFFSET_K).max(1.0);
+    4.0 * STEFAN_BOLTZMANN_CONSTANT_W_M2_K4 * emission_temperature_k.powi(3)
+}
+
+/// Storage-consistent seasonal equilibrium of one radiatively forced column
+/// (milestone A4, `2026-09-03-p4-water-heat-correction-design.md` §3.1).
+///
+/// Solves the linear energy-balance equation `C dT/dt = ASR(t) - [ASR_ann +
+/// B (T - T_ann)]` (Budyko 1969; North & Coakley 1979) with piecewise-constant
+/// monthly absorbed shortwave, exactly per month, and returns the month means
+/// of its unique periodic solution. The 12-month mean of the result equals
+/// `annual_equilibrium_temperature_c` identically; the single-harmonic limit is
+/// the North & Coakley amplitude `dF / sqrt(B^2 + (omega C)^2)` and lag
+/// `atan(omega C / B)`. Polar night stays finite: the instantaneous floor is
+/// `T_ann - ASR_ann / B`, further damped by storage.
+pub fn seasonal_storage_equilibrium_temperature_c(
+    monthly_absorbed_shortwave_w_m2: &[f64; CLIMATE_MONTH_COUNT],
+    annual_equilibrium_temperature_c: f64,
+    longwave_slope_w_m2_k: f64,
+    heat_capacity_j_m2_k: f64,
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    let annual_absorbed_shortwave =
+        monthly_absorbed_shortwave_w_m2.iter().sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
+    let mut instantaneous = [0.0_f64; CLIMATE_MONTH_COUNT];
+    for (target, absorbed) in instantaneous
+        .iter_mut()
+        .zip(monthly_absorbed_shortwave_w_m2)
+    {
+        *target = annual_equilibrium_temperature_c
+            + (absorbed - annual_absorbed_shortwave) / longwave_slope_w_m2_k;
+    }
+    // Exact exponential integration of one month with constant forcing:
+    // T_{m+1} = T_eq,m + (T_m - T_eq,m) r, r = exp(-B dt / C).
+    let decay = longwave_slope_w_m2_k * SECONDS_PER_CLIMATOLOGICAL_MONTH / heat_capacity_j_m2_k;
+    let retained = (-decay).exp();
+    // Periodic fixed point of the 12-month affine map.
+    let mut weighted = 0.0_f64;
+    let mut weight = 1.0 - retained;
+    for target in instantaneous.iter().rev() {
+        weighted += weight * target;
+        weight *= retained;
+    }
+    let cycle_retained = retained.powi(CLIMATE_MONTH_COUNT as i32);
+    let mut start = if cycle_retained < 1.0 {
+        weighted / (1.0 - cycle_retained)
+    } else {
+        annual_equilibrium_temperature_c
+    };
+    // Month mean of the exponential approach: T_eq + (T_m - T_eq) (1 - r) / (B dt / C).
+    let mean_factor = if decay > 0.0 {
+        (1.0 - retained) / decay
+    } else {
+        1.0
+    };
+    let mut months = [0.0_f64; CLIMATE_MONTH_COUNT];
+    for (month, target) in months.iter_mut().zip(instantaneous) {
+        *month = target + (start - target) * mean_factor;
+        start = target + (start - target) * retained;
+    }
+    months
+}
+
+/// Heat capacity per unit area of the seasonal storage columns that the
+/// forcing targets integrate: the lower atmosphere and the ocean mixed layer
+/// of the production profile (`ClimateModelProfile::C2LayeredV1`), in
+/// `J m-2 K-1`. The forcing is profile-independent, so the production layout
+/// is the single source of these capacities.
+pub fn p4_seasonal_storage_heat_capacities_j_m2_k() -> (f64, f64) {
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+    let capacity = |role: ClimateLayerRole| {
+        let layer = layout
+            .layers()
+            .iter()
+            .find(|layer| layer.role() == role)
+            .expect("production layout declares the storage roles");
+        layer.density_kg_m3() * layer.reference_thickness_m() * layer.heat_capacity_j_kg_k()
+    };
+    (
+        capacity(ClimateLayerRole::LowerAtmosphere),
+        capacity(ClimateLayerRole::OceanMixedLayer),
+    )
+}
+
+/// Bolton (1980) saturation specific humidity at the fixed P4 lower-layer
+/// reference pressure, in kg/kg.
+///
+/// Bolton's Eq. 10 gives saturation vapor pressure as
+/// `611.2 exp(17.67 T / (T + 243.5)) Pa`; the denominator below converts
+/// vapor pressure to specific humidity rather than mixing ratio.
+pub fn saturation_specific_humidity_kg_kg(temperature_c: f64) -> f64 {
+    saturation_specific_humidity_and_temperature_derivative(temperature_c).0
+}
+
+fn saturation_specific_humidity_and_temperature_derivative(temperature_c: f64) -> (f64, f64) {
+    let saturation_vapor_pressure_pa = BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA
+        * (BOLTON_SATURATION_EXPONENT_COEFFICIENT * temperature_c
+            / (temperature_c + BOLTON_DEWPOINT_OFFSET_C))
+            .exp();
+    let denominator = P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+        - (1.0 - WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO) * saturation_vapor_pressure_pa;
+    let raw_humidity =
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO * saturation_vapor_pressure_pa / denominator;
+    let humidity = raw_humidity.clamp(0.0, P4_MAX_SPECIFIC_HUMIDITY_KG_KG);
+    let derivative = if humidity != raw_humidity || !humidity.is_finite() {
+        0.0
+    } else {
+        let vapor_pressure_temperature_derivative = saturation_vapor_pressure_pa
+            * BOLTON_SATURATION_EXPONENT_COEFFICIENT
+            * BOLTON_DEWPOINT_OFFSET_C
+            / (temperature_c + BOLTON_DEWPOINT_OFFSET_C).powi(2);
+        WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO
+            * P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+            * vapor_pressure_temperature_derivative
+            / denominator.powi(2)
+    };
+    (humidity, derivative)
+}
+
+/// Diagnoses neutral near-surface air humidity from P4's deep lower slab.
+///
+/// Large–Pond bulk transfer is a near-surface neutral closure, whereas P4's
+/// prognostic lower atmosphere has the deep slab extent declared by
+/// `ClimateLayerLayout`. Directly subtracting that cold slab's specific
+/// humidity from saturation at the warmer ocean surface spuriously counts the
+/// slab's vertical temperature contrast as an air–sea humidity deficit. This
+/// zero-parameter closure preserves the slab's resolved relative humidity
+/// while evaluating it at the surface temperature, consistent with P4's
+/// existing Manabe–Wetherald relative-humidity state.
+pub fn neutral_surface_air_specific_humidity_kg_kg(
+    surface_temperature_c: f64,
+    lower_temperature_c: f64,
+    lower_specific_humidity_kg_kg: f64,
+) -> f64 {
+    let lower_saturation = saturation_specific_humidity_kg_kg(lower_temperature_c);
+    let relative_humidity = if lower_saturation > 0.0 {
+        (lower_specific_humidity_kg_kg / lower_saturation).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    relative_humidity * saturation_specific_humidity_kg_kg(surface_temperature_c)
+}
+
+/// Large–Pond neutral bulk evaporation from an explicitly wet surface.
+pub fn bulk_surface_evaporation_kg_m2_s(
+    surface_temperature_c: f64,
+    lower_specific_humidity_kg_kg: f64,
+    lower_wind_speed_m_s: f64,
+    water_fraction: f64,
+) -> f64 {
+    P4_REFERENCE_AIR_DENSITY_KG_M3
+        * BULK_MOISTURE_TRANSFER_COEFFICIENT
+        * lower_wind_speed_m_s.max(0.0)
+        * (saturation_specific_humidity_kg_kg(surface_temperature_c)
+            - lower_specific_humidity_kg_kg)
+            .max(0.0)
+        * water_fraction.clamp(0.0, 1.0)
+}
+
+/// Smith raw-upslope condensation source in kg/m2/s.
+pub fn raw_orographic_condensation_kg_m2_s(
+    lower_specific_humidity_kg_kg: f64,
+    upslope_velocity_m_s: f64,
+) -> f64 {
+    P4_REFERENCE_AIR_DENSITY_KG_M3
+        * lower_specific_humidity_kg_kg.max(0.0)
+        * upslope_velocity_m_s.max(0.0)
+}
+
+/// Integrates the raw Smith upslope source only after a parcel reaches its LCL.
+///
+/// Smith & Barstad (2004), DOI
+/// `10.1175/1520-0469(2004)061<1377:ALTOOP>2.0.CO;2`, derive their linear
+/// source for saturated or near-saturated flow. Bolton's Eq. 15 diagnoses the
+/// lifting-condensation temperature from the resolved temperature and
+/// humidity; dry-adiabatic lifting converts it to LCL height. The returned
+/// source is the raw Smith rate multiplied by the fraction of one resolved-cell
+/// terrain ascent above the LCL. The ascent follows the wind-aligned slope over
+/// the cell's area-derived characteristic length, so the physical tendency is
+/// continuous, time-step independent, and introduces no empirical
+/// relative-humidity switch.
+pub fn lcl_adjusted_orographic_condensation_kg_m2_s(
+    specific_humidity_kg_kg: f64,
+    temperature_c: f64,
+    upslope_velocity_m_s: f64,
+    horizontal_wind_speed_m_s: f64,
+    resolved_cell_area_m2: f64,
+) -> f64 {
+    if !specific_humidity_kg_kg.is_finite()
+        || !temperature_c.is_finite()
+        || !upslope_velocity_m_s.is_finite()
+        || !horizontal_wind_speed_m_s.is_finite()
+        || !resolved_cell_area_m2.is_finite()
+        || specific_humidity_kg_kg <= 0.0
+        || upslope_velocity_m_s <= 0.0
+        || horizontal_wind_speed_m_s <= 0.0
+        || resolved_cell_area_m2 <= 0.0
+    {
+        return 0.0;
+    }
+    let saturation = saturation_specific_humidity_kg_kg(temperature_c);
+    if saturation <= 0.0 {
+        return 0.0;
+    }
+    let raw_source = raw_orographic_condensation_kg_m2_s(
+        specific_humidity_kg_kg.min(saturation),
+        upslope_velocity_m_s,
+    );
+    if specific_humidity_kg_kg >= saturation {
+        return raw_source;
+    }
+
+    let humidity = specific_humidity_kg_kg.min(P4_MAX_SPECIFIC_HUMIDITY_KG_KG);
+    let vapor_pressure_pa = humidity * P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
+        / (WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO
+            + (1.0 - WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO) * humidity);
+    let logarithmic_pressure_ratio =
+        (vapor_pressure_pa / BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA).ln();
+    let dewpoint_denominator = BOLTON_SATURATION_EXPONENT_COEFFICIENT - logarithmic_pressure_ratio;
+    if !logarithmic_pressure_ratio.is_finite() || dewpoint_denominator <= 0.0 {
+        return 0.0;
+    }
+    let dewpoint_k =
+        BOLTON_DEWPOINT_OFFSET_C * logarithmic_pressure_ratio / dewpoint_denominator + 273.15;
+    let temperature_k = temperature_c + 273.15;
+    if dewpoint_k <= BOLTON_LCL_TEMPERATURE_OFFSET_K || temperature_k <= 0.0 {
+        return 0.0;
+    }
+    let lcl_denominator = 1.0 / (dewpoint_k - BOLTON_LCL_TEMPERATURE_OFFSET_K)
+        + (temperature_k / dewpoint_k).ln() / BOLTON_LCL_LOG_COEFFICIENT_K;
+    if !lcl_denominator.is_finite() || lcl_denominator <= 0.0 {
+        return 0.0;
+    }
+    let lcl_temperature_k = 1.0 / lcl_denominator + BOLTON_LCL_TEMPERATURE_OFFSET_K;
+    let lcl_height_m = (temperature_k - lcl_temperature_k).max(0.0)
+        * P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+        / STANDARD_GRAVITY_M_S2;
+    let uplift_m = upslope_velocity_m_s / horizontal_wind_speed_m_s * resolved_cell_area_m2.sqrt();
+    let saturated_path_fraction = ((uplift_m - lcl_height_m) / uplift_m).clamp(0.0, 1.0);
+    raw_source * saturated_path_fraction
+}
+
+/// Coarse-grid large-scale condensation with moist-enthalpy-conserving
+/// saturation adjustment.
+///
+/// Supersaturation is first projected to saturation along the local
+/// `c_p T + L_v q` conservation curve. Excess humidity above the unresolved
+/// cloud threshold then decays analytically on that same curve. Expressing the
+/// relaxation in threshold-relative humidity makes the endpoint independent
+/// of how a physical interval is partitioned into numerical steps, while the
+/// matching latent-heat tendency supplies exactly the diagnosed warming. The
+/// bracketed Newton solve follows the safeguarded Newton/bisection pattern of
+/// Press et al. (2007), *Numerical Recipes*, third edition, section 9.4.
+pub fn large_scale_condensation_kg_m2_s(
+    specific_humidity_kg_kg: f64,
+    temperature_c: f64,
+    moisture_column_mass_kg_m2: f64,
+    dry_column_mass_kg_m2: f64,
+    step_seconds: f64,
+) -> f64 {
+    if !specific_humidity_kg_kg.is_finite()
+        || !temperature_c.is_finite()
+        || !moisture_column_mass_kg_m2.is_finite()
+        || !dry_column_mass_kg_m2.is_finite()
+        || !step_seconds.is_finite()
+        || specific_humidity_kg_kg <= 0.0
+        || moisture_column_mass_kg_m2 <= 0.0
+        || dry_column_mass_kg_m2 <= 0.0
+        || step_seconds <= 0.0
+    {
+        return 0.0;
+    }
+    let latent_heating_mass_ratio = moisture_column_mass_kg_m2 / dry_column_mass_kg_m2;
+    let humidity = specific_humidity_kg_kg.max(0.0);
+    let saturation = saturation_specific_humidity_kg_kg(temperature_c);
+    let (saturation_adjusted_humidity, saturation_adjusted_temperature) = if humidity > saturation {
+        let adjusted = solve_moist_enthalpy_humidity_endpoint(
+            humidity,
+            temperature_c,
+            humidity,
+            1.0,
+            0.0,
+            latent_heating_mass_ratio,
+        );
+        (
+            adjusted,
+            moist_enthalpy_temperature_c(
+                humidity,
+                temperature_c,
+                adjusted,
+                latent_heating_mass_ratio,
+            ),
+        )
+    } else {
+        (humidity, temperature_c)
+    };
+    let cloudy_excess = (saturation_adjusted_humidity
+        - P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY
+            * saturation_specific_humidity_kg_kg(saturation_adjusted_temperature))
+    .max(0.0);
+    if cloudy_excess == 0.0 {
+        return 0.0;
+    }
+    let remaining_cloudy_excess =
+        cloudy_excess * (-step_seconds / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS).exp();
+    let adjusted_humidity = solve_moist_enthalpy_humidity_endpoint(
+        humidity,
+        temperature_c,
+        saturation_adjusted_humidity,
+        P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY,
+        remaining_cloudy_excess,
+        latent_heating_mass_ratio,
+    );
+    moisture_column_mass_kg_m2 * (humidity - adjusted_humidity).max(0.0) / step_seconds
+}
+
+/// Temperature reached by condensing from `initial` to `adjusted`.
+///
+/// The mixing ratio belongs to the water-vapour column and the heat capacity
+/// to the dry-air column, so the released heat is `L * M_q * dq` spread over
+/// `c_p * M_dry`. `latent_heating_mass_ratio` is `M_q / M_dry`; passing `1`
+/// recovers the single-column form (design 2026-09-03 A5 Task 1).
+fn moist_enthalpy_temperature_c(
+    initial_humidity_kg_kg: f64,
+    initial_temperature_c: f64,
+    adjusted_humidity_kg_kg: f64,
+    latent_heating_mass_ratio: f64,
+) -> f64 {
+    initial_temperature_c
+        + latent_heating_mass_ratio
+            * WATER_VAPORIZATION_LATENT_HEAT_J_KG
+            * (initial_humidity_kg_kg - adjusted_humidity_kg_kg)
+            / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+}
+
+fn solve_moist_enthalpy_humidity_endpoint(
+    initial_humidity_kg_kg: f64,
+    initial_temperature_c: f64,
+    upper_humidity_kg_kg: f64,
+    relative_humidity: f64,
+    remaining_cloudy_excess_kg_kg: f64,
+    latent_heating_mass_ratio: f64,
+) -> f64 {
+    let residual_and_derivative = |adjusted_humidity_kg_kg: f64| {
+        let adjusted_temperature_c = moist_enthalpy_temperature_c(
+            initial_humidity_kg_kg,
+            initial_temperature_c,
+            adjusted_humidity_kg_kg,
+            latent_heating_mass_ratio,
+        );
+        let (saturation, saturation_temperature_derivative) =
+            saturation_specific_humidity_and_temperature_derivative(adjusted_temperature_c);
+        (
+            adjusted_humidity_kg_kg
+                - relative_humidity * saturation
+                - remaining_cloudy_excess_kg_kg,
+            1.0 + relative_humidity
+                * latent_heating_mass_ratio
+                * WATER_VAPORIZATION_LATENT_HEAT_J_KG
+                / P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K
+                * saturation_temperature_derivative,
+        )
+    };
+    let mut lower = 0.0;
+    let mut upper = upper_humidity_kg_kg;
+    debug_assert!(residual_and_derivative(lower).0 <= 0.0);
+    debug_assert!(residual_and_derivative(upper).0 >= 0.0);
+    let mut candidate = upper;
+    for _ in 0..f64::MANTISSA_DIGITS {
+        let (residual, derivative) = residual_and_derivative(candidate);
+        if residual == 0.0 {
+            return candidate;
+        }
+        if residual < 0.0 {
+            lower = candidate;
+        } else {
+            upper = candidate;
+        }
+        let midpoint = lower + 0.5 * (upper - lower);
+        if midpoint == lower || midpoint == upper {
+            return midpoint;
+        }
+        let newton = candidate - residual / derivative;
+        let next = if newton > lower && newton < upper && newton != candidate {
+            newton
+        } else {
+            midpoint
+        };
+        if next == candidate {
+            return next;
+        }
+        candidate = next;
+    }
+    lower + 0.5 * (upper - lower)
+}
+
+/// Symmetric relative mismatch used by the production water-cycle gate and
+/// every downstream quality/UI consumer.
+pub fn water_cycle_relative_imbalance(
+    evaporation_global_mean_mm_day: f64,
+    precipitation_global_mean_mm_day: f64,
+) -> f64 {
+    (evaporation_global_mean_mm_day - precipitation_global_mean_mm_day).abs()
+        / evaporation_global_mean_mm_day
+            .abs()
+            .max(precipitation_global_mean_mm_day.abs())
+            .max(f64::MIN_POSITIVE)
+}
+
+pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64, u64) {
     // Conservative simultaneous dense-owner upper bound:
     //
-    // states (7): generation state/before/previous-year plus split advanced
+    // states (7): generation state/before/previous-cycle plus split advanced
     // and RK3 stage-two/stage-three/result during assignment;
     // tendencies (5): retained full diagnostic plus the maximum nested
     // tendency construction allowance used by full/fast evaluation;
@@ -42,32 +935,36 @@ pub(crate) const fn global_circulation_owner_inventory() -> (u64, u64, u64, u64)
     // combine return value;
     // vector temporaries (3): height gradient, Coriolis acceleration, and
     // thermal gradient in the full tendency role loop. The persistent
-    // workspace vector is counted separately in `workspace_bytes`.
-    (7, 5, 5, 3)
+    // workspace vector is counted separately in `workspace_bytes`;
+    // publication outputs (1): projected vectors are moved into
+    // `Monthly*Field` and then into `GlobalCirculationFields` without a
+    // second dense allocation.
+    (7, 5, 5, 3, 1)
 }
 
 const fn global_circulation_dense_profile_inventory(
     profile: ClimateModelProfile,
-) -> (u64, u64, u64, u64, u64) {
+) -> (u64, u64, u64, u64, u64, u64) {
     match profile {
-        ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 13, 13),
-        // C2 work has three vector fields plus eleven scalar fields; depth is
-        // derived from the projected height anomaly and owns no work Vec.
-        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 20, 24),
+        ClimateModelProfile::C1SingleLayerV1 => (2, 1, 0, 16, 16, 1),
+        // C2 work has four vector fields plus fourteen monthly scalar fields;
+        // thermocline depth is derived at publication. The static output is
+        // surface albedo.
+        ClimateModelProfile::C2LayeredV1 => (4, 2, 1, 26, 27, 1),
     }
 }
 
 pub(crate) fn global_circulation_tendency_cell_bytes(profile: ClimateModelProfile) -> u64 {
-    let (active_layers, humidity_fields, reservoir_fields, _, _) =
+    let (active_layers, humidity_fields, reservoir_fields, _, _, _) =
         global_circulation_dense_profile_inventory(profile);
     let f32_bytes = std::mem::size_of::<f32>() as u64;
     let f64_bytes = std::mem::size_of::<f64>() as u64;
     let layer_cell_bytes = 2 * f32_bytes + std::mem::size_of::<[f32; 3]>() as u64;
     active_layers * layer_cell_bytes
-        + (humidity_fields + reservoir_fields + 2) * f32_bytes
-        // `LayeredClimateTendency::external_moisture_tendency_s_inv` retains
-        // the quantized physical source/sink contribution per cell in f64.
-        + f64_bytes
+        + (humidity_fields + reservoir_fields + 3) * f32_bytes
+        // The retained external moisture and radiative ledgers preserve the
+        // exact extensive contributions per cell in f64.
+        + 2 * f64_bytes
 }
 
 /// Returns the mechanically-derived conservative peak dense-owner inventory
@@ -89,9 +986,15 @@ pub fn expected_global_circulation_dense_state_bytes(
     let f64_bytes = std::mem::size_of::<f64>() as u64;
     let vector_f32_bytes = std::mem::size_of::<[f32; 3]>() as u64;
     let vector_f64_bytes = std::mem::size_of::<[f64; 3]>() as u64;
-    let (active_layers, humidity_fields, reservoir_fields, work_components, output_components) =
-        global_circulation_dense_profile_inventory(profile);
-    let (state_owners, tendency_owners, derivative_owners, vector_temps) =
+    let (
+        active_layers,
+        humidity_fields,
+        reservoir_fields,
+        work_components,
+        monthly_output_components,
+        static_output_components,
+    ) = global_circulation_dense_profile_inventory(profile);
+    let (state_owners, tendency_owners, derivative_owners, vector_temps, publication_output_owners) =
         global_circulation_owner_inventory();
 
     let layer_cell_bytes = 2 * f32_bytes + vector_f32_bytes;
@@ -103,6 +1006,7 @@ pub fn expected_global_circulation_dense_state_bytes(
         .checked_add(7 * f64_bytes)?
         .checked_add(f32_bytes + u32_bytes)?;
     let workspace_cell_bytes = f32_bytes
+        .checked_add(f64_bytes)?
         .checked_add(vector_f32_bytes)?
         .checked_add(transport_cell_bytes)?;
     let workspace_edge_bytes = f32_bytes + 2 * f64_bytes;
@@ -133,8 +1037,11 @@ pub fn expected_global_circulation_dense_state_bytes(
         .checked_add(workspace_bytes.checked_mul(2)?)?;
 
     let output_bytes = output_cells
-        .checked_mul(output_components)?
-        .checked_mul(months)?
+        .checked_mul(
+            monthly_output_components
+                .checked_mul(months)?
+                .checked_add(static_output_components)?,
+        )?
         .checked_mul(f32_bytes)?;
     let remap_scratch = climate_cells
         .checked_mul(std::mem::size_of::<[f64; 2]>() as u64 + f64_bytes)?
@@ -142,7 +1049,7 @@ pub fn expected_global_circulation_dense_state_bytes(
             output_cells.checked_mul(std::mem::size_of::<[f64; 2]>() as u64 + f64_bytes)?,
         )?;
     let publication_peak = work_bytes
-        .checked_add(output_bytes.checked_mul(2)?)?
+        .checked_add(output_bytes.checked_mul(publication_output_owners)?)?
         .checked_add(remap_scratch)?;
     Some(formation_peak.max(publication_peak))
 }
@@ -274,15 +1181,58 @@ where
     deserialize_bounded_vec::<_, _, 5>(deserializer)
 }
 
+/// Simpson intervals used to integrate the reference moisture profile. The
+/// integrand is smooth and monotone, so this is far past convergence; it is
+/// fixed rather than adaptive to keep the result bit-reproducible.
+const MOISTURE_COLUMN_INTEGRATION_INTERVALS: usize = 1_024;
+
 impl ClimateLayerLayout {
+    /// Water-vapour column mass of one atmosphere layer, `kg m-2`.
+    ///
+    /// A P4 atmosphere layer carries near-surface intensive values: the bulk
+    /// evaporation reads its humidity as the air the sea exchanges with, the
+    /// condensation threshold compares that humidity against saturation at the
+    /// same temperature, and the published air temperature is compared against
+    /// Earth's 2 m field. Converting that humidity to water mass with the
+    /// layer's dry-air column mass therefore over-counts, because water is not
+    /// distributed like dry air. Under uniform relative humidity (Manabe &
+    /// Wetherald 1967) the mixing ratio follows `q_sat(T(z))`, which the
+    /// standard lapse rate concentrates in the lowest couple of kilometres:
+    ///
+    /// ```text
+    /// M_q = rho * integral over the layer of q_sat(T_ref - lapse * z) / q_sat(T_ref) dz
+    /// ```
+    ///
+    /// The integrand is the model's own saturation curve, so this introduces
+    /// no coefficient of its own. Ocean roles have no water-vapour column and
+    /// return zero.
+    pub fn moisture_column_mass_per_area(&self, role: ClimateLayerRole) -> f64 {
+        let mut base_height_m = 0.0_f64;
+        for layer in self.layers() {
+            if !matches!(
+                layer.role(),
+                ClimateLayerRole::LowerAtmosphere | ClimateLayerRole::UpperAtmosphere
+            ) {
+                continue;
+            }
+            let thickness = layer.reference_thickness_m();
+            if layer.role() == role {
+                return layer.density_kg_m3()
+                    * reference_moisture_profile_integral_m(base_height_m, thickness);
+            }
+            base_height_m += thickness;
+        }
+        0.0
+    }
+
     /// Returns the only legal layout for a closed model profile.
     pub fn for_profile(profile: ClimateModelProfile) -> Self {
         let atmosphere = |role, thickness| ClimateLayerSpec {
             role,
             dynamically_active: true,
             reference_thickness_m: thickness,
-            density_kg_m3: 1.225,
-            heat_capacity_j_kg_k: 1_004.0,
+            density_kg_m3: P4_REFERENCE_AIR_DENSITY_KG_M3,
+            heat_capacity_j_kg_k: P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
         };
         let ocean = |role, thickness, active| ClimateLayerSpec {
             role,
@@ -331,7 +1281,7 @@ impl ClimateLayerLayout {
                         heat_exchange_time_s: Some(90.0 * 86_400.0),
                         momentum_exchange_time_s: Some(90.0 * 86_400.0),
                         moisture_exchange_time_s: None,
-                        water_only: false,
+                        water_only: true,
                     },
                     ClimateLayerExchangeSpec {
                         first: ClimateLayerRole::OceanThermocline,
@@ -339,7 +1289,7 @@ impl ClimateLayerLayout {
                         heat_exchange_time_s: Some(200.0 * 365.25 * 86_400.0),
                         momentum_exchange_time_s: None,
                         moisture_exchange_time_s: None,
-                        water_only: false,
+                        water_only: true,
                     },
                 ],
             ),
@@ -632,7 +1582,7 @@ pub struct ClimateCheckpoint {
     model_fingerprint: [u8; 32],
     input_fingerprint: [u8; 32],
     quantization: ClimateQuantizationId,
-    completed_months: u32,
+    completed_phase_steps: u32,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -649,7 +1599,7 @@ struct ClimateCheckpointWire {
     model_fingerprint: [u8; 32],
     input_fingerprint: [u8; 32],
     quantization: ClimateQuantizationId,
-    completed_months: u32,
+    completed_phase_steps: u32,
     state_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
 }
@@ -665,11 +1615,11 @@ impl ClimateCheckpoint {
         model_fingerprint: [u8; 32],
         input_fingerprint: [u8; 32],
         quantization: ClimateQuantizationId,
-        completed_months: u32,
+        completed_phase_steps: u32,
         state_fingerprint: [u8; 32],
     ) -> Result<Self, ClimateCheckpointError> {
         let mut checkpoint = Self {
-            schema_version: CLIMATE_CHECKPOINT_SCHEMA_V1,
+            schema_version: CLIMATE_CHECKPOINT_SCHEMA_V2,
             quality_profile,
             profile,
             integrator,
@@ -678,7 +1628,7 @@ impl ClimateCheckpoint {
             model_fingerprint,
             input_fingerprint,
             quantization,
-            completed_months,
+            completed_phase_steps,
             state_fingerprint,
             fingerprint: [0; 32],
         };
@@ -697,10 +1647,10 @@ impl ClimateCheckpoint {
     }
 
     fn validate_identity(&self) -> Result<(), ClimateCheckpointError> {
-        if self.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V1 {
+        if self.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V2 {
             return Err(ClimateCheckpointError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: CLIMATE_CHECKPOINT_SCHEMA_V1,
+                supported: CLIMATE_CHECKPOINT_SCHEMA_V2,
             });
         }
         for (field, fingerprint) in [
@@ -714,22 +1664,22 @@ impl ClimateCheckpoint {
                 return Err(ClimateCheckpointError::ZeroFingerprint { field });
             }
         }
-        if self.completed_months == 0
-            || self.completed_months % u32::try_from(CLIMATE_MONTH_COUNT).unwrap_or(12) != 0
+        if self.completed_phase_steps == 0
+            || self.completed_phase_steps % u32::try_from(CLIMATE_MONTH_COUNT).unwrap_or(12) != 0
         {
-            return Err(ClimateCheckpointError::InvalidCompletedMonths {
-                found: self.completed_months,
+            return Err(ClimateCheckpointError::InvalidCompletedPhaseSteps {
+                found: self.completed_phase_steps,
             });
         }
-        let maximum_months = u32::from(
+        let maximum_phase_steps = u32::from(
             self.quality_profile
-                .global_circulation_formation_years_max(),
+                .global_circulation_formation_cycles_max(),
         ) * CLIMATE_MONTH_COUNT as u32;
-        if self.completed_months > maximum_months {
-            return Err(ClimateCheckpointError::CompletedMonthsExceedProfile {
+        if self.completed_phase_steps > maximum_phase_steps {
+            return Err(ClimateCheckpointError::CompletedPhaseStepsExceedProfile {
                 profile: self.quality_profile,
-                found: self.completed_months,
-                maximum: maximum_months,
+                found: self.completed_phase_steps,
+                maximum: maximum_phase_steps,
             });
         }
         Ok(())
@@ -737,7 +1687,7 @@ impl ClimateCheckpoint {
 
     fn canonical_fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.climate-checkpoint.v1\0");
+        hasher.update(b"sekai.climate-checkpoint.v2\0");
         hasher.update(&self.schema_version.to_le_bytes());
         hasher.update(&[natural_quality_profile_tag(self.quality_profile)]);
         hasher.update(&[model_profile_tag(self.profile)]);
@@ -747,7 +1697,7 @@ impl ClimateCheckpoint {
         hasher.update(&self.model_fingerprint);
         hasher.update(&self.input_fingerprint);
         hasher.update(&[quantization_tag(self.quantization)]);
-        hasher.update(&self.completed_months.to_le_bytes());
+        hasher.update(&self.completed_phase_steps.to_le_bytes());
         hasher.update(&self.state_fingerprint);
         *hasher.finalize().as_bytes()
     }
@@ -780,8 +1730,8 @@ impl ClimateCheckpoint {
         &self.input_fingerprint
     }
 
-    pub const fn completed_months(&self) -> u32 {
-        self.completed_months
+    pub const fn completed_phase_steps(&self) -> u32 {
+        self.completed_phase_steps
     }
 
     pub const fn state_fingerprint(&self) -> &[u8; 32] {
@@ -808,15 +1758,15 @@ impl<'de> Deserialize<'de> for ClimateCheckpoint {
             wire.model_fingerprint,
             wire.input_fingerprint,
             wire.quantization,
-            wire.completed_months,
+            wire.completed_phase_steps,
             wire.state_fingerprint,
         )
         .map_err(D::Error::custom)?;
-        if wire.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V1 {
+        if wire.schema_version != CLIMATE_CHECKPOINT_SCHEMA_V2 {
             return Err(D::Error::custom(
                 ClimateCheckpointError::UnsupportedSchema {
                     found: wire.schema_version,
-                    supported: CLIMATE_CHECKPOINT_SCHEMA_V1,
+                    supported: CLIMATE_CHECKPOINT_SCHEMA_V2,
                 },
             ));
         }
@@ -836,10 +1786,14 @@ pub enum ClimateCheckpointError {
     UnsupportedSchema { found: u16, supported: u16 },
     #[error("checkpoint {field} cannot be zero")]
     ZeroFingerprint { field: &'static str },
-    #[error("checkpoint completed months {found} must be a positive whole number of years")]
-    InvalidCompletedMonths { found: u32 },
-    #[error("checkpoint completed months {found} exceeds {profile:?} formation maximum {maximum}")]
-    CompletedMonthsExceedProfile {
+    #[error(
+        "checkpoint completed phase steps {found} must be a positive whole forcing-phase cycle"
+    )]
+    InvalidCompletedPhaseSteps { found: u32 },
+    #[error(
+        "checkpoint completed phase steps {found} exceeds {profile:?} formation maximum {maximum}"
+    )]
+    CompletedPhaseStepsExceedProfile {
         profile: NaturalQualityProfile,
         found: u32,
         maximum: u32,
@@ -890,8 +1844,9 @@ const fn quantization_tag(quantization: ClimateQuantizationId) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClimateSolveReport {
-    formation_years: u16,
-    macro_steps: u64,
+    formation_cycles: u16,
+    continuation_steps: u64,
+    integrated_model_seconds: u64,
     fast_substeps: u64,
     linear_iterations: u64,
     initial_residual: f64,
@@ -903,8 +1858,9 @@ pub struct ClimateSolveReport {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ClimateSolveReportWire {
-    formation_years: u16,
-    macro_steps: u64,
+    formation_cycles: u16,
+    continuation_steps: u64,
+    integrated_model_seconds: u64,
     fast_substeps: u64,
     linear_iterations: u64,
     initial_residual: f64,
@@ -916,8 +1872,8 @@ struct ClimateSolveReportWire {
 impl ClimateSolveReport {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        formation_years: u16,
-        macro_steps: u64,
+        formation_cycles: u16,
+        continuation_steps: u64,
         fast_substeps: u64,
         linear_iterations: u64,
         initial_residual: f64,
@@ -925,9 +1881,15 @@ impl ClimateSolveReport {
         maximum_cfl: f64,
         dense_state_bytes: u64,
     ) -> Result<Self, ClimateReportError> {
+        let integrated_model_seconds = continuation_steps
+            .checked_mul(GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "integrated_model_seconds",
+            })?;
         let report = Self {
-            formation_years,
-            macro_steps,
+            formation_cycles,
+            continuation_steps,
+            integrated_model_seconds,
             fast_substeps,
             linear_iterations,
             initial_residual,
@@ -952,21 +1914,46 @@ impl ClimateSolveReport {
                 });
             }
         }
-        if self.formation_years == 0 {
+        if self.formation_cycles == 0 {
             return Err(ClimateReportError::ZeroWork {
-                field: "formation_years",
+                field: "formation_cycles",
             });
         }
-        if self.formation_years > GLOBAL_CIRCULATION_FORMATION_YEARS_MAX {
+        if self.formation_cycles > GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX {
             return Err(ClimateReportError::StatisticAboveMaximum {
-                field: "formation_years",
-                found: f64::from(self.formation_years),
-                maximum: f64::from(GLOBAL_CIRCULATION_FORMATION_YEARS_MAX),
+                field: "formation_cycles",
+                found: f64::from(self.formation_cycles),
+                maximum: f64::from(GLOBAL_CIRCULATION_FORMATION_CYCLES_MAX),
             });
         }
-        if self.macro_steps == 0 {
+        if self.continuation_steps == 0 {
             return Err(ClimateReportError::ZeroWork {
-                field: "macro_steps",
+                field: "continuation_steps",
+            });
+        }
+        let expected_steps = u64::from(self.formation_cycles)
+            .checked_mul(CLIMATE_MONTH_COUNT as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "continuation_steps",
+            })?;
+        if self.continuation_steps != expected_steps {
+            return Err(ClimateReportError::WorkMismatch {
+                field: "continuation_steps",
+                found: self.continuation_steps,
+                expected: expected_steps,
+            });
+        }
+        let expected_seconds = self
+            .continuation_steps
+            .checked_mul(GLOBAL_CIRCULATION_MACRO_STEP_SECONDS as u64)
+            .ok_or(ClimateReportError::WorkOverflow {
+                field: "integrated_model_seconds",
+            })?;
+        if self.integrated_model_seconds != expected_seconds {
+            return Err(ClimateReportError::WorkMismatch {
+                field: "integrated_model_seconds",
+                found: self.integrated_model_seconds,
+                expected: expected_seconds,
             });
         }
         if self.fast_substeps == 0 {
@@ -1009,12 +1996,16 @@ impl ClimateSolveReport {
         Ok(())
     }
 
-    pub const fn formation_years(&self) -> u16 {
-        self.formation_years
+    pub const fn formation_cycles(&self) -> u16 {
+        self.formation_cycles
     }
 
-    pub const fn macro_steps(&self) -> u64 {
-        self.macro_steps
+    pub const fn continuation_steps(&self) -> u64 {
+        self.continuation_steps
+    }
+
+    pub const fn integrated_model_seconds(&self) -> u64 {
+        self.integrated_model_seconds
     }
 
     pub const fn fast_substeps(&self) -> u64 {
@@ -1044,9 +2035,9 @@ impl<'de> Deserialize<'de> for ClimateSolveReport {
         D: Deserializer<'de>,
     {
         let wire = ClimateSolveReportWire::deserialize(deserializer)?;
-        Self::new(
-            wire.formation_years,
-            wire.macro_steps,
+        let report = Self::new(
+            wire.formation_cycles,
+            wire.continuation_steps,
             wire.fast_substeps,
             wire.linear_iterations,
             wire.initial_residual,
@@ -1054,7 +2045,15 @@ impl<'de> Deserialize<'de> for ClimateSolveReport {
             wire.maximum_cfl,
             wire.dense_state_bytes,
         )
-        .map_err(D::Error::custom)
+        .map_err(D::Error::custom)?;
+        if wire.integrated_model_seconds != report.integrated_model_seconds {
+            return Err(D::Error::custom(ClimateReportError::WorkMismatch {
+                field: "integrated_model_seconds",
+                found: wire.integrated_model_seconds,
+                expected: report.integrated_model_seconds,
+            }));
+        }
+        Ok(report)
     }
 }
 
@@ -1067,6 +2066,13 @@ pub struct ClimateBudgetReport {
     moisture_relative_error: f64,
     energy_relative_error: f64,
     paired_exchange_relative_error: f64,
+    evaporation_global_mean_mm_day: f64,
+    precipitation_global_mean_mm_day: f64,
+    evaporation_precipitation_relative_imbalance: f64,
+    absorbed_shortwave_global_mean_w_m2: f64,
+    outgoing_longwave_global_mean_w_m2: f64,
+    toa_net_radiation_global_mean_w_m2: f64,
+    planetary_albedo_global_mean: f64,
 }
 
 #[derive(Deserialize)]
@@ -1077,6 +2083,13 @@ struct ClimateBudgetReportWire {
     moisture_relative_error: f64,
     energy_relative_error: f64,
     paired_exchange_relative_error: f64,
+    evaporation_global_mean_mm_day: f64,
+    precipitation_global_mean_mm_day: f64,
+    evaporation_precipitation_relative_imbalance: f64,
+    absorbed_shortwave_global_mean_w_m2: f64,
+    outgoing_longwave_global_mean_w_m2: f64,
+    toa_net_radiation_global_mean_w_m2: f64,
+    planetary_albedo_global_mean: f64,
 }
 
 impl ClimateBudgetReport {
@@ -1087,12 +2100,52 @@ impl ClimateBudgetReport {
         energy_relative_error: f64,
         paired_exchange_relative_error: f64,
     ) -> Result<Self, ClimateReportError> {
+        Self::new_with_climatology(
+            atmosphere_mass_relative_error,
+            ocean_volume_relative_error,
+            moisture_relative_error,
+            energy_relative_error,
+            paired_exchange_relative_error,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_climatology(
+        atmosphere_mass_relative_error: f64,
+        ocean_volume_relative_error: f64,
+        moisture_relative_error: f64,
+        energy_relative_error: f64,
+        paired_exchange_relative_error: f64,
+        evaporation_global_mean_mm_day: f64,
+        precipitation_global_mean_mm_day: f64,
+        absorbed_shortwave_global_mean_w_m2: f64,
+        outgoing_longwave_global_mean_w_m2: f64,
+        planetary_albedo_global_mean: f64,
+    ) -> Result<Self, ClimateReportError> {
+        let evaporation_precipitation_relative_imbalance = water_cycle_relative_imbalance(
+            evaporation_global_mean_mm_day,
+            precipitation_global_mean_mm_day,
+        );
+        let toa_net_radiation_global_mean_w_m2 =
+            absorbed_shortwave_global_mean_w_m2 - outgoing_longwave_global_mean_w_m2;
         let report = Self {
             atmosphere_mass_relative_error,
             ocean_volume_relative_error,
             moisture_relative_error,
             energy_relative_error,
             paired_exchange_relative_error,
+            evaporation_global_mean_mm_day,
+            precipitation_global_mean_mm_day,
+            evaporation_precipitation_relative_imbalance,
+            absorbed_shortwave_global_mean_w_m2,
+            outgoing_longwave_global_mean_w_m2,
+            toa_net_radiation_global_mean_w_m2,
+            planetary_albedo_global_mean,
         };
         report.validate()?;
         Ok(report)
@@ -1128,6 +2181,81 @@ impl ClimateBudgetReport {
         ] {
             validate_nonnegative_bounded(field, value, maximum)?;
         }
+        for (field, value, maximum) in [
+            (
+                "evaporation_global_mean_mm_day",
+                self.evaporation_global_mean_mm_day,
+                f64::from(f32::MAX),
+            ),
+            (
+                "precipitation_global_mean_mm_day",
+                self.precipitation_global_mean_mm_day,
+                f64::from(f32::MAX),
+            ),
+            (
+                "absorbed_shortwave_global_mean_w_m2",
+                self.absorbed_shortwave_global_mean_w_m2,
+                GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2,
+            ),
+            (
+                "outgoing_longwave_global_mean_w_m2",
+                self.outgoing_longwave_global_mean_w_m2,
+                GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2,
+            ),
+            (
+                "planetary_albedo_global_mean",
+                self.planetary_albedo_global_mean,
+                1.0,
+            ),
+        ] {
+            validate_nonnegative_bounded(field, value, maximum)?;
+        }
+        if !self.toa_net_radiation_global_mean_w_m2.is_finite() {
+            return Err(ClimateReportError::InvalidStatistic {
+                field: "toa_net_radiation_global_mean_w_m2",
+                found: self.toa_net_radiation_global_mean_w_m2,
+            });
+        }
+        if self.toa_net_radiation_global_mean_w_m2.abs() > GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2 {
+            return Err(ClimateReportError::RadiativeCycleNotClosed {
+                absorbed_shortwave_w_m2: self.absorbed_shortwave_global_mean_w_m2,
+                outgoing_longwave_w_m2: self.outgoing_longwave_global_mean_w_m2,
+                net_w_m2: self.toa_net_radiation_global_mean_w_m2,
+                maximum: GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+            });
+        }
+        let expected_water_imbalance = water_cycle_relative_imbalance(
+            self.evaporation_global_mean_mm_day,
+            self.precipitation_global_mean_mm_day,
+        );
+        if expected_water_imbalance.to_bits()
+            != self.evaporation_precipitation_relative_imbalance.to_bits()
+        {
+            return Err(ClimateReportError::StatisticIdentityMismatch {
+                field: "evaporation_precipitation_relative_imbalance",
+                found: self.evaporation_precipitation_relative_imbalance,
+                expected: expected_water_imbalance,
+            });
+        }
+        if self.evaporation_precipitation_relative_imbalance
+            > GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX
+        {
+            return Err(ClimateReportError::WaterCycleNotClosed {
+                evaporation_mm_day: self.evaporation_global_mean_mm_day,
+                precipitation_mm_day: self.precipitation_global_mean_mm_day,
+                relative_imbalance: self.evaporation_precipitation_relative_imbalance,
+                maximum: GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
+            });
+        }
+        let expected_toa =
+            self.absorbed_shortwave_global_mean_w_m2 - self.outgoing_longwave_global_mean_w_m2;
+        if expected_toa.to_bits() != self.toa_net_radiation_global_mean_w_m2.to_bits() {
+            return Err(ClimateReportError::StatisticIdentityMismatch {
+                field: "toa_net_radiation_global_mean_w_m2",
+                found: self.toa_net_radiation_global_mean_w_m2,
+                expected: expected_toa,
+            });
+        }
         Ok(())
     }
 
@@ -1150,6 +2278,39 @@ impl ClimateBudgetReport {
     pub const fn paired_exchange_relative_error(&self) -> f64 {
         self.paired_exchange_relative_error
     }
+
+    pub const fn evaporation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_global_mean_mm_day
+    }
+
+    pub const fn precipitation_global_mean_mm_day(&self) -> f64 {
+        self.precipitation_global_mean_mm_day
+    }
+
+    pub const fn evaporation_precipitation_relative_imbalance(&self) -> f64 {
+        self.evaporation_precipitation_relative_imbalance
+    }
+
+    /// Returns the signed global water-cycle residual in `mm/day`.
+    pub fn evaporation_minus_precipitation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_global_mean_mm_day - self.precipitation_global_mean_mm_day
+    }
+
+    pub const fn absorbed_shortwave_global_mean_w_m2(&self) -> f64 {
+        self.absorbed_shortwave_global_mean_w_m2
+    }
+
+    pub const fn outgoing_longwave_global_mean_w_m2(&self) -> f64 {
+        self.outgoing_longwave_global_mean_w_m2
+    }
+
+    pub const fn toa_net_radiation_global_mean_w_m2(&self) -> f64 {
+        self.toa_net_radiation_global_mean_w_m2
+    }
+
+    pub const fn planetary_albedo_global_mean(&self) -> f64 {
+        self.planetary_albedo_global_mean
+    }
 }
 
 impl<'de> Deserialize<'de> for ClimateBudgetReport {
@@ -1158,14 +2319,23 @@ impl<'de> Deserialize<'de> for ClimateBudgetReport {
         D: Deserializer<'de>,
     {
         let wire = ClimateBudgetReportWire::deserialize(deserializer)?;
-        Self::new(
-            wire.atmosphere_mass_relative_error,
-            wire.ocean_volume_relative_error,
-            wire.moisture_relative_error,
-            wire.energy_relative_error,
-            wire.paired_exchange_relative_error,
-        )
-        .map_err(D::Error::custom)
+        let report = Self {
+            atmosphere_mass_relative_error: wire.atmosphere_mass_relative_error,
+            ocean_volume_relative_error: wire.ocean_volume_relative_error,
+            moisture_relative_error: wire.moisture_relative_error,
+            energy_relative_error: wire.energy_relative_error,
+            paired_exchange_relative_error: wire.paired_exchange_relative_error,
+            evaporation_global_mean_mm_day: wire.evaporation_global_mean_mm_day,
+            precipitation_global_mean_mm_day: wire.precipitation_global_mean_mm_day,
+            evaporation_precipitation_relative_imbalance: wire
+                .evaporation_precipitation_relative_imbalance,
+            absorbed_shortwave_global_mean_w_m2: wire.absorbed_shortwave_global_mean_w_m2,
+            outgoing_longwave_global_mean_w_m2: wire.outgoing_longwave_global_mean_w_m2,
+            toa_net_radiation_global_mean_w_m2: wire.toa_net_radiation_global_mean_w_m2,
+            planetary_albedo_global_mean: wire.planetary_albedo_global_mean,
+        };
+        report.validate().map_err(D::Error::custom)?;
+        Ok(report)
     }
 }
 
@@ -1328,12 +2498,44 @@ pub enum ClimateReportError {
     InvalidStatistic { field: &'static str, found: f64 },
     #[error("climate report {field} is zero")]
     ZeroWork { field: &'static str },
+    #[error("climate report {field} work count overflowed")]
+    WorkOverflow { field: &'static str },
+    #[error("climate report {field} is {found}, expected {expected}")]
+    WorkMismatch {
+        field: &'static str,
+        found: u64,
+        expected: u64,
+    },
     #[error("climate residual increased from {initial} to {final_value}")]
     ResidualIncreased { initial: f64, final_value: f64 },
     #[error("climate report {field} is {found}, maximum {maximum}")]
     StatisticAboveMaximum {
         field: &'static str,
         found: f64,
+        maximum: f64,
+    },
+    #[error("climate report {field} identity is {found}, expected {expected}")]
+    StatisticIdentityMismatch {
+        field: &'static str,
+        found: f64,
+        expected: f64,
+    },
+    #[error(
+        "final-cycle water budget is not closed: evaporation {evaporation_mm_day} mm/day, precipitation {precipitation_mm_day} mm/day, relative imbalance {relative_imbalance}, maximum {maximum}"
+    )]
+    WaterCycleNotClosed {
+        evaporation_mm_day: f64,
+        precipitation_mm_day: f64,
+        relative_imbalance: f64,
+        maximum: f64,
+    },
+    #[error(
+        "final-cycle TOA budget is not closed: ASR {absorbed_shortwave_w_m2} W/m2, OLR {outgoing_longwave_w_m2} W/m2, net {net_w_m2} W/m2, absolute maximum {maximum}"
+    )]
+    RadiativeCycleNotClosed {
+        absorbed_shortwave_w_m2: f64,
+        outgoing_longwave_w_m2: f64,
+        net_w_m2: f64,
         maximum: f64,
     },
 }
@@ -1348,9 +2550,13 @@ pub struct GlobalCirculationFields {
     surface_ocean_current_m_s: MonthlyVector3Field,
     monthly_air_temperature_c: MonthlyScalarField,
     monthly_sea_surface_temperature_c: MonthlyScalarField,
+    surface_albedo: Vec<f32>,
+    monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+    monthly_outgoing_longwave_w_m2: MonthlyScalarField,
     monthly_thermocline_temperature_c: Option<MonthlyScalarField>,
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
+    monthly_evaporation_mm_day: MonthlyScalarField,
     monthly_precipitation_mm_day: MonthlyScalarField,
     monthly_orographic_precipitation_mm_day: MonthlyScalarField,
     monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1369,9 +2575,14 @@ struct GlobalCirculationFieldsWire {
     surface_ocean_current_m_s: MonthlyVector3Field,
     monthly_air_temperature_c: MonthlyScalarField,
     monthly_sea_surface_temperature_c: MonthlyScalarField,
+    #[serde(deserialize_with = "deserialize_global_circulation_scalars")]
+    surface_albedo: Vec<f32>,
+    monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+    monthly_outgoing_longwave_w_m2: MonthlyScalarField,
     monthly_thermocline_temperature_c: Option<MonthlyScalarField>,
     monthly_thermocline_depth_m: Option<MonthlyScalarField>,
     monthly_specific_humidity: MonthlyScalarField,
+    monthly_evaporation_mm_day: MonthlyScalarField,
     monthly_precipitation_mm_day: MonthlyScalarField,
     monthly_orographic_precipitation_mm_day: MonthlyScalarField,
     monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1388,7 +2599,11 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
+        monthly_evaporation_mm_day: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1401,9 +2616,13 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: None,
             monthly_thermocline_depth_m: None,
             monthly_specific_humidity,
+            monthly_evaporation_mm_day,
             monthly_precipitation_mm_day,
             monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
@@ -1422,7 +2641,11 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
+        monthly_evaporation_mm_day: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1436,9 +2659,13 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: None,
             monthly_thermocline_depth_m: None,
             monthly_specific_humidity,
+            monthly_evaporation_mm_day,
             monthly_precipitation_mm_day,
             monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
@@ -1463,9 +2690,13 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_thermocline_temperature_c: MonthlyScalarField,
         monthly_thermocline_depth_m: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
+        monthly_evaporation_mm_day: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1481,9 +2712,13 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: Some(monthly_thermocline_temperature_c),
             monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
             monthly_specific_humidity,
+            monthly_evaporation_mm_day,
             monthly_precipitation_mm_day,
             monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
@@ -1506,9 +2741,13 @@ impl GlobalCirculationFields {
         surface_ocean_current_m_s: MonthlyVector3Field,
         monthly_air_temperature_c: MonthlyScalarField,
         monthly_sea_surface_temperature_c: MonthlyScalarField,
+        surface_albedo: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: MonthlyScalarField,
+        monthly_outgoing_longwave_w_m2: MonthlyScalarField,
         monthly_thermocline_temperature_c: MonthlyScalarField,
         monthly_thermocline_depth_m: MonthlyScalarField,
         monthly_specific_humidity: MonthlyScalarField,
+        monthly_evaporation_mm_day: MonthlyScalarField,
         monthly_precipitation_mm_day: MonthlyScalarField,
         monthly_orographic_precipitation_mm_day: MonthlyScalarField,
         monthly_lower_atmosphere_height_anomaly_m: MonthlyScalarField,
@@ -1525,9 +2764,13 @@ impl GlobalCirculationFields {
             surface_ocean_current_m_s,
             monthly_air_temperature_c,
             monthly_sea_surface_temperature_c,
+            surface_albedo,
+            monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: Some(monthly_thermocline_temperature_c),
             monthly_thermocline_depth_m: Some(monthly_thermocline_depth_m),
             monthly_specific_humidity,
+            monthly_evaporation_mm_day,
             monthly_precipitation_mm_day,
             monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m,
@@ -1637,25 +2880,53 @@ impl GlobalCirculationFields {
             60.0,
             cancellation,
         )?;
+        validate_scalar_values(
+            "surface_albedo",
+            &self.surface_albedo,
+            0.0,
+            1.0,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_absorbed_shortwave_w_m2",
+            &self.monthly_absorbed_shortwave_w_m2,
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_outgoing_longwave_w_m2",
+            &self.monthly_outgoing_longwave_w_m2,
+            0.0,
+            GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32,
+            cancellation,
+        )?;
         validate_monthly_scalar(
             "monthly_specific_humidity",
             &self.monthly_specific_humidity,
             0.0,
-            0.1,
+            P4_MAX_SPECIFIC_HUMIDITY_KG_KG as f32,
+            cancellation,
+        )?;
+        validate_monthly_scalar(
+            "monthly_evaporation_mm_day",
+            &self.monthly_evaporation_mm_day,
+            0.0,
+            f32::MAX,
             cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_precipitation_mm_day",
             &self.monthly_precipitation_mm_day,
             0.0,
-            1_000.0,
+            f32::MAX,
             cancellation,
         )?;
         validate_monthly_scalar(
             "monthly_orographic_precipitation_mm_day",
             &self.monthly_orographic_precipitation_mm_day,
             0.0,
-            1_000.0,
+            f32::MAX,
             cancellation,
         )?;
         validate_orographic_precipitation_identity(
@@ -1757,9 +3028,22 @@ impl GlobalCirculationFields {
                 "monthly_sea_surface_temperature_c",
                 self.monthly_sea_surface_temperature_c.len(),
             ),
+            ("surface_albedo", self.surface_albedo.len()),
+            (
+                "monthly_absorbed_shortwave_w_m2",
+                self.monthly_absorbed_shortwave_w_m2.len(),
+            ),
+            (
+                "monthly_outgoing_longwave_w_m2",
+                self.monthly_outgoing_longwave_w_m2.len(),
+            ),
             (
                 "monthly_specific_humidity",
                 self.monthly_specific_humidity.len(),
+            ),
+            (
+                "monthly_evaporation_mm_day",
+                self.monthly_evaporation_mm_day.len(),
             ),
             (
                 "monthly_precipitation_mm_day",
@@ -1842,7 +3126,7 @@ impl GlobalCirculationFields {
     ) -> Result<[u8; 32], GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.global-circulation-state.v1\0");
+        hasher.update(b"sekai.global-circulation-state.v3\0");
         hash_monthly_vectors(
             &mut hasher,
             self.near_surface_wind_m_s.values(),
@@ -1859,10 +3143,14 @@ impl GlobalCirculationFields {
             self.surface_ocean_current_m_s.values(),
             cancellation,
         )?;
+        hash_scalar_values(&mut hasher, &self.surface_albedo, cancellation)?;
         for field in [
             &self.monthly_air_temperature_c,
             &self.monthly_sea_surface_temperature_c,
+            &self.monthly_absorbed_shortwave_w_m2,
+            &self.monthly_outgoing_longwave_w_m2,
             &self.monthly_specific_humidity,
+            &self.monthly_evaporation_mm_day,
             &self.monthly_precipitation_mm_day,
             &self.monthly_orographic_precipitation_mm_day,
             &self.monthly_lower_atmosphere_height_anomaly_m,
@@ -1906,6 +3194,18 @@ impl GlobalCirculationFields {
         &self.monthly_sea_surface_temperature_c
     }
 
+    pub fn surface_albedo(&self) -> &[f32] {
+        &self.surface_albedo
+    }
+
+    pub const fn monthly_absorbed_shortwave_w_m2(&self) -> &MonthlyScalarField {
+        &self.monthly_absorbed_shortwave_w_m2
+    }
+
+    pub const fn monthly_outgoing_longwave_w_m2(&self) -> &MonthlyScalarField {
+        &self.monthly_outgoing_longwave_w_m2
+    }
+
     pub const fn monthly_thermocline_temperature_c(&self) -> Option<&MonthlyScalarField> {
         self.monthly_thermocline_temperature_c.as_ref()
     }
@@ -1916,6 +3216,10 @@ impl GlobalCirculationFields {
 
     pub const fn monthly_specific_humidity(&self) -> &MonthlyScalarField {
         &self.monthly_specific_humidity
+    }
+
+    pub const fn monthly_evaporation_mm_day(&self) -> &MonthlyScalarField {
+        &self.monthly_evaporation_mm_day
     }
 
     pub const fn monthly_precipitation_mm_day(&self) -> &MonthlyScalarField {
@@ -1960,9 +3264,13 @@ impl<'de> Deserialize<'de> for GlobalCirculationFields {
             surface_ocean_current_m_s: wire.surface_ocean_current_m_s,
             monthly_air_temperature_c: wire.monthly_air_temperature_c,
             monthly_sea_surface_temperature_c: wire.monthly_sea_surface_temperature_c,
+            surface_albedo: wire.surface_albedo,
+            monthly_absorbed_shortwave_w_m2: wire.monthly_absorbed_shortwave_w_m2,
+            monthly_outgoing_longwave_w_m2: wire.monthly_outgoing_longwave_w_m2,
             monthly_thermocline_temperature_c: wire.monthly_thermocline_temperature_c,
             monthly_thermocline_depth_m: wire.monthly_thermocline_depth_m,
             monthly_specific_humidity: wire.monthly_specific_humidity,
+            monthly_evaporation_mm_day: wire.monthly_evaporation_mm_day,
             monthly_precipitation_mm_day: wire.monthly_precipitation_mm_day,
             monthly_orographic_precipitation_mm_day: wire.monthly_orographic_precipitation_mm_day,
             monthly_lower_atmosphere_height_anomaly_m: wire
@@ -1991,6 +3299,31 @@ fn check_global_circulation_cancelled(
     } else {
         Ok(())
     }
+}
+
+fn validate_scalar_values(
+    field: &'static str,
+    values: &[f32],
+    minimum: f32,
+    maximum: f32,
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (cell, value) in values.iter().copied().enumerate() {
+        if cell % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        if !value.is_finite() || value < minimum || value > maximum {
+            return Err(GlobalCirculationValidationError::ScalarOutOfRange {
+                field,
+                cell,
+                month: 0,
+                found: value,
+                minimum,
+                maximum,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_monthly_scalar(
@@ -2134,6 +3467,20 @@ fn validate_orographic_precipitation_identity(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn hash_scalar_values(
+    hasher: &mut blake3::Hasher,
+    values: &[f32],
+    cancellation: CancellationCheck<'_>,
+) -> Result<(), GlobalCirculationValidationError> {
+    for (index, value) in values.iter().enumerate() {
+        if index % 256 == 0 {
+            check_global_circulation_cancelled(cancellation)?;
+        }
+        hasher.update(&value.to_bits().to_le_bytes());
     }
     Ok(())
 }
@@ -2332,10 +3679,10 @@ impl GlobalCirculationSnapshot {
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
-        if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V1 {
+        if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V2 {
             return Err(GlobalCirculationValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: GLOBAL_CIRCULATION_SCHEMA_V1,
+                supported: GLOBAL_CIRCULATION_SCHEMA_V2,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -2400,7 +3747,7 @@ impl GlobalCirculationSnapshot {
             );
         }
         if self.checkpoint.model_fingerprint()
-            != &crate::generators::natural::global_circulation_model_fingerprint(profile)
+            != &crate::generators::natural::formation::global_circulation_model_fingerprint(profile)
         {
             return Err(
                 GlobalCirculationValidationError::CheckpointIdentityMismatch {
@@ -2408,19 +3755,19 @@ impl GlobalCirculationSnapshot {
                 },
             );
         }
-        let expected_months = u32::from(self.solve_report.formation_years())
+        let expected_phase_steps = u32::from(self.solve_report.formation_cycles())
             .checked_mul(CLIMATE_MONTH_COUNT as u32)
             .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "formation_years",
+                field: "formation_cycles",
             })?;
-        if self.checkpoint.completed_months() != expected_months {
+        if self.checkpoint.completed_phase_steps() != expected_phase_steps {
             return Err(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "completed_months",
+                field: "completed_phase_steps",
             });
         }
-        if self.solve_report.macro_steps() != u64::from(expected_months) {
+        if self.solve_report.continuation_steps() != u64::from(expected_phase_steps) {
             return Err(GlobalCirculationValidationError::SolveWorkMismatch {
-                field: "macro_steps",
+                field: "continuation_steps",
             });
         }
         if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
@@ -2430,11 +3777,13 @@ impl GlobalCirculationSnapshot {
                 field: "linear_iterations",
             });
         }
-        let minimum_fast_substeps = self.solve_report.macro_steps().checked_mul(6).ok_or(
-            GlobalCirculationValidationError::SolveWorkMismatch {
+        let minimum_fast_substeps = self
+            .solve_report
+            .continuation_steps()
+            .checked_mul(GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP)
+            .ok_or(GlobalCirculationValidationError::SolveWorkMismatch {
                 field: "fast_substeps",
-            },
-        )?;
+            })?;
         if self.integrator == ProductionIntegratorId::SplitExplicitRk3V1
             && self.solve_report.fast_substeps() < minimum_fast_substeps
         {

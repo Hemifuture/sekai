@@ -21,12 +21,13 @@ use blake3::Hasher;
 use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
-    surface_roughness_hurst, AmplificationFieldsView, ConditioningView, SurfaceRegime,
-    TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M, SHELF_TRANSITION_M,
+    surface_roughness_hurst, AmplificationFieldsView, ConditioningView, FormationDerivationInputs,
+    SurfaceRegime, TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M,
+    SHELF_TRANSITION_M,
 };
 use crate::world::natural::{
-    GeologicSubstrateSnapshot, NaturalSurfaceFormationSnapshot, RiverSegment,
-    SphericalTectonicSnapshot, ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_SHELF_BREAK_DEPTH_M,
+    RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    FORMATION_SHELF_BREAK_DEPTH_M,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, RootSeed};
@@ -243,19 +244,11 @@ impl HierarchicalEvaluator {
     /// Assembles the engine straight from the published formation
     /// product, river network included.
     pub fn from_formation_product(
-        surface: &SphericalSurfaceSnapshot,
-        compatibility: &SphericalTectonicSnapshot,
-        substrate: &GeologicSubstrateSnapshot,
-        formation: &NaturalSurfaceFormationSnapshot,
+        inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
-        let amplifier = TerrainAmplifier::from_formation_product(
-            surface,
-            compatibility,
-            substrate,
-            formation,
-            root_seed,
-        )?;
+        let surface = inputs.surface;
+        let amplifier = TerrainAmplifier::from_formation_product(inputs, root_seed)?;
         Ok(Self::from_amplifier(amplifier, surface, root_seed))
     }
 
@@ -264,8 +257,11 @@ impl HierarchicalEvaluator {
         mut self,
         surface: &SphericalSurfaceSnapshot,
         segments: &[RiverSegment],
+        surface_water: &SurfaceWaterField,
     ) -> Result<Self, TerrainAmplificationError> {
-        self.amplifier = self.amplifier.with_rivers(surface, segments)?;
+        self.amplifier = self
+            .amplifier
+            .with_rivers(surface, segments, surface_water)?;
         self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
     }
@@ -411,6 +407,19 @@ impl HierarchicalEvaluator {
         self.amplifier.river_reaches().len()
     }
 
+    /// The authoritative physical planet radius used by metre-scale T1 laws.
+    pub fn radius_m(&self) -> f64 {
+        self.amplifier.radius_m()
+    }
+
+    /// The production hydraulic width of one published reach, in metres.
+    pub fn river_width_m(&self, reach: u32) -> Option<f32> {
+        self.amplifier
+            .river_reaches()
+            .get(reach as usize)
+            .map(|reach| reach.width_m as f32)
+    }
+
     /// The deepest meaningful rerouting depth of one reach — where the
     /// sub-segment length falls under half the meander wavelength
     /// (spec §10 amendment A6).
@@ -418,9 +427,9 @@ impl HierarchicalEvaluator {
         super::hierarchical_rivers::path_depth_cap(self, reach)
     }
 
-    /// Materializes one reach's rerouted polyline at `depth` (clamped to
-    /// the reach's cap): `2^depth + 1` points from the upstream to the
-    /// downstream cell centroid. Depth 0 is the L0 chain.
+    /// Materializes one reach's dry-land polyline at `depth` (clamped to
+    /// each leg's cap). The path is split at its authoritative shared-edge
+    /// portal and omits water-cell interiors.
     pub fn river_path(&self, reach: u32, depth: u8) -> Vec<UnitVector3> {
         super::hierarchical_rivers::materialize_path(self, reach, depth)
     }
@@ -960,7 +969,9 @@ mod tests {
     use super::*;
     use crate::generators::natural::fibonacci_probe;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
-    use crate::world::natural::{RiverSegmentKind, SphericalOrogenyKind};
+    use crate::world::natural::{
+        RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind,
+    };
     use crate::world::{Meters, RiverSegmentId, SphericalSpaceSpec};
 
     fn test_surface() -> SphericalSurfaceSnapshot {
@@ -976,6 +987,10 @@ mod tests {
             || false,
         )
         .unwrap()
+    }
+
+    fn dry_surface_water(surface: &SphericalSurfaceSnapshot) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()])
     }
 
     /// Northern sloped land, flat southern abyssal plain, and an
@@ -1274,7 +1289,7 @@ mod tests {
         ];
         let carved = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
             .unwrap();
 
         // The carve surface descends along the chain (M1 module criteria

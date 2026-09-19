@@ -16,6 +16,7 @@ use sekai::world::natural::{
     TectonicActivity, TectonicSpec, WorldFormationPreset, MAX_HOTSPOT_COUNT,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 fn surface(radius_m: f64) -> sekai::world::spatial::SphericalSurfaceSnapshot {
@@ -53,7 +54,7 @@ fn formation() -> ResolvedWorldFormation {
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
     let version = match stage_id {
-        "natural.spherical-tectonics" => 4,
+        "natural.spherical-tectonics" => 9,
         "natural.spherical-relief" => 3,
         "natural.spherical-mantle" | "natural.spherical-geology" => 1,
         _ => panic!("unexpected spherical stage {stage_id}"),
@@ -219,7 +220,11 @@ fn stages_forward_science_diagnostics_and_strict_surface_bound_wires() {
         .unwrap();
     assert_eq!(staged_relief.snapshot(), &relief);
     assert_eq!(staged_geology.snapshot(), &geology);
-    assert!(!expected_diagnostics.is_empty());
+    if audited_float_platform() {
+        assert!(!expected_diagnostics.is_empty());
+    } else {
+        eprintln!("diagnostic-count freeze skipped: unaudited float platform");
+    }
     assert_eq!(outcome.report.diagnostics(), expected_diagnostics);
     staged_relief
         .snapshot()

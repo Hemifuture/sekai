@@ -71,6 +71,7 @@ pub enum StageCacheError {
 }
 
 /// A deterministic, process-local, bounded FIFO cache of validated stage outputs.
+#[derive(Clone)]
 pub struct MemoryStageCache {
     entries: BTreeMap<StageCacheKey, CachedSuccessfulStage>,
     insertion_order: VecDeque<StageCacheKey>,

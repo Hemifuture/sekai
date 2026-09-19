@@ -34,9 +34,6 @@ rand_chacha = "0.9.0"
 noise = "0.9"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
-criterion = { version = "0.5", default-features = false, features = ["html_reports", "cargo_bench_support"] }
-delaunator = "1.0.2"
-
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
@@ -76,10 +73,6 @@ opt-level = 2
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
-
-[[bench]]
-name = "delaunay"
-harness = false
 
 [[bin]]
 name = "circulation_compare"

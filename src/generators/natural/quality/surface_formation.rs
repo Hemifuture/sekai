@@ -13,8 +13,8 @@ use crate::world::natural::{
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use crate::world::CellId;
 
-const METRIC_NAMESPACE: &str = "sekai.surface-formation-v1";
-const METRIC_VERSION: u16 = 1;
+const METRIC_NAMESPACE: &str = "sekai.surface-formation-v2";
+const METRIC_VERSION: u16 = 2;
 const CANCELLATION_POLL_MASK: usize = 255;
 const CENTIMETERS_PER_METER: f64 = 100.0;
 
@@ -48,11 +48,10 @@ const HYPSOMETRY_ENVELOPE: [(&str, Option<f64>, Option<f64>); 8] = [
 ];
 
 /// Every per-world metric name in report (alphabetical) order.
-const EXPECTED_METRIC_NAMES: [&str; 22] = [
+const EXPECTED_METRIC_NAMES: [&str; 21] = [
     "component-identity-mismatch-count",
     "deposited-sediment-enrichment-ratio",
     "final-land-fraction-absolute-change",
-    "fixed-point-normalized-residual",
     "fluvial-incision-support-enrichment-ratio",
     "land-area-share-below-100m",
     "land-outlet-path-area-fraction",
@@ -76,7 +75,7 @@ const EXPECTED_METRIC_NAMES: [&str; 22] = [
 /// Returns the locked per-profile bounds in the canonical metric order; the
 /// hypsometric measurements are unbounded per world (see
 /// [`HYPSOMETRY_ENVELOPE`]).
-fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 22] {
+fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Option<f64>); 21] {
     let strahler_min = match profile {
         NaturalQualityProfile::Draft => 3.0,
         NaturalQualityProfile::Standard | NaturalQualityProfile::High => 4.0,
@@ -85,7 +84,6 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
         (None, Some(0.0)),
         (Some(1.25), None),
         (None, Some(0.03)),
-        (None, Some(1.0)),
         (Some(1.50), None),
         (None, None),
         (Some(0.95), None),
@@ -109,7 +107,7 @@ fn expected_metric_bounds(profile: NaturalQualityProfile) -> [(Option<f64>, Opti
 
 /// Looks one locked per-world bound pair up by metric name.
 fn locked_bounds(
-    bounds: &[(Option<f64>, Option<f64>); 22],
+    bounds: &[(Option<f64>, Option<f64>); 21],
     name: &str,
 ) -> (Option<f64>, Option<f64>) {
     let position = EXPECTED_METRIC_NAMES
@@ -203,13 +201,6 @@ fn evaluate_impl(
         metric_id(name)?,
         state.land_fraction_absolute_change,
         cells,
-        maximum(name),
-    )?;
-    let name = "fixed-point-normalized-residual";
-    builder.record_at_most(
-        metric_id(name)?,
-        snapshot.solve_report().final_residual().normalized_max(),
-        u32::from(snapshot.solve_report().outer_iterations()),
         maximum(name),
     )?;
     let name = "fluvial-incision-support-enrichment-ratio";
@@ -386,9 +377,10 @@ impl FormationQualityState {
     ) -> Result<Self, QualityBuildError> {
         let terrain = snapshot.terrain_fields();
         let components = terrain.elevation_components();
+        let process_rates = snapshot.process_rates();
         let hydrology = snapshot.hydrology();
         let sediment = terrain.sediment();
-        let elevation = terrain.final_elevation_m();
+        let elevation = terrain.current_elevation_m();
         let drainage = hydrology.drainage_surface_elevation_m().values();
         let discharge = hydrology.mean_annual_discharge_m3_s();
         let count = surface.cells().len();
@@ -440,17 +432,17 @@ impl FormationQualityState {
             final_sum += area_m2 * f64::from(elevation[index]);
 
             let expected = formation_elevation_from_components(
-                components.primary_elevation_m()[index],
-                components.tectonic_displacement_m()[index],
-                components.fluvial_erosion_m()[index],
-                components.hillslope_erosion_m()[index],
-                components.hillslope_deposition_m()[index],
-                components.routed_sediment_deposition_m()[index],
-                components.coastal_erosion_m()[index],
-                components.coastal_deposition_m()[index],
-                components.isostatic_response_m()[index],
+                f64::from(components.primary_elevation_m()[index]),
+                f64::from(components.tectonic_displacement_m()[index]),
+                f64::from(components.fluvial_erosion_m()[index]),
+                f64::from(components.hillslope_erosion_m()[index]),
+                f64::from(components.hillslope_deposition_m()[index]),
+                f64::from(components.routed_sediment_deposition_m()[index]),
+                f64::from(components.coastal_erosion_m()[index]),
+                f64::from(components.coastal_deposition_m()[index]),
+                f64::from(components.isostatic_response_m()[index]),
             );
-            if elevation[index].to_bits() != expected.to_bits() {
+            if elevation[index].to_bits() != (expected as f32).to_bits() {
                 state.component_identity_mismatch_count += 1.0;
             }
 
@@ -490,7 +482,8 @@ impl FormationQualityState {
                 state.eligible_cell_count += 1;
             }
 
-            let incision_m3 = f64::from(components.fluvial_erosion_m()[index]) * area_m2;
+            let incision_m3 =
+                f64::from(process_rates.fluvial_erosion_rate_m_per_year()[index]) * area_m2;
             if is_land {
                 state.incision_volume_m3 += incision_m3;
                 let slope = receiver_slope(surface, hydrology.flow_receiver(), drainage, index);
@@ -543,7 +536,7 @@ impl FormationQualityState {
                     state.support_area_m2 += area_m2;
                     state.support_cell_count += 1;
                     state.support_incision_volume_m3 +=
-                        f64::from(components.fluvial_erosion_m()[index]) * area_m2;
+                        f64::from(process_rates.fluvial_erosion_rate_m_per_year()[index]) * area_m2;
                 }
             }
         }

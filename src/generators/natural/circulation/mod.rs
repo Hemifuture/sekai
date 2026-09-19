@@ -20,6 +20,7 @@ pub use comparison::{
 };
 pub use fixtures::{build_fixture, CirculationFixture, FixtureBuildError};
 pub use grid::{CubedSphereGrid, CubedSphereGridError, SphericalCell, SphericalEdge};
+pub(crate) use operators::interpolate_vector;
 pub use operators::{
     CirculationOperatorError, CirculationOperators, ConservativeTransport, SecondOrderTransport,
     SecondOrderTransportWorkspace, SteadyTransportSolve, UpwindTracerTransport,

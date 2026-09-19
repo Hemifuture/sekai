@@ -208,3 +208,34 @@ P3 设计修订 A1（洋壳不再继承 v5 兼容高程；GDH1 深度律；均�
 - `metrics.csv`：29,964 B，`b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1`（前 `55a7dbe3…`）；
 - `performance.json` 由性能测试另行生成，本次未重录；
 - 上游 P2 证据刷新后 `c14fdbfd…` / `774f6040…`（见 v5 完成记录）。
+
+## T0b 陆地占比驱动修订（2026-08-22）
+
+`ReliefSpec` 升至 V2，并以 `SeaLevelPolicy` 明确选择物理水量正解或陆地占比
+目标解。目标解复用生产侧面积加权水线选择器，再由同一物理体积算子反推
+隐含水量；P3 快照 wire 不变，隐含值写入既有 `water_inventory_m3`。质量报告
+新增无界测量 `water-inventory-ratio`，其比值由快照生产助手统一推导。
+
+默认 `WaterInventory` 模式的物理快照保持逐位不变：seed 42 快照 JSON BLAKE3
+为
+`051d0907261112e80b59f0c4f014b6a0a9f1d9a5f142b2a74c160ab675b3aede`。
+完整 P3 工件因新增报告测量而改变；seed 42 工件为
+`18aff524ca7637abf59757e42e2c5f6ee2e000ecce09ec6fe0cc4a6a37079330`。
+17 粒 Release 证据刷新为：
+
+- `evidence.json`：86,089 B，BLAKE3
+  `fa4bac425c1c040d4bc7e07fe3c39b107a1e43b3055c20b4181b252889b67590`；
+- `metrics.csv`：31,529 B，BLAKE3
+  `a7917feebe7d0aa1bbf6c4a9bc3c96071f2323ab8b6ef8c120ce940ff5114738`；
+- 新增语料测量中位 `water-inventory-ratio = 1.0`，17 个样本，状态 Pass。
+
+证据测试同时生成只剔除该新增测量的 T0 投影；其 JSON/CSV 仍逐位得到
+`ea5ef259dafbd7eab5f301ef14ddb4aec23d0dc996679451868e93f4f27d34f2` /
+`b166ee754294614bad219f469f2f26f012d61f770d1448a6abe1fc33ea2f56b1`，
+证明默认地形、水线与旧测量没有借刷新之名发生漂移。
+
+目标模式新证据采用 Continents、seed 42、目标 0.38：P3 海面
+`−1242.500000 m`，陆地占比 `0.380047381`，隐含水量比
+`0.693323320384 × 地球`，P3 工件 BLAKE3
+`8c0ed4313edb4d136c5c41adad879d320ca0f52d87e182ac14cf49fd4021bd27`。
+把该隐含水量送回物理正解得到同一水线；目标状态为 `Satisfied`。

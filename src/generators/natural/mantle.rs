@@ -72,7 +72,7 @@ impl MantleGenerator {
     }
 }
 
-pub(super) fn resolve_mantle_profile(
+pub(crate) fn resolve_mantle_profile(
     spec: &GeologicSpec,
     formation_bias: MantleFormationBias,
 ) -> (u16, MantleActivity) {
@@ -91,7 +91,7 @@ pub(super) struct MantleFields {
     pub(super) volcanic_influence: Vec<f32>,
 }
 
-pub(super) fn generate_mantle_fields(
+pub(crate) fn generate_mantle_fields(
     topology: &NaturalTopologyIndex,
     sources: Vec<CellId>,
     mantle_activity: MantleActivity,

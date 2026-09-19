@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::world::natural::CLIMATE_MONTH_COUNT;
+use crate::world::natural::{CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2};
 
 use super::{bounded_vec::BoundedVec, MAX_CIRCULATION_CELL_COUNT};
 
@@ -17,6 +17,7 @@ pub struct PlanetForcing {
     ocean_depth_m: Vec<f32>,
     surface_albedo: Vec<f32>,
     surface_moisture_availability: Vec<f32>,
+    monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -32,6 +33,8 @@ struct PlanetForcingWire {
     ocean_depth_m: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
     surface_albedo: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
     surface_moisture_availability: BoundedVec<f32, MAX_CIRCULATION_CELL_COUNT, 1>,
+    monthly_absorbed_shortwave_w_m2:
+        BoundedVec<[f32; CLIMATE_MONTH_COUNT], MAX_CIRCULATION_CELL_COUNT, 1>,
     equilibrium_air_temperature_c:
         BoundedVec<[f32; CLIMATE_MONTH_COUNT], MAX_CIRCULATION_CELL_COUNT, 1>,
     equilibrium_surface_temperature_c:
@@ -49,6 +52,7 @@ impl PlanetForcing {
         land_fraction: Vec<f32>,
         surface_albedo: Vec<f32>,
         surface_moisture_availability: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -61,6 +65,7 @@ impl PlanetForcing {
             ocean_depth_m,
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
@@ -77,6 +82,7 @@ impl PlanetForcing {
         ocean_depth_m: Vec<f32>,
         surface_albedo: Vec<f32>,
         surface_moisture_availability: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -88,6 +94,7 @@ impl PlanetForcing {
             ocean_depth_m,
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
@@ -103,6 +110,7 @@ impl PlanetForcing {
         land_fraction: Vec<f32>,
         surface_albedo: Vec<f32>,
         surface_moisture_availability: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -116,6 +124,7 @@ impl PlanetForcing {
             ocean_depth_m,
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
@@ -131,6 +140,7 @@ impl PlanetForcing {
         ocean_depth_m: Vec<f32>,
         surface_albedo: Vec<f32>,
         surface_moisture_availability: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -143,6 +153,7 @@ impl PlanetForcing {
             ocean_depth_m,
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
@@ -158,6 +169,7 @@ impl PlanetForcing {
         ocean_depth_m: Vec<f32>,
         surface_albedo: Vec<f32>,
         surface_moisture_availability: Vec<f32>,
+        monthly_absorbed_shortwave_w_m2: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_air_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_surface_temperature_c: Vec<[f32; CLIMATE_MONTH_COUNT]>,
         equilibrium_specific_humidity: Vec<[f32; CLIMATE_MONTH_COUNT]>,
@@ -171,6 +183,7 @@ impl PlanetForcing {
             ocean_depth_m,
             surface_albedo,
             surface_moisture_availability,
+            monthly_absorbed_shortwave_w_m2,
             equilibrium_air_temperature_c,
             equilibrium_surface_temperature_c,
             equilibrium_specific_humidity,
@@ -233,6 +246,10 @@ impl PlanetForcing {
         &self.surface_moisture_availability
     }
 
+    pub fn monthly_absorbed_shortwave_w_m2(&self) -> &[[f32; CLIMATE_MONTH_COUNT]] {
+        &self.monthly_absorbed_shortwave_w_m2
+    }
+
     pub fn equilibrium_air_temperature_c(&self) -> &[[f32; CLIMATE_MONTH_COUNT]] {
         &self.equilibrium_air_temperature_c
     }
@@ -262,6 +279,10 @@ impl PlanetForcing {
             (
                 "surface_moisture_availability",
                 self.surface_moisture_availability.len(),
+            ),
+            (
+                "monthly_absorbed_shortwave_w_m2",
+                self.monthly_absorbed_shortwave_w_m2.len(),
             ),
             (
                 "equilibrium_air_temperature_c",
@@ -311,6 +332,12 @@ impl PlanetForcing {
             cancellation,
         )?;
         validate_monthly_field(
+            "monthly_absorbed_shortwave_w_m2",
+            &self.monthly_absorbed_shortwave_w_m2,
+            Some((0.0, GLOBAL_CIRCULATION_RADIATIVE_FLUX_MAX_W_M2 as f32)),
+            cancellation,
+        )?;
+        validate_monthly_field(
             "equilibrium_air_temperature_c",
             &self.equilibrium_air_temperature_c,
             None,
@@ -338,7 +365,7 @@ impl PlanetForcing {
     ) -> Result<[u8; 32], ForcingError> {
         check_cancelled(cancellation)?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"sekai.planet-forcing\0");
+        hasher.update(b"sekai.planet-forcing.v2\0");
         hasher.update(&super::CIRCULATION_SCHEMA_V1.to_le_bytes());
         hasher.update(&self.grid_fingerprint);
         hasher.update(&(self.cell_count() as u32).to_le_bytes());
@@ -349,6 +376,11 @@ impl PlanetForcing {
         hash_scalars(
             &mut hasher,
             &self.surface_moisture_availability,
+            cancellation,
+        )?;
+        hash_monthly(
+            &mut hasher,
+            &self.monthly_absorbed_shortwave_w_m2,
             cancellation,
         )?;
         hash_monthly(
@@ -385,6 +417,7 @@ impl<'de> Deserialize<'de> for PlanetForcing {
             ocean_depth_m: wire.ocean_depth_m.into_vec(),
             surface_albedo: wire.surface_albedo.into_vec(),
             surface_moisture_availability: wire.surface_moisture_availability.into_vec(),
+            monthly_absorbed_shortwave_w_m2: wire.monthly_absorbed_shortwave_w_m2.into_vec(),
             equilibrium_air_temperature_c: wire.equilibrium_air_temperature_c.into_vec(),
             equilibrium_surface_temperature_c: wire.equilibrium_surface_temperature_c.into_vec(),
             equilibrium_specific_humidity: wire.equilibrium_specific_humidity.into_vec(),
@@ -551,6 +584,7 @@ mod tests {
             vec![0.5; cells],
             vec![0.2; cells],
             vec![0.8; cells],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; cells],
             vec![[10.0; CLIMATE_MONTH_COUNT]; cells],
             vec![[12.0; CLIMATE_MONTH_COUNT]; cells],
             vec![[0.01; CLIMATE_MONTH_COUNT]; cells],

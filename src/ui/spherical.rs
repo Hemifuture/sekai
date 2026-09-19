@@ -73,7 +73,7 @@ pub enum SphericalCanvasAction {
     SetVectorLod(VectorGlyphLod),
     /// Advances only the fixed-size phase uniform.
     AdvanceVectorPhase { frame_delta_seconds: f32 },
-    /// Requests the explicit one-way migration from a legacy planar world.
+    /// Rebuilds the current spherical world from authored parameters.
     RegenerateAsSpherical,
 }
 
@@ -1321,34 +1321,6 @@ pub fn show_spherical_inspector(ui: &mut egui::Ui, model: &SphericalInspectorMod
             diagnostic.message()
         ));
     }
-}
-
-/// Compatibility UI copy for an explicitly legacy world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LegacyCompatibilityUi {
-    notice: &'static str,
-    action_label: &'static str,
-}
-
-impl LegacyCompatibilityUi {
-    /// Returns the non-silent legacy-origin notice.
-    pub const fn notice(self) -> &'static str {
-        self.notice
-    }
-
-    /// Returns the sole explicit one-way regeneration action label.
-    pub const fn action_label(self) -> &'static str {
-        self.action_label
-    }
-}
-
-/// Returns compatibility UI only for an actual legacy origin.
-pub fn legacy_compatibility_ui(app: &crate::TemplateApp) -> Option<LegacyCompatibilityUi> {
-    app.legacy_compatibility_notice()
-        .map(|notice| LegacyCompatibilityUi {
-            notice,
-            action_label: "用当前作者参数重新生成球面世界",
-        })
 }
 
 /// One formatted inspector row with a stable product label.

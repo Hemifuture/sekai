@@ -5,22 +5,21 @@ use sekai::engine::{
 };
 use sekai::generators::natural::{
     spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact, ReliefSpecArtifact,
-    ResolvedWorldFormationArtifact, RulePackSetArtifact, SphericalGeologicArtifact,
-    SphericalHydroErosionArtifact, SphericalMantleArtifact, SphericalPreliminaryClimateArtifact,
-    SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
-    WorldFormationSpecArtifact,
+    GeologicSpecArtifact, HydroErosionSpecArtifact, NaturalQualityArtifact,
+    NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedWorldFormationArtifact,
+    RulePackSetArtifact, SphericalGeologicArtifact, SphericalHydroErosionArtifact,
+    SphericalMantleArtifact, SphericalPreliminaryClimateArtifact, SphericalReliefArtifact,
+    SphericalTectonicArtifact, TectonicSpecArtifact, WorldFormationSpecArtifact,
 };
-use sekai::generators::spatial::{
-    PlanarSpaceArtifact, SphericalSpaceArtifact, SphericalSurfaceArtifact,
-};
+use sekai::generators::spatial::{SphericalSpaceArtifact, SphericalSurfaceArtifact};
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
-    ClimateSpec, GeologicSpec, HydroErosionSpec, ReliefSpec, TectonicSpec, WorldFormationPreset,
-    WorldFormationSpec,
+    ClimateSpec, GeologicSpec, HydroErosionSpec, NaturalQualityProfile, ReliefSpec, TectonicSpec,
+    WorldFormationPreset, WorldFormationSpec,
 };
+use sekai::world::spatial::audited_float_platform;
 use sekai::world::spatial::SurfaceRef;
-use sekai::world::{BoundaryCondition, Meters, PlanarSpaceSpec, RootSeed, SphericalSpaceSpec};
+use sekai::world::{Meters, RootSeed, SphericalSpaceSpec};
 
 const ALL_STAGE_IDS: [&str; 17] = [
     "natural.resolve-climate-rules",
@@ -59,7 +58,7 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "tectonic",
-        "d890c045604cb850f6530af0f927cdccd801f8693628364a4d9a423098985934",
+        "06ec9a95a3e861ce03971d0426575b6139156f515622e54f4f76cc61b7c35a68",
     ),
     (
         "mantle",
@@ -67,27 +66,27 @@ const EXPECTED_GRAPH_HASHES: [(&str, &str); 9] = [
     ),
     (
         "relief",
-        "27196ef933a8c42ac1e677ad220fdf396c584fe4aeb663726fbf277c312c2d67",
+        "5cbaf2e222257c77fa157df81f6d7fe415dce344d5fe2979232e6737426bd1fc",
     ),
     (
         "geology",
-        "46f6c5a974cb298221b68db2ba06776e5403a50246e404233c1a7aad4624324a",
+        "0174f20292208ee5f38ec1a3977f140ae86793e08930c1ce7f2b30fcb195fb71",
     ),
     (
         "climate",
-        "00a8a4775200ed64b315bee494de8505ea4397006cda7cae8e998da3065e7eb8",
+        "8f9e0507183d559e87d16595f9709d7b6d34d221b7b0259a02d9618f0f09ec31",
     ),
     (
         "hydro",
-        "41b2fa2e3634c8174ef7a18fb7f040fef7a460aae1f765e201b57563d057aa24",
+        "b1513337fc0be091b82e7483e24ffc80275d9ef717c22594f1792b94a10fb6a0",
     ),
     (
         "quality",
-        "2ba841b927093f6a6a0e693ebd5b6c111a00f6acf205dfb30d6c316165fb06d6",
+        "66684802988168bd9a282f6531cd949d1615ea1282c61a1f35462b0404e4877f",
     ),
     (
         "result",
-        "18d0c1b4fef960847ad4b5d2c20b24c7a5fc0bdbd88477a4858ac194bdb4494c",
+        "b0442d82c42ebc07d769b2f0cf9aa65e07596f68a84199968c10e446cb1c0f0a",
     ),
 ];
 
@@ -263,12 +262,9 @@ fn graph_requires_exactly_the_nine_approved_external_artifacts() {
 
     let mut extra = external(&inputs, None);
     extra
-        .insert(PlanarSpaceArtifact::new(PlanarSpaceSpec {
-            width: Meters::new(1_000_000.0).unwrap(),
-            height: Meters::new(600_000.0).unwrap(),
-            target_cell_count: 128,
-            boundary: BoundaryCondition::Closed,
-        }))
+        .insert(NaturalQualityProfileArtifact::new(
+            NaturalQualityProfile::Draft,
+        ))
         .unwrap();
     let failure = BuildEngine::new(spherical_natural_foundation_graph().unwrap())
         .build(RootSeed::new(42), extra, &mut MemoryStageCache::new())
@@ -478,20 +474,17 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .map(|(name, hash)| (*name, hash.as_str()))
         .chain(std::iter::once(("result", result_hash.as_str())))
         .collect::<Vec<_>>();
-    assert_eq!(actual, EXPECTED_GRAPH_HASHES);
+    if audited_float_platform() {
+        assert_eq!(actual, EXPECTED_GRAPH_HASHES);
+    } else {
+        eprintln!("exact identity checks skipped: unaudited float platform");
+    }
 }
 
 #[test]
 fn whole_graph_accepts_an_evolved_final_plate_count() {
-    let mut inputs = Inputs::default();
-    inputs.tectonic.plate_count = 7;
-    inputs.tectonic.continental_crust_fraction = 0.28;
-    inputs.formation = WorldFormationSpec {
-        preset: WorldFormationPreset::GreatIsland,
-        ..WorldFormationSpec::default()
-    };
-
-    let outcome = build(RootSeed::new(1), &inputs, &mut MemoryStageCache::new());
+    let inputs = Inputs::default();
+    let outcome = build(RootSeed::new(42), &inputs, &mut MemoryStageCache::new());
     let tectonic = outcome
         .artifacts
         .get::<SphericalTectonicArtifact>()

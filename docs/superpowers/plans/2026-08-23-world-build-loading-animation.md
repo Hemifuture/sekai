@@ -592,3 +592,11 @@ git commit -m "docs: record loading animation verification" -m "Capture the nati
 4. 再次重建并点击“取消”：加载视图标题变为“正在取消构建”，worker 结束后恢复上一张完整地图，并显示取消结果。
 5. 勾选“减少加载位移动效”后重复重建：透明度与拼图顺序保留，但进入／退出位移应为零；取消勾选后位移恢复。
 6. 本工作树保持在 `dyzdyz010/anim_loading`，不合并、不推送，等待用户通知。
+
+### 主分支合并修订（2026-09-20）
+
+- 用户已明确要求把动画合并回主分支并删除本分支，替代上面的保留分支安排。
+- 合并目标为 `main` 的 `7a5c858`；保留其球面视图、构建完成暂存、取消处理和缓存回滚实现，在现有画布入口接入 pending 加载视图。
+- 冲突解决保留主分支已精简的视图导出；加载测试适配当前 `PendingWorldBuild` 字段和 `DisplayRevisionClock::default()` 初始化方式，并复用主分支的 `world_build_raw_input`。
+- 只读代码审查未发现阻碍合并的问题；视觉效果和最终 UI 验收仍由用户执行。合并后在主仓库运行 `cargo run --release`，点击“按当前参数重建”，检查加载动画、取消回滚及“减少加载位移动效”。
+- 合并结果验证：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo check --target wasm32-unknown-unknown --all-features --lib` 均退出 0；`cargo test --workspace --all-features --no-fail-fast` 退出 0，147 个测试目标合计 1266 passed、0 failed、56 ignored（含库测试 475 passed、7 ignored）；相对 `main` 的 `git diff --cached --check main` 通过。

@@ -1,10 +1,9 @@
 use sekai::engine::BuildCancellation;
+use sekai::generators::natural::solve_physical_sea_level;
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    physical_land_fraction, scaled_earth_ocean_inventory_m3, solve_physical_sea_level,
-    ElevationField, LandFractionConstraintStatus, LandOceanField, NaturalQualityProfile,
-    PrimaryReliefSnapshot, ReliefSpec, SphericalReliefSnapshot, PRIMARY_RELIEF_SCHEMA_V1,
-    RELIEF_SCHEMA_V4,
+    scaled_earth_ocean_inventory_m3, LandFractionConstraintStatus, NaturalQualityProfile,
+    PrimaryReliefSnapshot, ReliefSpec, SeaLevelPolicy, PRIMARY_RELIEF_SCHEMA_V3,
 };
 use sekai::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use sekai::world::Meters;
@@ -23,7 +22,6 @@ fn surface() -> SphericalSurfaceSnapshot {
 fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     let count = surface.cells().len();
     let isostatic = vec![0.0; count];
-    let dynamic = vec![0.0; count];
     let volcanic = vec![0.0; count];
     let passive = vec![0.0; count];
     let detail = vec![0.0; count];
@@ -34,29 +32,11 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
         .map(|cell| cell.area.get())
         .collect::<Vec<_>>();
     let inventory = scaled_earth_ocean_inventory_m3(areas.iter().sum()).unwrap();
-    let solution = solve_physical_sea_level(&elevation, &areas, inventory).unwrap();
-    let elevation_field = ElevationField::from_values(elevation.clone()).unwrap();
-    let land_ocean = LandOceanField::classify(&elevation_field, solution.sea_level_m());
-    let compatibility = SphericalReliefSnapshot::new(
-        RELIEF_SCHEMA_V4,
-        SurfaceRef::for_spherical(surface),
-        solution.sea_level_m(),
-        ElevationField::from_values(isostatic.clone()).unwrap(),
-        ElevationField::from_values(dynamic.clone()).unwrap(),
-        ElevationField::from_values(volcanic.clone()).unwrap(),
-        ElevationField::from_values(
-            passive
-                .iter()
-                .zip(&detail)
-                .map(|(&margin, &regional)| margin + regional)
-                .collect(),
-        )
-        .unwrap(),
-        elevation_field,
-        land_ocean,
-    )
-    .unwrap();
-    let physical = physical_land_fraction(surface, compatibility.land_ocean()).unwrap();
+    let solution = solve_physical_sea_level(surface, &elevation, inventory).unwrap();
+    let physical = solution
+        .geometry()
+        .global_land_area_fraction(surface)
+        .unwrap();
     let tolerance = (surface
         .cells()
         .iter()
@@ -66,17 +46,15 @@ fn valid_snapshot(surface: &SphericalSurfaceSnapshot) -> PrimaryReliefSnapshot {
     .max(0.02) as f32;
 
     PrimaryReliefSnapshot::new(
-        PRIMARY_RELIEF_SCHEMA_V1,
+        PRIMARY_RELIEF_SCHEMA_V3,
         SurfaceRef::for_spherical(surface),
-        compatibility,
         isostatic,
-        dynamic,
         volcanic,
         passive,
         detail,
         elevation,
         inventory,
-        solution.realized_water_volume_m3(),
+        solution.geometry().clone(),
         ReliefSpec::default().target_land_fraction,
         physical,
         tolerance,
@@ -92,16 +70,27 @@ fn strict_primary_relief_roundtrips_and_cross_validates_physical_water() {
     snapshot
         .validate_against_surface(&surface, &ReliefSpec::default())
         .unwrap();
+    snapshot
+        .validate_against_authoring(&surface, &ReliefSpec::default())
+        .unwrap();
 
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     let decoded: PrimaryReliefSnapshot = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, snapshot);
+    assert_eq!(
+        decoded.surface_water_geometry(),
+        snapshot.surface_water_geometry()
+    );
     assert_eq!(
         decoded.constraint_status(),
         LandFractionConstraintStatus::Infeasible
     );
     assert_eq!(decoded.physical_land_fraction(), 0.0);
     assert!(decoded.water_volume_relative_error() <= 1.0e-6);
+
+    let wire = serde_json::to_value(&snapshot).unwrap();
+    assert!(wire.get("surface_water_geometry").is_some());
+    assert!(wire.get("realized_water_volume_m3").is_none());
 }
 
 #[test]
@@ -123,12 +112,23 @@ fn strict_wire_rejects_unknown_schema_and_component_drift() {
 }
 
 #[test]
-fn compatibility_mapping_cannot_diverge_from_causal_components() {
+fn primary_relief_v3_removes_compatibility_and_dynamic_duplicates_and_rejects_v2() {
     let surface = surface();
-    let mut encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
-    encoded["compatibility"]["regional_offset_m"][0] = serde_json::json!(5.0);
-    encoded["compatibility"]["elevation_m"][0] = serde_json::json!(5.0);
-    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(encoded).is_err());
+    let encoded = serde_json::to_value(valid_snapshot(&surface)).unwrap();
+    assert!(encoded.get("compatibility").is_none());
+    assert!(encoded.get("dynamic_tectonic_offset_m").is_none());
+
+    let mut v2 = encoded.clone();
+    v2["schema_version"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(v2).is_err());
+
+    let mut compatibility = encoded.clone();
+    compatibility["compatibility"] = serde_json::json!({});
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(compatibility).is_err());
+
+    let mut dynamic = encoded;
+    dynamic["dynamic_tectonic_offset_m"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<PrimaryReliefSnapshot>(dynamic).is_err());
 }
 
 #[test]
@@ -139,5 +139,21 @@ fn surface_cross_validation_recomputes_area_weighted_constraint_status() {
     let stale: PrimaryReliefSnapshot = serde_json::from_value(encoded).unwrap();
     assert!(stale
         .validate_against_surface(&surface, &ReliefSpec::default())
+        .is_err());
+}
+
+#[test]
+fn target_policy_cross_validation_requires_the_authored_land_fraction_to_be_satisfied() {
+    let surface = surface();
+    let snapshot = valid_snapshot(&surface);
+    let target_spec = ReliefSpec {
+        sea_level_policy: SeaLevelPolicy::TargetLandFraction,
+        ..ReliefSpec::default()
+    };
+    assert!(snapshot
+        .validate_against_surface(&surface, &target_spec)
+        .is_err());
+    assert!(snapshot
+        .validate_against_authoring(&surface, &target_spec)
         .is_err());
 }

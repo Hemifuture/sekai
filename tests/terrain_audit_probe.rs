@@ -20,9 +20,9 @@ use natural_quality::QUALITY_SEEDS;
 use sekai::app::default_spherical_space_spec;
 use sekai::engine::{BuildCancellation, BuildEngine, ExternalArtifacts, MemoryStageCache};
 use sekai::generators::natural::{
-    continental_airy_elevation_m, dynamic_tectonic_response_m, gdh1_ocean_depth_m,
-    spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
-    GeologicSpecArtifact, HydroErosionSpecArtifact, ImplicitStreamPowerSolver, ReliefSpecArtifact,
+    continental_airy_elevation_m, gdh1_ocean_depth_m, solve_physical_sea_level,
+    spherical_natural_foundation_graph, water_volume_at_sea_level_m3, AuthorConstraintsArtifact,
+    ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact, ReliefSpecArtifact,
     RulePackSetArtifact, SphericalReliefArtifact, SphericalTectonicArtifact, TectonicSpecArtifact,
     WorldFormationSpecArtifact,
 };
@@ -32,17 +32,15 @@ use sekai::generators::spatial::{
 use sekai::rules::{default_rule_pack_set, AuthorConstraints};
 use sekai::world::natural::{
     hypsometric_mean, hypsometric_quantile, hypsometric_share_below, hypsometric_total_area,
-    scaled_earth_ocean_inventory_m3, solve_physical_sea_level, sort_hypsometric_samples,
-    water_volume_at_sea_level_m3, CrustKind, ElevationField, GeologicSpec, LandOceanField,
+    scaled_earth_ocean_inventory_m3, sort_hypsometric_samples, CrustKind, GeologicSpec,
     LandOceanKind, NaturalQualityProfile, ReliefSpec, ResolvedWorldFormationPreset,
     SurfaceWaterKind, TectonicActivity, TectonicSpec, WorldFormationSpec,
     CONTINENTAL_CRUST_DENSITY_KG_M3, EARTH_OCEAN_VOLUME_M3, EARTH_WATER_REFERENCE_RADIUS_M,
-    SURFACE_FORMATION_HORIZON_YEARS,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, RootSeed};
+use support::causal_formation::causal_formation_fixture;
 use support::global_circulation::{build_primary_relief, build_primary_relief_for};
-use support::surface_formation::{published_formation, surface_formation_fixture};
 
 /// The root seed of the world currently on the user's screen.
 const APP_SEED: u64 = 15_957_999_680_335_491_072;
@@ -645,29 +643,29 @@ fn probe_foundation_terrain_structure() {
 #[test]
 #[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
 fn probe_p5_terrain_structure() {
-    let fixture = surface_formation_fixture();
-    let formation = published_formation();
-    let inputs = fixture.inputs();
-    let surface = inputs.surface;
+    let fixture = causal_formation_fixture();
+    let bundle = fixture.artifact.bundle();
+    let formation = bundle.surface_formation();
+    let surface = &fixture.surface;
     let terrain = formation.terrain_fields();
-    let final_elevation = terrain.final_elevation_m();
+    let current_elevation = terrain.current_elevation_m();
     let primary = terrain.elevation_components().primary_elevation_m();
     let sea = terrain.sea_level_m();
     let land = terrain.land_ocean().raw_values();
 
     println!("== p5 probe (draft fixture) ==");
     println!(
-        "corr(final, primary)={:.6}",
-        pearson(final_elevation, primary)
+        "corr(current, primary)={:.6}",
+        pearson(current_elevation, primary)
     );
-    let mut deltas: Vec<f32> = final_elevation
+    let mut deltas: Vec<f32> = current_elevation
         .iter()
         .zip(primary)
         .map(|(&f, &p)| (f - p).abs())
         .collect();
     deltas.sort_by(f32::total_cmp);
     println!(
-        "abs(final-primary)_m p50={:.2} p95={:.2} p99={:.2} max={:.2} | share>1m={:.4} share>10m={:.4}",
+        "abs(current-primary)_m p50={:.2} p95={:.2} p99={:.2} max={:.2} | share>1m={:.4} share>10m={:.4}",
         percentile(&deltas, 0.50),
         percentile(&deltas, 0.95),
         percentile(&deltas, 0.99),
@@ -676,7 +674,7 @@ fn probe_p5_terrain_structure() {
         deltas.iter().filter(|&&d| d > 10.0).count() as f64 / deltas.len() as f64,
     );
 
-    let compatibility = inputs.tectonics.compatibility();
+    let compatibility = bundle.tectonics().compatibility();
     let n = surface.cells().len();
     let kinds: Vec<CrustKind> = (0..n)
         .map(|i| {
@@ -688,7 +686,7 @@ fn probe_p5_terrain_structure() {
     let ages = compatibility.crust_age_myr();
     crust_composition("p5/evolved", surface, &kinds, ages, land);
 
-    let budget = inputs.tectonics.material_budget();
+    let budget = bundle.tectonics().material_budget();
     let total_area: f64 = surface.total_cell_area().get();
     println!(
         "evolved material budget: initial_continental_fraction={:.4} final_continental_fraction={:.4}",
@@ -702,14 +700,14 @@ fn probe_p5_terrain_structure() {
         budget.processes().oceanic_subducted().reference_area_m2() / total_area,
     );
 
-    landform_stats("p5/final", surface, final_elevation, sea, land);
+    landform_stats("p5/current", surface, current_elevation, sea, land);
 
     let raster = equirect_raster(surface);
     let dir = audit_output_dir();
     render_hypsometric(
         &dir.join("p5-elevation.png"),
         &raster,
-        final_elevation,
+        current_elevation,
         sea,
         land,
     );
@@ -739,8 +737,6 @@ const THICKNESS_BIN_EDGES_KM: [f32; 11] = [
 ];
 /// Reference ages at which the locked ocean depth law is tabulated, in Myr.
 const OCEAN_AGE_TABLE_MYR: [f32; 4] = [20.0, 60.0, 100.0, 150.0];
-/// Horizons of the stream-power-only continuation what-if, in years.
-const CONTINUATION_HORIZONS_YEARS: [f64; 2] = [1.0e6, 1.0e7];
 /// Uniform continental thickening trials for the freeboard-closure what-if, in km.
 const CLOSURE_THICKENING_TRIALS_KM: [f32; 4] = [0.0, 2.0, 4.0, 6.0];
 const CLOSURE_TOLERANCE_M: f32 = 0.01;
@@ -867,7 +863,7 @@ fn hypsometry(
 /// the bath-tub solve reproduces its own datum.
 fn freeboard_closure(
     label: &str,
-    areas: &[f64],
+    surface: &SphericalSurfaceSnapshot,
     elevation: &[f32],
     continental_weight: &[f32],
     inventory_m3: f64,
@@ -882,7 +878,7 @@ fn freeboard_closure(
         for ((slot, &base), &weight) in shifted.iter_mut().zip(elevation).zip(continental_weight) {
             *slot = base + (sea + lift_m) * weight;
         }
-        let next = solve_physical_sea_level(&shifted, areas, inventory_m3)
+        let next = solve_physical_sea_level(surface, &shifted, inventory_m3)
             .unwrap()
             .sea_level_m();
         let converged = (next - sea).abs() <= CLOSURE_TOLERANCE_M;
@@ -891,25 +887,37 @@ fn freeboard_closure(
             break;
         }
     }
-    let land =
-        LandOceanField::classify(&ElevationField::from_values(shifted.clone()).unwrap(), sea);
+    let water = solve_physical_sea_level(surface, &shifted, inventory_m3).unwrap();
+    let land = water.geometry().land_ocean();
+    let areas = surface
+        .cells()
+        .iter()
+        .map(|cell| cell.area.get())
+        .collect::<Vec<_>>();
     println!(
         "-- freeboard closure [{label}] lift_m={lift_m:.1} iterations={iterations} datum_shift_m={sea:.1}"
     );
-    let quantiles = hypsometry(label, areas, &shifted, sea, land.raw_values(), inventory_m3);
+    let quantiles = hypsometry(
+        label,
+        &areas,
+        &shifted,
+        sea,
+        land.raw_values(),
+        inventory_m3,
+    );
     (sea, quantiles, land.raw_values().to_vec())
 }
 
 #[test]
 #[ignore = "audit probe writer; run explicitly with --ignored --nocapture in release"]
 fn probe_t0_hypsometric_attribution() {
-    let fixture = surface_formation_fixture();
-    let formation = published_formation();
-    let upstream = fixture.upstream;
-    let surface = upstream.bundle.authoritative_surface();
-    let relief = &upstream.relief;
-    let evolved = &upstream.evolved;
-    let substrate = &upstream.substrate;
+    let fixture = causal_formation_fixture();
+    let bundle = fixture.artifact.bundle();
+    let formation = bundle.surface_formation();
+    let surface = &fixture.surface;
+    let relief = bundle.primary_relief();
+    let evolved = bundle.tectonics();
+    let substrate = bundle.substrate();
     let terrain = formation.terrain_fields();
     let n = surface.cells().len();
     let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
@@ -942,9 +950,8 @@ fn probe_t0_hypsometric_attribution() {
         land_p3,
         inventory,
     );
-    let components: [(&str, &[f32]); 6] = [
+    let components: [(&str, &[f32]); 5] = [
         ("isostatic_base", relief.isostatic_base_m()),
-        ("dynamic_tectonic", relief.dynamic_tectonic_offset_m()),
         ("volcanic", relief.volcanic_construction_m()),
         ("passive_margin", relief.passive_margin_offset_m()),
         ("regional_detail", relief.conditioned_regional_detail_m()),
@@ -1039,18 +1046,18 @@ fn probe_t0_hypsometric_attribution() {
             * f64::from(airy_slope_m_per_km),
     );
 
-    // (3) P3 -> P5 displacement, component by component, plus the uplift budget.
-    println!("\n#### (3) P3 -> P5 quantile displacement and P5 component budget");
+    // (3) Current P3 relief -> retained P5 causal components and process rates.
+    println!("\n#### (3) P3 relief -> P5 causal components and process rates");
     let q_p5 = hypsometry(
-        "p5/final",
+        "p5/current",
         &areas,
-        terrain.final_elevation_m(),
+        terrain.current_elevation_m(),
         terrain.sea_level_m(),
         land_p5,
         inventory,
     );
     println!(
-        "p3->p5 land relief quantile displacement m: p05={:+.1} p25={:+.1} p50={:+.1} p75={:+.1} p95={:+.1} | sea_level delta={:+.2} m | land/ocean class changed area fraction={:.5}",
+        "p3 relief -> p5 current land quantile adjustment m: p05={:+.1} p25={:+.1} p50={:+.1} p75={:+.1} p95={:+.1} | sea_level delta={:+.2} m | land/ocean class changed area fraction={:.5}",
         q_p5[0] - q_p3[0],
         q_p5[1] - q_p3[1],
         q_p5[2] - q_p3[2],
@@ -1065,10 +1072,10 @@ fn probe_t0_hypsometric_attribution() {
     );
     let elevation_components = terrain.elevation_components();
     let net: Vec<f32> = terrain
-        .final_elevation_m()
+        .current_elevation_m()
         .iter()
         .zip(elevation_components.primary_elevation_m())
-        .map(|(&f, &p)| f - p)
+        .map(|(&final_m, &primary_m)| final_m - primary_m)
         .collect();
     let p5_components: [(&str, &[f32]); 9] = [
         (
@@ -1099,9 +1106,50 @@ fn probe_t0_hypsometric_attribution() {
         ),
         ("net final-primary", &net),
     ];
-    for (name, values) in &p5_components {
+    for (name, values) in p5_components {
         print_quantiles(
-            &format!("p5 {name} over land (m per {SURFACE_FORMATION_HORIZON_YEARS:.0} yr)"),
+            &format!("p5 {name} over land (m)"),
+            &Weighted::collect(values, &areas, |i| land_p5[i] == 1),
+        );
+    }
+    let process_rates = formation.process_rates();
+    let p5_rates: [(&str, &[f32]); 8] = [
+        (
+            "tectonic_displacement_rate",
+            process_rates.tectonic_displacement_rate_m_per_year(),
+        ),
+        (
+            "fluvial_erosion_rate",
+            process_rates.fluvial_erosion_rate_m_per_year(),
+        ),
+        (
+            "hillslope_erosion_rate",
+            process_rates.hillslope_erosion_rate_m_per_year(),
+        ),
+        (
+            "hillslope_deposition_rate",
+            process_rates.hillslope_deposition_rate_m_per_year(),
+        ),
+        (
+            "routed_sediment_deposition_rate",
+            process_rates.routed_sediment_deposition_rate_m_per_year(),
+        ),
+        (
+            "coastal_erosion_rate",
+            process_rates.coastal_erosion_rate_m_per_year(),
+        ),
+        (
+            "coastal_deposition_rate",
+            process_rates.coastal_deposition_rate_m_per_year(),
+        ),
+        (
+            "isostatic_response_rate",
+            process_rates.isostatic_response_rate_m_per_year(),
+        ),
+    ];
+    for (name, values) in &p5_rates {
+        print_quantiles(
+            &format!("p5 current {name} over land (m/year)"),
             &Weighted::collect(values, &areas, |i| land_p5[i] == 1),
         );
     }
@@ -1134,42 +1182,6 @@ fn probe_t0_hypsometric_attribution() {
     println!(
         "land area share eligible for stream-power incision (dry land with a receiver)={fluvially_active:.4}"
     );
-    let cancellation = BuildCancellation::new();
-    for horizon in CONTINUATION_HORIZONS_YEARS {
-        let step = ImplicitStreamPowerSolver::advance_from_snapshots(
-            surface,
-            terrain.final_elevation_m(),
-            hydrology,
-            evolved,
-            substrate,
-            horizon,
-            &cancellation,
-        )
-        .unwrap();
-        let label = format!("what-if stream-power-only +{horizon:.0e} yr from p5/final");
-        print_quantiles(
-            &format!("{label}: tectonic_displacement over land (m)"),
-            &Weighted::collect(step.tectonic_displacement_m(), &areas, |i| land_p5[i] == 1),
-        );
-        print_quantiles(
-            &format!("{label}: fluvial_erosion over land (m)"),
-            &Weighted::collect(step.fluvial_erosion_m(), &areas, |i| land_p5[i] == 1),
-        );
-        let water = solve_physical_sea_level(step.elevation_m(), &areas, inventory).unwrap();
-        let land = LandOceanField::classify(
-            &ElevationField::from_values(step.elevation_m().to_vec()).unwrap(),
-            water.sea_level_m(),
-        );
-        hypsometry(
-            &label,
-            &areas,
-            step.elevation_m(),
-            water.sea_level_m(),
-            land.raw_values(),
-            inventory,
-        );
-    }
-
     // (4) Ocean basin and water inventory accounting.
     println!("\n#### (4) Ocean basin / water inventory accounting");
     let earth_area = 4.0 * PI * EARTH_WATER_REFERENCE_RADIUS_M * EARTH_WATER_REFERENCE_RADIUS_M;
@@ -1220,97 +1232,12 @@ fn probe_t0_hypsometric_attribution() {
         }),
     );
 
-    // L0 what-if: drop the inherited V5 compatibility elevation from the P3
-    // dynamic term and keep only the rate response (the production recipe with
-    // a zero accumulated response), first on oceanic crust, then everywhere,
-    // each followed by the uniform continental thickening trials.
-    println!("\n#### (L0 what-if) P3 dynamic term without the inherited compatibility elevation");
-    let inherited = evolved.compatibility().tectonic_elevation_m();
-    for (label, kind) in [
-        ("oceanic", CrustKind::Oceanic),
-        ("continental", CrustKind::Continental),
-    ] {
-        print_quantiles(
-            &format!(
-                "v5 compatibility tectonic_elevation_m inherited by P3 over {label} crust (m)"
-            ),
-            &Weighted::collect(inherited, &areas, |i| kinds[i] == kind),
-        );
-    }
-    for (label, predicate) in [
-        ("net uplift", (|rate: f32| rate > 0.0) as fn(f32) -> bool),
-        ("net subsidence", |rate: f32| rate < 0.0),
-        ("no normal forcing", |rate: f32| rate == 0.0),
-    ] {
-        let samples = Weighted::collect(relief.dynamic_tectonic_offset_m(), &areas, |i| {
-            kinds[i] == CrustKind::Oceanic && predicate(net_rate[i])
-        });
-        println!(
-            "p3 dynamic_tectonic over oceanic crust with {label}: area share={:.4} mean={:.1} m p50={:.1} m",
-            samples.total() / total_area,
-            samples.mean(),
-            samples.quantile(0.5),
-        );
-    }
-    let rate_only: Vec<f32> = (0..n)
-        .map(|i| {
-            dynamic_tectonic_response_m(
-                0.0,
-                forcing.uplift_rate_mm_per_year()[i],
-                forcing.subsidence_rate_mm_per_year()[i],
-            )
-        })
-        .collect();
-    for (scope, applies) in [
-        (
-            "oceanic-kind cells",
-            kinds
-                .iter()
-                .map(|&k| k == CrustKind::Oceanic)
-                .collect::<Vec<bool>>(),
-        ),
-        ("every cell", vec![true; n]),
-    ] {
-        let stripped: Vec<f32> = (0..n)
-            .map(|i| {
-                if applies[i] {
-                    relief.elevation_m()[i] - relief.dynamic_tectonic_offset_m()[i] + rate_only[i]
-                } else {
-                    relief.elevation_m()[i]
-                }
-            })
-            .collect();
-        for thickening_km in CLOSURE_THICKENING_TRIALS_KM {
-            let lift_m = thickening_km * airy_slope_m_per_km;
-            let elevation: Vec<f32> = stripped
-                .iter()
-                .zip(&continental_weight)
-                .map(|(&base, &weight)| base + lift_m * weight)
-                .collect();
-            let water = solve_physical_sea_level(&elevation, &areas, inventory).unwrap();
-            let land = LandOceanField::classify(
-                &ElevationField::from_values(elevation.clone()).unwrap(),
-                water.sea_level_m(),
-            );
-            hypsometry(
-                &format!(
-                    "L0 on p3/primary over {scope}, uniform continental thickening {thickening_km:.0} km"
-                ),
-                &areas,
-                &elevation,
-                water.sea_level_m(),
-                land.raw_values(),
-                inventory,
-            );
-        }
-    }
-
     // L1 what-if: re-reference the continental freeboard datum to the solved sea.
     println!("\n#### (L1 what-if) freeboard closure on the P3 column and on the P5 product");
     for thickening_km in CLOSURE_THICKENING_TRIALS_KM {
         let (sea, _, land) = freeboard_closure(
             &format!("L1 on p3/primary, uniform continental thickening {thickening_km:.0} km"),
-            &areas,
+            surface,
             relief.elevation_m(),
             &continental_weight,
             inventory,
@@ -1329,9 +1256,9 @@ fn probe_t0_hypsometric_attribution() {
         );
     }
     freeboard_closure(
-        "L1 on p5/final (diagnostic only; P5 would re-solve)",
-        &areas,
-        terrain.final_elevation_m(),
+        "L1 on p5/current (diagnostic only; P5 would re-solve)",
+        surface,
+        terrain.current_elevation_m(),
         &continental_weight,
         inventory,
         0.0,
@@ -1340,11 +1267,11 @@ fn probe_t0_hypsometric_attribution() {
 }
 
 // ---------------------------------------------------------------------------
-// T0 corpus hypsometry (calibration spec §8.6 "measure, then pin"): the P3
+// T0 corpus hypsometry (calibration spec 搂8.6 "measure, then pin"): the P3
 // land hypsometry and the V5 continental inventory of every quality seed.
 // ---------------------------------------------------------------------------
 
-/// Thickness ceilings whose area shares bound the inventory tails (spec §4 L2).
+/// Thickness ceilings whose area shares bound the inventory tails (spec 搂4 L2).
 const INVENTORY_THIN_CEILING_KM: f32 = 28.0;
 const INVENTORY_THICK_FLOOR_KM: f32 = 44.0;
 
@@ -1601,10 +1528,13 @@ fn probe_t0b_land_fraction_driver() {
             ];
             for ratio in T0B_WATER_RATIOS {
                 let solved =
-                    solve_physical_sea_level(elevation, &areas, ratio * inventory).unwrap();
-                row.push(
-                    land_area_at(elevation, &areas, solved.sea_level_m(), |_| true) / total_area,
-                );
+                    solve_physical_sea_level(surface, elevation, ratio * inventory).unwrap();
+                row.push(f64::from(
+                    solved
+                        .geometry()
+                        .global_land_area_fraction(surface)
+                        .unwrap(),
+                ));
             }
             let mut samples: Vec<(f32, f64)> = elevation
                 .iter()
@@ -1615,7 +1545,7 @@ fn probe_t0b_land_fraction_driver() {
             let mut oceanic_shares = Vec::with_capacity(5);
             for target in std::iter::once(nominal).chain(T0B_TARGET_LAND) {
                 let sea_t = hypsometric_quantile(&samples, 1.0 - target);
-                let volume = water_volume_at_sea_level_m3(elevation, &areas, sea_t).unwrap();
+                let volume = water_volume_at_sea_level_m3(surface, elevation, sea_t).unwrap();
                 row.push(volume / inventory);
                 let land_t = land_area_at(elevation, &areas, sea_t, |_| true);
                 let oceanic_t = land_area_at(elevation, &areas, sea_t, |i| !continental(i));

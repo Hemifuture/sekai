@@ -11,18 +11,68 @@ use sekai::world::natural::{
 };
 
 fn forcing(grid: &CubedSphereGrid) -> PlanetForcing {
+    forcing_with_surface_water(grid, 1.0)
+}
+
+fn forcing_with_surface_water(grid: &CubedSphereGrid, water_fraction: f32) -> PlanetForcing {
     let count = grid.cell_count();
     PlanetForcing::new(
         *grid.fingerprint(),
         vec![0.0; count],
         vec![0.0; count],
         vec![0.1; count],
-        vec![1.0; count],
+        vec![water_fraction; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[18.0; 12]; count],
         vec![[0.008; 12]; count],
     )
     .unwrap()
+}
+
+#[test]
+fn radiative_target_gradient_does_not_bypass_resolved_temperature_pressure() {
+    let grid = CubedSphereGrid::new(3, 6_371_000.0).unwrap();
+    let count = grid.cell_count();
+    let target = grid
+        .cells()
+        .iter()
+        .map(|cell| [15.0 + 40.0 * cell.center_unit()[0] as f32; 12])
+        .collect::<Vec<_>>();
+    let forcing = PlanetForcing::new(
+        *grid.fingerprint(),
+        vec![0.0; count],
+        vec![0.0; count],
+        vec![0.1; count],
+        vec![1.0; count],
+        vec![[240.0; 12]; count],
+        target.clone(),
+        target,
+        vec![[0.008; 12]; count],
+    )
+    .unwrap();
+    let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
+    let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+    for role in state.active_roles().to_vec() {
+        state.temperature_c_mut(role).unwrap().fill(15.0);
+    }
+    let tendency = LayeredTendencySystem::new(&grid)
+        .evaluate_for_step(
+            &state,
+            &forcing,
+            &vec![1.0; grid.edges().len()],
+            0,
+            7_200.0,
+            &BuildCancellation::new(),
+        )
+        .unwrap();
+
+    assert!(tendency
+        .velocity_tendency_m_s2(ClimateLayerRole::LowerAtmosphere)
+        .unwrap()
+        .iter()
+        .flatten()
+        .all(|value| *value == 0.0));
 }
 
 #[test]
@@ -115,6 +165,7 @@ fn final_c2_tendency_retains_mass_paired_vertical_moisture_exchange() {
         vec![0.0; count],
         vec![0.0; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[0.001; 12]; count],
@@ -138,8 +189,13 @@ fn final_c2_tendency_retains_mass_paired_vertical_moisture_exchange() {
     let upper = tendency.upper_specific_humidity_tendency_s_inv().unwrap();
     assert!(lower.iter().all(|value| *value > 0.0));
     assert!(upper.iter().all(|value| *value < 0.0));
-    let lower_mass = 1.225 * 6_000.0;
-    let upper_mass = 1.225 * 4_000.0;
+    // Water mass, so the moisture column masses rather than the dry-air ones
+    // (design 2026-09-03 A5 Task 1).
+    let moisture_layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+    let lower_mass =
+        moisture_layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);
+    let upper_mass =
+        moisture_layout.moisture_column_mass_per_area(ClimateLayerRole::UpperAtmosphere);
     let residual = grid
         .cells()
         .iter()
@@ -234,6 +290,9 @@ fn shared_tendency_is_tangent_budgeted_and_honors_closed_ocean_edges() {
     state
         .velocity_m_s_mut(ClimateLayerRole::OceanMixedLayer)
         .unwrap()[first] = edge.normal_from_first().map(|value| value as f32);
+    state
+        .temperature_c_mut(ClimateLayerRole::OceanMixedLayer)
+        .unwrap()[first] += 1.0;
 
     let system = LayeredTendencySystem::new(&grid);
     let cancellation = BuildCancellation::new();
@@ -296,10 +355,17 @@ fn shared_tendency_is_tangent_budgeted_and_honors_closed_ocean_edges() {
         open.budget().paired_momentum_residual_n() / open.budget().paired_momentum_absolute_n()
     );
     assert!(open.budget().paired_moisture_absolute_kg_s() > 0.0);
+    // Measured against all the water the tendency lattice carries, not the
+    // inter-layer exchange alone: the exchange legitimately shrinks as the
+    // layers equilibrate while the `f32` quantization floor does not
+    // (design 2026-09-03 A4 §6.4, extended to moisture in A5 Task 1).
+    let moisture_scale = open.budget().paired_moisture_absolute_kg_s()
+        + open.budget().external_moisture_source_rate_kg_s().abs()
+        + open.budget().external_precipitation_sink_rate_kg_s().abs();
     assert!(
-        open.budget().paired_moisture_residual_kg_s()
-            / open.budget().paired_moisture_absolute_kg_s()
-            <= 1.0e-6
+        open.budget().paired_moisture_residual_kg_s() / moisture_scale <= 1.0e-6,
+        "paired moisture residual {} against lattice scale {moisture_scale}",
+        open.budget().paired_moisture_residual_kg_s(),
     );
     assert!(open
         .budget()
@@ -328,6 +394,7 @@ fn fractional_coast_form_drag_lives_in_the_shared_momentum_tendency() {
             vec![land_fraction; count],
             vec![0.1; count],
             vec![1.0; count],
+            vec![[240.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[0.008; 12]; count],
@@ -404,6 +471,7 @@ fn physical_bathymetry_controls_shared_thermocline_bottom_drag() {
             vec![ocean_depth_m; count],
             vec![0.1; count],
             vec![1.0; count],
+            vec![[240.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[15.0; 12]; count],
             vec![[0.008; 12]; count],
@@ -477,6 +545,7 @@ fn warm_mixed_layer_steric_pressure_accelerates_toward_warm_water() {
         vec![0.0; count],
         vec![0.1; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[15.0; 12]; count],
         vec![[0.008; 12]; count],
@@ -550,6 +619,7 @@ fn two_layer_baroclinic_pressure_drives_low_level_return_and_upper_outflow() {
         vec![0.0; count],
         vec![0.1; count],
         vec![1.0; count],
+        vec![[240.0; 12]; count],
         air_temperature,
         vec![[15.0; 12]; count],
         vec![[0.008; 12]; count],
@@ -632,7 +702,7 @@ fn tendency_rejects_nonpositive_thickness_bad_permeability_and_cancellation() {
 #[test]
 fn shared_tendency_uses_monotone_second_order_heat_and_moisture_transport() {
     let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
-    let forcing = forcing(&grid);
+    let forcing = forcing_with_surface_water(&grid, 0.0);
     let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1);
     let mut still = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
     for (cell, temperature) in grid.cells().iter().zip(

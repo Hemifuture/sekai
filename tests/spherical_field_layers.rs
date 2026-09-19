@@ -129,50 +129,81 @@ fn vector_display_speed_rejects_non_finite_and_out_of_range_values() {
 }
 
 #[test]
-fn glyph_lod_keys_keep_the_exact_nested_sampling_denominators() {
-    assert_eq!(GlyphLodKey::Low.denominator(), 16);
-    assert_eq!(GlyphLodKey::Medium.denominator(), 8);
-    assert_eq!(GlyphLodKey::High.denominator(), 4);
-
-    for score in 0_u64..256 {
-        let low = GlyphLodKey::Low.includes_score(score);
-        let medium = GlyphLodKey::Medium.includes_score(score);
-        let high = GlyphLodKey::High.includes_score(score);
-        assert!(!low || medium, "low score {score} must remain in medium");
-        assert!(!medium || high, "medium score {score} must remain in high");
+fn glyph_lod_spacings_are_powers_of_two_that_nest_by_density() {
+    let mut previous = f64::INFINITY;
+    for lod in [
+        VectorGlyphLod::Low,
+        VectorGlyphLod::Medium,
+        VectorGlyphLod::High,
+    ] {
+        let spacing = GlyphLodKey::target_spacing_pixels(lod);
+        assert_eq!(spacing.log2().fract(), 0.0, "{lod:?} spacing {spacing} px");
+        assert!(
+            spacing < previous,
+            "denser settings must place glyphs closer"
+        );
+        assert_eq!(
+            GlyphLodKey::for_zoom(lod, 1.0).lattice_reference_pixels(),
+            spacing
+        );
+        previous = spacing;
     }
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::High),
+        16.0
+    );
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::Medium),
+        32.0
+    );
+    assert_eq!(
+        GlyphLodKey::target_spacing_pixels(VectorGlyphLod::Low),
+        64.0
+    );
 }
 
 #[test]
-fn zoom_lod_changes_only_at_predefined_discrete_thresholds() {
+fn zoom_lod_changes_only_at_power_of_two_bands_and_only_adds_glyphs() {
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0),
-        GlyphLodKey::Low
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0).zoom_band(),
+        0
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.99),
-        GlyphLodKey::Low
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.99).zoom_band(),
+        0
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0),
-        GlyphLodKey::Medium
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0).zoom_band(),
+        1
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0),
-        GlyphLodKey::High
+        GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0).zoom_band(),
+        2
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.99),
-        GlyphLodKey::Medium
+        GlyphLodKey::for_zoom(VectorGlyphLod::High, 0.5).zoom_band(),
+        -1
     );
     assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 2.0),
-        GlyphLodKey::High
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.5),
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.0)
     );
-    assert_eq!(
-        GlyphLodKey::for_zoom(VectorGlyphLod::High, 0.5),
-        GlyphLodKey::High
+    assert_ne!(
+        GlyphLodKey::for_zoom(VectorGlyphLod::Medium, 1.0),
+        GlyphLodKey::for_zoom(VectorGlyphLod::High, 1.0)
     );
+
+    let mut previous = f64::INFINITY;
+    for band_zoom in [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0] {
+        let spacing =
+            GlyphLodKey::for_zoom(VectorGlyphLod::Medium, band_zoom).lattice_reference_pixels();
+        assert!(
+            spacing < previous,
+            "zoom {band_zoom} must halve the lattice spacing"
+        );
+        assert_eq!(spacing.log2().fract(), 0.0);
+        previous = spacing;
+    }
 }
 
 #[test]

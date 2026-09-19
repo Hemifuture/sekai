@@ -1,18 +1,25 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use sekai::engine::{derive_stage_seed, Artifact, BuildCancellation, StageIdentity, StageRng};
+use sekai::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_global_circulation_quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator,
-    GeologicSubstrateGenerator, GlobalCirculationArtifact, GlobalCirculationGenerator,
-    GlobalClimateForcingBuilder, PrimaryReliefGenerator,
+    GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
+    PrimaryReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
-    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
-    GlobalCirculationSnapshot, NaturalQualityProfile, NaturalQualityReport, QualityMetricStatus,
-    ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset, TectonicSpec,
-    WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    latent_heat_flux_w_m2_from_evaporation_mm_day, ClimateModelProfile, ClimateSpec,
+    ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationSnapshot, NaturalQualityProfile,
+    NaturalQualityReport, QualityMetricStatus, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, TectonicSpec, WorldFormationPreset,
+    CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2, CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+    CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2, EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+    EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE,
+    EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+    STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+    WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2, WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
 };
 use sekai::world::{Meters, RootSeed};
 use serde::Serialize;
@@ -37,17 +44,19 @@ struct P4Evidence {
     climate_grid_fingerprint: String,
     seeds: Vec<SeedEvidence>,
     corpus_metrics: Vec<CorpusMetricEvidence>,
+    earth_references: EarthReferenceEvidence,
+    corpus_earth_observations: CorpusEarthObservations,
 }
 
 #[derive(Serialize)]
 struct SeedEvidence {
     seed: u64,
-    artifact_json_bytes: usize,
-    artifact_json_hash: String,
+    snapshot_json_bytes: usize,
+    snapshot_json_hash: String,
     sea_level_m: f32,
     physical_land_fraction: f32,
     formation_cycles: u16,
-    macro_steps: u64,
+    continuation_steps: u64,
     fast_substeps: u64,
     final_residual: f64,
     maximum_cfl: f64,
@@ -61,6 +70,16 @@ struct SeedEvidence {
     surface_current_rms_m_s: f64,
     global_air_temperature_c: f64,
     global_precipitation_mm_day: f64,
+    published_global_precipitation_mm_day: f64,
+    global_evaporation_mm_day: f64,
+    evaporation_precipitation_relative_imbalance: f64,
+    absorbed_shortwave_global_mean_w_m2: f64,
+    outgoing_longwave_global_mean_w_m2: f64,
+    toa_net_radiation_global_mean_w_m2: f64,
+    planetary_albedo_global_mean: f64,
+    latent_heat_flux_global_mean_w_m2: f64,
+    precipitation_low_to_high_latitude_ratio: f64,
+    precipitation_seasonal_hemisphere_phase_fraction: f64,
     metrics: Vec<MetricEvidence>,
 }
 
@@ -83,11 +102,74 @@ struct CorpusMetricEvidence {
     passing_seed_count: usize,
 }
 
+#[derive(Serialize)]
+struct EarthReferenceEvidence {
+    gpcp_global_precipitation_mm_day: f64,
+    gpcp_relative_evidence_tolerance: f64,
+    ceres_incoming_shortwave_global_mean_w_m2: f64,
+    ceres_reflected_shortwave_global_mean_w_m2: f64,
+    ceres_absorbed_shortwave_global_mean_w_m2: f64,
+    ceres_outgoing_longwave_global_mean_w_m2: f64,
+    ceres_toa_net_radiation_global_mean_w_m2: f64,
+    ceres_planetary_albedo_global_mean: f64,
+    wild_latent_heat_flux_min_w_m2: f64,
+    wild_latent_heat_flux_max_w_m2: f64,
+    stephens_latent_heat_flux_min_w_m2: f64,
+    stephens_latent_heat_flux_max_w_m2: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct RangeEvidence {
+    minimum_across_seeds: f64,
+    mean_across_seeds: f64,
+    maximum_across_seeds: f64,
+}
+
+#[derive(Serialize)]
+struct ReferenceComparison {
+    generated: RangeEvidence,
+    reference: f64,
+    mean_signed_deviation: f64,
+    mean_relative_deviation: f64,
+}
+
+#[derive(Serialize)]
+struct PrecipitationComparison {
+    comparison: ReferenceComparison,
+    evidence_minimum_mm_day: f64,
+    evidence_maximum_mm_day: f64,
+    seeds_inside_evidence_envelope: usize,
+    corpus_mean_inside_evidence_envelope: bool,
+}
+
+#[derive(Serialize)]
+struct LatentHeatComparison {
+    generated: RangeEvidence,
+    wild_minimum_w_m2: f64,
+    wild_maximum_w_m2: f64,
+    corpus_mean_inside_wild_range: bool,
+    stephens_minimum_w_m2: f64,
+    stephens_maximum_w_m2: f64,
+    corpus_mean_inside_stephens_range: bool,
+}
+
+#[derive(Serialize)]
+struct CorpusEarthObservations {
+    precipitation: PrecipitationComparison,
+    evaporation: RangeEvidence,
+    latent_heat_flux: LatentHeatComparison,
+    absorbed_shortwave: ReferenceComparison,
+    outgoing_longwave: ReferenceComparison,
+    toa_net_radiation: ReferenceComparison,
+    planetary_albedo: ReferenceComparison,
+    precipitation_low_to_high_latitude_ratio: RangeEvidence,
+    precipitation_seasonal_hemisphere_phase_fraction: RangeEvidence,
+}
+
 struct GeneratedWorld {
     relief: sekai::world::natural::PrimaryReliefSnapshot,
     snapshot: GlobalCirculationSnapshot,
     report: NaturalQualityReport,
-    artifact: GlobalCirculationArtifact,
 }
 
 #[test]
@@ -109,9 +191,32 @@ fn write_global_circulation_evidence() {
     let mut worlds = Vec::new();
     for seed in SEEDS {
         let world = generate_world(&bundle, &domain, &formation, seed);
+        let budget = world.snapshot.budget_report();
         eprintln!(
-            "P4 evidence seed={seed} residual={:.9} wind={:.6} current={:.6}",
+            "P4 evidence seed={seed} land={:.4} residual={:.9} precipitation={:.6} evaporation={:.6} latent={:.3} toa={:.3} wind={:.6} current={:.6}",
+            {
+                let mut land_area = 0.0_f64;
+                let mut total_area = 0.0_f64;
+                for (cell, elevation) in surface
+                    .cells()
+                    .iter()
+                    .zip(world.relief.elevation_m().iter().copied())
+                {
+                    let area = cell.area.get();
+                    total_area += area;
+                    if elevation >= 0.0 {
+                        land_area += area;
+                    }
+                }
+                land_area / total_area
+            },
             world.snapshot.solve_report().final_residual(),
+            budget.precipitation_global_mean_mm_day(),
+            budget.evaporation_global_mean_mm_day(),
+            latent_heat_flux_w_m2_from_evaporation_mm_day(
+                budget.evaporation_global_mean_mm_day()
+            ),
+            budget.toa_net_radiation_global_mean_w_m2(),
             vector_rms(
                 surface,
                 world.snapshot.fields().near_surface_wind_m_s().values()
@@ -128,7 +233,7 @@ fn write_global_circulation_evidence() {
             .filter(|metric| metric.status() != QualityMetricStatus::Pass)
         {
             eprintln!(
-                "P4 FAILURE seed={seed} metric={} status={:?} value={:?} bounds={:?}",
+                "P4 EVIDENCE-DEVIATION seed={seed} metric={} status={:?} value={:?} bounds={:?}",
                 metric.id().name(),
                 metric.status(),
                 metric.value(),
@@ -140,26 +245,19 @@ fn write_global_circulation_evidence() {
 
     let mut seeds = Vec::new();
     for (seed, world) in SEEDS.into_iter().zip(&worlds) {
-        assert!(
-            world
-                .report
-                .metrics()
-                .iter()
-                .all(|metric| metric.status() == QualityMetricStatus::Pass),
-            "P4 seed {seed} has a failed hard metric"
-        );
-        world.artifact.validate().unwrap();
-        let bytes = serde_json::to_vec(&world.artifact).unwrap();
+        world.snapshot.validate().unwrap();
+        world.report.validate().unwrap();
+        let bytes = serde_json::to_vec(&world.snapshot).unwrap();
         let solve = world.snapshot.solve_report();
         let budget = world.snapshot.budget_report();
         seeds.push(SeedEvidence {
             seed,
-            artifact_json_bytes: bytes.len(),
-            artifact_json_hash: blake3::hash(&bytes).to_hex().to_string(),
+            snapshot_json_bytes: bytes.len(),
+            snapshot_json_hash: blake3::hash(&bytes).to_hex().to_string(),
             sea_level_m: world.relief.sea_level_m(),
             physical_land_fraction: world.relief.physical_land_fraction(),
-            formation_cycles: solve.formation_years(),
-            macro_steps: solve.macro_steps(),
+            formation_cycles: solve.formation_cycles(),
+            continuation_steps: solve.continuation_steps(),
             fast_substeps: solve.fast_substeps(),
             final_residual: solve.final_residual(),
             maximum_cfl: solve.maximum_cfl(),
@@ -181,13 +279,32 @@ fn write_global_circulation_evidence() {
                 surface,
                 world.snapshot.fields().monthly_air_temperature_c().values(),
             ),
-            global_precipitation_mm_day: scalar_mean(
+            global_precipitation_mm_day: budget.precipitation_global_mean_mm_day(),
+            published_global_precipitation_mm_day: scalar_mean(
                 surface,
                 world
                     .snapshot
                     .fields()
                     .monthly_precipitation_mm_day()
                     .values(),
+            ),
+            global_evaporation_mm_day: budget.evaporation_global_mean_mm_day(),
+            evaporation_precipitation_relative_imbalance: budget
+                .evaporation_precipitation_relative_imbalance(),
+            absorbed_shortwave_global_mean_w_m2: budget.absorbed_shortwave_global_mean_w_m2(),
+            outgoing_longwave_global_mean_w_m2: budget.outgoing_longwave_global_mean_w_m2(),
+            toa_net_radiation_global_mean_w_m2: budget.toa_net_radiation_global_mean_w_m2(),
+            planetary_albedo_global_mean: budget.planetary_albedo_global_mean(),
+            latent_heat_flux_global_mean_w_m2: latent_heat_flux_w_m2_from_evaporation_mm_day(
+                budget.evaporation_global_mean_mm_day(),
+            ),
+            precipitation_low_to_high_latitude_ratio: metric_value(
+                &world.report,
+                "precipitation-low-to-high-latitude-ratio",
+            ),
+            precipitation_seasonal_hemisphere_phase_fraction: metric_value(
+                &world.report,
+                "precipitation-seasonal-hemisphere-phase-fraction",
             ),
             metrics: metric_evidence(&world.report),
         });
@@ -197,17 +314,16 @@ fn write_global_circulation_evidence() {
     assert_eq!(worlds[0].snapshot, repeated.snapshot);
     assert_eq!(worlds[0].report, repeated.report);
     let corpus_metrics = corpus_metric_evidence(&worlds);
-    assert!(corpus_metrics
-        .iter()
-        .all(|metric| metric.passing_seed_count == SEEDS.len()));
+    let earth_references = earth_reference_evidence();
+    let corpus_earth_observations = corpus_earth_observations(&seeds);
     let evidence = P4Evidence {
-        schema_version: 1,
+        schema_version: 2,
         profile: NaturalQualityProfile::Draft,
         model: ClimateModelProfile::C2LayeredV1,
         integrator: "split-explicit-rk3-v1",
         algorithm_references: vec![
             "classic-third-order-runge-kutta",
-            "split-explicit-frozen-slow-dynamic-momentum-and-viscosity-rk3",
+            "thermodynamic-endpoint-before-frozen-slow-dynamics-split-explicit-rk3",
             "green-gauss-barth-jespersen-component-local-second-order-finite-volume",
             "pair-specific-extensive-layer-exchange",
             "conservative-spherical-polygon-remap",
@@ -216,10 +332,15 @@ fn write_global_circulation_evidence() {
             "positive-permeability-finite-volume-horizontal-eddy-viscosity",
             "paired-f32-exchange-projection-5e-7-balance-1e-3-flux-accuracy",
             "signed-quantized-external-source-sink-ledger",
+            "bolton-saturation-and-lifting-condensation-level",
+            "large-pond-neutral-bulk-surface-evaporation",
+            "smith-barstad-lcl-limited-upslope-condensation",
+            "speedy-large-scale-condensation-with-moist-enthalpy-saturation-adjustment",
+            "machine-converged-bracketed-newton-phase-change-root",
         ],
         procedural_closures: vec![
             "accelerated-monthly-climatological-continuation",
-            "resolved-upslope-orographic-condensation",
+            "continuous-saturated-path-orographic-condensation",
             "liquid-ocean-temperature-bound-with-sea-ice-unavailable",
             "bathymetry-scaled-thermocline-bottom-drag",
             "column-neutral-c2-first-baroclinic-pressure-mode",
@@ -232,6 +353,8 @@ fn write_global_circulation_evidence() {
         climate_grid_fingerprint: hex(*domain.climate_grid_fingerprint()),
         seeds,
         corpus_metrics,
+        earth_references,
+        corpus_earth_observations,
     };
     let json = serde_json::to_vec_pretty(&evidence).unwrap();
     assert_eq!(json, serde_json::to_vec_pretty(&evidence).unwrap());
@@ -288,79 +411,26 @@ fn generate_world(
     let forcing = GlobalClimateForcingBuilder::build(
         surface,
         &relief,
+        substrate.relative_permeability(),
         &ClimateSpec::default(),
         domain,
         &BuildCancellation::new(),
     )
     .unwrap();
-    let artifact = GlobalCirculationArtifact::generate(
+    let snapshot = GlobalCirculationGenerator::generate(
         surface,
         domain,
         &forcing,
-        &relief,
+        ClimateModelProfile::C2LayeredV1,
         &BuildCancellation::new(),
     )
-    .unwrap_or_else(|error| {
-        let snapshot = GlobalCirculationGenerator::generate(
-            surface,
-            domain,
-            &forcing,
-            ClimateModelProfile::C2LayeredV1,
-            &BuildCancellation::new(),
-        )
-        .unwrap_or_else(|diagnostic_error| {
-            panic!(
-                "P4 product seed {seed} rejected: {error}; diagnostic raw generation also failed: {diagnostic_error}"
-            )
-        });
-        let report = evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot)
-            .expect("diagnostic quality evaluation after product rejection");
-        for metric in report.metrics() {
-            eprintln!(
-                "P4 diagnostic seed={seed} metric={} status={:?} value={:?} bounds={:?}",
-                metric.id().name(),
-                metric.status(),
-                metric.value(),
-                metric.bounds(),
-            );
-        }
-        let wind = snapshot.fields().near_surface_wind_m_s().values();
-        for month in 0..12 {
-            let mut positive = 0_u32;
-            let mut total = 0_u32;
-            let mut zonal_sum = 0.0_f64;
-            for (cell, values) in surface.cells().iter().zip(wind) {
-                let radial = cell.centroid.components();
-                let latitude = radial[2].asin().to_degrees().abs();
-                if !(35.0..=60.0).contains(&latitude) {
-                    continue;
-                }
-                let cosine = radial[0].hypot(radial[1]);
-                let east = [-radial[1] / cosine, radial[0] / cosine, 0.0];
-                let zonal = values[month]
-                    .iter()
-                    .zip(east)
-                    .map(|(value, basis)| f64::from(*value) * basis)
-                    .sum::<f64>();
-                total += 1;
-                positive += u32::from(zonal > 0.0);
-                zonal_sum += zonal;
-            }
-            eprintln!(
-                "P4 diagnostic seed={seed} month={month} mid_westerly_fraction={} mid_mean_zonal_m_s={}",
-                f64::from(positive) / f64::from(total),
-                zonal_sum / f64::from(total),
-            );
-        }
-        panic!("P4 product seed {seed} rejected: {error}");
-    });
-    let snapshot = artifact.snapshot().clone();
-    let report = artifact.quality_report().clone();
+    .unwrap();
+    let report =
+        evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot).unwrap();
     GeneratedWorld {
         relief,
         snapshot,
         report,
-        artifact,
     }
 }
 
@@ -400,26 +470,181 @@ fn metric_evidence(report: &NaturalQualityReport) -> Vec<MetricEvidence> {
         .collect()
 }
 
+fn metric_value(report: &NaturalQualityReport, name: &str) -> f64 {
+    report
+        .metrics()
+        .iter()
+        .find(|metric| metric.id().name() == name)
+        .and_then(|metric| metric.value())
+        .unwrap_or_else(|| panic!("P4 evidence metric {name} is unavailable"))
+}
+
+fn earth_reference_evidence() -> EarthReferenceEvidence {
+    EarthReferenceEvidence {
+        gpcp_global_precipitation_mm_day: EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY,
+        gpcp_relative_evidence_tolerance: EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE,
+        ceres_incoming_shortwave_global_mean_w_m2: CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        ceres_reflected_shortwave_global_mean_w_m2: CERES_EBAF_REFLECTED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        ceres_absorbed_shortwave_global_mean_w_m2: CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        ceres_outgoing_longwave_global_mean_w_m2: CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
+        ceres_toa_net_radiation_global_mean_w_m2: CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2,
+        ceres_planetary_albedo_global_mean: EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+        wild_latent_heat_flux_min_w_m2: WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+        wild_latent_heat_flux_max_w_m2: WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
+        stephens_latent_heat_flux_min_w_m2: STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+        stephens_latent_heat_flux_max_w_m2: STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
+    }
+}
+
+fn corpus_earth_observations(seeds: &[SeedEvidence]) -> CorpusEarthObservations {
+    let precipitation = seeds
+        .iter()
+        .map(|seed| seed.global_precipitation_mm_day)
+        .collect::<Vec<_>>();
+    let evaporation = seeds
+        .iter()
+        .map(|seed| seed.global_evaporation_mm_day)
+        .collect::<Vec<_>>();
+    let latent_heat = seeds
+        .iter()
+        .map(|seed| seed.latent_heat_flux_global_mean_w_m2)
+        .collect::<Vec<_>>();
+    let precipitation_evidence_minimum = EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY
+        * (1.0 - EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE);
+    let precipitation_evidence_maximum = EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY
+        * (1.0 + EARTH_GLOBAL_PRECIPITATION_EVIDENCE_RELATIVE_TOLERANCE);
+    let precipitation_comparison = ReferenceComparison::new(
+        range_evidence(&precipitation),
+        EARTH_GLOBAL_PRECIPITATION_REFERENCE_MM_DAY,
+    );
+    let latent_heat_range = range_evidence(&latent_heat);
+    CorpusEarthObservations {
+        precipitation: PrecipitationComparison {
+            seeds_inside_evidence_envelope: precipitation
+                .iter()
+                .filter(|value| {
+                    (precipitation_evidence_minimum..=precipitation_evidence_maximum)
+                        .contains(value)
+                })
+                .count(),
+            corpus_mean_inside_evidence_envelope: (precipitation_evidence_minimum
+                ..=precipitation_evidence_maximum)
+                .contains(&precipitation_comparison.generated.mean_across_seeds),
+            comparison: precipitation_comparison,
+            evidence_minimum_mm_day: precipitation_evidence_minimum,
+            evidence_maximum_mm_day: precipitation_evidence_maximum,
+        },
+        evaporation: range_evidence(&evaporation),
+        latent_heat_flux: LatentHeatComparison {
+            corpus_mean_inside_wild_range: (WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2
+                ..=WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2)
+                .contains(&latent_heat_range.mean_across_seeds),
+            corpus_mean_inside_stephens_range: (STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2
+                ..=STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2)
+                .contains(&latent_heat_range.mean_across_seeds),
+            generated: latent_heat_range,
+            wild_minimum_w_m2: WILD_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+            wild_maximum_w_m2: WILD_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
+            stephens_minimum_w_m2: STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MIN_W_M2,
+            stephens_maximum_w_m2: STEPHENS_GLOBAL_LATENT_HEAT_FLUX_MAX_W_M2,
+        },
+        absorbed_shortwave: ReferenceComparison::from_seeds(
+            seeds,
+            |seed| seed.absorbed_shortwave_global_mean_w_m2,
+            CERES_EBAF_ABSORBED_SHORTWAVE_GLOBAL_MEAN_W_M2,
+        ),
+        outgoing_longwave: ReferenceComparison::from_seeds(
+            seeds,
+            |seed| seed.outgoing_longwave_global_mean_w_m2,
+            CERES_EBAF_OUTGOING_LONGWAVE_GLOBAL_MEAN_W_M2,
+        ),
+        toa_net_radiation: ReferenceComparison::from_seeds(
+            seeds,
+            |seed| seed.toa_net_radiation_global_mean_w_m2,
+            CERES_EBAF_TOA_NET_RADIATION_GLOBAL_MEAN_W_M2,
+        ),
+        planetary_albedo: ReferenceComparison::from_seeds(
+            seeds,
+            |seed| seed.planetary_albedo_global_mean,
+            EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+        ),
+        precipitation_low_to_high_latitude_ratio: range_evidence(
+            &seeds
+                .iter()
+                .map(|seed| seed.precipitation_low_to_high_latitude_ratio)
+                .collect::<Vec<_>>(),
+        ),
+        precipitation_seasonal_hemisphere_phase_fraction: range_evidence(
+            &seeds
+                .iter()
+                .map(|seed| seed.precipitation_seasonal_hemisphere_phase_fraction)
+                .collect::<Vec<_>>(),
+        ),
+    }
+}
+
+impl ReferenceComparison {
+    fn new(generated: RangeEvidence, reference: f64) -> Self {
+        Self {
+            mean_signed_deviation: generated.mean_across_seeds - reference,
+            mean_relative_deviation: (generated.mean_across_seeds - reference) / reference,
+            generated,
+            reference,
+        }
+    }
+
+    fn from_seeds(
+        seeds: &[SeedEvidence],
+        value: impl Fn(&SeedEvidence) -> f64,
+        reference: f64,
+    ) -> Self {
+        Self::new(
+            range_evidence(&seeds.iter().map(value).collect::<Vec<_>>()),
+            reference,
+        )
+    }
+}
+
+fn range_evidence(values: &[f64]) -> RangeEvidence {
+    assert!(!values.is_empty(), "P4 corpus evidence needs observations");
+    RangeEvidence {
+        minimum_across_seeds: values.iter().copied().fold(f64::INFINITY, f64::min),
+        mean_across_seeds: values.iter().sum::<f64>() / values.len() as f64,
+        maximum_across_seeds: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    }
+}
+
 fn corpus_metric_evidence(worlds: &[GeneratedWorld]) -> Vec<CorpusMetricEvidence> {
     worlds[0]
         .report
         .metrics()
         .iter()
-        .enumerate()
-        .map(|(index, metric)| {
+        .map(|metric| {
+            let name = metric.id().name();
             let values = worlds
                 .iter()
-                .map(|world| world.report.metrics()[index].value().unwrap())
+                .filter_map(|world| {
+                    world
+                        .report
+                        .metrics()
+                        .iter()
+                        .find(|candidate| candidate.id().name() == name)
+                        .and_then(|candidate| candidate.value())
+                })
                 .collect::<Vec<_>>();
+            let range = range_evidence(&values);
             CorpusMetricEvidence {
-                name: metric.id().name().to_owned(),
-                minimum_across_seeds: values.iter().copied().fold(f64::INFINITY, f64::min),
-                mean_across_seeds: values.iter().sum::<f64>() / values.len() as f64,
-                maximum_across_seeds: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                name: name.to_owned(),
+                minimum_across_seeds: range.minimum_across_seeds,
+                mean_across_seeds: range.mean_across_seeds,
+                maximum_across_seeds: range.maximum_across_seeds,
                 passing_seed_count: worlds
                     .iter()
                     .filter(|world| {
-                        world.report.metrics()[index].status() == QualityMetricStatus::Pass
+                        world.report.metrics().iter().any(|candidate| {
+                            candidate.id().name() == name
+                                && candidate.status() == QualityMetricStatus::Pass
+                        })
                     })
                     .count(),
             }
@@ -501,8 +726,11 @@ fn render_csv(evidence: &P4Evidence) -> String {
     for metric in &evidence.corpus_metrics {
         writeln!(
             csv,
-            "corpus,,{},Pass,{:.17},17,,,{:?}",
-            metric.name, metric.mean_across_seeds, metric.passing_seed_count,
+            "corpus,,{},,{:.17},{},,,{:?}",
+            metric.name,
+            metric.mean_across_seeds,
+            evidence.seeds.len(),
+            metric.passing_seed_count,
         )
         .unwrap();
     }

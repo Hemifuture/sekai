@@ -8,11 +8,13 @@ use sekai::generators::natural::{
 use sekai::generators::spatial::{GeodesicVoronoiBuilder, ProfileSurfaceBuilder};
 use sekai::world::natural::{
     formation_elevation_from_components, NaturalQualityProfile, SurfaceWaterField,
-    SurfaceWaterKind, FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
-    FORMATION_STREAM_POWER_SLOPE_THRESHOLD, SURFACE_FORMATION_MACRO_STEP_YEARS,
+    SurfaceWaterKind, CLIMATOLOGICAL_YEAR_SECONDS, ELEVATION_MAX_M,
+    FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
 };
 use sekai::world::spatial::SphericalSurfaceSnapshot;
 use sekai::world::{CellId, Meters, SphericalSpaceSpec};
+
+const IMPLICIT_TEST_STEP_YEARS: f64 = 25_000.0;
 
 fn surface(target_cell_count: u32) -> SphericalSurfaceSnapshot {
     GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
@@ -54,12 +56,19 @@ fn simple_path(surface: &SphericalSurfaceSnapshot, length: usize) -> Vec<CellId>
     path
 }
 
+/// Converts a catchment area into the discharge it yields under the frozen
+/// reference runoff, so a fixture states catchment size and the law still reads
+/// the routed water.
+fn discharge_of_reference_runoff_m3_s(area_m2: f64) -> f32 {
+    (area_m2 * FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM / 1_000.0 / CLIMATOLOGICAL_YEAR_SECONDS)
+        as f32
+}
+
 struct Fields {
-    elevation_m: Vec<f32>,
+    elevation_m: Vec<f64>,
     receiver: Vec<Option<CellId>>,
     water: SurfaceWaterField,
-    drainage_area_km2: Vec<f32>,
-    annual_runoff_mm: Vec<f32>,
+    discharge_m3_s: Vec<f32>,
     uplift_rate_mm_year: Vec<f32>,
     subsidence_rate_mm_year: Vec<f32>,
     erodibility: Vec<f32>,
@@ -71,8 +80,7 @@ impl Fields {
             elevation_m: &self.elevation_m,
             flow_receiver: &self.receiver,
             surface_water: &self.water,
-            drainage_area_km2: &self.drainage_area_km2,
-            annual_local_runoff_mm: &self.annual_runoff_mm,
+            mean_annual_discharge_m3_s: &self.discharge_m3_s,
             uplift_rate_mm_per_year: &self.uplift_rate_mm_year,
             subsidence_rate_mm_per_year: &self.subsidence_rate_mm_year,
             substrate_erodibility: &self.erodibility,
@@ -86,13 +94,11 @@ fn chain_fields(surface: &SphericalSurfaceSnapshot) -> (Vec<CellId>, Fields) {
     let mut elevation_m = vec![0.0; count];
     let mut receiver = vec![None; count];
     let mut water_kind = vec![SurfaceWaterKind::DryLand; count];
-    let mut drainage_area_km2 = vec![1.0; count];
-    let mut annual_runoff_mm = vec![0.0; count];
+    let mut discharge_m3_s = vec![0.0; count];
     for (position, &cell) in path.iter().enumerate() {
         let index = cell.raw() as usize;
-        elevation_m[index] = (3 - position) as f32 * 1_000.0;
-        drainage_area_km2[index] = (position + 1) as f32 * 4_000_000.0;
-        annual_runoff_mm[index] = 1_000.0;
+        elevation_m[index] = f64::from((3 - position) as u32) * 1_000.0;
+        discharge_m3_s[index] = discharge_of_reference_runoff_m3_s((position + 1) as f64 * 4.0e12);
         if let Some(&downstream) = path.get(position + 1) {
             receiver[index] = Some(downstream);
         } else {
@@ -105,8 +111,7 @@ fn chain_fields(surface: &SphericalSurfaceSnapshot) -> (Vec<CellId>, Fields) {
             elevation_m,
             receiver,
             water: SurfaceWaterField::from_kinds(water_kind),
-            drainage_area_km2,
-            annual_runoff_mm,
+            discharge_m3_s,
             uplift_rate_mm_year: vec![0.0; count],
             subsidence_rate_mm_year: vec![0.0; count],
             erodibility: vec![0.5; count],
@@ -176,14 +181,14 @@ fn spherical_chain_is_deterministic_monotone_base_safe_and_component_exact() {
     let first = ImplicitStreamPowerSolver::advance(
         &surface,
         fields.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
     let second = ImplicitStreamPowerSolver::advance(
         &surface,
         fields.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
@@ -217,17 +222,17 @@ fn spherical_chain_is_deterministic_monotone_base_safe_and_component_exact() {
 }
 
 #[test]
-fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exact() {
+fn discharge_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exact() {
     let surface = surface(42);
     let (path, base) = chain_fields(&surface);
     let head = path[0].raw() as usize;
 
     let mut zero = chain_fields(&surface).1;
-    zero.annual_runoff_mm.fill(0.0);
+    zero.discharge_m3_s.fill(0.0);
     let zero_result = ImplicitStreamPowerSolver::advance(
         &surface,
         zero.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
@@ -255,29 +260,29 @@ fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exac
         .and_then(|&edge| surface.edge(edge))
         .unwrap();
     subthreshold.elevation_m[head] = subthreshold.elevation_m[downstream]
-        + (edge.center_distance.get() * FORMATION_STREAM_POWER_SLOPE_THRESHOLD * 0.5) as f32;
+        + edge.center_distance.get() * FORMATION_STREAM_POWER_SLOPE_THRESHOLD * 0.5;
     let subthreshold_result = ImplicitStreamPowerSolver::advance(
         &surface,
         subthreshold.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
     assert_eq!(subthreshold_result.fluvial_erosion_m()[head], 0.0);
 
     let mut wet = chain_fields(&surface).1;
-    wet.annual_runoff_mm[head] = 4_000.0;
+    wet.discharge_m3_s[head] *= 4.0;
     let wet_result = ImplicitStreamPowerSolver::advance(
         &surface,
         wet.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
     let base_result = ImplicitStreamPowerSolver::advance(
         &surface,
         base.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
@@ -288,7 +293,7 @@ fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exac
     let soft_result = ImplicitStreamPowerSolver::advance(
         &surface,
         soft.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
@@ -299,16 +304,97 @@ fn runoff_erodibility_and_uplift_are_causal_while_zero_and_subthreshold_are_exac
     let uplift_result = ImplicitStreamPowerSolver::advance(
         &surface,
         uplift.inputs(),
-        SURFACE_FORMATION_MACRO_STEP_YEARS,
+        IMPLICIT_TEST_STEP_YEARS,
         &BuildCancellation::new(),
     )
     .unwrap();
     assert!(uplift_result.elevation_m()[head] > base_result.elevation_m()[head]);
     assert!(uplift_result.tectonic_displacement_m()[head] > 0.0);
+}
+
+#[test]
+fn submerged_cells_integrate_present_day_tectonic_forcing_without_fluvial_incision() {
+    let surface = surface(42);
+    let (path, mut fields) = chain_fields(&surface);
+    let submerged = path[3].raw() as usize;
     assert_eq!(
-        FORMATION_STREAM_POWER_REFERENCE_ERODIBILITY_PER_YEAR,
-        5.0e-6
+        fields.water.get(submerged),
+        Some(SurfaceWaterKind::Ocean),
+        "the chain terminal must be the submerged base level"
     );
+    fields.subsidence_rate_mm_year[submerged] = 5.0;
+    let initial_elevation_m = fields.elevation_m[submerged];
+    let result = ImplicitStreamPowerSolver::advance(
+        &surface,
+        fields.inputs(),
+        IMPLICIT_TEST_STEP_YEARS,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+
+    // The same cell reclassified as land keeps its receiver-free terminal role,
+    // so any difference in the retained displacement can only come from a
+    // surface-water mask on the tectonic forcing.
+    let mut exposed = fields;
+    exposed.water =
+        SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()]);
+    let exposed_result = ImplicitStreamPowerSolver::advance(
+        &surface,
+        exposed.inputs(),
+        IMPLICIT_TEST_STEP_YEARS,
+        &BuildCancellation::new(),
+    )
+    .unwrap();
+    let displacement = result.tectonic_displacement_m()[submerged];
+    assert_eq!(
+        displacement.to_bits(),
+        exposed_result.tectonic_displacement_m()[submerged].to_bits(),
+        "the current tectonic forcing must not depend on the surface-water class"
+    );
+    assert!(
+        displacement < 0.0,
+        "the submerged cell must actually integrate its subsidence"
+    );
+    assert_eq!(
+        result.elevation_m()[submerged].to_bits(),
+        formation_elevation_from_components(
+            initial_elevation_m,
+            displacement,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        .to_bits()
+    );
+
+    // Subaerial stream power still never reaches below the base level.
+    assert_eq!(result.fluvial_erosion_m()[submerged], 0.0);
+}
+
+#[test]
+fn tectonic_forcing_outside_the_elevation_domain_fails_instead_of_clipping() {
+    let surface = surface(42);
+    let mut fields = chain_fields(&surface).1;
+    let cell = fields.receiver.iter().position(Option::is_none).unwrap();
+    fields.elevation_m[cell] = f64::from(ELEVATION_MAX_M) - 1.0;
+    fields.uplift_rate_mm_year[cell] = 1.0;
+
+    assert!(matches!(
+        ImplicitStreamPowerSolver::advance(
+            &surface,
+            fields.inputs(),
+            2_000.0,
+            &BuildCancellation::new(),
+        ),
+        Err(StreamPowerGenerationError::ElevationOutOfRange {
+            cell: found_cell,
+            found,
+        }) if found_cell.raw() as usize == cell && found > f64::from(ELEVATION_MAX_M)
+    ));
 }
 
 #[test]
@@ -335,7 +421,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         ImplicitStreamPowerSolver::advance(
             &surface,
             invalid.inputs(),
-            SURFACE_FORMATION_MACRO_STEP_YEARS,
+            IMPLICIT_TEST_STEP_YEARS,
             &BuildCancellation::new(),
         ),
         Err(StreamPowerGenerationError::ReceiverNotAdjacent { .. })
@@ -347,7 +433,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         ImplicitStreamPowerSolver::advance(
             &surface,
             cyclic.inputs(),
-            SURFACE_FORMATION_MACRO_STEP_YEARS,
+            IMPLICIT_TEST_STEP_YEARS,
             &BuildCancellation::new(),
         ),
         Err(StreamPowerGenerationError::ReceiverCycle)
@@ -365,8 +451,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         elevation_m: vec![1_000.0; count],
         receiver: vec![None; count],
         water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
-        drainage_area_km2: vec![1.0; count],
-        annual_runoff_mm: vec![1_000.0; count],
+        discharge_m3_s: vec![discharge_of_reference_runoff_m3_s(1.0e6); count],
         uplift_rate_mm_year: vec![0.0; count],
         subsidence_rate_mm_year: vec![0.0; count],
         erodibility: vec![0.5; count],
@@ -377,7 +462,7 @@ fn malformed_receivers_fail_and_active_dense_work_cancels() {
         ImplicitStreamPowerSolver::advance(
             &surface,
             fields.inputs(),
-            SURFACE_FORMATION_MACRO_STEP_YEARS,
+            IMPLICIT_TEST_STEP_YEARS,
             &worker_signal,
         )
     });

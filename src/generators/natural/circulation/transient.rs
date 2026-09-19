@@ -1100,6 +1100,7 @@ mod tests {
             vec![0.5; count],
             vec![0.3; count],
             vec![1.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; count],
             vec![[15.0; CLIMATE_MONTH_COUNT]; count],
             vec![[0.005; CLIMATE_MONTH_COUNT]; count],
@@ -1313,6 +1314,7 @@ mod tests {
             vec![0.0; grid.cell_count()],
             vec![0.3; grid.cell_count()],
             vec![1.0; grid.cell_count()],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; grid.cell_count()],
             temperature
                 .iter()
                 .map(|value| [*value; CLIMATE_MONTH_COUNT])

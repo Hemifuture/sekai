@@ -47,10 +47,6 @@ where
 }
 
 impl<T> Resource<T> {
-    pub fn new(value: T) -> Self {
-        Self(Arc::new(RwLock::new(value)))
-    }
-
     pub fn read_resource<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let reader = self.0.read().unwrap();
         f(&reader)

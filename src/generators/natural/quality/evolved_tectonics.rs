@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 
 use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
 use crate::world::natural::{
-    BoundaryKind, CrustKind, EvolvedTectonicSnapshot, NaturalQualityReport, QualityMetricId,
+    BoundaryKind, EvolvedTectonicSnapshot, NaturalQualityReport, QualityMetricId,
     MAX_TECTONIC_AUTHORITY_RELATIVE_BUDGET_ERROR, MAX_TECTONIC_CONTROL_RELATIVE_BUDGET_ERROR,
 };
 use crate::world::spatial::{
@@ -16,7 +16,7 @@ use crate::world::{EdgeId, PlateId, SurfaceVertexId};
 const METRIC_NAMESPACE: &str = "sekai.tectonics-v5";
 const METRIC_VERSION: u16 = 1;
 const MACRO_BRANCH_LENGTH_M: f64 = 750_000.0;
-const EXPECTED_METRIC_NAMES: [&str; 13] = [
+const EXPECTED_METRIC_NAMES: [&str; 12] = [
     "authority-material-relative-error",
     "collision-causality-fraction",
     "continental-area-fraction",
@@ -25,7 +25,6 @@ const EXPECTED_METRIC_NAMES: [&str; 13] = [
     "lineage-closure-error",
     "maximum-plate-area-fraction",
     "non-finite-value-count",
-    "ocean-age-depth-spearman",
     "regular-triple-junction-angle-fraction",
     "remap-category-ambiguity-fraction",
     "subduction-causality-fraction",
@@ -104,11 +103,6 @@ pub fn evaluate_evolved_tectonic_quality(
         0.50,
     )?;
 
-    builder.record_observation_at_least(
-        metric_id("ocean-age-depth-spearman")?,
-        ocean_age_depth_spearman(surface, snapshot)?,
-        0.70,
-    )?;
     builder.record_observation_at_most(
         metric_id("regular-triple-junction-angle-fraction")?,
         regular_triple_junction_fraction(surface, snapshot)?,
@@ -153,11 +147,11 @@ pub fn evaluate_evolved_tectonic_quality(
     builder.finish()
 }
 
-/// Evaluates the six P2 statistical gates over a complete fixed-seed corpus.
+/// Evaluates the five P2 statistical gates over a complete fixed-seed corpus.
 ///
-/// Ratios are recombined from their contributing sample counts. Ocean
-/// age/depth ranks and transform/convergent medians are recomputed from the
-/// original authoritative cells rather than averaging per-world summaries.
+/// Ratios are recombined from their contributing sample counts, while
+/// transform/convergent medians are recomputed from the original authoritative
+/// cells rather than averaging per-world summaries.
 pub fn evaluate_evolved_tectonic_corpus_quality(
     surface: &SphericalSurfaceSnapshot,
     snapshots: &[&EvolvedTectonicSnapshot],
@@ -181,7 +175,6 @@ pub fn evaluate_evolved_tectonic_corpus_quality(
     let mut subduction = FractionAggregate::default();
     let mut collision = FractionAggregate::default();
     let mut triple_regularity = FractionAggregate::default();
-    let mut ocean_age_depth = Vec::new();
     let mut transform_uplift = Vec::new();
     let mut convergent_uplift = Vec::new();
     for snapshot in snapshots {
@@ -195,7 +188,6 @@ pub fn evaluate_evolved_tectonic_corpus_quality(
         subduction.push(&causality.subduction)?;
         collision.push(&causality.collision)?;
         triple_regularity.push(&regular_triple_junction_fraction(surface, snapshot)?)?;
-        append_ocean_age_depth(surface, snapshot, &mut ocean_age_depth);
         append_boundary_uplift_samples(
             surface,
             snapshot,
@@ -224,25 +216,6 @@ pub fn evaluate_evolved_tectonic_corpus_quality(
         0.80,
     )?;
 
-    let ocean_observation = if ocean_age_depth.len() < 2 {
-        MetricObservation::Unavailable {
-            reason: "fewer than two oceanic cells in the corpus".to_owned(),
-        }
-    } else if let Some(value) = weighted_spearman(&ocean_age_depth) {
-        MetricObservation::Available {
-            value,
-            sample_count: count(ocean_age_depth.len(), "corpus-ocean-age-depth")?,
-        }
-    } else {
-        MetricObservation::Unavailable {
-            reason: "corpus ocean age or depth ranks have zero weighted variance".to_owned(),
-        }
-    };
-    builder.record_observation_at_least(
-        metric_id("ocean-age-depth-spearman")?,
-        ocean_observation,
-        0.70,
-    )?;
     builder.record_observation_at_most(
         metric_id("regular-triple-junction-angle-fraction")?,
         triple_regularity.finish("no three-lineage macro junctions in the corpus")?,
@@ -586,48 +559,6 @@ fn fraction_observation(
     }
 }
 
-fn ocean_age_depth_spearman(
-    surface: &SphericalSurfaceSnapshot,
-    snapshot: &EvolvedTectonicSnapshot,
-) -> Result<MetricObservation, QualityBuildError> {
-    let mut values = Vec::new();
-    append_ocean_age_depth(surface, snapshot, &mut values);
-    if values.len() < 2 {
-        return Ok(MetricObservation::Unavailable {
-            reason: "fewer than two oceanic cells".to_owned(),
-        });
-    }
-    let Some(value) = weighted_spearman(&values) else {
-        return Ok(MetricObservation::Unavailable {
-            reason: "ocean age or depth ranks have zero weighted variance".to_owned(),
-        });
-    };
-    if !value.is_finite() {
-        return Err(QualityBuildError::NonFiniteAccumulation);
-    }
-    Ok(MetricObservation::Available {
-        value,
-        sample_count: count(values.len(), "ocean-age-depth-spearman")?,
-    })
-}
-
-fn append_ocean_age_depth(
-    surface: &SphericalSurfaceSnapshot,
-    snapshot: &EvolvedTectonicSnapshot,
-    values: &mut Vec<(f64, f64, f64)>,
-) {
-    let tectonic = snapshot.compatibility();
-    for (index, cell) in surface.cells().iter().enumerate() {
-        if tectonic.crust_kinds().get(index) == Some(CrustKind::Oceanic) {
-            values.push((
-                f64::from(tectonic.crust_age_myr()[index]),
-                -f64::from(tectonic.tectonic_elevation_m()[index]),
-                cell.area.get(),
-            ));
-        }
-    }
-}
-
 fn regular_triple_junction_fraction(
     surface: &SphericalSurfaceSnapshot,
     snapshot: &EvolvedTectonicSnapshot,
@@ -786,61 +717,6 @@ fn median_f64(values: &[f64]) -> f64 {
     } else {
         values[middle]
     }
-}
-
-fn weighted_spearman(values: &[(f64, f64, f64)]) -> Option<f64> {
-    let first = average_ranks(values, |value| value.0);
-    let second = average_ranks(values, |value| value.1);
-    let weight_sum = values.iter().map(|value| value.2).sum::<f64>();
-    if !weight_sum.is_finite() || weight_sum <= 0.0 {
-        return None;
-    }
-    let first_mean = first
-        .iter()
-        .zip(values)
-        .map(|(rank, value)| rank * value.2)
-        .sum::<f64>()
-        / weight_sum;
-    let second_mean = second
-        .iter()
-        .zip(values)
-        .map(|(rank, value)| rank * value.2)
-        .sum::<f64>()
-        / weight_sum;
-    let mut covariance = 0.0;
-    let mut first_variance = 0.0;
-    let mut second_variance = 0.0;
-    for index in 0..values.len() {
-        let first_delta = first[index] - first_mean;
-        let second_delta = second[index] - second_mean;
-        let weight = values[index].2;
-        covariance += weight * first_delta * second_delta;
-        first_variance += weight * first_delta * first_delta;
-        second_variance += weight * second_delta * second_delta;
-    }
-    let scale = (first_variance * second_variance).sqrt();
-    (scale > 0.0).then_some(covariance / scale)
-}
-
-fn average_ranks(values: &[(f64, f64, f64)], key: impl Fn(&(f64, f64, f64)) -> f64) -> Vec<f64> {
-    let mut order = (0..values.len()).collect::<Vec<_>>();
-    order.sort_by(|&first, &second| key(&values[first]).total_cmp(&key(&values[second])));
-    let mut ranks = vec![0.0; values.len()];
-    let mut start = 0;
-    while start < order.len() {
-        let mut end = start + 1;
-        while end < order.len()
-            && key(&values[order[end]]).to_bits() == key(&values[order[start]]).to_bits()
-        {
-            end += 1;
-        }
-        let average = (start + end - 1) as f64 * 0.5;
-        for &index in &order[start..end] {
-            ranks[index] = average;
-        }
-        start = end;
-    }
-    ranks
 }
 
 fn non_finite_count(snapshot: &EvolvedTectonicSnapshot) -> (usize, usize) {

@@ -1,7 +1,7 @@
 //! Immutable field document for the formation-product chain (P2v5→P5).
 //!
 //! Mirrors the natural-foundation document boundary: it extracts shared
-//! artifacts from one complete `surface_formation_graph()` build outcome,
+//! siblings from one complete causal-formation bundle build outcome,
 //! cross-validates their identities, and exposes the same renderer-independent
 //! [`FieldDocument`] surface the spherical presenters already consume.
 
@@ -16,8 +16,8 @@ use crate::engine::{
     BuildResultHash,
 };
 use crate::generators::natural::{
-    EvolvedTectonicArtifact, GeologicSubstrateArtifact, GlobalCirculationArtifact,
-    NaturalSurfaceFormationArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
+    NaturalFormationBundleArtifact, ReliefSpecArtifact, ResolvedTectonicInput,
+    ResolvedTectonicInputArtifact,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::view::{
@@ -26,18 +26,28 @@ use crate::view::{
 };
 use crate::world::fields::{FieldId, FieldRegistry, ValueRange};
 use crate::world::natural::{
-    annual_local_runoff_mm_field_id, circulation_annual_precipitation_mm_field_id,
-    circulation_mean_air_temperature_c_field_id, circulation_prevailing_wind_m_s_field_id,
-    coastal_deposition_m_field_id, coastal_erosion_m_field_id, crust_kind_field_id,
-    crust_thickness_field_id, drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
-    formation_annual_precipitation_mm, hillslope_deposition_m_field_id,
-    hillslope_erosion_m_field_id, isostatic_response_m_field_id, lake_depth_m_field_id,
-    land_ocean_field_id, mean_annual_discharge_m3_s_field_id, plate_id_field_id,
+    annual_local_runoff_mm_field_id, circulation_annual_evaporation_mm_field_id,
+    circulation_annual_precipitation_mm_field_id,
+    circulation_mean_absorbed_shortwave_w_m2_field_id, circulation_mean_air_temperature_c_field_id,
+    circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
+    circulation_surface_albedo_field_id, climatological_annual_total_mm,
+    climatological_monthly_mean, coastal_deposition_m_field_id,
+    coastal_deposition_rate_m_per_year_field_id, coastal_erosion_m_field_id,
+    coastal_erosion_rate_m_per_year_field_id, crust_kind_field_id, crust_thickness_field_id,
+    drainage_area_km2_field_id, fluvial_erosion_depth_m_field_id,
+    fluvial_erosion_rate_m_per_year_field_id, hillslope_deposition_m_field_id,
+    hillslope_deposition_rate_m_per_year_field_id, hillslope_erosion_m_field_id,
+    hillslope_erosion_rate_m_per_year_field_id, isostatic_response_m_field_id,
+    isostatic_response_rate_m_per_year_field_id, lake_depth_m_field_id, land_ocean_field_id,
+    mean_annual_discharge_m3_s_field_id, ocean_age_myr_field_id, plate_id_field_id,
     primary_elevation_m_field_id, routed_sediment_deposition_m_field_id,
-    sediment_deposition_thickness_m_field_id, spherical_formation_field_registry,
-    strahler_stream_order_field_id, surface_elevation_m_field_id, surface_water_kind_field_id,
-    tectonic_displacement_m_field_id, GlobalCirculationFields, NaturalFieldRegistryError,
-    SphericalTectonicValidationError, SurfaceFormationValidationError, CLIMATE_MONTH_COUNT,
+    routed_sediment_deposition_rate_m_per_year_field_id, sediment_deposition_thickness_m_field_id,
+    spherical_formation_field_registry, strahler_stream_order_field_id,
+    surface_elevation_m_field_id, surface_water_kind_field_id, tectonic_displacement_m_field_id,
+    tectonic_displacement_rate_m_per_year_field_id, ClimateBudgetReport, GlobalCirculationFields,
+    NaturalFieldRegistryError, NaturalFormationBundleValidationError, PrimaryReliefValidationError,
+    SeaLevelPolicy, SphericalTectonicValidationError, SurfaceFormationValidationError,
+    CLIMATE_MONTH_COUNT,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
@@ -45,7 +55,7 @@ use crate::world::spatial::{
 };
 use crate::world::RootSeed;
 
-const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 1;
+const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 3;
 
 /// Stable provenance identity for one complete formation-product document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,16 +97,104 @@ impl SphericalFormationBuildIdentity {
     }
 }
 
+/// Read-only water and energy budget copied from the final P5 climate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct P4WaterEnergySummary {
+    evaporation_global_mean_mm_day: f64,
+    precipitation_global_mean_mm_day: f64,
+    evaporation_minus_precipitation_global_mean_mm_day: f64,
+    evaporation_precipitation_relative_imbalance: f64,
+    absorbed_shortwave_global_mean_w_m2: f64,
+    outgoing_longwave_global_mean_w_m2: f64,
+    toa_net_radiation_global_mean_w_m2: f64,
+    planetary_albedo_global_mean: f64,
+}
+
+impl P4WaterEnergySummary {
+    pub(super) fn from_budget_report(report: &ClimateBudgetReport) -> Self {
+        Self {
+            evaporation_global_mean_mm_day: report.evaporation_global_mean_mm_day(),
+            precipitation_global_mean_mm_day: report.precipitation_global_mean_mm_day(),
+            evaporation_minus_precipitation_global_mean_mm_day: report
+                .evaporation_minus_precipitation_global_mean_mm_day(),
+            evaporation_precipitation_relative_imbalance: report
+                .evaporation_precipitation_relative_imbalance(),
+            absorbed_shortwave_global_mean_w_m2: report.absorbed_shortwave_global_mean_w_m2(),
+            outgoing_longwave_global_mean_w_m2: report.outgoing_longwave_global_mean_w_m2(),
+            toa_net_radiation_global_mean_w_m2: report.toa_net_radiation_global_mean_w_m2(),
+            planetary_albedo_global_mean: report.planetary_albedo_global_mean(),
+        }
+    }
+
+    pub const fn evaporation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_global_mean_mm_day
+    }
+
+    pub const fn precipitation_global_mean_mm_day(&self) -> f64 {
+        self.precipitation_global_mean_mm_day
+    }
+
+    pub const fn evaporation_minus_precipitation_global_mean_mm_day(&self) -> f64 {
+        self.evaporation_minus_precipitation_global_mean_mm_day
+    }
+
+    pub const fn evaporation_precipitation_relative_imbalance(&self) -> f64 {
+        self.evaporation_precipitation_relative_imbalance
+    }
+
+    pub const fn absorbed_shortwave_global_mean_w_m2(&self) -> f64 {
+        self.absorbed_shortwave_global_mean_w_m2
+    }
+
+    pub const fn outgoing_longwave_global_mean_w_m2(&self) -> f64 {
+        self.outgoing_longwave_global_mean_w_m2
+    }
+
+    pub const fn toa_net_radiation_global_mean_w_m2(&self) -> f64 {
+        self.toa_net_radiation_global_mean_w_m2
+    }
+
+    pub const fn planetary_albedo_global_mean(&self) -> f64 {
+        self.planetary_albedo_global_mean
+    }
+}
+
 /// Build-time authoring-compliance measurements for the formation product.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FormationAreaSummary {
     authored_continental_fraction: f32,
     evolved_continental_fraction: f64,
+    target_land_fraction: f32,
     actual_land_fraction: f64,
     sea_level_m: f32,
+    sea_level_policy: SeaLevelPolicy,
+    water_inventory_ratio: f64,
+    p4_water_energy: P4WaterEnergySummary,
 }
 
 impl FormationAreaSummary {
+    pub(super) const fn new(
+        authored_continental_fraction: f32,
+        evolved_continental_fraction: f64,
+        target_land_fraction: f32,
+        actual_land_fraction: f64,
+        sea_level_m: f32,
+        sea_level_policy: SeaLevelPolicy,
+        water_inventory_ratio: f64,
+        p4_water_energy: P4WaterEnergySummary,
+    ) -> Self {
+        Self {
+            authored_continental_fraction,
+            evolved_continental_fraction,
+            target_land_fraction,
+            actual_land_fraction,
+            sea_level_m,
+            sea_level_policy,
+            water_inventory_ratio,
+            p4_water_energy,
+        }
+    }
+
     /// Returns the author-requested initial continental crust area fraction.
     pub const fn authored_continental_fraction(&self) -> f32 {
         self.authored_continental_fraction
@@ -107,14 +205,34 @@ impl FormationAreaSummary {
         self.evolved_continental_fraction
     }
 
+    /// Returns the authored nominal land fraction carried by the built relief spec.
+    pub const fn target_land_fraction(&self) -> f32 {
+        self.target_land_fraction
+    }
+
     /// Returns the area-weighted land fraction of the published surface.
     pub const fn actual_land_fraction(&self) -> f64 {
         self.actual_land_fraction
     }
 
-    /// Returns the water-volume-derived global sea level.
+    /// Returns the published global sea level selected by the active driver.
     pub const fn sea_level_m(&self) -> f32 {
         self.sea_level_m
+    }
+
+    /// Returns the sea-level driver used by the published build.
+    pub const fn sea_level_policy(&self) -> SeaLevelPolicy {
+        self.sea_level_policy
+    }
+
+    /// Returns P3 inventory relative to the area-scaled Earth ocean reference.
+    pub const fn water_inventory_ratio(&self) -> f64 {
+        self.water_inventory_ratio
+    }
+
+    /// Returns the final formation climate's authoritative P4 budget.
+    pub const fn p4_water_energy(&self) -> P4WaterEnergySummary {
+        self.p4_water_energy
     }
 }
 
@@ -122,8 +240,11 @@ impl FormationAreaSummary {
 /// published end-state circulation, so the climate on screen is consistent
 /// with the terrain on screen.
 struct FormationDisplayCache {
+    annual_evaporation_mm: Vec<f32>,
     annual_precipitation_mm: Vec<f32>,
+    mean_absorbed_shortwave_w_m2: Vec<f32>,
     mean_air_temperature_c: Vec<f32>,
+    mean_outgoing_longwave_w_m2: Vec<f32>,
     prevailing_wind_m_s: Vec<[f32; 2]>,
 }
 
@@ -140,18 +261,36 @@ impl FormationDisplayCache {
             });
         }
         let monthly_precipitation = fields.monthly_precipitation_mm_day().values();
+        let monthly_evaporation = fields.monthly_evaporation_mm_day().values();
+        let monthly_absorbed_shortwave = fields.monthly_absorbed_shortwave_w_m2().values();
         let monthly_temperature = fields.monthly_air_temperature_c().values();
+        let monthly_outgoing_longwave = fields.monthly_outgoing_longwave_w_m2().values();
         let monthly_wind = fields.near_surface_wind_m_s().values();
 
+        let mut annual_evaporation_mm = Vec::with_capacity(cell_count);
         let mut annual_precipitation_mm = Vec::with_capacity(cell_count);
+        let mut mean_absorbed_shortwave_w_m2 = Vec::with_capacity(cell_count);
         let mut mean_air_temperature_c = Vec::with_capacity(cell_count);
+        let mut mean_outgoing_longwave_w_m2 = Vec::with_capacity(cell_count);
         let mut prevailing_wind_m_s = Vec::with_capacity(cell_count);
         for (index, cell) in surface.cells().iter().enumerate() {
-            annual_precipitation_mm.push(formation_annual_precipitation_mm(
+            annual_evaporation_mm.push(display_annual_water_total_mm(
+                "circulation_annual_evaporation_mm",
+                index,
+                &monthly_evaporation[index],
+            )?);
+            annual_precipitation_mm.push(display_annual_water_total_mm(
+                "circulation_annual_precipitation_mm",
+                index,
                 &monthly_precipitation[index],
+            )?);
+            mean_absorbed_shortwave_w_m2.push(climatological_monthly_mean(
+                &monthly_absorbed_shortwave[index],
             ));
-            mean_air_temperature_c
-                .push(monthly_temperature[index].iter().sum::<f32>() / CLIMATE_MONTH_COUNT as f32);
+            mean_air_temperature_c.push(climatological_monthly_mean(&monthly_temperature[index]));
+            mean_outgoing_longwave_w_m2.push(climatological_monthly_mean(
+                &monthly_outgoing_longwave[index],
+            ));
             let mut mean_wind = [0.0_f64; 3];
             for month in &monthly_wind[index] {
                 for (axis, component) in month.iter().enumerate() {
@@ -169,21 +308,33 @@ impl FormationDisplayCache {
             prevailing_wind_m_s.push([east_component as f32, north_component as f32]);
         }
         Ok(Self {
+            annual_evaporation_mm,
             annual_precipitation_mm,
+            mean_absorbed_shortwave_w_m2,
             mean_air_temperature_c,
+            mean_outgoing_longwave_w_m2,
             prevailing_wind_m_s,
         })
     }
+}
+
+fn display_annual_water_total_mm(
+    field: &'static str,
+    cell: usize,
+    monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT],
+) -> Result<f32, SphericalFormationDisplayError> {
+    let annual = climatological_annual_total_mm(monthly_mm_day) as f32;
+    if !annual.is_finite() {
+        return Err(SphericalFormationDisplayError::ReductionOverflow { field, cell });
+    }
+    Ok(annual)
 }
 
 /// Projection-free, immutable document for one complete formation world.
 pub struct SphericalFormationFieldDocument {
     pub(super) surface: Arc<SphericalSurfaceArtifact>,
     resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
-    tectonics: Arc<EvolvedTectonicArtifact>,
-    substrate: Arc<GeologicSubstrateArtifact>,
-    circulation: Arc<GlobalCirculationArtifact>,
-    pub(super) formation: Arc<NaturalSurfaceFormationArtifact>,
+    pub(super) formation: Arc<NaturalFormationBundleArtifact>,
     registry: FieldRegistry,
     diagnostics: Vec<OwnedViewDiagnostic>,
     cache: FormationDisplayCache,
@@ -208,10 +359,8 @@ impl SphericalFormationFieldDocument {
             provenance,
             outcome.artifacts.get::<SphericalSurfaceArtifact>()?,
             outcome.artifacts.get::<ResolvedTectonicInputArtifact>()?,
-            outcome.artifacts.get::<EvolvedTectonicArtifact>()?,
-            outcome.artifacts.get::<GeologicSubstrateArtifact>()?,
-            outcome.artifacts.get::<GlobalCirculationArtifact>()?,
-            outcome.artifacts.get::<NaturalSurfaceFormationArtifact>()?,
+            outcome.artifacts.get::<ReliefSpecArtifact>()?,
+            outcome.artifacts.get::<NaturalFormationBundleArtifact>()?,
             &outcome.report,
         )
     }
@@ -220,19 +369,19 @@ impl SphericalFormationFieldDocument {
         provenance: BuildProvenance,
         surface: Arc<SphericalSurfaceArtifact>,
         resolved_tectonic: Arc<ResolvedTectonicInputArtifact>,
-        tectonics: Arc<EvolvedTectonicArtifact>,
-        substrate: Arc<GeologicSubstrateArtifact>,
-        circulation: Arc<GlobalCirculationArtifact>,
-        formation: Arc<NaturalSurfaceFormationArtifact>,
+        relief_spec: Arc<ReliefSpecArtifact>,
+        formation: Arc<NaturalFormationBundleArtifact>,
         report: &BuildReport,
     ) -> Result<Self, SphericalFormationDisplayError> {
         surface.snapshot().validate()?;
         let authoritative = SurfaceRef::for_spherical(surface.snapshot());
-        tectonics
-            .snapshot()
+        let bundle = formation.bundle();
+        bundle.validate()?;
+        bundle
+            .tectonics()
             .compatibility()
             .validate_against(surface.snapshot())?;
-        let formation_snapshot = formation.snapshot();
+        let formation_snapshot = bundle.surface_formation();
         formation_snapshot.validate()?;
         if formation_snapshot.surface_ref() != authoritative {
             return Err(SphericalFormationDisplayError::FormationSurfaceMismatch {
@@ -240,18 +389,22 @@ impl SphericalFormationFieldDocument {
                 authoritative,
             });
         }
+        bundle
+            .primary_relief()
+            .validate_against_authoring(surface.snapshot(), relief_spec.spec())?;
+        bundle
+            .substrate()
+            .validate_against_surface(surface.snapshot())
+            .map_err(PrimaryReliefValidationError::from)?;
 
-        let compatibility = tectonics.snapshot().compatibility();
+        let compatibility = bundle.tectonics().compatibility();
         let plate_count = u16::try_from(compatibility.plates().len())
             .map_err(|_| SphericalFormationDisplayError::PlateCountOverflow)?;
         let registry = spherical_formation_field_registry(
             plate_count,
             surface.snapshot().total_cell_area().get(),
         )?;
-        let cache = FormationDisplayCache::build(
-            surface.snapshot(),
-            formation_snapshot.formation_climate().fields(),
-        )?;
+        let cache = FormationDisplayCache::build(surface.snapshot(), bundle.climate().fields())?;
 
         let terrain = formation_snapshot.terrain_fields();
         let areas = surface.snapshot().cells();
@@ -268,24 +421,22 @@ impl SphericalFormationFieldDocument {
                 land_area += cell.area.get();
             }
         }
-        let area_summary = FormationAreaSummary {
-            authored_continental_fraction: resolved_tectonic
-                .input()
-                .spec()
-                .continental_crust_fraction,
-            evolved_continental_fraction: continental_area / total_area,
-            actual_land_fraction: land_area / total_area,
-            sea_level_m: terrain.sea_level_m(),
-        };
+        let area_summary = FormationAreaSummary::new(
+            resolved_tectonic.input().spec().continental_crust_fraction,
+            continental_area / total_area,
+            relief_spec.spec().target_land_fraction,
+            land_area / total_area,
+            terrain.sea_level_m(),
+            relief_spec.spec().sea_level_policy,
+            bundle.primary_relief().water_inventory_ratio(total_area)?,
+            P4WaterEnergySummary::from_budget_report(bundle.climate().budget_report()),
+        );
         let elevation_display_radius_m =
-            elevation_display_radius_m(terrain.sea_level_m(), terrain.final_elevation_m());
+            elevation_display_radius_m(terrain.sea_level_m(), terrain.current_elevation_m());
         let identity = SphericalFormationBuildIdentity::new(&provenance, authoritative);
         let document = Self {
             surface,
             resolved_tectonic,
-            tectonics,
-            substrate,
-            circulation,
             formation,
             registry,
             diagnostics: owned_view_diagnostics(report),
@@ -321,7 +472,11 @@ impl SphericalFormationFieldDocument {
 
     /// Returns the quality tier the published formation product was built at.
     pub fn quality_profile(&self) -> crate::world::natural::NaturalQualityProfile {
-        self.formation.snapshot().checkpoint().quality_profile()
+        self.formation
+            .bundle()
+            .surface_formation()
+            .checkpoint()
+            .quality_profile()
     }
 
     /// Borrows the resolved tectonic input that authored this world.
@@ -329,28 +484,25 @@ impl SphericalFormationFieldDocument {
         self.resolved_tectonic.input()
     }
 
-    /// Borrows the initial P4 circulation checkpoint retained for provenance.
-    ///
-    /// Displayed climatologies come from the formation product's own
-    /// end-state circulation instead (single source of display truth).
-    pub fn initial_circulation(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
-        self.circulation.snapshot()
-    }
-
     /// Borrows the validated catalog used to prepare fill and annotation layers.
     /// Returns the evolved plate-compatibility snapshot (T1 conditioning input).
     pub fn evolved_compatibility(&self) -> &crate::world::natural::SphericalTectonicSnapshot {
-        self.tectonics.snapshot().compatibility()
+        self.formation.bundle().tectonics().compatibility()
     }
 
     /// Returns the geologic substrate snapshot (T1 erodibility source).
     pub fn substrate(&self) -> &crate::world::natural::GeologicSubstrateSnapshot {
-        self.substrate.snapshot()
+        self.formation.bundle().substrate()
     }
 
-    /// Returns the published formation snapshot (T1 terrain and climate source).
+    /// Returns the published formation snapshot (T1 terrain source).
     pub fn formation_snapshot(&self) -> &crate::world::natural::NaturalSurfaceFormationSnapshot {
-        self.formation.snapshot()
+        self.formation.bundle().surface_formation()
+    }
+
+    /// Returns the sibling endpoint P4 snapshot used by UI and T1.
+    pub fn formation_climate(&self) -> &crate::world::natural::GlobalCirculationSnapshot {
+        self.formation.bundle().climate()
     }
 
     /// Sea level (m) and the sea-anchored hypsometric display radius (m) the
@@ -374,6 +526,11 @@ impl SphericalFormationFieldDocument {
         &self.area_summary
     }
 
+    /// Borrows the field schemas that provide presentation labels and units.
+    pub(super) const fn field_registry(&self) -> &FieldRegistry {
+        &self.registry
+    }
+
     /// Returns the product-preferred initial fill field.
     pub fn preferred_field(&self) -> Option<FieldId> {
         <Self as FieldDocument>::preferred_field(self)
@@ -387,10 +544,13 @@ impl SphericalFormationFieldDocument {
 
 impl FieldDocument for SphericalFormationFieldDocument {
     fn catalog(&self) -> Result<FieldCatalog<'_>, FieldViewError> {
-        let compatibility = self.tectonics.snapshot().compatibility();
-        let terrain = self.formation.snapshot().terrain_fields();
+        let bundle = self.formation.bundle();
+        let compatibility = bundle.tectonics().compatibility();
+        let formation = bundle.surface_formation();
+        let terrain = formation.terrain_fields();
         let components = terrain.elevation_components();
-        let hydrology = self.formation.snapshot().hydrology();
+        let rates = formation.process_rates();
+        let hydrology = formation.hydrology();
         let payloads: Vec<(FieldId, FieldPayloadRef<'_>)> = vec![
             (
                 plate_id_field_id(),
@@ -403,6 +563,10 @@ impl FieldDocument for SphericalFormationFieldDocument {
             (
                 crust_thickness_field_id(),
                 FieldPayloadRef::ScalarF32(compatibility.crust_thickness_km()),
+            ),
+            (
+                ocean_age_myr_field_id(),
+                FieldPayloadRef::ScalarF32(compatibility.crust_age_myr()),
             ),
             (
                 primary_elevation_m_field_id(),
@@ -441,28 +605,78 @@ impl FieldDocument for SphericalFormationFieldDocument {
                 FieldPayloadRef::ScalarF32(components.isostatic_response_m()),
             ),
             (
+                tectonic_displacement_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.tectonic_displacement_rate_m_per_year()),
+            ),
+            (
+                fluvial_erosion_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.fluvial_erosion_rate_m_per_year()),
+            ),
+            (
+                hillslope_erosion_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.hillslope_erosion_rate_m_per_year()),
+            ),
+            (
+                hillslope_deposition_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.hillslope_deposition_rate_m_per_year()),
+            ),
+            (
+                routed_sediment_deposition_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.routed_sediment_deposition_rate_m_per_year()),
+            ),
+            (
+                coastal_erosion_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.coastal_erosion_rate_m_per_year()),
+            ),
+            (
+                coastal_deposition_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.coastal_deposition_rate_m_per_year()),
+            ),
+            (
+                isostatic_response_rate_m_per_year_field_id(),
+                FieldPayloadRef::ScalarF32(rates.isostatic_response_rate_m_per_year()),
+            ),
+            (
                 sediment_deposition_thickness_m_field_id(),
                 FieldPayloadRef::ScalarF32(terrain.sediment().sediment_thickness_m()),
             ),
             (
                 surface_elevation_m_field_id(),
-                FieldPayloadRef::ScalarF32(terrain.final_elevation_m()),
+                FieldPayloadRef::ScalarF32(terrain.current_elevation_m()),
             ),
             (
                 land_ocean_field_id(),
                 FieldPayloadRef::CategoryU32(terrain.land_ocean().raw_values()),
             ),
             (
+                circulation_annual_evaporation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.annual_evaporation_mm),
+            ),
+            (
                 circulation_annual_precipitation_mm_field_id(),
                 FieldPayloadRef::ScalarF32(&self.cache.annual_precipitation_mm),
+            ),
+            (
+                circulation_mean_absorbed_shortwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.mean_absorbed_shortwave_w_m2),
             ),
             (
                 circulation_mean_air_temperature_c_field_id(),
                 FieldPayloadRef::ScalarF32(&self.cache.mean_air_temperature_c),
             ),
             (
+                circulation_mean_outgoing_longwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.cache.mean_outgoing_longwave_w_m2),
+            ),
+            (
                 circulation_prevailing_wind_m_s_field_id(),
                 FieldPayloadRef::Vector2F32(&self.cache.prevailing_wind_m_s),
+            ),
+            (
+                circulation_surface_albedo_field_id(),
+                FieldPayloadRef::ScalarF32(
+                    self.formation.bundle().climate().fields().surface_albedo(),
+                ),
             ),
             (
                 annual_local_runoff_mm_field_id(),
@@ -503,7 +717,11 @@ impl FieldDocument for SphericalFormationFieldDocument {
     fn preferred_range(&self, field: &FieldId) -> Option<DisplayRangeMode> {
         formation_preferred_range(
             &self.registry,
-            self.formation.snapshot().terrain_fields().sea_level_m(),
+            self.formation
+                .bundle()
+                .surface_formation()
+                .terrain_fields()
+                .sea_level_m(),
             self.elevation_display_radius_m,
             field,
         )
@@ -533,20 +751,33 @@ fn formation_preferred_range(
 ) -> Option<DisplayRangeMode> {
     if [
         annual_local_runoff_mm_field_id(),
+        circulation_annual_evaporation_mm_field_id(),
         circulation_annual_precipitation_mm_field_id(),
+        circulation_mean_absorbed_shortwave_w_m2_field_id(),
         circulation_mean_air_temperature_c_field_id(),
+        circulation_mean_outgoing_longwave_w_m2_field_id(),
+        circulation_surface_albedo_field_id(),
         coastal_deposition_m_field_id(),
+        coastal_deposition_rate_m_per_year_field_id(),
         coastal_erosion_m_field_id(),
+        coastal_erosion_rate_m_per_year_field_id(),
         drainage_area_km2_field_id(),
+        fluvial_erosion_rate_m_per_year_field_id(),
         fluvial_erosion_depth_m_field_id(),
         hillslope_deposition_m_field_id(),
+        hillslope_deposition_rate_m_per_year_field_id(),
         hillslope_erosion_m_field_id(),
+        hillslope_erosion_rate_m_per_year_field_id(),
         isostatic_response_m_field_id(),
+        isostatic_response_rate_m_per_year_field_id(),
         lake_depth_m_field_id(),
         mean_annual_discharge_m3_s_field_id(),
+        ocean_age_myr_field_id(),
         routed_sediment_deposition_m_field_id(),
+        routed_sediment_deposition_rate_m_per_year_field_id(),
         sediment_deposition_thickness_m_field_id(),
         tectonic_displacement_m_field_id(),
+        tectonic_displacement_rate_m_per_year_field_id(),
     ]
     .contains(field)
     {
@@ -575,6 +806,10 @@ pub enum SphericalFormationDisplayError {
     #[error(transparent)]
     Formation(#[from] SurfaceFormationValidationError),
     #[error(transparent)]
+    FormationBundle(#[from] NaturalFormationBundleValidationError),
+    #[error(transparent)]
+    PrimaryRelief(#[from] PrimaryReliefValidationError),
+    #[error(transparent)]
     Registry(#[from] NaturalFieldRegistryError),
     #[error(transparent)]
     FieldView(#[from] FieldViewError),
@@ -589,6 +824,8 @@ pub enum SphericalFormationDisplayError {
         circulation_cells: usize,
         surface_cells: usize,
     },
+    #[error("{field} reduction at cell {cell} cannot be represented as finite f32")]
+    ReductionOverflow { field: &'static str, cell: usize },
     #[error(
         "formation product {snapshot:?} does not match authoritative surface {authoritative:?}"
     )]
@@ -596,4 +833,47 @@ pub enum SphericalFormationDisplayError {
         snapshot: SurfaceRef,
         authoritative: SurfaceRef,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_annual_water_total_mm, SphericalFormationDisplayError};
+    use crate::world::natural::{
+        climatological_annual_total_mm, ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT,
+    };
+
+    #[test]
+    fn displayed_annual_water_total_preserves_values_above_the_legacy_p5_envelope() {
+        for (field, monthly) in [
+            (
+                "circulation_annual_precipitation_mm",
+                [100.0; CLIMATE_MONTH_COUNT],
+            ),
+            (
+                "circulation_annual_evaporation_mm",
+                [75.0; CLIMATE_MONTH_COUNT],
+            ),
+        ] {
+            let displayed = display_annual_water_total_mm(field, 0, &monthly).unwrap();
+
+            assert!(displayed > ANNUAL_PRECIPITATION_MAX_MM);
+            assert_eq!(
+                displayed.to_bits(),
+                (climatological_annual_total_mm(&monthly) as f32).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn displayed_annual_water_total_reports_f32_overflow_without_clamping() {
+        let monthly = [f32::MAX; CLIMATE_MONTH_COUNT];
+
+        assert!(matches!(
+            display_annual_water_total_mm("circulation_annual_precipitation_mm", 7, &monthly),
+            Err(SphericalFormationDisplayError::ReductionOverflow {
+                field: "circulation_annual_precipitation_mm",
+                cell: 7,
+            })
+        ));
+    }
 }

@@ -481,7 +481,7 @@ fn center_and_bound(values: &mut [f32], min: f32, max: f32) {
     }
 }
 
-pub(super) fn reconcile_final_safety(
+pub(crate) fn reconcile_final_safety(
     crust_base: &mut [f32],
     tectonic_offset: &mut [f32],
     volcanic_offset: &mut [f32],

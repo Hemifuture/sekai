@@ -91,7 +91,7 @@ pub(super) struct AmplifiedDetailContext {
     /// Per reach (published segment order): the from/to cell ids, for
     /// looking the reach's display depth up in a selection.
     pub(super) river_cells: Vec<(u32, u32)>,
-    /// Per reach: the published Strahler order for symbolic line width.
+    /// Per reach: the published Strahler order for scale selection.
     pub(super) river_orders: Vec<u8>,
 }
 
@@ -998,11 +998,9 @@ fn encode_srgb(linear: f64) -> u8 {
     (encoded * 255.0).round() as u8
 }
 
-/// Builds the display river polylines for one selection: each reach is
-/// rerouted to the depth of its cells' current leaf level (the smaller
-/// of the two ends, engine-clamped to the meander cap), so channels
-/// meander in step with the terrain mosaic and fall back to the L0
-/// chain at the global view (plan M2 Task 4, spec amendment A6.6).
+/// Builds display river polylines for one terrain selection. Each deeper
+/// leaf level reveals one lower Strahler tier; visible reaches use the
+/// deeper endpoint's path depth so their geometry follows the terrain.
 pub(super) fn build_river_polylines(
     context: &AmplifiedDetailContext,
     selection: &DetailSelection,
@@ -1025,6 +1023,7 @@ pub(super) fn build_river_polylines(
             .copied()
             .unwrap_or(1)
     };
+    let max_order = context.river_orders.iter().copied().max().unwrap_or(0);
     let mut polylines = Vec::with_capacity(context.river_cells.len());
     for (reach, (&(from, to), &order)) in context
         .river_cells
@@ -1033,6 +1032,13 @@ pub(super) fn build_river_polylines(
         .enumerate()
     {
         let level = cell_level(from).max(cell_level(to));
+        if !river_order_is_visible(order, level, max_order) {
+            continue;
+        }
+        let width_m = context
+            .evaluator
+            .river_width_m(reach as u32)
+            .expect("the reach metadata is evaluator-aligned");
         let path = context
             .evaluator
             .river_path(reach as u32, level.saturating_sub(1));
@@ -1040,11 +1046,17 @@ pub(super) fn build_river_polylines(
             polylines.push(RiverPolylineSegment {
                 start: pair[0].components(),
                 end: pair[1].components(),
-                strahler_order: order,
+                width_m,
             });
         }
     }
     polylines
+}
+
+/// Multi-scale river selection: level one keeps only the trunk order and
+/// every deeper terrain level reveals exactly one lower order.
+fn river_order_is_visible(order: u8, leaf_level: u8, max_order: u8) -> bool {
+    u16::from(order) + u16::from(leaf_level.saturating_sub(1)) >= u16::from(max_order)
 }
 
 #[cfg(test)]
@@ -1097,7 +1109,9 @@ mod tests {
 
     /// A context with a two-reach chain for the polyline builder tests.
     fn river_context() -> AmplifiedDetailContext {
-        use crate::world::natural::{RiverSegment, RiverSegmentKind};
+        use crate::world::natural::{
+            RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
+        };
         use crate::world::RiverSegmentId;
 
         let surface = GeodesicVoronoiBuilder::build_cancellable(
@@ -1163,7 +1177,14 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
             .unwrap()
-            .with_rivers(&surface, &segments)
+            .with_rivers(
+                &surface,
+                &segments,
+                &SurfaceWaterField::from_kinds(vec![
+                    SurfaceWaterKind::DryLand;
+                    surface.cells().len()
+                ]),
+            )
             .unwrap();
         AmplifiedDetailContext {
             evaluator,
@@ -1180,28 +1201,81 @@ mod tests {
         }
     }
 
-    /// Amendment A6.6: river polylines follow the selection's cell levels
-    /// — the L0 chain at level one, `2^(level−1)` sub-segments as the
-    /// terrain deepens, deterministically.
+    /// Amendments A6.6/A10: river polylines follow the selection's cell
+    /// levels while preserving portal-split dry-land legs.
     #[test]
     fn river_polylines_follow_selection_levels() {
         let context = river_context();
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
-        assert_eq!(coarse.len(), 2, "level one is the L0 chain");
+        let max_order = context.river_orders.iter().copied().max().unwrap();
+        let coarse_expected: usize = context
+            .river_orders
+            .iter()
+            .enumerate()
+            .filter(|&(_, &order)| river_order_is_visible(order, 1, max_order))
+            .map(|(reach, _)| context.evaluator.river_path(reach as u32, 0).len() - 1)
+            .sum();
+        assert_eq!(coarse.len(), coarse_expected, "level one keeps the trunk");
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
-        assert_eq!(
-            deeper.len(),
-            2 * (1 << 3),
-            "level four reroutes at depth three"
-        );
+        let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
+            .map(|reach| context.evaluator.river_path(reach, 3).len() - 1)
+            .sum();
+        assert_eq!(deeper.len(), deep_expected);
         for (first, second) in coarse.iter().zip(&coarse) {
             assert_eq!(first, second);
         }
         let again = build_river_polylines(&context, &uniform_selection(&context, 4));
         assert_eq!(deeper, again, "polylines are deterministic");
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
-        let mid = deeper[(1 << 3) - 1].end;
-        assert_eq!(mid, deeper[1 << 3].start);
+        let first_reach_segments = context.evaluator.river_path(0, 3).len() - 1;
+        let mid = deeper[first_reach_segments - 1].end;
+        assert_eq!(mid, deeper[first_reach_segments].start);
+    }
+
+    #[test]
+    fn river_polylines_carry_the_production_reach_width() {
+        let context = river_context();
+        let polylines = build_river_polylines(&context, &uniform_selection(&context, 4));
+        let mut cursor = 0;
+        for reach in 0..context.evaluator.river_reach_count() as u32 {
+            let segment_count = context.evaluator.river_path(reach, 3).len() - 1;
+            let width_m = context
+                .evaluator
+                .river_width_m(reach)
+                .expect("the production reach owns one physical width");
+            assert!(polylines[cursor..cursor + segment_count]
+                .iter()
+                .all(|segment| segment.width_m.to_bits() == width_m.to_bits()));
+            cursor += segment_count;
+        }
+        assert_eq!(cursor, polylines.len());
+    }
+
+    #[test]
+    fn river_visibility_reveals_one_order_per_level() {
+        let visible = |level| {
+            (1_u8..=4)
+                .filter(|&order| river_order_is_visible(order, level, 4))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(visible(1), vec![4]);
+        assert_eq!(visible(2), vec![3, 4]);
+        assert_eq!(visible(3), vec![2, 3, 4]);
+        assert_eq!(visible(4), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn visible_river_selection_keeps_downstream_continuity() {
+        let downstream_orders = [1_u8, 1, 2, 3, 3, 4];
+        for level in 1..=4 {
+            for start in 0..downstream_orders.len() {
+                if river_order_is_visible(downstream_orders[start], level, 4) {
+                    assert!(downstream_orders[start..]
+                        .iter()
+                        .all(|&order| river_order_is_visible(order, level, 4)));
+                }
+            }
+        }
     }
 
     /// Symptom regression (user acceptance, 2026-08-21): a reach follows
@@ -1222,10 +1296,13 @@ mod tests {
             cell_levels,
         };
         let polylines = build_river_polylines(&context, &selection);
-        // Reach 0 renders at its deeper endpoint (level 4 → 8
-        // sub-segments) although its other endpoint sits at level 1;
-        // reach 1 touches no deep cell and stays the L0 chord.
-        assert_eq!(polylines.len(), 8 + 1);
+        // Reach 0 renders at its deeper endpoint (level 4 → depth 3)
+        // although its other endpoint sits at level 1; reach 1 touches
+        // no deep cell and stays at its portal-split depth-zero path.
+        let expected = context.evaluator.river_path(0, 3).len() - 1
+            + context.evaluator.river_path(1, 0).len()
+            - 1;
+        assert_eq!(polylines.len(), expected);
     }
 
     fn map_view(zoom: f64) -> SphericalPresentationViewState {

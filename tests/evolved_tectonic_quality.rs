@@ -1,11 +1,9 @@
 use std::sync::OnceLock;
 
-use sekai::engine::{
-    derive_stage_seed, Artifact, BuildCancellation, Diagnostic, StageIdentity, StageRng,
-};
+use sekai::engine::{derive_stage_seed, BuildCancellation, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{
     evaluate_evolved_tectonic_corpus_quality, evaluate_evolved_tectonic_quality,
-    EvolvedTectonicArtifact, EvolvedTectonicGenerator, MantleGenerator, ReliefGenerator,
+    EvolvedTectonicGenerator, MantleGenerator, ReliefGenerator,
 };
 use sekai::generators::spatial::{ProfileSurfaceBuilder, ProfileSurfaceBundle};
 use sekai::world::natural::{
@@ -79,7 +77,6 @@ fn quality_report_is_surface_bound_versioned_and_covers_every_p2_gate() {
             "lineage-closure-error",
             "maximum-plate-area-fraction",
             "non-finite-value-count",
-            "ocean-age-depth-spearman",
             "regular-triple-junction-angle-fraction",
             "remap-category-ambiguity-fraction",
             "subduction-causality-fraction",
@@ -109,7 +106,6 @@ fn quality_report_is_surface_bound_versioned_and_covers_every_p2_gate() {
         vec![
             "collision-causality-fraction",
             "continental-area-fraction",
-            "ocean-age-depth-spearman",
             "regular-triple-junction-angle-fraction",
             "subduction-causality-fraction",
             "transform-to-convergent-uplift-ratio",
@@ -153,9 +149,7 @@ fn quality_evaluator_rejects_a_different_authoritative_surface() {
             }
         })
         .collect();
-    EvolvedTectonicArtifact::new(snapshot.clone(), report)
-        .validate()
-        .unwrap();
+    report.validate().unwrap();
     let failing_report = NaturalQualityReport::new(
         NATURAL_QUALITY_REPORT_SCHEMA_V1,
         snapshot.surface_ref(),
@@ -171,18 +165,7 @@ fn quality_evaluator_rejects_a_different_authoritative_surface() {
             .status(),
         QualityMetricStatus::Fail
     );
-    EvolvedTectonicArtifact::new(snapshot.clone(), failing_report)
-        .validate()
-        .unwrap();
-    let empty_report = NaturalQualityReport::new(
-        NATURAL_QUALITY_REPORT_SCHEMA_V1,
-        snapshot.surface_ref(),
-        Vec::new(),
-    )
-    .unwrap();
-    assert!(EvolvedTectonicArtifact::new(snapshot.clone(), empty_report)
-        .validate()
-        .is_err());
+    failing_report.validate().unwrap();
     let other = sekai::generators::spatial::GeodesicVoronoiBuilder::build(
         &sekai::world::SphericalSpaceSpec {
             radius: Meters::new(6_371_100.0).unwrap(),

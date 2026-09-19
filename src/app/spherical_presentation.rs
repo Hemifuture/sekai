@@ -20,7 +20,7 @@ use crate::engine::{
     GraphError, MemoryStageCache,
 };
 use crate::generators::natural::{
-    spherical_natural_foundation_graph, surface_formation_graph, AuthorConstraintsArtifact,
+    causal_natural_formation_graph, spherical_natural_foundation_graph, AuthorConstraintsArtifact,
     ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
     NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedClimateInput,
     ResolvedClimateInputArtifact, ResolvedGeologicInput, ResolvedGeologicInputArtifact,
@@ -175,7 +175,7 @@ impl SphericalWorldFieldDocument {
 pub enum SphericalWorldAreaSummary {
     /// Legacy natural-foundation compliance (land target driven).
     NaturalFoundation(super::spherical_natural_display::SphericalNaturalAreaSummary),
-    /// Formation-product compliance (water-volume sea level, conserved crust).
+    /// Formation-product compliance (selected sea-level driver, conserved crust).
     Formation(super::spherical_formation_display::FormationAreaSummary),
 }
 
@@ -572,6 +572,35 @@ impl SphericalPresentationCandidate {
             report: self.report.clone(),
         }
     }
+
+    fn adopt_live_display(
+        &mut self,
+        published: &PublishedSphericalPresentation,
+    ) -> Result<(), SphericalPresentationError> {
+        let live_view = *published.view_state();
+        let live_state = published.state();
+        if self.view_state == live_view && &self.state == live_state {
+            let mut candidate_clock = self.clock.clone();
+            let mut published_clock = published.clock().clone();
+            if let (Ok(candidate_next), Ok(published_next)) =
+                (candidate_clock.issue(), published_clock.issue())
+            {
+                if published_next.get() <= candidate_next.get() {
+                    return Ok(());
+                }
+            }
+        }
+        *self = assemble_spherical_candidate(
+            Arc::clone(&self.document),
+            self.report.clone(),
+            live_view,
+            live_state,
+            published.clock(),
+            FailureInjector::NONE,
+            self.lineage.clone(),
+        )?;
+        Ok(())
+    }
 }
 
 /// The currently published complete spherical world and all of its presentation derivatives.
@@ -635,7 +664,7 @@ impl PublishedSphericalPresentation {
         Self::try_new_with_preparer(candidate, &mut NoopGpuPreparer)
     }
 
-    /// Builds a whole-world candidate bound to this exact publication and revision lineage.
+    /// Builds a whole-world candidate bound to this publication's world document.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_replacement_candidate(
         &self,
@@ -661,7 +690,7 @@ impl PublishedSphericalPresentation {
         )
     }
 
-    /// Builds a whole-world candidate bound to an explicit complete view and this lineage.
+    /// Builds a whole-world candidate for an explicit view, bound to this world document.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_replacement_candidate_for_view(
         &self,
@@ -716,21 +745,21 @@ impl PublishedSphericalPresentation {
             requested_view,
             requested_state,
             self.clock(),
-            WorldCandidateLineage::Replacement(Arc::new(StateBoundCandidateBase::from_published(
-                self,
-            ))),
+            WorldCandidateLineage::Replacement(Arc::new(WorldReplaceBase::from_published(self))),
             &BuildCancellation::new(),
         )
     }
 
     /// Returns an owned replacement authorization for off-thread candidate builds.
     ///
-    /// The token binds a future candidate to this exact publication; the
-    /// finished candidate is installed with [`Self::try_replace`].
+    /// The token binds a future candidate to this publication's world document.
+    /// Display-only changes while the worker runs (fill, projection, camera,
+    /// selection) do not invalidate it; [`Self::try_replace`] adopts the live
+    /// display onto the finished world.
     pub fn replacement_token(&self) -> SphericalReplacementToken {
         SphericalReplacementToken {
             lineage: WorldCandidateLineage::Replacement(Arc::new(
-                StateBoundCandidateBase::from_published(self),
+                WorldReplaceBase::from_published(self),
             )),
             clock: self.clock().clone(),
         }
@@ -790,16 +819,17 @@ impl PublishedSphericalPresentation {
             requested_state,
             self.clock(),
             failure,
-            WorldCandidateLineage::Replacement(Arc::new(StateBoundCandidateBase::from_published(
-                self,
-            ))),
+            WorldCandidateLineage::Replacement(Arc::new(WorldReplaceBase::from_published(self))),
         )
     }
 
     /// Revalidates, prepares GPU resources, then replaces the whole publication once.
     ///
-    /// The candidate must come from [`Self::prepare_replacement_candidate`] on this exact current
-    /// publication. Standalone candidates are initial-publication inputs only.
+    /// The candidate must come from a replacement token on the still-current world
+    /// document. Standalone candidates are initial-publication inputs only. Live
+    /// display (view, fill, selection) is merged from this publication before GPU
+    /// prepare, so a long worker build is not discarded because the user panned
+    /// or changed fill while waiting.
     pub fn try_replace(
         &mut self,
         candidate: SphericalPresentationCandidate,
@@ -819,6 +849,7 @@ impl PublishedSphericalPresentation {
         };
         gpu.preflight(preparation)?;
         candidate.lineage.validate_current(self)?;
+        candidate.adopt_live_display(self)?;
         candidate.validate()?;
         gpu.prepare(preparation, candidate.gpu_packet())?;
         candidate.lineage.clear();
@@ -1144,6 +1175,12 @@ impl CandidateBase {
 }
 
 #[derive(Clone)]
+struct WorldReplaceBase {
+    document: Arc<SphericalWorldFieldDocument>,
+    source: SphericalPresentationSource,
+}
+
+#[derive(Clone)]
 struct StateBoundCandidateBase {
     publication: CandidateBase,
     state: SphericalFieldDisplayState,
@@ -1152,7 +1189,7 @@ struct StateBoundCandidateBase {
 #[derive(Clone)]
 enum WorldCandidateLineage {
     NoBase,
-    Replacement(Arc<StateBoundCandidateBase>),
+    Replacement(Arc<WorldReplaceBase>),
 }
 
 impl WorldCandidateLineage {
@@ -1177,6 +1214,28 @@ impl WorldCandidateLineage {
 
     fn clear(&mut self) {
         *self = Self::NoBase;
+    }
+}
+
+impl WorldReplaceBase {
+    fn from_published(published: &PublishedSphericalPresentation) -> Self {
+        Self {
+            document: Arc::clone(published.document_arc()),
+            source: published.source().clone(),
+        }
+    }
+
+    fn validate_current(
+        &self,
+        published: &PublishedSphericalPresentation,
+        candidate: &'static str,
+    ) -> Result<(), SphericalPresentationError> {
+        if !Arc::ptr_eq(&self.document, published.document_arc())
+            || self.source != *published.source()
+        {
+            return Err(SphericalPresentationError::StaleCandidate { candidate });
+        }
+        Ok(())
     }
 }
 
@@ -1593,7 +1652,7 @@ fn build_spherical_formation_candidate_with_lineage(
         relief,
         geologic,
     )?;
-    let outcome = BuildEngine::new(surface_formation_graph()?).build_with_cancellation(
+    let outcome = BuildEngine::new(causal_natural_formation_graph()?).build_with_cancellation(
         root_seed,
         external,
         cache,
@@ -2753,6 +2812,65 @@ mod tests {
         assert_eq!(revisions, published.revisions());
         let mut actual_clock = published.clock().clone();
         assert_eq!(expected_next, actual_clock.issue().unwrap());
+    }
+
+    #[test]
+    fn world_replacement_adopts_live_display_instead_of_going_stale() {
+        let mut cache = MemoryStageCache::new();
+        let initial = build_spherical_presentation_candidate(
+            RootSeed::new(311),
+            &space(),
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &ReliefSpec::default(),
+            &GeologicSpec::default(),
+            &mut cache,
+            &SphericalFieldDisplayState::default(),
+            &DisplayRevisionClock::default(),
+        )
+        .unwrap();
+        let mut gpu = TestGpuPreparer::default();
+        let mut published =
+            PublishedSphericalPresentation::try_new_with_preparer(initial, &mut gpu).unwrap();
+        let snapshot_overlay = published.state().overlay_field().cloned();
+        let replacement = published
+            .prepare_replacement_candidate(
+                RootSeed::new(313),
+                &space(),
+                &WorldFormationSpec::default(),
+                &TectonicSpec::default(),
+                &ReliefSpec::default(),
+                &GeologicSpec::default(),
+                &mut cache,
+                published.state(),
+            )
+            .unwrap();
+        let mut live_state = published.state().clone();
+        live_state.select_overlay(Some(plate_velocity_field_id()));
+        let field = published
+            .prepare_field_candidate(
+                live_state,
+                SphericalViewMode::Map,
+                MapCamera::default(),
+                GlobeCamera::default(),
+            )
+            .unwrap();
+        published
+            .try_replace_field_candidate_with_preparer(field, &mut gpu)
+            .unwrap();
+        let live_overlay = published.state().overlay_field().cloned();
+        assert_ne!(live_overlay, snapshot_overlay);
+
+        published
+            .try_replace_with_preparer(replacement, &mut gpu)
+            .unwrap();
+
+        assert_eq!(published.source().root_seed(), RootSeed::new(313));
+        assert_eq!(published.state().overlay_field().cloned(), live_overlay);
+        assert_eq!(
+            published.view_state().projection().kind(),
+            SphericalProjectionKind::EqualEarth
+        );
     }
 
     #[test]

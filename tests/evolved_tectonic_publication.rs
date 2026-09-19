@@ -140,7 +140,7 @@ fn cancellation_is_atomic_before_control_evolution_or_authority_remap() {
 
 #[test]
 fn publication_source_has_no_nearest_or_barycentric_material_fallback() {
-    let source = include_str!("../src/generators/natural/spherical_tectonics/publication.rs");
+    let source = include_str!("../src/generators/natural/foundation/tectonics/publication.rs");
     assert!(source.contains("remap_extensive_f64"));
     assert!(!source.contains("project_current_state("));
     assert!(!source.contains("walk_nearest_cell("));

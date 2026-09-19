@@ -15,4 +15,10 @@ target_wasm
 # https://github.com/lycheeverse/lychee
 .lycheecache
 
-docs/**/*.pdfscreenshots/*.ppm
+docs/**/*.pdf
+
+# Uncompressed offline render dumps; the reviewed PNGs beside them are tracked.
+screenshots/*.ppm
+
+# Chrome/crashpad noise from accessibility-driven screenshot runs
+debug.log

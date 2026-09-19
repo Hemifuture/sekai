@@ -92,6 +92,29 @@ impl<'grid> CirculationOperators<'grid> {
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         debug_assert_eq!(scalar.len(), self.grid.cell_count());
         let mut accumulated = vec![[0.0_f64; 3]; self.grid.cell_count()];
+        let mut result = vec![[0.0_f32; 3]; self.grid.cell_count()];
+        self.gradient_f32_into_validated_impl(
+            scalar,
+            edge_permeability,
+            &mut accumulated,
+            &mut result,
+            cancellation,
+        )?;
+        Ok(result)
+    }
+
+    fn gradient_f32_into_validated_impl(
+        &self,
+        scalar: &[f32],
+        edge_permeability: Option<&[f32]>,
+        accumulated: &mut [[f64; 3]],
+        result: &mut [[f32; 3]],
+        cancellation: Option<&BuildCancellation>,
+    ) -> Result<(), CirculationOperatorError> {
+        debug_assert_eq!(scalar.len(), self.grid.cell_count());
+        debug_assert_eq!(accumulated.len(), self.grid.cell_count());
+        debug_assert_eq!(result.len(), self.grid.cell_count());
+        accumulated.fill([0.0; 3]);
         for (edge_index, edge) in self.grid.edges().iter().enumerate() {
             poll_operator_cancelled(edge_index, cancellation)?;
             let [first, second] = edge.cells();
@@ -116,22 +139,24 @@ impl<'grid> CirculationOperators<'grid> {
                 -(edge_value - second_value) * length,
             );
         }
-        let mut result = Vec::with_capacity(self.grid.cell_count());
-        for (index, (cell, value)) in self.grid.cells().iter().zip(accumulated).enumerate() {
+        for (index, ((cell, value), target)) in self
+            .grid
+            .cells()
+            .iter()
+            .zip(accumulated)
+            .zip(result)
+            .enumerate()
+        {
             poll_operator_cancelled(index, cancellation)?;
             let gradient =
-                project_tangent(scale(value, cell.area_m2().recip()), cell.center_unit());
-            result.push(to_quantized_tangent_f32(gradient, cell.center_unit()));
+                project_tangent(scale(*value, cell.area_m2().recip()), cell.center_unit());
+            *target = to_quantized_tangent_f32(gradient, cell.center_unit());
         }
         check_operator_cancelled(cancellation)?;
-        Ok(result)
+        Ok(())
     }
 
-    /// Allocation-free gradient kernel for a caller that already validated
-    /// the field, permeability, and workspace shape. The transport gradient
-    /// scratch is idle during the split-explicit fast solve, so sharing it
-    /// here keeps the hot RK stages free of transient dense allocations.
-    pub(crate) fn gradient_with_permeability_into_cancellable_validated(
+    pub(crate) fn gradient_into_cancellable_validated(
         &self,
         scalar: &[f32],
         edge_permeability: &[f32],
@@ -139,23 +164,70 @@ impl<'grid> CirculationOperators<'grid> {
         workspace: &mut SecondOrderTransportWorkspace,
         cancellation: &BuildCancellation,
     ) -> Result<(), CirculationOperatorError> {
-        debug_assert_eq!(scalar.len(), self.grid.cell_count());
         debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
-        debug_assert_eq!(output.len(), self.grid.cell_count());
+        debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
+        debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
+        self.gradient_f32_into_validated_impl(
+            scalar,
+            Some(edge_permeability),
+            &mut workspace.gradients,
+            output,
+            Some(cancellation),
+        )
+    }
+
+    /// Fuses the two finite-volume edge traversals needed by the fast
+    /// pressure-gradient and donor-upwind layer-continuity operators.
+    ///
+    /// Each accumulator preserves the same canonical edge order and f64
+    /// arithmetic as its standalone production operator; only the shared
+    /// geometry/permeability traversal is removed.
+    ///
+    /// The gradient output feeds one transient RK stage acceleration and is
+    /// never published, so it is written with the plain f32 cast of the exact
+    /// f64 tangent rather than the iterative representable-vector correction
+    /// that the public operators keep for final fields. Measured on Draft
+    /// seed 42 (2026-09-02, milestone A1): the correction was 15 % of the P4
+    /// solve with no effect on cycle counts or residuals.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
+        &self,
+        height_anomaly_m: &[f32],
+        velocity_m_s: &[[f32; 3]],
+        edge_permeability: &[f32],
+        reference_thickness_m: f64,
+        terrain_floor_m: Option<&[f32]>,
+        gradient_output: &mut [[f32; 3]],
+        thickness_tendency_m_s: &mut [f64],
+        workspace: &mut SecondOrderTransportWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<(), CirculationOperatorError> {
+        debug_assert_eq!(height_anomaly_m.len(), self.grid.cell_count());
+        debug_assert_eq!(velocity_m_s.len(), self.grid.cell_count());
+        debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
+        debug_assert!(reference_thickness_m.is_finite() && reference_thickness_m > 0.0);
+        debug_assert!(terrain_floor_m.is_none_or(|floor| floor.len() == self.grid.cell_count()));
+        debug_assert_eq!(gradient_output.len(), self.grid.cell_count());
+        debug_assert_eq!(thickness_tendency_m_s.len(), self.grid.cell_count());
         debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
         debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
         check_operator_cancelled(Some(cancellation))?;
         workspace.gradients.fill([0.0; 3]);
-        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
+        thickness_tendency_m_s.fill(0.0);
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
             poll_operator_cancelled(edge_index, Some(cancellation))?;
-            let [first, second] = edge.cells();
-            let first = *first as usize;
-            let second = *second as usize;
-            let first_value = f64::from(scalar[first]);
-            let second_value = f64::from(scalar[second]);
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let first_value = f64::from(height_anomaly_m[first]);
+            let second_value = f64::from(height_anomaly_m[second]);
             let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
             let normal = edge.normal_from_first();
-            let length = edge.length_m() * f64::from(edge_permeability[edge_index]);
+            let permeability = f64::from(*permeability);
+            let edge_length_m = edge.length_m();
+            let length = edge_length_m * permeability;
             accumulate_vector(
                 &mut workspace.gradients[first],
                 normal,
@@ -166,19 +238,43 @@ impl<'grid> CirculationOperators<'grid> {
                 normal,
                 -(edge_value - second_value) * length,
             );
+
+            if permeability > 0.0 {
+                let normal_velocity_m_s = dot(
+                    interpolate_vector(edge, velocity_m_s[first], velocity_m_s[second]),
+                    normal,
+                );
+                let donor = if normal_velocity_m_s >= 0.0 {
+                    first
+                } else {
+                    second
+                };
+                // Shallow water over topography: the pressure gradient above
+                // reads the layer top, the transported thickness is the layer
+                // top minus the terrain floor (Vallis 2017, §3.1).
+                let floor_m = terrain_floor_m.map_or(0.0, |floor| f64::from(floor[donor]));
+                let donor_thickness_m =
+                    (reference_thickness_m - floor_m + f64::from(height_anomaly_m[donor])).max(0.0);
+                let amount_rate_m3_s =
+                    normal_velocity_m_s * edge_length_m * permeability * donor_thickness_m;
+                thickness_tendency_m_s[first] -=
+                    amount_rate_m3_s / self.grid.cells()[first].area_m2();
+                thickness_tendency_m_s[second] +=
+                    amount_rate_m3_s / self.grid.cells()[second].area_m2();
+            }
         }
         for (index, ((cell, value), target)) in self
             .grid
             .cells()
             .iter()
             .zip(&workspace.gradients)
-            .zip(output)
+            .zip(gradient_output)
             .enumerate()
         {
             poll_operator_cancelled(index, Some(cancellation))?;
             let gradient =
                 project_tangent(scale(*value, cell.area_m2().recip()), cell.center_unit());
-            *target = to_quantized_tangent_f32(gradient, cell.center_unit());
+            *target = to_f32_vector(gradient);
         }
         check_operator_cancelled(Some(cancellation))
     }
@@ -316,49 +412,6 @@ impl<'grid> CirculationOperators<'grid> {
         Ok(result)
     }
 
-    /// Allocation-free divergence counterpart to the reusable gradient
-    /// kernel above.
-    pub(crate) fn divergence_with_permeability_into_cancellable_validated(
-        &self,
-        velocity: &[[f32; 3]],
-        edge_permeability: &[f32],
-        output: &mut [f32],
-        workspace: &mut SecondOrderTransportWorkspace,
-        cancellation: &BuildCancellation,
-    ) -> Result<(), CirculationOperatorError> {
-        debug_assert_eq!(velocity.len(), self.grid.cell_count());
-        debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
-        debug_assert_eq!(output.len(), self.grid.cell_count());
-        debug_assert_eq!(workspace.cell_count, self.grid.cell_count());
-        debug_assert_eq!(workspace.edge_count, self.grid.edges().len());
-        check_operator_cancelled(Some(cancellation))?;
-        workspace.extensive_delta.fill(0.0);
-        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
-            poll_operator_cancelled(edge_index, Some(cancellation))?;
-            let [first, second] = edge.cells();
-            let first = *first as usize;
-            let second = *second as usize;
-            let edge_velocity = interpolate_vector(edge, velocity[first], velocity[second]);
-            let flux = dot(edge_velocity, edge.normal_from_first())
-                * edge.length_m()
-                * f64::from(edge_permeability[edge_index]);
-            workspace.extensive_delta[first] += flux;
-            workspace.extensive_delta[second] -= flux;
-        }
-        for (index, ((cell, flux), target)) in self
-            .grid
-            .cells()
-            .iter()
-            .zip(&workspace.extensive_delta)
-            .zip(output)
-            .enumerate()
-        {
-            poll_operator_cancelled(index, Some(cancellation))?;
-            *target = (*flux / cell.area_m2()) as f32;
-        }
-        check_operator_cancelled(Some(cancellation))
-    }
-
     pub(crate) fn divergence_f64_with_permeability(
         &self,
         velocity: &[[f64; 3]],
@@ -447,12 +500,36 @@ impl<'grid> CirculationOperators<'grid> {
         velocity: [f32; 3],
         rotation_rate_rad_s: f64,
     ) -> [f32; 3] {
+        let (acceleration, radial) =
+            self.coriolis_cell_f64_validated(cell, velocity, rotation_rate_rad_s);
+        to_quantized_tangent_f32(acceleration, radial)
+    }
+
+    #[inline]
+    pub(crate) fn coriolis_cell_projected_validated(
+        &self,
+        cell: usize,
+        velocity: [f32; 3],
+        rotation_rate_rad_s: f64,
+    ) -> [f32; 3] {
+        let (acceleration, _) =
+            self.coriolis_cell_f64_validated(cell, velocity, rotation_rate_rad_s);
+        to_f32_vector(acceleration)
+    }
+
+    #[inline]
+    fn coriolis_cell_f64_validated(
+        &self,
+        cell: usize,
+        velocity: [f32; 3],
+        rotation_rate_rad_s: f64,
+    ) -> ([f64; 3], [f64; 3]) {
         debug_assert!(cell < self.grid.cell_count());
         let radial = self.grid.cells()[cell].center_unit();
         let tangent_velocity = project_tangent(to_f64_vector(velocity), radial);
         let coriolis_parameter = 2.0 * rotation_rate_rad_s * radial[2];
         let acceleration = scale(cross(radial, tangent_velocity), -coriolis_parameter);
-        to_quantized_tangent_f32(acceleration, radial)
+        (acceleration, radial)
     }
 
     pub(crate) fn coriolis_validated(
@@ -473,34 +550,30 @@ impl<'grid> CirculationOperators<'grid> {
         Ok(self.tangentize_validated(vectors))
     }
 
-    pub(crate) fn tangentize_cancellable(
-        &self,
-        vectors: &[[f32; 3]],
-        cancellation: &BuildCancellation,
-    ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        check_operator_cancelled(Some(cancellation))?;
-        validate_vector_field("vectors", vectors, self.grid.cell_count())?;
-        let mut tangent = Vec::with_capacity(vectors.len());
-        for (index, (cell, value)) in self.grid.cells().iter().zip(vectors).enumerate() {
-            poll_operator_cancelled(index, Some(cancellation))?;
-            tangent.push(to_quantized_tangent_f32(
-                to_f64_vector(*value),
-                cell.center_unit(),
-            ));
-        }
-        check_operator_cancelled(Some(cancellation))?;
-        Ok(tangent)
+    pub(crate) fn tangentize_validated(&self, vectors: &[[f32; 3]]) -> Vec<[f32; 3]> {
+        vectors
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| self.tangentize_cell_validated(cell, *value))
+            .collect()
     }
 
-    pub(crate) fn tangentize_validated(&self, vectors: &[[f32; 3]]) -> Vec<[f32; 3]> {
-        self.grid
-            .cells()
-            .iter()
-            .zip(vectors)
-            .map(|(cell, value)| {
-                to_quantized_tangent_f32(to_f64_vector(*value), cell.center_unit())
-            })
-            .collect()
+    #[inline]
+    pub(crate) fn tangentize_cell_validated(&self, cell: usize, value: [f32; 3]) -> [f32; 3] {
+        debug_assert!(cell < self.grid.cell_count());
+        to_quantized_tangent_f32(to_f64_vector(value), self.grid.cells()[cell].center_unit())
+    }
+
+    /// Orthogonally projects one transient RK stage vector before its next
+    /// tendency evaluation. Final/public operator paths retain the stricter
+    /// representable-vector correction above.
+    #[inline]
+    pub(crate) fn project_tangent_cell_validated(&self, cell: usize, value: [f32; 3]) -> [f32; 3] {
+        debug_assert!(cell < self.grid.cell_count());
+        to_f32_vector(project_tangent(
+            to_f64_vector(value),
+            self.grid.cells()[cell].center_unit(),
+        ))
     }
 
     /// Advances one cell-mean scalar using conservative first-order upwind fluxes.
@@ -573,6 +646,7 @@ impl<'grid> CirculationOperators<'grid> {
             edge_permeability,
             dt_seconds,
             enforce_nonnegative,
+            false,
             workspace,
             || false,
         )
@@ -596,6 +670,42 @@ impl<'grid> CirculationOperators<'grid> {
             edge_permeability,
             dt_seconds,
             enforce_nonnegative,
+            false,
+            workspace,
+            || cancellation.is_cancelled(),
+        )
+    }
+
+    /// Same monotone update for a non-negative intensive scalar, except that
+    /// the amount by which a convergent cell's flux-form update exceeds its
+    /// one-ring upper bound stays in that cell instead of being redistributed
+    /// over the connected component, and the shortfall of a divergent cell
+    /// below its bound stays too. In a fixed-thickness layer the surplus is
+    /// exactly the scalar carried by the mass that converged and must leave
+    /// the layer vertically, and the shortfall is the dilution by the mass
+    /// that replaced what diverged; the caller reads the surplus back through
+    /// [`SecondOrderTransport::convergent_excess`] and disposes of it (A5
+    /// Task 2b: converged moisture condenses). No redistribution runs, so the
+    /// update is conservative by the paired edge fluxes alone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable<
+        'workspace,
+    >(
+        &self,
+        scalar: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        dt_seconds: f64,
+        workspace: &'workspace mut SecondOrderTransportWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<SecondOrderTransport<'workspace>, CirculationOperatorError> {
+        self.advect_scalar_monotone_second_order_with_cancel(
+            scalar,
+            velocity,
+            edge_permeability,
+            dt_seconds,
+            true,
+            true,
             workspace,
             || cancellation.is_cancelled(),
         )
@@ -609,6 +719,7 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: &[f32],
         dt_seconds: f64,
         enforce_nonnegative: bool,
+        retain_convergent_excess: bool,
         workspace: &'workspace mut SecondOrderTransportWorkspace,
         mut cancelled: F,
     ) -> Result<SecondOrderTransport<'workspace>, CirculationOperatorError>
@@ -809,20 +920,33 @@ impl<'grid> CirculationOperators<'grid> {
             } else {
                 workspace.local_min[index]
             };
-            workspace.bounded_values[index] =
-                value.clamp(lower, workspace.local_max[index].max(lower));
+            let upper = workspace.local_max[index].max(lower);
+            if retain_convergent_excess {
+                // Both sides of the flux-form result are physical for a
+                // fixed-thickness intensive scalar in divergent flow: the
+                // surplus above the bound is what converging mass carried in
+                // (it leaves vertically), the shortfall below it is dilution
+                // by the mass that replaced diverging air. Positivity is
+                // already guaranteed by the outgoing-flux limiter above.
+                workspace.convergent_excess[index] = (value - upper).max(0.0);
+                workspace.bounded_values[index] = value.max(0.0);
+            } else {
+                workspace.bounded_values[index] = value.clamp(lower, upper);
+            }
         }
         let before = extensive_total_cancellable(self.grid, scalar, false, &mut cancelled)?;
         if cancelled() {
             return Err(CirculationOperatorError::Cancelled);
         }
-        conservative_bound_redistribution(
-            self.grid,
-            scalar,
-            enforce_nonnegative,
-            workspace,
-            &mut cancelled,
-        )?;
+        if !retain_convergent_excess {
+            conservative_bound_redistribution(
+                self.grid,
+                scalar,
+                enforce_nonnegative,
+                workspace,
+                &mut cancelled,
+            )?;
+        }
         for (index, (target, value)) in workspace
             .output
             .iter_mut()
@@ -843,6 +967,7 @@ impl<'grid> CirculationOperators<'grid> {
             .max(f64::MIN_POSITIVE);
         Ok(SecondOrderTransport {
             values: &workspace.output,
+            convergent_excess: &workspace.convergent_excess,
             relative_mass_error: (after - before).abs() / mass_scale,
             positivity_scaled_cells,
         })
@@ -1229,6 +1354,7 @@ pub struct SecondOrderTransportWorkspace {
     bounded_values: Vec<f64>,
     output: Vec<f32>,
     component_root: Vec<u32>,
+    convergent_excess: Vec<f64>,
 }
 
 impl SecondOrderTransportWorkspace {
@@ -1250,6 +1376,7 @@ impl SecondOrderTransportWorkspace {
             bounded_values: vec![0.0; cell_count],
             output: vec![0.0; cell_count],
             component_root: vec![0; cell_count],
+            convergent_excess: vec![0.0; cell_count],
         }
     }
 
@@ -1312,6 +1439,7 @@ impl SecondOrderTransportWorkspace {
         self.bounded_values.fill(0.0);
         self.output.fill(0.0);
         self.component_root.fill(0);
+        self.convergent_excess.fill(0.0);
     }
 }
 
@@ -1319,6 +1447,7 @@ impl SecondOrderTransportWorkspace {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SecondOrderTransport<'workspace> {
     values: &'workspace [f32],
+    convergent_excess: &'workspace [f64],
     relative_mass_error: f64,
     positivity_scaled_cells: usize,
 }
@@ -1326,6 +1455,14 @@ pub struct SecondOrderTransport<'workspace> {
 impl SecondOrderTransport<'_> {
     pub const fn values(&self) -> &[f32] {
         self.values
+    }
+
+    /// Per-cell amount by which the flux-form update exceeded the cell's
+    /// one-ring upper bound and was retained in `values` instead of being
+    /// redistributed; all zeros unless the update was requested with
+    /// [`CirculationOperators::advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable`].
+    pub const fn convergent_excess(&self) -> &[f64] {
+        self.convergent_excess
     }
 
     pub const fn relative_mass_error(&self) -> f64 {
@@ -1506,7 +1643,11 @@ fn edge_displacement_m(grid: &CubedSphereGrid, edge: &SphericalEdge, owner: usiz
     }
 }
 
-fn interpolate_vector(edge: &SphericalEdge, first: [f32; 3], second: [f32; 3]) -> [f64; 3] {
+pub(crate) fn interpolate_vector(
+    edge: &SphericalEdge,
+    first: [f32; 3],
+    second: [f32; 3],
+) -> [f64; 3] {
     interpolate_vector_f64(edge, to_f64_vector(first), to_f64_vector(second))
 }
 
@@ -2059,6 +2200,99 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retained_convergent_excess_is_conservative_and_local() {
+        // A divergent lower-layer flow on a uniform scalar: the flux form
+        // piles the scalar up where the flow converges and thins it where the
+        // flow diverges. The clamped update hides both behind the one-ring
+        // bound and a component-wide redistribution; the retaining update
+        // keeps them, reports the surplus, and still conserves the total.
+        let grid = CubedSphereGrid::new(4, 6_371_000.0).unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let count = grid.cell_count();
+        let scalar = vec![0.01_f32; count];
+        // Velocity converging toward the +z pole and diverging from the -z
+        // pole: the meridional component of a fixed axial vector.
+        let velocity: Vec<[f32; 3]> = grid
+            .cells()
+            .iter()
+            .map(|cell| {
+                let radial = cell.center_unit();
+                let axial = [0.0, 0.0, 10.0];
+                let along = radial.iter().zip(axial).map(|(r, a)| r * a).sum::<f64>();
+                [
+                    (axial[0] - along * radial[0]) as f32,
+                    (axial[1] - along * radial[1]) as f32,
+                    (axial[2] - along * radial[2]) as f32,
+                ]
+            })
+            .collect();
+        let permeability = vec![1.0_f32; grid.edges().len()];
+        let mut clamped_workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+        let clamped = operators
+            .advect_scalar_monotone_second_order_into(
+                &scalar,
+                &velocity,
+                &permeability,
+                7_200.0,
+                true,
+                &mut clamped_workspace,
+            )
+            .unwrap()
+            .values()
+            .to_vec();
+        let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
+        let retained = operators
+            .advect_scalar_monotone_second_order_retaining_convergent_excess_cancellable(
+                &scalar,
+                &velocity,
+                &permeability,
+                7_200.0,
+                &mut workspace,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        let total = |values: &[f32]| {
+            grid.cells()
+                .iter()
+                .zip(values)
+                .map(|(cell, value)| cell.area_m2() * f64::from(*value))
+                .sum::<f64>()
+        };
+        let before = total(&scalar);
+        assert!((total(retained.values()) - before).abs() <= 1.0e-9 * before);
+        assert!(retained.relative_mass_error() <= 1.0e-9);
+        // The uniform field is its own one-ring bound, so every convergent
+        // cell carries a surplus equal to its rise above the uniform value,
+        // every divergent cell sits below it, and the clamped update returns
+        // the uniform value everywhere.
+        let mut surplus_cells = 0_usize;
+        let mut deficit_cells = 0_usize;
+        for (index, (value, excess)) in retained
+            .values()
+            .iter()
+            .zip(retained.convergent_excess())
+            .enumerate()
+        {
+            assert!(*excess >= 0.0);
+            assert!(*value >= 0.0);
+            let rise = f64::from(*value) - 0.01;
+            if rise > 1.0e-9 {
+                surplus_cells += 1;
+                // `value` went through f32 (one ULP at 0.01 is about 1e-9).
+                assert!((excess - rise).abs() <= 4.0e-9);
+            } else {
+                assert_eq!(*excess, 0.0);
+                if rise < -1.0e-9 {
+                    deficit_cells += 1;
+                }
+            }
+            assert!((f64::from(clamped[index]) - 0.01).abs() <= 1.0e-9);
+        }
+        assert!(surplus_cells > 0);
+        assert!(deficit_cells > 0);
+    }
+
+    #[test]
     fn reusable_fast_operator_buffers_are_bitwise_equivalent() {
         let grid = CubedSphereGrid::new(5, 6_371_000.0).unwrap();
         let operators = CirculationOperators::new(&grid);
@@ -2086,34 +2320,38 @@ mod tests {
                 ]
             })
             .collect::<Vec<_>>();
+        // The fused stage gradient is the exact f64 tangent cast to f32; the
+        // representable-vector correction belongs to the public operator only.
         let expected_gradient = operators
-            .gradient_with_permeability_cancellable(&scalar, &permeability, &cancellation)
-            .unwrap();
-        let expected_divergence = operators
-            .divergence_with_permeability_cancellable(&velocity, &permeability, &cancellation)
-            .unwrap();
+            .gradient_f64_with_permeability(
+                &scalar
+                    .iter()
+                    .map(|value| f64::from(*value))
+                    .collect::<Vec<_>>(),
+                &permeability,
+            )
+            .unwrap()
+            .into_iter()
+            .map(to_f32_vector)
+            .collect::<Vec<_>>();
         let expected_coriolis = operators
             .coriolis_cancellable(&velocity, 7.292_115_9e-5, &cancellation)
             .unwrap();
+        let expected_tangent = operators.tangentize(&velocity).unwrap();
 
         let mut workspace = SecondOrderTransportWorkspace::for_grid(&grid);
         let allocation = workspace.allocation_signature();
         let mut gradient = vec![[f32::NAN; 3]; grid.cell_count()];
-        let mut divergence = vec![f32::NAN; grid.cell_count()];
+        let mut thickness = vec![0.0; grid.cell_count()];
         operators
-            .gradient_with_permeability_into_cancellable_validated(
+            .gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
                 &scalar,
-                &permeability,
-                &mut gradient,
-                &mut workspace,
-                &cancellation,
-            )
-            .unwrap();
-        operators
-            .divergence_with_permeability_into_cancellable_validated(
                 &velocity,
                 &permeability,
-                &mut divergence,
+                6_000.0,
+                None,
+                &mut gradient,
+                &mut thickness,
                 &mut workspace,
                 &cancellation,
             )
@@ -2123,10 +2361,39 @@ mod tests {
             .enumerate()
             .map(|(cell, value)| operators.coriolis_cell_validated(cell, *value, 7.292_115_9e-5))
             .collect::<Vec<_>>();
+        let stage_coriolis = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| {
+                operators.coriolis_cell_projected_validated(cell, *value, 7.292_115_9e-5)
+            })
+            .collect::<Vec<_>>();
+        let tangent = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| operators.tangentize_cell_validated(cell, *value))
+            .collect::<Vec<_>>();
+        let stage_tangent = velocity
+            .iter()
+            .enumerate()
+            .map(|(cell, value)| operators.project_tangent_cell_validated(cell, *value))
+            .collect::<Vec<_>>();
 
         assert_eq!(gradient, expected_gradient);
-        assert_eq!(divergence, expected_divergence);
         assert_eq!(coriolis, expected_coriolis);
+        assert_eq!(tangent, expected_tangent);
+        for (cell, value) in grid.cells().iter().zip(stage_tangent) {
+            assert!(
+                dot(to_f64_vector(value), cell.center_unit()).abs()
+                    <= crate::world::natural::GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S
+            );
+        }
+        for (cell, value) in grid.cells().iter().zip(stage_coriolis) {
+            assert!(
+                dot(to_f64_vector(value), cell.center_unit()).abs()
+                    <= crate::world::natural::GLOBAL_CIRCULATION_TANGENCY_TOLERANCE_M_S
+            );
+        }
         assert_eq!(workspace.allocation_signature(), allocation);
     }
 }

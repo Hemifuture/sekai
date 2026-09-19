@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use super::morphology::arrival::{assign_arrivals_bounded, ArrivalSource, ArrivalWorkspace};
 use super::morphology::metric::PositiveEdgeMetric;
 use crate::world::spatial::{NaturalSurface, PlanarNaturalSurface, SpatialSnapshot};
