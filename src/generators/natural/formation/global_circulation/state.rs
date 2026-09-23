@@ -3,8 +3,9 @@ use thiserror::Error;
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
 use crate::world::natural::{
-    saturation_specific_humidity_kg_kg, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ForcingError, PlanetForcing, CLIMATE_MONTH_COUNT,
+    atmospheric_reference_surface_height_m, saturation_specific_humidity_kg_kg, ClimateLayerLayout,
+    ClimateLayerRole, ClimateModelProfile, ForcingError, PlanetForcing, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
 };
 
 const C1_ACTIVE_ROLES: [ClimateLayerRole; 2] = [
@@ -109,13 +110,15 @@ impl LayeredClimateState {
         Ok(())
     }
 
+    /// Fixture forcings publish sea-level-relative elevation, so the
+    /// reference surface height is read against a zero sea level.
     pub fn from_forcing(
         grid: &CubedSphereGrid,
         layout: &ClimateLayerLayout,
         forcing: &PlanetForcing,
         month: usize,
     ) -> Result<Self, LayeredStateError> {
-        Self::from_forcing_impl(grid, layout, forcing, Some(month), None)
+        Self::from_forcing_impl(grid, layout, forcing, 0.0, Some(month), None)
     }
 
     /// Initializes a periodic climatology from the annual mean boundary
@@ -124,15 +127,17 @@ impl LayeredClimateState {
         grid: &CubedSphereGrid,
         layout: &ClimateLayerLayout,
         forcing: &PlanetForcing,
+        sea_level_m: f32,
         cancellation: &BuildCancellation,
     ) -> Result<Self, LayeredStateError> {
-        Self::from_forcing_impl(grid, layout, forcing, None, Some(cancellation))
+        Self::from_forcing_impl(grid, layout, forcing, sea_level_m, None, Some(cancellation))
     }
 
     fn from_forcing_impl(
         grid: &CubedSphereGrid,
         layout: &ClimateLayerLayout,
         forcing: &PlanetForcing,
+        sea_level_m: f32,
         month: Option<usize>,
         cancellation: Option<&BuildCancellation>,
     ) -> Result<Self, LayeredStateError> {
@@ -168,6 +173,13 @@ impl LayeredClimateState {
             return Err(LayeredStateError::GridMismatch);
         }
 
+        let upper_reference_c = upper_atmosphere_reference_air_temperature_c(
+            grid,
+            forcing,
+            sea_level_m,
+            month,
+            cancellation,
+        )?;
         let mut active_layers = Vec::with_capacity(Self::roles_for_profile(layout.profile()).len());
         for role in Self::roles_for_profile(layout.profile()) {
             let layer = layout
@@ -176,11 +188,12 @@ impl LayeredClimateState {
                 .find(|layer| layer.role() == *role)
                 .expect("fixed layout contains every active role");
             let mut temperature_c = Vec::with_capacity(grid.cell_count());
-            for cell in 0..grid.cell_count() {
+            for (cell, &upper_air_c) in upper_reference_c.iter().enumerate() {
                 poll_state_cancelled(cell, cancellation)?;
                 let value = forcing_initial_temperature(
                     &forcing.equilibrium_air_temperature_c()[cell],
                     &forcing.equilibrium_surface_temperature_c()[cell],
+                    upper_air_c,
                     month,
                     *role,
                 );
@@ -198,7 +211,7 @@ impl LayeredClimateState {
         let mut specific_humidity = Vec::with_capacity(grid.cell_count());
         let mut upper_specific_humidity = c2.then(|| Vec::with_capacity(grid.cell_count()));
         let mut deep_ocean_temperature_c = c2.then(|| Vec::with_capacity(grid.cell_count()));
-        for cell in 0..grid.cell_count() {
+        for (cell, &upper_air_c) in upper_reference_c.iter().enumerate() {
             poll_state_cancelled(cell, cancellation)?;
             let humidity = forcing_initial_humidity(
                 &forcing.equilibrium_air_temperature_c()[cell],
@@ -213,6 +226,7 @@ impl LayeredClimateState {
                 deep.push(forcing_initial_temperature(
                     &forcing.equilibrium_air_temperature_c()[cell],
                     &forcing.equilibrium_surface_temperature_c()[cell],
+                    upper_air_c,
                     month,
                     ClimateLayerRole::DeepOceanReservoir,
                 ));
@@ -496,12 +510,12 @@ fn forcing_initial_humidity(
         })
         .sum::<f64>()
         / CLIMATE_MONTH_COUNT as f64;
-    let annual_mean_temperature = forcing_initial_temperature(
-        air_temperature_c,
-        air_temperature_c,
-        None,
-        ClimateLayerRole::LowerAtmosphere,
-    );
+    let annual_mean_temperature = (air_temperature_c
+        .iter()
+        .copied()
+        .map(f64::from)
+        .sum::<f64>()
+        / CLIMATE_MONTH_COUNT as f64) as f32;
     (relative_humidity * saturation_specific_humidity_kg_kg(f64::from(annual_mean_temperature)))
         as f32
 }
@@ -509,6 +523,7 @@ fn forcing_initial_humidity(
 fn forcing_initial_temperature(
     air_months: &[f32; CLIMATE_MONTH_COUNT],
     surface_months: &[f32; CLIMATE_MONTH_COUNT],
+    upper_air_c: f32,
     month: Option<usize>,
     role: ClimateLayerRole,
 ) -> f32 {
@@ -521,22 +536,110 @@ fn forcing_initial_temperature(
                 (months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64)
                     as f32
             };
-            role_reference_temperature_c(role, mean(air_months), mean(surface_months))
+            role_reference_temperature_c(role, mean(air_months), mean(surface_months), upper_air_c)
         },
-        |month| role_reference_temperature_c(role, air_months[month], surface_months[month]),
+        |month| {
+            role_reference_temperature_c(
+                role,
+                air_months[month],
+                surface_months[month],
+                upper_air_c,
+            )
+        },
     )
 }
 
+/// Latitude-band count shared with the work-domain memory inventory.
+pub(super) fn axisymmetric_band_count(grid: &CubedSphereGrid) -> usize {
+    crate::world::natural::global_circulation_axisymmetric_band_count(grid.face_resolution())
+}
+
+/// Band index of every cell, evaluated once per workspace.
+pub(super) fn axisymmetric_bands(grid: &CubedSphereGrid) -> Vec<u32> {
+    let band_count = axisymmetric_band_count(grid);
+    grid.cells()
+        .iter()
+        .map(|cell| {
+            let sine_latitude = cell.center_unit()[2].clamp(-1.0, 1.0);
+            let fraction = sine_latitude.asin() / std::f64::consts::PI + 0.5;
+            ((fraction * band_count as f64).floor() as usize).min(band_count - 1) as u32
+        })
+        .collect()
+}
+
+/// Upper-atmosphere reference air temperature of every cell.
+///
+/// A cold non-zonal surface anomaly stays in the lower troposphere: Lindzen &
+/// Nigam (1987) and Battisti, Sarachik & Hirst (1999) Eq. (4)-(5) let the eddy
+/// temperature decay to zero at the 700 hPa reference level, below this
+/// model's layer interface, so the free troposphere above it keeps the
+/// zonal-mean structure `T(y, z)`. A warm anomaly does not stay confined: the
+/// column convects (Battisti et al. 1999 §2b, convecting regime; Gill 1980
+/// first baroclinic mode) and the free troposphere follows the column's own
+/// equilibrium stratification, which is the fixed offset this model already
+/// declares for every layer pair (Manabe, Smagorinsky & Strickler 1965
+/// convective adjustment to a stable reference lapse). The upper layer
+/// therefore references the warmer of the latitude-band mean and the local
+/// sea-level-reduced air target, re-expressed at the cell's own reference
+/// height so it shares the lower layer's terrain-lapse coordinate (the two
+/// lapse terms cancel in the interface buoyancy). `month` `None` averages the
+/// twelve monthly targets first, as the annual-mean initialisation does for
+/// every other role.
+pub(super) fn upper_atmosphere_reference_air_temperature_c(
+    grid: &CubedSphereGrid,
+    forcing: &PlanetForcing,
+    sea_level_m: f32,
+    month: Option<usize>,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<Vec<f32>, LayeredStateError> {
+    let bands = axisymmetric_bands(grid);
+    let mut band_area_m2 = vec![0.0_f64; axisymmetric_band_count(grid)];
+    let mut band_sum_c_m2 = vec![0.0_f64; band_area_m2.len()];
+    let mut sea_level_targets_c = Vec::with_capacity(grid.cell_count());
+    let mut lapse_offsets_c = Vec::with_capacity(grid.cell_count());
+    for (cell, geometry) in grid.cells().iter().enumerate() {
+        poll_state_cancelled(cell, cancellation)?;
+        let lapse_offset_c = CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M
+            * atmospheric_reference_surface_height_m(
+                forcing.elevation_m()[cell] - sea_level_m,
+                forcing.land_fraction()[cell],
+            );
+        let months = &forcing.equilibrium_air_temperature_c()[cell];
+        let target_c = month.map_or_else(
+            || months.iter().copied().map(f64::from).sum::<f64>() / CLIMATE_MONTH_COUNT as f64,
+            |month| f64::from(months[month]),
+        );
+        let band = bands[cell] as usize;
+        band_area_m2[band] += geometry.area_m2();
+        band_sum_c_m2[band] += geometry.area_m2() * (target_c + lapse_offset_c);
+        sea_level_targets_c.push(target_c + lapse_offset_c);
+        lapse_offsets_c.push(lapse_offset_c);
+    }
+    Ok(sea_level_targets_c
+        .iter()
+        .zip(&lapse_offsets_c)
+        .zip(&bands)
+        .map(|((&sea_level_target_c, &lapse_offset_c), &band)| {
+            let band_mean_c = band_sum_c_m2[band as usize] / band_area_m2[band as usize];
+            (band_mean_c.max(sea_level_target_c) - lapse_offset_c) as f32
+        })
+        .collect())
+}
+
+/// Equilibrium temperature of one role at one cell and month.
+///
+/// `upper_air_c` is the cell's value from
+/// `upper_atmosphere_reference_air_temperature_c`; only the upper atmosphere
+/// consults it.
 pub(super) fn role_reference_temperature_c(
     role: ClimateLayerRole,
     air_temperature_c: f32,
     surface_temperature_c: f32,
+    upper_air_c: f32,
 ) -> f32 {
     match role {
         ClimateLayerRole::LowerAtmosphere => air_temperature_c,
-        ClimateLayerRole::UpperAtmosphere => {
-            air_temperature_c - UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C
-        }
+        ClimateLayerRole::UpperAtmosphere => upper_air_c - UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C,
         ClimateLayerRole::OceanMixedLayer => {
             surface_temperature_c.clamp(LIQUID_MIXED_LAYER_MIN_C, OCEAN_EQUILIBRIUM_MAX_C)
         }

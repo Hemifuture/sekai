@@ -562,7 +562,10 @@ impl GlobalClimateForcingBuilder {
             }
             let latitude = cell.center_unit()[2].asin();
             let land = f64::from(land_fraction[index]);
-            let orography = f64::from(relative_elevation_m[index].max(0.0)) * land;
+            let orography = crate::world::natural::atmospheric_reference_surface_height_m(
+                relative_elevation_m[index],
+                land_fraction[index],
+            );
             let snow_prior = ((orography - P4_HIGHLAND_ALBEDO_RAMP_ONSET_M)
                 / P4_HIGHLAND_ALBEDO_RAMP_SPAN_M)
                 .clamp(0.0, 1.0);

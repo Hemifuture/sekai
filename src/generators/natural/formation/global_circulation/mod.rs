@@ -15,6 +15,8 @@ use crate::world::natural::{
     EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
     EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_GRAY_GREENHOUSE_OFFSET_K,
     EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES,
+    GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
     GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
     P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
     P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
@@ -61,6 +63,13 @@ pub use tendency::{
 pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.global-circulation-equations.v6\0");
+    if profile == ClimateModelProfile::C2LayeredV1 {
+        hasher.update(
+            b"fixed-month-background-extensive-fas-atmosphere-injection-after-first-cycle.v1\0",
+        );
+        hasher.update(&GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR.to_le_bytes());
+        hasher.update(&GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES.to_le_bytes());
+    }
     hasher.update(&tendency::layered_equation_model_fingerprint(profile));
     hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());
     hasher.update(&GLOBAL_CIRCULATION_MACRO_STEP_SECONDS.to_le_bytes());
@@ -90,6 +99,8 @@ pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8
     for semantic_id in [
         b"toa-gray-radiation-ledger.v1".as_slice(),
         b"annual-mean-relative-humidity-initial-state.v2".as_slice(),
+        b"bulk-evaporation-prognostic-near-surface-humidity.v1".as_slice(),
+        b"ocean-saturation-vapor-pressure-water-activity.v1".as_slice(),
         b"thermodynamic-moisture-shooting-preconditioner-v2".as_slice(),
         b"surface-albedo-asr-olr-fields.v1".as_slice(),
     ] {

@@ -14,6 +14,15 @@ pub struct CirculationOperators<'grid> {
     grid: &'grid CubedSphereGrid,
 }
 
+/// 同一流体层的已验证输运场；切片按网格单元索引。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LayerTransportFields<'a> {
+    pub(crate) velocity_m_s: &'a [[f32; 3]],
+    pub(crate) height_anomaly_m: &'a [f32],
+    pub(crate) reference_thickness_m: f64,
+    pub(crate) terrain_floor_m: Option<&'a [f32]>,
+}
+
 impl<'grid> CirculationOperators<'grid> {
     pub const fn new(grid: &'grid CubedSphereGrid) -> Self {
         Self { grid }
@@ -182,6 +191,8 @@ impl<'grid> CirculationOperators<'grid> {
     /// Each accumulator preserves the same canonical edge order and f64
     /// arithmetic as its standalone production operator; only the shared
     /// geometry/permeability traversal is removed.
+    /// `include_donor_continuity` is false when C2 atmospheric continuity is
+    /// assembled later from its shared reconstructed momentum face flux.
     ///
     /// The gradient output feeds one transient RK stage acceleration and is
     /// never published, so it is written with the plain f32 cast of the exact
@@ -197,6 +208,7 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: &[f32],
         reference_thickness_m: f64,
         terrain_floor_m: Option<&[f32]>,
+        include_donor_continuity: bool,
         gradient_output: &mut [[f32; 3]],
         thickness_tendency_m_s: &mut [f64],
         workspace: &mut SecondOrderTransportWorkspace,
@@ -214,6 +226,12 @@ impl<'grid> CirculationOperators<'grid> {
         check_operator_cancelled(Some(cancellation))?;
         workspace.gradients.fill([0.0; 3]);
         thickness_tendency_m_s.fill(0.0);
+        let transport_fields = LayerTransportFields {
+            velocity_m_s,
+            height_anomaly_m,
+            reference_thickness_m,
+            terrain_floor_m,
+        };
         for (edge_index, (edge, permeability)) in
             self.grid.edges().iter().zip(edge_permeability).enumerate()
         {
@@ -225,7 +243,8 @@ impl<'grid> CirculationOperators<'grid> {
             let second_value = f64::from(height_anomaly_m[second]);
             let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
             let normal = edge.normal_from_first();
-            let permeability = f64::from(*permeability);
+            let edge_permeability = *permeability;
+            let permeability = f64::from(edge_permeability);
             let edge_length_m = edge.length_m();
             let length = edge_length_m * permeability;
             accumulate_vector(
@@ -239,24 +258,9 @@ impl<'grid> CirculationOperators<'grid> {
                 -(edge_value - second_value) * length,
             );
 
-            if permeability > 0.0 {
-                let normal_velocity_m_s = dot(
-                    interpolate_vector(edge, velocity_m_s[first], velocity_m_s[second]),
-                    normal,
-                );
-                let donor = if normal_velocity_m_s >= 0.0 {
-                    first
-                } else {
-                    second
-                };
-                // Shallow water over topography: the pressure gradient above
-                // reads the layer top, the transported thickness is the layer
-                // top minus the terrain floor (Vallis 2017, §3.1).
-                let floor_m = terrain_floor_m.map_or(0.0, |floor| f64::from(floor[donor]));
-                let donor_thickness_m =
-                    (reference_thickness_m - floor_m + f64::from(height_anomaly_m[donor])).max(0.0);
+            if include_donor_continuity && permeability > 0.0 {
                 let amount_rate_m3_s =
-                    normal_velocity_m_s * edge_length_m * permeability * donor_thickness_m;
+                    donor_layer_edge_amount_rate_m3_s(edge, edge_permeability, transport_fields);
                 thickness_tendency_m_s[first] -=
                     amount_rate_m3_s / self.grid.cells()[first].area_m2();
                 thickness_tendency_m_s[second] +=
@@ -757,124 +761,26 @@ impl<'grid> CirculationOperators<'grid> {
             &mut cancelled,
         )?;
 
-        // The same Green-Gauss gradient used by the shared pressure operator,
-        // written directly into reusable f64 scratch storage. Closed edges are
-        // absent from both the stencil and the flux graph, so disconnected
-        // basins remain numerically independent.
-        for (edge_index, (edge, permeability)) in
-            self.grid.edges().iter().zip(edge_permeability).enumerate()
-        {
+        self.prepare_monotone_face_reconstruction(
+            |cell| f64::from(scalar[cell]),
+            velocity,
+            edge_permeability,
+            workspace,
+            &mut cancelled,
+        )?;
+        for (edge_index, edge) in self.grid.edges().iter().enumerate() {
             if edge_index % 256 == 0 && cancelled() {
                 return Err(CirculationOperatorError::Cancelled);
             }
-            if *permeability <= 0.0 {
-                continue;
-            }
-            let [first, second] = *edge.cells();
-            let first = first as usize;
-            let second = second as usize;
-            let first_value = f64::from(scalar[first]);
-            let second_value = f64::from(scalar[second]);
-            let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
-            accumulate_vector(
-                &mut workspace.gradients[first],
-                edge.normal_from_first(),
-                (edge_value - first_value) * edge.length_m() * f64::from(*permeability),
-            );
-            accumulate_vector(
-                &mut workspace.gradients[second],
-                edge.normal_from_first(),
-                -(edge_value - second_value) * edge.length_m() * f64::from(*permeability),
-            );
-        }
-        for (index, cell) in self.grid.cells().iter().enumerate() {
-            if index % 256 == 0 && cancelled() {
-                return Err(CirculationOperatorError::Cancelled);
-            }
-            workspace.gradients[index] = project_tangent(
-                scale(workspace.gradients[index], cell.area_m2().recip()),
-                cell.center_unit(),
-            );
-            let mut minimum = scalar[index];
-            let mut maximum = scalar[index];
-            for edge_id in cell.edges() {
-                if edge_permeability[*edge_id as usize] <= 0.0 {
-                    continue;
-                }
-                let edge = &self.grid.edges()[*edge_id as usize];
-                let [first, second] = *edge.cells();
-                let neighbor = if first as usize == index {
-                    second
-                } else {
-                    first
-                } as usize;
-                minimum = minimum.min(scalar[neighbor]);
-                maximum = maximum.max(scalar[neighbor]);
-            }
-            workspace.local_min[index] = f64::from(minimum);
-            workspace.local_max[index] = f64::from(maximum);
-        }
-
-        // Barth-Jespersen limiter: every owner-side edge reconstruction stays
-        // inside that cell's one-ring extrema before a donor is selected.
-        for (edge_index, (edge, permeability)) in
-            self.grid.edges().iter().zip(edge_permeability).enumerate()
-        {
-            if edge_index % 256 == 0 && cancelled() {
-                return Err(CirculationOperatorError::Cancelled);
-            }
-            if *permeability <= 0.0 {
-                continue;
-            }
-            for owner in 0..2 {
-                let cell = edge.cells()[owner] as usize;
-                let displacement = edge_displacement_m(self.grid, edge, owner);
-                let increment = dot(workspace.gradients[cell], displacement);
-                let center = f64::from(scalar[cell]);
-                let ratio = if increment > 0.0 {
-                    (workspace.local_max[cell] - center) / increment
-                } else if increment < 0.0 {
-                    (workspace.local_min[cell] - center) / increment
-                } else {
-                    1.0
-                };
-                workspace.limiter[cell] = workspace.limiter[cell].min(ratio.clamp(0.0, 1.0));
-            }
-        }
-
-        for (edge_index, (edge, permeability)) in
-            self.grid.edges().iter().zip(edge_permeability).enumerate()
-        {
-            if edge_index % 256 == 0 && cancelled() {
-                return Err(CirculationOperatorError::Cancelled);
-            }
-            let [first, second] = *edge.cells();
-            let first = first as usize;
-            let second = second as usize;
-            let signed_volume_flux = dot(
-                interpolate_vector(edge, velocity[first], velocity[second]),
-                edge.normal_from_first(),
-            ) * edge.length_m()
-                * f64::from(*permeability);
-            let (donor, owner) = if signed_volume_flux >= 0.0 {
-                (first, 0)
-            } else {
-                (second, 1)
-            };
-            let displacement = edge_displacement_m(self.grid, edge, owner);
-            let reconstructed = f64::from(scalar[donor])
-                + workspace.limiter[donor] * dot(workspace.gradients[donor], displacement);
-            let mut face_value =
-                reconstructed.clamp(workspace.local_min[donor], workspace.local_max[donor]);
+            let signed_volume_flux = workspace.edge_volume_flux_m2_s[edge_index];
+            let donor = edge.cells()[usize::from(signed_volume_flux < 0.0)] as usize;
             if enforce_nonnegative {
-                face_value = face_value.max(0.0);
+                workspace.edge_face_value[edge_index] =
+                    workspace.edge_face_value[edge_index].max(0.0);
             }
-            workspace.edge_volume_flux_m2_s[edge_index] = signed_volume_flux;
-            workspace.edge_face_value[edge_index] = face_value;
             workspace.outgoing_amount[donor] +=
-                signed_volume_flux.abs() * face_value.abs() * dt_seconds;
+                signed_volume_flux.abs() * workspace.edge_face_value[edge_index].abs() * dt_seconds;
         }
-
         let mut positivity_scaled_cells = 0_usize;
         if enforce_nonnegative {
             for (index, cell) in self.grid.cells().iter().enumerate() {
@@ -973,6 +879,171 @@ impl<'grid> CirculationOperators<'grid> {
         })
     }
 
+    /// Reconstructs positive layer depth at each face with the same limited
+    /// linear reconstruction consumed by scalar transport. Returns borrowed
+    /// (normal volume flux in m2/s, face depth in m); their product is the
+    /// unique layer amount flux consumed by continuity, momentum and CFL.
+    ///
+    /// Inputs must belong to this grid and contain validated positive finite
+    /// actual depths and tangent velocities. Propagates cancellation. No
+    /// endpoint bound, redistribution or time-step scaling is performed.
+    pub(crate) fn reconstruct_layer_faces_cancellable<'workspace>(
+        &self,
+        actual_depth_m: &[f64],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        workspace: &'workspace mut SecondOrderTransportWorkspace,
+        cancellation: &BuildCancellation,
+    ) -> Result<(&'workspace [f64], &'workspace [f64]), CirculationOperatorError> {
+        debug_assert_eq!(actual_depth_m.len(), self.grid.cell_count());
+        debug_assert!(actual_depth_m
+            .iter()
+            .all(|depth| depth.is_finite() && *depth > 0.0));
+        debug_assert_eq!(velocity.len(), self.grid.cell_count());
+        debug_assert_eq!(edge_permeability.len(), self.grid.edges().len());
+        workspace.validate_for_grid(self.grid)?;
+        self.prepare_monotone_face_reconstruction(
+            |cell| actual_depth_m[cell],
+            velocity,
+            edge_permeability,
+            workspace,
+            &mut || cancellation.is_cancelled(),
+        )?;
+        Ok((&workspace.edge_volume_flux_m2_s, &workspace.edge_face_value))
+    }
+
+    fn prepare_monotone_face_reconstruction(
+        &self,
+        value_at: impl Fn(usize) -> f64,
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        workspace: &mut SecondOrderTransportWorkspace,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<(), CirculationOperatorError> {
+        if cancelled() {
+            return Err(CirculationOperatorError::Cancelled);
+        }
+        workspace.gradients.fill([0.0; 3]);
+        workspace.limiter.fill(1.0);
+        // The same Green-Gauss gradient used by the shared pressure operator,
+        // written directly into reusable f64 scratch storage. Closed edges are
+        // absent from both the stencil and the flux graph, so disconnected
+        // basins remain numerically independent.
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
+            if edge_index % 256 == 0 && cancelled() {
+                return Err(CirculationOperatorError::Cancelled);
+            }
+            if *permeability <= 0.0 {
+                continue;
+            }
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let first_value = value_at(first);
+            let second_value = value_at(second);
+            let edge_value = interpolate_scalar_f64(edge, first_value, second_value);
+            accumulate_vector(
+                &mut workspace.gradients[first],
+                edge.normal_from_first(),
+                (edge_value - first_value) * edge.length_m() * f64::from(*permeability),
+            );
+            accumulate_vector(
+                &mut workspace.gradients[second],
+                edge.normal_from_first(),
+                -(edge_value - second_value) * edge.length_m() * f64::from(*permeability),
+            );
+        }
+        for (index, cell) in self.grid.cells().iter().enumerate() {
+            if index % 256 == 0 && cancelled() {
+                return Err(CirculationOperatorError::Cancelled);
+            }
+            workspace.gradients[index] = project_tangent(
+                scale(workspace.gradients[index], cell.area_m2().recip()),
+                cell.center_unit(),
+            );
+            let mut minimum = value_at(index);
+            let mut maximum = value_at(index);
+            for edge_id in cell.edges() {
+                if edge_permeability[*edge_id as usize] <= 0.0 {
+                    continue;
+                }
+                let edge = &self.grid.edges()[*edge_id as usize];
+                let [first, second] = *edge.cells();
+                let neighbor = if first as usize == index {
+                    second
+                } else {
+                    first
+                } as usize;
+                minimum = minimum.min(value_at(neighbor));
+                maximum = maximum.max(value_at(neighbor));
+            }
+            workspace.local_min[index] = minimum;
+            workspace.local_max[index] = maximum;
+        }
+
+        // Barth-Jespersen limiter: every owner-side edge reconstruction stays
+        // inside that cell's one-ring extrema before a donor is selected.
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
+            if edge_index % 256 == 0 && cancelled() {
+                return Err(CirculationOperatorError::Cancelled);
+            }
+            if *permeability <= 0.0 {
+                continue;
+            }
+            for owner in 0..2 {
+                let cell = edge.cells()[owner] as usize;
+                let displacement = edge_displacement_m(self.grid, edge, owner);
+                let increment = dot(workspace.gradients[cell], displacement);
+                let center = value_at(cell);
+                let ratio = if increment > 0.0 {
+                    (workspace.local_max[cell] - center) / increment
+                } else if increment < 0.0 {
+                    (workspace.local_min[cell] - center) / increment
+                } else {
+                    1.0
+                };
+                workspace.limiter[cell] = workspace.limiter[cell].min(ratio.clamp(0.0, 1.0));
+            }
+        }
+
+        for (edge_index, (edge, permeability)) in
+            self.grid.edges().iter().zip(edge_permeability).enumerate()
+        {
+            if edge_index % 256 == 0 && cancelled() {
+                return Err(CirculationOperatorError::Cancelled);
+            }
+            let [first, second] = *edge.cells();
+            let first = first as usize;
+            let second = second as usize;
+            let signed_volume_flux = dot(
+                interpolate_vector(edge, velocity[first], velocity[second]),
+                edge.normal_from_first(),
+            ) * edge.length_m()
+                * f64::from(*permeability);
+            let (donor, owner) = if signed_volume_flux >= 0.0 {
+                (first, 0)
+            } else {
+                (second, 1)
+            };
+            let displacement = edge_displacement_m(self.grid, edge, owner);
+            let reconstructed = value_at(donor)
+                + workspace.limiter[donor] * dot(workspace.gradients[donor], displacement);
+            let face_value =
+                reconstructed.clamp(workspace.local_min[donor], workspace.local_max[donor]);
+            workspace.edge_volume_flux_m2_s[edge_index] = signed_volume_flux;
+            workspace.edge_face_value[edge_index] = face_value;
+        }
+
+        if cancelled() {
+            return Err(CirculationOperatorError::Cancelled);
+        }
+        Ok(())
+    }
+
     /// Advances an intensive scalar with constant-preserving upwind inflow.
     pub fn advect_scalar_upwind_tracer(
         &self,
@@ -990,6 +1061,70 @@ impl<'grid> CirculationOperators<'grid> {
 
         let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
         self.advect_scalar_upwind_tracer_from_fluxes_validated(scalar, &fluxes, dt_seconds)
+    }
+
+    /// 以冻结边流量对子步推进强度量，保持温标平移不变及初值界限。
+    ///
+    /// `scalar`、`velocity` 按单元索引，`edge_permeability` 按边索引；
+    /// `dt_seconds` 为非负宏步，`cancellation` 可中断每个子步的边／单元循环。
+    /// 返回单位参考载体上的强度量；总量变化沿用既有强度量算子的诊断含义。
+    /// 无效输入、数值溢出或取消返回对应错误。
+    ///
+    /// LeVeque (2002), ch. 9：迎风 Euler 更新在入流权重和不超过一时为凸组合。
+    /// 子步数由实际最大入流率直接确定，不增加经验 CFL 系数。
+    pub(crate) fn advect_scalar_upwind_tracer_subcycled_cancellable(
+        &self,
+        scalar: &[f32],
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        dt_seconds: f64,
+        cancellation: &BuildCancellation,
+    ) -> Result<UpwindTracerTransport, CirculationOperatorError> {
+        check_operator_cancelled(Some(cancellation))?;
+        validate_scalar_field("scalar", scalar, self.grid.cell_count())?;
+        validate_vector_field("velocity", velocity, self.grid.cell_count())?;
+        validate_permeability(edge_permeability, self.grid.edges().len())?;
+        if !dt_seconds.is_finite() || dt_seconds < 0.0 {
+            return Err(CirculationOperatorError::InvalidTimeStep { found: dt_seconds });
+        }
+
+        let fluxes = steady_upwind_fluxes(self.grid, velocity, edge_permeability);
+        let mut intensive_delta = vec![0.0_f64; self.grid.cell_count()];
+        for (index, flux) in fluxes.iter().enumerate() {
+            poll_operator_cancelled(index, Some(cancellation))?;
+            intensive_delta[flux.receiver] +=
+                flux.magnitude_m2_s / self.grid.cells()[flux.receiver].area_m2();
+        }
+        let max_rate = intensive_delta.iter().copied().fold(0.0_f64, f64::max);
+        let substeps = (dt_seconds * max_rate).ceil().max(1.0);
+        if !substeps.is_finite() || substeps >= usize::MAX as f64 {
+            return Err(CirculationOperatorError::NumericalOverflow);
+        }
+        let substep_seconds = dt_seconds / substeps;
+        let mut values = scalar.to_vec();
+        for _ in 0..substeps as usize {
+            check_operator_cancelled(Some(cancellation))?;
+            self.intensive_upwind_delta_into(
+                &values,
+                &fluxes,
+                substep_seconds,
+                &mut intensive_delta,
+                Some(cancellation),
+            )?;
+            for (index, (value, delta)) in values.iter_mut().zip(&intensive_delta).enumerate() {
+                poll_operator_cancelled(index, Some(cancellation))?;
+                let updated = f64::from(*value) + delta;
+                if !updated.is_finite()
+                    || updated < f64::from(f32::MIN)
+                    || updated > f64::from(f32::MAX)
+                {
+                    return Err(CirculationOperatorError::NumericalOverflow);
+                }
+                *value = updated as f32;
+            }
+        }
+        check_operator_cancelled(Some(cancellation))?;
+        Ok(self.intensive_tracer_transport_result(scalar, values))
     }
 
     /// Advances a mixing ratio consistently with a linearized shallow-water layer.
@@ -1050,12 +1185,7 @@ impl<'grid> CirculationOperators<'grid> {
     ) -> Result<UpwindTracerTransport, CirculationOperatorError> {
         debug_assert_eq!(scalar.len(), self.grid.cell_count());
         let mut intensive_delta = vec![0.0_f64; self.grid.cell_count()];
-        for flux in fluxes {
-            intensive_delta[flux.receiver] += flux.magnitude_m2_s
-                * (f64::from(scalar[flux.donor]) - f64::from(scalar[flux.receiver]))
-                * dt_seconds
-                / self.grid.cells()[flux.receiver].area_m2();
-        }
+        self.intensive_upwind_delta_into(scalar, fluxes, dt_seconds, &mut intensive_delta, None)?;
         let mut values = Vec::with_capacity(self.grid.cell_count());
         for (original, delta) in scalar.iter().zip(intensive_delta) {
             let value = f64::from(*original) + delta;
@@ -1064,14 +1194,41 @@ impl<'grid> CirculationOperators<'grid> {
             }
             values.push(value as f32);
         }
+        Ok(self.intensive_tracer_transport_result(scalar, values))
+    }
+
+    fn intensive_upwind_delta_into(
+        &self,
+        scalar: &[f32],
+        fluxes: &[UpwindFlux],
+        dt_seconds: f64,
+        intensive_delta: &mut [f64],
+        cancellation: Option<&BuildCancellation>,
+    ) -> Result<(), CirculationOperatorError> {
+        intensive_delta.fill(0.0);
+        for (index, flux) in fluxes.iter().enumerate() {
+            poll_operator_cancelled(index, cancellation)?;
+            intensive_delta[flux.receiver] += flux.magnitude_m2_s
+                * (f64::from(scalar[flux.donor]) - f64::from(scalar[flux.receiver]))
+                * dt_seconds
+                / self.grid.cells()[flux.receiver].area_m2();
+        }
+        Ok(())
+    }
+
+    fn intensive_tracer_transport_result(
+        &self,
+        scalar: &[f32],
+        values: Vec<f32>,
+    ) -> UpwindTracerTransport {
         let before = extensive_total(self.grid, scalar, false);
         let after = extensive_total(self.grid, &values, false);
         let scale = extensive_total(self.grid, scalar, true).max(f64::MIN_POSITIVE);
-        Ok(UpwindTracerTransport {
+        UpwindTracerTransport {
             values,
             layer_amounts: vec![1.0; self.grid.cell_count()],
             relative_mass_error: (after - before).abs() / scale,
-        })
+        }
     }
 
     pub(crate) fn advect_linearized_layer_mixing_ratio_from_fluxes_validated(
@@ -1643,6 +1800,40 @@ fn edge_displacement_m(grid: &CubedSphereGrid, edge: &SphericalEdge, owner: usiz
     }
 }
 
+/// 以供体实际厚度计算边体积通量，正值从边的第一个单元流向第二个单元。
+///
+/// `edge`、`permeability` 和 `fields` 须来自同一已验证网格；本助手不分配内存。
+pub(crate) fn donor_layer_edge_amount_rate_m3_s(
+    edge: &SphericalEdge,
+    permeability: f32,
+    fields: LayerTransportFields<'_>,
+) -> f64 {
+    let [first, second] = *edge.cells();
+    let first = first as usize;
+    let second = second as usize;
+    let normal_velocity_m_s = dot(
+        interpolate_vector(
+            edge,
+            fields.velocity_m_s[first],
+            fields.velocity_m_s[second],
+        ),
+        edge.normal_from_first(),
+    );
+    let donor = if normal_velocity_m_s >= 0.0 {
+        first
+    } else {
+        second
+    };
+    // 地形上的浅水输运使用层顶减去地形底面的实际厚度（Vallis 2017，§3.1）。
+    let floor_m = fields
+        .terrain_floor_m
+        .map_or(0.0, |floor| f64::from(floor[donor]));
+    let donor_thickness_m = (fields.reference_thickness_m - floor_m
+        + f64::from(fields.height_anomaly_m[donor]))
+    .max(0.0);
+    normal_velocity_m_s * edge.length_m() * f64::from(permeability) * donor_thickness_m
+}
+
 pub(crate) fn interpolate_vector(
     edge: &SphericalEdge,
     first: [f32; 3],
@@ -2200,6 +2391,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn subcycled_intensive_tracer_preserves_temperature_origin_and_bounds() {
+        // 辐散流暴露强度量与通量形式的区别；宏步跨越单步凸组合 CFL。
+        let grid = CubedSphereGrid::new(4, 6_371_000.0).unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let cancellation = BuildCancellation::new();
+        let scalar = grid
+            .cells()
+            .iter()
+            .map(|cell| (20.0 * cell.center_unit()[0] - 10.0 * cell.center_unit()[2]) as f32)
+            .collect::<Vec<_>>();
+        let velocity = grid
+            .cells()
+            .iter()
+            .map(|cell| to_f32_vector(project_tangent([0.0, 0.0, 10.0], cell.center_unit())))
+            .collect::<Vec<_>>();
+        let permeability = vec![1.0; grid.edges().len()];
+        let mut incoming_rates = vec![0.0_f64; grid.cell_count()];
+        for flux in steady_upwind_fluxes(&grid, &velocity, &permeability) {
+            incoming_rates[flux.receiver] +=
+                flux.magnitude_m2_s / grid.cells()[flux.receiver].area_m2();
+        }
+        let max_rate = incoming_rates.into_iter().fold(0.0_f64, f64::max);
+        assert!(max_rate > 0.0);
+        let dt_seconds = 3.5 / max_rate;
+        let shifted = scalar
+            .iter()
+            .map(|value| value + 273.15)
+            .collect::<Vec<_>>();
+        let constant = vec![273.15; grid.cell_count()];
+        let transport = |values: &[f32]| {
+            operators
+                .advect_scalar_upwind_tracer_subcycled_cancellable(
+                    values,
+                    &velocity,
+                    &permeability,
+                    dt_seconds,
+                    &cancellation,
+                )
+                .unwrap()
+        };
+        let result = transport(&scalar);
+        let shifted_result = transport(&shifted);
+        let minimum = scalar.iter().copied().fold(f32::INFINITY, f32::min);
+        let maximum = scalar.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        // 初值与四个子步各经 f32 舍入，容差按温标平移后的量级计算。
+        let tolerance = 8.0 * f32::EPSILON * (273.15 + maximum.abs());
+        for (value, shifted_value) in result.values().iter().zip(shifted_result.values()) {
+            assert!((shifted_value - value - 273.15).abs() <= tolerance);
+            assert!(*value >= minimum && *value <= maximum);
+        }
+        assert_eq!(transport(&constant).values(), constant);
+        assert!(result
+            .values()
+            .iter()
+            .zip(&scalar)
+            .any(|(after, before)| (after - before).abs() > tolerance));
+    }
+
+    #[test]
     fn retained_convergent_excess_is_conservative_and_local() {
         // A divergent lower-layer flow on a uniform scalar: the flux form
         // piles the scalar up where the flow converges and thins it where the
@@ -2350,6 +2600,7 @@ mod tests {
                 &permeability,
                 6_000.0,
                 None,
+                true,
                 &mut gradient,
                 &mut thickness,
                 &mut workspace,

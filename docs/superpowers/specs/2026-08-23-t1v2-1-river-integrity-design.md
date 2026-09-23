@@ -257,6 +257,78 @@ fmt、全 workspace clippy `-D warnings`、wasm32 all-features lib 与受影响
 release GPU/P5 套件也全部通过。日志保存在 `target/verification/`，不进入
 版本控制。
 
+### R5 — 当前水体与非统一 LOD 的一致性修复（2026-09-14）
+
+当前代码的 `flat_color` 只消费细分高程，不消费 P5 水体；因此 §4 的格边
+河口与屏幕水边没有共同事实源，湖泊甚至被画成陆地。§8 的证明也隐含所有
+河段使用相同 leaf level，实际相机并非如此；高级干流的首点还只是被隐藏
+支流的汇合处，并非河源。这些问题与 P5 receiver 是否无环相互独立。
+
+修订呈现契约：放大地形以最终 P5 `SurfaceWaterField` 决定水陆，海洋与湖泊
+复用既有水色色板；陆地的细分高程仍供高程色带，但低于海平面的干陆不因
+高程而变成海洋。只限制颜色的陆地区间，不改写任何科学高程或水量。
+水体边界与河流门户现在同为 P5 格边，二维和三维共享 mesh。代价是水体边界
+保持权威工作网格精度，不再把未求解水文的细分高程零等值线称为新岸线；
+这显式替换父规格 §2 的“海岸线分形涌现”在当前水体呈现上的应用。
+未来更细水岸必须连同细域水体和河网统一派生，不能再分别构造。
+
+河级 LOD 仅作为选择起点。对被选中的 reach，沿既有出边保留到水体／已选
+下游，并向上延续主流到真正的已发布 channel head 或湖泊出口；上游以
+Strahler 级优先、生产河宽次之、上游 CellId 稳定打破并列。其它支流仍随
+原 LOD 逐级显示。每条已选边只扩展一次，建索引与遍历均 O(V+E)，几何深度
+仍按自身两端的较深 level，不能把上游深层细分传播到整个流域。
+
+河源只恢复 P5 已发布的真实源头，不强制起于山顶、不伪造泉眼符号；平原
+汇水成河本身不是错误。机制出处沿 §11 的网络制图、河级与水文拓扑规范，
+不改 P5 阈值、receiver、河宽、流量或 artifact。测试使用局部合成图，专门
+覆盖混合层级和反向存储顺序；水体测试覆盖海拔以上湖泊和海拔以下干陆。
+
+### R6 — 以可复核的 Horton 追踪替换河宽代理（2026-09-16）
+
+用户要求先有科学算法支撑，再观察效果。R5 对连通性有测试，但将
+「Strahler、河宽、CellId」组合规则笼统归给网络制图文献，不能证明该规则
+直接来自引用。此次逐项核对原文及工业实现，修订如下。
+
+**直接方法。** 采用 GRASS GIS `r.stream.order -a` 的 Horton 主流追踪：
+上溯一个汇流点时，先选择 Strahler 级最高的入流；同级选贡献汇水面积最大者。
+Horton (1945) 提供整条主流的分级思想，具体消歧算法以 Jarek Jasiewicz 的
+GRASS 实现为准，不声称它是 Horton 原文中唯一的自然主流定义。
+GRASS 手册还明确指出，此方法可能优先选择分支更多、而不是总汇水面积最大的
+支流；这是保留 Strahler 优先级的已知性质，不以事后效果调换排序。
+
+- [GRASS 手册](https://grass.osgeo.org/grass-stable/manuals/addons/r.stream.order.html)，
+  `Horton's stream ordering` 和 `-a` 小节。
+- [固定版本源码](https://github.com/OSGeo/grass-addons/blob/a0e37beaf0ce8a4cc6ec615b6d3d40e39f9d725f/src/raster/r.stream.order/stream_order.c#L118)，
+  `horton()` 的 Strahler／accum 比较；SHA-256
+  `3e35239b8982d288e70a6bf58e753405b85b6d1391310453cb8dd7a1d24d2433`。
+
+**输入映射。** P5 是已验证的单 receiver、无环网络，符合 GRASS `-a` 的单流向
+前提。输入取 `drainage_area_km2()[segment.from()]`，即合流前该支流贡献的面积。
+球面格元不等面积，因此用生产累积面积而不是格子个数；不取合流后的共同面积，
+不拿流量或被限宽后的河宽代替。选择器只追踪主流，不新增持久 Horton 字段。
+库实现与本项目都按河段汇流图处理，格内折线细分不参与主流判断。
+
+**显示边界。** R5 的逐段 LOD 选择起点保留为 UI 显示密度策略；它并非
+Horton 分级公式，也没有从文献推导“放大一级就显示低一级”的物理意义。
+既有河段被选中后，上游按上述 Horton 规则连到已发布河网的 headwater，
+下游沿唯一 receiver 连到出口或已有路径。下游网络追踪参考 Gary et al.
+(2009, revised May 2010), USGS SIR 2009–5202, pp. 7–10。
+本项目没有 GNIS 名称和人工选源输入，因此不宣称复现该报告的整套生产流程。
+原 §11 将该报告误写为 Stanislawski (2009)，本修订明确勘正为 Gary 等。
+PDF SHA-256：`2b5c45b1f07758a55f3c5c3e4103ed145157b6c599ee56b82b6f4699a1c4e0d1`。
+
+精确同级同面积时保留 CellId 稳定打破并列；这是可复现性约定，没有物理偏好。
+水岸仍消费同一 P5 水体分类。既有几何、流量、河宽和 P5 指纹不受此次显示选择
+影响；每边只访问常数次，复杂度仍为 O(V+E)。无新增依赖或数值常量。
+
+本修订证明的是**河网主流追踪的直接出处**，不意味着审计过全部源头形成、
+细域曲流、侵蚀或岸线科学机制。UI 中“源头”仅指当前 P5 发布河网的起点。
+
+**最小充分证据。** 一个汇流点验证河级优先、同级面积消歧；混合 LOD 与反序
+存储的既有测试继续验证连通性。app 现有 fixture 扩为一次汇流：让较大面积支流
+的流量更小，实际构建折线必须选择该支流，避免只改函数名却继续传河宽。
+一次同配置生产 UI 对照验证可见效果；不为显示层修复增加多 seed 水文求解。
+
 ## 11. 每项承重技术的出处
 
 | 技术 | 出处 | 落点 |
@@ -267,4 +339,5 @@ release GPU/P5 套件也全部通过。日志保存在 `target/verification/`，
 | Gnomonic 将球面大圆映为直线，适用范围小于半球 | Snyder (1987), USGS Professional Paper 1395，<https://pubs.usgs.gov/publication/pp1395> | §5 O(1) 单调/扇区证明 |
 | 河宽与流量的幂律，系数/指数随位置变化 | Leopold & Maddock (1953), USGS Professional Paper 252，<https://pubs.usgs.gov/publication/pp252> | §6 |
 | Strahler 河级定义 | Strahler (1957), *Transactions, AGU* 38(6), 913–920，<https://doi.org/10.1029/TR038i006p00913> | §8 层级抽稀 |
-| 河网制图须先做要素选择/密度控制再简化几何 | Stanislawski (2009), USGS SIR 2009-5202，<https://pubs.usgs.gov/sir/2009/5202/> | §8 |
+| 河网制图要素选择、下游网络追踪与几何简化 | Gary et al. (2009, revised May 2010), USGS SIR 2009-5202，<https://pubs.usgs.gov/sir/2009/5202/>；作者勘误见 R6 | §8、R6 |
+| Strahler 优先、同级汇水面积消歧的 Horton 主流追踪 | GRASS GIS `r.stream.order -a`，Jarek Jasiewicz；固定源码与适用边界见 R6 | R6 |

@@ -46,6 +46,24 @@ fn p4_zonal_profile() {
     let fixture = causal_formation_fixture();
     let bundle = fixture.artifact.bundle();
     let climate = bundle.climate();
+    eprintln!(
+        "[quality] {}",
+        serde_json::to_string(bundle.climate_quality()).expect("serializable climate quality")
+    );
+    // Offline paired solver comparisons consume the existing final snapshot;
+    // no reference state or iteration history enters the product schema.
+    if let Some(path) = std::env::var_os("SEKAI_ZONAL_REFERENCE_OUTPUT") {
+        use std::io::Write as _;
+
+        let file = std::fs::File::create(path).expect("writable offline reference path");
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(
+            &mut writer,
+            &(&fixture.surface, climate, bundle.climate_quality()),
+        )
+        .expect("serializable offline final snapshot");
+        writer.flush().expect("complete offline final snapshot");
+    }
     let fields = climate.fields();
     let solve = climate.solve_report();
     eprintln!(
@@ -177,12 +195,12 @@ fn p4_zonal_profile() {
         );
     }
     let a = global[0];
-    // Evaporation closure diagnostic (A5 Task 0): the bulk formula wants a
-    // near-surface wind, the model hands it the 6 km slab mean. Compare the
-    // ocean-mean slab wind against Earth's ~6.6 m/s 10 m ocean wind, and
-    // reconstruct the bulk flux from its own factors.
+    // Published monthly endpoints describe the evaporation environment; they
+    // cannot reconstruct the budget's nonlinear average over transported q.
+    // The wind is the reconstructed near-surface field, not a slab mean.
     let mut ocean_area = 0.0_f64;
     let mut ocean_wind = 0.0_f64;
+    let mut ocean_relative_wind = 0.0_f64;
     let mut ocean_deficit = 0.0_f64;
     let mut ocean_evaporation = 0.0_f64;
     for (index, cell) in fixture.surface.cells().iter().enumerate() {
@@ -191,6 +209,7 @@ fn p4_zonal_profile() {
         }
         let area = cell.area.get();
         let winds = &fields.near_surface_wind_m_s().values()[index];
+        let currents = &fields.surface_ocean_current_m_s().values()[index];
         let sst = &fields.monthly_sea_surface_temperature_c().values()[index];
         let humidity = &fields.monthly_specific_humidity().values()[index];
         let evaporation = &fields.monthly_evaporation_mm_day().values()[index];
@@ -205,23 +224,28 @@ fn p4_zonal_profile() {
             .max(0.0);
             ocean_area += area;
             ocean_wind += area * speed;
+            ocean_relative_wind += area
+                * winds[month]
+                    .iter()
+                    .zip(currents[month])
+                    .map(|(&wind, current)| (f64::from(wind) - f64::from(current)).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
             ocean_deficit += area * deficit;
             ocean_evaporation += area * f64::from(evaporation[month]);
         }
     }
     eprintln!(
-        "[evap] ocean mean |U| {:.2} m/s (Earth 10 m ocean wind 6.6), saturation deficit {:.2} g/kg, E {:.3} mm/day",
+        "[evap] ocean mean |U| {:.2} m/s (Earth 10 m ocean wind 6.6), pure-water endpoint saturation deficit {:.2} g/kg, E {:.3} mm/day, mean |U_air-U_ocean| {:.2} m/s",
         ocean_wind / ocean_area,
         1000.0 * ocean_deficit / ocean_area,
         ocean_evaporation / ocean_area,
+        ocean_relative_wind / ocean_area,
     );
-    // A5 Task 2: where does the lower layer converge, and which term of the
-    // zonal-mean momentum balance puts it there? Annual, area-weighted
-    // zonal means of the published lower/upper winds and height anomalies;
-    // the divergence of the mean meridional wind is the axisymmetric mass
-    // convergence, and the zonal-momentum residual `r u - f v` is the sum of
-    // every non-Coriolis, non-drag torque (the diagnosed Reynolds stress and
-    // the resolved nonlinear/viscous terms).
+    // Annual, area-weighted zonal means of the published winds and heights.
+    // The band-centred divergence estimates describe the flow, not a closed
+    // momentum budget: surface stress and donor exchange require the private
+    // solver state and production tendencies (A5 design §7.28).
     let radius_m = fixture.surface.radius().get();
     // columns: area, lower u, lower v, upper u, upper v, lower h, upper h,
     // monthly-mean meridional moisture flux v*q (m/s * kg/kg), P-E (mm/day)
@@ -275,9 +299,7 @@ fn p4_zonal_profile() {
             area * annual(&fields.monthly_lower_atmosphere_height_anomaly_m().values()[index]);
         row[6] += area * upper_height.map_or(0.0, |field| annual(&field.values()[index]));
     }
-    eprintln!(
-        "[circ]   lat   low_u  low_v   up_u   up_v  low_h   up_h  div_low(1e-6/s) div_up  f*v_low r*u_low resid_low(1e-5 m/s2) | qconv(mm/d)  P-E"
-    );
+    eprintln!("[circ]   lat   low_u  low_v   up_u   up_v  low_h   up_h  div_low(1e-6/s) div_up");
     let band_mean = |row: &[f64; 9], column: usize| {
         if row[0] > 0.0 {
             row[column] / row[0]
@@ -285,7 +307,6 @@ fn p4_zonal_profile() {
             0.0
         }
     };
-    let rotation = 7.292_115_9e-5_f64;
     for band in 0..BANDS {
         let row = &circ[band];
         if row[0] <= 0.0 {
@@ -309,11 +330,8 @@ fn p4_zonal_profile() {
         };
         let lower_u = band_mean(row, 1);
         let lower_v = band_mean(row, 2);
-        let coriolis = 2.0 * rotation * latitude.sin();
-        let f_v = coriolis * lower_v;
-        let r_u = lower_u / 86_400.0;
         eprintln!(
-            "[circ] {:>5.1} {:>7.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>6.1} {:>10.3} {:>10.3} {:>8.2} {:>7.2} {:>8.2}",
+            "[circ] {:>5.1} {:>7.2} {:>6.2} {:>6.2} {:>6.2} {:>6.1} {:>6.1} {:>10.3} {:>10.3}",
             latitude.to_degrees(),
             lower_u,
             lower_v,
@@ -323,9 +341,6 @@ fn p4_zonal_profile() {
             band_mean(row, 6),
             1.0e6 * divergence(2),
             1.0e6 * divergence(4),
-            1.0e5 * f_v,
-            1.0e5 * r_u,
-            1.0e5 * (r_u - f_v),
         );
         eprintln!(
             "[qflux] {:>5.1} {:>8.2} {:>6.2}",
@@ -335,8 +350,8 @@ fn p4_zonal_profile() {
         );
     }
     // A5 Task 1: the prognostic humidity is converted to water mass through the
-    // dry-air column mass. Precipitable water and the moisture residence time
-    // say whether that conversion is the right one.
+    // effective water-vapour column mass. Precipitable water and the moisture
+    // residence time say whether that conversion is the right one.
     let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
     let moisture_column_mass =
         layout.moisture_column_mass_per_area(ClimateLayerRole::LowerAtmosphere);

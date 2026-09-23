@@ -206,7 +206,8 @@ fn fixed_model_profiles_publish_exact_layer_roles_and_constants() {
         )
         .expect("C2 lower-upper exchange");
     assert_eq!(lower_upper.heat_exchange_time_s(), Some(5.0 * 86_400.0));
-    assert_eq!(lower_upper.momentum_exchange_time_s(), Some(5.0 * 86_400.0));
+    // Diagnosed momentum processes must not gain an extra background relaxation.
+    assert!(lower_upper.momentum_exchange_time_s().is_none());
     assert_eq!(lower_upper.moisture_exchange_time_s(), Some(5.0 * 86_400.0));
     let deep = c2
         .exchange(

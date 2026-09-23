@@ -6,6 +6,7 @@ mod field_layers;
 mod palette;
 mod prepared;
 mod resident;
+mod river_selection;
 mod spherical_camera;
 mod spherical_mesh;
 mod spherical_picking;
@@ -35,6 +36,7 @@ pub(crate) use field_layers::{
     FieldLayerPreparationCounts,
 };
 pub(crate) use field_layers::{prepare_globe_vector_glyphs, prepare_map_vector_glyphs};
+pub(crate) use palette::terrain_water_color;
 pub use palette::{
     built_in_palette, category_color, prepare_cell_field, resolve_display_range, sample_palette,
     scalar_color, DisplayPrepareError, DisplayRangeMode, LinearRgba, PaletteId, PreparedCellField,
@@ -44,6 +46,7 @@ pub use palette::{
 pub(crate) use palette::{WorldLoadingPalette, WORLD_LOADING_PALETTE};
 pub use prepared::{DisplayRevision, DisplayRevisionClock};
 pub use resident::ResidentBytesError;
+pub(crate) use river_selection::select_river_reaches;
 pub use spherical_camera::{
     GlobeCamera, MapCamera, MapScreenTransform, SphericalPresentationViewState, SphericalViewMode,
 };

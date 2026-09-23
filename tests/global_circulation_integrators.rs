@@ -739,7 +739,7 @@ fn moisture_transport_operator_is_positive_and_conservative_over_the_real_macro_
 }
 
 #[test]
-fn split_macro_step_moisture_delta_matches_declared_external_sources_minus_precipitation() {
+fn split_slow_step_moisture_delta_matches_declared_external_sources_minus_precipitation() {
     let grid = CubedSphereGrid::new(8, 6_371_000.0).unwrap();
     let forcing = sharp_humidity_forcing(&grid);
     let mut initial = state(&grid, ClimateModelProfile::C1SingleLayerV1, &forcing);
@@ -753,13 +753,31 @@ fn split_macro_step_moisture_delta_matches_declared_external_sources_minus_preci
     }
     let permeability = vec![1.0; grid.edges().len()];
     let cancellation = BuildCancellation::new();
+    // This contract concerns one declared endpoint. Macro-step aggregation is
+    // covered separately by the retained slow-step precipitation regression.
+    let step_seconds = 1_200.0;
     let declared = LayeredTendencySystem::new(&grid)
-        .evaluate_for_step(&initial, &forcing, &permeability, 0, 7_200.0, &cancellation)
+        .evaluate_for_step(
+            &initial,
+            &forcing,
+            &permeability,
+            0,
+            step_seconds,
+            &cancellation,
+        )
         .unwrap();
-    let result = SplitExplicitRk3Integrator::new(&grid, 1_200.0)
+    let result = SplitExplicitRk3Integrator::new(&grid, step_seconds)
         .unwrap()
-        .advance(&initial, &forcing, &permeability, 0, 7_200.0, &cancellation)
+        .advance(
+            &initial,
+            &forcing,
+            &permeability,
+            0,
+            step_seconds,
+            &cancellation,
+        )
         .unwrap();
+    assert_eq!(result.diagnostics().endpoint_evaluations(), 1);
     // Water mass, so the moisture column mass rather than the dry-air mass
     // (design A5 Task 1).
     let column_mass = ClimateLayerLayout::for_profile(ClimateModelProfile::C1SingleLayerV1)
@@ -777,7 +795,7 @@ fn split_macro_step_moisture_delta_matches_declared_external_sources_minus_preci
             cell.area_m2() * column_mass * (f64::from(*after) - f64::from(*before))
         })
         .sum::<f64>();
-    let expected_change = declared.budget().external_moisture_net_rate_kg_s() * 7_200.0;
+    let expected_change = declared.budget().external_moisture_net_rate_kg_s() * step_seconds;
     let scale = grid
         .cells()
         .iter()
@@ -813,7 +831,7 @@ fn closed_split_path_preserves_every_c2_layer_mass_over_an_analytic_year() {
 }
 
 #[test]
-fn split_explicit_reports_the_frozen_slow_macro_step_precipitation() {
+fn split_explicit_reports_the_mean_of_its_retained_slow_step_precipitation() {
     let grid = CubedSphereGrid::new(3, 6_371_000.0).unwrap();
     let forcing = sharp_humidity_forcing(&grid);
     let mut initial = state(&grid, ClimateModelProfile::C1SingleLayerV1, &forcing);
@@ -826,18 +844,8 @@ fn split_explicit_reports_the_frozen_slow_macro_step_precipitation() {
         *velocity = [-120.0 * y as f32, 120.0 * x as f32, 0.0];
     }
     let permeability = vec![1.0; grid.edges().len()];
-    let declared = LayeredTendencySystem::new(&grid)
-        .evaluate_for_step(
-            &initial,
-            &forcing,
-            &permeability,
-            0,
-            7_200.0,
-            &BuildCancellation::new(),
-        )
-        .unwrap();
-    let result = SplitExplicitRk3Integrator::new(&grid, 600.0)
-        .unwrap()
+    let integrator = SplitExplicitRk3Integrator::new(&grid, 600.0).unwrap();
+    let result = integrator
         .advance(
             &initial,
             &forcing,
@@ -847,10 +855,41 @@ fn split_explicit_reports_the_frozen_slow_macro_step_precipitation() {
             &BuildCancellation::new(),
         )
         .unwrap();
-    assert_eq!(
-        result.mean_precipitation_rate_mm_s(),
-        declared.precipitation_rate_mm_s()
+    // Read the actual production plan through its retained diagnostics;
+    // no test-only public plan API or duplicated slow-step cap is needed.
+    let steps = result.diagnostics().endpoint_evaluations();
+    assert!(
+        steps > 1,
+        "fixture must exercise internal slow-step subdivision"
     );
+    let step_seconds = 7_200.0 / steps as f64;
+    let mut substep_state = initial.clone();
+    let mut precipitation_integral = vec![0.0_f64; grid.cell_count()];
+    for _ in 0..steps {
+        let substep = integrator
+            .advance(
+                &substep_state,
+                &forcing,
+                &permeability,
+                0,
+                step_seconds,
+                &BuildCancellation::new(),
+            )
+            .unwrap();
+        for (integral, rate) in precipitation_integral
+            .iter_mut()
+            .zip(substep.mean_precipitation_rate_mm_s())
+        {
+            *integral += step_seconds * f64::from(*rate);
+        }
+        substep_state = substep.into_state();
+    }
+    let expected = precipitation_integral
+        .into_iter()
+        .map(|integral| (integral / 7_200.0) as f32)
+        .collect::<Vec<_>>();
+    assert_eq!(result.mean_precipitation_rate_mm_s(), expected);
+    assert_eq!(result.state(), &substep_state);
     let terminal = LayeredTendencySystem::new(&grid)
         .evaluate_for_step(
             result.state(),
@@ -867,7 +906,7 @@ fn split_explicit_reports_the_frozen_slow_macro_step_precipitation() {
             .iter()
             .zip(terminal.precipitation_rate_mm_s())
             .any(|(mean, terminal)| mean.to_bits() != terminal.to_bits()),
-        "fixture must distinguish the emitted frozen diagnostic from terminal reevaluation"
+        "fixture must distinguish the retained mean from terminal reevaluation"
     );
 }
 
