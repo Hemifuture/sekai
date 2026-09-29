@@ -492,7 +492,7 @@ Release 下逐位复现。
     不变；Linux 同机成对耗时 +0.3 %。设计 §7.62。
   - [x] 共享求解器 Release 全量回归（Windows，1315 通过 / 0 失败 / 54 忽略）、
     fmt/clippy/wasm lib check 通过。
-  - [ ] 推送后确认 Linux CI 全绿。
+  - [x] 推送 `883cc22` 后 CI 全绿（run 36543648735，含 Linux Test Suite）。
 - [ ] **开放问题（待用户裁定）**：Draft 全链耗时 52–73 s（Linux 52.4 s，Windows
   54–73 s），远超 A1 目标 10–20 s。§7.59 已记 40.75 s；Task 2b 时为 19.9 s。
   这是 Task 3 研究态求解器的既有成本，已随合入进入 main。
