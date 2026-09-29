@@ -797,7 +797,7 @@ pub struct LayeredTendencyWorkspace {
 }
 
 #[derive(Debug)]
-/// Quantized T gradients owned by one scalar endpoint and borrowed by fast stages.
+/// Transient T gradients owned by one scalar endpoint and borrowed by fast stages.
 pub(super) struct AtmosphericTemperatureGradients {
     lower_temperature: Vec<[f32; 3]>,
     upper_temperature: Vec<[f32; 3]>,
@@ -2505,7 +2505,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
     }
 
     /// Builds both C2 gradients with the unchanged reference-height correction
-    /// and tangent quantization. Propagates gradient and cancellation errors.
+    /// and the transient tangent rounding (A6 §5). Propagates gradient and
+    /// cancellation errors.
     pub(super) fn atmospheric_temperature_gradients(
         &self,
         state: &LayeredClimateState,
@@ -2529,13 +2530,11 @@ impl<'grid> LayeredTendencySystem<'grid> {
                         as f32,
                 );
             }
-            Ok(
-                operators.gradient_with_permeability_cancellable(
-                    &corrected,
-                    &open,
-                    cancellation,
-                )?,
-            )
+            Ok(operators.transient_gradient_with_permeability_cancellable(
+                &corrected,
+                &open,
+                cancellation,
+            )?)
         };
         let lower_gradient = gradient(lower)?;
         let upper_gradient = gradient(upper)?;
@@ -2555,12 +2554,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
         let lower = ClimateLayerRole::LowerAtmosphere;
         let upper = ClimateLayerRole::UpperAtmosphere;
         let operators = CirculationOperators::new(self.grid);
-        let interface_gradient = operators.gradient_with_permeability_cancellable(
+        let interface_gradient = operators.transient_gradient_with_permeability_cancellable(
             state.height_anomaly_m(lower).expect("C2"),
             open,
             cancellation,
         )?;
-        let upper_height_gradient = operators.gradient_with_permeability_cancellable(
+        let upper_height_gradient = operators.transient_gradient_with_permeability_cancellable(
             state.height_anomaly_m(upper).expect("C2"),
             open,
             cancellation,
@@ -5261,8 +5260,9 @@ mod tests {
         let mut transport = LayeredClimateTendency::zeroed(&state);
         let mut transport_workspace = LayeredTendencyWorkspace::for_grid(&grid);
         // Reuse these nonuniform depths on the smallest grid with non-axis
-        // centers: the shared pressure input must retain the public operator's
-        // tangent quantization, not the fast fused kernel's plain f32 cast.
+        // centers: the shared pressure input must equal the standalone
+        // transient operator bit for bit (A6 §5: plain f32 cast of the exact
+        // tangent, like the fast fused kernel).
         let cancellation = BuildCancellation::new();
         let temperature_gradients = system
             .atmospheric_temperature_gradients(&state, Some(&forcing), &cancellation)
@@ -5280,7 +5280,7 @@ mod tests {
             (ClimateLayerRole::UpperAtmosphere, &gradients.upper_height),
         ] {
             let separate = CirculationOperators::new(&grid)
-                .gradient_with_permeability_cancellable(
+                .transient_gradient_with_permeability_cancellable(
                     state.height_anomaly_m(role).unwrap(),
                     &transport_workspace.open_edges,
                     &cancellation,
@@ -6519,11 +6519,8 @@ mod tests {
         let permeability = vec![1.0; grid.edges().len()];
         let cancellation = BuildCancellation::new();
         let operators = CirculationOperators::new(&grid);
-        let expected_gradient = operators
-            .gradient_with_permeability_cancellable(&height, &permeability, &cancellation)
-            .unwrap();
-        // The fused stage gradient skips the public representable-vector
-        // correction: it must equal the exact f64 tangent cast to f32.
+        // Both stage gradients skip the public representable-vector
+        // correction: they must equal the exact f64 tangent cast to f32.
         let expected_stage_gradient = operators
             .gradient_f64_with_permeability(
                 &height
@@ -6581,7 +6578,7 @@ mod tests {
                 &cancellation,
             )
             .unwrap();
-        assert_eq!(reused_gradient, expected_gradient);
+        assert_eq!(reused_gradient, expected_stage_gradient);
         assert_eq!(
             workspace.transport.allocation_signature(),
             allocation_signature

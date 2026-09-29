@@ -8,6 +8,18 @@ use super::{
     CubedSphereGrid, SphericalEdge,
 };
 
+/// How a gradient's exact f64 tangent becomes f32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TangentRounding {
+    /// Iterative representable-vector correction, for fields that are
+    /// published or returned by the public operators.
+    Published,
+    /// Plain cast of the exact tangent, for a value that feeds one transient
+    /// RK stage and is projected again when it is applied (milestone A1 §5b,
+    /// extended by A6 §5).
+    Transient,
+}
+
 /// One shared finite-volume operator set for every circulation solver.
 #[derive(Debug, Clone, Copy)]
 pub struct CirculationOperators<'grid> {
@@ -34,7 +46,7 @@ impl<'grid> CirculationOperators<'grid> {
 
     /// Computes a tangent Green-Gauss gradient with exact constant preservation.
     pub fn gradient(&self, scalar: &[f32]) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        self.gradient_impl(scalar, None, None)
+        self.gradient_impl(scalar, None, None, TangentRounding::Published)
     }
 
     /// Cancellation-aware tangent Green-Gauss gradient used while constructing
@@ -44,7 +56,7 @@ impl<'grid> CirculationOperators<'grid> {
         scalar: &[f32],
         cancellation: &BuildCancellation,
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        self.gradient_impl(scalar, None, Some(cancellation))
+        self.gradient_impl(scalar, None, Some(cancellation), TangentRounding::Published)
     }
 
     /// Computes a tangent gradient while closing selected shared edges.
@@ -53,7 +65,12 @@ impl<'grid> CirculationOperators<'grid> {
         scalar: &[f32],
         edge_permeability: &[f32],
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        self.gradient_impl(scalar, Some(edge_permeability), None)
+        self.gradient_impl(
+            scalar,
+            Some(edge_permeability),
+            None,
+            TangentRounding::Published,
+        )
     }
 
     pub fn gradient_with_permeability_cancellable(
@@ -62,7 +79,29 @@ impl<'grid> CirculationOperators<'grid> {
         edge_permeability: &[f32],
         cancellation: &BuildCancellation,
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
-        self.gradient_impl(scalar, Some(edge_permeability), Some(cancellation))
+        self.gradient_impl(
+            scalar,
+            Some(edge_permeability),
+            Some(cancellation),
+            TangentRounding::Published,
+        )
+    }
+
+    /// The validated gradient of [`Self::gradient_with_permeability_cancellable`]
+    /// for a solver-internal acceleration: the exact f64 tangent is cast to
+    /// f32 without the representable-vector correction.
+    pub(crate) fn transient_gradient_with_permeability_cancellable(
+        &self,
+        scalar: &[f32],
+        edge_permeability: &[f32],
+        cancellation: &BuildCancellation,
+    ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
+        self.gradient_impl(
+            scalar,
+            Some(edge_permeability),
+            Some(cancellation),
+            TangentRounding::Transient,
+        )
     }
 
     fn gradient_impl(
@@ -70,17 +109,18 @@ impl<'grid> CirculationOperators<'grid> {
         scalar: &[f32],
         edge_permeability: Option<&[f32]>,
         cancellation: Option<&BuildCancellation>,
+        rounding: TangentRounding,
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         check_operator_cancelled(cancellation)?;
         validate_scalar_field("scalar", scalar, self.grid.cell_count())?;
         if let Some(permeability) = edge_permeability {
             validate_permeability(permeability, self.grid.edges().len())?;
         }
-        self.gradient_f32_validated_impl(scalar, edge_permeability, cancellation)
+        self.gradient_f32_validated_impl(scalar, edge_permeability, cancellation, rounding)
     }
 
     pub(crate) fn gradient_validated(&self, scalar: &[f32]) -> Vec<[f32; 3]> {
-        self.gradient_f32_validated_impl(scalar, None, None)
+        self.gradient_f32_validated_impl(scalar, None, None, TangentRounding::Published)
             .expect("uncancellable validated gradient cannot fail")
     }
 
@@ -89,8 +129,13 @@ impl<'grid> CirculationOperators<'grid> {
         scalar: &[f32],
         edge_permeability: &[f32],
     ) -> Vec<[f32; 3]> {
-        self.gradient_f32_validated_impl(scalar, Some(edge_permeability), None)
-            .expect("uncancellable validated gradient cannot fail")
+        self.gradient_f32_validated_impl(
+            scalar,
+            Some(edge_permeability),
+            None,
+            TangentRounding::Published,
+        )
+        .expect("uncancellable validated gradient cannot fail")
     }
 
     fn gradient_f32_validated_impl(
@@ -98,6 +143,7 @@ impl<'grid> CirculationOperators<'grid> {
         scalar: &[f32],
         edge_permeability: Option<&[f32]>,
         cancellation: Option<&BuildCancellation>,
+        rounding: TangentRounding,
     ) -> Result<Vec<[f32; 3]>, CirculationOperatorError> {
         debug_assert_eq!(scalar.len(), self.grid.cell_count());
         let mut accumulated = vec![[0.0_f64; 3]; self.grid.cell_count()];
@@ -105,9 +151,9 @@ impl<'grid> CirculationOperators<'grid> {
         self.gradient_f32_into_validated_impl(
             scalar,
             edge_permeability,
-            &mut accumulated,
-            &mut result,
+            (&mut accumulated, &mut result),
             cancellation,
+            rounding,
         )?;
         Ok(result)
     }
@@ -116,9 +162,9 @@ impl<'grid> CirculationOperators<'grid> {
         &self,
         scalar: &[f32],
         edge_permeability: Option<&[f32]>,
-        accumulated: &mut [[f64; 3]],
-        result: &mut [[f32; 3]],
+        (accumulated, result): (&mut [[f64; 3]], &mut [[f32; 3]]),
         cancellation: Option<&BuildCancellation>,
+        rounding: TangentRounding,
     ) -> Result<(), CirculationOperatorError> {
         debug_assert_eq!(scalar.len(), self.grid.cell_count());
         debug_assert_eq!(accumulated.len(), self.grid.cell_count());
@@ -159,12 +205,19 @@ impl<'grid> CirculationOperators<'grid> {
             poll_operator_cancelled(index, cancellation)?;
             let gradient =
                 project_tangent(scale(*value, cell.area_m2().recip()), cell.center_unit());
-            *target = to_quantized_tangent_f32(gradient, cell.center_unit());
+            *target = match rounding {
+                TangentRounding::Published => {
+                    to_quantized_tangent_f32(gradient, cell.center_unit())
+                }
+                TangentRounding::Transient => to_f32_vector(gradient),
+            };
         }
         check_operator_cancelled(cancellation)?;
         Ok(())
     }
 
+    /// Transient gradient into caller-owned buffers: the exact f64 tangent cast
+    /// to f32, like the fused stage operator below.
     pub(crate) fn gradient_into_cancellable_validated(
         &self,
         scalar: &[f32],
@@ -179,9 +232,9 @@ impl<'grid> CirculationOperators<'grid> {
         self.gradient_f32_into_validated_impl(
             scalar,
             Some(edge_permeability),
-            &mut workspace.gradients,
-            output,
+            (&mut workspace.gradients, output),
             Some(cancellation),
+            TangentRounding::Transient,
         )
     }
 
