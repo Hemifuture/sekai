@@ -80,7 +80,7 @@ const PAIRED_EXCHANGE_RELATIVE_FLUX_ACCURACY: f64 = 1.0e-3;
 pub(super) fn layered_equation_model_fingerprint(profile: ClimateModelProfile) -> [u8; 32] {
     let layout = ClimateLayerLayout::for_profile(profile);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.global-circulation-equations.v18\0");
+    hasher.update(b"sekai.global-circulation-equations.v19\0");
     hasher.update(&layout.fingerprint());
     hasher.update(&p4_thermodynamic_constants_fingerprint());
     hasher.update(&p4_momentum_constants_fingerprint());
@@ -1366,6 +1366,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
         mode: TendencyEvaluationMode,
         transport_step_seconds: f64,
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        // Fluxes see sea water at or above its freezing point; the tendency
+        // still changes the enthalpy form the integrator carries.
+        let physical = state.physical_view();
+        let state: &LayeredClimateState = &physical;
         if !transport_step_seconds.is_finite() || transport_step_seconds <= 0.0 {
             return Err(LayeredTendencyError::InvalidTransportStep {
                 found: transport_step_seconds,
@@ -2121,6 +2125,8 @@ impl<'grid> LayeredTendencySystem<'grid> {
         ),
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
         let (workspace, endpoint_temperature) = workspace_and_temperature;
+        let physical = state.physical_view();
+        let state: &LayeredClimateState = &physical;
         debug_assert_eq!(forcing.grid_fingerprint(), self.grid.fingerprint());
         debug_assert_eq!(forcing.cell_count(), self.grid.cell_count());
         debug_assert_eq!(ocean_edge_permeability.len(), self.grid.edges().len());
@@ -2699,6 +2705,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
         cancellation: &BuildCancellation,
         workspace: &mut LayeredTendencyWorkspace,
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        let (physical_before, physical_after) = (before.physical_view(), after.physical_view());
+        let (before, after): (&LayeredClimateState, &LayeredClimateState) =
+            (&physical_before, &physical_after);
         debug_assert_eq!(before.profile(), after.profile());
         debug_assert_eq!(before.grid_fingerprint(), after.grid_fingerprint());
         debug_assert_eq!(before.grid_fingerprint(), self.grid.fingerprint());
@@ -7133,6 +7142,51 @@ mod tests {
                 "cell {cell}: warm near-surface air already saturates the colder sea"
             );
         }
+    }
+
+    #[test]
+    fn sea_ice_latent_heat_is_invisible_to_every_flux() {
+        // Enthalpy method: mixed-layer enthalpy below the freezing point is
+        // latent heat of sea ice, not colder water. Water holding that ice
+        // must drive exactly the fluxes of water sitting at the freezing
+        // point, in both the declared endpoint and the fast stage.
+        let (grid, forcing, mut frozen) = axisymmetric_venting_fixture(1.0);
+        frozen
+            .temperature_c_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap()
+            .fill(-30.0);
+        let mut at_freezing = frozen.clone();
+        frozen
+            .temperature_c_mut(ClimateLayerRole::OceanMixedLayer)
+            .unwrap()
+            .fill(super::super::state::LIQUID_MIXED_LAYER_MIN_C - 8.0);
+        at_freezing
+            .temperature_c_mut(ClimateLayerRole::OceanMixedLayer)
+            .unwrap()
+            .fill(super::super::state::LIQUID_MIXED_LAYER_MIN_C);
+        let system = LayeredTendencySystem::new(&grid);
+        let permeability = vec![1.0; grid.edges().len()];
+        let cancellation = BuildCancellation::new();
+        let endpoint = |state: &LayeredClimateState| {
+            system
+                .evaluate_for_step(state, &forcing, &permeability, 0, 7_200.0, &cancellation)
+                .unwrap()
+        };
+        let fast = |state: &LayeredClimateState| {
+            system
+                .evaluate_fast(state, &forcing, &permeability, 0, &cancellation)
+                .unwrap()
+        };
+        // The fixture's 15 C target makes the mixed-layer tendency depend on
+        // the water temperature, so equality below is not vacuous.
+        let frozen_endpoint = endpoint(&frozen);
+        assert!(frozen_endpoint
+            .temperature_tendency_k_s(ClimateLayerRole::OceanMixedLayer)
+            .unwrap()
+            .iter()
+            .any(|&rate| rate != 0.0));
+        assert_eq!(frozen_endpoint, endpoint(&at_freezing));
+        assert_eq!(fast(&frozen), fast(&at_freezing));
     }
 
     fn axisymmetric_venting_fixture(

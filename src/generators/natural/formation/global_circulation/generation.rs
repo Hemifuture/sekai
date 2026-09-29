@@ -1789,6 +1789,7 @@ impl WorkClimatology {
         copy_scalar_month(
             &mut self.sea_temperature,
             state
+                .physical_view()
                 .temperature_c(ClimateLayerRole::OceanMixedLayer)
                 .expect("mixed layer"),
             month,

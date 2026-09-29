@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use thiserror::Error;
 
 use crate::engine::BuildCancellation;
@@ -18,6 +20,12 @@ const C2_ACTIVE_ROLES: [ClimateLayerRole; 4] = [
     ClimateLayerRole::OceanMixedLayer,
     ClimateLayerRole::OceanThermocline,
 ];
+/// Freezing point of the mixed layer, in degrees Celsius.
+///
+/// Seawater of reference salinity 35 freezes at -1.92 C at the surface
+/// (Millero 1978, the UNESCO 1983 algorithm); the model has no salinity and
+/// keeps the rounded value it has always used for the liquid-water floor, so
+/// the mixed layer changes phase 0.08 K early.
 pub(crate) const LIQUID_MIXED_LAYER_MIN_C: f32 = -2.0;
 pub(crate) const SUBSURFACE_OCEAN_MIN_C: f32 = -5.0;
 pub(crate) const OCEAN_EQUILIBRIUM_MAX_C: f32 = 40.0;
@@ -462,6 +470,37 @@ impl LayeredClimateState {
     pub fn temperature_c_mut(&mut self, role: ClimateLayerRole) -> Option<&mut [f32]> {
         self.layer_mut(role)
             .map(|layer| layer.temperature_c.as_mut_slice())
+    }
+
+    /// Returns the state as the physics sees it.
+    ///
+    /// The mixed layer's prognostic temperature is its enthalpy per unit heat
+    /// capacity (the enthalpy method for the Stefan problem, Voller & Prakash
+    /// 1987). Below [`LIQUID_MIXED_LAYER_MIN_C`] the water stays at the
+    /// freezing point and the deficit `C (T_f - theta)` is the latent heat of
+    /// the sea ice it formed, so ice melts before the water warms again. Every
+    /// flux and published value reads this view; the integrator, grid
+    /// transfers and the energy ledger keep the enthalpy form, which conserves
+    /// energy exactly without a separate ice reservoir.
+    pub(crate) fn physical_view(&self) -> Cow<'_, Self> {
+        let freezing = |temperatures: &[f32]| {
+            temperatures
+                .iter()
+                .any(|&value| value < LIQUID_MIXED_LAYER_MIN_C)
+        };
+        match self.temperature_c(ClimateLayerRole::OceanMixedLayer) {
+            Some(temperatures) if freezing(temperatures) => {
+                let mut physical = self.clone();
+                for value in physical
+                    .temperature_c_mut(ClimateLayerRole::OceanMixedLayer)
+                    .expect("the mixed layer was just read")
+                {
+                    *value = value.max(LIQUID_MIXED_LAYER_MIN_C);
+                }
+                Cow::Owned(physical)
+            }
+            Some(_) | None => Cow::Borrowed(self),
+        }
     }
 
     pub fn specific_humidity(&self) -> &[f32] {
