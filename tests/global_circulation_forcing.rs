@@ -715,7 +715,17 @@ fn forcing_targets_are_storage_consistent_over_land_and_sea() {
             - sekai::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography;
         let air_mean = air.iter().map(|v| f64::from(*v)).sum::<f64>() / 12.0;
         let surface_mean = surface.iter().map(|v| f64::from(*v)).sum::<f64>() / 12.0;
-        if expected_annual > -89.0 {
+        // A target clamped to its numeric domain in any month no longer
+        // averages to the gray target, so the identity is claimed only
+        // strictly inside both declared ranges.
+        let inside = |months: &[f32; 12], [lower, upper]: [f64; 2]| {
+            months
+                .iter()
+                .all(|&value| f64::from(value) > lower && f64::from(value) < upper)
+        };
+        if inside(&air, sekai::world::natural::P4_AIR_TARGET_RANGE_C)
+            && inside(&surface, sekai::world::natural::P4_SURFACE_TARGET_RANGE_C)
+        {
             assert!(
                 (air_mean - expected_annual).abs() < 1e-3,
                 "{air_mean} vs {expected_annual}"

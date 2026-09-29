@@ -259,6 +259,21 @@ const fn ceil_ratio_u64(numerator: f64, denominator: f64) -> u64 {
 /// rate or a claim about every generated atmosphere.
 pub const CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M: f64 = 0.0065;
 
+/// Numeric domain `[min, max]` of the P4 surface equilibrium targets, annual
+/// and monthly, in degrees Celsius.
+///
+/// These fence the idealized radiative prior, not a resolved state. The
+/// values date from the A4 storage-consistent seasonal targets and carry no
+/// literature source yet; the P4 water-cycle plan records them as open.
+/// Where a target reaches a bound, its annual mean no longer equals the
+/// unclamped gray target.
+pub const P4_SURFACE_TARGET_RANGE_C: [f64; 2] = [-90.0, 65.0];
+
+/// Numeric domain `[min, max]` of the P4 monthly air equilibrium targets in
+/// degrees Celsius; same status and consequence as
+/// [`P4_SURFACE_TARGET_RANGE_C`].
+pub const P4_AIR_TARGET_RANGE_C: [f64; 2] = [-100.0, 65.0];
+
 /// Returns the overlap-weighted emergent surface height above sea level.
 ///
 /// The forcing's standard-atmosphere reference lapse and the pressure

@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
 
 use sekai::engine::BuildCancellation;
 use sekai::generators::natural::circulation::CubedSphereGrid;
@@ -399,8 +398,9 @@ fn active_hydrology_work_observes_cancellation() {
             &worker_signal,
         )
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while signal.observation_count() < 32 && Instant::now() < deadline {
+    // Wait on the worker itself, not a wall clock: a slow debug runner may
+    // spend longer than any fixed deadline before the dense loop starts.
+    while signal.observation_count() < 32 && !worker.is_finished() {
         std::thread::yield_now();
     }
     assert!(

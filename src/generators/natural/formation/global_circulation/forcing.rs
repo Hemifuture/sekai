@@ -13,10 +13,10 @@ use crate::world::natural::{
     ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
     FormationTerrainFields, LandOceanKind, PlanetForcing, PrimaryReliefSnapshot,
     PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_AIR_TARGET_RANGE_C, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
     P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
     P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
-    REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+    P4_SURFACE_TARGET_RANGE_C, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -639,7 +639,7 @@ impl GlobalClimateForcingBuilder {
                 (gray_equilibrium_surface_temperature_c(annual_absorbed_shortwave)
                     + temperature_offset_c
                     - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * orography)
-                    .clamp(-90.0, 65.0);
+                    .clamp(P4_SURFACE_TARGET_RANGE_C[0], P4_SURFACE_TARGET_RANGE_C[1]);
             let longwave_slope = gray_longwave_slope_w_m2_k(annual_surface_c);
             let surface_months = seasonal_storage_equilibrium_temperature_c(
                 &absorbed_shortwave_exact,
@@ -655,8 +655,10 @@ impl GlobalClimateForcingBuilder {
                 air_storage_j_m2_k + (1.0 - land) * mixed_layer_storage_j_m2_k,
             );
             for month in 0..CLIMATE_MONTH_COUNT {
-                let surface_c = surface_months[month].clamp(-90.0, 65.0);
-                let air_c = air_months[month].clamp(-100.0, 65.0);
+                let surface_c = surface_months[month]
+                    .clamp(P4_SURFACE_TARGET_RANGE_C[0], P4_SURFACE_TARGET_RANGE_C[1]);
+                let air_c =
+                    air_months[month].clamp(P4_AIR_TARGET_RANGE_C[0], P4_AIR_TARGET_RANGE_C[1]);
                 surface_temperature[month] = surface_c as f32;
                 air_temperature[month] = air_c as f32;
                 let saturation =
