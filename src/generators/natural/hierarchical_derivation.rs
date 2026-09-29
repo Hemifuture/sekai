@@ -1332,7 +1332,8 @@ mod tests {
     /// Runs on a finer fixture than the other tests: at 162 cells the L0
     /// stair coastline itself is quantized by whole percentage points, so
     /// the statistic would measure fixture coarseness, not derivation
-    /// drift. The real product tier is gated in the integration suite.
+    /// drift. The real product tier is gated in
+    /// `tests/hierarchical_product_gates.rs`.
     #[test]
     fn deep_land_fraction_matches_l0() {
         let surface = surface_with(642);
