@@ -10,7 +10,8 @@ mod support;
 use sekai::generators::natural::{
     fibonacci_probe, FormationDerivationInputs, HierarchicalEvaluator,
 };
-use sekai::world::spatial::audited_float_platform;
+use sekai::world::natural::{ELEVATION_MAX_M, ELEVATION_MIN_M};
+use sekai::world::spatial::{audited_float_platform, spherical_triangle_area_unit};
 use sekai::world::{CellId, RootSeed};
 use support::causal_formation::causal_formation_fixture;
 
@@ -105,20 +106,6 @@ fn probe_fingerprint_matches_the_frozen_value_on_the_audited_platform() {
     }
 }
 
-/// Area of the spherical triangle `abc` on the unit sphere (Van Oosterom &
-/// Strackee 1983).
-fn unit_triangle_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
-    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-    let cross = [
-        b[1] * c[2] - b[2] * c[1],
-        b[2] * c[0] - b[0] * c[2],
-        b[0] * c[1] - b[1] * c[0],
-    ];
-    2.0 * dot(a, cross)
-        .abs()
-        .atan2(1.0 + dot(a, b) + dot(b, c) + dot(c, a))
-}
-
 fn quantiles(values: &mut [f64]) -> String {
     values.sort_by(f64::total_cmp);
     let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
@@ -135,7 +122,9 @@ fn quantiles(values: &mut [f64]) -> String {
 
 /// T1 v2.2 spec §3.4: per land cell, the area-weighted mean of its L1 sector
 /// faces and of its level-6 leaves minus the cell's P5 value, in metres,
-/// grouped by local relief (range of the cell and its edge neighbours).
+/// grouped by local relief (range of the cell and its edge neighbours), and
+/// the L1 faces that leave that range or reach the elevation bounds (spec
+/// §9.2 overshoot count).
 /// Level-6 leaves are weighted equally inside a sector (the four-way split
 /// is only approximately equal-area, spec §1.2). Prints numbers; no gate.
 #[test]
@@ -159,6 +148,10 @@ fn aggregate_bias_probe() {
         }
     }
     let mut rows = Vec::new();
+    let (mut faces, mut outside_neighborhood, mut at_bounds) = (0_u32, 0_u32, 0_u32);
+    // Overshoot in metres by cell kind: [inland, inland extremum, coastal,
+    // coastal extremum]; coastal means an ocean cell in the neighbourhood.
+    let mut overshoot: [Vec<f64>; 4] = Default::default();
     for (index, &z) in elevation.iter().enumerate() {
         if z < sea_level {
             continue;
@@ -166,10 +159,8 @@ fn aggregate_bias_probe() {
         let cell = CellId::from_raw(index as u32);
         let (mut area, mut l1, mut l6) = (0.0_f64, 0.0_f64, 0.0_f64);
         for sector in 0..evaluator.sector_count(cell) as u8 {
-            let [a, b, c] = evaluator
-                .sector_corners(cell, sector)
-                .map(|corner| corner.components());
-            let weight = unit_triangle_area(a, b, c);
+            let [a, b, c] = evaluator.sector_corners(cell, sector);
+            let weight = spherical_triangle_area_unit(a, b, c);
             let (mut sum, mut count) = (0.0_f64, 0_u32);
             evaluator.for_each_leaf_value(cell, sector, &[], 5, &mut |leaf| {
                 sum += f64::from(leaf.elevation_m);
@@ -181,9 +172,37 @@ fn aggregate_bias_probe() {
         }
         let relief = f64::from(range[index].1 - range[index].0);
         rows.push((relief, l1 / area - f64::from(z), l6 / area - f64::from(z)));
+        let extremum = z == range[index].0 || z == range[index].1;
+        let coastal = range[index].0 < sea_level;
+        for sector in 0..evaluator.sector_count(cell) as u8 {
+            let face = evaluator.value(cell, sector, &[]).elevation_m;
+            let excess = (face - range[index].1).max(range[index].0 - face);
+            if excess > 0.0 {
+                let group = usize::from(extremum) + 2 * usize::from(coastal);
+                overshoot[group].push(f64::from(excess));
+            }
+            outside_neighborhood += u32::from(face < range[index].0 || face > range[index].1);
+            at_bounds += u32::from(face <= ELEVATION_MIN_M || face >= ELEVATION_MAX_M);
+            faces += 1;
+        }
+    }
+    for (label, values) in ["inland", "inland extremum", "coastal", "coastal extremum"]
+        .iter()
+        .zip(&mut overshoot)
+    {
+        if !values.is_empty() {
+            eprintln!(
+                "[aggregate] overshoot {label:<16} faces {:5} | {}",
+                values.len(),
+                quantiles(values)
+            );
+        }
     }
     rows.sort_by(|left, right| left.0.total_cmp(&right.0));
-    eprintln!("[aggregate] land cells {}", rows.len());
+    eprintln!(
+        "[aggregate] land cells {}, L1 faces {faces}: outside the cell-and-neighbour range          {outside_neighborhood}, at the elevation bounds {at_bounds}",
+        rows.len()
+    );
     for (label, part) in [
         ("all", &rows[..]),
         ("low relief", &rows[..rows.len() / 3]),
