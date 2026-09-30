@@ -2494,6 +2494,17 @@ impl eframe::App for TemplateApp {
                         rebuild = true;
                     }
                     let _ = self.show_pending_world_build_status(ui);
+                    if new_seed {
+                        editing.world_seed = rand::random();
+                        rebuild = true;
+                    }
+                    // Settle this frame's edit before drawing its save/map status.
+                    self.finish_author_input(
+                        editing,
+                        author_input_focused,
+                        ctx.input(|input| input.pointer.any_down()),
+                        cancel_input_edit,
+                    );
                     // Variable status rows follow the numeric editors so their
                     // auto IDs and pending text survive status changes.
                     #[cfg(not(target_arch = "wasm32"))]
@@ -2561,16 +2572,6 @@ impl eframe::App for TemplateApp {
         // The control panel above drew the pending build's status row, so this
         // pass's 取消 input is already observed: a staged completion may settle
         // now, and this pass's actions and canvas then see the settled world.
-        if new_seed {
-            editing.world_seed = rand::random();
-            rebuild = true;
-        }
-        self.finish_author_input(
-            editing,
-            author_input_focused,
-            ctx.input(|input| input.pointer.any_down()),
-            cancel_input_edit,
-        );
         #[cfg(not(target_arch = "wasm32"))]
         {
             if let Some(action) = self.project_shortcut(ctx) {
@@ -3534,7 +3535,7 @@ mod natural_app_tests {
         output.shapes.iter().map(|shape| count(&shape.shape)).sum()
     }
 
-    fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
+    pub(super) fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
         match shape {
             egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
             egui::epaint::Shape::Vec(shapes) => {
@@ -5958,6 +5959,79 @@ mod phase_a_tests {
         assert!(!app.authoring.is_dirty());
         let wire = serde_json::to_value(&app).unwrap();
         assert_eq!(wire["inputs"]["world_seed"].as_u64(), Some(seed));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_status_shapes_follow_uncommitted_text_enter_and_escape() {
+        use super::natural_app_tests::{
+            authoring_keyboard_frame, collect_text, focus_authoring_number,
+        };
+        fn rendered_text(output: egui::FullOutput) -> Vec<String> {
+            let mut text = Vec::new();
+            for shape in &output.shapes {
+                collect_text(&shape.shape, &mut text);
+            }
+            text
+        }
+        fn key(key: egui::Key) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+        let mut app = TemplateApp::default();
+        let before = app.authoring.draft().clone();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        // Status consumes only publication identity, so no world generation or
+        // GPU payload is needed to represent the last valid published recipe.
+        let published = app.authoring.begin_build();
+        assert!(app.authoring.mark_published(published));
+        app.published_world_token = Some(published);
+        let ctx = egui::Context::default();
+        let initial = rendered_text(authoring_keyboard_frame(&mut app, &ctx, Vec::new()));
+        assert!(initial
+            .iter()
+            .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+        for finish in [egui::Key::Escape, egui::Key::Enter] {
+            focus_authoring_number(&mut app, &ctx, &before.world_seed.to_string());
+            for events in [vec![egui::Event::Text("717".into())], Vec::new()] {
+                let text = rendered_text(authoring_keyboard_frame(&mut app, &ctx, events));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数文本尚未提交；配方尚未保存"));
+                assert!(!text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数已修改，地图仍为上次有效结果"));
+                assert!(!text.iter().any(|text| text == "地图对应当前已提交配方"));
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(app.world_build.is_none());
+            }
+            let text = rendered_text(authoring_keyboard_frame(&mut app, &ctx, vec![key(finish)]));
+            if finish == egui::Key::Escape {
+                assert!(text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text.iter().any(|text| text == "地图对应当前已提交配方"));
+                assert_eq!(app.authoring.draft(), &before);
+            } else {
+                assert!(text.iter().any(|text| text == "配方尚未保存"));
+                assert!(!text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数已修改，地图仍为上次有效结果"));
+                assert_eq!(app.authoring.draft().world_seed, 717);
+            }
+            assert!(app.world_build.is_none());
+        }
     }
 
     // Manual completions isolate publication races from the expensive formation solver.
