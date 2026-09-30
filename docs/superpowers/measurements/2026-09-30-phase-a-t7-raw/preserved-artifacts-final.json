@@ -1,0 +1,52 @@
+[
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-before\\allocation-probe.exe",
+    "bytes": 450560,
+    "sha256": "26A9C0B7CA583DF61C48AA436CD7402608906724B32BDDF18E87D1674E906D47"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-before\\allocation-probe.pdb",
+    "bytes": 1863680,
+    "sha256": "0E078A528F731B52EF737A89C3B3EC27C5EC8613BC6118DF98325AD96DD2E5E3"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-before\\generation_latency.exe",
+    "bytes": 3648512,
+    "sha256": "FD8EB00935972C02B33CF144583ADC83180DABC4DC9B144D25EB0C29A5B7D73E"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-before\\libsekai.rlib",
+    "bytes": 74929998,
+    "sha256": "93D30A1EF90F7A91D613EEE83F58A2DFDAAD321295B5BF0389098393AF376243"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-before\\libtests.exe",
+    "bytes": 35880960,
+    "sha256": "3B119C5CD8555BCF9A292AD881D9F64BEA2707CC789A87C66EBF8000E42DB036"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\allocation-probe.exe",
+    "bytes": 450560,
+    "sha256": "9210A92DAB0B834030818DC200878B81ED1B34412B5CFF9163C12774E5491B3B"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\allocation-probe.pdb",
+    "bytes": 1789952,
+    "sha256": "FB43EF1C6F0618914E3F4877D3A8C6CAE46B0319CC8BD7020650981A08BF5316"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\generation_latency.exe",
+    "bytes": 3648512,
+    "sha256": "69D57A16320C78CE73E22A9305C166D98E5E0EDA3AA67EEC0AEB2455E55E1A79"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\libsekai.rlib",
+    "bytes": 74930476,
+    "sha256": "0F3291FE29A35901FCC484755511C5DA0C983110BC0BACA197E23A91B52E4C37"
+  },
+  {
+    "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\libtests.exe",
+    "bytes": 35880960,
+    "sha256": "EB978542AEE156C373F6B78B539378FABAF85F504F731B000DFA324639FD94C2"
+  }
+]

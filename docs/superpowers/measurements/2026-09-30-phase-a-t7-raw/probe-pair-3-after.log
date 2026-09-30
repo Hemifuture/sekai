@@ -1,0 +1,8 @@
+PROBE cells=3456 profile=C2LayeredV1 state=nonzero_zonal_velocity land_fraction=0.25 output_debug_hash=cc8dbf66b9be5379a6771e47f50564020c1b53e4824418a3432b6b1d9fc2ed33
+PROBE_SAMPLE sample=1 evaluations=30 elapsed_s=0.129233000 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=2 evaluations=30 elapsed_s=0.126951100 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=3 evaluations=30 elapsed_s=0.131657700 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=4 evaluations=30 elapsed_s=0.128453800 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=5 evaluations=30 elapsed_s=0.128521500 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=6 evaluations=30 elapsed_s=0.128261100 allocations=1380 requested_bytes=34915200
+PROBE_SAMPLE sample=7 evaluations=30 elapsed_s=0.126041100 allocations=1380 requested_bytes=34915200

@@ -1,0 +1,24 @@
+
+running 19 tests
+test all_integrators_preserve_the_exact_uniform_c1_equilibrium ... ok
+test closed_split_path_preserves_every_c2_layer_mass_over_an_analytic_year ... ok
+test coarse_grid_condensation_relaxes_cloudy_humidity_without_overshoot ... ok
+test coupled_saturation_adjustment_is_invariant_to_physical_step_partition ... ok
+test every_integrator_rejects_pre_cancelled_work_atomically ... ok
+test explicit_reference_exhibits_third_order_convergence_on_a_smooth_wave ... ok
+test explicit_reference_reports_one_endpoint_precipitation_before_classic_rk3 ... ok
+test formation_residual_exposes_unconverged_humidity_and_wind_independently ... ok
+test integrator_results_and_diagnostics_are_byte_deterministic ... ok
+test moisture_transport_operator_is_positive_and_conservative_over_the_real_macro_horizon ... ok
+test production_candidates_remain_finite_and_positive_beyond_explicit_macro_stability ... ok
+test retained_evaporation_draws_only_surface_heat_and_closes_moist_energy ... ok
+test retained_radiative_power_is_the_same_power_that_advances_temperature ... ok
+test saturation_adjustment_removes_supersaturation_within_one_physical_step ... ok
+test split_explicit_reports_the_mean_of_its_retained_slow_step_precipitation ... ok
+test split_explicit_subcycles_against_the_actual_characteristic_speed ... ok
+test split_slow_step_moisture_delta_matches_declared_external_sources_minus_precipitation ... ok
+test upper_layer_saturation_adjustment_cannot_store_cloud_water_without_rain ... ok
+test zero_absorbed_shortwave_prevents_positive_radiative_heating_in_the_equation ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+

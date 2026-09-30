@@ -1,0 +1,72 @@
+[
+  {
+    "pair": 1,
+    "before": {
+      "surface": 0.457188,
+      "graph": 37.681131,
+      "total": 38.138318
+    },
+    "after": {
+      "surface": 0.484893,
+      "graph": 40.323313,
+      "total": 40.808206
+    },
+    "gain_percent": -7.00053945745589
+  },
+  {
+    "pair": 2,
+    "before": {
+      "surface": 0.459497,
+      "graph": 37.344049,
+      "total": 37.803546
+    },
+    "after": {
+      "surface": 0.478041,
+      "graph": 35.591757,
+      "total": 36.069798
+    },
+    "gain_percent": 4.586204690956763
+  },
+  {
+    "pair": 3,
+    "before": {
+      "surface": 0.466676,
+      "graph": 36.640635,
+      "total": 37.107312
+    },
+    "after": {
+      "surface": 0.465095,
+      "graph": 35.723563,
+      "total": 36.188658
+    },
+    "gain_percent": 2.475668407347864
+  },
+  {
+    "pair": 4,
+    "before": {
+      "surface": 0.463774,
+      "graph": 36.361498,
+      "total": 36.825272
+    },
+    "after": {
+      "surface": 0.551943,
+      "graph": 41.765515,
+      "total": 42.317458
+    },
+    "gain_percent": -14.914176329777028
+  },
+  {
+    "pair": 5,
+    "before": {
+      "surface": 0.459732,
+      "graph": 36.308085,
+      "total": 36.767818
+    },
+    "after": {
+      "surface": 0.461028,
+      "graph": 34.979626,
+      "total": 35.440654
+    },
+    "gain_percent": 3.609580530451917
+  }
+]

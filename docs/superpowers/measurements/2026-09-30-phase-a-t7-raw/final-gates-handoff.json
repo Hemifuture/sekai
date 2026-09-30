@@ -1,0 +1,22 @@
+{
+  "utc": "2026-09-30T12:47:00.6803258Z",
+  "source_baseline": "8f71bd9ccd9bab891ec180ba6be3f70ec1436535",
+  "fmt": "PASS; wrapper proceeded to clippy",
+  "clippy": "PASS; Finished dev profile in 9m27s",
+  "wasm": "INTERRUPTED by Ctrl-C on own unified exec session 13780 while checking cold dependencies; not PASS; T6 source-identical wasm PASS remains evidence",
+  "base_release_build": "SKIPPED; never started",
+  "wrapper_exit": 1,
+  "active_cargo_rustc": [],
+  "top_level_release_rlib_exists": false,
+  "release_dependency_rlibs": [
+    {
+      "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsekai-10cb798e7d791089.rlib",
+      "sha256": "1A95EAE6BC438CF8A8B155312F5E69C828FBF031D61130521E64FA6C5981CEDB"
+    },
+    {
+      "path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsekai-7716a1b8ffc33b4e.rlib",
+      "sha256": "0F3291FE29A35901FCC484755511C5DA0C983110BC0BACA197E23A91B52E4C37"
+    }
+  ],
+  "warning": "Do not use experimental target release rlib/test exe as current source; T8 required new tests/regression compilation must rebuild current once; preserved BEFORE artifacts remain exact-source evidence."
+}

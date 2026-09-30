@@ -1,0 +1,25 @@
+{
+  "rustflags": null,
+  "binary": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\t7-after\\generation_latency.exe",
+  "cold_runs": "1",
+  "incremental": "0",
+  "side": "after",
+  "rayon": null,
+  "pid": 53288,
+  "exit": 0,
+  "start_utc": "2026-09-30T12:22:59.6344411Z",
+  "profile": "draft",
+  "args": [
+    "observe_phase_a_latency",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "end_utc": "2026-09-30T12:23:36.0436879Z",
+  "cache": "fresh MemoryStageCache; P1 cold; then in-process same-input hot",
+  "sha256": "69D57A16320C78CE73E22A9305C166D98E5E0EDA3AA67EEC0AEB2455E55E1A79",
+  "pair": 5,
+  "process_wall_s": 36.4084696,
+  "process_cpu_s": 8.21875
+}

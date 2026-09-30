@@ -1,0 +1,10 @@
+{
+  "utc": "2026-09-30T12:40:36.9657704Z",
+  "baseline": "8f71bd9ccd9bab891ec180ba6be3f70ec1436535",
+  "manifest_scope": "all src/tests *.rs; remaining product/config bytes checked by clean git diff",
+  "before_manifest_files": 398,
+  "current_files": 398,
+  "hash_mismatches": [],
+  "file_set_difference": [],
+  "product_diff": []
+}
