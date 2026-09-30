@@ -1,0 +1,244 @@
+    Finished `release` profile [optimized] target(s) in 0.36s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 193 tests
+test app::amplified_detail_engine_tests::a_newer_already_installed_answer_drops_an_older_payload ... ok
+test app::authoring::tests::only_the_current_request_can_publish_and_publication_does_not_save ... ok
+test app::authoring::tests::identity_round_trips_losslessly_and_includes_inactive_inputs ... ok
+test app::build_metrics_app_tests::observe_phase_a_detached_renderer ... ignored, release-only offscreen native detached-renderer timing; not real UI or OS present
+SEKAI_BUILD_CANCEL outcome=Cancelled feedback_update_s=None observed_worker_exit_s=0.000005 slot_release_s=0.000008 source=application_update_proxy
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } outcome=Cancelled request_elapsed_s=0.000098 root_spans_s=0.000036 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.000002 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.000002 duration_s=0.000034 parent=None inclusive=true
+test app::amplified_detail_engine_tests::the_newest_payload_installs_and_a_failure_in_the_batch_surfaces ... SEKAI_BUILD_METRICS token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } outcome=Stale request_elapsed_s=0.000006 root_spans_s=0.000005 source=application_submission_proxy validation=included_in_graph_and_presentation
+ok
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.000000 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.000001 duration_s=0.000005 parent=None inclusive=true
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } outcome=Failed request_elapsed_s=0.000009 root_spans_s=0.000002 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.000000 parent=None inclusive=true
+test app::authoring::tests::a_new_command_after_undo_cuts_the_redo_branch ... okSEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.000003 duration_s=0.000002 parent=None inclusive=true
+
+test app::authoring::tests::a_preset_and_its_linked_inputs_are_one_command ... ok
+test app::authoring::tests::invalid_inputs_leave_the_draft_and_request_unchanged ... ok
+test app::authoring::tests::noop_does_not_advance_revision_or_invalidate_build ... ok
+test app::authoring::tests::redo_restores_the_recorded_seed_and_never_revives_an_old_request ... ok
+test app::authoring::tests::resetting_rejects_old_save_and_build_tokens_and_clears_history ... ok
+test app::authoring::tests::saving_a_then_editing_b_marks_the_written_recipe_and_stays_dirty ... ok
+test app::build_metrics::tests::nested_spans_do_not_double_count_elapsed_time ... ok
+test app::build_metrics::tests::observations_cannot_change_recipe_identity_or_recipe_wire ... ok
+test app::build_metrics::tests::terminal_outcomes_keep_cancel_failure_and_stale_out_of_success ... ok
+test app::amplified_detail_engine_tests::an_already_installed_answer_against_a_superseded_hash_is_stale ... ok
+test app::frame_stats::tests::one_percent_low_uses_the_average_of_the_slowest_ceil_one_percent ... ok
+test app::frame_stats::tests::disabled_sampler_observation_is_constant_and_does_not_allocate ... ok
+test app::frame_stats::tests::disabling_an_active_sampler_releases_its_opt_in_storage ... ok
+test app::frame_stats::tests::interval_summary_uses_nearest_rank_quantiles_and_maximum ... ok
+test app::frame_stats::tests::runtime_opt_in_starts_on_the_first_update_and_reports_once ... ok
+test app::frame_stats::tests::opt_in_sampler_collects_exactly_one_ten_second_window ... ok
+test app::build_metrics_app_tests::application_classifies_cancel_stale_and_failed_without_success_submission ... ok
+test app::frame_stats::tests::statistics_use_elapsed_update_intervals_and_average_the_slowest_one_percent ... ok
+test app::frame_stats::tests::wasm_query_opt_in_requires_an_exact_enabled_pair ... ok
+test app::frame_stats::tests::wasm_measurement_scenario_requires_an_exact_medium_wind_pair ... ok
+test app::amplified_mesh::tests::initial_selection_is_the_uniform_task4r_density ... ok
+test app::field_document::tests::data_only_documents_expose_fields_without_a_presentation_mesh ... ok
+test app::amplified_mesh::tests::river_depth_follows_the_deeper_endpoint ... ok
+test app::amplified_mesh::tests::river_polylines_carry_the_production_reach_width ... ok
+test app::amplified_mesh::tests::zooming_out_never_refines_visible_cells ... ok
+test app::amplified_mesh::tests::river_polylines_follow_selection_levels ... ok
+test app::natural_app_tests::application_roundtrip_preserves_manual_land_target ... ok
+test app::natural_app_tests::default_application_persists_continents_with_missing_field_compatibility ... ok
+test app::natural_app_tests::formation_driver_locks_the_derived_authoring_control_without_mutating_it ... ok
+test app::natural_app_tests::formation_surface_cache_is_keyed_by_tier_and_radius ... ok
+test app::natural_app_tests::formation_summary_reports_implicit_water_and_non_blocking_hints ... ok
+test app::natural_app_tests::invalid_persisted_inputs_are_rejected_before_runtime_initialization ... ok
+test app::natural_app_tests::application_copy_describes_hydrology_without_implying_history_or_final_climate ... ok
+test app::natural_app_tests::loading_motion_preference_roundtrips ... ok
+test app::natural_app_tests::named_preset_applies_recommendation_while_random_preserves_author_value ... ok
+test app::amplified_mesh::tests::global_view_keeps_every_cell_visible ... ok
+test app::natural_app_tests::opt_in_frame_scenario_is_elevation_medium_wind_and_never_persists ... ok
+test app::natural_app_tests::persisted_legacy_inputs_import_once_and_unknown_recipe_schema_is_rejected ... ok
+test app::natural_app_tests::persisted_recipe_has_one_input_source_and_no_runtime_or_history ... ok
+test app::amplified_mesh::tests::visible_levels_are_uniform_across_the_equal_area_map ... ok
+test app::natural_app_tests::quality_tier_roundtrips_and_defaults_to_draft ... ok
+test app::natural_app_tests::spherical_authoring_names_the_parameter_as_an_initial_plate_count ... ok
+test app::natural_app_tests::review_regression_nested_unknown_scientific_inputs_are_rejected_in_both_layouts ... ok
+test app::natural_app_tests::review_regression_seed_keyboard_text_commits_once_on_enter_and_escape_discards ... ok
+test app::natural_app_tests::review_regression_plate_keyboard_text_stays_pending_until_confirmation ... ok
+test app::phase_a_tests::phase_a_recipe_reopen_formation ... ignored, release-only production Formation save/reopen with cold session and GPU publication
+test app::natural_app_tests::pending_world_build_keeps_the_last_valid_map_browsable_until_publication ... ok
+test app::phase_a_tests::project_flow_actual_text_edit_is_unsaved_without_implicit_build ... ok
+test app::phase_a_tests::project_flow_actual_text_focus_keeps_recipe_undo_shortcut_out_of_text_editor ... ok
+test app::phase_a_tests::project_flow_drag_frames_commit_once_and_escape_restores_input ... ok
+test app::phase_a_tests::project_flow_large_seed_focus_and_confirmation_preserve_every_u64_bit ... ok
+test app::amplified_mesh::tests::selection_deepens_with_zoom_and_respects_the_budget ... ok
+test app::phase_a_tests::project_flow_invalid_text_focus_loss_cannot_silently_save_previous_value ... ok
+test app::phase_a_tests::project_flow_new_resets_epoch_before_completion_poll ... ok
+test app::phase_a_tests::project_flow_undo_invalidates_pending_open_before_poll ... ok
+test app::phase_a_tests::project_flow_system_close_asks_before_cancelling_build ... ok
+test app::phase_a_tests::publication_completion_waits_for_actual_worker_exit_and_open_intent_is_one_shot ... ok
+test app::phase_a_tests::project_flow_status_shapes_follow_uncommitted_text_enter_and_escape ... ok
+test app::phase_a_tests::publication_failure_does_not_publish_surface_association ... ok
+test app::phase_a_tests::phase_a_save_ungenerated_draft_keeps_recipe_without_world ... ok
+test app::phase_a_tests::publication_old_detail_completion_after_epoch_reset_is_rejected ... ok
+test app::amplified_mesh::tests::zooming_in_never_coarsens_and_reaches_the_ladder_floor ... ok
+test app::project_file::tests::algorithm_differences_require_upgrade_and_platform_only_requires_confirmation ... ok
+test app::project_file::tests::author_edits_and_writer_versions_are_not_algorithm_changes ... ok
+test app::amplified_mesh::tests::detail_mesh_leaves_carry_engine_values ... ok
+test app::project_file::tests::checksum_excludes_itself_and_detects_corruption ... ok
+test app::project_file::tests::duplicate_keys_truncation_and_depth_fail ... ok
+test app::project_file::tests::explicit_upgrade_copy_preserves_source_identity_and_bytes ... ok
+test app::project_file::tests::encoding_rejects_metadata_exceeding_the_default_decode_depth_budget ... ok
+test app::project_file::tests::file_resource_boundary_accepts_exact_limit_and_rejects_excess_before_parsing ... ok
+complete recipe/preferences/metadata fixture: 13755 bytes
+test app::project_file::tests::global_reduce_motion_is_independent_of_canvas_vector_pause ... ok
+test app::project_file::tests::measure_complete_parameter_preference_metadata_fixture ... ok
+test app::project_file::tests::nonfinite_inputs_fail_and_negative_zero_uses_t1_identity ... ok
+test app::project_file::tests::project_preferences_share_camera_conversion_and_clear_transient_selection ... ok
+test app::project_file::tests::nested_metadata_round_trips_and_all_optional_core_keys_are_explicit ... ok
+test app::project_file::tests::standard_profile_uses_authoritative_resolution_and_keeps_authored_count ... ok
+test app::project_file::tests::recipe_round_trip_preserves_inactive_authored_values ... ok
+test app::project_file::tests::unknown_core_versions_fields_enums_and_missing_fields_fail ... ok
+test app::project_file::tests::whitespace_and_object_order_preserve_checksum_and_recipe_identity ... ok
+test app::project_file::tests::wire_is_recipe_only_and_extensions_reject_generated_state_containers ... ok
+test app::project_io::tests::changed_raw_bytes_conflict_even_when_recipe_is_identical ... ok
+test app::project_io::tests::damaged_read_preserves_file_and_format_reason ... ok
+test app::project_io::tests::confirmed_overwrite_is_bound_to_captured_disk_bytes ... ok
+test app::project_io::tests::first_save_race_uses_platform_no_overwrite_operation ... ok
+test app::project_io::tests::first_save_reads_back_exact_bytes_on_unicode_path ... ok
+test app::project_io::tests::missing_file_read_is_a_read_error ... ok
+test app::amplified_mesh::tests::cached_and_cold_builds_are_bit_identical ... ok
+test app::project_io::tests::new_file_never_overwrites_existing_file ... ok
+test app::project_io::tests::missing_parent_write_failure_preserves_original ... ok
+test app::project_io::tests::partial_write_failure_preserves_original_and_reports_actual_files ... ok
+test app::project_io::tests::late_external_edit_is_checked_immediately_before_replacement ... ok
+test app::project_io::tests::oversized_read_is_bounded_and_retains_codec_limit_reason ... ok
+test app::project_io::tests::successful_replacement_retains_old_recipe_backup ... ok
+test app::project_io::tests::sync_failure_preserves_old_and_complete_new_recipe ... ok
+test app::project_io::tests::replacement_error_after_old_file_moves_reports_real_backup_and_pending ... ok
+test app::project_ui::tests::actual_open_update_waits_for_old_worker_then_starts_once_and_never_retries_cancel ... ok
+test app::project_ui::tests::compatibility_confirmation_precedes_session_reset_and_generation ... ok
+test app::project_ui::tests::confirmed_platform_open_retains_binding_without_claiming_bitwise_restore ... ok
+test app::project_ui::tests::exit_with_transient_input_requires_unsaved_confirmation ... ok
+test app::project_ui::tests::explicit_upgrade_is_unsaved_unbound_and_preserves_source_identity ... ok
+test app::project_ui::tests::io_id_mismatch_cannot_bind_or_mark_saved ... ok
+test app::project_io::tests::windows_real_sharing_violation_reports_readable_old_and_new_recipes ... ok
+test app::project_ui::tests::old_epoch_confirmation_cannot_discard_new_session ... ok
+test app::project_ui::tests::open_completion_and_compatibility_choice_recheck_edits_since_authorization ... ok
+test app::project_ui::tests::path_input_preserves_chinese_and_spaces_and_rejects_relative_paths ... ok
+test app::project_io::tests::temporary_checksum_failure_never_replaces_original ... ok
+test app::project_ui::tests::save_failure_aborts_pending_open_and_exit ... ok
+test app::project_ui::tests::save_rejects_uncommitted_text_and_leaves_session_dirty ... ok
+test app::project_ui::tests::stale_save_cannot_bind_a_new_session ... ok
+test app::project_ui::tests::uncommitted_text_cannot_display_saved_recipe ... ok
+test app::project_ui::tests::save_a_completion_retains_edit_b_and_does_not_continue_exit ... ok
+test app::project_ui::tests::upgrade_save_cannot_overwrite_windows_case_or_canonical_source_alias ... ok
+test app::project_ui::timing_tests::io_timing_keeps_worker_duration_separate_from_request_elapsed ... ok
+test app::spherical_formation_display::tests::displayed_annual_water_total_preserves_values_above_the_legacy_p5_envelope ... ok
+test app::spherical_formation_display::tests::displayed_annual_water_total_reports_f32_overflow_without_clamping ... ok
+SEKAI_PROJECT_IO operation=encode_validate_and_save outcome=completed request_elapsed_s=0.013005 worker_operation_s=Some(0.0111975) validation=included source=native_io
+SEKAI_PROJECT_IO operation=read_and_decode outcome=completed request_elapsed_s=0.000405 worker_operation_s=Some(0.0002396) validation=included source=native_io
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 1, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } origin=open read_and_decode_s=0.000240 pre_worker_s=0.000936 includes_compatibility_confirmation_and_previous_worker_wait=true
+test app::project_ui::timing_tests::actual_small_save_and_open_carry_read_timing_into_one_shot_intent ... ok
+test app::project_ui::tests::native_worker_save_open_and_confirmed_overwrite_preserve_recipe_identity ... ok
+test app::spherical_natural_display::tests::camera_only_document_reconciliation_retains_the_outer_arc_and_skips_scans_in_band ... ok
+test app::spherical_natural_display::tests::camera_only_reconciliation_falls_back_for_pending_layer_state ... ok
+test app::spherical_natural_display::tests::complete_spherical_catalog_prepares_fill_edge_and_vector_layers ... ok
+test app::spherical_natural_display::tests::camera_only_reconciliation_never_reuses_layers_from_another_source ... ok
+test app::spherical_natural_display::tests::document_caches_authoritative_area_compliance ... ok
+test app::spherical_natural_display::tests::document_preserves_authoritative_build_identity_without_a_presenter ... ok
+test app::spherical_natural_display::tests::document_publishes_every_payload_with_surface_cardinality_and_borrowed_storage ... ok
+test app::spherical_natural_display::tests::edge_preparation_reports_field_ids_for_bad_cardinality_and_channels ... ok
+test app::spherical_natural_display::tests::document_identity_comes_only_from_verified_outcome_provenance ... ok
+test app::spherical_natural_display::tests::equal_count_artifact_from_another_surface_is_rejected ... ok
+test app::spherical_natural_display::tests::failed_spherical_preparation_preserves_state_and_revision_clock ... ok
+test app::spherical_natural_display::tests::failed_spherical_update_preserves_state_and_revision_clock ... ok
+test app::spherical_natural_display::tests::failed_candidate_does_not_replace_the_published_document ... ok
+test app::spherical_natural_display::tests::local_east_north_vectors_reconstruct_authoritative_tangent_vectors ... ok
+test app::spherical_natural_display::tests::presentation_source_derives_every_value_from_the_validated_document_identity ... ok
+test app::spherical_natural_display::tests::overlay_palette_uses_its_own_schema_not_the_fill_override ... ok
+test app::spherical_natural_display::tests::rebuilding_the_document_reuses_artifacts_and_recreates_only_disposable_vectors ... ok
+test app::spherical_natural_display::tests::report_without_a_build_result_hash_is_rejected ... ok
+spherical_natural_field_hash=d1fa0c3f8a4f456ecb0388c7a5724cff8d798af387b1fc418ce6d8b50e1bc7ac
+test app::spherical_natural_display::tests::registry_order_field_bytes_are_deterministic_and_frozen ... ok
+test app::spherical_natural_display::tests::spherical_document_binds_layer_preparation_to_its_own_source_and_cardinality ... ok
+test app::spherical_natural_display::tests::spherical_layer_updates_replace_only_changed_payloads ... ok
+test app::spherical_natural_display::tests::spherical_updates_refresh_only_changed_diagnostics ... ok
+test app::spherical_natural_display::tests::spherical_updates_prepare_only_changed_large_payloads ... ok
+test app::spherical_natural_display::tests::switching_fill_reconciles_range_against_the_published_field ... ok
+test app::spherical_presentation::tests::failed_whole_replacement_keeps_predecessor_live_and_current ... ok
+test app::spherical_presentation::tests::field_candidate_cannot_roll_back_a_newer_projection ... ok
+test app::spherical_presentation::tests::fresh_different_seed_whole_candidate_continues_revision_lineage ... ok
+test app::spherical_presentation::tests::every_candidate_boundary_failure_preserves_the_complete_publication ... ok
+test app::spherical_presentation::tests::projection_candidate_cannot_overwrite_newer_field_layers ... ok
+test app::spherical_presentation::tests::initial_publication_rejects_predecessor_lineage_before_gpu_prepare ... ok
+test app::spherical_presentation::tests::projection_candidate_preserves_newer_uniform_only_state ... ok
+test app::spherical_presentation::tests::same_source_layers_cannot_be_paired_with_mismatched_field_state ... ok
+test app::spherical_presentation::tests::smaller_candidate_gpu_failures_preserve_the_complete_publication ... ok
+test app::spherical_presentation::tests::renderer_ownership_preflight_precedes_candidate_validation_and_prepare ... ok
+test app::spherical_presentation::tests::stale_field_candidate_is_rejected_before_gpu_and_preserves_newer_fields ... ok
+test app::spherical_presentation::tests::smaller_publications_do_not_resurrect_retired_whole_lineage ... ok
+test app::spherical_presentation::tests::stale_projection_candidate_is_rejected_before_gpu_and_preserves_newer_projection ... ok
+test app::spherical_presentation::tests::whole_candidates_require_the_exact_current_lineage ... ok
+test app::spherical_presentation::tests::successful_whole_replacement_retires_predecessor_packet_and_caches ... ok
+test app::spherical_presentation::tests::world_replacement_adopts_live_display_instead_of_going_stale ... ok
+test app::natural_app_tests::formation_channel_disconnect_restores_published_stage_cache ... ok
+test app::natural_app_tests::persisted_non_default_view_is_bound_to_initial_and_rebuilt_whole_publications ... ok
+test app::phase_a_tests::publication_preparation_and_cancelled_final_guard_preserve_all_consumers ... ok
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } origin=build_request
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.resolve-climate-rules duration_s=0.000026 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.project-climate-input duration_s=0.000004 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.resolve-geologic-rules duration_s=0.000013 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.project-geologic-input duration_s=0.000003 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.resolve-hydro-erosion-rules duration_s=0.000012 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.project-hydro-erosion-input duration_s=0.000003 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.resolve-tectonic-rules duration_s=0.000016 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.project-tectonic-input duration_s=0.000003 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.resolve-world-formation duration_s=0.000004 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=spatial.spherical-voronoi duration_s=0.002377 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-mantle duration_s=0.004819 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-tectonics duration_s=0.011961 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-relief duration_s=0.002610 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-geology duration_s=0.008867 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-preliminary-climate duration_s=0.002291 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-hydro-erosion duration_s=0.001666 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } stage=natural.spherical-quality duration_s=0.000059 cache_hit=false source=build_report
+test app::natural_app_tests::edge_picking_uses_an_exact_logical_pixel_circle_for_maps_and_the_globe_limb ... ok
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([97, 205, 186, 132, 251, 191, 189, 240, 113, 135, 254, 220, 0, 207, 164, 255, 133, 81, 160, 39, 158, 229, 51, 97, 243, 149, 192, 192, 188, 69, 12, 152]) } outcome=Published request_elapsed_s=0.499246 root_spans_s=0.499244 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.000002 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.000002 duration_s=0.041857 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=2 phase=InputAndSurface start_s=0.000220 duration_s=0.000000 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=3 phase=InputAndSurface start_s=0.000223 duration_s=0.000048 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=4 phase=Graph start_s=0.000272 duration_s=0.034900 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=5 phase=Presentation start_s=0.035173 duration_s=0.004847 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=6 phase=Presentation start_s=0.040027 duration_s=0.000000 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=7 phase=GpuInstall start_s=0.041860 duration_s=0.456418 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=8 phase=FirstSubmittedFrame start_s=0.498278 duration_s=0.000967 parent=None inclusive=true
+test app::phase_a_tests::publication_edit_before_settlement_preserves_world ... ok
+test app::natural_app_tests::same_frame_cancel_precedes_successful_world_and_cache_commit ... ok
+test app::natural_app_tests::pointer_down_in_the_settling_pass_precedes_the_world_and_cache_commit ... ok
+test app::natural_app_tests::legacy_world_build_keeps_moving_the_stage_cache_without_a_rollback_snapshot ... ok
+test app::natural_app_tests::held_cancel_button_precedes_a_same_pass_completion_commit ... ok
+test app::natural_app_tests::failed_p5_completion_discards_candidate_stage_cache_and_keeps_current_world ... ok
+test app::natural_app_tests::spherical_inspector_cache_skips_static_camera_view_phase_scans_and_retires_old_sources ... ok
+test app::build_metrics_app_tests::application_records_real_worker_and_gpu_spans_then_only_marks_queued_world_submission ... ok
+test app::natural_app_tests::keyboard_activated_cancel_still_cancels_the_pending_build ... ok
+test app::phase_a_tests::publication_new_epoch_rejects_prepared_world ... ok
+test app::natural_app_tests::template_app_new_executes_the_spherical_origin_graph ... ok
+test app::natural_app_tests::successful_initial_install_commits_the_amplified_display_state ... ok
+test app::natural_app_tests::cancellation_is_decided_before_the_render_state_guard ... ok
+test app::natural_app_tests::successful_initial_settlement_commits_the_working_stage_cache ... ok
+test app::natural_app_tests::existing_spherical_runtime_rebuilds_from_the_current_publication_lineage ... ok
+test app::natural_app_tests::persisted_and_rebuilt_land_targets_reach_the_current_spherical_publication ... ok
+test app::spherical_natural_display::tests::retained_camera_layers_keep_renderer_validation_fixed_and_only_write_the_uniform ... ok
+test app::natural_app_tests::spherical_author_ui_reports_requested_evolved_target_actual_delta_and_sea_level ... ok
+test app::natural_app_tests::persisted_edges_without_a_valid_edge_overlay_reconcile_before_first_inspector_frame ... ok
+test app::phase_a_tests::publication_gpu_preparation_failure_preserves_current_world ... ok
+test app::natural_app_tests::failed_initial_formation_install_commits_no_amplified_display_state ... ok
+test app::natural_app_tests::gpu_failed_spherical_startup_is_visible_and_retry_publishes_once ... ok
+test app::natural_app_tests::formation_cache_fork_is_shared_by_initial_and_replacement_requests ... ok
+test app::natural_app_tests::a_second_poll_in_the_same_pass_stages_without_settling ... ok
+test app::natural_app_tests::packet_changing_app_actions_queue_only_the_current_callback_in_the_same_frame ... ok
+test app::natural_app_tests::formation_initial_and_replacement_install_failures_restore_published_stage_cache ... ok
+
+test result: ok. 191 passed; 0 failed; 2 ignored; 0 measured; 426 filtered out; finished in 9.39s
+
+EXIT_CODE=0

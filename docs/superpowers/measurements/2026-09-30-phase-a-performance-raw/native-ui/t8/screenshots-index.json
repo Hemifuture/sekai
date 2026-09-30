@@ -1,0 +1,101 @@
+[
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-2d-zoom-controls.png",
+    "Utc": "2026-09-30T13:45:45.327575Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "543DA099D884604993DD64284F9750062E17FBDA01D47A361A8FC94A8ABF9856",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-3d-rotated.png",
+    "Utc": "2026-09-30T13:38:56.3153972Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "1FBCF2582D221F4489BE8D4E78E28C2967107AFE62B5E903F7773A086FB4A084",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-cancel-retained-world.png",
+    "Utc": "2026-09-30T13:47:48.9383653Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "E3F832ABBD8BD2003565346BC0347F6E1F7FB0D8294EA0D6C9BBEE05E181DC03",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-field-menu.png",
+    "Utc": "2026-09-30T13:46:29.6931709Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "D65D48AF4228CBA0C77AAD40E0CE952665EC044D449046C677EB405DFEA54CC6",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-field-temperature.png",
+    "Utc": "2026-09-30T13:47:47.4668828Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "08D5272B45E01F319B784900E9201951B22E4598D69208B53354EAFC4C87F9F9",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-observed-open-state.png",
+    "Utc": "2026-09-30T13:53:27.0861228Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "0B00DD133AECD7A8C402817D6073EC32245E6924FBFA94D1815C6ABD3BAA1539",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-open-autogenerating.png",
+    "Utc": "2026-09-30T13:42:23.9827614Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "2AD8493595455DF0B826E325527CD5B58D86679597637C8624E32E3A9BF810C5",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-open-publish-sampling-start.png",
+    "Utc": "2026-09-30T13:43:45.5899037Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "4AFBB9CB5277FC4E9AAA9D4BDD30F7EE85D2AF7EAAEAC447C3223B950179CB5B",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-retry-published-sampled.png",
+    "Utc": "2026-09-30T13:49:47.9428222Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "7A4153B6DE621B3D11ED4115F5295F5CD2C9DA8632F1B97D62423A5B86EA929C",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-save-demo-path.png",
+    "Utc": "2026-09-30T13:40:32.6993438Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "12B75A78631C154FF53A4D05B37225B8D58821A272CBD9BD6A9AF482F6877376",
+    "Viewed": true
+  },
+  {
+    "Path": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\wake-first-menu.png",
+    "Utc": "2026-09-30T13:37:42.2039455Z",
+    "Width": 1280,
+    "Height": 900,
+    "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+    "Sha256": "4D5407264031B0381EF2F7A392907F3925CA062381BBB1DCA5AD85E443D2A328",
+    "Viewed": true
+  }
+]

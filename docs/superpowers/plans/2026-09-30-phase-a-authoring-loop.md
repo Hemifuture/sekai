@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**执行登记（2026-09-30）：用户已批准八项实施，T1–T7 已实施并独立审查；T8 执行中。原 design-only/待执行文字是批准前的历史记录，由本登记覆盖；R2 技术范围不变。用户本人 UI 验收仍 pending，不宣称整体交付。**
+**执行登记（2026-09-30）：用户已批准八项实施，T1–T7 已实施并独立审查；T8 整链、代理UI证据及必要工程检查已完成，进行文档收尾；用户本人UI与T1/性能关切仍保留。原 design-only/待执行文字是批准前的历史记录，由本登记覆盖；R2 技术范围不变。用户本人 UI 验收仍 pending，不宣称整体交付。**
 
 **Goal:** 交付不存世界快照的输入配方作者闭环：编辑/撤销→显式异步重建→验证后原子发布→安全保存→兼容项目重开自动生成一次，并完成证据驱动的性能迭代。
 
@@ -225,12 +225,12 @@
 - [x] 未需装配修补，运行：
   `cargo test --release --lib phase_a_recipe_reopen_formation -- --ignored --nocapture --test-threads=1`。
   预期成功生成且通过生产 bundle 校验；GPU 不可用必须明确阻碍，不静默跳过所有发布断言。CPU 配方重建和真实 UI 证据分别报告。
-- [ ] 综合回归：`cargo test --release --lib app:: -- --nocapture`；`cargo test --release --test build_cancellation --test spherical_presentation_integration --test spherical_presentation_gpu -- --nocapture`。若改动 engine 公共身份/schema/共享求解器而影响扩大，按 AGENTS.md 追加 Release 全量；不默认跑全 debug 或大语料。
-- [ ] 工程检查（一次通过后不重复刷）：`cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`；`cargo check --target wasm32-unknown-unknown --all-features --lib`。任何实际产品缺陷修复后才重跑受影响检查。
-- [ ] 原预算测试分别显式执行并报告实际状态：`cargo test --release --test generation_latency draft_full_chain_within_twenty_seconds -- --ignored --exact --nocapture --test-threads=1`；Standard 用 `standard_full_chain_within_one_minute`。失败保留原始数据，不改门槛/ignore 来伪装通过。
-- [ ] 用户本人 UI 验收脚本：用 `cargo run --release --bin sekai` 启动；选择水量/目标陆比编辑、预设与 seed undo/redo；重建中转动 3D/缩放 2D/切字段；候选待发布时取消；观察草稿/旧地图身份和错误；保存未生成草稿，退出并在另一目录打开配方，自动现算一次；取消后不自重试；原版本不兼容时只报差异/明确升级副本。验证地图、图例、河线、面积摘要、拾取同步，检查接缝与 LOD。
-- [ ] T1 红门单独注明已有 0.0139>0.01 且 ignored；不必为了本期重复高成本已知红测试，不把它标绿。闭环证据通过与整体地理显示质量阻碍分别报告，最终用户 UI 未验收不能写“已交付”。
-- [ ] 交接记录：变更/测试/实测、配方保存限制、取消/失败路径、T1 阻碍、性能目标状态与未裁定科学方向。未来获准执行时完成独立审查/提交；是否合并/推送另依授权，不在本计划自动执行。
+- [x] 综合回归：`cargo test --release --lib app:: -- --nocapture`；`cargo test --release --test build_cancellation --test spherical_presentation_integration --test spherical_presentation_gpu -- --nocapture`。若改动 engine 公共身份/schema/共享求解器而影响扩大，按 AGENTS.md 追加 Release 全量；不默认跑全 debug 或大语料。 实际app191PASS/2ignored；三个消费者7/5/31PASS，exit0。
+- [x] 工程检查：本次fmt exit0；新增native cfg(test)已由计划 `cargo clippy --workspace --all-targets --all-features -- -D warnings` 实际覆盖，26.54s、exit0；wasm复用T6不变生产源exit0。空间恢复后仅一次热lint，无删除/重复回归或基准。
+- [x] 原预算测试分别显式执行并报告实际状态：`cargo test --release --test generation_latency draft_full_chain_within_twenty_seconds -- --ignored --exact --nocapture --test-threads=1`；Standard 用 `standard_full_chain_within_one_minute`。失败保留原始数据，不改门槛/ignore 来伪装通过。 实际Draft58.83>20s/Standard91.25>60s，均1FAILED/exit101；执行完成不等于达标。
+- [ ] 用户本人 UI 验收脚本：用 `cargo run --release --bin sekai` 启动；选择水量/目标陆比编辑、预设与 seed undo/redo；重建中转动 3D/缩放 2D/切字段；候选待发布时取消；观察草稿/旧地图身份和错误；保存未生成草稿，退出并在另一目录打开配方，自动现算一次；取消后不自重试；原版本不兼容时只报差异/明确升级副本。验证地图、图例、河线、面积摘要、拾取同步，检查接缝与 LOD。 代理实际UI已取得11PNG、一次instrumented Open、取消保留旧地图及三窗口采样；个人UI、异目录/新进程、精确候选瞬间、全河线/接缝/LOD仍pending。
+- [x] T1 红门单独注明已有 0.0139>0.01 且 ignored；不必为了本期重复高成本已知红测试，不把它标绿。闭环证据通过与整体地理显示质量阻碍分别报告，最终用户 UI 未验收不能写“已交付”。
+- [x] 交接记录：变更/真实测试/实测、配方保存限制、取消失败路径、T1阻碍、预算失败与未裁定科学方向均已报告。源码checkpoint49e2084，代理UI/raw及lint证据归档，doc-only本地收尾提交；独立审查由root安排，用户本人UI仍pending，不自动merge/push。
 
 ## 计划自审（编写时完成，产品验证尚未执行）
 

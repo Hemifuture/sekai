@@ -1,0 +1,11 @@
+{
+  "Utc": "2026-09-30T13:42:23.9827614Z",
+  "ProcessId": 69756,
+  "Executable": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\sekai-native-capture-t8.exe",
+  "Handle": 1248108,
+  "Width": 1280,
+  "Height": 900,
+  "OutputPng": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\t8-open-autogenerating.png",
+  "Method": "PrintWindow PW_CLIENTONLY|PW_RENDERFULLCONTENT",
+  "Validation": "view_image inspected: readable real native Sekai owned window"
+}

@@ -131,3 +131,24 @@ Remove-Item Env:SEKAI_PHASE_A_PROFILE
 
 T8须补真实UI sampler操作与用户验收，并核验发布图板块数控件显示。未测操作与GPU显存均明确列出；这些限制不阻止把T6观测代码/CPU证据交独立review，但不把UI性能或最终用户验收标绿。
 
+## T8：真实 Formation 配方重开与原预算（2026-09-30）
+
+源码checkpoint `49e20840db736a233876e1028dedf2cc5b0c70b6`，BASE `12007ebc65f12967f50847ac85d9b0071f366bdf`。仅新增私有native cfg(test)整链/草稿保存测试；没有生产、科学或性能策略修补，不改T1/20s/60s门槛和ignore。所有昂贵测试串行，CARGO_INCREMENTAL=0、无RUSTFLAGS/profile修改。构建前C free=5,412,282,368bytes，热own-release额外峰值规划1GB/操作保留1GB；交接时free=4,687,478,784bytes。规划不是精确测得峰值。[空间receipt](2026-09-30-phase-a-performance-raw/t8/t8-space-admission.json)与[消费者准入](2026-09-30-phase-a-performance-raw/t8/t8-integration-space.json)保留。
+
+新增 ignored `app::phase_a_tests::phase_a_recipe_reopen_formation` 的首次完整运行GREEN，1PASS/0FAILED/0ignored/618filtered，224.34s，exit0；编译48.77s不计入test时间。唯一Draft/seed42从生产worker生成/GPU发布，编辑事务切TargetLandFraction并设0.4，显式重建/保存；销毁旧app、所有stage/surface/display缓存及旧renderer后，新app通过真实Open/IO与App::update自动一次现算。编辑后recipe、generator身份和全部SphericalPresentationSource（RootSeed、SurfaceRef、BuildResultHash、graph contract）匹配；新token epoch1/request1/revision0，历史不跨会话。生产Formation document构造已经执行bundle及跨层校验。三次构建是初始/编辑后/冷重开对照的最小链，224.34s不是单次生成预算、原生屏幕延迟或优化收益。[原始整链](2026-09-30-phase-a-performance-raw/t8/t8-reopen-first-complete.log)保留确切bytes/指纹。首次编译在test未开始前纠正inactive目标陆比fixture而中断，exit1，[中断记录](2026-09-30-phase-a-performance-raw/t8/t8-reopen-first.log)不计产品RED，未造失败。
+
+应用回归191PASS/0FAILED/2ignored/426filtered（9.39s、exit0），其中新增小型未生成草稿保存不跑全链；普通native环境运行避免已验证ReplaceFileW sandbox OS5。[app raw](2026-09-30-phase-a-performance-raw/t8/t8-app-regression.log)。直接消费者build_cancellation7PASS、spherical_presentation_gpu5PASS、spherical_presentation_integration31PASS，全部0fail/ignored/filtered，0.02/0.65/6.62s，exit0；[raw](2026-09-30-phase-a-performance-raw/t8/t8-consumers.log)。无共享身份/schema/求解器改动，不扩Release全量。fmt实际exit0，[raw](2026-09-30-phase-a-performance-raw/t8/t8-fmt.log)；wasm复用不变生产源码的T6已通过证据；新增cfg(test)已由本次计划all-targets/all-features/-D warnings Clippy实际覆盖，26.54s、exit0。
+
+原预算分别显式运行，不用observer代替、不调整门槛：
+
+| 原预算测试 | P1 surface s | graph s | full total s | 目标 s | endpoint | 实际状态 |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| Draft/seed42 | 0.61 | 58.23 | 58.83 | 20 | 5cycles/720fastsubsteps | 1FAILED、exit101 |
+| Standard/seed42 | 2.89 | 88.35 | 91.25 | 60 | 4cycles/767fastsubsteps | 1FAILED、exit101 |
+
+[Draft原始失败](2026-09-30-phase-a-performance-raw/t8/t8-draft-budget.log)和[Standard原始失败](2026-09-30-phase-a-performance-raw/t8/t8-standard-budget.log)各为一个冷构建样本，test时间58.84/91.26s；没有成对负载控制，不能与T6/T7数字归因比较，也不能宣称优化收益。未重跑已知T1 ignored红门0.0139>0.01，不标绿；整体地理显示质量仍有阻碍，性能目标未达。
+
+必要消费者编译1m00s成功刷新生产 `target/release/deps/libsekai-7716a1b8ffc33b4e.rlib`，74,931,004bytes，SHA256 `A3F6D1F3CCD4B48070B8AB5A085F76BD86E49125D8D945A438B7CEA819844299`；明确排除T7残留实验库和另一个旧10cb库。[生产库receipt](2026-09-30-phase-a-performance-raw/t8/t8-production-library.json)保留实际编译时BASE+source状态及后续相同源码checkpoint；[source manifest](2026-09-30-phase-a-performance-raw/t8/t8-source-manifest.json)含398个src/tests文件及Cargo.toml。root在BENCH-IDLE后安排已有隔离native helper，代理实际3D/open-auto-once/cancellation/生产UI采样证据已经完成，详见 [UI原始报告](2026-09-30-phase-a-performance-raw/native-ui/t8/ui-report.md) 与 [11PNG索引](2026-09-30-phase-a-performance-raw/native-ui/t8/screenshots-index.json)；它们不替代用户本人验收。
+
+
+T8最终状态：新增tests必要Clippy实际exit0，原始 [lint log](2026-09-30-phase-a-performance-raw/t8/t8-clippy.log)/[receipt](2026-09-30-phase-a-performance-raw/t8/t8-clippy-receipt.json)。仅一次热metadata检查，CARGO_INCREMENTAL=0，无RUSTFLAGS；启动free1,508,237,312bytes、结束1,490,661,376bytes，删除0。此前SPACE暂停是历史情况，未知恢复原因不归因清理；源码仍49e2084。代理UI使用同一freshA3F6库、inactive native1280×900/RTX4080SUPER/Vulkan，无周期wrapper重绘；PID69756已于13:54:56.1452172Z正常退出。instrumented Open读请求0.007852s/worker0.0070838s，pre-worker0.024922s，Published69.724806s（Graph66.682725/GpuInstall0.060270）；FirstSubmittedFrame起点69.724761s、自身0.000044s，仅应用绘制入队。热构建取消反馈0.0016165s、观察worker退出0.999387s、槽释放0.999937s；显式热重建Published2.163288s。三个实际10s窗口p50/p95/p99/max（ms）为1.375/21.209/21.507/28.094、2.817/24.510/26.316/65.799、1.806/21.251/24.994/100.690；最后窗口仅覆盖热发布，非最终冷Open/stock idle/OS-present测量。首Open的observer关闭，之后只补一次instrumented Open；未验精确候选瞬间取消、异目录/新进程Open、不可兼容升级及完整河线/拾取/接缝/LOD，本人UI仍pending。3D/Open/Cancel三张Library真实succeeded/version0及身份见原始receipt；本地Windows xattrs未成功，不混为Library成功。原预算失败/T1红门均保留，DONE_WITH_CONCERNS不等于性能或整体显示质量已交付。

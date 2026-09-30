@@ -1,0 +1,22 @@
+    Finished `release` profile [optimized] target(s) in 0.58s
+     Running tests\generation_latency.rs (target\release\deps\generation_latency-0d05a1953c61a1de.exe)
+
+running 1 test
+[latency Standard]    stage natural.climate-work-domain                  2.03 s
+[latency Standard]    stage natural.causal-formation                    85.42 s
+[latency Standard] surface 2.89 s, graph 88.35 s, total 91.25 s (endpoint P4 4 cycles, 767 fast substeps)
+
+thread 'standard_full_chain_within_one_minute' (60400) panicked at tests\generation_latency.rs:46:5:
+Standard full chain took 91.25 s, budget 60 s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test standard_full_chain_within_one_minute ... FAILED
+
+failures:
+
+failures:
+    standard_full_chain_within_one_minute
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 91.26s
+
+error: test failed, to rerun pass `--test generation_latency`
+EXIT_CODE=101

@@ -1,0 +1,60 @@
+SEKAI_FRAME_STATS adapter=AdapterInfo { name: "NVIDIA GeForce RTX 4080 SUPER", vendor: 4318, device: 9986, device_type: DiscreteGpu, driver: "NVIDIA", driver_info: "591.86", backend: Vulkan } window=10s source=egui_input_time scenario=current
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } origin=build_request
+SEKAI_FRAME_STATS logical_viewport=1280x900
+SEKAI_FRAME_STATS average_fps=143.985 one_percent_low_fps=43.159 samples=1440 window=10s source=update_interval interval_p50_ms=1.375 interval_p95_ms=21.209 interval_p99_ms=21.507 interval_max_ms=28.094
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.climate-work-domain duration_s=0.383285 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.causal-formation duration_s=50.142899 cache_hit=false source=build_report
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 0, request_id: 1, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } outcome=Published request_elapsed_s=52.344039 root_spans_s=52.343575 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.000002 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.000002 duration_s=52.046983 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=2 phase=InputAndSurface start_s=0.002422 duration_s=0.456059 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=3 phase=InputAndSurface start_s=0.458482 duration_s=0.149641 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=4 phase=Graph start_s=0.608123 duration_s=50.526223 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=5 phase=Presentation start_s=51.134347 duration_s=0.764859 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=6 phase=Presentation start_s=51.900330 duration_s=0.133786 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=7 phase=GpuInstall start_s=52.047449 duration_s=0.296509 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=8 phase=FirstSubmittedFrame start_s=52.343957 duration_s=0.000082 parent=None inclusive=true
+SEKAI_PROJECT_IO operation=encode_validate_and_save outcome=completed request_elapsed_s=0.008060 worker_operation_s=Some(0.0074275) validation=included source=native_io
+SEKAI_FRAME_STATS logical_viewport=1280x900
+SEKAI_FRAME_STATS average_fps=119.351 one_percent_low_fps=28.347 samples=1194 window=10s source=update_interval interval_p50_ms=2.817 interval_p95_ms=24.510 interval_p99_ms=26.316 interval_max_ms=65.799
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 1, request_id: 3, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } origin=build_request
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 1, request_id: 3, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.climate-work-domain duration_s=0.000003 cache_hit=true source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 1, request_id: 3, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.causal-formation duration_s=0.000003 cache_hit=true source=build_report
+SEKAI_BUILD_CANCEL outcome=Cancelled feedback_update_s=Some(0.0016165) observed_worker_exit_s=0.999387 slot_release_s=0.999937 source=application_update_proxy
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 1, request_id: 3, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } outcome=Cancelled request_elapsed_s=1.231710 root_spans_s=1.231067 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.002856 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.002857 duration_s=1.228210 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=2 phase=InputAndSurface start_s=0.003226 duration_s=0.002485 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=3 phase=InputAndSurface start_s=0.005712 duration_s=0.179648 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=4 phase=Graph start_s=0.185361 duration_s=0.000038 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=5 phase=Presentation start_s=0.185400 duration_s=1.032196 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=6 phase=Presentation start_s=1.218535 duration_s=0.000000 parent=Some(1) inclusive=true
+SEKAI_FRAME_STATS logical_viewport=1280x900
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 1, request_id: 4, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } origin=build_request
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 1, request_id: 4, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.climate-work-domain duration_s=0.000003 cache_hit=true source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 1, request_id: 4, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.causal-formation duration_s=0.000004 cache_hit=true source=build_report
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 1, request_id: 4, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } outcome=Published request_elapsed_s=2.163288 root_spans_s=2.162508 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.003553 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.003554 duration_s=2.066156 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=2 phase=InputAndSurface start_s=0.003992 duration_s=0.005675 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=3 phase=InputAndSurface start_s=0.009669 duration_s=0.283393 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=4 phase=Graph start_s=0.293062 duration_s=0.000044 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=5 phase=Presentation start_s=0.293106 duration_s=1.541776 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=6 phase=Presentation start_s=1.837541 duration_s=0.224316 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=7 phase=GpuInstall start_s=2.070487 duration_s=0.092688 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=8 phase=FirstSubmittedFrame start_s=2.163174 duration_s=0.000112 parent=None inclusive=true
+SEKAI_FRAME_STATS average_fps=143.202 one_percent_low_fps=31.443 samples=1433 window=10s source=update_interval interval_p50_ms=1.806 interval_p95_ms=21.251 interval_p99_ms=24.994 interval_max_ms=100.690
+SEKAI_PROJECT_IO operation=read_and_decode outcome=completed request_elapsed_s=0.007852 worker_operation_s=Some(0.0070838) validation=included source=native_io
+SEKAI_BUILD_ORIGIN token=BuildToken { epoch: 2, request_id: 5, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } origin=open read_and_decode_s=0.007084 pre_worker_s=0.024922 includes_compatibility_confirmation_and_previous_worker_wait=true
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 2, request_id: 5, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.climate-work-domain duration_s=0.692576 cache_hit=false source=build_report
+SEKAI_BUILD_STAGE token=BuildToken { epoch: 2, request_id: 5, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } stage=natural.causal-formation duration_s=65.990081 cache_hit=false source=build_report
+SEKAI_BUILD_METRICS token=BuildToken { epoch: 2, request_id: 5, revision: 0, recipe_id: RecipeId([233, 231, 91, 89, 23, 209, 245, 57, 162, 3, 99, 122, 41, 61, 209, 138, 113, 177, 96, 14, 49, 39, 62, 61, 110, 106, 113, 49, 133, 191, 17, 193]) } outcome=Published request_elapsed_s=69.724806 root_spans_s=69.724160 source=application_submission_proxy validation=included_in_graph_and_presentation
+SEKAI_BUILD_SPAN index=0 phase=OpenOrRequest start_s=0.000000 duration_s=0.024921 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=1 phase=WaitWorker start_s=0.024922 duration_s=69.638925 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=2 phase=InputAndSurface start_s=0.025559 duration_s=0.855589 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=3 phase=InputAndSurface start_s=0.881150 duration_s=0.276072 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=4 phase=Graph start_s=1.157222 duration_s=66.682725 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=5 phase=Presentation start_s=67.839948 duration_s=1.604486 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=6 phase=Presentation start_s=69.446379 duration_s=0.208616 parent=Some(1) inclusive=true
+SEKAI_BUILD_SPAN index=7 phase=GpuInstall start_s=69.664491 duration_s=0.060270 parent=None inclusive=true
+SEKAI_BUILD_SPAN index=8 phase=FirstSubmittedFrame start_s=69.724761 duration_s=0.000044 parent=None inclusive=true

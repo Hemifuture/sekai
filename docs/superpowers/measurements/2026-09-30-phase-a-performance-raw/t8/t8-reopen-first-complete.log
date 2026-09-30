@@ -1,0 +1,12 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 48.77s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 1 test
+PHASE_A_REOPEN saved recipe=RecipeId([153, 193, 118, 38, 45, 168, 4, 31, 157, 49, 134, 121, 205, 67, 18, 36, 37, 253, 108, 173, 169, 180, 113, 137, 137, 140, 83, 13, 22, 90, 104, 202]) source=SphericalPresentationSource { root_seed: RootSeed(42), surface_ref: SurfaceRef { geometry_kind: SphericalV1, geometry_schema: 1, cell_count: 20252, edge_count: 60750, fingerprint: [13, 9, 223, 122, 161, 49, 209, 32, 73, 2, 2, 116, 27, 15, 211, 24, 73, 25, 234, 150, 129, 241, 101, 55, 161, 79, 129, 240, 229, 128, 111, 46] }, build_result_hash: BuildResultHash([135, 78, 127, 5, 241, 161, 70, 48, 124, 7, 187, 76, 49, 5, 236, 15, 113, 249, 141, 23, 232, 38, 215, 29, 130, 41, 43, 94, 123, 54, 134, 210]), graph_contract_version: 3 }
+PHASE_A_REOPEN restored token=BuildToken { epoch: 1, request_id: 1, revision: 0, recipe_id: RecipeId([153, 193, 118, 38, 45, 168, 4, 31, 157, 49, 134, 121, 205, 67, 18, 36, 37, 253, 108, 173, 169, 180, 113, 137, 137, 140, 83, 13, 22, 90, 104, 202]) } source=SphericalPresentationSource { root_seed: RootSeed(42), surface_ref: SurfaceRef { geometry_kind: SphericalV1, geometry_schema: 1, cell_count: 20252, edge_count: 60750, fingerprint: [13, 9, 223, 122, 161, 49, 209, 32, 73, 2, 2, 116, 27, 15, 211, 24, 73, 25, 234, 150, 129, 241, 101, 55, 161, 79, 129, 240, 229, 128, 111, 46] }, build_result_hash: BuildResultHash([135, 78, 127, 5, 241, 161, 70, 48, 124, 7, 187, 76, 49, 5, 236, 15, 113, 249, 141, 23, 232, 38, 215, 29, 130, 41, 43, 94, 123, 54, 134, 210]), graph_contract_version: 3 }
+test app::phase_a_tests::phase_a_recipe_reopen_formation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 618 filtered out; finished in 224.34s
+
+EXIT_CODE=0

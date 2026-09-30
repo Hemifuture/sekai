@@ -1,0 +1,7 @@
+{
+  "Scope": "warm release library/test compilation; no cold workspace gate reruns",
+  "ExpectedAdditionalPeakBytes": 1000000000,
+  "Admission": true,
+  "FreeBefore": 5412282368,
+  "OperationalReserveBytes": 1000000000
+}

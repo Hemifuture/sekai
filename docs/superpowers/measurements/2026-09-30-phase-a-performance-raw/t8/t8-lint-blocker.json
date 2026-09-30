@@ -1,0 +1,11 @@
+{
+  "GuardExit": 1,
+  "ReclaimedFiles": 0,
+  "DebugRelevantLogicalBytes": 932764304.0,
+  "ReleaseRlibRmetaCount": 400,
+  "Reason": "unexpected active cargo/rustc; space dropped below 1GB reserve; no process stopped",
+  "ReleaseRlibRmetaLogicalBytes": 995893346.0,
+  "FreeBytes": 114016256,
+  "ClippyStarted": false,
+  "Utc": "2026-09-30T14:05:15.5371848Z"
+}

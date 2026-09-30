@@ -1,0 +1,9 @@
+{
+  "Utc": "2026-09-30T13:37:41.5243308Z",
+  "ProcessId": 69756,
+  "Handle": 1248108,
+  "Executable": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\sekai-native-capture-t8.exe",
+  "CommandFile": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\screenshots\\t8\\ui-command.txt",
+  "Wake": "InvalidateRect on verified owned HWND; no focus change",
+  "Validation": "Wake requested; command consumption and repaint require native runtime verification"
+}

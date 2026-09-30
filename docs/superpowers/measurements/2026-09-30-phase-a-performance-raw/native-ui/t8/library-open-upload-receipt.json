@@ -1,0 +1,35 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Action completed."
+    }
+  ],
+  "structuredContent": {
+    "results": [
+      {
+        "operation": "create_library_file",
+        "status": "succeeded",
+        "path": "/t8-open-autogenerating.png",
+        "file_id": "file_0000000031c081fdae45835746109bcd",
+        "library_file_id": "libfile_a5628327bfb48191a870c75d5744b62c",
+        "file_name": "t8-open-autogenerating.png",
+        "current_version_number": 0,
+        "restored_from_version_number": null,
+        "xattrs": [
+          {
+            "name": "user.library-file-version",
+            "value": "0"
+          }
+        ],
+        "directory_id": "libdir_0858eaa2e0388191bdf895b382f94930",
+        "mime_type": "image/png",
+        "library_artifact_type": "image",
+        "file_size_bytes": 183015
+      }
+    ],
+    "warnings": [],
+    "external_connectors_accessed": false
+  },
+  "isError": false
+}

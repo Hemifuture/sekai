@@ -1,0 +1,23 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 1.98s
+     Running tests\generation_latency.rs (target\release\deps\generation_latency-0d05a1953c61a1de.exe)
+
+running 1 test
+[latency Draft]    stage natural.climate-work-domain                  0.52 s
+[latency Draft]    stage natural.causal-formation                    57.51 s
+[latency Draft] surface 0.61 s, graph 58.23 s, total 58.83 s (endpoint P4 5 cycles, 720 fast substeps)
+
+thread 'draft_full_chain_within_twenty_seconds' (66080) panicked at tests\generation_latency.rs:46:5:
+Draft full chain took 58.83 s, budget 20 s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test draft_full_chain_within_twenty_seconds ... FAILED
+
+failures:
+
+failures:
+    draft_full_chain_within_twenty_seconds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 58.84s
+
+error: test failed, to rerun pass `--test generation_latency`
+EXIT_CODE=101

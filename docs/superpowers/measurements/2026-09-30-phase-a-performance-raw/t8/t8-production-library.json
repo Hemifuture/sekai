@@ -1,0 +1,18 @@
+{
+  "CompileExit": 0,
+  "ProductionRlib": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsekai-7716a1b8ffc33b4e.rlib",
+  "BaseCommit": "12007ebc65f12967f50847ac85d9b0071f366bdf",
+  "SHA256": "A3F6D1F3CCD4B48070B8AB5A085F76BD86E49125D8D945A438B7CEA819844299",
+  "CreatedUtc": "2026-09-30T13:31:24.1194396Z",
+  "RUSTFLAGS": null,
+  "CargoIncremental": "0",
+  "Length": 74931004,
+  "CompiledBy": "cargo test --release --test build_cancellation --test spherical_presentation_integration --test spherical_presentation_gpu -- --nocapture",
+  "SourceManifest": "t8-source-manifest.json",
+  "SourceFileCount": 399,
+  "FreeBytes": 4687478784,
+  "SourceState": "compiled before checkpoint; unchanged source bytes now in clean 49e2084 checkpoint",
+  "SourceCommit": "49e20840db736a233876e1028dedf2cc5b0c70b6",
+  "SourceCommitRecordedUtc": "2026-09-30T13:34:22.8831689Z",
+  "AppSourceSHA256": "635E25C1764C1658506520E1A3C7AAEEF02444BE4D130984189B7A8091FD4FAD"
+}
