@@ -438,6 +438,9 @@ pub(super) fn encode_project(file: &ProjectFile) -> Result<Vec<u8>, ProjectFileE
     };
     let bytes = serde_json::to_vec(&wire).map_err(input_error)?;
     check_size(bytes.len())?;
+    // Serde serialization has no recursion budget. Check the complete wire with the
+    // same default parser as decode before reporting that a project can be saved.
+    let _: UniqueJson = serde_json::from_slice(&bytes).map_err(parse_error)?;
     Ok(bytes)
 }
 
@@ -1088,5 +1091,20 @@ mod tests {
             .unwrap();
         assert!(reduce_motion);
         assert!(!restored.field_state().vector_paused());
+    }
+
+    #[test]
+    fn encoding_rejects_metadata_exceeding_the_default_decode_depth_budget() {
+        let mut metadata = Value::String("ordinary metadata".into());
+        for _ in 0..130 {
+            metadata = serde_json::json!({"detail": metadata});
+        }
+        let mut file = project(WorldPipeline::Formation);
+        file.extensions.insert("metadata".into(), metadata);
+        assert!(serde_json::to_vec(&file.extensions).unwrap().len() < MAX_PROJECT_FILE_BYTES);
+        assert!(matches!(
+            encode_project(&file),
+            Err(ProjectFileError::Limit(_))
+        ));
     }
 }
