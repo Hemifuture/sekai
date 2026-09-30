@@ -617,6 +617,40 @@ pub struct PublishedSphericalPresentation {
 }
 
 impl PublishedSphericalPresentation {
+    /// Validates the existing world lineage, then prepares an independent renderer.
+    /// The caller retains both current resources until its final publication guard succeeds.
+    pub(super) fn prepare_detached_world(
+        mut candidate: SphericalPresentationCandidate,
+        current: Option<&Self>,
+        view: SphericalPresentationViewState,
+        state: &SphericalFieldDisplayState,
+        gpu: &mut SphericalRendererPreparer<'_>,
+    ) -> Result<Self, SphericalPresentationError> {
+        if let Some(current) = current {
+            candidate.lineage.validate_current(current)?;
+            candidate.adopt_live_display(current)?;
+        } else {
+            candidate.lineage.validate_initial()?;
+        }
+        let mut state = state.clone();
+        if current.is_none_or(|current| current.source() != candidate.source()) {
+            state.select_entity(None);
+        }
+        if candidate.view_state != view || candidate.state != state {
+            candidate = assemble_spherical_candidate(
+                Arc::clone(candidate.document_arc()),
+                candidate.report().clone(),
+                view,
+                &state,
+                candidate.clock(),
+                FailureInjector::NONE,
+                candidate.lineage.clone(),
+            )?;
+        }
+        candidate.lineage.clear();
+        Self::try_new(candidate, gpu)
+    }
+
     /// Prepares the renderer and publishes an already complete first candidate.
     pub fn try_new(
         candidate: SphericalPresentationCandidate,
