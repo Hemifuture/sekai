@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**状态：待用户审阅、待选择执行方式。当前只编写文档，所有复选框均未执行。**
+**执行登记（2026-09-30）：用户已批准八项实施，T1–T7 已实施并独立审查；T8 执行中。原 design-only/待执行文字是批准前的历史记录，由本登记覆盖；R2 技术范围不变。用户本人 UI 验收仍 pending，不宣称整体交付。**
 
 **Goal:** 交付不存世界快照的输入配方作者闭环：编辑/撤销→显式异步重建→验证后原子发布→安全保存→兼容项目重开自动生成一次，并完成证据驱动的性能迭代。
 
@@ -23,7 +23,7 @@
 - Draft 10–20 s、Standard ≤60 s 是待验证目标；不承诺达标，不降低质量、不裁剪科学状态、不改冻结门槛。
 - 不改 t1v2-2-stage1-candidate，不重做已撤回的细粒度并行，不纳入未裁定的模分裂、FAS/CFL/周期或科学模型变化。
 - 未知 schema/算法/依赖明确失败；升级副本须显式选择，原件保留；跨平台不冒充逐位恢复。
-- 本轮只写设计与计划，不执行下列命令、不改产品代码、不安装依赖、不 commit/push。以后获准执行时，一任务一审查/提交遵循仓库纪律。
+- 已获准按下列任务实施并本地提交，一任务一审查/提交遵循仓库纪律；不 push/merge，不自动扩大到未裁定科学方向。
 
 ## Review Focus
 
@@ -221,8 +221,8 @@
 
 **Files:** Test src/app.rs::phase_a_tests；复用 tests/support/causal_formation.rs 的思想/现有 Formation 构建入口，不导出私有 session；Update 本计划勾选和 T6 measurement；不修改 T1 测试阈值或忽略原因。
 
-- [ ] 新增 ignored `phase_a_recipe_reopen_formation`（位于 phase_a_tests）用一个 Draft seed 42：生成并校验→改配方保存→销毁会话和全部内存缓存→新会话读取并走自动一次生成→比配方/生成身份及同环境产物指纹。另一个小型状态测试覆盖保存尚未生成草稿，避免多次昂贵全链排列。先红确认缺少整链/自动启动契约，不能只测试 serialize==deserialize。
-- [ ] 实现必要装配修补后运行：
+- [x] 新增 ignored `phase_a_recipe_reopen_formation`（位于 phase_a_tests）用一个 Draft seed 42：生成并校验→改活动目标陆比配方并显式重建/保存→销毁会话和全部内存缓存及旧 GPU 发布→新会话读取并走自动一次生成→比配方/生成身份及同环境产物指纹。另一个小型状态测试覆盖保存尚未生成草稿。现有 T1–T6 契约首次完整 GREEN，未发现装配缺失，未制造 RED；不是只测试 serialize==deserialize。
+- [x] 未需装配修补，运行：
   `cargo test --release --lib phase_a_recipe_reopen_formation -- --ignored --nocapture --test-threads=1`。
   预期成功生成且通过生产 bundle 校验；GPU 不可用必须明确阻碍，不静默跳过所有发布断言。CPU 配方重建和真实 UI 证据分别报告。
 - [ ] 综合回归：`cargo test --release --lib app:: -- --nocapture`；`cargo test --release --test build_cancellation --test spherical_presentation_integration --test spherical_presentation_gpu -- --nocapture`。若改动 engine 公共身份/schema/共享求解器而影响扩大，按 AGENTS.md 追加 Release 全量；不默认跑全 debug 或大语料。

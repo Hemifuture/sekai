@@ -5904,6 +5904,211 @@ mod phase_a_tests {
     use super::*;
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn wait_recipe_io(
+        app: &mut TemplateApp,
+        ctx: &egui::Context,
+        completed: impl Fn(&TemplateApp) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !completed(app) {
+            app.poll_project_io(ctx);
+            assert!(std::time::Instant::now() < deadline, "recipe IO timed out");
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_formation_publication(app: &mut TemplateApp, ctx: &egui::Context) {
+        // This ignored integration contract includes the real worker and detached GPU install.
+        // Ordinary state tests use the existing tiny completion fixtures instead.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while app.world_build.is_some() {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Formation worker timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            app.spherical_runtime_error.is_none(),
+            "Formation publication failed: {:?}",
+            app.spherical_runtime_error
+        );
+        app.spherical_presentation.read_resource(|current| {
+            let document = current
+                .as_ref()
+                .expect("Formation was published")
+                .document();
+            let formation = document
+                .formation()
+                .expect("the production Formation document");
+            assert_eq!(
+                formation.quality_profile(),
+                crate::world::natural::NaturalQualityProfile::Draft
+            );
+            formation.formation_snapshot().validate().unwrap();
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "release-only production Formation save/reopen with cold session and GPU publication"]
+    fn phase_a_recipe_reopen_formation() {
+        use project_file::{current_generator_identity, ProjectFile};
+        use project_io::read_project;
+        use project_ui::ProjectAction;
+
+        let directory = std::env::temp_dir().join(format!(
+            "sekai-phase-a-reopen-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("recipe.sekai.json");
+        let render_state = request_test_render_state();
+        let ctx = egui::Context::default();
+        let (saved_inputs, saved_source, saved_generator) = {
+            let mut app = TemplateApp {
+                authoring: AuthoringSession::new(AuthorInputs {
+                    world_pipeline: WorldPipeline::Formation,
+                    world_seed: 42,
+                    ..Default::default()
+                })
+                .unwrap(),
+                render_state: Some(render_state.clone()),
+                ..Default::default()
+            };
+            let initial_recipe = app.authoring.capture_save().recipe_id;
+            app.request_spherical_world_build();
+            wait_formation_publication(&mut app, &ctx);
+            let initial_source = published_source(&app);
+
+            let mut edited = app.authoring.draft().clone();
+            edited.relief_spec.sea_level_policy =
+                crate::world::natural::SeaLevelPolicy::TargetLandFraction;
+            edited.relief_spec.target_land_fraction = 0.4;
+            assert!(app
+                .authoring
+                .commit("land fraction".into(), edited)
+                .unwrap());
+            assert_ne!(app.authoring.capture_save().recipe_id, initial_recipe);
+            assert!(
+                app.world_build.is_none(),
+                "editing requires explicit rebuild"
+            );
+            assert_eq!(
+                published_source(&app),
+                initial_source,
+                "old world remains published"
+            );
+            app.request_spherical_world_build();
+            wait_formation_publication(&mut app, &ctx);
+            let source = published_source(&app);
+            assert_ne!(
+                source.build_result_hash(),
+                initial_source.build_result_hash()
+            );
+            let inputs = app.authoring.draft().clone();
+            let generator = ProjectFile::new(inputs.clone()).unwrap().generator;
+            app.dispatch_project_action(ProjectAction::SaveAs(path.clone()), &ctx);
+            wait_recipe_io(&mut app, &ctx, |app| !app.authoring.is_dirty());
+            assert_eq!(read_project(&path).unwrap().file.inputs, inputs);
+            eprintln!(
+                "PHASE_A_REOPEN saved recipe={:?} source={source:?}",
+                inputs.recipe_id().unwrap()
+            );
+            (inputs, source, generator)
+        }; // Drops the old session, publication, stage/surface/display caches and worker slots.
+           // Do not reuse the old callback resource's GPU publication in the new app.
+        drop(render_state);
+        let mut reopened = TemplateApp {
+            render_state: Some(request_test_render_state()),
+            ..Default::default()
+        };
+        assert!(reopened.stage_cache.is_empty());
+        assert!(reopened.formation_surface.is_none());
+        assert!(reopened
+            .spherical_presentation
+            .read_resource(Option::is_none));
+        // A new empty editor is intentionally unsaved; bind only the authorized open action.
+        reopened
+            .authoring
+            .mark_saved(reopened.authoring.capture_save());
+        reopened.dispatch_project_action(ProjectAction::Open(path.clone()), &ctx);
+        wait_recipe_io(&mut reopened, &ctx, |app| app.pending_open_build.is_some());
+        assert_eq!(reopened.authoring.draft(), &saved_inputs);
+        assert_eq!(
+            current_generator_identity(reopened.authoring.draft()).unwrap(),
+            saved_generator
+        );
+        assert_eq!(read_project(&path).unwrap().file.generator, saved_generator);
+        assert!(
+            !reopened.authoring.undo(),
+            "session history is not persisted"
+        );
+        assert!(!reopened.authoring.is_dirty());
+        assert!(reopened.world_build.is_none());
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            eframe::App::update(&mut reopened, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        let token = reopened
+            .world_build
+            .as_ref()
+            .expect("open automatically started one build")
+            .token;
+        assert_eq!(token.recipe_id, saved_inputs.recipe_id().unwrap());
+        assert!(reopened.pending_open_build.is_none());
+        assert!(
+            !reopened.try_start_open_build(),
+            "the open intent is consumed once"
+        );
+        wait_formation_publication(&mut reopened, &ctx);
+        assert_eq!(
+            published_source(&reopened),
+            saved_source,
+            "same-environment output fingerprint"
+        );
+        assert_eq!(reopened.published_world_token, Some(token));
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            eframe::App::update(&mut reopened, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        assert!(reopened.world_build.is_none());
+        assert!(!reopened.try_start_open_build());
+        eprintln!(
+            "PHASE_A_REOPEN restored token={token:?} source={:?}",
+            published_source(&reopened)
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn phase_a_save_ungenerated_draft_keeps_recipe_without_world() {
+        let directory = std::env::temp_dir().join(format!(
+            "sekai-phase-a-draft-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("draft.sekai.json");
+        let mut app = TemplateApp::default();
+        let mut edited = app.authoring.draft().clone();
+        edited.world_seed = 717;
+        app.authoring.commit("seed".into(), edited.clone()).unwrap();
+        let ctx = egui::Context::default();
+        app.dispatch_project_action(project_ui::ProjectAction::SaveAs(path.clone()), &ctx);
+        wait_recipe_io(&mut app, &ctx, |app| !app.authoring.is_dirty());
+        assert_eq!(project_io::read_project(&path).unwrap().file.inputs, edited);
+        assert!(app.world_build.is_none());
+        assert!(app.published_world_token.is_none());
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(app.stage_cache.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn project_flow_new_resets_epoch_before_completion_poll() {
         let mut app = TemplateApp::default();
