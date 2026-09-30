@@ -64,6 +64,7 @@ pub(super) mod spherical_space_spec_serde {
     use crate::world::{Meters, SphericalSpaceSpec};
 
     #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Wire {
         radius: f64,
         target_cell_count: u32,

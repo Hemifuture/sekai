@@ -1959,6 +1959,8 @@ impl eframe::App for TemplateApp {
             .input_edit
             .take()
             .unwrap_or_else(|| self.authoring.draft().clone());
+        let cancel_input_edit = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut author_input_focused = false;
         let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
@@ -1978,7 +1980,12 @@ impl eframe::App for TemplateApp {
 
                     ui.horizontal(|ui| {
                         ui.label("根种子");
-                        ui.add(egui::DragValue::new(&mut editing.world_seed).range(0..=u64::MAX));
+                        let response = ui.add(
+                            egui::DragValue::new(&mut editing.world_seed)
+                                .range(0..=u64::MAX)
+                                .update_while_editing(false),
+                        );
+                        author_input_focused |= response.has_focus();
                     });
                     if ui.button("新种子并重建").clicked() {
                         new_seed = true;
@@ -2015,10 +2022,12 @@ impl eframe::App for TemplateApp {
                     }
                     ui.horizontal(|ui| {
                         ui.label(INITIAL_PLATE_COUNT_LABEL);
-                        ui.add(
+                        let response = ui.add(
                             egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
-                                .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT),
+                                .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
+                                .update_while_editing(false),
                         );
+                        author_input_focused |= response.has_focus();
                     });
                     if editing.world_pipeline == WorldPipeline::Formation {
                         ui.horizontal(|ui| {
@@ -2043,7 +2052,7 @@ impl eframe::App for TemplateApp {
                         published_area_summary,
                     );
                     if controls.land_fraction_enabled {
-                        ui.add(
+                        let response = ui.add(
                             egui::Slider::new(
                                 &mut editing.relief_spec.target_land_fraction,
                                 crate::world::natural::MIN_TARGET_LAND_FRACTION
@@ -2052,6 +2061,7 @@ impl eframe::App for TemplateApp {
                             .text("陆地占比")
                             .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                         );
+                        author_input_focused |= response.has_focus();
                     } else {
                         let mut measured_land_fraction = controls.displayed_land_fraction;
                         ui.add_enabled(
@@ -2063,20 +2073,22 @@ impl eframe::App for TemplateApp {
                         .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
                     }
                     ui.collapsing("高级", |ui| {
-                        ui.add_enabled(
-                            controls.continental_fraction_enabled,
-                            egui::Slider::new(
-                                &mut editing.tectonic_spec.continental_crust_fraction,
-                                MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
+                        let response = ui
+                            .add_enabled(
+                                controls.continental_fraction_enabled,
+                                egui::Slider::new(
+                                    &mut editing.tectonic_spec.continental_crust_fraction,
+                                    MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                )
+                                .text(if controls.continental_fraction_enabled {
+                                    "初始大陆地壳比例"
+                                } else {
+                                    "初始大陆地壳比例（预设值）"
+                                })
+                                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                             )
-                            .text(if controls.continental_fraction_enabled {
-                                "初始大陆地壳比例"
-                            } else {
-                                "初始大陆地壳比例（预设值）"
-                            })
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                        )
-                        .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                            .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                        author_input_focused |= response.has_focus();
                     });
                     egui::ComboBox::from_label("构造活动")
                         .selected_text(activity_label(editing.tectonic_spec.activity))
@@ -2182,10 +2194,12 @@ impl eframe::App for TemplateApp {
             editing.world_seed = rand::random();
             rebuild = true;
         }
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if cancel_input_edit {
             editing = self.authoring.draft().clone();
         }
-        if ctx.input(|input| input.pointer.any_down()) {
+        // Numeric text (including a slider's value editor) stays transient until
+        // Enter or focus loss. Pointer release remains the drag transaction boundary.
+        if author_input_focused || ctx.input(|input| input.pointer.any_down()) {
             self.input_edit = Some(editing);
         } else if let Err(error) = self.authoring.commit("编辑生成参数".to_owned(), editing) {
             self.spherical_runtime_error = Some(error.to_string());
@@ -2492,6 +2506,133 @@ mod natural_app_tests {
     }
 
     #[test]
+    fn review_regression_nested_unknown_scientific_inputs_are_rejected_in_both_layouts() {
+        let current = serde_json::to_value(TemplateApp::default()).unwrap();
+        let legacy = current["inputs"].clone();
+        for field in [
+            "spherical_space_spec",
+            "formation_spec",
+            "tectonic_spec",
+            "geologic_spec",
+        ] {
+            let mut unknown_current = current.clone();
+            unknown_current["inputs"][field]["unknown_future_science"] = serde_json::json!("v2");
+            assert!(
+                serde_json::from_value::<TemplateApp>(unknown_current).is_err(),
+                "current {field}"
+            );
+            let mut unknown_legacy = legacy.clone();
+            unknown_legacy[field]["unknown_future_science"] = serde_json::json!("v2");
+            assert!(
+                serde_json::from_value::<TemplateApp>(unknown_legacy).is_err(),
+                "legacy {field}"
+            );
+        }
+    }
+
+    fn authoring_keyboard_frame(
+        app: &mut TemplateApp,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        context.run(world_build_raw_input(events), |context| {
+            eframe::App::update(app, context, &mut eframe::Frame::_new_kittest());
+        })
+    }
+
+    fn focus_authoring_number(app: &mut TemplateApp, context: &egui::Context, text: &str) {
+        fn find_number(shape: &egui::epaint::Shape, text: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(egui::Rect::from_min_size(shape.pos, shape.galley.size()).center())
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| find_number(shape, text))
+                }
+                _ => None,
+            }
+        }
+        let output = authoring_keyboard_frame(app, context, Vec::new());
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| find_number(&shape.shape, text))
+            .expect("the actual authoring number is visible");
+        for pressed in [true, false] {
+            authoring_keyboard_frame(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        authoring_keyboard_frame(app, context, Vec::new());
+    }
+
+    fn authoring_key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn review_regression_seed_keyboard_text_commits_once_on_enter_and_escape_discards() {
+        let mut app = TemplateApp::default();
+        let context = egui::Context::default();
+        let before = app.authoring.draft().clone();
+        let token = app.authoring.begin_build();
+        focus_authoring_number(&mut app, &context, &before.world_seed.to_string());
+        for text in ["7", "1", "7"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 0, "typing is an uncommitted edit");
+            assert_eq!(app.authoring.draft(), &before);
+            assert!(app.authoring.accepts(token));
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Enter)]);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(!app.authoring.accepts(token));
+        focus_authoring_number(&mut app, &context, "717");
+        for text in ["2", "3"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 1);
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Escape)]);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(app.authoring.undo());
+        assert_eq!(app.authoring.draft(), &before);
+        assert!(!app.authoring.undo());
+    }
+
+    #[test]
+    fn review_regression_plate_keyboard_text_stays_pending_until_confirmation() {
+        let mut app = TemplateApp::default();
+        let context = egui::Context::default();
+        let before = app.authoring.draft().tectonic_spec.plate_count;
+        focus_authoring_number(&mut app, &context, &before.to_string());
+        for text in ["1", "8"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 0);
+            assert_eq!(app.authoring.draft().tectonic_spec.plate_count, before);
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Enter)]);
+        assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18);
+        assert_eq!(app.authoring.revision(), 1);
+    }
+
+    #[test]
     fn persisted_recipe_has_one_input_source_and_no_runtime_or_history() {
         let app = TemplateApp::default();
         let wire = serde_json::to_value(&app).unwrap();
@@ -2531,6 +2672,13 @@ mod natural_app_tests {
         );
         assert!(imported.authoring.is_dirty());
         assert!(!imported.authoring.undo());
+
+        // A recipe serialized at the root is the legacy flat input layout.
+        // Reuse its production fields to exercise every nested strict decoder in RON.
+        let inputs = imported.authoring.draft().clone();
+        eframe::set_value(&mut storage, eframe::APP_KEY, &inputs);
+        let fully_imported: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
+        assert_eq!(fully_imported.authoring.draft(), &inputs);
     }
 
     #[derive(Default)]
