@@ -639,7 +639,7 @@ impl<'de> Deserialize<'de> for SphericalCanvasState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct MapCamerasWire {
     equal_earth_pan: [f64; 2],
@@ -686,7 +686,7 @@ impl MapCamerasWire {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct GlobeCameraWire {
     orientation_xyzw: [f64; 4],
@@ -774,6 +774,130 @@ impl SphericalFieldStateWire {
         state.set_vector_paused(self.vector_paused);
         state.set_vector_display_speed(self.vector_display_speed)?;
         Ok(state)
+    }
+}
+
+/// Strict project preferences; transient entity selection and animation phase are excluded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SphericalCanvasPreferencesWire {
+    view_mode: SphericalViewMode,
+    projection_kind: SphericalProjectionKind,
+    central_meridian_radians: f64,
+    #[serde(deserialize_with = "strict_camera_preferences")]
+    map_cameras: MapCamerasWire,
+    #[serde(deserialize_with = "strict_camera_preferences")]
+    globe_camera: GlobeCameraWire,
+    #[serde(deserialize_with = "explicit_project_option")]
+    fill_field: Option<ProjectFieldId>,
+    #[serde(deserialize_with = "explicit_project_option")]
+    overlay_field: Option<ProjectFieldId>,
+    vector_paused: bool,
+}
+
+fn explicit_project_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+// The old app restore path retains its defaultable camera wire. Project files demand
+// precisely the same complete field set, then reuse its conversion and validation.
+fn strict_camera_preferences<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Serialize + serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let expected = serde_json::to_value(T::default()).map_err(serde::de::Error::custom)?;
+    let fields = expected
+        .as_object()
+        .expect("camera preferences serialize as an object");
+    let object = value
+        .as_object()
+        .ok_or_else(|| serde::de::Error::custom("camera object required"))?;
+    if object.len() != fields.len() || object.keys().any(|key| !fields.contains_key(key)) {
+        return Err(serde::de::Error::custom(
+            "unknown or missing camera preference fields",
+        ));
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectFieldId {
+    namespace: String,
+    name: String,
+    version: u16,
+}
+
+impl ProjectFieldId {
+    fn from_field(field: &FieldId) -> Self {
+        Self {
+            namespace: field.namespace().to_owned(),
+            name: field.name().to_owned(),
+            version: field.version(),
+        }
+    }
+
+    fn try_into_field(self) -> Result<FieldId, crate::world::fields::FieldSchemaError> {
+        FieldId::new(self.namespace, self.name, self.version)
+    }
+}
+
+impl Default for SphericalCanvasPreferencesWire {
+    fn default() -> Self {
+        Self::from_state(&SphericalCanvasState::default())
+    }
+}
+
+impl SphericalCanvasPreferencesWire {
+    /// Captures only project preferences using the existing camera wire semantics.
+    pub(crate) fn from_state(state: &SphericalCanvasState) -> Self {
+        Self {
+            view_mode: state.view_mode,
+            projection_kind: state.projection.kind(),
+            central_meridian_radians: state.projection.central_meridian(),
+            map_cameras: MapCamerasWire::from_camera(state.map_camera),
+            globe_camera: GlobeCameraWire::from_camera(state.globe_camera),
+            fill_field: state
+                .field_state
+                .fill_field()
+                .map(ProjectFieldId::from_field),
+            overlay_field: state
+                .field_state
+                .overlay_field()
+                .map(ProjectFieldId::from_field),
+            vector_paused: state.field_state.vector_paused(),
+        }
+    }
+
+    /// Validates and restores preferences with a fresh transient display state.
+    pub(crate) fn try_into_state(self) -> Result<SphericalCanvasState, SphericalUiError> {
+        let mut field_state = SphericalFieldDisplayState::default();
+        if let Some(field) = self.fill_field {
+            field_state.select_fill(field.try_into_field()?);
+        }
+        field_state.select_overlay(
+            self.overlay_field
+                .map(ProjectFieldId::try_into_field)
+                .transpose()?,
+        );
+        field_state.set_vector_paused(self.vector_paused);
+        Ok(SphericalCanvasState {
+            view_mode: self.view_mode,
+            projection: SphericalProjection::new(
+                self.projection_kind,
+                self.central_meridian_radians,
+            )?,
+            map_camera: self.map_cameras.try_into_camera()?,
+            globe_camera: self.globe_camera.try_into_camera()?,
+            field_state,
+            vector_animation: VectorAnimationUniform::default(),
+        })
     }
 }
 
@@ -1805,6 +1929,9 @@ fn format_field_id(field: &FieldId) -> String {
 /// UI state and persistence validation failures.
 #[derive(Debug, Error)]
 pub enum SphericalUiError {
+    /// A persisted field selection contains an invalid stable identifier.
+    #[error(transparent)]
+    FieldSchema(#[from] crate::world::fields::FieldSchemaError),
     /// A projection parameter was not finite or supported.
     #[error(transparent)]
     Projection(#[from] SphericalProjectionError),

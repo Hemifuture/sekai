@@ -1834,28 +1834,42 @@ pub fn build_spherical_formation_external_artifacts(
         WorldFormationGenerator::resolve_for_roll(formation, (root_seed.raw() % 100) as u32)?;
     let mut external = ExternalArtifacts::new();
     external.insert(NaturalQualityProfileArtifact::new(quality_profile))?;
-    external.insert(ResolvedTectonicInputArtifact::new(
-        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, tectonic.clone())?,
-    ))?;
+    let (resolved_tectonic, resolved_geologic) = formation_authored_models(tectonic, geologic)?;
+    external.insert(ResolvedTectonicInputArtifact::new(resolved_tectonic))?;
     external.insert(ResolvedWorldFormationArtifact::new(resolved_formation))?;
-    external.insert(ResolvedGeologicInputArtifact::new(
-        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, geologic.clone())?,
-    ))?;
+    external.insert(ResolvedGeologicInputArtifact::new(resolved_geologic))?;
     external.insert(ReliefSpecArtifact::new(relief.clone()))?;
-    external.insert(ResolvedClimateInputArtifact::new(
+    let (climate, hydro_erosion) = formation_implicit_models()?;
+    external.insert(ResolvedClimateInputArtifact::new(climate))?;
+    external.insert(ResolvedHydroErosionInputArtifact::new(hydro_erosion))?;
+    external.insert(SphericalSurfaceArtifact::new(surface.clone()))?;
+    Ok(external)
+}
+
+/// Shared compiled model bindings for the authored formation inputs.
+pub(super) fn formation_authored_models(
+    tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
+) -> Result<(ResolvedTectonicInput, ResolvedGeologicInput), SphericalPresentationError> {
+    Ok((
+        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, tectonic.clone())?,
+        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, geologic.clone())?,
+    ))
+}
+
+/// Shared fixed climate/hydro inputs for both generation and recipe compatibility.
+pub(super) fn formation_implicit_models(
+) -> Result<(ResolvedClimateInput, ResolvedHydroErosionInput), SphericalPresentationError> {
+    Ok((
         ResolvedClimateInput::new(
             ClimateModel::SeasonalEnergyMoistureV1,
             ClimateSpec::default(),
         )?,
-    ))?;
-    external.insert(ResolvedHydroErosionInputArtifact::new(
         ResolvedHydroErosionInput::new(
             HydroErosionModel::PriorityFloodStreamPowerV1,
             HydroErosionSpec::default(),
         )?,
-    ))?;
-    external.insert(SphericalSurfaceArtifact::new(surface.clone()))?;
-    Ok(external)
+    ))
 }
 
 /// Binds one complete document to every presentation derivative for the view.

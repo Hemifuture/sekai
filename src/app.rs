@@ -9,6 +9,7 @@ mod field_document;
 mod frame_stats;
 mod natural_field_payloads;
 mod pipeline;
+mod project_file;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;

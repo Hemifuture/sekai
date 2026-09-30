@@ -6,6 +6,11 @@ pub(super) const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
 /// Root seed used by a newly authored product world.
 pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 
+/// Compatibility epoch for generation semantics outside existing domain/stage versions.
+/// Changes to P1, RNG binding, or profile numeric policy must bump their owning version
+/// or this epoch. Application releases alone do not change recipe compatibility.
+pub(super) const PRODUCT_RECIPE_GENERATOR_VERSION: u32 = 1;
+
 /// Which authoritative generation chain the spherical canvas builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorldPipeline {
