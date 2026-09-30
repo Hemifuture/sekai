@@ -1,0 +1,10 @@
+{
+  "Revision": "a716138ad619ebc2cd335b7a7fdaa6b79c6876ab",
+  "Executable": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\generation_latency-654241cadc112d50.exe",
+  "SHA256": "93FCC9074946CF78AB1D7934022B43517EDD1BBFAEA89A49649EFC94135DC920",
+  "CompileSeconds": 145,
+  "SourceUnchanged": true,
+  "Cache": "fresh process + fresh MemoryStageCache per cold sample",
+  "CARGO_INCREMENTAL": "0",
+  "Target": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target"
+}

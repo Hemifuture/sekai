@@ -5,6 +5,7 @@ use thiserror::Error;
 
 mod amplified_mesh;
 mod authoring;
+mod build_metrics;
 mod field_document;
 mod frame_stats;
 mod natural_field_payloads;
@@ -42,6 +43,7 @@ pub use spherical_presentation::{
 };
 
 use authoring::{AuthorInputs, AuthoringSession, BuildToken, RecipeId};
+use build_metrics::{BuildObservation, BuildOutcome, BuildPhase};
 use frame_stats::{emit_runtime_line, FrameSampler};
 
 use crate::{
@@ -532,6 +534,7 @@ struct WorldBuildCompletion {
 /// One successful open's one-shot rebuild intent; never persisted.
 #[derive(Debug, Clone, Copy)]
 struct PendingOpenBuild {
+    timing: Option<build_metrics::OpenTiming>,
     epoch: u64,
     recipe_id: RecipeId,
 }
@@ -640,6 +643,7 @@ pub struct TemplateApp {
     spherical_inspector_cache: SphericalInspectorCache,
     stage_cache: MemoryStageCache,
     frame_sampler: FrameSampler,
+    build_observation: Option<BuildObservation>,
     frame_stats_persisted_canvas_state: Option<crate::ui::spherical::SphericalCanvasState>,
 }
 
@@ -800,6 +804,7 @@ impl Default for TemplateApp {
             spherical_inspector_cache: SphericalInspectorCache::default(),
             stage_cache: MemoryStageCache::new(),
             frame_sampler: frame_stats::runtime_frame_sampler(),
+            build_observation: None,
             frame_stats_persisted_canvas_state: None,
         }
     }
@@ -1351,9 +1356,18 @@ impl TemplateApp {
     /// [`Self::poll_world_build`] installs the finished candidate. A second
     /// request while one build is pending is ignored.
     fn request_spherical_world_build(&mut self) {
+        self.request_spherical_world_build_observed(None);
+    }
+
+    fn request_spherical_world_build_observed(
+        &mut self,
+        origin: Option<build_metrics::OpenTiming>,
+    ) {
         if self.world_build.is_some() {
             return;
         }
+        let request_started =
+            origin.map_or_else(std::time::Instant::now, |timing| timing.started_at);
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
@@ -1375,6 +1389,20 @@ impl TemplateApp {
             (token, cancellation),
             is_replacement,
         );
+        self.build_observation = self
+            .frame_sampler
+            .is_requested_or_enabled()
+            .then(|| BuildObservation::new(token, request_started));
+        let observation = self.build_observation.clone();
+        if observation.is_some() {
+            if let Some(timing) = origin {
+                emit_runtime_line(&format!("SEKAI_BUILD_ORIGIN token={token:?} origin=open read_and_decode_s={:.6} pre_worker_s={:.6} includes_compatibility_confirmation_and_previous_worker_wait=true", timing.read_and_decode.as_secs_f64(), request_started.elapsed().as_secs_f64()));
+            } else {
+                emit_runtime_line(&format!(
+                    "SEKAI_BUILD_ORIGIN token={token:?} origin=build_request"
+                ));
+            }
+        }
         let worker = std::thread::spawn(move || {
             let AuthorInputs {
                 world_seed,
@@ -1390,6 +1418,9 @@ impl TemplateApp {
             let mut stage_cache = stage_cache;
             let mut formation_surface = formation_surface;
             let result = (|| -> Result<SphericalPresentationCandidate, String> {
+                let input_timing = observation
+                    .as_ref()
+                    .map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
                 let target = match pipeline {
                     WorldPipeline::Formation => {
                         let radius_m = space.radius.get();
@@ -1426,7 +1457,8 @@ impl TemplateApp {
                         crate::app::SphericalWorldBuildTarget::LegacyFoundation { space }
                     }
                 };
-                run_spherical_world_build(
+                drop(input_timing);
+                spherical_presentation::run_spherical_world_build_observed(
                     SphericalWorldBuildRequest {
                         root_seed,
                         target,
@@ -1440,6 +1472,7 @@ impl TemplateApp {
                     },
                     &mut stage_cache,
                     &worker_cancellation,
+                    observation.as_ref(),
                 )
                 .map_err(|error| {
                     // Surface the report's error diagnostics: "inspect the
@@ -1461,6 +1494,9 @@ impl TemplateApp {
             // The T1 v2 hierarchical engine is the value source; the bake
             // installs the uniform global selection and the camera-driven
             // detail engine refines it after install (plan M2 Task 3).
+            let amplified_timing = observation
+                .as_ref()
+                .map(|o| o.span(BuildPhase::Presentation, Some(1)));
             let amplified = if worker_cancellation.is_cancelled() {
                 None
             } else {
@@ -1514,6 +1550,18 @@ impl TemplateApp {
                     })
                 })
             };
+            drop(amplified_timing);
+            if observation.is_some() {
+                let report = match &result {
+                    Ok(candidate) => Some(candidate.report()),
+                    Err(_) => None,
+                };
+                if let Some(report) = report {
+                    for stage in report.stages() {
+                        emit_runtime_line(&format!("SEKAI_BUILD_STAGE token={token:?} stage={} duration_s={:.6} cache_hit={} source=build_report", stage.stage_id(), stage.duration().as_secs_f64(), stage.cache_hit()));
+                    }
+                }
+            }
             let _ = sender.send(WorldBuildCompletion {
                 token,
                 result,
@@ -1529,6 +1577,13 @@ impl TemplateApp {
 
     fn show_pending_world_build_status(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let pending = self.world_build.as_ref()?;
+        if pending.cancellation.is_cancelled() {
+            if let Some(observation) = &mut self.build_observation {
+                observation
+                    .cancel_feedback_at
+                    .get_or_insert(observation.started_at.elapsed());
+            }
+        }
         let mut cancel_rect = None;
         let mut cancel_requested = false;
         ui.horizontal(|ui| {
@@ -1585,6 +1640,15 @@ impl TemplateApp {
         }
         if let Some(pending) = &mut self.world_build {
             if !self.authoring.accepts(pending.token) || pending.cancellation.is_cancelled() {
+                if let Some(observation) = &mut self.build_observation {
+                    observation
+                        .termination
+                        .get_or_insert(if pending.cancellation.is_cancelled() {
+                            BuildOutcome::Cancelled
+                        } else {
+                            BuildOutcome::Stale
+                        });
+                }
                 pending.cancellation.cancel();
                 if self.authoring.accepts(pending.token) {
                     self.authoring.invalidate_build();
@@ -1606,7 +1670,13 @@ impl TemplateApp {
                     .worker
                     .take()
                     .expect("the finished worker was present");
+                if let Some(observation) = &self.build_observation {
+                    observation.worker_exited();
+                }
                 if worker.join().is_err() {
+                    if let Some(observation) = &mut self.build_observation {
+                        observation.termination = Some(BuildOutcome::Failed);
+                    }
                     pending.cancellation.cancel();
                     self.authoring.invalidate_build();
                     if let Some((_, completion)) = &mut pending.completion {
@@ -1677,6 +1747,10 @@ impl TemplateApp {
                 self.stage_cache =
                     settle_world_build_stage_cache(orphaned, pending.retained_stage_cache, false);
                 self.spherical_runtime_error = Some("世界构建线程意外终止".to_owned());
+                if let Some(observation) = self.build_observation.take() {
+                    observation.worker_exited();
+                    observation.emit(observation.termination.unwrap_or(BuildOutcome::Failed));
+                }
                 // The status row of this pass was drawn before this poll, and
                 // the pending build that kept asking for repaints is gone, so
                 // the error needs one requested pass to become visible.
@@ -1696,6 +1770,19 @@ impl TemplateApp {
 
     /// Revokes publication authority immediately; the worker exits cooperatively.
     fn cancel_world_build(&mut self) {
+        if let (Some(observation), Some(pending)) = (&mut self.build_observation, &self.world_build)
+        {
+            observation
+                .cancel_requested_at
+                .get_or_insert(observation.started_at.elapsed());
+            observation
+                .termination
+                .get_or_insert(if self.authoring.accepts(pending.token) {
+                    BuildOutcome::Cancelled
+                } else {
+                    BuildOutcome::Stale
+                });
+        }
         self.authoring.invalidate_build();
         self.pending_open_build = None;
         if let Some(pending) = &self.world_build {
@@ -1716,7 +1803,7 @@ impl TemplateApp {
             return false;
         }
         self.pending_open_build = None;
-        self.request_spherical_world_build();
+        self.request_spherical_world_build_observed(intent.timing);
         true
     }
 
@@ -1907,6 +1994,9 @@ impl TemplateApp {
         let token = pending.token;
         let cancellation = pending.cancellation.clone();
         let working_cache = completion.stage_cache.clone();
+        if let Some(observation) = &self.build_observation {
+            observation.worker_exited();
+        }
         let install = if cancellation.is_cancelled() {
             Err(AppRuntimeError::WorldBuild("已取消本次世界构建".to_owned()))
         } else if completion.token != token || !self.authoring.accepts(token) {
@@ -1914,6 +2004,10 @@ impl TemplateApp {
         } else if let Err(error) = &completion.result {
             Err(AppRuntimeError::WorldBuild(error.clone()))
         } else if let Some(render_state) = self.render_state.clone() {
+            let _gpu_timing = self
+                .build_observation
+                .as_ref()
+                .map(|o| o.span(BuildPhase::GpuInstall, None));
             self.prepare_world_publication(completion, &render_state)
                 .and_then(|prepared| self.commit_world_publication(prepared, &render_state))
         } else {
@@ -1935,6 +2029,25 @@ impl TemplateApp {
                 intent.epoch == token.epoch && intent.recipe_id == token.recipe_id
             }) {
                 self.pending_open_build = None;
+            }
+        }
+        if let Some(observation) = &mut self.build_observation {
+            if install.is_ok() {
+                observation
+                    .metrics
+                    .lock()
+                    .expect("timing lock")
+                    .finish(BuildOutcome::Published);
+            } else {
+                let outcome = observation.termination.unwrap_or(
+                    if matches!(&install, Err(AppRuntimeError::StaleWorldBuild)) {
+                        BuildOutcome::Stale
+                    } else {
+                        BuildOutcome::Failed
+                    },
+                );
+                observation.emit(outcome);
+                self.build_observation = None;
             }
         }
         self.spherical_runtime_error = install.err().map(|error| error.to_string());
@@ -2173,6 +2286,37 @@ impl TemplateApp {
                     true
                 })
             });
+            if queued
+                && self.build_observation.as_ref().is_some_and(|o| {
+                    let metrics = o.metrics.lock().expect("timing lock");
+                    metrics.outcome == BuildOutcome::Published
+                        && Some(metrics.token) == self.published_world_token
+                })
+            {
+                let observation = self
+                    .build_observation
+                    .take()
+                    .expect("the published observation exists");
+                let start = observation
+                    .metrics
+                    .lock()
+                    .expect("timing lock")
+                    .spans
+                    .iter()
+                    .filter(|span| span.parent.is_none())
+                    .map(|span| span.start + span.duration)
+                    .max()
+                    .unwrap_or_default();
+                observation.metrics.lock().expect("timing lock").record(
+                    build_metrics::TimingSpan {
+                        phase: BuildPhase::FirstSubmittedFrame,
+                        start,
+                        duration: observation.started_at.elapsed().saturating_sub(start),
+                        parent: None,
+                    },
+                );
+                observation.emit(BuildOutcome::Published);
+            }
             if !queued {
                 ui.centered_and_justified(|ui| {
                     ui.label("球面世界尚未发布");
@@ -2246,10 +2390,14 @@ impl eframe::App for TemplateApp {
         }
         if let Some(stats) = self.frame_sampler.take_unreported_completed() {
             emit_runtime_line(&format!(
-                "SEKAI_FRAME_STATS average_fps={:.3} one_percent_low_fps={:.3} samples={} window=10s",
+                "SEKAI_FRAME_STATS average_fps={:.3} one_percent_low_fps={:.3} samples={} window=10s source=update_interval interval_p50_ms={:.3} interval_p95_ms={:.3} interval_p99_ms={:.3} interval_max_ms={:.3}",
                 stats.average_fps(),
                 stats.one_percent_low_fps(),
-                stats.sample_count()
+                stats.sample_count(),
+                stats.interval_quantiles_seconds()[0] * 1000.0,
+                stats.interval_quantiles_seconds()[1] * 1000.0,
+                stats.interval_quantiles_seconds()[2] * 1000.0,
+                stats.interval_quantiles_seconds()[3] * 1000.0,
             ));
         }
         if self.frame_sampler.is_sampling() {
@@ -5775,6 +5923,7 @@ mod phase_a_tests {
         app.authoring.commit("edit".into(), next).unwrap();
         let stamp = app.authoring.capture_save();
         app.pending_open_build = Some(PendingOpenBuild {
+            timing: None,
             epoch: stamp.epoch,
             recipe_id: stamp.recipe_id,
         });
@@ -6305,6 +6454,7 @@ mod phase_a_tests {
         app.world_build = Some(pending);
         let stamp = app.authoring.capture_save();
         app.pending_open_build = Some(PendingOpenBuild {
+            timing: None,
             epoch: stamp.epoch,
             recipe_id: stamp.recipe_id,
         });
@@ -6329,5 +6479,200 @@ mod phase_a_tests {
         }
         assert!(!app.try_start_open_build());
         assert!(!app.authoring.accepts(token));
+    }
+}
+
+#[cfg(test)]
+mod build_metrics_app_tests {
+    use super::*;
+
+    fn tiny_observed_app() -> TemplateApp {
+        let mut app = TemplateApp::default();
+        let mut inputs = app.authoring.draft().clone();
+        inputs.spherical_space_spec.target_cell_count = 162;
+        app.authoring = AuthoringSession::new(inputs).unwrap();
+        app.frame_sampler.start(0.0);
+        app
+    }
+
+    fn exit_and_settle(app: &mut TemplateApp) {
+        app.world_build
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+        let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+    }
+
+    #[test]
+    fn application_records_real_worker_and_gpu_spans_then_only_marks_queued_world_submission() {
+        let mut app = tiny_observed_app();
+        let wire = serde_json::to_string(&app).unwrap();
+        let recipe_id = app.authoring.draft().recipe_id().unwrap();
+        app.render_state = Some(natural_app_tests::request_test_render_state());
+        app.request_spherical_world_build();
+        assert_eq!(serde_json::to_string(&app).unwrap(), wire);
+        let observation = app.build_observation.clone().unwrap();
+        exit_and_settle(&mut app);
+        {
+            let metrics = observation.metrics.lock().unwrap();
+            assert_eq!(metrics.outcome, BuildOutcome::Published);
+            for phase in [
+                BuildPhase::InputAndSurface,
+                BuildPhase::Graph,
+                BuildPhase::Presentation,
+                BuildPhase::GpuInstall,
+            ] {
+                assert!(metrics.spans.iter().any(|span| span.phase == phase));
+            }
+            assert!(!metrics
+                .spans
+                .iter()
+                .any(|span| span.phase == BuildPhase::FirstSubmittedFrame));
+        }
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.show_active_canvas_after_actions(ctx, Vec::new()),
+        );
+        assert!(app.build_observation.is_none());
+        let metrics = observation.metrics.lock().unwrap();
+        assert_eq!(
+            metrics
+                .spans
+                .iter()
+                .filter(|span| span.phase == BuildPhase::FirstSubmittedFrame)
+                .count(),
+            1
+        );
+        assert_eq!(app.authoring.draft().recipe_id().unwrap(), recipe_id);
+    }
+
+    #[test]
+    fn application_classifies_cancel_stale_and_failed_without_success_submission() {
+        for expected in [
+            BuildOutcome::Cancelled,
+            BuildOutcome::Stale,
+            BuildOutcome::Failed,
+        ] {
+            let mut app = tiny_observed_app();
+            let token = app.authoring.begin_build();
+            let observation = BuildObservation::new(token, std::time::Instant::now());
+            app.build_observation = Some(observation.clone());
+            let (_, receiver) = std::sync::mpsc::channel();
+            let (_, mut pending) = prepare_pending_world_build(
+                WorldPipeline::LegacyFoundation,
+                MemoryStageCache::new(),
+                receiver,
+                (token, crate::engine::BuildCancellation::new()),
+                false,
+            );
+            pending.completion = Some((
+                0,
+                WorldBuildCompletion {
+                    token,
+                    result: Err("fixture build failure".to_owned()),
+                    stage_cache: MemoryStageCache::new(),
+                    formation_surface: None,
+                    amplified: None,
+                },
+            ));
+            app.world_build = Some(pending);
+            match expected {
+                BuildOutcome::Cancelled => app.cancel_world_build(),
+                BuildOutcome::Stale => {
+                    app.authoring.invalidate_build();
+                }
+                BuildOutcome::Failed => {}
+                BuildOutcome::Published => unreachable!(),
+            }
+            app.settle_staged_world_build();
+            assert!(app.build_observation.is_none());
+            let metrics = observation.metrics.lock().unwrap();
+            assert_eq!(metrics.outcome, expected);
+            assert!(!metrics
+                .spans
+                .iter()
+                .any(|span| span.phase == BuildPhase::FirstSubmittedFrame));
+        }
+    }
+
+    #[test]
+    #[ignore = "release-only offscreen native detached-renderer timing; not real UI or OS present"]
+    fn observe_phase_a_detached_renderer() {
+        let mut app = tiny_observed_app();
+        let mut inputs = app.authoring.draft().clone();
+        inputs.world_pipeline = WorldPipeline::Formation;
+        inputs.formation_quality_profile = match std::env::var("SEKAI_PHASE_A_PROFILE")
+            .as_deref()
+            .unwrap_or("draft")
+        {
+            "draft" => crate::world::natural::NaturalQualityProfile::Draft,
+            "standard" => crate::world::natural::NaturalQualityProfile::Standard,
+            other => panic!("unsupported profile {other}"),
+        };
+        app.authoring = AuthoringSession::new(inputs).unwrap();
+        let render = natural_app_tests::request_test_render_state();
+        eprintln!("PHASE_A_DETACHED_CONFIG profile={:?} seed={} adapter={} target_format={:?} source=offscreen_native_test not_os_present=true", app.authoring.draft().formation_quality_profile, app.authoring.draft().world_seed, render.adapter.get_info().name, render.target_format);
+        app.render_state = Some(render.clone());
+        app.request_spherical_world_build();
+        exit_and_settle(&mut app);
+        assert!(
+            app.spherical_runtime_error.is_none(),
+            "{:?}",
+            app.spherical_runtime_error
+        );
+        // Discard the unsubmitted first attempt, then measure a genuine replacement
+        // with the old publication and candidate both alive through detached preparation.
+        app.build_observation = None;
+        app.request_spherical_world_build();
+        app.world_build
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        let completion = app.world_build.as_ref().unwrap().receiver.recv().unwrap();
+        let before = native_memory();
+        let started = std::time::Instant::now();
+        let prepared = app.prepare_world_publication(completion, &render).unwrap();
+        let duration = started.elapsed();
+        let retained = native_memory();
+        app.commit_world_publication(prepared, &render).unwrap();
+        eprintln!("PHASE_A_DETACHED_SAMPLE outcome=published replacement=true cache=hot preparation_s={:.6} memory_before={before:?} memory_old_plus_detached={retained:?} memory_after_commit={:?} gpu_device_memory=unmeasured validation=included source=offscreen_native_test", duration.as_secs_f64(), native_memory());
+    }
+
+    #[cfg(windows)]
+    fn native_memory() -> Option<(usize, usize)> {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        // Reads this process into the exact Windows C structure; no external process access.
+        let ok =
+            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        (ok != 0).then_some((counters.WorkingSetSize, counters.PeakWorkingSetSize))
+    }
+
+    #[cfg(not(windows))]
+    fn native_memory() -> Option<(usize, usize)> {
+        None
     }
 }

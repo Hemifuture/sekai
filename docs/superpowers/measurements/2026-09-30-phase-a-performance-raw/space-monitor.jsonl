@@ -1,0 +1,7 @@
+{"Utc":"2026-09-30T11:07:01.7990222Z","Phase":"old-release-compile","Free":5728141312,"OwnedReleaseBytes":548602512.0}
+{"Utc":"2026-09-30T11:07:45.8339733Z","Phase":"old-release-compile","Free":5321420800,"OwnedReleaseBytes":984885089.0}
+{"Utc":"2026-09-30T11:08:16.2394452Z","Phase":"old-release-compile","Free":5288919040,"OwnedReleaseBytes":985868070.0}
+{"Utc":"2026-09-30T11:09:54.7318627Z","Phase":"old-release-compile","Free":6199582720,"OwnedReleaseBytes":1182423247.0}
+{"Utc":"2026-09-30T11:23:52.5743158Z","Phase":"current_release_compile_yield","FreeBytes":14896967680,"OwnedReleaseBytes":1215834519.0,"ReserveBytes":1000000000}
+{"Utc":"2026-09-30T11:24:25.8647596Z","Phase":"current_release_compile_yield","FreeBytes":14513500160,"OwnedReleaseBytes":1345770089.0,"ReserveBytes":1000000000}
+{"Utc":"2026-09-30T11:25:11.7129409Z","Phase":"current_release_completed","FreeBytes":14042488832,"OwnedReleaseBytes":1345095800.0,"ReserveBytes":1000000000}

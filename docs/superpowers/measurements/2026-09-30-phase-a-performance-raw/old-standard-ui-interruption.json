@@ -1,0 +1,9 @@
+{
+  "Utc": "2026-09-30T11:16:31.4337103Z",
+  "Pid": 68504,
+  "Executable": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\generation_latency-654241cadc112d50.exe",
+  "Action": "stop_owned_standard_for_requested_UI_probe_idle",
+  "TimingSample": "aborted_not_a_completed_baseline",
+  "ProcessCpuSecondsAtStop": 9.71875,
+  "WallSecondsFromRunnerTimestamps": 130.4461486
+}

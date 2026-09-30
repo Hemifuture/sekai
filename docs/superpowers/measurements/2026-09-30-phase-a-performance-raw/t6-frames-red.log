@@ -1,0 +1,74 @@
+warning: variants `InputAndSurface`, `Presentation`, `GpuInstall`, and `FirstSubmittedFrame` are never constructed
+  --> src\app\build_metrics.rs:19:5
+   |
+16 | pub(super) enum BuildPhase {
+   |                 ---------- variants in this enum
+...
+19 |     InputAndSurface,
+   |     ^^^^^^^^^^^^^^^
+20 |     Graph,
+21 |     Presentation,
+   |     ^^^^^^^^^^^^
+22 |     GpuInstall,
+   |     ^^^^^^^^^^
+23 |     FirstSubmittedFrame,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `BuildPhase` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `phase`, `start`, `duration`, and `parent` are never read
+  --> src\app\build_metrics.rs:28:9
+   |
+27 | pub(super) struct TimingSpan {
+   |                   ---------- fields in this struct
+28 |     pub phase: BuildPhase,
+   |         ^^^^^
+29 |     pub start: Duration,
+   |         ^^^^^
+30 |     pub duration: Duration,
+   |         ^^^^^^^^
+31 |     pub parent: Option<usize>,
+   |         ^^^^^^
+   |
+   = note: `TimingSpan` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `token` is never read
+  --> src\app\build_metrics.rs:36:9
+   |
+35 | pub(super) struct BuildMetrics {
+   |                   ------------ field in this struct
+36 |     pub token: BuildToken,
+   |         ^^^^^
+   |
+   = note: `BuildMetrics` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `sekai` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running unittests src\lib.rs (target\debug\deps\sekai-d369f725a58f0cff.exe)
+
+running 9 tests
+
+thread 'app::frame_stats::tests::interval_summary_uses_nearest_rank_quantiles_and_maximum' (27932) panicked at src\app\frame_stats.rs:214:9:
+assertion `left == right` failed
+  left: [0.0, 0.0, 0.0, 0.0]
+ right: [0.02, 0.04, 0.04, 0.04]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::frame_stats::tests::disabled_sampler_observation_is_constant_and_does_not_allocate ... ok
+test app::frame_stats::tests::opt_in_sampler_collects_exactly_one_ten_second_window ... ok
+test app::frame_stats::tests::statistics_use_elapsed_update_intervals_and_average_the_slowest_one_percent ... ok
+test app::frame_stats::tests::runtime_opt_in_starts_on_the_first_update_and_reports_once ... ok
+test app::frame_stats::tests::disabling_an_active_sampler_releases_its_opt_in_storage ... ok
+test app::frame_stats::tests::one_percent_low_uses_the_average_of_the_slowest_ceil_one_percent ... ok
+test app::frame_stats::tests::wasm_measurement_scenario_requires_an_exact_medium_wind_pair ... ok
+test app::frame_stats::tests::wasm_query_opt_in_requires_an_exact_enabled_pair ... ok
+test app::frame_stats::tests::interval_summary_uses_nearest_rank_quantiles_and_maximum ... FAILED
+
+failures:
+
+failures:
+    app::frame_stats::tests::interval_summary_uses_nearest_rank_quantiles_and_maximum
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 603 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

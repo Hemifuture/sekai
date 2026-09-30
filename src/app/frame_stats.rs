@@ -67,6 +67,7 @@ pub(super) struct FrameStats {
     sample_count: usize,
     average_fps: f64,
     one_percent_low_fps: f64,
+    interval_quantiles_seconds: [f64; 4],
 }
 
 impl FrameStats {
@@ -91,7 +92,16 @@ impl FrameStats {
             sample_count: intervals.len(),
             average_fps: intervals.len() as f64 / total_seconds,
             one_percent_low_fps: slow_count as f64 / slow_seconds,
+            // Nearest-rank empirical quantiles; raw update intervals, not present times.
+            interval_quantiles_seconds: [50, 95, 99, 100].map(|percent| {
+                let rank = (intervals.len() * percent).div_ceil(100);
+                slowest[intervals.len() - rank]
+            }),
         })
+    }
+
+    pub(super) const fn interval_quantiles_seconds(self) -> [f64; 4] {
+        self.interval_quantiles_seconds
     }
 
     pub(super) const fn sample_count(self) -> usize {
@@ -205,6 +215,12 @@ impl FrameSampler {
 #[cfg(test)]
 mod tests {
     use super::{query_requests_medium_wind, query_requests_sampling, FrameSampler, FrameStats};
+
+    #[test]
+    fn interval_summary_uses_nearest_rank_quantiles_and_maximum() {
+        let stats = FrameStats::from_intervals(&[0.04, 0.01, 0.03, 0.02]).unwrap();
+        assert_eq!(stats.interval_quantiles_seconds(), [0.02, 0.04, 0.04, 0.04]);
+    }
 
     #[test]
     fn wasm_query_opt_in_requires_an_exact_enabled_pair() {

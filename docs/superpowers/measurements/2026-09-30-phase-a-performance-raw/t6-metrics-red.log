@@ -1,0 +1,81 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+warning: variants `InputAndSurface`, `Presentation`, `GpuInstall`, and `FirstSubmittedFrame` are never constructed
+  --> src\app\build_metrics.rs:19:5
+   |
+16 | pub(super) enum BuildPhase {
+   |                 ---------- variants in this enum
+...
+19 |     InputAndSurface,
+   |     ^^^^^^^^^^^^^^^
+20 |     Graph,
+21 |     Presentation,
+   |     ^^^^^^^^^^^^
+22 |     GpuInstall,
+   |     ^^^^^^^^^^
+23 |     FirstSubmittedFrame,
+   |     ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `BuildPhase` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `phase`, `start`, `duration`, and `parent` are never read
+  --> src\app\build_metrics.rs:28:9
+   |
+27 | pub(super) struct TimingSpan {
+   |                   ---------- fields in this struct
+28 |     pub phase: BuildPhase,
+   |         ^^^^^
+29 |     pub start: Duration,
+   |         ^^^^^
+30 |     pub duration: Duration,
+   |         ^^^^^^^^
+31 |     pub parent: Option<usize>,
+   |         ^^^^^^
+   |
+   = note: `TimingSpan` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `token` is never read
+  --> src\app\build_metrics.rs:36:9
+   |
+35 | pub(super) struct BuildMetrics {
+   |                   ------------ field in this struct
+36 |     pub token: BuildToken,
+   |         ^^^^^
+   |
+   = note: `BuildMetrics` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `sekai` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.35s
+     Running unittests src\lib.rs (target\debug\deps\sekai-d369f725a58f0cff.exe)
+
+running 3 tests
+
+thread 'app::build_metrics::tests::terminal_outcomes_keep_cancel_failure_and_stale_out_of_success' (64108) panicked at src\app\build_metrics.rs:74:13:
+assertion `left == right` failed
+  left: Stale
+ right: Published
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'app::build_metrics::tests::nested_spans_do_not_double_count_elapsed_time' (48468) panicked at src\app\build_metrics.rs:65:9:
+assertion `left == right` failed
+  left: 0ns
+ right: 10s
+
+thread 'app::build_metrics::tests::observations_cannot_change_recipe_identity_or_recipe_wire' (39652) panicked at src\app\build_metrics.rs:88:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+test app::build_metrics::tests::terminal_outcomes_keep_cancel_failure_and_stale_out_of_success ... FAILED
+test app::build_metrics::tests::nested_spans_do_not_double_count_elapsed_time ... FAILED
+test app::build_metrics::tests::observations_cannot_change_recipe_identity_or_recipe_wire ... FAILED
+
+failures:
+
+failures:
+    app::build_metrics::tests::nested_spans_do_not_double_count_elapsed_time
+    app::build_metrics::tests::observations_cannot_change_recipe_identity_or_recipe_wire
+    app::build_metrics::tests::terminal_outcomes_keep_cancel_failure_and_stale_out_of_success
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 609 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

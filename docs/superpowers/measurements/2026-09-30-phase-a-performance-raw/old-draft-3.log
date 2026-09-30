@@ -1,0 +1,18 @@
+
+running 1 test
+[latency Draft]    stage natural.climate-work-domain                  0.92 s
+[latency Draft]    stage natural.causal-formation                    65.07 s
+[latency Draft] surface 1.35 s, graph 66.36 s, total 67.72 s (endpoint P4 5 cycles, 720 fast substeps)
+
+thread 'draft_full_chain_within_twenty_seconds' (63776) panicked at tests\generation_latency.rs:66:5:
+Draft full chain took 67.72 s, budget 20 s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test draft_full_chain_within_twenty_seconds ... FAILED
+
+failures:
+
+failures:
+    draft_full_chain_within_twenty_seconds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 67.73s
+

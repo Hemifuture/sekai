@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+     Running unittests src\lib.rs (target\debug\deps\sekai-d369f725a58f0cff.exe)
+
+running 7 tests
+test app::phase_a_tests::publication_completion_waits_for_actual_worker_exit_and_open_intent_is_one_shot ... ok
+test app::phase_a_tests::publication_edit_before_settlement_preserves_world ... ok
+test app::phase_a_tests::publication_failure_does_not_publish_surface_association ... ok
+test app::phase_a_tests::publication_gpu_preparation_failure_preserves_current_world ... ok
+test app::phase_a_tests::publication_new_epoch_rejects_prepared_world ... ok
+test app::phase_a_tests::publication_old_detail_completion_after_epoch_reset_is_rejected ... ok
+test app::phase_a_tests::publication_preparation_and_cancelled_final_guard_preserve_all_consumers ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 610 filtered out; finished in 3.26s
+

@@ -1,5 +1,6 @@
 //! Composition root for one complete source-bound spherical presentation.
 
+use super::build_metrics::{BuildObservation, BuildPhase};
 use std::sync::Arc;
 
 use eframe::egui_wgpu::wgpu;
@@ -781,6 +782,7 @@ impl PublishedSphericalPresentation {
             self.clock(),
             WorldCandidateLineage::Replacement(Arc::new(WorldReplaceBase::from_published(self))),
             &BuildCancellation::new(),
+            None,
         )
     }
 
@@ -1657,6 +1659,7 @@ pub fn build_spherical_formation_candidate_for_view(
         clock,
         WorldCandidateLineage::NoBase,
         &BuildCancellation::new(),
+        None,
     )
 }
 
@@ -1676,7 +1679,9 @@ fn build_spherical_formation_candidate_with_lineage(
     clock: &DisplayRevisionClock,
     lineage: WorldCandidateLineage,
     cancellation: &BuildCancellation,
+    observation: Option<&BuildObservation>,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    let input_timing = observation.map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
     let external = build_spherical_formation_external_artifacts(
         root_seed,
         quality_profile,
@@ -1686,12 +1691,16 @@ fn build_spherical_formation_candidate_with_lineage(
         relief,
         geologic,
     )?;
+    drop(input_timing);
+    let graph_timing = observation.map(|o| o.span(BuildPhase::Graph, Some(1)));
     let outcome = BuildEngine::new(causal_natural_formation_graph()?).build_with_cancellation(
         root_seed,
         external,
         cache,
         cancellation,
     )?;
+    drop(graph_timing);
+    let _presentation_timing = observation.map(|o| o.span(BuildPhase::Presentation, Some(1)));
     let document = Arc::new(SphericalWorldFieldDocument::Formation(Arc::new(
         SphericalFormationFieldDocument::from_build_outcome(&outcome)?,
     )));
@@ -1763,6 +1772,16 @@ pub fn run_spherical_world_build(
     cache: &mut MemoryStageCache,
     cancellation: &BuildCancellation,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    run_spherical_world_build_observed(request, cache, cancellation, None)
+}
+
+/// App-only timing at the existing causal boundaries; validation remains included.
+pub(super) fn run_spherical_world_build_observed(
+    request: SphericalWorldBuildRequest,
+    cache: &mut MemoryStageCache,
+    cancellation: &BuildCancellation,
+    observation: Option<&BuildObservation>,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     let (lineage, clock) = match request.replacement {
         Some(token) => (token.lineage, token.clock),
         None => (
@@ -1788,8 +1807,10 @@ pub fn run_spherical_world_build(
             &clock,
             lineage,
             cancellation,
+            observation,
         ),
         SphericalWorldBuildTarget::LegacyFoundation { space } => {
+            let input_timing = observation.map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
             let external = build_spherical_external_artifacts(
                 &space,
                 &request.formation,
@@ -1797,8 +1818,13 @@ pub fn run_spherical_world_build(
                 &request.relief,
                 &request.geologic,
             )?;
+            drop(input_timing);
+            let graph_timing = observation.map(|o| o.span(BuildPhase::Graph, Some(1)));
             let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
                 .build_with_cancellation(request.root_seed, external, cache, cancellation)?;
+            drop(graph_timing);
+            let _presentation_timing =
+                observation.map(|o| o.span(BuildPhase::Presentation, Some(1)));
             let document = Arc::new(SphericalWorldFieldDocument::NaturalFoundation(Arc::new(
                 SphericalNaturalFieldDocument::from_build_outcome(&outcome)?,
             )));

@@ -1,0 +1,11 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.63s
+     Running unittests src\lib.rs (target\debug\deps\sekai-d369f725a58f0cff.exe)
+
+running 3 tests
+test app::build_metrics::tests::terminal_outcomes_keep_cancel_failure_and_stale_out_of_success ... ok
+test app::build_metrics::tests::nested_spans_do_not_double_count_elapsed_time ... ok
+test app::build_metrics::tests::observations_cannot_change_recipe_identity_or_recipe_wire ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 609 filtered out; finished in 0.00s
+

@@ -41,6 +41,7 @@ enum ProjectIoOutcome {
 
 /// One short native worker, distinct from the single world-build slot.
 struct PendingProjectIo {
+    timing: Option<IoTiming>,
     id: u64,
     epoch: u64,
     revision: u64,
@@ -76,6 +77,7 @@ enum ConfirmationKind {
         loaded: Box<LoadedProject>,
         current: GeneratorIdentity,
         compatibility: Compatibility,
+        timing: Option<super::build_metrics::OpenTiming>,
     },
     Overwrite {
         path: PathBuf,
@@ -299,7 +301,21 @@ impl TemplateApp {
             }
             .into(),
         );
+        let timing = self
+            .frame_sampler
+            .is_requested_or_enabled()
+            .then(|| IoTiming {
+                started_at: std::time::Instant::now(),
+                operation: match task {
+                    IoTask::Read => "read_and_decode",
+                    IoTask::Save(..) => "encode_validate_and_save",
+                    IoTask::InspectOverwrite => "read_decode_and_inspect",
+                },
+                duration: std::sync::Arc::new(std::sync::OnceLock::new()),
+            });
+        let worker_timing = timing.clone();
         let worker = std::thread::spawn(move || {
+            let started = worker_timing.as_ref().map(|_| std::time::Instant::now());
             let result = match task {
                 IoTask::Read => read_project(&worker_path)
                     .map(Box::new)
@@ -323,10 +339,14 @@ impl TemplateApp {
                     }
                 }
             };
+            if let (Some(timing), Some(started)) = (&worker_timing, started) {
+                let _ = timing.duration.set(started.elapsed());
+            }
             let _ = sender.send(ProjectIoCompletion { id, epoch, result });
             worker_ctx.request_repaint();
         });
         self.project_ui.io = Some(PendingProjectIo {
+            timing,
             id,
             epoch,
             revision: self.authoring.revision(),
@@ -353,6 +373,9 @@ impl TemplateApp {
         }
         if let Some(worker) = pending.worker.take() {
             if worker.join().is_err() {
+                if let Some(timing) = &pending.timing {
+                    timing.emit("failed");
+                }
                 self.project_ui.status = Some("文件操作失败：线程意外终止".into());
                 self.project_ui.io = None;
                 self.project_ui.after_save = None;
@@ -367,6 +390,9 @@ impl TemplateApp {
                 return;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
+                if let Some(timing) = &pending.timing {
+                    timing.emit("failed");
+                }
                 self.project_ui.io = None;
                 self.project_ui.after_save = None;
                 self.project_ui.status = Some("文件操作失败：线程没有返回结果".into());
@@ -383,7 +409,23 @@ impl TemplateApp {
             || completion.epoch != pending.epoch
             || completion.epoch != self.authoring.capture_save().epoch
         {
+            if let Some(timing) = &pending.timing {
+                timing.emit("stale");
+            }
             return;
+        }
+        if let Some(timing) = &pending.timing {
+            if let Err(error) = &completion.result {
+                super::emit_runtime_line(&format!(
+                    "SEKAI_PROJECT_IO_ERROR operation={} error={error}",
+                    timing.operation
+                ));
+            }
+            timing.emit(if completion.result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            });
         }
         self.project_ui.conflict_path = None;
         match completion.result {
@@ -393,7 +435,16 @@ impl TemplateApp {
                     // while it ran. Re-read only after another explicit choice.
                     self.dispatch_project_action(ProjectAction::Open(pending.path), ctx);
                 } else {
-                    self.receive_open_project(pending.path, *loaded);
+                    let timing = pending.timing.as_ref().and_then(|timing| {
+                        timing
+                            .duration
+                            .get()
+                            .map(|duration| super::build_metrics::OpenTiming {
+                                started_at: timing.started_at,
+                                read_and_decode: *duration,
+                            })
+                    });
+                    self.receive_open_project_observed(pending.path, *loaded, timing);
                 }
             }
             Ok(ProjectIoOutcome::Inspected(disk_stamp)) => {
@@ -456,7 +507,17 @@ impl TemplateApp {
         ctx.request_repaint();
     }
 
+    #[cfg(test)]
     fn receive_open_project(&mut self, path: PathBuf, loaded: LoadedProject) {
+        self.receive_open_project_observed(path, loaded, None);
+    }
+
+    fn receive_open_project_observed(
+        &mut self,
+        path: PathBuf,
+        loaded: LoadedProject,
+        timing: Option<super::build_metrics::OpenTiming>,
+    ) {
         let current = match current_generator_identity(&loaded.file.inputs) {
             Ok(current) => current,
             Err(error) => {
@@ -466,13 +527,14 @@ impl TemplateApp {
         };
         let compatibility = compare_generator(&loaded.file.generator, &current);
         if compatibility == Compatibility::Exact {
-            self.install_open_project(path, loaded, false, false);
+            self.install_open_project(path, loaded, false, false, timing);
         } else {
             self.set_project_confirmation(ConfirmationKind::Compatibility {
                 path,
                 loaded: Box::new(loaded),
                 current,
                 compatibility,
+                timing,
             });
         }
     }
@@ -483,6 +545,7 @@ impl TemplateApp {
         loaded: LoadedProject,
         upgraded: bool,
         platform: bool,
+        timing: Option<super::build_metrics::OpenTiming>,
     ) {
         let (canvas, reduce_motion) = match loaded.file.view.clone().try_into_state() {
             Ok(view) => view,
@@ -519,6 +582,7 @@ impl TemplateApp {
         );
         let stamp = self.authoring.capture_save();
         self.pending_open_build = Some(PendingOpenBuild {
+            timing,
             epoch: stamp.epoch,
             recipe_id: stamp.recipe_id,
         });
@@ -559,6 +623,7 @@ impl TemplateApp {
                     mut loaded,
                     current,
                     compatibility,
+                    timing,
                 },
                 ConfirmationChoice::Continue,
             ) => {
@@ -566,7 +631,7 @@ impl TemplateApp {
                 if upgraded {
                     loaded.file = upgrade_copy(&loaded.file, current);
                 }
-                self.install_open_project(path, *loaded, upgraded, !upgraded);
+                self.install_open_project(path, *loaded, upgraded, !upgraded, timing);
             }
             (ConfirmationKind::Overwrite { path, disk_stamp }, ConfirmationChoice::Continue) => {
                 self.start_project_save(
@@ -932,6 +997,7 @@ mod tests {
         let stamp = app.authoring.capture_save();
         app.project_ui.next_io_id += 1;
         app.project_ui.io = Some(PendingProjectIo {
+            timing: None,
             id: app.project_ui.next_io_id,
             epoch: stamp.epoch,
             revision: app.authoring.revision(),
@@ -1355,5 +1421,122 @@ mod tests {
         }
         assert!(!app.try_start_open_build());
         assert!(app.spherical_presentation.read_resource(Option::is_none));
+    }
+}
+
+#[derive(Clone)]
+struct IoTiming {
+    started_at: std::time::Instant,
+    operation: &'static str,
+    duration: std::sync::Arc<std::sync::OnceLock<std::time::Duration>>,
+}
+
+impl IoTiming {
+    fn emit(&self, outcome: &str) {
+        super::emit_runtime_line(&io_timing_line(
+            self.operation,
+            outcome,
+            self.started_at.elapsed(),
+            self.duration.get().copied(),
+        ));
+    }
+}
+
+fn io_timing_line(
+    operation: &str,
+    outcome: &str,
+    elapsed: std::time::Duration,
+    duration: Option<std::time::Duration>,
+) -> String {
+    format!("SEKAI_PROJECT_IO operation={operation} outcome={outcome} request_elapsed_s={:.6} worker_operation_s={:?} validation=included source=native_io", elapsed.as_secs_f64(), duration.map(|duration| duration.as_secs_f64()))
+}
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn io_timing_keeps_worker_duration_separate_from_request_elapsed() {
+        let line = io_timing_line(
+            "read_and_decode",
+            "completed",
+            Duration::from_secs(5),
+            Some(Duration::from_secs(2)),
+        );
+        assert!(line.contains("request_elapsed_s=5.000000"));
+        assert!(line.contains("worker_operation_s=Some(2.0)"));
+        assert!(line.contains("operation=read_and_decode outcome=completed"));
+    }
+
+    #[test]
+    fn actual_small_save_and_open_carry_read_timing_into_one_shot_intent() {
+        let mut app = TemplateApp::default();
+        let mut inputs = app.authoring.draft().clone();
+        inputs.spherical_space_spec.target_cell_count = 162;
+        app.authoring = super::super::AuthoringSession::new(inputs).unwrap();
+        app.frame_sampler.start(0.0);
+        let path = std::env::temp_dir().join(format!(
+            "sekai-phase-a-io-timing-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!path.exists());
+        let ctx = egui::Context::default();
+        let file = ProjectFile::new(app.authoring.draft().clone()).unwrap();
+        app.start_project_io(
+            path.clone(),
+            Some(app.authoring.capture_save()),
+            IoTask::Save(Box::new(file), SaveExpectation::NewFile),
+            &ctx,
+        );
+        app.project_ui
+            .io
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        app.poll_project_io(&ctx);
+        assert_eq!(app.project_ui.path.as_ref(), Some(&path));
+        app.start_project_io(path.clone(), None, IoTask::Read, &ctx);
+        app.project_ui
+            .io
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        app.poll_project_io(&ctx);
+        std::fs::remove_file(&path).unwrap();
+        let intent = app.pending_open_build.unwrap();
+        assert!(
+            intent.timing.is_some(),
+            "real read/decode must survive as open origin timing"
+        );
+        assert!(
+            app.world_build.is_none(),
+            "IO timing must not trigger an extra world build"
+        );
+        assert!(app.try_start_open_build());
+        assert_eq!(
+            app.build_observation.as_ref().unwrap().started_at,
+            intent.timing.unwrap().started_at
+        );
+        app.cancel_world_build();
+        app.world_build
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

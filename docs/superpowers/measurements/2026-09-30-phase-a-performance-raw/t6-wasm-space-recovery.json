@@ -1,0 +1,11 @@
+{
+  "Root": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\wasm32-unknown-unknown",
+  "DeletedFiles": 610,
+  "DeletedLogicalBytes": 440473879.0,
+  "FreeBefore": 5802741760,
+  "FreeAfter": 6227824640,
+  "NetFreeDelta": 425082880,
+  "Reason": "Increase release space margin; own successful wasm check cache only; evidence kept outside target",
+  "ReserveBytes": 1000000000,
+  "PlanningProxyPeakBytes": 4778106805
+}

@@ -1,0 +1,57 @@
+{
+  "captured_utc": "2026-09-30T10:54:33.7084556Z",
+  "cpu": {
+    "Name": "Intel(R) Core(TM) i9-14900KF",
+    "NumberOfCores": 24,
+    "NumberOfLogicalProcessors": 32,
+    "MaxClockSpeed": 3200
+  },
+  "gpu": [
+    {
+      "Name": "OrayIddDriver Device",
+      "DriverVersion": "17.1.58.818",
+      "AdapterRAM": null
+    },
+    {
+      "Name": "MuMu Virtual Display Adapter",
+      "DriverVersion": "20.36.41.498",
+      "AdapterRAM": null
+    },
+    {
+      "Name": "GameViewer Virtual Display Adapter",
+      "DriverVersion": "15.6.5.199",
+      "AdapterRAM": null
+    },
+    {
+      "Name": "NVIDIA GeForce RTX 4080 SUPER",
+      "DriverVersion": "32.0.15.9186",
+      "AdapterRAM": 4293918720
+    }
+  ],
+  "os": {
+    "Caption": "Microsoft Windows 11 专业版",
+    "Version": "10.0.22631",
+    "BuildNumber": "22631",
+    "OSArchitecture": "64 位"
+  },
+  "power": "电源方案 GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (高性能)",
+  "rustc": [
+    "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "binary: rustc",
+    "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+    "commit-date: 2026-08-18",
+    "host: x86_64-pc-windows-msvc",
+    "release: 1.98.0",
+    "LLVM version: 22.1.8"
+  ],
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "incremental": "0",
+  "rustflags": null,
+  "rayon_threads": null,
+  "disk_free": 3755405312,
+  "baseline_revision": "a716138ad619ebc2cd335b7a7fdaa6b79c6876ab",
+  "task_base_revision": "f2ad407507668f9d02727c3b235920738940a8fc",
+  "build_config": "repository Release opt-level=2; no RUSTFLAGS; serial builds and benchmarks",
+  "ui": "unmeasured; no safe isolated persistence launch/control available",
+  "window": "unmeasured for native UI; CPU graph has no window"
+}

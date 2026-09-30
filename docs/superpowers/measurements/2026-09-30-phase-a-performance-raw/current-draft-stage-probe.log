@@ -1,0 +1,17 @@
+
+running 1 test
+[probe Draft] P1 bundle             0.540 s
+[probe Draft] climate domain        0.356 s
+[probe Draft] P2 tectonics          0.695 s
+[probe Draft] P3 substrate          0.437 s
+[probe Draft] P3 relief             1.559 s
+[probe Draft] P4 start forcing      0.306 s
+[probe Draft] P4 start solve       19.793 s
+[probe Draft]    cycles=5 steps=60 fast_substeps=720 final_residual=0.2140
+[probe Draft] P5 + endpoint P4     23.290 s
+[probe Draft]    P5 substeps=1 endpoint cycles=5 steps=60 fast_substeps=720 final_residual=0.2138
+[probe Draft] TOTAL                46.976 s
+test generators::natural::formation::causal::timing_probe::stage_timing_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 46.99s
+

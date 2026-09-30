@@ -1,0 +1,38 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.28s
+     Running unittests src\lib.rs (target\debug\deps\sekai-d369f725a58f0cff.exe)
+
+running 18 tests
+test app::project_ui::tests::actual_open_update_waits_for_old_worker_then_starts_once_and_never_retries_cancel ... ok
+test app::project_ui::tests::compatibility_confirmation_precedes_session_reset_and_generation ... ok
+test app::project_ui::tests::confirmed_platform_open_retains_binding_without_claiming_bitwise_restore ... ok
+test app::project_ui::tests::exit_with_transient_input_requires_unsaved_confirmation ... ok
+test app::project_ui::tests::explicit_upgrade_is_unsaved_unbound_and_preserves_source_identity ... ok
+test app::project_ui::tests::io_id_mismatch_cannot_bind_or_mark_saved ... ok
+
+thread 'app::project_ui::tests::native_worker_save_open_and_confirmed_overwrite_preserve_recipe_identity' (65972) panicked at src\app\project_ui.rs:1293:9:
+assertion failed: app.project_ui.status.as_ref().unwrap().contains("旧配方备份")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::project_ui::tests::native_worker_save_open_and_confirmed_overwrite_preserve_recipe_identity ... FAILED
+test app::project_ui::tests::old_epoch_confirmation_cannot_discard_new_session ... ok
+test app::project_ui::tests::open_completion_and_compatibility_choice_recheck_edits_since_authorization ... ok
+test app::project_ui::tests::path_input_preserves_chinese_and_spaces_and_rejects_relative_paths ... ok
+test app::project_ui::tests::save_a_completion_retains_edit_b_and_does_not_continue_exit ... ok
+test app::project_ui::tests::save_failure_aborts_pending_open_and_exit ... ok
+test app::project_ui::tests::save_rejects_uncommitted_text_and_leaves_session_dirty ... ok
+test app::project_ui::tests::stale_save_cannot_bind_a_new_session ... ok
+test app::project_ui::tests::uncommitted_text_cannot_display_saved_recipe ... ok
+test app::project_ui::tests::upgrade_save_cannot_overwrite_windows_case_or_canonical_source_alias ... ok
+test app::project_ui::timing_tests::actual_small_save_and_open_carry_read_timing_into_one_shot_intent ... SEKAI_PROJECT_IO operation=encode_validate_and_save outcome=completed request_elapsed_s=0.006198 worker_operation_s=Some(0.0060203) validation=included source=native_io
+SEKAI_PROJECT_IO operation=read_and_decode outcome=completed request_elapsed_s=0.000583 worker_operation_s=Some(0.0004091) validation=included source=native_io
+ok
+test app::project_ui::timing_tests::io_timing_keeps_worker_duration_separate_from_request_elapsed ... ok
+
+failures:
+
+failures:
+    app::project_ui::tests::native_worker_save_open_and_confirmed_overwrite_preserve_recipe_identity
+
+test result: FAILED. 17 passed; 1 failed; 0 ignored; 0 measured; 599 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--lib`
