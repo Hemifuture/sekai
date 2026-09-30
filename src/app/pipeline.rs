@@ -41,10 +41,6 @@ pub enum PersistedWorldOrigin {
     SphericalV1,
 }
 
-pub(super) fn missing_world_origin_is_spherical() -> PersistedWorldOrigin {
-    PersistedWorldOrigin::SphericalV1
-}
-
 /// The graph family selected for runtime initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppRuntimeGraph {

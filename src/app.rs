@@ -4,6 +4,7 @@ use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
 mod amplified_mesh;
+mod authoring;
 mod field_document;
 mod frame_stats;
 mod natural_field_payloads;
@@ -35,6 +36,7 @@ pub use spherical_presentation::{
     SphericalWorldFieldDocument,
 };
 
+use authoring::{AuthorInputs, AuthoringSession};
 use frame_stats::{emit_runtime_line, FrameSampler};
 
 use crate::{
@@ -77,11 +79,6 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
-/// The default quality tier for interactive formation builds.
-fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
-    crate::world::natural::NaturalQualityProfile::Draft
-}
-
 /// The authored combo label per quality tier (single source for the selector).
 fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> &'static str {
     match profile {
@@ -567,87 +564,177 @@ fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCa
     canvas.replace_field_state(state);
 }
 
-/// Persisted UI state plus skipped runtime resources for the current natural slice.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+/// A committed authoring session and the current in-memory display resources.
 pub struct TemplateApp {
-    #[serde(default = "pipeline::missing_world_origin_is_spherical")]
     world_origin: PersistedWorldOrigin,
-    #[serde(
-        default = "default_spherical_space_spec",
-        with = "pipeline::spherical_space_spec_serde"
-    )]
-    spherical_space_spec: crate::world::SphericalSpaceSpec,
-    #[serde(default)]
+    authoring: AuthoringSession,
+    input_edit: Option<AuthorInputs>,
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
-    #[serde(default)]
     reduce_loading_motion: bool,
-    world_seed: u64,
-    formation_spec: WorldFormationSpec,
-    tectonic_spec: TectonicSpec,
-    #[serde(default)]
-    relief_spec: ReliefSpec,
-    geologic_spec: GeologicSpec,
-    #[serde(default)]
-    world_pipeline: WorldPipeline,
-    #[serde(default = "default_formation_quality_profile")]
-    formation_quality_profile: crate::world::natural::NaturalQualityProfile,
-    #[serde(skip)]
     formation_surface: Option<FormationSurfaceCacheEntry>,
-    #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
-    #[serde(skip)]
     amplified_detail: Option<AmplifiedDetailEngine>,
-    #[serde(skip)]
     river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
-    #[serde(skip)]
     river_radius_m: Option<f64>,
     /// The active mesh's pre-projected map geometry (worker-produced;
     /// recomputed on the UI thread only when the projection changes).
-    #[serde(skip)]
     amplified_map_projected:
         Option<std::sync::Arc<(Vec<crate::view::AmplifiedMapVertex>, Vec<u32>)>>,
-    #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
-    #[serde(skip)]
     render_state: Option<RenderState>,
-    #[serde(skip)]
     spherical_presentation: SphericalPresentationResource,
-    #[serde(skip)]
     active_runtime_graph: Option<AppRuntimeGraph>,
-    #[serde(skip)]
     active_runtime_stage_ids: Vec<String>,
-    #[serde(skip)]
     spherical_runtime_error: Option<String>,
-    #[serde(skip)]
     spherical_inspector_cache: SphericalInspectorCache,
-    #[serde(skip)]
     stage_cache: MemoryStageCache,
-    #[serde(skip, default = "frame_stats::runtime_frame_sampler")]
     frame_sampler: FrameSampler,
-    #[serde(skip)]
     frame_stats_persisted_canvas_state: Option<crate::ui::spherical::SphericalCanvasState>,
+}
+
+/// Autosave contains only the committed recipe and non-scientific preferences.
+#[derive(serde::Serialize)]
+struct AppPersistenceWire<'a> {
+    schema_version: u16,
+    // Option preserves RON's Some wrapper when the deserialize-only adapter reads it.
+    inputs: Option<&'a AuthorInputs>,
+    spherical_canvas_state: &'a crate::ui::spherical::SphericalCanvasState,
+    reduce_loading_motion: bool,
+}
+
+const APP_AUTOSAVE_SCHEMA_V1: u16 = 1;
+
+/// Reads pre-session autosaves once; these fields never become editable runtime state.
+#[derive(serde::Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct LegacyAppInputsWire {
+    schema_version: u16,
+    inputs: Option<AuthorInputs>,
+    #[serde(rename = "world_origin")]
+    #[serde(deserialize_with = "deserialize_present")]
+    _world_origin: Option<PersistedWorldOrigin>,
+    #[serde(deserialize_with = "deserialize_optional_spherical_space_spec")]
+    spherical_space_spec: Option<crate::world::SphericalSpaceSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    world_seed: Option<u64>,
+    #[serde(deserialize_with = "deserialize_present")]
+    formation_spec: Option<WorldFormationSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    tectonic_spec: Option<TectonicSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    relief_spec: Option<ReliefSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    geologic_spec: Option<GeologicSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    world_pipeline: Option<WorldPipeline>,
+    #[serde(deserialize_with = "deserialize_present")]
+    formation_quality_profile: Option<crate::world::natural::NaturalQualityProfile>,
+    spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
+    reduce_loading_motion: bool,
+}
+
+fn deserialize_present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_optional_spherical_space_spec<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::world::SphericalSpaceSpec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    pipeline::spherical_space_spec_serde::deserialize(deserializer).map(Some)
+}
+
+impl serde::Serialize for TemplateApp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        AppPersistenceWire {
+            schema_version: APP_AUTOSAVE_SCHEMA_V1,
+            inputs: Some(self.authoring.draft()),
+            spherical_canvas_state: &self.spherical_canvas_state,
+            reduce_loading_motion: self.reduce_loading_motion,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TemplateApp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = LegacyAppInputsWire::deserialize(deserializer)?;
+        let inputs = match (wire.schema_version, wire.inputs) {
+            (schema, Some(inputs)) if schema == APP_AUTOSAVE_SCHEMA_V1 => {
+                if wire.world_seed.is_some()
+                    || wire.spherical_space_spec.is_some()
+                    || wire.formation_spec.is_some()
+                    || wire.tectonic_spec.is_some()
+                    || wire.relief_spec.is_some()
+                    || wire.geologic_spec.is_some()
+                    || wire.world_pipeline.is_some()
+                    || wire.formation_quality_profile.is_some()
+                {
+                    return Err(serde::de::Error::custom("mixed legacy and session inputs"));
+                }
+                inputs
+            }
+            (0, None) => {
+                let defaults = AuthorInputs::default();
+                AuthorInputs {
+                    world_seed: wire.world_seed.unwrap_or(defaults.world_seed),
+                    spherical_space_spec: wire
+                        .spherical_space_spec
+                        .unwrap_or(defaults.spherical_space_spec),
+                    world_pipeline: wire.world_pipeline.unwrap_or(defaults.world_pipeline),
+                    formation_quality_profile: wire
+                        .formation_quality_profile
+                        .unwrap_or(defaults.formation_quality_profile),
+                    formation_spec: wire.formation_spec.unwrap_or(defaults.formation_spec),
+                    tectonic_spec: wire.tectonic_spec.unwrap_or(defaults.tectonic_spec),
+                    relief_spec: wire.relief_spec.unwrap_or(defaults.relief_spec),
+                    geologic_spec: wire.geologic_spec.unwrap_or(defaults.geologic_spec),
+                }
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "unsupported or incomplete autosave recipe schema",
+                ))
+            }
+        };
+        // Neither autosave layout carries a verified generation identity yet. T3
+        // supplies that compatibility boundary; recovery remains an unsaved import.
+        let authoring = AuthoringSession::new(inputs).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            authoring,
+            spherical_canvas_state: wire.spherical_canvas_state,
+            reduce_loading_motion: wire.reduce_loading_motion,
+            ..Self::default()
+        })
+    }
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             world_origin: PersistedWorldOrigin::SphericalV1,
-            spherical_space_spec: default_spherical_space_spec(),
+            authoring: AuthoringSession::new(AuthorInputs::default())
+                .expect("default author inputs satisfy domain contracts"),
+            input_edit: None,
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
             reduce_loading_motion: false,
-            world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
-            formation_spec: WorldFormationSpec::default(),
-            tectonic_spec: TectonicSpec::default(),
-            relief_spec: ReliefSpec::default(),
-            geologic_spec: GeologicSpec::default(),
-            world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
             amplified_map_projected: None,
             amplified_detail: None,
             river_polylines: None,
             river_radius_m: None,
-            formation_quality_profile: default_formation_quality_profile(),
             formation_surface: None,
             world_build: None,
             render_state: None,
@@ -670,13 +757,13 @@ impl TemplateApp {
     }
 
     /// Returns the explicit authoring specification for spherical worlds.
-    pub const fn spherical_space_spec(&self) -> &crate::world::SphericalSpaceSpec {
-        &self.spherical_space_spec
+    pub fn spherical_space_spec(&self) -> &crate::world::SphericalSpaceSpec {
+        &self.authoring.draft().spherical_space_spec
     }
 
     /// Returns the runtime graph family for the current pipeline.
-    pub const fn runtime_graph(&self) -> AppRuntimeGraph {
-        match self.world_pipeline {
+    pub fn runtime_graph(&self) -> AppRuntimeGraph {
+        match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         }
@@ -778,17 +865,17 @@ impl TemplateApp {
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let requested_state = self.spherical_canvas_state.field_state().clone();
-        let candidate = match self.world_pipeline {
+        let candidate = match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?.clone();
                 build_spherical_formation_candidate_for_view(
-                    RootSeed::new(self.world_seed),
-                    self.formation_quality_profile,
+                    RootSeed::new(self.authoring.draft().world_seed),
+                    self.authoring.draft().formation_quality_profile,
                     &surface,
-                    &self.formation_spec,
-                    &self.tectonic_spec,
-                    &self.relief_spec,
-                    &self.geologic_spec,
+                    &self.authoring.draft().formation_spec,
+                    &self.authoring.draft().tectonic_spec,
+                    &self.authoring.draft().relief_spec,
+                    &self.authoring.draft().geologic_spec,
                     &mut self.stage_cache,
                     self.spherical_canvas_state.presentation_view_state(),
                     &requested_state,
@@ -796,12 +883,12 @@ impl TemplateApp {
                 )?
             }
             WorldPipeline::LegacyFoundation => build_spherical_presentation_candidate_for_view(
-                RootSeed::new(self.world_seed),
-                &self.spherical_space_spec,
-                &self.formation_spec,
-                &self.tectonic_spec,
-                &self.relief_spec,
-                &self.geologic_spec,
+                RootSeed::new(self.authoring.draft().world_seed),
+                &self.authoring.draft().spherical_space_spec,
+                &self.authoring.draft().formation_spec,
+                &self.authoring.draft().tectonic_spec,
+                &self.authoring.draft().relief_spec,
+                &self.authoring.draft().geologic_spec,
                 &mut self.stage_cache,
                 self.spherical_canvas_state.presentation_view_state(),
                 &requested_state,
@@ -860,7 +947,7 @@ impl TemplateApp {
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
-        self.active_runtime_graph = Some(match self.world_pipeline {
+        self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -1146,8 +1233,8 @@ impl TemplateApp {
     fn formation_profile_surface(
         &mut self,
     ) -> Result<&crate::world::spatial::SphericalSurfaceSnapshot, AppRuntimeError> {
-        let radius_m = self.spherical_space_spec.radius.get();
-        let profile = self.formation_quality_profile;
+        let radius_m = self.authoring.draft().spherical_space_spec.radius.get();
+        let profile = self.authoring.draft().formation_quality_profile;
         let stale = formation_surface_key_is_stale(
             self.formation_surface
                 .as_ref()
@@ -1158,7 +1245,7 @@ impl TemplateApp {
         if stale {
             let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
                 profile,
-                self.spherical_space_spec.radius,
+                self.authoring.draft().spherical_space_spec.radius,
                 &crate::engine::BuildCancellation::new(),
             )?;
             self.formation_surface = Some(FormationSurfaceCacheEntry {
@@ -1186,16 +1273,16 @@ impl TemplateApp {
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
-        let pipeline = self.world_pipeline;
+        let pipeline = self.authoring.draft().world_pipeline;
         let stage_cache = std::mem::take(&mut self.stage_cache);
         let formation_surface = self.formation_surface.take();
-        let quality_profile = self.formation_quality_profile;
-        let root_seed = RootSeed::new(self.world_seed);
-        let space = self.spherical_space_spec.clone();
-        let formation_spec = self.formation_spec.clone();
-        let tectonic_spec = self.tectonic_spec.clone();
-        let relief_spec = self.relief_spec.clone();
-        let geologic_spec = self.geologic_spec.clone();
+        let quality_profile = self.authoring.draft().formation_quality_profile;
+        let root_seed = RootSeed::new(self.authoring.draft().world_seed);
+        let space = self.authoring.draft().spherical_space_spec.clone();
+        let formation_spec = self.authoring.draft().formation_spec.clone();
+        let tectonic_spec = self.authoring.draft().tectonic_spec.clone();
+        let relief_spec = self.authoring.draft().relief_spec.clone();
+        let geologic_spec = self.authoring.draft().geologic_spec.clone();
         let view_state = self.spherical_canvas_state.presentation_view_state();
         let requested_state = self.spherical_canvas_state.field_state().clone();
         let replacement = self
@@ -1539,7 +1626,7 @@ impl TemplateApp {
         &mut self,
         render_state: &RenderState,
     ) -> Result<(), AppRuntimeError> {
-        let candidate = match self.world_pipeline {
+        let candidate = match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?.clone();
                 self.spherical_presentation.read_resource(|current| {
@@ -1547,13 +1634,13 @@ impl TemplateApp {
                         .as_ref()
                         .ok_or(AppRuntimeError::MissingSphericalPublication)?
                         .prepare_formation_replacement_candidate_for_view(
-                            RootSeed::new(self.world_seed),
-                            self.formation_quality_profile,
+                            RootSeed::new(self.authoring.draft().world_seed),
+                            self.authoring.draft().formation_quality_profile,
                             &surface,
-                            &self.formation_spec,
-                            &self.tectonic_spec,
-                            &self.relief_spec,
-                            &self.geologic_spec,
+                            &self.authoring.draft().formation_spec,
+                            &self.authoring.draft().tectonic_spec,
+                            &self.authoring.draft().relief_spec,
+                            &self.authoring.draft().geologic_spec,
                             &mut self.stage_cache,
                             self.spherical_canvas_state.presentation_view_state(),
                             self.spherical_canvas_state.field_state(),
@@ -1567,12 +1654,12 @@ impl TemplateApp {
                         .as_ref()
                         .ok_or(AppRuntimeError::MissingSphericalPublication)?
                         .prepare_replacement_candidate_for_view(
-                            RootSeed::new(self.world_seed),
-                            &self.spherical_space_spec,
-                            &self.formation_spec,
-                            &self.tectonic_spec,
-                            &self.relief_spec,
-                            &self.geologic_spec,
+                            RootSeed::new(self.authoring.draft().world_seed),
+                            &self.authoring.draft().spherical_space_spec,
+                            &self.authoring.draft().formation_spec,
+                            &self.authoring.draft().tectonic_spec,
+                            &self.authoring.draft().relief_spec,
+                            &self.authoring.draft().geologic_spec,
                             &mut self.stage_cache,
                             self.spherical_canvas_state.presentation_view_state(),
                             self.spherical_canvas_state.field_state(),
@@ -1619,7 +1706,7 @@ impl TemplateApp {
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
-        self.active_runtime_graph = Some(match self.world_pipeline {
+        self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -1868,6 +1955,10 @@ impl eframe::App for TemplateApp {
             });
         });
 
+        let mut editing = self
+            .input_edit
+            .take()
+            .unwrap_or_else(|| self.authoring.draft().clone());
         let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
@@ -1887,16 +1978,16 @@ impl eframe::App for TemplateApp {
 
                     ui.horizontal(|ui| {
                         ui.label("根种子");
-                        ui.add(egui::DragValue::new(&mut self.world_seed).range(0..=u64::MAX));
+                        ui.add(egui::DragValue::new(&mut editing.world_seed).range(0..=u64::MAX));
                     });
                     if ui.button("新种子并重建").clicked() {
                         new_seed = true;
                     }
 
                     ui.add_space(8.0);
-                    let previous_preset = self.formation_spec.preset;
+                    let previous_preset = editing.formation_spec.preset;
                     egui::ComboBox::from_label("世界形态")
-                        .selected_text(formation_preset_label(self.formation_spec.preset))
+                        .selected_text(formation_preset_label(editing.formation_spec.preset))
                         .show_ui(ui, |ui| {
                             for preset in [
                                 WorldFormationPreset::Random,
@@ -1907,39 +1998,39 @@ impl eframe::App for TemplateApp {
                                 WorldFormationPreset::VolcanicIslands,
                             ] {
                                 ui.selectable_value(
-                                    &mut self.formation_spec.preset,
+                                    &mut editing.formation_spec.preset,
                                     preset,
                                     formation_preset_label(preset),
                                 );
                             }
                         });
-                    if self.formation_spec.preset != previous_preset {
-                        let selected = self.formation_spec.preset;
+                    if editing.formation_spec.preset != previous_preset {
+                        let selected = editing.formation_spec.preset;
                         apply_formation_preset_selection(
-                            &mut self.formation_spec,
-                            &mut self.tectonic_spec,
-                            &mut self.relief_spec,
+                            &mut editing.formation_spec,
+                            &mut editing.tectonic_spec,
+                            &mut editing.relief_spec,
                             selected,
                         );
                     }
                     ui.horizontal(|ui| {
                         ui.label(INITIAL_PLATE_COUNT_LABEL);
                         ui.add(
-                            egui::DragValue::new(&mut self.tectonic_spec.plate_count)
+                            egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
                                 .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT),
                         );
                     });
-                    if self.world_pipeline == WorldPipeline::Formation {
+                    if editing.world_pipeline == WorldPipeline::Formation {
                         ui.horizontal(|ui| {
                             ui.label("驱动");
                             ui.radio_value(
-                                &mut self.relief_spec.sea_level_policy,
+                                &mut editing.relief_spec.sea_level_policy,
                                 SeaLevelPolicy::WaterInventory,
                                 "陆壳比例",
                             )
                             .on_hover_text("物理解：海平面由表层水量与地形共同决定");
                             ui.radio_value(
-                                &mut self.relief_spec.sea_level_policy,
+                                &mut editing.relief_spec.sea_level_policy,
                                 SeaLevelPolicy::TargetLandFraction,
                                 "陆地占比",
                             )
@@ -1947,14 +2038,14 @@ impl eframe::App for TemplateApp {
                         });
                     }
                     let controls = formation_authoring_control_state(
-                        self.world_pipeline,
-                        &self.relief_spec,
+                        editing.world_pipeline,
+                        &editing.relief_spec,
                         published_area_summary,
                     );
                     if controls.land_fraction_enabled {
                         ui.add(
                             egui::Slider::new(
-                                &mut self.relief_spec.target_land_fraction,
+                                &mut editing.relief_spec.target_land_fraction,
                                 crate::world::natural::MIN_TARGET_LAND_FRACTION
                                     ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
                             )
@@ -1975,7 +2066,7 @@ impl eframe::App for TemplateApp {
                         ui.add_enabled(
                             controls.continental_fraction_enabled,
                             egui::Slider::new(
-                                &mut self.tectonic_spec.continental_crust_fraction,
+                                &mut editing.tectonic_spec.continental_crust_fraction,
                                 MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
                             )
                             .text(if controls.continental_fraction_enabled {
@@ -1988,7 +2079,7 @@ impl eframe::App for TemplateApp {
                         .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
                     });
                     egui::ComboBox::from_label("构造活动")
-                        .selected_text(activity_label(self.tectonic_spec.activity))
+                        .selected_text(activity_label(editing.tectonic_spec.activity))
                         .show_ui(ui, |ui| {
                             for activity in [
                                 TectonicActivity::Quiet,
@@ -1996,15 +2087,15 @@ impl eframe::App for TemplateApp {
                                 TectonicActivity::Active,
                             ] {
                                 ui.selectable_value(
-                                    &mut self.tectonic_spec.activity,
+                                    &mut editing.tectonic_spec.activity,
                                     activity,
                                     activity_label(activity),
                                 );
                             }
                         });
-                    if self.world_pipeline == WorldPipeline::Formation {
+                    if editing.world_pipeline == WorldPipeline::Formation {
                         egui::ComboBox::from_label("质量档位")
-                            .selected_text(quality_tier_label(self.formation_quality_profile))
+                            .selected_text(quality_tier_label(editing.formation_quality_profile))
                             .show_ui(ui, |ui| {
                                 for profile in [
                                     crate::world::natural::NaturalQualityProfile::Draft,
@@ -2012,7 +2103,7 @@ impl eframe::App for TemplateApp {
                                     crate::world::natural::NaturalQualityProfile::High,
                                 ] {
                                     ui.selectable_value(
-                                        &mut self.formation_quality_profile,
+                                        &mut editing.formation_quality_profile,
                                         profile,
                                         quality_tier_label(profile),
                                     );
@@ -2087,12 +2178,19 @@ impl eframe::App for TemplateApp {
         // The control panel above drew the pending build's status row, so this
         // pass's 取消 input is already observed: a staged completion may settle
         // now, and this pass's actions and canvas then see the settled world.
-        self.poll_world_build(ctx);
-
         if new_seed {
-            self.world_seed = rand::random();
+            editing.world_seed = rand::random();
             rebuild = true;
         }
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            editing = self.authoring.draft().clone();
+        }
+        if ctx.input(|input| input.pointer.any_down()) {
+            self.input_edit = Some(editing);
+        } else if let Err(error) = self.authoring.commit("编辑生成参数".to_owned(), editing) {
+            self.spherical_runtime_error = Some(error.to_string());
+        }
+        self.poll_world_build(ctx);
         if rebuild {
             spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
         }
@@ -2387,6 +2485,54 @@ mod natural_app_tests {
         assert_eq!(INITIAL_PLATE_COUNT_LABEL, "初始板块数");
     }
 
+    fn edit_inputs(app: &mut TemplateApp, edit: impl FnOnce(&mut super::AuthorInputs)) {
+        let mut inputs = app.authoring.draft().clone();
+        edit(&mut inputs);
+        app.authoring.commit("test".to_owned(), inputs).unwrap();
+    }
+
+    #[test]
+    fn persisted_recipe_has_one_input_source_and_no_runtime_or_history() {
+        let app = TemplateApp::default();
+        let wire = serde_json::to_value(&app).unwrap();
+        assert!(wire.get("inputs").is_some());
+        assert!(wire.get("world_seed").is_none());
+        assert!(wire.get("authoring").is_none());
+        assert!(wire.get("history").is_none());
+        assert!(wire.get("stage_cache").is_none());
+        assert!(wire.get("spherical_presentation").is_none());
+    }
+
+    #[test]
+    fn persisted_legacy_inputs_import_once_and_unknown_recipe_schema_is_rejected() {
+        let legacy = serde_json::json!({ "world_seed": 717 });
+        let app: TemplateApp = serde_json::from_value(legacy).unwrap();
+        assert!(app.authoring.is_dirty());
+        let wire = serde_json::to_value(&app).unwrap();
+        assert_eq!(wire["inputs"]["world_seed"], 717);
+        assert!(wire.get("world_seed").is_none());
+        let mut unknown = wire;
+        unknown["schema_version"] = serde_json::json!(u16::MAX);
+        assert!(serde_json::from_value::<TemplateApp>(unknown).is_err());
+
+        // eframe's existing autosaves use RON: legacy scalars and enums have
+        // no Option wrapper, unlike the new optional recipe container.
+        let mut storage = TestStorage::default();
+        eframe::Storage::set_string(&mut storage, eframe::APP_KEY, "(world_seed:717,world_origin:SphericalV1,world_pipeline:LegacyFoundation,formation_quality_profile:standard)".to_owned());
+        let mut imported: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
+        assert_eq!(imported.authoring.draft().world_seed, 717);
+        assert_eq!(
+            imported.authoring.draft().world_pipeline,
+            WorldPipeline::LegacyFoundation
+        );
+        assert_eq!(
+            imported.authoring.draft().formation_quality_profile,
+            crate::world::natural::NaturalQualityProfile::Standard
+        );
+        assert!(imported.authoring.is_dirty());
+        assert!(!imported.authoring.undo());
+    }
+
     #[derive(Default)]
     struct TestStorage(std::collections::BTreeMap<String, String>);
 
@@ -2437,14 +2583,16 @@ mod natural_app_tests {
 
     fn create_cpu_published_app() -> TemplateApp {
         let mut app = TemplateApp::default();
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let candidate = super::build_spherical_presentation_candidate(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.field_state(),
             &DisplayRevisionClock::default(),
@@ -2490,7 +2638,9 @@ mod natural_app_tests {
         mut persisted: TemplateApp,
         render_state: &eframe::egui_wgpu::RenderState,
     ) -> TemplateApp {
-        persisted.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let mut storage = TestStorage::default();
         eframe::set_value(&mut storage, eframe::APP_KEY, &persisted);
         let restored: TemplateApp =
@@ -2607,7 +2757,9 @@ mod natural_app_tests {
                     current.source().clone(),
                 )
             });
-        app.world_seed = app.world_seed.wrapping_add(1);
+        edit_inputs(&mut app, |inputs| {
+            inputs.world_seed = inputs.world_seed.wrapping_add(1)
+        });
 
         app.try_rebuild_spherical_world(&render_state).unwrap();
         let (address_after, packet_after, source_after) =
@@ -2622,15 +2774,22 @@ mod natural_app_tests {
         assert_eq!(publication_address, address_after);
         assert!(!Arc::ptr_eq(&packet_before, &packet_after));
         assert_ne!(source_after, source_before);
-        assert_eq!(source_after.root_seed(), RootSeed::new(app.world_seed));
+        assert_eq!(
+            source_after.root_seed(),
+            RootSeed::new(app.authoring.draft().world_seed)
+        );
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
         assert_eq!(
             app.active_runtime_graph(),
             Some(AppRuntimeGraph::SphericalNaturalFoundation)
         );
 
-        app.spherical_space_spec.target_cell_count = 1;
-        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        let mut invalid = app.authoring.draft().clone();
+        invalid.spherical_space_spec.target_cell_count = 1;
+        assert!(app
+            .authoring
+            .commit("invalid space".into(), invalid)
+            .is_err());
         app.spherical_presentation.read_resource(|current| {
             let current = current.as_ref().unwrap();
             assert_eq!(publication_address, std::ptr::from_ref(current));
@@ -2639,7 +2798,9 @@ mod natural_app_tests {
         });
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
 
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let revisions_before_invalid_relief = app
             .spherical_presentation
             .read_resource(|current| current.as_ref().unwrap().revisions());
@@ -2650,8 +2811,12 @@ mod natural_app_tests {
             .get::<crate::gpu::spherical::SphericalFieldRenderer>()
             .unwrap()
             .upload_counters();
-        app.relief_spec.target_land_fraction = f32::NAN;
-        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        let mut invalid = app.authoring.draft().clone();
+        invalid.relief_spec.target_land_fraction = f32::NAN;
+        assert!(app
+            .authoring
+            .commit("invalid relief".into(), invalid)
+            .is_err());
         app.spherical_presentation.read_resource(|current| {
             let current = current.as_ref().unwrap();
             assert_eq!(publication_address, std::ptr::from_ref(current));
@@ -2703,14 +2868,20 @@ mod natural_app_tests {
 
         let render_state = request_test_render_state();
         let mut persisted = TemplateApp::default();
-        persisted.spherical_space_spec.target_cell_count = 162;
-        persisted.relief_spec.target_land_fraction = 0.55;
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.55
+        });
         let mut app = create_from_persisted(persisted, &render_state);
 
         let (initial_actual, initial_elevation, initial_sea_level) = published_land_fraction(&app);
         assert!((initial_actual - 0.55).abs() <= 0.02);
 
-        app.relief_spec.target_land_fraction = 0.25;
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.25
+        });
         app.try_rebuild_spherical_world(&render_state).unwrap();
         let (rebuilt_actual, rebuilt_elevation, rebuilt_sea_level) = published_land_fraction(&app);
         assert!((rebuilt_actual - 0.25).abs() <= 0.02);
@@ -2775,11 +2946,11 @@ mod natural_app_tests {
                     .expect("the fixture is published")
                     .prepare_replacement_candidate_for_view(
                         root_seed,
-                        &app.spherical_space_spec,
-                        &app.formation_spec,
-                        &app.tectonic_spec,
-                        &app.relief_spec,
-                        &app.geologic_spec,
+                        &app.authoring.draft().spherical_space_spec,
+                        &app.authoring.draft().formation_spec,
+                        &app.authoring.draft().tectonic_spec,
+                        &app.authoring.draft().relief_spec,
+                        &app.authoring.draft().geologic_spec,
                         stage_cache,
                         app.spherical_canvas_state.presentation_view_state(),
                         app.spherical_canvas_state.field_state(),
@@ -2858,8 +3029,11 @@ mod natural_app_tests {
     /// a self-proving `(0, n) == (0, n)`.
     fn published_cache_hits(app: &TemplateApp, cache: &MemoryStageCache) -> (usize, usize) {
         let mut probe = cache.clone();
-        let candidate =
-            prepare_test_replacement_candidate(app, RootSeed::new(app.world_seed), &mut probe);
+        let candidate = prepare_test_replacement_candidate(
+            app,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &mut probe,
+        );
         let report = candidate.report();
         assert!(
             report.cache_hits() > 0,
@@ -2965,7 +3139,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3026,7 +3204,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3097,7 +3279,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3192,15 +3378,17 @@ mod natural_app_tests {
             render_state: Some(render_state.clone()),
             ..TemplateApp::default()
         };
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let requested_state = app.spherical_canvas_state.field_state().clone();
         let candidate = build_spherical_presentation_candidate_for_view(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3238,15 +3426,17 @@ mod natural_app_tests {
             render_state: Some(render_state.clone()),
             ..TemplateApp::default()
         };
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let requested_state = app.spherical_canvas_state.field_state().clone();
         let _warm = build_spherical_presentation_candidate_for_view(
             RootSeed::new(99),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3265,12 +3455,12 @@ mod natural_app_tests {
             false,
         );
         let candidate = build_spherical_presentation_candidate_for_view(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut working_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3308,7 +3498,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3400,7 +3594,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3484,7 +3682,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3566,7 +3768,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3624,7 +3830,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3800,7 +4010,11 @@ mod natural_app_tests {
             let render_state = request_test_render_state();
             let mut app = create_from_persisted(
                 TemplateApp {
-                    world_seed: 7,
+                    authoring: super::AuthoringSession::new(super::AuthorInputs {
+                        world_seed: 7,
+                        ..Default::default()
+                    })
+                    .unwrap(),
                     ..TemplateApp::default()
                 },
                 &render_state,
@@ -3864,41 +4078,20 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn failed_spherical_startup_is_visible_and_retries_standalone_without_planar_fallback() {
-        let render_state = request_test_render_state();
-        let mut persisted = TemplateApp::default();
-        persisted.spherical_space_spec.target_cell_count = 162;
-        persisted.tectonic_spec.plate_count = 0;
-        let mut app = create_from_persisted(persisted, &render_state);
-
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert_eq!(app.active_runtime_graph(), None);
-        assert!(app.spherical_runtime_error.as_deref().is_some());
-
-        app.tectonic_spec.plate_count = TectonicSpec::default().plate_count;
-        app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
-        wait_for_world_build(&mut app);
-        assert!(app.spherical_runtime_error.is_none());
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert_eq!(
-            app.active_runtime_graph(),
-            Some(AppRuntimeGraph::SphericalNaturalFoundation)
-        );
-        assert!(app.spherical_presentation.read_resource(Option::is_some));
-        assert!(render_state
-            .renderer
-            .read()
-            .callback_resources
-            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
-            .is_some());
+    fn invalid_persisted_inputs_are_rejected_before_runtime_initialization() {
+        let persisted = TemplateApp::default();
+        let mut invalid_wire = serde_json::to_value(&persisted).unwrap();
+        invalid_wire["inputs"]["tectonic_spec"]["plate_count"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<TemplateApp>(invalid_wire).is_err());
     }
 
     #[test]
     fn gpu_failed_spherical_startup_is_visible_and_retry_publishes_once() {
         let render_state = request_test_render_state();
         let mut app = TemplateApp::default();
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         app.render_state = Some(render_state.clone());
 
         assert!(app
@@ -4080,7 +4273,9 @@ mod natural_app_tests {
                 Arc::downgrade(current.layers_arc()),
             )
         });
-        app.world_seed = app.world_seed.wrapping_add(1);
+        edit_inputs(&mut app, |inputs| {
+            inputs.world_seed = inputs.world_seed.wrapping_add(1)
+        });
         app.try_rebuild_spherical_world(&render_state).unwrap();
         inspect(&app, &mut cache, SphericalViewMode::Globe);
         assert_eq!(cache.probe_for_test(), (3, diagnostics.len() * 3));
@@ -4616,36 +4811,54 @@ mod natural_app_tests {
     #[test]
     fn default_application_persists_continents_with_missing_field_compatibility() {
         let app = TemplateApp::default();
-        assert_eq!(app.formation_spec.preset, WorldFormationPreset::Continents);
-        assert_eq!(app.relief_spec, ReliefSpec::default());
-
-        let mut encoded = serde_json::to_value(&app).unwrap();
-        encoded.as_object_mut().unwrap().remove("formation_spec");
-        encoded.as_object_mut().unwrap().remove("relief_spec");
-        let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
         assert_eq!(
-            restored.formation_spec.preset,
+            app.authoring.draft().formation_spec.preset,
             WorldFormationPreset::Continents
         );
-        assert_eq!(restored.relief_spec, ReliefSpec::default());
+        assert_eq!(app.authoring.draft().relief_spec, ReliefSpec::default());
+
+        // Missing-field defaults are a legacy-import contract. Current recipes
+        // require their complete input record instead of silently inventing it.
+        let encoded = serde_json::json!({"world_seed": app.authoring.draft().world_seed});
+        let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            restored.authoring.draft().formation_spec.preset,
+            WorldFormationPreset::Continents
+        );
+        assert_eq!(
+            restored.authoring.draft().relief_spec,
+            ReliefSpec::default()
+        );
     }
 
     #[test]
     fn application_roundtrip_preserves_manual_land_target() {
         let mut app = TemplateApp::default();
-        app.relief_spec.target_land_fraction = 0.55;
-        app.relief_spec.sea_level_policy = SeaLevelPolicy::TargetLandFraction;
-        app.relief_spec.water_inventory_ratio = 1.75;
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.55
+        });
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.sea_level_policy = SeaLevelPolicy::TargetLandFraction
+        });
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.water_inventory_ratio = 1.75
+        });
 
         let restored: TemplateApp =
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
 
-        assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
         assert_eq!(
-            restored.relief_spec.sea_level_policy,
+            restored.authoring.draft().relief_spec.target_land_fraction,
+            0.55
+        );
+        assert_eq!(
+            restored.authoring.draft().relief_spec.sea_level_policy,
             SeaLevelPolicy::TargetLandFraction
         );
-        assert_eq!(restored.relief_spec.water_inventory_ratio, 1.75);
+        assert_eq!(
+            restored.authoring.draft().relief_spec.water_inventory_ratio,
+            1.75
+        );
     }
 
     #[test]
@@ -4773,17 +4986,24 @@ mod natural_app_tests {
     #[test]
     fn quality_tier_roundtrips_and_defaults_to_draft() {
         assert_eq!(
-            TemplateApp::default().formation_quality_profile,
+            TemplateApp::default()
+                .authoring
+                .draft()
+                .formation_quality_profile,
             crate::world::natural::NaturalQualityProfile::Draft
         );
         let app = TemplateApp {
-            formation_quality_profile: crate::world::natural::NaturalQualityProfile::Standard,
+            authoring: super::AuthoringSession::new(super::AuthorInputs {
+                formation_quality_profile: crate::world::natural::NaturalQualityProfile::Standard,
+                ..Default::default()
+            })
+            .unwrap(),
             ..Default::default()
         };
         let restored: TemplateApp =
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
         assert_eq!(
-            restored.formation_quality_profile,
+            restored.authoring.draft().formation_quality_profile,
             crate::world::natural::NaturalQualityProfile::Standard
         );
     }
