@@ -14,15 +14,12 @@ use std::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DiskStamp([u8; 32]);
 /// Validated recipe and the exact disk version it was loaded from.
-// T5 connects these native entry points; remove the local allowances on integration.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(super) struct LoadedProject {
     pub file: ProjectFile,
     pub disk_stamp: DiskStamp,
 }
 /// A save is allowed only for an absent file or this explicitly captured disk version.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(super) enum SaveExpectation {
     NewFile,
@@ -30,7 +27,6 @@ pub(super) enum SaveExpectation {
     ConfirmedOverwrite(DiskStamp),
 }
 /// Returned only after the saved bytes and any old-recipe backup were verified.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(super) struct SaveReceipt {
     pub path: PathBuf,
@@ -38,7 +34,6 @@ pub(super) struct SaveReceipt {
     pub backup: Option<PathBuf>,
 }
 /// Operation failures retain the original cause and paths checked as readable on return.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ProjectIoError {
     #[error("disk conflict")]
@@ -71,7 +66,6 @@ pub(super) enum ProjectIoError {
 }
 impl ProjectIoError {
     /// Files readable when the error was constructed; third-party changes can occur later.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn recovery_paths(&self) -> &[PathBuf] {
         match self {
             Self::Conflict { recovery_paths }
@@ -85,6 +79,12 @@ impl ProjectIoError {
 }
 fn stamp(bytes: &[u8]) -> DiskStamp {
     DiskStamp(*blake3::hash(bytes).as_bytes())
+}
+
+#[cfg(test)]
+/// Creates a fixture stamp through the production disk-byte identity implementation.
+pub(super) fn stamp_for_test(bytes: &[u8]) -> DiskStamp {
+    stamp(bytes)
 }
 
 fn readable_paths(paths: &[&Path]) -> Vec<PathBuf> {
@@ -107,7 +107,6 @@ fn read_bytes(path: &Path) -> io::Result<Vec<u8>> {
 
 /// Reads and validates `path` without changing any caller-owned session.
 /// Returns Read for filesystem failures or Format with the unchanged codec cause.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn read_project(path: &Path) -> Result<LoadedProject, ProjectIoError> {
     let bytes = read_bytes(path).map_err(|source| ProjectIoError::Read {
         source,
@@ -207,7 +206,6 @@ fn verify_bytes(path: &Path, expected: &[u8]) -> io::Result<()> {
 /// Failures report Conflict, Format, Read/Write/Sync/Replace and actual readable paths.
 /// The final stamp check protects its check window, not arbitrary concurrent writers
 /// through cross-process CAS; synchronization does not promise absolute power-loss safety.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn save_project(
     path: &Path,
     file: &ProjectFile,

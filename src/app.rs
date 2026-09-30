@@ -12,6 +12,8 @@ mod pipeline;
 mod project_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod project_io;
+#[cfg(not(target_arch = "wasm32"))]
+mod project_ui;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
@@ -614,6 +616,8 @@ pub struct TemplateApp {
     world_origin: PersistedWorldOrigin,
     authoring: AuthoringSession,
     input_edit: Option<AuthorInputs>,
+    #[cfg(not(target_arch = "wasm32"))]
+    project_ui: project_ui::ProjectUiState,
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
     reduce_loading_motion: bool,
     formation_surface: Option<FormationSurfaceCacheEntry>,
@@ -775,6 +779,8 @@ impl Default for TemplateApp {
             authoring: AuthoringSession::new(AuthorInputs::default())
                 .expect("default author inputs satisfy domain contracts"),
             input_edit: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            project_ui: project_ui::ProjectUiState::default(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
             reduce_loading_motion: false,
             amplified_mesh: None,
@@ -1528,7 +1534,12 @@ impl TemplateApp {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new());
             ui.label(format!(
-                "正在生成世界…已用 {:.0} 秒",
+                "{}…已用 {:.0} 秒",
+                if pending.cancellation.is_cancelled() {
+                    "正在取消"
+                } else {
+                    "正在生成世界"
+                },
                 pending.started_at.elapsed().as_secs_f32()
             ));
             let cancel = ui.button("取消");
@@ -1542,6 +1553,9 @@ impl TemplateApp {
             }
         });
         if cancel_requested {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dispatch_project_action(project_ui::ProjectAction::CancelBuild, ui.ctx());
+            #[cfg(target_arch = "wasm32")]
             self.cancel_world_build();
         }
         cancel_rect
@@ -1689,7 +1703,6 @@ impl TemplateApp {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     fn try_start_open_build(&mut self) -> bool {
         let Some(intent) = self.pending_open_build else {
             return false;
@@ -2118,15 +2131,17 @@ impl TemplateApp {
         if let Some(pending) = &self.world_build {
             let elapsed = pending.started_at.elapsed();
             let cancelling = pending.cancellation.is_cancelled();
-            egui::CentralPanel::default().show(ctx, |ui| {
-                crate::ui::world_loading::show_world_loading(
-                    ui,
-                    elapsed,
-                    self.reduce_loading_motion,
-                    cancelling,
-                );
-            });
-            return;
+            if self.spherical_presentation.read_resource(Option::is_none) {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::ui::world_loading::show_world_loading(
+                        ui,
+                        elapsed,
+                        self.reduce_loading_motion,
+                        cancelling,
+                    );
+                });
+                return;
+            }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -2202,7 +2217,8 @@ impl eframe::App for TemplateApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_amplified_detail(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut project_actions = Vec::new();
         let update_time_seconds = ctx.input(|input| input.time);
         let toggle_frame_sampler = ctx.input(|input| {
             input.modifiers.ctrl && input.modifiers.alt && input.key_pressed(egui::Key::F)
@@ -2242,12 +2258,9 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                if !cfg!(target_arch = "wasm32") {
-                    ui.menu_button("文件", |ui| {
-                        if ui.button("退出").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.show_project_menus(ui, &mut project_actions);
                     ui.add_space(16.0);
                 }
                 egui::widgets::global_theme_preference_buttons(ui);
@@ -2304,12 +2317,33 @@ impl eframe::App for TemplateApp {
 
                     ui.horizontal(|ui| {
                         ui.label("根种子");
+                        let rejected_text = std::cell::RefCell::new(None);
+                        let parsed_seed = std::cell::Cell::new(None);
+                        let exact_seed = editing.world_seed;
                         let response = ui.add(
                             egui::DragValue::new(&mut editing.world_seed)
                                 .range(0..=u64::MAX)
+                                .custom_formatter(move |_, _| exact_seed.to_string())
+                                .custom_parser(|text| {
+                                    match normalized_authoring_number(text).parse::<u64>() {
+                                        Ok(seed) => {
+                                            parsed_seed.set(Some(seed));
+                                            Some(seed as f64)
+                                        }
+                                        Err(_) => {
+                                            rejected_text.replace(Some(text.to_owned()));
+                                            None
+                                        }
+                                    }
+                                })
                                 .update_while_editing(false),
                         );
-                        author_input_focused |= response.has_focus();
+                        // DragValue's f64 is only a UI bridge; commit the exact u64 text.
+                        if let Some(seed) = parsed_seed.get() {
+                            editing.world_seed = seed;
+                        }
+                        author_input_focused |=
+                            authoring_number_stays_pending(&response, rejected_text.into_inner());
                     });
                     if ui.button("新种子并重建").clicked() {
                         new_seed = true;
@@ -2346,12 +2380,15 @@ impl eframe::App for TemplateApp {
                     }
                     ui.horizontal(|ui| {
                         ui.label(INITIAL_PLATE_COUNT_LABEL);
+                        let rejected_text = std::cell::RefCell::new(None);
                         let response = ui.add(
                             egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
                                 .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
+                                .custom_parser(|text| parse_authoring_number(text, &rejected_text))
                                 .update_while_editing(false),
                         );
-                        author_input_focused |= response.has_focus();
+                        author_input_focused |=
+                            authoring_number_stays_pending(&response, rejected_text.into_inner());
                     });
                     if editing.world_pipeline == WorldPipeline::Formation {
                         ui.horizontal(|ui| {
@@ -2376,6 +2413,7 @@ impl eframe::App for TemplateApp {
                         published_area_summary,
                     );
                     if controls.land_fraction_enabled {
+                        let rejected_text = std::cell::RefCell::new(None);
                         let response = ui.add(
                             egui::Slider::new(
                                 &mut editing.relief_spec.target_land_fraction,
@@ -2383,9 +2421,11 @@ impl eframe::App for TemplateApp {
                                     ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
                             )
                             .text("陆地占比")
+                            .custom_parser(|text| parse_authoring_number(text, &rejected_text))
                             .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                         );
-                        author_input_focused |= response.has_focus();
+                        author_input_focused |=
+                            authoring_number_stays_pending(&response, rejected_text.into_inner());
                     } else {
                         let mut measured_land_fraction = controls.displayed_land_fraction;
                         ui.add_enabled(
@@ -2397,6 +2437,7 @@ impl eframe::App for TemplateApp {
                         .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
                     }
                     ui.collapsing("高级", |ui| {
+                        let rejected_text = std::cell::RefCell::new(None);
                         let response = ui
                             .add_enabled(
                                 controls.continental_fraction_enabled,
@@ -2409,10 +2450,12 @@ impl eframe::App for TemplateApp {
                                 } else {
                                     "初始大陆地壳比例（预设值）"
                                 })
+                                .custom_parser(|text| parse_authoring_number(text, &rejected_text))
                                 .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                             )
                             .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
-                        author_input_focused |= response.has_focus();
+                        author_input_focused |=
+                            authoring_number_stays_pending(&response, rejected_text.into_inner());
                     });
                     egui::ComboBox::from_label("构造活动")
                         .selected_text(activity_label(editing.tectonic_spec.activity))
@@ -2451,6 +2494,10 @@ impl eframe::App for TemplateApp {
                         rebuild = true;
                     }
                     let _ = self.show_pending_world_build_status(ui);
+                    // Variable status rows follow the numeric editors so their
+                    // auto IDs and pending text survive status changes.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.show_project_status(ui, ctx);
 
                     self.spherical_presentation.read_resource(|current| {
                         let Some(presentation) = current.as_ref() else {
@@ -2518,27 +2565,110 @@ impl eframe::App for TemplateApp {
             editing.world_seed = rand::random();
             rebuild = true;
         }
-        if cancel_input_edit {
-            editing = self.authoring.draft().clone();
-        }
-        // Numeric text (including a slider's value editor) stays transient until
-        // Enter or focus loss. Pointer release remains the drag transaction boundary.
-        if author_input_focused || ctx.input(|input| input.pointer.any_down()) {
-            self.input_edit = Some(editing);
-        } else {
-            match self.authoring.commit("编辑生成参数".to_owned(), editing) {
-                Ok(true) => self.cancel_world_build(),
-                Ok(false) => {}
-                Err(error) => self.spherical_runtime_error = Some(error.to_string()),
+        self.finish_author_input(
+            editing,
+            author_input_focused,
+            ctx.input(|input| input.pointer.any_down()),
+            cancel_input_edit,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(action) = self.project_shortcut(ctx) {
+                project_actions.push(action);
             }
+            self.show_project_dialogs(ctx, &mut project_actions);
+            for action in project_actions {
+                self.dispatch_project_action(action, ctx);
+            }
+            self.intercept_project_close(ctx);
         }
-        self.poll_world_build(ctx);
         if rebuild {
-            spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dispatch_project_action(project_ui::ProjectAction::RetryBuild, ctx);
+            #[cfg(target_arch = "wasm32")]
+            self.request_spherical_world_build();
         }
+
+        // All authoring, file, close and cancel input precedes every completion.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_project_io(ctx);
+        self.poll_world_build(ctx);
+        self.poll_amplified_detail(ctx);
+        self.try_start_open_build();
 
         self.show_active_canvas_after_actions(ctx, std::mem::take(&mut spherical_actions));
     }
+}
+
+impl TemplateApp {
+    fn finish_author_input(
+        &mut self,
+        editing: AuthorInputs,
+        focused: bool,
+        pointer_down: bool,
+        escape: bool,
+    ) {
+        self.input_edit = None;
+        if escape {
+            return;
+        }
+        if focused || pointer_down {
+            if focused || editing != *self.authoring.draft() {
+                self.pending_open_build = None;
+                self.input_edit = Some(editing);
+            }
+        } else {
+            match self
+                .authoring
+                .commit("编辑生成参数".to_owned(), editing.clone())
+            {
+                Ok(true) => self.cancel_world_build(),
+                Ok(false) => {}
+                Err(error) => {
+                    self.pending_open_build = None;
+                    self.input_edit = Some(editing);
+                    self.spherical_runtime_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn parse_authoring_number(
+    text: &str,
+    rejected: &std::cell::RefCell<Option<String>>,
+) -> Option<f64> {
+    match normalized_authoring_number(text)
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+    {
+        Some(value) => Some(value),
+        None => {
+            rejected.replace(Some(text.to_owned()));
+            None
+        }
+    }
+}
+
+fn normalized_authoring_number(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect()
+}
+
+fn authoring_number_stays_pending(response: &egui::Response, rejected: Option<String>) -> bool {
+    // DragValue removes its temporary string on focus loss before returning.
+    // Restore a rejected parse so saving cannot silently capture the old number.
+    if let Some(text) = rejected {
+        response
+            .ctx
+            .data_mut(|data| data.insert_temp(response.id, text));
+        response.request_focus();
+        return true;
+    }
+    response.has_focus()
 }
 
 fn activity_label(activity: TectonicActivity) -> &'static str {
@@ -2864,7 +2994,7 @@ mod natural_app_tests {
         }
     }
 
-    fn authoring_keyboard_frame(
+    pub(super) fn authoring_keyboard_frame(
         app: &mut TemplateApp,
         context: &egui::Context,
         events: Vec<egui::Event>,
@@ -2874,7 +3004,11 @@ mod natural_app_tests {
         })
     }
 
-    fn focus_authoring_number(app: &mut TemplateApp, context: &egui::Context, text: &str) {
+    pub(super) fn focus_authoring_number(
+        app: &mut TemplateApp,
+        context: &egui::Context,
+        text: &str,
+    ) {
         fn find_number(shape: &egui::epaint::Shape, text: &str) -> Option<egui::Pos2> {
             match shape {
                 egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
@@ -4659,8 +4793,9 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn pending_world_build_hides_the_old_map_until_rollback_or_publication() {
+    fn pending_world_build_keeps_the_last_valid_map_browsable_until_publication() {
         let mut app = create_cpu_published_app();
+        let before = published_source(&app);
         let (sender, receiver) = std::sync::mpsc::channel();
         app.world_build = Some(PendingWorldBuild {
             token: app.authoring.begin_build(),
@@ -4677,23 +4812,15 @@ mod natural_app_tests {
         let pending = context.run(test_raw_input(), |context| {
             app.show_active_canvas_after_actions(context, Vec::new());
         });
-        assert_eq!(spherical_callback_count(&pending), 0);
-        let mut texts = Vec::new();
-        for shape in &pending.shapes {
-            collect_text(&shape.shape, &mut texts);
-        }
-        assert!(texts.iter().any(|text| text == "世界正在成形"));
+        assert_eq!(spherical_callback_count(&pending), 1);
+        assert_eq!(published_source(&app), before);
 
         app.world_build.as_ref().unwrap().cancellation.cancel();
         let cancelling = context.run(test_raw_input(), |context| {
             app.show_active_canvas_after_actions(context, Vec::new());
         });
-        assert_eq!(spherical_callback_count(&cancelling), 0);
-        let mut texts = Vec::new();
-        for shape in &cancelling.shapes {
-            collect_text(&shape.shape, &mut texts);
-        }
-        assert!(texts.iter().any(|text| text == "正在取消构建"));
+        assert_eq!(spherical_callback_count(&cancelling), 1);
+        assert_eq!(published_source(&app), before);
 
         drop(sender);
         app.world_build = None;
@@ -5626,6 +5753,212 @@ mod phase_a_tests {
         request_test_render_state, settle_queued_world_build,
     };
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_new_resets_epoch_before_completion_poll() {
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let before = app.authoring.capture_save();
+        app.dispatch_project_action(project_ui::ProjectAction::New, &egui::Context::default());
+        assert!(app.authoring.capture_save().epoch > before.epoch);
+        assert!(app.authoring.is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_undo_invalidates_pending_open_before_poll() {
+        let mut app = TemplateApp::default();
+        let mut next = app.authoring.draft().clone();
+        next.world_seed += 1;
+        app.authoring.commit("edit".into(), next).unwrap();
+        let stamp = app.authoring.capture_save();
+        app.pending_open_build = Some(PendingOpenBuild {
+            epoch: stamp.epoch,
+            recipe_id: stamp.recipe_id,
+        });
+        app.dispatch_project_action(project_ui::ProjectAction::Undo, &egui::Context::default());
+        assert!(app.pending_open_build.is_none());
+        assert_eq!(app.authoring.revision(), 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_actual_text_edit_is_unsaved_without_implicit_build() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let ctx = egui::Context::default();
+        let seed = app.authoring.draft().world_seed.to_string();
+        focus_authoring_number(&mut app, &ctx, &seed);
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("717".into())]);
+        assert_eq!(app.authoring.revision(), 0);
+        assert!(app.project_is_dirty());
+        assert!(app.input_edit.is_some());
+        assert!(app.world_build.is_none());
+        app.dispatch_project_action(project_ui::ProjectAction::Save, &ctx);
+        assert!(app.project_is_dirty());
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(app.world_build.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_drag_frames_commit_once_and_escape_restores_input() {
+        let mut app = TemplateApp::default();
+        let before = app.authoring.draft().clone();
+        let mut edit = before.clone();
+        for seed in [111, 222, 333] {
+            edit.world_seed = seed;
+            app.finish_author_input(edit.clone(), false, true, false);
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.world_build.is_none());
+        }
+        app.finish_author_input(edit.clone(), false, false, false);
+        assert_eq!(app.authoring.revision(), 1);
+        edit.world_seed = 999;
+        app.finish_author_input(edit.clone(), false, true, false);
+        app.finish_author_input(edit, false, false, true);
+        assert_eq!(app.authoring.draft().world_seed, 333);
+        app.dispatch_project_action(project_ui::ProjectAction::Undo, &egui::Context::default());
+        assert_eq!(app.authoring.draft(), &before);
+        assert!(!app.authoring.undo());
+        app.dispatch_project_action(project_ui::ProjectAction::Redo, &egui::Context::default());
+        assert_eq!(app.authoring.draft().world_seed, 333);
+        assert!(app.world_build.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_actual_text_focus_keeps_recipe_undo_shortcut_out_of_text_editor() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        let mut edit = app.authoring.draft().clone();
+        edit.world_seed = 717;
+        app.authoring.commit("recipe edit".into(), edit).unwrap();
+        let ctx = egui::Context::default();
+        focus_authoring_number(&mut app, &ctx, "717");
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("123".into())]);
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let _ = ctx.run(
+            egui::RawInput {
+                modifiers,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..egui::RawInput::default()
+            },
+            |ctx| {
+                eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
+            },
+        );
+        assert_eq!(app.authoring.revision(), 1);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert!(app.authoring.undo());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_system_close_asks_before_cancelling_build() {
+        let mut app = TemplateApp::default();
+        let token = app.authoring.begin_build();
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let output = ctx.run(raw, |ctx| {
+            eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        assert!(app.authoring.accepts(token));
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.project_is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_invalid_text_focus_loss_cannot_silently_save_previous_value() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let ctx = egui::Context::default();
+        let seed = app.authoring.draft().world_seed.to_string();
+        focus_authoring_number(&mut app, &ctx, &seed);
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("invalid".into())]);
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.input_edit.is_some());
+        assert!(app.project_is_dirty());
+        assert_eq!(app.authoring.revision(), 0);
+        app.dispatch_project_action(project_ui::ProjectAction::Save, &ctx);
+        assert!(app.project_is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_large_seed_focus_and_confirmation_preserve_every_u64_bit() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        let seed = (1_u64 << 53) + 1;
+        let mut edited = app.authoring.draft().clone();
+        edited.world_seed = seed;
+        app.authoring.commit("large seed".into(), edited).unwrap();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let stamp = app.authoring.capture_save();
+        let revision = app.authoring.revision();
+        let ctx = egui::Context::default();
+        focus_authoring_number(&mut app, &ctx, &seed.to_string());
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.authoring.draft().world_seed, seed);
+        assert_eq!(app.authoring.capture_save(), stamp);
+        assert_eq!(app.authoring.revision(), revision);
+        assert!(!app.authoring.is_dirty());
+        let wire = serde_json::to_value(&app).unwrap();
+        assert_eq!(wire["inputs"]["world_seed"].as_u64(), Some(seed));
+    }
 
     // Manual completions isolate publication races from the expensive formation solver.
     #[test]

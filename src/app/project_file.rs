@@ -1,5 +1,4 @@
 //! Recipe-only project transport and explicit generator compatibility.
-// T4 connects these narrowly visible entry points to native project operations.
 
 use std::{collections::BTreeMap, fmt};
 
@@ -42,7 +41,7 @@ pub(super) struct ProjectView {
 
 impl ProjectView {
     /// Captures canvas preferences and `TemplateApp::reduce_loading_motion` independently.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
     pub fn from_state(canvas: &SphericalCanvasState, reduce_motion: bool) -> Self {
         Self {
             canvas: SphericalCanvasPreferencesWire::from_state(canvas),
@@ -70,7 +69,7 @@ pub(super) struct ProjectFile {
 
 impl ProjectFile {
     /// Creates a current-format project; invalid inputs or compiled definitions return an error.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
     pub fn new(inputs: AuthorInputs) -> Result<Self, ProjectFileError> {
         let generator = current_generator_identity(&inputs)?;
         Ok(Self {
@@ -275,7 +274,7 @@ fn serialized_hash(value: &impl Serialize) -> Result<[u8; 32], ProjectFileError>
 }
 
 /// Compares semantic components first, then the environment canary.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn compare_generator(
     saved: &GeneratorIdentity,
     current: &GeneratorIdentity,
@@ -312,7 +311,7 @@ pub(super) fn compare_generator(
 
 /// Copies an already decoded/validated project after an explicit upgrade choice.
 /// Preserves the original project and records its saved generator identity in the copy.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn upgrade_copy(file: &ProjectFile, current: GeneratorIdentity) -> ProjectFile {
     let mut upgraded = file.clone();
     upgraded.upgraded_from = Some(file.generator.clone());
@@ -423,7 +422,7 @@ fn validate_metadata(key: &str, value: &Value) -> Result<(), ProjectFileError> {
 }
 
 /// Validates and encodes V1. Returns input/schema/limit errors before producing a file.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn encode_project(file: &ProjectFile) -> Result<Vec<u8>, ProjectFileError> {
     validate_file(file)?;
     let wire = ProjectWire {
@@ -453,7 +452,7 @@ fn check_size(size: usize) -> Result<(), ProjectFileError> {
 
 /// Decodes only recognized input schemas; unknown algorithms remain saved identities to compare.
 /// Rejects duplicate keys, unknown fields, invalid inputs, checksums and resource excesses.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn decode_project(bytes: &[u8]) -> Result<ProjectFile, ProjectFileError> {
     check_size(bytes.len())?;
     // Duplicate-key rejection also covers extension maps. Default serde recursion limits stay on.

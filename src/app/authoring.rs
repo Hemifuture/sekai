@@ -199,8 +199,7 @@ pub(super) struct AuthoringSession {
     cursor: usize,
 }
 
-// T2–T4 consume the request, save, and history operations after the T1 SSOT migration.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 impl AuthoringSession {
     /// Starts an unsaved session; invalid inputs return an error before any state exists.
     pub fn new(inputs: AuthorInputs) -> Result<Self, AuthorInputError> {
