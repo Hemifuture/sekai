@@ -473,7 +473,7 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
     }
 }
 
-/// Reconstructs P5's shared centre-node anchors in the production iteration order.
+/// Reconstructs shared vertex anchors from P5 centre-node elevations in production iteration order.
 /// P1-A's offline T1 candidate also consumes this helper; cancellation and
 /// non-finite results retain the original water-volume error.
 pub(super) fn reconstruct_vertex_elevations(
