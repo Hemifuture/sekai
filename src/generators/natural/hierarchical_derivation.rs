@@ -208,6 +208,13 @@ struct TriangleFrame {
     boundary_edge: [bool; 3],
 }
 
+impl TriangleFrame {
+    fn mean_elevation_m(&self) -> f64 {
+        let [a, b, c] = &self.corners;
+        (a.value_m + b.value_m + c.value_m) / 3.0
+    }
+}
+
 /// The T1 v2 hierarchical evaluation engine: built once per published
 /// world, then evaluated as a pure function of hierarchical IDs.
 pub struct HierarchicalEvaluator {
@@ -385,8 +392,7 @@ impl HierarchicalEvaluator {
             }
             LocatedPrimitive::Triangle { cell, sector, path } => {
                 let frame = self.walk_frame(cell, sector, path.steps());
-                let [a, b, c] = &frame.corners;
-                (a.value_m + b.value_m + c.value_m) / 3.0
+                frame.mean_elevation_m()
             }
         }
     }
@@ -626,8 +632,23 @@ impl HierarchicalEvaluator {
         frame: &TriangleFrame,
         leaf_level: u8,
     ) -> PrimitiveValue {
+        let elevation = self.carved_face_elevation_m(cell_index, frame, leaf_level);
+        let elevation =
+            elevation.clamp(f64::from(ELEVATION_MIN_M), f64::from(ELEVATION_MAX_M)) as f32;
+        PrimitiveValue {
+            elevation_m: elevation,
+            regime: self.regime_for(f64::from(elevation)),
+        }
+    }
+
+    fn carved_face_elevation_m(
+        &self,
+        cell_index: usize,
+        frame: &TriangleFrame,
+        leaf_level: u8,
+    ) -> f64 {
         let [a, b, c] = &frame.corners;
-        let mut elevation = (a.value_m + b.value_m + c.value_m) / 3.0;
+        let mut elevation = frame.mean_elevation_m();
         if self.amplifier.has_rivers() {
             let [ax, ay, az] = a.position.components();
             let [bx, by, bz] = b.position.components();
@@ -641,12 +662,7 @@ impl HierarchicalEvaluator {
                 elevation = elevation.min(carve.max(f64::from(ELEVATION_MIN_M)));
             }
         }
-        let elevation =
-            elevation.clamp(f64::from(ELEVATION_MIN_M), f64::from(ELEVATION_MAX_M)) as f32;
-        PrimitiveValue {
-            elevation_m: elevation,
-            regime: self.regime_for(f64::from(elevation)),
-        }
+        elevation
     }
 
     fn regime_for(&self, elevation_m: f64) -> SurfaceRegime {
@@ -966,7 +982,9 @@ fn side(a: UnitVector3, b: UnitVector3, p: UnitVector3) -> f64 {
 mod tests {
     use std::collections::HashSet;
 
+    use super::super::surface_water_geometry::reconstruct_vertex_elevations;
     use super::*;
+    use crate::engine::BuildCancellation;
     use crate::generators::natural::fibonacci_probe;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
@@ -1065,6 +1083,104 @@ mod tests {
         (evaluator, surface)
     }
 
+    // P1-A failed the original Draft42 height gate. Its shared-anchor candidate
+    // stays here as an explicit offline experiment; production remains legacy.
+    fn p1_a_shared_candidate(
+        mut evaluator: HierarchicalEvaluator,
+        surface: &SphericalSurfaceSnapshot,
+    ) -> Result<HierarchicalEvaluator, crate::world::natural::WaterVolumeSolveError> {
+        let elevation_m = evaluator
+            .amplifier
+            .conditioning()
+            .elevation_m
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect::<Vec<_>>();
+        evaluator.vertex_value_m =
+            reconstruct_vertex_elevations(surface, &elevation_m, &BuildCancellation::new())?;
+        Ok(evaluator)
+    }
+
+    /// P1-A's smallest regression: T1 must use the actual P5 node reconstruction.
+    /// Constants and a cross-coast step exercise the base without a world solve;
+    /// the existing midpoint contract separately covers the unchanged L2+ noise.
+    #[test]
+    fn p1_a_constant_step_shared_edge() {
+        let surface = test_surface();
+        for constant in [true, false] {
+            let mut fields = SyntheticFields::new(&surface);
+            for (value, cell) in fields.elevation.iter_mut().zip(surface.cells()) {
+                *value = if constant || cell.centroid.components()[2] >= 0.0 {
+                    500.0
+                } else {
+                    -1_800.0
+                };
+            }
+            let elevations: Vec<f64> = fields.elevation.iter().copied().map(f64::from).collect();
+            let expected =
+                reconstruct_vertex_elevations(&surface, &elevations, &BuildCancellation::new())
+                    .unwrap();
+            let evaluator = p1_a_shared_candidate(
+                HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42)).unwrap(),
+                &surface,
+            )
+            .unwrap();
+            let mismatches = evaluator
+                .vertex_value_m
+                .iter()
+                .zip(&expected)
+                .filter(|(actual, p5)| actual.to_bits() != p5.to_bits())
+                .count();
+            eprintln!(
+                "P1_A_SYNTHETIC constant={constant} vertices={} anchor_mismatches={mismatches}",
+                expected.len()
+            );
+            assert_eq!(
+                mismatches, 0,
+                "T1 and P5 must share bit-identical vertex anchors"
+            );
+            for (index, cell) in surface.cells().iter().enumerate() {
+                assert_eq!(
+                    evaluator.cell_value(cell.id).elevation_m.to_bits(),
+                    fields.elevation[index].to_bits()
+                );
+                for sector in 0..cell.boundary_vertices.len() {
+                    let frame = evaluator.sector_frame(cell.id.raw(), sector as u8);
+                    assert_eq!(
+                        frame.corners[0].value_m.to_bits(),
+                        elevations[index].to_bits()
+                    );
+                    for anchor in frame.corners {
+                        assert!(anchor.value_m.is_finite());
+                        assert!((-1_800.0..=500.0).contains(&anchor.value_m));
+                        if constant {
+                            assert_eq!(anchor.value_m.to_bits(), 500.0_f64.to_bits());
+                        }
+                    }
+                }
+            }
+            for edge in surface.edges() {
+                let frames = edge.cells.map(|cell| {
+                    let record = &surface.cells()[cell.raw() as usize];
+                    let sector = record
+                        .boundary_edges
+                        .iter()
+                        .position(|id| *id == edge.id)
+                        .unwrap();
+                    evaluator.sector_frame(cell.raw(), sector as u8)
+                });
+                for anchor in &frames[0].corners[1..] {
+                    let opposite = frames[1].corners[1..]
+                        .iter()
+                        .find(|other| other.seed == anchor.seed)
+                        .unwrap();
+                    assert_eq!(anchor.value_m.to_bits(), opposite.value_m.to_bits());
+                }
+            }
+        }
+    }
+
     /// Spec §7 invariant 4: every L0 cell face value is bit-identical to
     /// the published T0 elevation, labelled by the discrete regime table.
     #[test]
@@ -1086,6 +1202,270 @@ mod tests {
                 assert_eq!(regime, SurfaceRegime::OceanFloor);
             }
         }
+    }
+
+    /// One production solve is sufficient: both anchor rules borrow this bundle,
+    /// and the fixed original gate and all diagnostic stages use the same probes.
+    #[test]
+    #[ignore = "release-only P1-A feasibility probe; one real Draft42 bundle"]
+    fn p1_a_draft42_shared_anchor_probe() {
+        use std::io::{BufWriter, Write};
+        use std::time::Instant;
+
+        use crate::app::build_spherical_formation_external_artifacts;
+        use crate::engine::{BuildEngine, MemoryStageCache};
+        use crate::generators::natural::{
+            causal_natural_formation_graph, NaturalFormationBundleArtifact,
+        };
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{
+            GeologicSpec, NaturalQualityProfile, ReliefSpec, TectonicSpec, WorldFormationSpec,
+        };
+        use crate::world::spatial::{
+            audited_float_platform, spherical_triangle_area_unit, SurfaceRef,
+        };
+
+        let clock = Instant::now();
+        let seed = RootSeed::new(42);
+        let profile = NaturalQualityProfile::Draft;
+        let surface = ProfileSurfaceBuilder::build(
+            profile,
+            Meters::new(6_371_000.0).unwrap(),
+            &BuildCancellation::new(),
+        )
+        .unwrap()
+        .authoritative_surface()
+        .clone();
+        let external = build_spherical_formation_external_artifacts(
+            seed,
+            profile,
+            &surface,
+            &WorldFormationSpec::default(),
+            &TectonicSpec::default(),
+            &ReliefSpec::default(),
+            &GeologicSpec::default(),
+        )
+        .unwrap();
+        eprintln!(
+            "P1_A_BUILD_BEGIN cells={} elapsed_s={}",
+            surface.cells().len(),
+            clock.elapsed().as_secs_f64()
+        );
+        let outcome = BuildEngine::new(causal_natural_formation_graph().unwrap())
+            .build(seed, external, &mut MemoryStageCache::new())
+            .unwrap();
+        let artifact = outcome
+            .artifacts
+            .get::<NaturalFormationBundleArtifact>()
+            .unwrap();
+        let bundle = artifact.bundle();
+        bundle.validate().unwrap();
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        eprintln!(
+            "P1_A_BUILD_END elapsed_s={} build={} bundle={} surface={} surface_ref={:?} audited={}",
+            clock.elapsed().as_secs_f64(),
+            hex(outcome.report.result_hash().unwrap().as_bytes()),
+            hex(outcome
+                .artifacts
+                .hash::<NaturalFormationBundleArtifact>()
+                .unwrap()
+                .as_bytes()),
+            hex(&surface.fingerprint()),
+            SurfaceRef::for_spherical(&surface),
+            audited_float_platform()
+        );
+        let inputs = || FormationDerivationInputs {
+            surface: &surface,
+            compatibility: bundle.tectonics().compatibility(),
+            substrate: bundle.substrate(),
+            formation: bundle.surface_formation(),
+            climate: bundle.climate(),
+        };
+        let shared = p1_a_shared_candidate(
+            HierarchicalEvaluator::from_formation_product(inputs(), seed).unwrap(),
+            &surface,
+        )
+        .unwrap();
+        let mut legacy = HierarchicalEvaluator::from_formation_product(inputs(), seed).unwrap();
+        // Only the historical anchor arithmetic is reproduced in the test. Walk,
+        // conditions, seeds, river guidance and public face evaluation stay production.
+        let mut sums = vec![0.0; surface.vertices().len()];
+        let mut shares = vec![0_u32; surface.vertices().len()];
+        let elevation = bundle
+            .surface_formation()
+            .terrain_fields()
+            .current_elevation_m();
+        for (index, cell) in surface.cells().iter().enumerate() {
+            for vertex in &cell.boundary_vertices {
+                sums[vertex.raw() as usize] += f64::from(elevation[index]);
+                shares[vertex.raw() as usize] += 1;
+            }
+        }
+        legacy.vertex_value_m = sums
+            .iter()
+            .zip(&shares)
+            .map(|(&sum, &count)| sum / f64::from(count.max(1)))
+            .collect();
+        let sea_level = bundle.surface_formation().terrain_fields().sea_level_m();
+        const TOTAL: usize = 16_384;
+        const LEVELS: [u8; 4] = [0, 1, 2, 6];
+        let mut output = BufWriter::new(std::io::stdout().lock());
+        writeln!(output, "P1_A_ROW_HEADER rule,index,level,cell,sector,path,l0_m,base_m,raw_m,carved_m,published_m,published_bits,corner0_m,corner1_m,corner2_m").unwrap();
+        let mut candidate_drift = f64::NAN;
+        let mut domain_errors = 0_usize;
+        let mut shared_errors = 0_usize;
+        for (rule, mut evaluator) in [("legacy", legacy), ("shared_p5", shared)] {
+            eprintln!(
+                "P1_A_EVALUATOR rule={rule} sea_level={sea_level:?} probe_fingerprint={}",
+                hex(&evaluator.probe_fingerprint())
+            );
+            // A test-only zero-amplitude observation isolates the linear base.
+            // It never evaluates carving, so river caches keep their real guidance.
+            let conditions = evaluator.cell_conditions.clone();
+            for condition in &mut evaluator.cell_conditions {
+                condition.a0_m = 0.0;
+            }
+            let bases: Vec<[f64; 4]> = (0..TOTAL)
+                .map(|index| {
+                    let direction = fibonacci_probe(index, TOTAL);
+                    LEVELS.map(|level| evaluator.uncarved_sample_elevation_m(direction, level))
+                })
+                .collect();
+            evaluator.cell_conditions = conditions;
+            let mut land = [0_u32; 4];
+            let mut base_land = [0_u32; 4];
+            let mut raw_land = [0_u32; 4];
+            let mut carved_land = [0_u32; 4];
+            let mut lost = [0_u32; 4];
+            let mut gained = [0_u32; 4];
+            let mut raw_lost = [0_u32; 4];
+            let mut raw_gained = [0_u32; 4];
+            let mut cast_flips = [0_u32; 4];
+            for (index, base) in bases.iter().enumerate() {
+                let direction = fibonacci_probe(index, TOTAL);
+                let root = evaluator.locate_cell_index(direction) as usize;
+                let l0 = evaluator.sample(direction, 0).elevation_m;
+                assert_eq!(l0.to_bits(), elevation[root].to_bits(), "L0 index={index}");
+                let l0_land = l0 >= sea_level;
+                for (slot, &level) in LEVELS.iter().enumerate() {
+                    let public = evaluator.sample(direction, level);
+                    let (sector, path, frame) = match evaluator.locate(direction, level) {
+                        LocatedPrimitive::Cell(cell) => (
+                            0,
+                            HierarchicalPath::new(&[]),
+                            evaluator.sector_frame(cell.raw(), 0),
+                        ),
+                        LocatedPrimitive::Triangle { cell, sector, path } => (
+                            sector,
+                            path,
+                            evaluator.walk_frame(cell, sector, path.steps()),
+                        ),
+                    };
+                    let raw = evaluator.uncarved_sample_elevation_m(direction, level);
+                    let carved = if level == 0 {
+                        raw
+                    } else {
+                        evaluator.carved_face_elevation_m(root, &frame, level)
+                    };
+                    if level > 0 {
+                        assert_eq!(
+                            public.elevation_m.to_bits(),
+                            evaluator
+                                .face_value(root, &frame, level)
+                                .elevation_m
+                                .to_bits()
+                        );
+                    }
+                    domain_errors += usize::from(
+                        !raw.is_finite()
+                            || !carved.is_finite()
+                            || !public.elevation_m.is_finite()
+                            || !(ELEVATION_MIN_M..=ELEVATION_MAX_M).contains(&public.elevation_m)
+                            || carved > raw,
+                    );
+                    land[slot] += u32::from(public.elevation_m >= sea_level);
+                    base_land[slot] += u32::from(base[slot] >= f64::from(sea_level));
+                    raw_land[slot] += u32::from(raw >= f64::from(sea_level));
+                    carved_land[slot] += u32::from(carved >= f64::from(sea_level));
+                    lost[slot] += u32::from(l0_land && public.elevation_m < sea_level);
+                    gained[slot] += u32::from(!l0_land && public.elevation_m >= sea_level);
+                    raw_lost[slot] += u32::from(l0_land && raw < f64::from(sea_level));
+                    raw_gained[slot] += u32::from(!l0_land && raw >= f64::from(sea_level));
+                    cast_flips[slot] += u32::from(
+                        (carved >= f64::from(sea_level)) != (public.elevation_m >= sea_level),
+                    );
+                    // Corner nodes are declared geometric point observations, distinct
+                    // from the stepped public face value; no fine field is published.
+                    writeln!(output, "P1_A_ROW {rule},{index},{level},{root},{sector},{:?},{l0:?},{:?},{raw:?},{carved:?},{:?},{:08x},{:?},{:?},{:?}",
+                        path.steps(), base[slot], public.elevation_m, public.elevation_m.to_bits(),
+                        frame.corners[0].value_m, frame.corners[1].value_m, frame.corners[2].value_m).unwrap();
+                }
+            }
+            for (slot, level) in LEVELS.iter().enumerate() {
+                eprintln!("P1_A_COUNTS rule={rule} level={level} total={TOTAL} base_land={} raw_land={} carved_land={} final_land={} lost={} gained={} raw_lost={} raw_gained={} cast_flips={}",
+                    base_land[slot], raw_land[slot], carved_land[slot], land[slot], lost[slot], gained[slot], raw_lost[slot], raw_gained[slot], cast_flips[slot]);
+            }
+            let drift = (f64::from(land[0]) - f64::from(land[3])).abs() / TOTAL as f64;
+            eprintln!("P1_A_GATE rule={rule} l0_land={} l6_land={} drift={drift:?} threshold=0.01 pass={}", land[0], land[3], drift <= 0.01);
+            if rule == "shared_p5" {
+                candidate_drift = drift;
+            }
+            if rule == "legacy" && (land[0], land[3]) != (4219, 3991) {
+                eprintln!("P1_A_IDENTITY_DIFFERENCE legacy counts differ from recorded platform baseline; original scientific gate remains mandatory");
+            }
+            for (index, cell) in surface.cells().iter().enumerate() {
+                let (mut area, mut weighted) = (0.0, 0.0);
+                for sector in 0..cell.boundary_vertices.len() {
+                    let frame = evaluator.sector_frame(cell.id.raw(), sector as u8);
+                    let [a, b, c] = frame.corners.map(|corner| corner.position);
+                    let weight = spherical_triangle_area_unit(a, b, c);
+                    area += weight;
+                    weighted += weight * frame.mean_elevation_m();
+                }
+                writeln!(
+                    output,
+                    "P1_A_MEAN {rule},{index},{:?},{:?},{:?}",
+                    elevation[index],
+                    weighted / area,
+                    weighted / area - f64::from(elevation[index])
+                )
+                .unwrap();
+            }
+            // Real coast-adjacent nodes and the first boundary split level
+            // retain canonical bit identity from both incident cells.
+            for edge in surface.edges() {
+                let frames = edge.cells.map(|cell| {
+                    let record = &surface.cells()[cell.raw() as usize];
+                    let sector = record
+                        .boundary_edges
+                        .iter()
+                        .position(|id| *id == edge.id)
+                        .unwrap();
+                    let frame = evaluator.sector_frame(cell.raw(), sector as u8);
+                    (frame, evaluator.sector_conditions(cell.raw(), sector as u8))
+                });
+                let a = evaluator.split_midpoints(&frames[0].0, 1, &frames[0].1);
+                let b = evaluator.split_midpoints(&frames[1].0, 1, &frames[1].1);
+                shared_errors += usize::from(
+                    a[1].value_m.to_bits() != b[1].value_m.to_bits() || a[1].seed != b[1].seed,
+                );
+            }
+        }
+        output.flush().unwrap();
+        eprintln!("P1_A_INVARIANTS domain_errors={domain_errors} shared_errors={shared_errors} elapsed_s={}", clock.elapsed().as_secs_f64());
+        assert_eq!(domain_errors, 0);
+        assert_eq!(shared_errors, 0);
+        // Identical to hierarchical_product_gates.rs: original Fibonacci
+        // directions, sample L0/L6 >= original f32 sea level, same threshold.
+        assert!(
+            candidate_drift <= 0.01,
+            "P1-A original height gate: drift {candidate_drift}"
+        );
     }
 
     /// Spec §7 invariant 1: identical IDs evaluate bit-identically across

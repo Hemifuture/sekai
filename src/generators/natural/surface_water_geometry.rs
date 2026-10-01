@@ -473,7 +473,10 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
     }
 }
 
-fn reconstruct_vertex_elevations(
+/// Reconstructs P5's shared centre-node anchors in the production iteration order.
+/// P1-A's offline T1 candidate also consumes this helper; cancellation and
+/// non-finite results retain the original water-volume error.
+pub(super) fn reconstruct_vertex_elevations(
     surface: &SphericalSurfaceSnapshot,
     elevation_m: &[f64],
     cancellation: &BuildCancellation,

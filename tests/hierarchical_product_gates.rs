@@ -69,6 +69,9 @@ fn l0_cells_reproduce_the_published_elevation_bit_exactly() {
 /// one percentage point of L0 over the same 16,384 Fibonacci probes as the
 /// unit test. Red when restored (T1 v2.2 spec §1.8); stage 1 must turn it
 /// green and remove the ignore, never widen the threshold.
+/// P1-A's same-fixture shared-P5-anchor probe explicitly ran this exact
+/// sample/threshold path and still failed (Draft42 L0 4219, L6 3992).
+/// Its candidate remains test-only; the original gate and ignore stay intact.
 #[test]
 #[ignore = "red until T1 v2.2 stage 1: measured drift 0.0139 on Draft seed 42 (spec §1.8)"]
 fn deep_land_fraction_stays_within_one_point_of_l0() {
