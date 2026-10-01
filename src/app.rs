@@ -3518,6 +3518,8 @@ mod natural_app_tests {
     fn final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits() {
         for continental in [false, true] {
             let mut app = final_fix_percentage_app(continental, 0.38123456);
+            app.authoring.mark_saved(app.authoring.capture_save());
+            assert!(!app.authoring.is_dirty());
             let ctx = egui::Context::default();
             let before = app.authoring.draft().clone();
             let identity = before.recipe_id().unwrap();
