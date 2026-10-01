@@ -1,0 +1,8 @@
+    Finished `release` profile [optimized] target(s) in 0.27s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 1 test
+test app::natural_app_tests::a_second_poll_in_the_same_pass_stages_without_settling ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 625 filtered out; finished in 0.36s
+

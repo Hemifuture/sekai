@@ -1,0 +1,30 @@
+    Checking sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+error: field assignment outside of initializer for an instance created with Default::default()
+    --> src\app.rs:3444:9
+     |
+3444 |         inputs.world_pipeline = WorldPipeline::LegacyFoundation;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: consider initializing the variable with `app::authoring::AuthorInputs { world_pipeline: WorldPipeline::LegacyFoundation, ..Default::default() }` and removing relevant reassignments
+    --> src\app.rs:3443:9
+     |
+3443 |         let mut inputs = super::AuthorInputs::default();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#field_reassign_with_default
+     = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+    --> src\app.rs:3733:9
+     |
+3733 |         inputs.world_pipeline = WorldPipeline::LegacyFoundation;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: consider initializing the variable with `app::authoring::AuthorInputs { world_pipeline: WorldPipeline::LegacyFoundation, ..Default::default() }` and removing relevant reassignments
+    --> src\app.rs:3732:9
+     |
+3732 |         let mut inputs = super::AuthorInputs::default();
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#field_reassign_with_default
+
+error: could not compile `sekai` (lib test) due to 2 previous errors

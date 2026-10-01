@@ -1,0 +1,9 @@
+{
+  "EndUtc": "2026-10-01T00:30:20.8875611Z",
+  "Exit": 101,
+  "CARGO_TARGET_DIR": null,
+  "Command": "cargo test --release --lib final_fix_ -- --nocapture",
+  "StartUtc": "2026-10-01T00:29:47.1265804Z",
+  "Free": 102088232960,
+  "CARGO_INCREMENTAL": "0"
+}

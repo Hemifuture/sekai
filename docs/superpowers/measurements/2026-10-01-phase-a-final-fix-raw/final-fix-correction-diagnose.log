@@ -1,0 +1,19 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 33.22s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 1 test
+
+thread 'app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place' (38164) panicked at src\app.rs:3677:13:
+field=land error=Some(("陆地占比", "0")) focus=Some(8B06) input=Some(AuthorInputs { world_seed: 42, spherical_space_spec: SphericalSpaceSpec { radius: Meters(6371000.0), target_cell_count: 20000 }, world_pipeline: LegacyFoundation, formation_quality_profile: Draft, formation_spec: WorldFormationSpec { schema_version: 1, preset: Continents }, tectonic_spec: TectonicSpec { schema_version: 1, plate_count: 12, continental_crust_fraction: 0.31, activity: Moderate }, relief_spec: ReliefSpec { schema_version: 2, target_land_fraction: 0.38, sea_level_policy: WaterInventory, water_inventory_ratio: 1.0 }, geologic_spec: GeologicSpec { schema_version: 1, hotspot_count: 4, mantle_activity: Moderate } }) correction=["文件", "编辑", "☀ Light", "🌙 Dark", "💻 System", "当前切片：空间 → 板块/地壳 → 地形/地质 → 初步气候 → 水文/侵蚀", "egui", "自然世界", "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）", "根种子", "42", "新种子并重建", "多大陆", "世界形态", "初始板块数", "12", "0", "陆地占比", "高级", "适中", "构造活动", "减少加载位移动效", "按当前参数重建", "无效陆地占比 0：请按控件单位输入范围内的数值", "未命名项目", "参数文本尚未提交；配方尚未保存", "请先提交或取消参数文本，再保存", "球面世界尚未发布"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place ... FAILED
+
+failures:
+
+failures:
+    app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 625 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

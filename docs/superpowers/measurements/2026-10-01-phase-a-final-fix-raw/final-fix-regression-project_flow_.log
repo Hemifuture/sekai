@@ -1,0 +1,16 @@
+    Finished `release` profile [optimized] target(s) in 0.27s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 9 tests
+test app::phase_a_tests::project_flow_drag_frames_commit_once_and_escape_restores_input ... ok
+test app::phase_a_tests::project_flow_new_resets_epoch_before_completion_poll ... ok
+test app::phase_a_tests::project_flow_undo_invalidates_pending_open_before_poll ... ok
+test app::phase_a_tests::project_flow_system_close_asks_before_cancelling_build ... ok
+test app::phase_a_tests::project_flow_actual_text_focus_keeps_recipe_undo_shortcut_out_of_text_editor ... ok
+test app::phase_a_tests::project_flow_actual_text_edit_is_unsaved_without_implicit_build ... ok
+test app::phase_a_tests::project_flow_large_seed_focus_and_confirmation_preserve_every_u64_bit ... ok
+test app::phase_a_tests::project_flow_invalid_text_focus_loss_cannot_silently_save_previous_value ... ok
+test app::phase_a_tests::project_flow_status_shapes_follow_uncommitted_text_enter_and_escape ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 617 filtered out; finished in 0.00s
+

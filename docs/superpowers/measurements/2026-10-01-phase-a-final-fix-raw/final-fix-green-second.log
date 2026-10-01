@@ -1,0 +1,23 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 46.66s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 5 tests
+test app::natural_app_tests::final_fix_pending_status_renders_actual_surface_phase_without_observation ... ok
+
+thread 'app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing' (19652) panicked at src\app.rs:3474:17:
+continental=false invalid=0% focused=None error=None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing ... FAILED
+test app::natural_app_tests::final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits ... ok
+test app::natural_app_tests::final_fix_percentage_keyboard_accepts_display_units_and_escape_discards ... ok
+test app::natural_app_tests::final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round ... ok
+
+failures:
+
+failures:
+    app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,39 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 47.56s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 5 tests
+
+thread 'app::natural_app_tests::final_fix_pending_status_renders_actual_surface_phase_without_observation' (54532) panicked at src\app.rs:3413:9:
+actual status text: ["正在生成世界…已用 0 秒", "取消"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::natural_app_tests::final_fix_pending_status_renders_actual_surface_phase_without_observation ... FAILED
+
+thread 'app::natural_app_tests::final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round' (73216) panicked at src\app.rs:3343:17:
+assertion `left == right` failed: invalid=0 finish=Enter
+  left: AuthorInputs { world_seed: 42, spherical_space_spec: SphericalSpaceSpec { radius: Meters(6371000.0), target_cell_count: 20000 }, world_pipeline: LegacyFoundation, formation_quality_profile: Draft, formation_spec: WorldFormationSpec { schema_version: 1, preset: Continents }, tectonic_spec: TectonicSpec { schema_version: 1, plate_count: 2, continental_crust_fraction: 0.38, activity: Moderate }, relief_spec: ReliefSpec { schema_version: 2, target_land_fraction: 0.38, sea_level_policy: WaterInventory, water_inventory_ratio: 1.0 }, geologic_spec: GeologicSpec { schema_version: 1, hotspot_count: 4, mantle_activity: Moderate } }
+ right: AuthorInputs { world_seed: 42, spherical_space_spec: SphericalSpaceSpec { radius: Meters(6371000.0), target_cell_count: 20000 }, world_pipeline: LegacyFoundation, formation_quality_profile: Draft, formation_spec: WorldFormationSpec { schema_version: 1, preset: Continents }, tectonic_spec: TectonicSpec { schema_version: 1, plate_count: 12, continental_crust_fraction: 0.38, activity: Moderate }, relief_spec: ReliefSpec { schema_version: 2, target_land_fraction: 0.38, sea_level_policy: WaterInventory, water_inventory_ratio: 1.0 }, geologic_spec: GeologicSpec { schema_version: 1, hotspot_count: 4, mantle_activity: Moderate } }
+
+thread 'app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing' (73588) panicked at src\app.rs:3384:17:
+assertion failed: app.input_edit.is_some()
+
+thread 'app::natural_app_tests::final_fix_percentage_keyboard_accepts_display_units_and_escape_discards' (58020) panicked at src\app.rs:3298:17:
+assertion `left == right` failed: continental=false input=40%
+  left: 0.38
+ right: 0.4
+test app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing ... FAILED
+test app::natural_app_tests::final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round ... FAILED
+test app::natural_app_tests::final_fix_percentage_keyboard_accepts_display_units_and_escape_discards ... FAILED
+test app::natural_app_tests::final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits ... ok
+
+failures:
+
+failures:
+    app::natural_app_tests::final_fix_pending_status_renders_actual_surface_phase_without_observation
+    app::natural_app_tests::final_fix_percentage_keyboard_accepts_display_units_and_escape_discards
+    app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing
+    app::natural_app_tests::final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

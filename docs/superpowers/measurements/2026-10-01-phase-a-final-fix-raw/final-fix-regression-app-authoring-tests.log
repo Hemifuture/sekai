@@ -1,0 +1,16 @@
+    Finished `release` profile [optimized] target(s) in 0.28s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 9 tests
+test app::authoring::tests::a_preset_and_its_linked_inputs_are_one_command ... ok
+test app::authoring::tests::identity_round_trips_losslessly_and_includes_inactive_inputs ... ok
+test app::authoring::tests::invalid_inputs_leave_the_draft_and_request_unchanged ... ok
+test app::authoring::tests::a_new_command_after_undo_cuts_the_redo_branch ... ok
+test app::authoring::tests::noop_does_not_advance_revision_or_invalidate_build ... ok
+test app::authoring::tests::only_the_current_request_can_publish_and_publication_does_not_save ... ok
+test app::authoring::tests::redo_restores_the_recorded_seed_and_never_revives_an_old_request ... ok
+test app::authoring::tests::resetting_rejects_old_save_and_build_tokens_and_clears_history ... ok
+test app::authoring::tests::saving_a_then_editing_b_marks_the_written_recipe_and_stays_dirty ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 617 filtered out; finished in 0.00s
+

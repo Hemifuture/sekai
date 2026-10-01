@@ -1,0 +1,19 @@
+   Compiling windows-sys v0.61.2
+   Compiling winapi-util v0.1.11
+   Compiling anstyle-wincon v3.0.11
+   Compiling anstyle-query v1.1.5
+   Compiling home v0.5.12
+   Compiling mio v1.1.1
+   Compiling termcolor v1.4.1
+   Compiling anstream v0.6.21
+   Compiling codespan-reporting v0.11.1
+   Compiling env_logger v0.11.8
+   Compiling tokio v1.49.0
+   Compiling naga v24.0.0
+   Compiling wgpu-hal v24.0.4
+   Compiling wgpu-core v24.0.5
+   Compiling wgpu v24.0.5
+   Compiling egui-wgpu v0.31.1
+   Compiling eframe v0.31.1
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 40.93s

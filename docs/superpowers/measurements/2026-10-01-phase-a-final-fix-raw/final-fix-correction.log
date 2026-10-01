@@ -1,0 +1,25 @@
+   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
+    Finished `release` profile [optimized] target(s) in 33.50s
+     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
+
+running 7 tests
+test app::natural_app_tests::final_fix_pending_status_renders_actual_surface_phase_without_observation ... ok
+
+thread 'app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place' (70580) panicked at src\app.rs:3675:13:
+field=land error=Some(("陆地占比", "0")) focus=Some(8B06)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place ... FAILED
+test app::natural_app_tests::final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits ... ok
+test app::natural_app_tests::final_fix_percentage_keyboard_accepts_display_units_and_escape_discards ... ok
+test app::natural_app_tests::final_fix_percentage_keyboard_rejects_domain_errors_without_committing ... ok
+test app::natural_app_tests::final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round ... ok
+test app::natural_app_tests::final_fix_actual_worker_phase_is_request_owned_and_never_persisted ... ok
+
+failures:
+
+failures:
+    app::natural_app_tests::final_fix_invalid_numbers_can_be_corrected_in_place
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--lib`

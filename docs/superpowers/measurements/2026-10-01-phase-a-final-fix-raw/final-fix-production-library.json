@@ -1,0 +1,3781 @@
+{
+  "Wasm": "PENDING until native helper exits",
+  "Artifacts": [
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\proc-macro2-7eb519b372b4c73a\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\proc-macro2-7eb519b372b4c73a\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "proc-macro"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\quote-13e08cccb837ecce\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\quote-13e08cccb837ecce\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "proc-macro"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "unicode_ident",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_ident-590ec847f0224622.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_ident-590ec847f0224622.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde_core-4063181fead92cfd\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde_core-4063181fead92cfd\\build_script_build.pdb"
+      ],
+      "Features": [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "windows_link",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_link-06774a930fddcd1f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_link-06774a930fddcd1f.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "cfg_if",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcfg_if-78622695d720e42a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcfg_if-78622695d720e42a.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "cfg_aliases",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcfg_aliases-15c59441e9c485f2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcfg_aliases-15c59441e9c485f2.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\windows_x86_64_msvc-45a2459b1c26446e\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\windows_x86_64_msvc-45a2459b1c26446e\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "stable_deref_trait",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstable_deref_trait-c224f3abad164eb5.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstable_deref_trait-c224f3abad164eb5.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "smallvec",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsmallvec-37bd4277684491e0.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsmallvec-37bd4277684491e0.rmeta"
+      ],
+      "Features": [
+        "const_generics",
+        "union"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde-18e4efa32b7cdfa4\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde-18e4efa32b7cdfa4\\build_script_build.pdb"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "autocfg",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libautocfg-bffc21148cebcdee.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libautocfg-bffc21148cebcdee.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "log",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblog-7cb31675a7b306d2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblog-7cb31675a7b306d2.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "arrayvec",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarrayvec-5928c5d48658789a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarrayvec-5928c5d48658789a.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\parking_lot_core-b8592bb93fc193fe\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\parking_lot_core-b8592bb93fc193fe\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "foldhash",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfoldhash-39613e3b32918332.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfoldhash-39613e3b32918332.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "scopeguard",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libscopeguard-1ff9a2dc01d1cbfa.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libscopeguard-1ff9a2dc01d1cbfa.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\khronos_api-753cf98616530cd4\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\khronos_api-753cf98616530cd4\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "writeable",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwriteable-9dae00a8e82d7de1.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwriteable-9dae00a8e82d7de1.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "litemap",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblitemap-b0ee94d702c42e53.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblitemap-b0ee94d702c42e53.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\rustversion-cf3ddffa05816db1\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\rustversion-cf3ddffa05816db1\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "once_cell",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libonce_cell-4f6953d81ce35ccb.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libonce_cell-4f6953d81ce35ccb.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\windows_x86_64_msvc-3413d02297863342\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\windows_x86_64_msvc-3413d02297863342\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\icu_properties_data-0e833813eb92d3bf\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\icu_properties_data-0e833813eb92d3bf\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\icu_normalizer_data-86098c48370999b5\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\icu_normalizer_data-86098c48370999b5\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "log",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblog-cd08075103038ad7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblog-cd08075103038ad7.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "xml",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libxml-5b6dd432a781c253.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libxml-5b6dd432a781c253.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "simd_adler32",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsimd_adler32-6e68a53c92e89700.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsimd_adler32-6e68a53c92e89700.rmeta"
+      ],
+      "Features": [
+        "const-generics",
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\crc32fast-a07dd41d36a80750\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\crc32fast-a07dd41d36a80750\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\zerocopy-5f38a93ddda00fb7\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\zerocopy-5f38a93ddda00fb7\\build_script_build.pdb"
+      ],
+      "Features": [
+        "simd"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\libc-83b5fb63b0d2819d\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\libc-83b5fb63b0d2819d\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "heck",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libheck-dd3c308fd6b7f530.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libheck-dd3c308fd6b7f530.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "proc_macro2",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libproc_macro2-785e7ee88cd87ede.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libproc_macro2-785e7ee88cd87ede.rmeta"
+      ],
+      "Features": [
+        "default",
+        "proc-macro"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-69c735b027d98d8b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-69c735b027d98d8b.rmeta"
+      ],
+      "Features": [
+        "Wdk",
+        "Wdk_Foundation",
+        "Wdk_Storage",
+        "Wdk_Storage_FileSystem",
+        "Wdk_System",
+        "Wdk_System_IO",
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_Console",
+        "Win32_System_IO",
+        "Win32_System_Pipes",
+        "Win32_System_SystemInformation",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Shell",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\num-traits-deaa9f080cd72035\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\num-traits-deaa9f080cd72035\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "lock_api",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblock_api-7d2fa150aa67756c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblock_api-7d2fa150aa67756c.rmeta"
+      ],
+      "Features": [
+        "atomic_usize",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "hashbrown",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhashbrown-c8150f0ee7caeed0.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhashbrown-c8150f0ee7caeed0.rmeta"
+      ],
+      "Features": [
+        "default-hasher"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "raw_window_handle",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libraw_window_handle-42c75c54b034a2e7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libraw_window_handle-42c75c54b034a2e7.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "version_check",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libversion_check-912bb7fb10a59bce.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libversion_check-912bb7fb10a59bce.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "profiling",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libprofiling-4d27a7676808ce59.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libprofiling-4d27a7676808ce59.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\thiserror-30b7c650b1146d78\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\thiserror-30b7c650b1146d78\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\naga-24da66ab38ec54c9\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\naga-24da66ab38ec54c9\\build_script_build.pdb"
+      ],
+      "Features": [
+        "compact",
+        "default",
+        "glsl-out",
+        "msl-out-if-target-apple",
+        "spv-out",
+        "wgsl-in"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "libloading",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblibloading-1a2ef48fad05cccd.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblibloading-1a2ef48fad05cccd.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\ash-3ce7df5962d542bc\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\ash-3ce7df5962d542bc\\build_script_build.pdb"
+      ],
+      "Features": [
+        "debug",
+        "default",
+        "libloading",
+        "loaded",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\khronos-egl-8b308bb59cab6470\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\khronos-egl-8b308bb59cab6470\\build_script_build.pdb"
+      ],
+      "Features": [
+        "1_0",
+        "1_1",
+        "1_2",
+        "1_3",
+        "1_4",
+        "1_5",
+        "default",
+        "dynamic",
+        "libloading"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "pin_project_lite",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpin_project_lite-98edefcacbb32751.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpin_project_lite-98edefcacbb32751.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "unicode_width",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_width-9aa648e8c56f1fcf.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_width-9aa648e8c56f1fcf.rmeta"
+      ],
+      "Features": [
+        "cjk",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ttf_parser",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libttf_parser-9dcd59a01481a7b0.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libttf_parser-9dcd59a01481a7b0.rmeta"
+      ],
+      "Features": [
+        "apple-layout",
+        "glyph-names",
+        "gvar-alloc",
+        "opentype-layout",
+        "std",
+        "variable-fonts"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "adler2",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libadler2-9d929e7b72f6cd65.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libadler2-9d929e7b72f6cd65.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "equivalent",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libequivalent-42fe5c6431d084df.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libequivalent-42fe5c6431d084df.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "bit_vec",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbit_vec-c12dd99044b408be.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbit_vec-c12dd99044b408be.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "quote",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libquote-715d11a71675e99b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libquote-715d11a71675e99b.rmeta"
+      ],
+      "Features": [
+        "default",
+        "proc-macro"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "serde_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde_core-9f1eea63b6865c93.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde_core-9f1eea63b6865c93.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_x86_64_msvc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_x86_64_msvc-8abbfd0b0cb9ee1e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_x86_64_msvc-8abbfd0b0cb9ee1e.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "parking_lot_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libparking_lot_core-8e403a4ebb561a97.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libparking_lot_core-8e403a4ebb561a97.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "khronos_api",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libkhronos_api-39fa53175307c151.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libkhronos_api-39fa53175307c151.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "winapi_util",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinapi_util-19ec6dee68996444.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinapi_util-19ec6dee68996444.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rustversion",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\rustversion-9e27753b7e797d2b.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\rustversion-9e27753b7e797d2b.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\rustversion-9e27753b7e797d2b.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\rustversion-9e27753b7e797d2b.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "icu_normalizer_data",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_normalizer_data-5c46555df5d30cc8.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_normalizer_data-5c46555df5d30cc8.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_x86_64_msvc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_x86_64_msvc-c8dcf6c42b3af625.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_x86_64_msvc-c8dcf6c42b3af625.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\ahash-7a64843ea94ad9f3\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\ahash-7a64843ea94ad9f3\\build_script_build.pdb"
+      ],
+      "Features": [
+        "no-rng",
+        "serde",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "icu_properties_data",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_properties_data-6c05a68385b80070.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_properties_data-6c05a68385b80070.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "hashbrown",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhashbrown-673477c7616c72fc.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhashbrown-673477c7616c72fc.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "owned_ttf_parser",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libowned_ttf_parser-ccf369f9df44d414.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libowned_ttf_parser-ccf369f9df44d414.rmeta"
+      ],
+      "Features": [
+        "apple-layout",
+        "default",
+        "glyph-names",
+        "gvar-alloc",
+        "opentype-layout",
+        "std",
+        "variable-fonts"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "bit_set",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbit_set-4966eae6bf53cb6e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbit_set-4966eae6bf53cb6e.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "libc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblibc-a8bccdbf2eb988b7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblibc-a8bccdbf2eb988b7.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "miniz_oxide",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libminiz_oxide-1823a3a5ccd60b61.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libminiz_oxide-1823a3a5ccd60b61.rmeta"
+      ],
+      "Features": [
+        "default",
+        "simd",
+        "simd-adler32",
+        "with-alloc"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zerocopy",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerocopy-01c4c0536e6111f3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerocopy-01c4c0536e6111f3.rmeta"
+      ],
+      "Features": [
+        "simd"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "crc32fast",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrc32fast-f57108d5ffefa26d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrc32fast-f57108d5ffefa26d.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\winit-4d9a05d90c83f355\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\winit-4d9a05d90c83f355\\build_script_build.pdb"
+      ],
+      "Features": [
+        "ahash",
+        "bytemuck",
+        "memmap2",
+        "percent-encoding",
+        "rwh_06",
+        "sctk",
+        "wayland",
+        "wayland-backend",
+        "wayland-client",
+        "wayland-protocols",
+        "wayland-protocols-plasma",
+        "x11",
+        "x11-dl",
+        "x11rb"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-hal-27bd9e713be14850\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-hal-27bd9e713be14850\\build_script_build.pdb"
+      ],
+      "Features": [
+        "gles",
+        "metal",
+        "renderdoc",
+        "vulkan",
+        "windows"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\paste-f461e73ad646fe1f\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\paste-f461e73ad646fe1f\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "unicode_xid",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_xid-1bce92caa6c68c94.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_xid-1bce92caa6c68c94.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\crossbeam-utils-ff8fb82616b35af7\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\crossbeam-utils-ff8fb82616b35af7\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "memchr",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmemchr-63dd0e6c39602549.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmemchr-63dd0e6c39602549.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "tracing_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtracing_core-e19e7d0b64ce9fa4.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtracing_core-e19e7d0b64ce9fa4.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rustc_hash",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librustc_hash-6811183da3a33c16.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librustc_hash-6811183da3a33c16.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "hexf_parse",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhexf_parse-a04cb36ae85d1dd0.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhexf_parse-a04cb36ae85d1dd0.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "syn",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsyn-92a7dd5151f45c3f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsyn-92a7dd5151f45c3f.rmeta"
+      ],
+      "Features": [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "bitflags",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbitflags-688857e2cc7b384d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbitflags-688857e2cc7b384d.rmeta"
+      ],
+      "Features": [
+        "serde",
+        "serde_core"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_targets",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_targets-9c4da8084fb13035.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_targets-9c4da8084fb13035.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "num_traits",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnum_traits-5515193b8d5fc8b3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnum_traits-5515193b8d5fc8b3.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "parking_lot",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libparking_lot-8b4ed4c495f20069.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libparking_lot-8b4ed4c495f20069.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "gl_generator",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgl_generator-842cb13d19ddabe7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgl_generator-842cb13d19ddabe7.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "termcolor",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtermcolor-a32815664fa4b5c4.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtermcolor-a32815664fa4b5c4.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_targets",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_targets-46a5b8fc74e3b76b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_targets-46a5b8fc74e3b76b.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "indexmap",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libindexmap-3a67c37d31275cad.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libindexmap-3a67c37d31275cad.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "static_assertions",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstatic_assertions-79cbca6dbb90c55d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstatic_assertions-79cbca6dbb90c55d.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ab_glyph_rasterizer",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libab_glyph_rasterizer-bdbb1255371c2be2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libab_glyph_rasterizer-bdbb1255371c2be2.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "flate2",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libflate2-6747d01e0a6ae500.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libflate2-6747d01e0a6ae500.rmeta"
+      ],
+      "Features": [
+        "any_impl",
+        "default",
+        "miniz_oxide",
+        "rust_backend"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ash",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libash-10c9f97aef10a63c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libash-10c9f97aef10a63c.rmeta"
+      ],
+      "Features": [
+        "debug",
+        "default",
+        "libloading",
+        "loaded",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "tracing",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtracing-f0b1c7ae347a7a31.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtracing-f0b1c7ae347a7a31.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "khronos_egl",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libkhronos_egl-5242f8464d57d9cc.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libkhronos_egl-5242f8464d57d9cc.rmeta"
+      ],
+      "Features": [
+        "1_0",
+        "1_1",
+        "1_2",
+        "1_3",
+        "1_4",
+        "1_5",
+        "default",
+        "dynamic",
+        "libloading"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "immutable_chunkmap",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libimmutable_chunkmap-50782c36c1fd792f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libimmutable_chunkmap-50782c36c1fd792f.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-core-e09858905fd21ae5\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-core-e09858905fd21ae5\\build_script_build.pdb"
+      ],
+      "Features": [
+        "gles",
+        "indirect-validation",
+        "metal",
+        "raw-window-handle",
+        "vulkan",
+        "wgsl"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "fdeflate",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfdeflate-3d5b193a6b6fdd0c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfdeflate-3d5b193a6b6fdd0c.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "smol_str",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsmol_str-53aa9313c13d2f73.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsmol_str-53aa9313c13d2f73.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "utf8_iter",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libutf8_iter-d21dc293288f1295.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libutf8_iter-d21dc293288f1295.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\getrandom-38d3cb3c572986de\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\getrandom-38d3cb3c572986de\\build_script_build.pdb"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "litrs",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblitrs-b5fc86dc0ee54b7a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liblitrs-b5fc86dc0ee54b7a.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "base64",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbase64-b611079f94621234.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbase64-b611079f94621234.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "cursor_icon",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcursor_icon-4839e930c9204e68.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcursor_icon-4839e930c9204e68.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "nohash_hasher",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnohash_hasher-5620f1a7b3502c5a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnohash_hasher-5620f1a7b3502c5a.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "percent_encoding",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpercent_encoding-6c01512a3267ec4d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpercent_encoding-6c01512a3267ec4d.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "dpi",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libdpi-9377ba489ae59a80.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libdpi-9377ba489ae59a80.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "synstructure",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsynstructure-1d3539105dfccaf9.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsynstructure-1d3539105dfccaf9.rmeta"
+      ],
+      "Features": [
+        "default",
+        "proc-macro"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zerovec_derive",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerovec_derive-093d6acd4c3e1b47.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerovec_derive-093d6acd4c3e1b47.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerovec_derive-093d6acd4c3e1b47.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerovec_derive-093d6acd4c3e1b47.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "serde_derive",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\serde_derive-6eb4c1e07e50ca1f.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\serde_derive-6eb4c1e07e50ca1f.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\serde_derive-6eb4c1e07e50ca1f.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\serde_derive-6eb4c1e07e50ca1f.pdb"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "bytemuck_derive",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\bytemuck_derive-5b3fa4389f7f841e.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\bytemuck_derive-5b3fa4389f7f841e.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\bytemuck_derive-5b3fa4389f7f841e.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\bytemuck_derive-5b3fa4389f7f841e.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "displaydoc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\displaydoc-8aa16c2a4b3f5e40.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\displaydoc-8aa16c2a4b3f5e40.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\displaydoc-8aa16c2a4b3f5e40.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\displaydoc-8aa16c2a4b3f5e40.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "windows_result",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_result-b974bf614aa67a2b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_result-b974bf614aa67a2b.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_implement",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_implement-655913bd24f236d2.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_implement-655913bd24f236d2.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_implement-655913bd24f236d2.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_implement-655913bd24f236d2.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "windows_interface",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_interface-500e6806c7b848ff.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_interface-500e6806c7b848ff.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_interface-500e6806c7b848ff.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\windows_interface-500e6806c7b848ff.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "enumn",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\enumn-3ce1a5ee82b173aa.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\enumn-3ce1a5ee82b173aa.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\enumn-3ce1a5ee82b173aa.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\enumn-3ce1a5ee82b173aa.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\glutin_wgl_sys-af7d63639716f753\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\glutin_wgl_sys-af7d63639716f753\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "thiserror_impl",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-3f291481cba690e1.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-3f291481cba690e1.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-3f291481cba690e1.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-3f291481cba690e1.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "strum_macros",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\strum_macros-4d5318ab10593dc7.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\strum_macros-4d5318ab10593dc7.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\strum_macros-4d5318ab10593dc7.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\strum_macros-4d5318ab10593dc7.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "codespan_reporting",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcodespan_reporting-cce2996c5d03003f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcodespan_reporting-cce2996c5d03003f.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "gpu_alloc_types",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_alloc_types-98a2de4b88b9357c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_alloc_types-98a2de4b88b9357c.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "spirv",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libspirv-514c6fc0705cfbca.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libspirv-514c6fc0705cfbca.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "gpu_descriptor_types",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_descriptor_types-47e24e2315b32a0b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_descriptor_types-47e24e2315b32a0b.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "wgpu_types",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_types-12d88de539861725.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_types-12d88de539861725.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ordered_float",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libordered_float-4e62b8545d1c9003.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libordered_float-4e62b8545d1c9003.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ab_glyph",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libab_glyph-bc3fc4cf2ce45bb5.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libab_glyph-bc3fc4cf2ce45bb5.rmeta"
+      ],
+      "Features": [
+        "default",
+        "gvar-alloc",
+        "std",
+        "variable-fonts"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-d420d152a3fb2caf.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-d420d152a3fb2caf.rmeta"
+      ],
+      "Features": [
+        "Win32",
+        "Win32_Devices",
+        "Win32_Devices_HumanInterfaceDevice",
+        "Win32_Foundation",
+        "Win32_Globalization",
+        "Win32_Graphics",
+        "Win32_Graphics_Dwm",
+        "Win32_Graphics_Gdi",
+        "Win32_Media",
+        "Win32_Security",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_Com_StructuredStorage",
+        "Win32_System_LibraryLoader",
+        "Win32_System_Ole",
+        "Win32_System_SystemInformation",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Accessibility",
+        "Win32_UI_Controls",
+        "Win32_UI_HiDpi",
+        "Win32_UI_Input",
+        "Win32_UI_Input_Ime",
+        "Win32_UI_Input_KeyboardAndMouse",
+        "Win32_UI_Input_Pointer",
+        "Win32_UI_Input_Touch",
+        "Win32_UI_Shell",
+        "Win32_UI_TextServices",
+        "Win32_UI_WindowsAndMessaging",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "pxfm",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpxfm-5685f889eed8d241.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpxfm-5685f889eed8d241.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-c038f71422a651b7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-c038f71422a651b7.rmeta"
+      ],
+      "Features": [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Graphics",
+        "Win32_Graphics_Gdi",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_DataExchange",
+        "Win32_System_IO",
+        "Win32_System_Memory",
+        "Win32_System_Ole",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Shell",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "unicode_segmentation",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_segmentation-fdb5fb8a6cda8cbc.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libunicode_segmentation-fdb5fb8a6cda8cbc.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "glow",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libglow-dd85f342a44c89be.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libglow-dd85f342a44c89be.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "renderdoc_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librenderdoc_sys-8344310ecaa281dd.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librenderdoc_sys-8344310ecaa281dd.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "epaint_default_fonts",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libepaint_default_fonts-d8cd06476b4f99f7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libepaint_default_fonts-d8cd06476b4f99f7.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "paste",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\paste-21710fe0dbab1b49.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\paste-21710fe0dbab1b49.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\paste-21710fe0dbab1b49.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\paste-21710fe0dbab1b49.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "crossbeam_utils",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_utils-2b37c1ea15cdf113.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_utils-2b37c1ea15cdf113.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "png",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpng-62f371f9f95ee32a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpng-62f371f9f95ee32a.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "document_features",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\document_features-6b59361cb44c674b.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\document_features-6b59361cb44c674b.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\document_features-6b59361cb44c674b.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\document_features-6b59361cb44c674b.pdb"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "zerofrom_derive",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerofrom_derive-75be4a7eba4baaeb.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerofrom_derive-75be4a7eba4baaeb.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerofrom_derive-75be4a7eba4baaeb.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\zerofrom_derive-75be4a7eba4baaeb.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "yoke_derive",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\yoke_derive-e26072f21d776f78.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\yoke_derive-e26072f21d776f78.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\yoke_derive-e26072f21d776f78.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\yoke_derive-e26072f21d776f78.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "serde",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde-43505223ccbbfa04.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde-43505223ccbbfa04.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "bytemuck",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbytemuck-7cd0d6071f63ee79.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbytemuck-7cd0d6071f63ee79.rmeta"
+      ],
+      "Features": [
+        "bytemuck_derive",
+        "derive",
+        "extern_crate_alloc",
+        "min_const_generics"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_strings",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_strings-a6f0089f1e7dd153.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_strings-a6f0089f1e7dd153.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "strum",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstrum-2743e43fea73a324.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libstrum-2743e43fea73a324.rmeta"
+      ],
+      "Features": [
+        "default",
+        "derive",
+        "std",
+        "strum_macros"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "thiserror",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libthiserror-19e44d8e832388f2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libthiserror-19e44d8e832388f2.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "gpu_alloc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_alloc-ecae3f12f52346fc.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_alloc-ecae3f12f52346fc.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "gpu_descriptor",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_descriptor-fbb78cd43bf33645.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgpu_descriptor-fbb78cd43bf33645.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "moxcms",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmoxcms-025dec9475e607b4.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmoxcms-025dec9475e607b4.rmeta"
+      ],
+      "Features": [
+        "avx",
+        "default",
+        "neon",
+        "sse"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "winit",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinit-e42637de5f9627b1.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinit-e42637de5f9627b1.rmeta"
+      ],
+      "Features": [
+        "ahash",
+        "bytemuck",
+        "memmap2",
+        "percent-encoding",
+        "rwh_06",
+        "sctk",
+        "wayland",
+        "wayland-backend",
+        "wayland-client",
+        "wayland-protocols",
+        "wayland-protocols-plasma",
+        "x11",
+        "x11-dl",
+        "x11rb"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "form_urlencoded",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libform_urlencoded-3939774b2e9108b6.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libform_urlencoded-3939774b2e9108b6.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "aho_corasick",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaho_corasick-648ef972c48ce5ef.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaho_corasick-648ef972c48ce5ef.rmeta"
+      ],
+      "Features": [
+        "perf-literal",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-d871dad0cd578461\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\wgpu-d871dad0cd578461\\build_script_build.pdb"
+      ],
+      "Features": [
+        "metal",
+        "webgpu",
+        "wgsl"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "find_msvc_tools",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfind_msvc_tools-55cad095c4942b11.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libfind_msvc_tools-55cad095c4942b11.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "byteorder_lite",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbyteorder_lite-e930672879f9a66c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbyteorder_lite-e930672879f9a66c.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "shlex",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libshlex-c53a65b2283952f5.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libshlex-c53a65b2283952f5.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "error_code",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liberror_code-8193a47811f2591d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liberror_code-8193a47811f2591d.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\thiserror-88d76b9e095acb7f\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\thiserror-88d76b9e095acb7f\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "regex_syntax",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex_syntax-1a8ddb4859dc245c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex_syntax-1a8ddb4859dc245c.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "getrandom",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgetrandom-326e04aea96b0a1c.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libgetrandom-326e04aea96b0a1c.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "crossbeam_epoch",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_epoch-08697c9a4b08312e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_epoch-08697c9a4b08312e.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "thiserror_impl",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-c7718d01a3bcd13c.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-c7718d01a3bcd13c.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-c7718d01a3bcd13c.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\thiserror_impl-c7718d01a3bcd13c.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\rayon-core-8d3d7462d4e2b302\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\rayon-core-8d3d7462d4e2b302\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "utf8parse",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libutf8parse-fd20d120b20cfad2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libutf8parse-fd20d120b20cfad2.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "once_cell_polyfill",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libonce_cell_polyfill-19a39aef7f02a800.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libonce_cell_polyfill-19a39aef7f02a800.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\zmij-83bf80c53fd81d5a\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\zmij-83bf80c53fd81d5a\\build_script_build.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "rustc_hash",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librustc_hash-f4c1d5bbad5ed1d6.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librustc_hash-f4c1d5bbad5ed1d6.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rand_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_core-01f924605dd697e8.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_core-01f924605dd697e8.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "anstyle",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle-349264d44ad2e05e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle-349264d44ad2e05e.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "web_time",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libweb_time-e7e784abcabfe0c9.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libweb_time-e7e784abcabfe0c9.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zerofrom",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerofrom-fd5affd430fca70a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerofrom-fd5affd430fca70a.rmeta"
+      ],
+      "Features": [
+        "derive"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_core-dc6f4156f469458e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_core-dc6f4156f469458e.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "accesskit",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit-18a24bb0b1cdce14.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit-18a24bb0b1cdce14.rmeta"
+      ],
+      "Features": [
+        "enumn",
+        "serde"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "emath",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libemath-6c76e18c6847e2c1.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libemath-6c76e18c6847e2c1.rmeta"
+      ],
+      "Features": [
+        "bytemuck",
+        "serde"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ahash",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libahash-82737eac1ed2d441.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libahash-82737eac1ed2d441.rmeta"
+      ],
+      "Features": [
+        "no-rng",
+        "serde",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "glutin_wgl_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libglutin_wgl_sys-d3c4fcfdaddd77bd.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libglutin_wgl_sys-d3c4fcfdaddd77bd.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "naga",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnaga-c13be74036773885.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnaga-c13be74036773885.rmeta"
+      ],
+      "Features": [
+        "compact",
+        "default",
+        "glsl-out",
+        "msl-out-if-target-apple",
+        "spv-out",
+        "wgsl-in"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ron",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libron-83e63ed9b09cf6eb.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libron-83e63ed9b09cf6eb.rmeta"
+      ],
+      "Features": [
+        "default",
+        "integer128"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "clipboard_win",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libclipboard_win-cce7723fda8e0ea6.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libclipboard_win-cce7723fda8e0ea6.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "regex_automata",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex_automata-01f61b9ad5317a45.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex_automata-01f61b9ad5317a45.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "cc",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcc-a72d6a4db002fe15.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcc-a72d6a4db002fe15.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "image",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libimage-a947b32c4b1f3338.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libimage-a947b32c4b1f3338.rmeta"
+      ],
+      "Features": [
+        "bmp",
+        "png"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\winapi-39d75b86e7ee574d\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\winapi-39d75b86e7ee574d\\build_script_build.pdb"
+      ],
+      "Features": [
+        "winuser"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "rand_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_core-57261bedcada7610.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_core-57261bedcada7610.rmeta"
+      ],
+      "Features": [
+        "os_rng",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "type_map",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtype_map-389d5e7bb5de4e39.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtype_map-389d5e7bb5de4e39.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "anstyle_wincon",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_wincon-0036c1a18a918580.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_wincon-0036c1a18a918580.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "crossbeam_deque",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_deque-bb4d5bd0e9f60b6f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcrossbeam_deque-bb4d5bd0e9f60b6f.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "anstyle_parse",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_parse-ee2ae62fe56a959d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_parse-ee2ae62fe56a959d.rmeta"
+      ],
+      "Features": [
+        "default",
+        "utf8"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "anstyle_query",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_query-e7797deaed1631bd.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstyle_query-e7797deaed1631bd.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde_json-058b00ab5998ad29\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\serde_json-058b00ab5998ad29\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "float_roundtrip",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "is_terminal_polyfill",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libis_terminal_polyfill-7d9666aa4b6ab96e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libis_terminal_polyfill-7d9666aa4b6ab96e.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "colorchoice",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcolorchoice-d1cbd49e9611baaa.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcolorchoice-d1cbd49e9611baaa.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ppv_lite86",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libppv_lite86-792d8a6b6f186b3f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libppv_lite86-792d8a6b6f186b3f.rmeta"
+      ],
+      "Features": [
+        "simd",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rand",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand-08bc05f1b497cb09.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand-08bc05f1b497cb09.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rand_xorshift",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_xorshift-fe5e6728ff8a261e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_xorshift-fe5e6728ff8a261e.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "socket2",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsocket2-caaac539efbb06b0.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsocket2-caaac539efbb06b0.rmeta"
+      ],
+      "Features": [
+        "all"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows_sys",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-0db7d53f9fb7f900.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows_sys-0db7d53f9fb7f900.rmeta"
+      ],
+      "Features": [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_UI",
+        "Win32_UI_Shell",
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "tokio_macros",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\tokio_macros-4c04650de5077c27.dll",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\tokio_macros-4c04650de5077c27.dll.lib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\tokio_macros-4c04650de5077c27.dll.exp",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\tokio_macros-4c04650de5077c27.pdb"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "proc-macro"
+      ]
+    },
+    {
+      "Name": "yoke",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libyoke-597b358bffad38db.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libyoke-597b358bffad38db.rmeta"
+      ],
+      "Features": [
+        "derive",
+        "zerofrom"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "windows",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows-45561103faae8e48.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwindows-45561103faae8e48.rmeta"
+      ],
+      "Features": [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Graphics",
+        "Win32_Graphics_Gdi",
+        "Win32_Graphics_OpenGL",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_LibraryLoader",
+        "Win32_System_Ole",
+        "Win32_System_Variant",
+        "Win32_UI",
+        "Win32_UI_Accessibility",
+        "Win32_UI_Input",
+        "Win32_UI_Input_KeyboardAndMouse",
+        "Win32_UI_WindowsAndMessaging",
+        "default",
+        "implement",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "ecolor",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libecolor-f21e2a756aa22af7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libecolor-f21e2a756aa22af7.rmeta"
+      ],
+      "Features": [
+        "bytemuck",
+        "serde"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "accesskit_consumer",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_consumer-d20ba7b6d1f59072.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_consumer-d20ba7b6d1f59072.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "arboard",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarboard-30bbeb11f49a73db.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarboard-30bbeb11f49a73db.rmeta"
+      ],
+      "Features": [
+        "core-graphics",
+        "image",
+        "image-data",
+        "windows-sys"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "build-script-build",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\blake3-a62134da349d215b\\build-script-build.exe",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\build\\blake3-a62134da349d215b\\build_script_build.pdb"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "custom-build"
+      ]
+    },
+    {
+      "Name": "thiserror",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libthiserror-ebbe35ba57bf0856.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libthiserror-ebbe35ba57bf0856.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "regex",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex-2db14b7f2174f51a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libregex-2db14b7f2174f51a.rmeta"
+      ],
+      "Features": [
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rayon_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librayon_core-086a906e88467b65.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librayon_core-086a906e88467b65.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zmij",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzmij-9b5663cead9f087b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzmij-9b5663cead9f087b.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "anstream",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstream-3cbd62720efe89b8.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libanstream-3cbd62720efe89b8.rmeta"
+      ],
+      "Features": [
+        "auto",
+        "wincon"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rand_chacha",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_chacha-46126c8537def8f9.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand_chacha-46126c8537def8f9.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "home",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhome-7cdb80f141e4d3a3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libhome-7cdb80f141e4d3a3.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "mio",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmio-abc5fe8c1ef59011.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libmio-abc5fe8c1ef59011.rmeta"
+      ],
+      "Features": [
+        "net",
+        "os-ext",
+        "os-poll"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "cpufeatures",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcpufeatures-9bcbf1e760349792.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libcpufeatures-9bcbf1e760349792.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "constant_time_eq",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libconstant_time_eq-4b226f1ec1ab0584.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libconstant_time_eq-4b226f1ec1ab0584.rmeta"
+      ],
+      "Features": [
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "itoa",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libitoa-7c5c58a4a2d16142.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libitoa-7c5c58a4a2d16142.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "jiff",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libjiff-41cab5f62b5717e7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libjiff-41cab5f62b5717e7.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "pollster",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpollster-16c1f0898a5f0154.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpollster-16c1f0898a5f0154.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "bytes",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbytes-07bb1fad361cf428.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libbytes-07bb1fad361cf428.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "arrayref",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarrayref-e0d376f0e751616f.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libarrayref-e0d376f0e751616f.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "either",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeither-853cb469e91b649b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeither-853cb469e91b649b.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "noise",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnoise-8b58691bb9534878.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libnoise-8b58691bb9534878.rmeta"
+      ],
+      "Features": [
+        "default"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zerovec",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerovec-9ec193bfb591e926.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerovec-9ec193bfb591e926.rmeta"
+      ],
+      "Features": [
+        "derive",
+        "yoke"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "zerotrie",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerotrie-a1e7774359859f2d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libzerotrie-a1e7774359859f2d.rmeta"
+      ],
+      "Features": [
+        "yoke",
+        "zerofrom"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "wgpu_hal",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_hal-290d661e012b5fd3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_hal-290d661e012b5fd3.rmeta"
+      ],
+      "Features": [
+        "gles",
+        "metal",
+        "renderdoc",
+        "vulkan",
+        "windows"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "epaint",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libepaint-e769c0fdb8aa6094.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libepaint-e769c0fdb8aa6094.rmeta"
+      ],
+      "Features": [
+        "bytemuck",
+        "default_fonts",
+        "epaint_default_fonts",
+        "log",
+        "serde"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "accesskit_windows",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_windows-6c3d23c0c3632f11.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_windows-6c3d23c0c3632f11.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "env_filter",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libenv_filter-a0e81662b7d405a3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libenv_filter-a0e81662b7d405a3.rmeta"
+      ],
+      "Features": [
+        "regex"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "winapi",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinapi-4ef6da565477c88b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwinapi-4ef6da565477c88b.rmeta"
+      ],
+      "Features": [
+        "winuser"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "tokio",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtokio-11fbfe9b29d96029.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtokio-11fbfe9b29d96029.rmeta"
+      ],
+      "Features": [
+        "bytes",
+        "default",
+        "fs",
+        "full",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "parking_lot",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros",
+        "windows-sys"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rand",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand-413ac0c1f04f285d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librand-413ac0c1f04f285d.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "default",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "rayon",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librayon-e8a5e337b7a30616.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\librayon-e8a5e337b7a30616.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "serde_json",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde_json-1964ecae53323614.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libserde_json-1964ecae53323614.rmeta"
+      ],
+      "Features": [
+        "default",
+        "float_roundtrip",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "tinystr",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtinystr-1695180f2d1ba5a7.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libtinystr-1695180f2d1ba5a7.rmeta"
+      ],
+      "Features": [
+        "zerovec"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "potential_utf",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpotential_utf-b489f8e8c5c70724.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libpotential_utf-b489f8e8c5c70724.rmeta"
+      ],
+      "Features": [
+        "zerovec"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "egui",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui-ba1d24565b2c372e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui-ba1d24565b2c372e.rmeta"
+      ],
+      "Features": [
+        "accesskit",
+        "bytemuck",
+        "default",
+        "default_fonts",
+        "log",
+        "persistence",
+        "ron",
+        "serde"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "wgpu_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_core-653d0e9fb934442e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu_core-653d0e9fb934442e.rmeta"
+      ],
+      "Features": [
+        "gles",
+        "indirect-validation",
+        "metal",
+        "raw-window-handle",
+        "vulkan",
+        "wgsl"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "accesskit_winit",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_winit-42ba8fe57b3fe18e.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libaccesskit_winit-42ba8fe57b3fe18e.rmeta"
+      ],
+      "Features": [
+        "accesskit_unix",
+        "async-io",
+        "default",
+        "rwh_06"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "blake3",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libblake3-4d4074bdebdaaef3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libblake3-4d4074bdebdaaef3.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "env_logger",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libenv_logger-bb42911c5e40e826.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libenv_logger-bb42911c5e40e826.rmeta"
+      ],
+      "Features": [
+        "auto-color",
+        "color",
+        "default",
+        "humantime",
+        "regex"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "icu_locale_core",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_locale_core-e7c79f760fbfa0f2.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_locale_core-e7c79f760fbfa0f2.rmeta"
+      ],
+      "Features": [
+        "zerovec"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "icu_collections",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_collections-237175fac67e95ac.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_collections-237175fac67e95ac.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "wgpu",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu-b9b7217c2886effd.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwgpu-b9b7217c2886effd.rmeta"
+      ],
+      "Features": [
+        "metal",
+        "webgpu",
+        "wgsl"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "icu_provider",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_provider-0876c3fa24f602ae.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_provider-0876c3fa24f602ae.rmeta"
+      ],
+      "Features": [
+        "baked"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "egui_wgpu",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui_wgpu-45ab4cb2a9692ab8.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui_wgpu-45ab4cb2a9692ab8.rmeta"
+      ],
+      "Features": [
+        "wayland",
+        "winit",
+        "x11"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "icu_properties",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_properties-877688083503563b.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_properties-877688083503563b.rmeta"
+      ],
+      "Features": [
+        "compiled_data"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "icu_normalizer",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_normalizer-26009167690f0cb9.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libicu_normalizer-26009167690f0cb9.rmeta"
+      ],
+      "Features": [
+        "compiled_data"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "idna_adapter",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libidna_adapter-e1375fae93b4277d.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libidna_adapter-e1375fae93b4277d.rmeta"
+      ],
+      "Features": [
+        "compiled_data"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "idna",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libidna-871ae9f6dc0fe0eb.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libidna-871ae9f6dc0fe0eb.rmeta"
+      ],
+      "Features": [
+        "alloc",
+        "compiled_data",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "url",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liburl-7215e9c2d9f48499.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\liburl-7215e9c2d9f48499.rmeta"
+      ],
+      "Features": [
+        "default",
+        "std"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "webbrowser",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwebbrowser-213e94c257394365.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libwebbrowser-213e94c257394365.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "egui_winit",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui_winit-e8e027140b77cd1a.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libegui_winit-e8e027140b77cd1a.rmeta"
+      ],
+      "Features": [
+        "accesskit",
+        "arboard",
+        "bytemuck",
+        "clipboard",
+        "links",
+        "serde",
+        "smithay-clipboard",
+        "wayland",
+        "webbrowser",
+        "x11"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "eframe",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeframe-34ef0bb63ee25fb3.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeframe-34ef0bb63ee25fb3.rmeta"
+      ],
+      "Features": [
+        "accesskit",
+        "default_fonts",
+        "persistence",
+        "ron",
+        "serde",
+        "wayland",
+        "wgpu",
+        "x11"
+      ],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    },
+    {
+      "Name": "sekai",
+      "Filenames": [
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\libsekai.rlib",
+        "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsekai-5c9dba06e85c9e1f.rmeta"
+      ],
+      "Features": [],
+      "Fresh": true,
+      "Kind": [
+        "lib"
+      ]
+    }
+  ],
+  "LastWriteUtc": "2026-10-01T00:40:26.7521531Z",
+  "ProductionRlib": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\libsekai.rlib",
+  "CreatedUtc": "2026-10-01T00:42:14.7096266Z",
+  "SHA256": "135FB169A9DF61EA216573DE9A0EBED52959088DF7C4DECBA54EB017A430A756",
+  "BaseCommit": "516c23c64eddb7f083caf4ab4a8d2eb6d6805bdf",
+  "CARGO_INCREMENTAL": "0",
+  "RUSTFLAGS": null,
+  "Eframe": {
+    "Name": "eframe",
+    "Filenames": [
+      "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeframe-34ef0bb63ee25fb3.rlib",
+      "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libeframe-34ef0bb63ee25fb3.rmeta"
+    ],
+    "Features": [
+      "accesskit",
+      "default_fonts",
+      "persistence",
+      "ron",
+      "serde",
+      "wayland",
+      "wgpu",
+      "x11"
+    ],
+    "Fresh": true,
+    "Kind": [
+      "lib"
+    ]
+  },
+  "QueryCommand": "cargo build --release --lib --message-format=json",
+  "CARGO_TARGET_DIR": null,
+  "Length": 75055942,
+  "BuildCommand": "cargo build --release --lib",
+  "SourceCommit": "50e379cfe2b918bdd8a50445d318a7a7f082d13d",
+  "ProductionDepsRlib": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\target\\release\\deps\\libsekai-5c9dba06e85c9e1f.rlib",
+  "AppSourceSHA256": "CDF8562A579913634456D9834E4D271E7D55604D95C8CE8D8A3039E042669514",
+  "SourceManifest": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-source-manifest.json",
+  "SourceManifestSHA256": "04F5F53F0FBFF94A527905B160DCCDD85A8E01EDD7A1E9BF765E91A874358655",
+  "NativeDependencySubsetRebuilt": [
+    "Compiling windows-sys v0.61.2",
+    "Compiling winapi-util v0.1.11",
+    "Compiling anstyle-wincon v3.0.11",
+    "Compiling anstyle-query v1.1.5",
+    "Compiling home v0.5.12",
+    "Compiling mio v1.1.1",
+    "Compiling termcolor v1.4.1",
+    "Compiling anstream v0.6.21",
+    "Compiling codespan-reporting v0.11.1",
+    "Compiling env_logger v0.11.8",
+    "Compiling tokio v1.49.0",
+    "Compiling naga v24.0.0",
+    "Compiling wgpu-hal v24.0.4",
+    "Compiling wgpu-core v24.0.5",
+    "Compiling wgpu v24.0.5",
+    "Compiling egui-wgpu v0.31.1",
+    "Compiling eframe v0.31.1",
+    "Compiling sekai v0.1.0 (C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a)"
+  ],
+  "NativeBuildSeconds": 40.93
+}

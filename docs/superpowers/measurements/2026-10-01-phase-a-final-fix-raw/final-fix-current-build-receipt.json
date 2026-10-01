@@ -1,0 +1,16 @@
+{
+  "Commands": [
+    "cargo test --release --lib final_fix_ -- --nocapture",
+    "cargo build --release --lib"
+  ],
+  "FreeAfter": 109618827264,
+  "Exit": 0,
+  "StartUtc": "2026-10-01T00:39:07.8307755Z",
+  "ExpectedAdditionalPeakBytes": 500000000,
+  "FreeBefore": 109853708288,
+  "RUSTFLAGS": null,
+  "CARGO_INCREMENTAL": "0",
+  "EndUtc": "2026-10-01T00:40:26.8503246Z",
+  "OperationalReserveBytes": 1000000000,
+  "CARGO_TARGET_DIR": null
+}

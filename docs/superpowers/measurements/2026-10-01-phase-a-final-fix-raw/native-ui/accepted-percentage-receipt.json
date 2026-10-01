@@ -1,0 +1,35 @@
+{
+  "Utc": "2026-10-01T00:50:42.4312111Z",
+  "Source": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\Sekai演示\\输入校验.sekai.json",
+  "Hash": "52731740B94833F9698BB51181674F44AD9BE3978EE6079762200817130D33EE",
+  "Inputs": {
+    "world_seed": 42,
+    "spherical_space_spec": {
+      "radius": 6371000.0,
+      "target_cell_count": 20000
+    },
+    "world_pipeline": "Formation",
+    "formation_quality_profile": "draft",
+    "formation_spec": {
+      "schema_version": 1,
+      "preset": "Continents"
+    },
+    "tectonic_spec": {
+      "schema_version": 1,
+      "plate_count": 12,
+      "continental_crust_fraction": 0.38,
+      "activity": "Moderate"
+    },
+    "relief_spec": {
+      "schema_version": 2,
+      "target_land_fraction": 0.4,
+      "sea_level_policy": "TargetLandFraction",
+      "water_inventory_ratio": 1.0
+    },
+    "geologic_spec": {
+      "schema_version": 1,
+      "hotspot_count": 4,
+      "mantle_activity": "Moderate"
+    }
+  }
+}

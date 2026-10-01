@@ -1,0 +1,49 @@
+[
+  {
+    "EndUtc": "2026-10-01T00:36:38.8840942Z",
+    "Log": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-regression-app-authoring-tests.log",
+    "StartUtc": "2026-10-01T00:36:38.4574273Z",
+    "Command": "cargo test --release --lib app::authoring::tests -- --nocapture",
+    "Exit": 0
+  },
+  {
+    "EndUtc": "2026-10-01T00:36:39.3002342Z",
+    "Log": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-regression-project_flow_.log",
+    "StartUtc": "2026-10-01T00:36:38.8926548Z",
+    "Command": "cargo test --release --lib project_flow_ -- --nocapture",
+    "Exit": 0
+  },
+  {
+    "EndUtc": "2026-10-01T00:36:40.4424202Z",
+    "Log": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-regression-keyboard.log",
+    "StartUtc": "2026-10-01T00:36:39.3049822Z",
+    "Command": "cargo test --release --lib keyboard -- --nocapture",
+    "Exit": 0
+  },
+  {
+    "EndUtc": "2026-10-01T00:36:41.2121271Z",
+    "Log": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-regression-a_second_poll_in_the_same_pass_stages_without_settling.log",
+    "StartUtc": "2026-10-01T00:36:40.4481237Z",
+    "Command": "cargo test --release --lib a_second_poll_in_the_same_pass_stages_without_settling -- --nocapture",
+    "Exit": 0
+  },
+  {
+    "EndUtc": "2026-10-01T00:36:41.6338154Z",
+    "Log": "C:\\Users\\DYZ\\Documents\\Codex\\2026-09-30\\task\\sekai-phase-a\\.superpowers\\sdd\\2026-09-30-phase-a-authoring-loop\\final-fix-regression-pending_world_build_keeps_the_last_valid_map_browsable_until_publication.log",
+    "StartUtc": "2026-10-01T00:36:41.2170876Z",
+    "Command": "cargo test --release --lib pending_world_build_keeps_the_last_valid_map_browsable_until_publication -- --nocapture",
+    "Exit": 0
+  },
+  {
+    "Exit": 0,
+    "Command": "cargo fmt --all -- --check"
+  },
+  {
+    "CARGO_TARGET_DIR": null,
+    "Command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "StartUtc": "2026-10-01T00:36:43.3091204Z",
+    "EndUtc": "2026-10-01T00:37:01.468621Z",
+    "Exit": 101,
+    "CARGO_INCREMENTAL": "0"
+  }
+]
