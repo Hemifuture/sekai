@@ -163,9 +163,36 @@ struct FormationSurfaceCacheEntry {
     surface: crate::world::spatial::SphericalSurfaceSnapshot,
 }
 
+/// Current coarse operation of one request; never persisted or a solver progress estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorldBuildPhase {
+    Surface,
+    Graph,
+    Presentation,
+}
+
+impl WorldBuildPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Surface => "地表准备",
+            Self::Graph => "自然世界构建",
+            Self::Presentation => "显示准备/发布",
+        }
+    }
+
+    fn enter(self, current: Option<&std::sync::Mutex<Self>>) {
+        if let Some(current) = current {
+            *current
+                .lock()
+                .expect("phase lock is never held during work") = self;
+        }
+    }
+}
+
 /// A spherical world build running on a worker thread.
 struct PendingWorldBuild {
     token: BuildToken,
+    phase: Arc<std::sync::Mutex<WorldBuildPhase>>,
     worker: Option<std::thread::JoinHandle<()>>,
     receiver: std::sync::mpsc::Receiver<WorldBuildCompletion>,
     cancellation: crate::engine::BuildCancellation,
@@ -572,6 +599,7 @@ fn prepare_pending_world_build(
         working_stage_cache,
         PendingWorldBuild {
             token,
+            phase: Arc::new(std::sync::Mutex::new(WorldBuildPhase::Surface)),
             worker: None,
             receiver,
             cancellation,
@@ -614,11 +642,20 @@ fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCa
     canvas.replace_field_state(state);
 }
 
+/// Rejected text keeps its numeric-editor ID when Slider returns its track ID after blur.
+#[derive(Debug, Clone)]
+struct RejectedAuthorInput {
+    field: &'static str,
+    widget_id: egui::Id,
+    text: String,
+}
+
 /// A committed authoring session and the current in-memory display resources.
 pub struct TemplateApp {
     world_origin: PersistedWorldOrigin,
     authoring: AuthoringSession,
     input_edit: Option<AuthorInputs>,
+    author_input_error: Option<RejectedAuthorInput>,
     #[cfg(not(target_arch = "wasm32"))]
     project_ui: project_ui::ProjectUiState,
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
@@ -783,6 +820,7 @@ impl Default for TemplateApp {
             authoring: AuthoringSession::new(AuthorInputs::default())
                 .expect("default author inputs satisfy domain contracts"),
             input_edit: None,
+            author_input_error: None,
             #[cfg(not(target_arch = "wasm32"))]
             project_ui: project_ui::ProjectUiState::default(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
@@ -1394,6 +1432,7 @@ impl TemplateApp {
             .is_requested_or_enabled()
             .then(|| BuildObservation::new(token, request_started));
         let observation = self.build_observation.clone();
+        let worker_phase = pending_build.phase.clone();
         if observation.is_some() {
             if let Some(timing) = origin {
                 emit_runtime_line(&format!("SEKAI_BUILD_ORIGIN token={token:?} origin=open read_and_decode_s={:.6} pre_worker_s={:.6} includes_compatibility_confirmation_and_previous_worker_wait=true", timing.read_and_decode.as_secs_f64(), request_started.elapsed().as_secs_f64()));
@@ -1473,6 +1512,7 @@ impl TemplateApp {
                     &mut stage_cache,
                     &worker_cancellation,
                     observation.as_ref(),
+                    Some(&worker_phase),
                 )
                 .map_err(|error| {
                     // Surface the report's error diagnostics: "inspect the
@@ -1589,12 +1629,17 @@ impl TemplateApp {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new());
             ui.label(format!(
-                "{}…已用 {:.0} 秒",
+                "{} · {}…已用 {:.0} 秒",
                 if pending.cancellation.is_cancelled() {
                     "正在取消"
                 } else {
                     "正在生成世界"
                 },
+                pending
+                    .phase
+                    .lock()
+                    .expect("phase lock is never held during work")
+                    .label(),
                 pending.started_at.elapsed().as_secs_f32()
             ));
             let cancel = ui.button("取消");
@@ -2468,10 +2513,16 @@ impl eframe::App for TemplateApp {
                         let rejected_text = std::cell::RefCell::new(None);
                         let parsed_seed = std::cell::Cell::new(None);
                         let exact_seed = editing.world_seed;
+                        let rejected_seed =
+                            rejected_authoring_text(&self.author_input_error, "根种子");
                         let response = ui.add(
                             egui::DragValue::new(&mut editing.world_seed)
                                 .range(0..=u64::MAX)
-                                .custom_formatter(move |_, _| exact_seed.to_string())
+                                .custom_formatter(move |_, _| {
+                                    rejected_seed
+                                        .clone()
+                                        .unwrap_or_else(|| exact_seed.to_string())
+                                })
                                 .custom_parser(|text| {
                                     match normalized_authoring_number(text).parse::<u64>() {
                                         Ok(seed) => {
@@ -2490,8 +2541,12 @@ impl eframe::App for TemplateApp {
                         if let Some(seed) = parsed_seed.get() {
                             editing.world_seed = seed;
                         }
-                        author_input_focused |=
-                            authoring_number_stays_pending(&response, rejected_text.into_inner());
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "根种子",
+                        );
                     });
                     if ui.button("新种子并重建").clicked() {
                         new_seed = true;
@@ -2528,15 +2583,30 @@ impl eframe::App for TemplateApp {
                     }
                     ui.horizontal(|ui| {
                         ui.label(INITIAL_PLATE_COUNT_LABEL);
+                        let rejected_plates = rejected_authoring_text(
+                            &self.author_input_error,
+                            INITIAL_PLATE_COUNT_LABEL,
+                        );
                         let rejected_text = std::cell::RefCell::new(None);
                         let response = ui.add(
                             egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
                                 .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
-                                .custom_parser(|text| parse_authoring_number(text, &rejected_text))
+                                .custom_formatter(move |value, _| {
+                                    rejected_plates
+                                        .clone()
+                                        .unwrap_or_else(|| (value as u16).to_string())
+                                })
+                                .custom_parser(|text| {
+                                    parse_authoring_plate_count(text, &rejected_text)
+                                })
                                 .update_while_editing(false),
                         );
-                        author_input_focused |=
-                            authoring_number_stays_pending(&response, rejected_text.into_inner());
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "初始板块数",
+                        );
                     });
                     if editing.world_pipeline == WorldPipeline::Formation {
                         ui.horizontal(|ui| {
@@ -2561,6 +2631,9 @@ impl eframe::App for TemplateApp {
                         published_area_summary,
                     );
                     if controls.land_fraction_enabled {
+                        let current_fraction = editing.relief_spec.target_land_fraction;
+                        let rejected_fraction =
+                            rejected_authoring_text(&self.author_input_error, "陆地占比");
                         let rejected_text = std::cell::RefCell::new(None);
                         let response = ui.add(
                             egui::Slider::new(
@@ -2569,11 +2642,27 @@ impl eframe::App for TemplateApp {
                                     ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
                             )
                             .text("陆地占比")
-                            .custom_parser(|text| parse_authoring_number(text, &rejected_text))
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                            .custom_parser(|text| {
+                                parse_authoring_percentage(
+                                    text,
+                                    current_fraction,
+                                    crate::world::natural::MIN_TARGET_LAND_FRACTION
+                                        ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
+                                    &rejected_text,
+                                )
+                            })
+                            .custom_formatter(move |value, _| {
+                                rejected_fraction
+                                    .clone()
+                                    .unwrap_or_else(|| format_authoring_percentage(value))
+                            }),
                         );
-                        author_input_focused |=
-                            authoring_number_stays_pending(&response, rejected_text.into_inner());
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "陆地占比",
+                        );
                     } else {
                         let mut measured_land_fraction = controls.displayed_land_fraction;
                         ui.add_enabled(
@@ -2585,6 +2674,9 @@ impl eframe::App for TemplateApp {
                         .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
                     }
                     ui.collapsing("高级", |ui| {
+                        let current_fraction = editing.tectonic_spec.continental_crust_fraction;
+                        let rejected_fraction =
+                            rejected_authoring_text(&self.author_input_error, "初始大陆地壳比例");
                         let rejected_text = std::cell::RefCell::new(None);
                         let response = ui
                             .add_enabled(
@@ -2598,12 +2690,30 @@ impl eframe::App for TemplateApp {
                                 } else {
                                     "初始大陆地壳比例（预设值）"
                                 })
-                                .custom_parser(|text| parse_authoring_number(text, &rejected_text))
-                                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                                .custom_parser(|text| {
+                                    parse_authoring_percentage(
+                                        text,
+                                        current_fraction,
+                                        MIN_CONTINENTAL_CRUST_FRACTION
+                                            ..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                        &rejected_text,
+                                    )
+                                })
+                                .custom_formatter(
+                                    move |value, _| {
+                                        rejected_fraction
+                                            .clone()
+                                            .unwrap_or_else(|| format_authoring_percentage(value))
+                                    },
+                                ),
                             )
                             .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
-                        author_input_focused |=
-                            authoring_number_stays_pending(&response, rejected_text.into_inner());
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "初始大陆地壳比例",
+                        );
                     });
                     egui::ComboBox::from_label("构造活动")
                         .selected_text(activity_label(editing.tectonic_spec.activity))
@@ -2653,6 +2763,15 @@ impl eframe::App for TemplateApp {
                         ctx.input(|input| input.pointer.any_down()),
                         cancel_input_edit,
                     );
+                    if let Some(error) = &self.author_input_error {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            format!(
+                                "无效{} {}：请按控件单位输入范围内的数值",
+                                error.field, error.text
+                            ),
+                        );
+                    }
                     // Variable status rows follow the numeric editors so their
                     // auto IDs and pending text survive status changes.
                     #[cfg(not(target_arch = "wasm32"))]
@@ -2759,7 +2878,11 @@ impl TemplateApp {
     ) {
         self.input_edit = None;
         if escape {
+            self.author_input_error = None;
             return;
+        }
+        if !focused {
+            self.author_input_error = None;
         }
         if focused || pointer_down {
             if focused || editing != *self.authoring.draft() {
@@ -2783,21 +2906,47 @@ impl TemplateApp {
     }
 }
 
-fn parse_authoring_number(
+fn parse_authoring_plate_count(
     text: &str,
     rejected: &std::cell::RefCell<Option<String>>,
 ) -> Option<f64> {
-    match normalized_authoring_number(text)
+    let value = normalized_authoring_number(text)
+        .parse::<u16>()
+        .ok()
+        .filter(|value| (MIN_PLATE_COUNT..=MAX_PLATE_COUNT).contains(value));
+    if value.is_none() {
+        rejected.replace(Some(text.to_owned()));
+    }
+    value.map(f64::from)
+}
+
+fn format_authoring_percentage(value: f64) -> String {
+    format!("{}%", value as f32 * 100.0)
+}
+
+fn parse_authoring_percentage(
+    text: &str,
+    current: f32,
+    range: std::ops::RangeInclusive<f32>,
+    rejected: &std::cell::RefCell<Option<String>>,
+) -> Option<f64> {
+    let normalized = normalized_authoring_number(text);
+    let number = normalized.strip_suffix('%').unwrap_or(&normalized);
+    let displayed = format_authoring_percentage(f64::from(current));
+    // A displayed percentage can lose one f32 bit on division. Keep the authored
+    // bits when confirming the displayed value so a no-op cannot create a recipe.
+    if number == displayed.trim_end_matches('%') {
+        return Some(f64::from(current));
+    }
+    let value = number
         .parse::<f64>()
         .ok()
-        .filter(|value| value.is_finite())
-    {
-        Some(value) => Some(value),
-        None => {
-            rejected.replace(Some(text.to_owned()));
-            None
-        }
+        .map(|percent| (percent / 100.0) as f32)
+        .filter(|fraction| fraction.is_finite() && range.contains(fraction));
+    if value.is_none() {
+        rejected.replace(Some(text.to_owned()));
     }
+    value.map(f64::from)
 }
 
 fn normalized_authoring_number(text: &str) -> String {
@@ -2807,15 +2956,55 @@ fn normalized_authoring_number(text: &str) -> String {
         .collect()
 }
 
-fn authoring_number_stays_pending(response: &egui::Response, rejected: Option<String>) -> bool {
+fn rejected_authoring_text(error: &Option<RejectedAuthorInput>, field: &str) -> Option<String> {
+    error
+        .as_ref()
+        .filter(|error| error.field == field)
+        .map(|error| error.text.clone())
+}
+
+fn authoring_number_stays_pending(
+    response: &egui::Response,
+    rejected: Option<String>,
+    error: &mut Option<RejectedAuthorInput>,
+    field: &'static str,
+) -> bool {
     // DragValue removes its temporary string on focus loss before returning.
     // Restore a rejected parse so saving cannot silently capture the old number.
-    if let Some(text) = rejected {
+    // Slider parses while typing; unchanged Enter need not reparse. After blur
+    // its response can use the track ID, so retain the original numeric-editor ID.
+    let rejected = rejected
+        .map(|text| RejectedAuthorInput {
+            field,
+            widget_id: response.id,
+            text,
+        })
+        .or_else(|| {
+            if !response.changed()
+                && !response
+                    .ctx
+                    .input(|input| input.key_pressed(egui::Key::Escape))
+            {
+                error.as_ref().filter(|error| error.field == field).cloned()
+            } else {
+                None
+            }
+        });
+    if let Some(rejected) = rejected {
+        let id = rejected.widget_id;
         response
             .ctx
-            .data_mut(|data| data.insert_temp(response.id, text));
-        response.request_focus();
+            .data_mut(|data| data.insert_temp(id, rejected.text.clone()));
+        response.ctx.memory_mut(|memory| {
+            if !memory.has_focus(id) {
+                memory.request_focus(id);
+            }
+        });
+        *error = Some(rejected);
         return true;
+    }
+    if response.changed() {
+        *error = None;
     }
     response.has_focus()
 }
@@ -3249,6 +3438,349 @@ mod natural_app_tests {
         assert_eq!(app.authoring.revision(), 1);
     }
 
+    // Actual widgets are required: egui clamps/parses before the authoring transaction.
+    fn final_fix_percentage_app(continental: bool, value: f32) -> TemplateApp {
+        let mut inputs = super::AuthorInputs {
+            world_pipeline: WorldPipeline::LegacyFoundation,
+            ..Default::default()
+        };
+        inputs.relief_spec.target_land_fraction = if continental { 0.31 } else { value };
+        inputs.tectonic_spec.continental_crust_fraction = if continental { value } else { 0.31 };
+        TemplateApp {
+            authoring: super::AuthoringSession::new(inputs).unwrap(),
+            ..TemplateApp::default()
+        }
+    }
+
+    fn final_fix_focus_percentage(app: &mut TemplateApp, ctx: &egui::Context, continental: bool) {
+        let output = authoring_keyboard_frame(app, ctx, Vec::new());
+        let mut visible = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut visible);
+        }
+        if continental
+            && !visible
+                .iter()
+                .any(|text| text.ends_with('%') && text != "31%")
+        {
+            focus_authoring_number(app, ctx, "高级");
+        }
+        let output = authoring_keyboard_frame(app, ctx, Vec::new());
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        let percentage = text
+            .iter()
+            .find(|text| text.ends_with('%') && *text != "31%")
+            .expect("the editable percentage is rendered")
+            .clone();
+        focus_authoring_number(app, ctx, &percentage);
+    }
+
+    #[test]
+    fn final_fix_percentage_keyboard_accepts_display_units_and_escape_discards() {
+        for continental in [false, true] {
+            for input in ["40%", "40"] {
+                let mut app = final_fix_percentage_app(continental, 0.38);
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(input.into())]);
+                assert_eq!(app.authoring.draft(), &before);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                let value = if continental {
+                    app.authoring
+                        .draft()
+                        .tectonic_spec
+                        .continental_crust_fraction
+                } else {
+                    app.authoring.draft().relief_spec.target_land_fraction
+                };
+                assert_eq!(value, 0.40, "continental={continental} input={input}");
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(!app.authoring.accepts(token));
+                let committed = app.authoring.draft().clone();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("50%".into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert_eq!(app.authoring.draft(), &committed);
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(app.authoring.undo());
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(!app.authoring.undo());
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits() {
+        for continental in [false, true] {
+            let mut app = final_fix_percentage_app(continental, 0.38123456);
+            let ctx = egui::Context::default();
+            let before = app.authoring.draft().clone();
+            let identity = before.recipe_id().unwrap();
+            let token = app.authoring.begin_build();
+            final_fix_focus_percentage(&mut app, &ctx, continental);
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+            assert_eq!(app.authoring.draft(), &before, "continental={continental}");
+            assert_eq!(app.authoring.draft().recipe_id().unwrap(), identity);
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.authoring.accepts(token));
+            assert!(!app.authoring.undo());
+            assert!(
+                app.input_edit.is_none(),
+                "untouched Enter finishes without a pending edit"
+            );
+        }
+    }
+
+    #[test]
+    fn final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round() {
+        for invalid in ["0", "999", "2.5"] {
+            for finish in [egui::Key::Enter, egui::Key::Tab] {
+                let mut app = TemplateApp::default();
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                focus_authoring_number(
+                    &mut app,
+                    &ctx,
+                    &before.tectonic_spec.plate_count.to_string(),
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(invalid.into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(finish)]);
+                assert_eq!(
+                    app.authoring.draft(),
+                    &before,
+                    "invalid={invalid} finish={finish:?}"
+                );
+                assert_eq!(app.authoring.revision(), 0);
+                assert!(app.authoring.accepts(token));
+                assert!(app.input_edit.is_some());
+                assert!(!app.authoring.undo());
+                let output = authoring_keyboard_frame(&mut app, &ctx, Vec::new());
+                let mut text = Vec::new();
+                for shape in &output.shapes {
+                    collect_text(&shape.shape, &mut text);
+                }
+                assert!(text.iter().any(|text| text == invalid), "rejected raw text stays visible: invalid={invalid} finish={finish:?} rendered={text:?}");
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.dispatch_project_action(super::project_ui::ProjectAction::Save, &ctx);
+                    assert!(
+                        app.input_edit.is_some(),
+                        "saving refuses the pending invalid text"
+                    );
+                }
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(app.input_edit.is_none());
+                focus_authoring_number(
+                    &mut app,
+                    &ctx,
+                    &before.tectonic_spec.plate_count.to_string(),
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("18".into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18);
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(!app.authoring.accepts(token));
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_percentage_keyboard_rejects_domain_errors_without_committing() {
+        for continental in [false, true] {
+            for invalid in ["0%", "999%", "NaN"] {
+                let mut app = final_fix_percentage_app(continental, 0.38);
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(invalid.into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                assert_eq!(
+                    app.authoring.draft(),
+                    &before,
+                    "continental={continental} invalid={invalid}"
+                );
+                assert_eq!(app.authoring.revision(), 0);
+                assert!(app.authoring.accepts(token));
+                assert!(
+                    app.input_edit.is_some(),
+                    "continental={continental} invalid={invalid} focused={:?} error={:?}",
+                    ctx.memory(|m| m.focused()),
+                    app.author_input_error
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert!(app.input_edit.is_none());
+                assert_eq!(app.authoring.draft(), &before);
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_pending_status_renders_actual_surface_phase_without_observation() {
+        let mut app = TemplateApp::default();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (_, pending) = super::prepare_pending_world_build(
+            app.authoring.draft().world_pipeline,
+            MemoryStageCache::default(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            false,
+        );
+        app.world_build = Some(pending);
+        assert!(app.build_observation.is_none());
+        let ctx = egui::Context::default();
+        let output = ctx.run(test_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.show_pending_world_build_status(ui);
+            });
+        });
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        assert!(
+            text.iter().any(|text| text.contains("地表准备")),
+            "actual status text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn final_fix_invalid_numbers_can_be_corrected_in_place() {
+        for field in ["plates", "land", "continental"] {
+            let continental = field == "continental";
+            let mut app = final_fix_percentage_app(continental, 0.38);
+            let ctx = egui::Context::default();
+            let token = app.authoring.begin_build();
+            if field == "plates" {
+                focus_authoring_number(&mut app, &ctx, "12");
+            } else {
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+            }
+            authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("0".into())]);
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Tab)]);
+            assert!(app.input_edit.is_some(), "field={field}");
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.authoring.accepts(token));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                app.dispatch_project_action(super::project_ui::ProjectAction::Save, &ctx);
+                assert!(app.input_edit.is_some());
+            }
+            authoring_keyboard_frame(&mut app, &ctx, Vec::new());
+            let replacement = if field == "plates" { "18" } else { "40%" };
+            let correction_output = authoring_keyboard_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            ctrl: true,
+                            command: true,
+                            ..egui::Modifiers::NONE
+                        },
+                    },
+                    egui::Event::Text(replacement.into()),
+                ],
+            );
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+            let mut correction_text = Vec::new();
+            for shape in &correction_output.shapes {
+                collect_text(&shape.shape, &mut correction_text);
+            }
+            assert!(
+                app.input_edit.is_none(),
+                "field={field} error={:?} focus={:?} input={:?} correction={correction_text:?}",
+                app.author_input_error,
+                ctx.memory(|m| m.focused()),
+                app.input_edit
+            );
+            assert!(app.author_input_error.is_none());
+            assert_eq!(app.authoring.revision(), 1);
+            assert!(!app.authoring.accepts(token));
+            match field {
+                "plates" => assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18),
+                "land" => assert_eq!(app.authoring.draft().relief_spec.target_land_fraction, 0.40),
+                _ => assert_eq!(
+                    app.authoring
+                        .draft()
+                        .tectonic_spec
+                        .continental_crust_fraction,
+                    0.40
+                ),
+            }
+            assert!(app.authoring.undo());
+            assert!(!app.authoring.undo());
+        }
+    }
+
+    // The cheapest actual worker proves phase updates with observation disabled;
+    // a renderer-only fixture cannot prove that production advances its state.
+    #[test]
+    fn final_fix_actual_worker_phase_is_request_owned_and_never_persisted() {
+        let mut inputs = super::AuthorInputs {
+            world_pipeline: WorldPipeline::LegacyFoundation,
+            ..Default::default()
+        };
+        inputs.spherical_space_spec.target_cell_count = 162;
+        let mut app = TemplateApp {
+            authoring: super::AuthoringSession::new(inputs).unwrap(),
+            ..TemplateApp::default()
+        };
+        app.request_spherical_world_build();
+        assert!(app.build_observation.is_none());
+        let pending = app.world_build.as_mut().unwrap();
+        pending.worker.take().unwrap().join().unwrap();
+        let old_phase = pending.phase.clone();
+        assert_eq!(
+            *old_phase.lock().unwrap(),
+            super::WorldBuildPhase::Presentation
+        );
+        assert!(pending.receiver.try_recv().unwrap().result.is_ok());
+        let ctx = egui::Context::default();
+        let output = ctx.run(test_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.show_pending_world_build_status(ui);
+            });
+        });
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        assert!(text.iter().any(|text| text.contains("显示准备/发布")));
+        app.world_build = None;
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (_, next) = super::prepare_pending_world_build(
+            WorldPipeline::LegacyFoundation,
+            MemoryStageCache::default(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            false,
+        );
+        super::WorldBuildPhase::Graph.enter(Some(&old_phase));
+        assert_eq!(*next.phase.lock().unwrap(), super::WorldBuildPhase::Surface);
+        app.world_build = Some(next);
+        let wire = serde_json::to_value(&app).unwrap();
+        assert!(wire.get("world_build").is_none());
+        assert!(wire.get("phase").is_none());
+        assert!(wire.get("author_input_error").is_none());
+    }
     #[test]
     fn persisted_recipe_has_one_input_source_and_no_runtime_or_history() {
         let app = TemplateApp::default();
@@ -4948,6 +5480,7 @@ mod natural_app_tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         app.world_build = Some(PendingWorldBuild {
             token: app.authoring.begin_build(),
+            phase: Arc::new(std::sync::Mutex::new(super::WorldBuildPhase::Surface)),
             worker: None,
             receiver,
             cancellation: crate::engine::BuildCancellation::new(),

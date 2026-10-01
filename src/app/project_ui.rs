@@ -131,6 +131,7 @@ impl TemplateApp {
             ProjectAction::Undo | ProjectAction::Redo => {
                 release_project_text_focus(ctx);
                 self.input_edit = None;
+                self.author_input_error = None;
                 let changed = match action {
                     ProjectAction::Undo => self.authoring.undo(),
                     _ => self.authoring.redo(),
@@ -208,6 +209,7 @@ impl TemplateApp {
 
     fn clear_project_publication(&mut self) {
         self.input_edit = None;
+        self.author_input_error = None;
         self.spherical_presentation
             .with_resource(|published| *published = None);
         self.published_world_token = None;
@@ -615,6 +617,7 @@ impl TemplateApp {
             }
             (ConfirmationKind::Unsaved(action), ConfirmationChoice::Discard) => {
                 self.input_edit = None;
+                self.author_input_error = None;
                 self.continue_project_action(action, ctx);
             }
             (
